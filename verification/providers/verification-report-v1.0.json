@@ -81,7 +81,7 @@
   "environment_file": "/tmp/rag-provider.env",
   "full_prompts_or_responses_recorded": false,
   "raw_base_urls_recorded": false,
-  "report_id": "provider-smoke-deepseek-qwen-v0.1",
+  "report_id": "provider-smoke-deepseek-qwen-v1.0",
   "schema_version": "1.0",
   "secret_values_recorded": false,
   "status": "passed",

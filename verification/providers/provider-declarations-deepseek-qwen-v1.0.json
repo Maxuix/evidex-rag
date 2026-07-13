@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
   "baseline_id": "provider-baseline-p1a-deepseek-qwen",
-  "status": "verified_pending_approval",
+  "status": "approved",
   "chat": {
     "required": true,
     "logical_endpoint_id": "deepseek-official-chat",
@@ -87,6 +87,6 @@
   "validation": {
     "real_endpoint_verified": true,
     "verified_at": "2026-07-13T10:05:58.289312+00:00",
-    "report_path": "verification/providers/verification-report-v0.1.json"
+    "report_path": "verification/providers/verification-report-v1.0.json"
   }
 }

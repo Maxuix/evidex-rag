@@ -69,7 +69,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--report",
         type=Path,
-        default=Path("verification/providers/verification-report-v0.1.json"),
+        default=Path("verification/providers/verification-report-v1.0.json"),
     )
     return parser.parse_args()
 
@@ -370,7 +370,7 @@ def main() -> int:
     args = parse_args()
     report: dict[str, Any] = {
         "schema_version": "1.0",
-        "report_id": "provider-smoke-deepseek-qwen-v0.1",
+        "report_id": "provider-smoke-deepseek-qwen-v1.0",
         "verified_at": datetime.now(timezone.utc).isoformat(),
         "status": "failed",
         "secret_values_recorded": False,

@@ -6,7 +6,7 @@ The repository stores provider declarations, fingerprints, and non-sensitive rep
 
 `provider-declarations.template.json` defines the required chat, embedding, optional-rerank, and P1A embedding-space fields. It is intentionally incomplete until candidate endpoints are selected and tested.
 
-The current verified draft is `provider-declarations-deepseek-qwen-v0.1.json`, backed by the secret-free `verification-report-v0.1.json`. It selects DeepSeek `deepseek-v4-flash` for chat and Alibaba Cloud Model Studio Beijing `text-embedding-v4` at 1024 dimensions for embeddings. It remains a draft until the named owner approves the six decisions in the capability baseline.
+The approved declaration is `provider-declarations-deepseek-qwen-v1.0.json`, backed by the secret-free `verification-report-v1.0.json`. It selects DeepSeek `deepseek-v4-flash` for chat and Alibaba Cloud Model Studio Beijing `text-embedding-v4` at 1024 dimensions for embeddings. Any material change requires a new reviewed version.
 
 Validate the template without exposing environment values:
 
