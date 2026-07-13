@@ -1,0 +1,92 @@
+{
+  "schema_version": "1.0",
+  "baseline_id": "provider-baseline-p1a-deepseek-qwen",
+  "status": "verified_pending_approval",
+  "chat": {
+    "required": true,
+    "logical_endpoint_id": "deepseek-official-chat",
+    "provider_id": "deepseek",
+    "protocol": "openai-compatible-chat-completions",
+    "base_url_env": "RAG_CHAT_BASE_URL",
+    "api_key_env": "RAG_CHAT_API_KEY",
+    "requested_model": "deepseek-v4-flash",
+    "resolved_model": "deepseek-v4-flash",
+    "model_version": "DeepSeek-V4-Flash",
+    "deployment_revision": null,
+    "configuration_fingerprint": "sha256:f65fee43dc8b5886c78ceb1116514e407d539d7f4b9378a8b8073e2de8620b04",
+    "capability_fingerprint": "sha256:b09e82393dc80d4326ce8bf5040025bf046e31e7828d0ecdec76c02aefe11d76",
+    "timeout_seconds": 30,
+    "max_retries": 2,
+    "max_concurrency": 2,
+    "capabilities": {
+      "supports_structured_output": true,
+      "schema_mode": "json_object_then_pydantic_validation",
+      "max_input_tokens": 1000000,
+      "supports_usage": true,
+      "supports_streaming": true,
+      "retryable_statuses": [
+        429,
+        500,
+        503
+      ],
+      "rate_limit_semantics": "429 rate limiting; published numeric account limits not relied upon",
+      "provider_idempotency_support": "not_declared"
+    },
+    "evidence_sources": [
+      "https://api-docs.deepseek.com/",
+      "https://api-docs.deepseek.com/api/create-chat-completion/",
+      "https://api-docs.deepseek.com/quick_start/error_codes",
+      "https://api-docs.deepseek.com/news/news260424/"
+    ]
+  },
+  "embedding": {
+    "required": true,
+    "logical_endpoint_id": "alibaba-model-studio-beijing-embedding",
+    "provider_id": "alibaba-cloud-model-studio-qwen",
+    "protocol": "openai-compatible-embeddings",
+    "base_url_env": "RAG_EMBEDDING_BASE_URL",
+    "api_key_env": "RAG_EMBEDDING_API_KEY",
+    "requested_model": "text-embedding-v4",
+    "resolved_model": "text-embedding-v4",
+    "model_version": "text-embedding-v4 (Qwen3-Embedding series)",
+    "deployment_revision": null,
+    "configuration_fingerprint": "sha256:c135eb852aefd97be80fd82dd168f7cf1ccff0c99eb4fcfdbbf3e337cedeee66",
+    "timeout_seconds": 30,
+    "max_retries": 2,
+    "max_concurrency": 2,
+    "capabilities": {
+      "max_input_tokens": 8192,
+      "embedding_dimension": 1024,
+      "max_batch_size": 10,
+      "supports_usage": true,
+      "retryable_statuses": [
+        429,
+        500,
+        503
+      ],
+      "rate_limit_semantics": "account- and model-level RPM/TPM plus burst limits; 429 usually recovers within one minute",
+      "provider_idempotency_support": "not_declared"
+    },
+    "embedding_space": {
+      "metric": "cosine",
+      "vector_data_type": "float32",
+      "normalization": "provider_output_l2_normalized_measured",
+      "compatibility_fingerprint": "sha256:7bd706a3642d7ee17a5a0112a3e0d7e50abaa26bf19c5511d240f222ae4d1153"
+    },
+    "evidence_sources": [
+      "https://www.alibabacloud.com/help/en/model-studio/text-embedding-synchronous-api",
+      "https://help.aliyun.com/en/model-studio/rate-limit",
+      "https://help.aliyun.com/en/model-studio/error-code"
+    ]
+  },
+  "rerank": {
+    "enabled": false,
+    "required": false,
+    "reason": "Optional and disabled for the P1A baseline"
+  },
+  "validation": {
+    "real_endpoint_verified": true,
+    "verified_at": "2026-07-13T10:05:58.289312+00:00",
+    "report_path": "verification/providers/verification-report-v0.1.json"
+  }
+}
