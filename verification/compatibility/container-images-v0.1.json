@@ -1,0 +1,44 @@
+{
+  "schema_version": "1.0",
+  "status": "draft_for_review",
+  "verified_at": "2026-07-13",
+  "tested_platform": "linux/arm64",
+  "images": [
+    {
+      "purpose": "Python compatibility and future API/worker base",
+      "repository": "docker.io/library/python",
+      "tag": "3.12.13-slim-bookworm",
+      "pinned_reference": "docker.io/library/python:3.12.13-slim-bookworm@sha256:8a7e7cc04fd3e2bd787f7f24e22d5d119aa590d429b50c95dfe12b3abe52f48b",
+      "index_digest": "sha256:8a7e7cc04fd3e2bd787f7f24e22d5d119aa590d429b50c95dfe12b3abe52f48b",
+      "platform_manifests": {
+        "linux/amd64": "sha256:db8e83a44af476c636a6a753adace39ad37863b63c0afd2862db7bbafeeb3944",
+        "linux/arm64": "sha256:49f3bd3ed3a1c554a43f1e9d03ff303716afed6eda0f3e98c34cd976c8880cd6"
+      },
+      "observed_version": "Python 3.12.13",
+      "tested": true,
+      "test_scope": "linux/arm64 only; amd64 manifest recorded but not executed"
+    },
+    {
+      "purpose": "PostgreSQL with pgvector",
+      "repository": "docker.io/pgvector/pgvector",
+      "tag": "0.8.2-pg18-bookworm",
+      "pinned_reference": "docker.io/pgvector/pgvector:0.8.2-pg18-bookworm@sha256:42e7f6b4e1eceb02ff14e3e6bc6108bbe259abbe83879dc1845d0da1ddeb555d",
+      "index_digest": "sha256:42e7f6b4e1eceb02ff14e3e6bc6108bbe259abbe83879dc1845d0da1ddeb555d",
+      "platform_manifests": {
+        "linux/amd64": "sha256:2ac2c62ac8f030b414b19ea633a6d1d4d37c03abe52ce91887a4e5b4fbb5c73c",
+        "linux/arm64": "sha256:ce08de03bf31a99aca4678ce9862f626348047f9058d46bc3bcca8c2bb72fbb9"
+      },
+      "observed_versions": {
+        "postgresql": "18.4 (Debian 18.4-1.pgdg12+1)",
+        "pgvector": "0.8.2"
+      },
+      "tested": true,
+      "test_scope": "linux/arm64 real container; extension, type, operators, exact query, HNSW index, and iterative scan"
+    }
+  ],
+  "rules": [
+    "Compose and CI must use pinned_reference, never a bare tag or latest.",
+    "A platform not listed and executed as tested requires its own compatibility run before release.",
+    "A changed index or platform digest is a dependency upgrade even when the human-readable tag is unchanged."
+  ]
+}
