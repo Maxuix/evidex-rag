@@ -1,0 +1,72 @@
+{
+  "schema_version": "1.0",
+  "baseline_id": "synthetic-fingerprint-test-only",
+  "status": "fixture_not_a_provider_declaration",
+  "chat": {
+    "required": true,
+    "logical_endpoint_id": "fixture-chat",
+    "provider_id": "fixture-provider",
+    "protocol": "openai-compatible",
+    "base_url_env": "FIXTURE_CHAT_BASE_URL",
+    "api_key_env": "FIXTURE_CHAT_API_KEY",
+    "requested_model": "fixture-chat-model",
+    "resolved_model": "fixture-chat-model-r1",
+    "model_version": "fixture-v1",
+    "deployment_revision": "fixture-r1",
+    "configuration_fingerprint": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "timeout_seconds": 30,
+    "max_retries": 2,
+    "max_concurrency": 2,
+    "capabilities": {
+      "supports_structured_output": true,
+      "schema_mode": "json_schema",
+      "max_input_tokens": 8192,
+      "supports_usage": true,
+      "supports_streaming": false,
+      "retryable_statuses": [429, 500, 502, 503, 504],
+      "rate_limit_semantics": "fixture",
+      "provider_idempotency_support": false
+    }
+  },
+  "embedding": {
+    "required": true,
+    "logical_endpoint_id": "fixture-embedding",
+    "provider_id": "fixture-provider",
+    "protocol": "openai-compatible",
+    "base_url_env": "FIXTURE_EMBEDDING_BASE_URL",
+    "api_key_env": "FIXTURE_EMBEDDING_API_KEY",
+    "requested_model": "fixture-embedding-model",
+    "resolved_model": "fixture-embedding-model-r1",
+    "model_version": "fixture-v1",
+    "deployment_revision": "fixture-r1",
+    "configuration_fingerprint": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "timeout_seconds": 30,
+    "max_retries": 2,
+    "max_concurrency": 2,
+    "capabilities": {
+      "max_input_tokens": 8192,
+      "embedding_dimension": 3,
+      "max_batch_size": 4,
+      "supports_usage": true,
+      "retryable_statuses": [429, 500, 502, 503, 504],
+      "rate_limit_semantics": "fixture",
+      "provider_idempotency_support": false
+    },
+    "embedding_space": {
+      "metric": "cosine",
+      "vector_data_type": "float32",
+      "normalization": "none",
+      "compatibility_fingerprint": null
+    }
+  },
+  "rerank": {
+    "enabled": false,
+    "required": false,
+    "reason": "Fixture"
+  },
+  "validation": {
+    "real_endpoint_verified": true,
+    "verified_at": "2000-01-01T00:00:00Z",
+    "report_path": "synthetic-fixture-only"
+  }
+}

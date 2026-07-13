@@ -1,0 +1,72 @@
+{
+  "schema_version": "1.0",
+  "baseline_id": "provider-baseline-p1a",
+  "status": "incomplete",
+  "chat": {
+    "required": true,
+    "logical_endpoint_id": null,
+    "provider_id": null,
+    "protocol": "openai-compatible",
+    "base_url_env": "RAG_CHAT_BASE_URL",
+    "api_key_env": "RAG_CHAT_API_KEY",
+    "requested_model": null,
+    "resolved_model": null,
+    "model_version": null,
+    "deployment_revision": null,
+    "configuration_fingerprint": null,
+    "timeout_seconds": null,
+    "max_retries": null,
+    "max_concurrency": null,
+    "capabilities": {
+      "supports_structured_output": null,
+      "schema_mode": null,
+      "max_input_tokens": null,
+      "supports_usage": null,
+      "supports_streaming": null,
+      "retryable_statuses": null,
+      "rate_limit_semantics": null,
+      "provider_idempotency_support": null
+    }
+  },
+  "embedding": {
+    "required": true,
+    "logical_endpoint_id": null,
+    "provider_id": null,
+    "protocol": "openai-compatible",
+    "base_url_env": "RAG_EMBEDDING_BASE_URL",
+    "api_key_env": "RAG_EMBEDDING_API_KEY",
+    "requested_model": null,
+    "resolved_model": null,
+    "model_version": null,
+    "deployment_revision": null,
+    "configuration_fingerprint": null,
+    "timeout_seconds": null,
+    "max_retries": null,
+    "max_concurrency": null,
+    "capabilities": {
+      "max_input_tokens": null,
+      "embedding_dimension": null,
+      "max_batch_size": null,
+      "supports_usage": null,
+      "retryable_statuses": null,
+      "rate_limit_semantics": null,
+      "provider_idempotency_support": null
+    },
+    "embedding_space": {
+      "metric": "cosine",
+      "vector_data_type": "float32",
+      "normalization": null,
+      "compatibility_fingerprint": null
+    }
+  },
+  "rerank": {
+    "enabled": false,
+    "required": false,
+    "reason": "Optional and disabled for the P1A baseline"
+  },
+  "validation": {
+    "real_endpoint_verified": false,
+    "verified_at": null,
+    "report_path": null
+  }
+}
