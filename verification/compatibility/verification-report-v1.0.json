@@ -1,4 +1,5 @@
 {
+  "baseline_version": "1.0",
   "direct_package_versions": {
     "SQLAlchemy": "2.0.51",
     "alembic": "1.18.5",

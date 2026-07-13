@@ -28,6 +28,7 @@ DIRECT_EXPECTED = {
     "pydantic-settings": "2.14.2",
     "SQLAlchemy": "2.0.51",
 }
+BASELINE_VERSION = "1.0"
 
 
 class ProbeModel(BaseModel):
@@ -200,6 +201,7 @@ async def probe() -> dict[str, Any]:
         failures.append("SQLAlchemy async probe did not return 1")
 
     return {
+        "baseline_version": BASELINE_VERSION,
         "schema_version": "1.0",
         "status": "passed" if not failures else "failed",
         "runtime": {
