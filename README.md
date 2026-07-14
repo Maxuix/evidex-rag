@@ -15,6 +15,7 @@ Authoritative project documents:
 - [Async data access and transactions](docs/architecture/async-data-access.md)
 - [Public API and error conventions](docs/architecture/api-conventions.md)
 - [Identity and security boundaries](docs/architecture/identity-security.md)
+- [Local runtime and diagnostics](docs/architecture/local-runtime.md)
 
 ## Current Layout
 
@@ -58,14 +59,40 @@ PYTHONPATH=src:. .venv/bin/python tools/check_architecture.py
 PYTHONPATH=src:. .venv/bin/python -m unittest discover -s tests/unit -v
 PYTHONPATH=src:. .venv/bin/python -m unittest discover -s tests/contract -v
 PYTHONPATH=src:. .venv/bin/python tools/check_openapi_compatibility.py
+.venv/bin/python tools/check_compose_contract.py
 PYTHONPATH=src:. .venv/bin/python tools/run_db_integration.py
+.venv/bin/python tools/run_compose_smoke.py
 ```
+
+## Local Compose Runtime
+
+Copy the checked example, replace its application placeholders as needed, and
+provide the three Compose database passwords in the shell. `RAG_KB_ENV_FILE`
+selects the application settings file without injecting that control variable
+into the application process.
+
+```bash
+cp .env.example .env
+export RAG_KB_ENV_FILE=.env
+export POSTGRES_ADMIN_PASSWORD='replace-with-a-local-password'
+export RAG_KB_MIGRATION_PASSWORD='replace-with-a-different-local-password'
+export RAG_KB_RUNTIME_PASSWORD='replace-with-another-local-password'
+
+docker compose up -d --wait postgres storage-init
+docker compose --profile tools run --rm migrate
+docker compose up -d --wait api worker frontend
+```
+
+The shell is then available at `http://127.0.0.1:3000`, API documentation at
+`http://127.0.0.1:8000/api/v1/docs`, and diagnostics at `/health/live` and
+`/health/ready`. Stop processes while retaining data with `docker compose down`.
+See the [local runtime guide](docs/architecture/local-runtime.md) for port
+overrides, logs, checks, and the explicitly destructive clean reset.
 
 ## Current Boundary
 
-This foundation does not yet provide upload, indexing, retrieval, chat, a
-frontend, public business APIs, or a runnable Compose environment. Those
-capabilities are introduced only by their ordered work items in the execution
-tracker. Until the local-release stage is complete, this repository makes no
-claim of enterprise authentication, high availability, formal backup,
-production hardening, or multi-tenant isolation.
+The Compose profile is a local foundation runtime. It does not yet provide
+upload, indexing, retrieval, chat, or frontend business screens. It has one
+fixed development identity and provides no enterprise authentication or
+authorization, durable audit system, formal backup/recovery, high availability,
+production hardening, or hostile multi-tenant isolation guarantee.

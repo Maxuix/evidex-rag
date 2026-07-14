@@ -1,0 +1,121 @@
+x-runtime-environment: &runtime-environment
+  RAG_KB__DATABASE__RUNTIME_DSN: postgresql+asyncpg://rag_kb_runtime:${RAG_KB_RUNTIME_PASSWORD:-replace-locally}@postgres:5432/rag_kb
+  RAG_KB__DATABASE__MIGRATION_DSN: postgresql+asyncpg://rag_kb_migration:not-available@migration-disabled.invalid/rag_kb
+
+x-app-image: &app-image
+  image: rag-kb-app:s02-w07
+  build:
+    context: .
+    dockerfile: Dockerfile
+
+x-runtime-service: &runtime-service
+  <<: *app-image
+  env_file:
+    - ${RAG_KB_ENV_FILE:-.env.example}
+  environment: *runtime-environment
+  depends_on:
+    postgres:
+      condition: service_healthy
+    storage-init:
+      condition: service_completed_successfully
+
+services:
+  postgres:
+    image: docker.io/pgvector/pgvector:0.8.2-pg18-bookworm@sha256:42e7f6b4e1eceb02ff14e3e6bc6108bbe259abbe83879dc1845d0da1ddeb555d
+    environment:
+      POSTGRES_DB: rag_kb
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:-replace-locally}
+      RAG_KB_MIGRATION_PASSWORD: ${RAG_KB_MIGRATION_PASSWORD:-replace-locally}
+      RAG_KB_RUNTIME_PASSWORD: ${RAG_KB_RUNTIME_PASSWORD:-replace-locally}
+    ports:
+      - 127.0.0.1:${RAG_KB_POSTGRES_PORT:-5432}:5432
+    volumes:
+      - postgres-data:/var/lib/postgresql
+      - ./deploy/postgres/init-runtime.sh:/docker-entrypoint-initdb.d/10-init-runtime.sh:ro
+      - ./deploy/postgres/bootstrap-roles.sql:/opt/rag-kb/bootstrap-roles.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d rag_kb"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    restart: unless-stopped
+
+  storage-init:
+    <<: *app-image
+    user: "0:0"
+    command:
+      - /bin/sh
+      - -c
+      - install -d -o 10001 -g 10001 /var/lib/rag-kb/sources/staging /var/lib/rag-kb/sources/final
+    depends_on: {}
+    volumes:
+      - source-data:/var/lib/rag-kb/sources
+    restart: "no"
+
+  migrate:
+    <<: *app-image
+    profiles: ["tools"]
+    environment:
+      RAG_KB__DATABASE__MIGRATION_DSN: postgresql+asyncpg://rag_kb_migration:${RAG_KB_MIGRATION_PASSWORD:-replace-locally}@postgres:5432/rag_kb
+    command: ["python", "-m", "alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    <<: *runtime-service
+    command: ["python", "-m", "apps.api.main", "--container-listen"]
+    ports:
+      - 127.0.0.1:${RAG_KB_API_PORT:-8000}:8000
+    volumes:
+      - source-data:/var/lib/rag-kb/sources
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=2).read()"
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    restart: unless-stopped
+
+  worker:
+    <<: *runtime-service
+    command: ["python", "-m", "apps.worker.main"]
+    volumes:
+      - source-data:/var/lib/rag-kb/sources
+    healthcheck:
+      test: ["CMD", "python", "-m", "apps.worker.main", "--check"]
+      interval: 5s
+      timeout: 4s
+      retries: 12
+      start_period: 5s
+    restart: unless-stopped
+
+  frontend:
+    <<: *app-image
+    command: ["python", "/app/apps/web-test/server.py"]
+    ports:
+      - 127.0.0.1:${RAG_KB_FRONTEND_PORT:-3000}:3000
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:3000/', timeout=2).read()"
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 3s
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  source-data:

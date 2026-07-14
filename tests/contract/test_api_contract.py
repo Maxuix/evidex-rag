@@ -104,7 +104,8 @@ async def identity(
 class StubApiDependencies:
     def __init__(self) -> None:
         self.settings = SimpleNamespace(
-            security=SimpleNamespace(allowed_cors_origins=(ALLOWED_ORIGIN,))
+            security=SimpleNamespace(allowed_cors_origins=(ALLOWED_ORIGIN,)),
+            observability=SimpleNamespace(log_level="INFO"),
         )
         self.auth_provider = DevelopmentAuthProvider(
             deployment_profile="development",
@@ -114,6 +115,18 @@ class StubApiDependencies:
         )
         self.access_policy = SingleWorkspaceAccessPolicy(WORKSPACE)
         self.closed = False
+        self.started = False
+
+    async def start(self) -> SimpleNamespace:
+        self.started = True
+        return await self.check_readiness()
+
+    async def check_readiness(self) -> SimpleNamespace:
+        return SimpleNamespace(
+            database="ready",
+            queue="ready",
+            queue_backend="postgresql",
+        )
 
     async def close(self) -> None:
         self.closed = True
@@ -229,6 +242,44 @@ class ApiContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body["trace_id"], response.headers["x-trace-id"])
         self.assertNotEqual(body["trace_id"], "client-selected-trace")
         self.assertFalse(body["retryable"])
+
+    async def test_health_routes_report_process_and_dependency_state(self) -> None:
+        live = await request(self.app, "GET", "/health/live")
+        ready = await request(self.app, "GET", "/health/ready")
+
+        self.assertEqual(live.status, 200)
+        self.assertEqual(live.json(), {"status": "alive"})
+        self.assertEqual(ready.status, 200)
+        self.assertEqual(
+            ready.json(),
+            {
+                "status": "ready",
+                "components": {
+                    "database": "ready",
+                    "queue": "ready",
+                    "queue_backend": "postgresql",
+                },
+            },
+        )
+
+    async def test_readiness_failure_is_generic_and_does_not_leak_details(self) -> None:
+        async def unavailable() -> None:
+            raise RuntimeError("database-password-must-not-leak")
+
+        self.dependencies.check_readiness = unavailable  # type: ignore[method-assign]
+        response = await request(self.app, "GET", "/health/ready")
+        self.assertEqual(response.status, 503)
+        self.assertEqual(
+            response.json(),
+            {
+                "status": "not_ready",
+                "components": {
+                    "database": "unavailable",
+                    "queue": "unavailable",
+                },
+            },
+        )
+        self.assertNotIn("database-password", response.body.decode("utf-8"))
 
     async def test_validation_and_idempotency_header_errors_are_normalized(
         self,
@@ -404,6 +455,14 @@ class ApiContractTests(unittest.IsolatedAsyncioTestCase):
     async def test_lifespan_owns_dependency_shutdown(self) -> None:
         class StubDependencies:
             closed = False
+            started = False
+            settings = SimpleNamespace(
+                security=SimpleNamespace(allowed_cors_origins=()),
+                observability=SimpleNamespace(log_level="INFO"),
+            )
+
+            async def start(self) -> None:
+                self.started = True
 
             async def close(self) -> None:
                 self.closed = True
@@ -412,6 +471,7 @@ class ApiContractTests(unittest.IsolatedAsyncioTestCase):
         app = create_app(dependencies=dependencies)  # type: ignore[arg-type]
         async with app.router.lifespan_context(app):
             self.assertIs(app.state.dependencies, dependencies)
+            self.assertTrue(dependencies.started)
             self.assertFalse(dependencies.closed)
 
         self.assertTrue(dependencies.closed)

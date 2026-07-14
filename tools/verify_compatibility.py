@@ -24,9 +24,12 @@ DIRECT_EXPECTED = {
     "alembic": "1.18.5",
     "asyncpg": "0.31.0",
     "fastapi": "0.135.4",
+    "greenlet": "3.5.3",
     "pgvector": "0.4.2",
+    "pydantic": "2.13.4",
     "pydantic-settings": "2.14.2",
     "SQLAlchemy": "2.0.51",
+    "uvicorn": "0.51.0",
 }
 BASELINE_VERSION = "1.0"
 

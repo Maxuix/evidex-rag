@@ -12,7 +12,13 @@ from rag_kb.config import (
     load_settings,
     validate_startup_environment,
 )
-from rag_kb.db import DatabaseProcess, DatabaseResources, create_database_resources
+from rag_kb.db import (
+    DatabaseProcess,
+    DatabaseResources,
+    RuntimeReadiness,
+    create_database_resources,
+    validate_runtime_readiness,
+)
 from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWorkFactory
 
 
@@ -31,6 +37,14 @@ class WorkerDependencies:
         """Release process-owned database resources during Worker shutdown."""
 
         await self.database.close()
+
+    async def start(self) -> RuntimeReadiness:
+        """Fail startup when the migration-created runtime is incompatible."""
+
+        return await self.check_readiness()
+
+    async def check_readiness(self) -> RuntimeReadiness:
+        return await validate_runtime_readiness(self.database.engine)
 
 
 def build_worker_dependencies(

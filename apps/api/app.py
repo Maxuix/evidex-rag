@@ -10,11 +10,15 @@ from fastapi import APIRouter, FastAPI
 from apps.api.cors import ConfiguredCorsMiddleware
 from apps.api.dependencies import ApiDependencies, build_api_dependencies
 from apps.api.errors import install_problem_handlers
+from apps.api.health import install_health_routes
 from apps.api.middleware import TraceIdMiddleware
+from apps.api.request_logging import RequestLoggingMiddleware
 from apps.api.security import IdentityOverrideMiddleware
+from rag_kb.observability import configure_logging, get_logger, log_event
 
 
 API_PREFIX = "/api/v1"
+LOGGER = get_logger("rag_kb.api.runtime")
 
 
 def create_app(
@@ -29,10 +33,14 @@ def create_app(
         resolved = dependencies or build_api_dependencies()
         app.state.dependencies = resolved
         try:
+            configure_logging(level=resolved.settings.observability.log_level)
+            await resolved.start()
+            log_event(LOGGER, "process_ready", process="api")
             yield
         finally:
             await resolved.close()
             app.state.dependencies = None
+            log_event(LOGGER, "process_stopped", process="api")
 
     app = FastAPI(
         title="Enterprise Knowledge Base API",
@@ -46,7 +54,9 @@ def create_app(
     app.add_middleware(IdentityOverrideMiddleware)
     app.add_middleware(ConfiguredCorsMiddleware)
     app.add_middleware(TraceIdMiddleware)
+    app.add_middleware(RequestLoggingMiddleware)
     install_problem_handlers(app)
+    install_health_routes(app)
     for router in routers:
         app.include_router(router, prefix=API_PREFIX)
     return app

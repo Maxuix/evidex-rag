@@ -1,11 +1,13 @@
-# Exact installed set from the passing linux/arm64 Python 3.12.13 probe.
+# Exact installed set from the passing linux/arm64 Python 3.12.13 probes.
 alembic==1.18.5
 annotated-doc==0.0.4
 annotated-types==0.7.0
 anyio==4.14.2
 asyncpg==0.31.0
+click==8.4.2
 fastapi==0.135.4
 greenlet==3.5.3
+h11==0.16.0
 idna==3.18
 Mako==1.3.12
 MarkupSafe==3.0.3
@@ -20,3 +22,4 @@ SQLAlchemy==2.0.51
 starlette==1.3.1
 typing-inspection==0.4.2
 typing_extensions==4.16.0
+uvicorn==0.51.0

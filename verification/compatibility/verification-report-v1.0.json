@@ -5,8 +5,11 @@
     "alembic": "1.18.5",
     "asyncpg": "0.31.0",
     "fastapi": "0.135.4",
+    "greenlet": "3.5.3",
     "pgvector": "0.4.2",
-    "pydantic-settings": "2.14.2"
+    "pydantic": "2.13.4",
+    "pydantic-settings": "2.14.2",
+    "uvicorn": "0.51.0"
   },
   "failures": [],
   "fastapi_native_sse": {
@@ -14,6 +17,13 @@
     "media_type": "text/event-stream",
     "module_import": true,
     "response_type": "EventSourceResponse"
+  },
+  "local_asgi_runtime": {
+    "application_image_build": true,
+    "compose_clean_start": true,
+    "content_safe_json_logging": true,
+    "health_endpoints": true,
+    "uvicorn_version": "0.51.0"
   },
   "pgvector": {
     "dimension_probe": 3,

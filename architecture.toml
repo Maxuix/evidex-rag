@@ -55,3 +55,4 @@ scan_roots = ["src", "apps"]
   "rag_kb.adapters",
   "rag_kb.observability",
 ]
+"apps.web-test" = []
