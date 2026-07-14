@@ -33,10 +33,24 @@ from rag_kb.domain.files import (
     StoredSourceFile,
 )
 from rag_kb.domain.idempotency import IdempotencyScope, canonical_request_hash
+from rag_kb.domain.parsing import (
+    AdmittedFile,
+    AdmissionLimits,
+    FileAdmissionError,
+    IndexChunkDraft,
+    ParsedBlock,
+    ParsedDocument,
+    ParserExecutionError,
+    ParserLimits,
+    ParserSource,
+    ProcessedDocument,
+)
 from rag_kb.domain.workspaces import Workspace
 
 __all__ = [
     "ContentLifecycleError",
+    "AdmittedFile",
+    "AdmissionLimits",
     "ContentMutation",
     "Document",
     "DocumentMutationResult",
@@ -45,14 +59,21 @@ __all__ = [
     "EmbeddingSpaceDefinition",
     "ErrorCode",
     "FileLocation",
+    "FileAdmissionError",
     "FileReconciliationResult",
     "FileStoreError",
     "IdempotencyScope",
     "IdempotencyKeyReusedError",
     "IndexProfileDefinition",
+    "IndexChunkDraft",
     "InvalidStorageIdentityError",
     "KnowledgeBase",
     "Page",
+    "ParsedBlock",
+    "ParsedDocument",
+    "ParserExecutionError",
+    "ParserLimits",
+    "ParserSource",
     "PendingFileMutation",
     "ResourceNameConflictError",
     "ResourceNotFoundError",
@@ -65,6 +86,7 @@ __all__ = [
     "SourceFileReference",
     "StagedSourceFile",
     "StoredSourceFile",
+    "ProcessedDocument",
     "Workspace",
     "canonical_request_hash",
 ]

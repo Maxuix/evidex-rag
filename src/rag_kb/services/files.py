@@ -69,20 +69,24 @@ class SourceFileService:
             key_material,
             source,
         )
-        reserved = await self._documents.reserve_version(
-            context,
-            idempotency_key,
-            kb_id=kb_id,
-            document_id=document_id,
-            display_name=display_name,
-            source=DocumentSource(
-                checksum_sha256=staged.digest.checksum_sha256,
-                storage_uri=staged.identity.storage_uri,
-                original_filename=original_filename,
-                media_type=media_type,
-                size_bytes=staged.digest.size_bytes,
-            ),
-        )
+        try:
+            reserved = await self._documents.reserve_version(
+                context,
+                idempotency_key,
+                kb_id=kb_id,
+                document_id=document_id,
+                display_name=display_name,
+                source=DocumentSource(
+                    checksum_sha256=staged.digest.checksum_sha256,
+                    storage_uri=staged.identity.storage_uri,
+                    original_filename=original_filename,
+                    media_type=media_type,
+                    size_bytes=staged.digest.size_bytes,
+                ),
+            )
+        except Exception:
+            await self._file_store.discard_staged(staged.identity)
+            raise
         await self._file_store.finalize(staged.identity, staged.digest)
         return await self._documents.activate_reserved_version(
             context,

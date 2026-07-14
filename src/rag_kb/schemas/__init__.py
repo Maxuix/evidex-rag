@@ -12,6 +12,7 @@ from rag_kb.schemas.documents import (
     DocumentDeleteResponse,
     DocumentPage,
     DocumentResponse,
+    DocumentUploadResponse,
     DocumentVersionResponse,
 )
 from rag_kb.schemas.knowledge_bases import (
@@ -28,6 +29,7 @@ __all__ = [
     "DocumentDeleteResponse",
     "DocumentPage",
     "DocumentResponse",
+    "DocumentUploadResponse",
     "DocumentVersionResponse",
     "ErrorCode",
     "FieldViolation",

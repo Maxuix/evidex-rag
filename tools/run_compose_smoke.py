@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise a clean Stage 02 Compose start, diagnostics, storage, and shutdown."""
+"""Exercise a clean Stage 03 Compose start, upload, storage, and shutdown."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+import uuid
 from pathlib import Path
 
 
@@ -22,7 +23,7 @@ def available_port() -> int:
 class ComposeSmoke:
     def __init__(self, root: Path) -> None:
         self.root = root
-        self.project = f"rag-kb-s03-w02-{os.getpid()}"
+        self.project = f"rag-kb-s03-w03-{os.getpid()}"
         self.environment = {
             **os.environ,
             "POSTGRES_ADMIN_PASSWORD": "smoke-admin-password",
@@ -71,6 +72,27 @@ class ComposeSmoke:
     def http_json(self, port_name: str, path: str) -> dict[str, object]:
         return json.loads(self.http_bytes(port_name, path))
 
+    def request_json(
+        self,
+        method: str,
+        path: str,
+        *,
+        body: bytes,
+        headers: dict[str, str],
+        expected_status: int,
+    ) -> dict[str, object]:
+        port = self.environment["RAG_KB_API_PORT"]
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{port}{path}",
+            data=body,
+            method=method,
+            headers=headers,
+        )
+        with urllib.request.urlopen(request, timeout=10) as response:
+            if response.status != expected_status:
+                raise RuntimeError(f"{path} returned {response.status}")
+            return json.loads(response.read())
+
     def wait_http(self, port_name: str, path: str, timeout: float = 60) -> None:
         deadline = time.monotonic() + timeout
         last_error: Exception | None = None
@@ -88,14 +110,14 @@ def main() -> int:
     root = Path(__file__).resolve().parents[1]
     smoke = ComposeSmoke(root)
     try:
-        print("[1/7] building the pinned application image", flush=True)
+        print("[1/8] building the pinned application image", flush=True)
         smoke.run("build", "api", timeout=600)
 
-        print("[2/7] starting clean PostgreSQL and source storage", flush=True)
+        print("[2/8] starting clean PostgreSQL and source storage", flush=True)
         smoke.run("up", "-d", "--wait", "--wait-timeout", "90", "postgres")
         smoke.run("run", "--rm", "--no-deps", "storage-init")
 
-        print("[3/7] proving runtime startup fails before explicit migration", flush=True)
+        print("[3/8] proving runtime startup fails before explicit migration", flush=True)
         before_migration = smoke.run(
             "run",
             "--rm",
@@ -109,10 +131,10 @@ def main() -> int:
         if before_migration.returncode == 0:
             raise RuntimeError("Worker unexpectedly became ready before migration")
 
-        print("[4/7] running the one-shot migration role", flush=True)
+        print("[4/8] running the one-shot migration role", flush=True)
         smoke.run("run", "--rm", "migrate")
 
-        print("[5/7] starting API, Worker, and frontend shell", flush=True)
+        print("[5/8] starting API, Worker, and frontend shell", flush=True)
         smoke.run(
             "up",
             "-d",
@@ -128,8 +150,35 @@ def main() -> int:
         if readiness.get("status") != "ready":
             raise RuntimeError("API readiness did not report ready")
         smoke.wait_http("RAG_KB_FRONTEND_PORT", "/")
+        smoke.run("exec", "-T", "worker", "python", "-m", "apps.worker.parser_check")
 
-        print("[6/7] verifying shared same-filesystem storage across restart", flush=True)
+        print("[6/8] exercising bounded public upload", flush=True)
+        created = smoke.request_json(
+            "POST",
+            "/api/v1/knowledge-bases",
+            body=json.dumps({"name": "Smoke KB"}).encode(),
+            headers={
+                "Content-Type": "application/json",
+                "Idempotency-Key": str(uuid.uuid4()),
+            },
+            expected_status=201,
+        )
+        uploaded = smoke.request_json(
+            "POST",
+            f"/api/v1/knowledge-bases/{created['id']}/documents",
+            body=b"# Smoke\nrestart-safe upload",
+            headers={
+                "Content-Type": "text/markdown; charset=utf-8",
+                "X-Document-Filename": "smoke.md",
+                "X-Document-Display-Name": "Smoke document",
+                "Idempotency-Key": str(uuid.uuid4()),
+            },
+            expected_status=202,
+        )
+        if uploaded.get("job_status") != "queued":
+            raise RuntimeError("upload did not return a queued durable job")
+
+        print("[7/8] verifying shared same-filesystem storage across restart", flush=True)
         devices = {
             smoke.run("exec", "-T", service, "stat", "-c", "%d", path).stdout.strip()
             for service in ("api", "worker")
@@ -145,8 +194,13 @@ def main() -> int:
             "-T",
             "api",
             "touch",
-            "/var/lib/rag-kb/sources/final/s03-w02-smoke-marker",
+            "/var/lib/rag-kb/sources/final/s03-w03-smoke-marker",
         )
+        document = smoke.http_json(
+            "RAG_KB_API_PORT", f"/api/v1/documents/{uploaded['document']['id']}"
+        )
+        if document.get("current_version", {}).get("source_status") != "available":
+            raise RuntimeError("uploaded source was not readable after restart")
         smoke.run("restart", "api", "worker")
         smoke.run("up", "-d", "--wait", "--wait-timeout", "90", "api", "worker")
         smoke.run(
@@ -155,7 +209,7 @@ def main() -> int:
             "worker",
             "test",
             "-f",
-            "/var/lib/rag-kb/sources/final/s03-w02-smoke-marker",
+            "/var/lib/rag-kb/sources/final/s03-w03-smoke-marker",
         )
 
         smoke.http_json(
@@ -174,7 +228,7 @@ def main() -> int:
         if '"event":"http_request_completed"' not in logs or '"trace_id"' not in logs:
             raise RuntimeError("structured request correlation fields were not emitted")
 
-        print("[7/7] exercising graceful process shutdown", flush=True)
+        print("[8/8] exercising graceful process shutdown", flush=True)
         smoke.run("stop", "--timeout", "15", "frontend", "api", "worker")
         stopped_logs = smoke.run("logs", "--no-color", "api", "worker").stdout
         if stopped_logs.count('"event":"process_stopped"') < 2:
@@ -184,7 +238,7 @@ def main() -> int:
         return_code = 1
     else:
         print(
-            "Compose smoke passed: clean start, explicit migration, health, "
+            "Compose smoke passed: clean start, explicit migration, bounded upload, "
             "shared persistence, content-safe logs, and shutdown",
             flush=True,
         )

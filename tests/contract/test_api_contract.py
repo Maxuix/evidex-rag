@@ -29,6 +29,7 @@ from rag_kb.auth import (
     SingleWorkspaceAccessPolicy,
 )
 from rag_kb.domain import (
+    AdmissionLimits,
     Document,
     DocumentMutationResult,
     DocumentVersion,
@@ -39,6 +40,7 @@ from rag_kb.domain import (
     ResourceNotFoundError,
     canonical_request_hash,
 )
+from rag_kb.services import FileAdmissionService
 from rag_kb.schemas import CursorPayload, ErrorCode, PaginationQuery
 
 
@@ -161,9 +163,14 @@ async def request(
     query: str = "",
     headers: dict[str, str] | None = None,
     json_body: object | None = None,
+    raw_body: bytes | None = None,
     suppress_application_error: bool = False,
 ) -> AsgiResponse:
-    body = b"" if json_body is None else json.dumps(json_body).encode("utf-8")
+    if json_body is not None and raw_body is not None:
+        raise ValueError("request cannot contain both JSON and raw body")
+    body = raw_body if raw_body is not None else (
+        b"" if json_body is None else json.dumps(json_body).encode("utf-8")
+    )
     request_headers = {
         "host": "testserver",
         "content-type": "application/json",
@@ -445,7 +452,10 @@ class ApiContractTests(unittest.IsolatedAsyncioTestCase):
             headers={
                 "origin": ALLOWED_ORIGIN,
                 "access-control-request-method": "GET",
-                "access-control-request-headers": "content-type",
+                "access-control-request-headers": (
+                    "content-type,idempotency-key,x-document-filename,"
+                    "x-document-display-name"
+                ),
             },
         )
         self.assertEqual(allowed.status, 200)
@@ -524,14 +534,17 @@ class CommonContractTests(unittest.TestCase):
             set(production["paths"]),
             {
                 "/api/v1/documents/{document_id}",
+                "/api/v1/documents/{document_id}/versions",
                 "/api/v1/knowledge-bases",
                 "/api/v1/knowledge-bases/{kb_id}",
                 "/api/v1/knowledge-bases/{kb_id}/documents",
             },
         )
-        self.assertNotIn(
-            "post",
-            production["paths"]["/api/v1/knowledge-bases/{kb_id}/documents"],
+        upload = production["paths"]["/api/v1/knowledge-bases/{kb_id}/documents"]["post"]
+        self.assertEqual(upload["responses"]["202"]["description"], "Successful Response")
+        self.assertEqual(
+            upload["requestBody"]["content"]["text/markdown"]["schema"]["format"],
+            "binary",
         )
         create_conflict = production["paths"]["/api/v1/knowledge-bases"][
             "post"
@@ -610,11 +623,51 @@ class _FakeDocumentService:
         )
 
 
+class _FakeSourceFileService:
+    def __init__(self, documents: _FakeDocumentService) -> None:
+        self.documents = documents
+        self.calls: list[dict[str, object]] = []
+
+    async def store_and_activate(self, context, key, **kwargs):
+        del context, key
+        content = kwargs["source"].read()
+        self.calls.append({**kwargs, "content": content, "source": None})
+        prior = self.documents.value
+        version = dataclass_replace(
+            prior.current_version,
+            original_filename=kwargs["original_filename"],
+            media_type=kwargs["media_type"],
+            size_bytes=len(content),
+        )
+        document = dataclass_replace(
+            prior,
+            display_name=kwargs["display_name"],
+            current_version=version,
+        )
+        self.documents.value = document
+        return DocumentMutationResult(
+            document=document,
+            document_version_id=version.id,
+            source_change_id=UUID("01900000-0000-7000-8000-000000000025"),
+            source_change_seq=1,
+            indexed_document_version_id=UUID("01900000-0000-7000-8000-000000000026"),
+            index_revision_id=UUID("01900000-0000-7000-8000-000000000012"),
+            job_id=UUID("01900000-0000-7000-8000-000000000027"),
+            job_status="queued",
+        )
+
+
 class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.dependencies = StubApiDependencies()
         self.dependencies.knowledge_base_service = _FakeKnowledgeBaseService()
         self.dependencies.document_service = _FakeDocumentService()
+        self.dependencies.file_admission_service = FileAdmissionService(
+            AdmissionLimits(max_bytes=32, max_lines=3)
+        )
+        self.dependencies.source_file_service = _FakeSourceFileService(
+            self.dependencies.document_service
+        )
         self.app = create_app(dependencies=self.dependencies)  # type: ignore[arg-type]
         self.lifespan = self.app.router.lifespan_context(self.app)
         await self.lifespan.__aenter__()
@@ -683,7 +736,7 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(conflict.json()["code"], "IDEMPOTENCY_KEY_REUSED")
         self.assertNotIn("internal hash", conflict.body.decode())
 
-    async def test_document_reads_and_delete_are_published_but_upload_is_not(self) -> None:
+    async def test_document_upload_version_read_and_delete_are_published(self) -> None:
         value = _document_value()
         loaded = await request(
             self.app, "GET", f"{API_PREFIX}/documents/{value.id}"
@@ -700,14 +753,60 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(deleted.status, 200)
         self.assertEqual(deleted.json()["source_change_seq"], 2)
 
-        unavailable_upload = await request(
+        uploaded = await request(
             self.app,
             "POST",
             f"{API_PREFIX}/knowledge-bases/{value.kb_id}/documents",
-            headers={"idempotency-key": str(uuid4())},
-            json_body={},
+            headers={
+                "idempotency-key": str(uuid4()),
+                "content-type": "text/markdown; charset=utf-8",
+                "x-document-filename": "guide.md",
+                "x-document-display-name": "Guide",
+            },
+            raw_body=b"# Guide\ncontent",
         )
-        self.assertEqual(unavailable_upload.status, 405)
+        self.assertEqual(uploaded.status, 202)
+        self.assertEqual(uploaded.json()["job_status"], "queued")
+        self.assertEqual(uploaded.json()["document"]["display_name"], "Guide")
+
+        versioned = await request(
+            self.app,
+            "POST",
+            f"{API_PREFIX}/documents/{value.id}/versions",
+            headers={
+                "idempotency-key": str(uuid4()),
+                "content-type": "text/plain",
+                "x-document-filename": "guide.txt",
+            },
+            raw_body=b"replacement",
+        )
+        self.assertEqual(versioned.status, 202)
+        self.assertEqual(len(self.dependencies.source_file_service.calls), 2)
+
+    async def test_upload_admission_failures_are_problem_details_and_do_not_handoff(self) -> None:
+        value = _document_value()
+        cases = (
+            ("guide.pdf", "application/pdf", b"binary", 415, "PARSER_NOT_CONFIGURED"),
+            ("guide.md", "text/plain", b"text", 415, "FILE_MEDIA_TYPE_MISMATCH"),
+            ("guide.txt", "text/plain", b"\xff", 422, "FILE_INVALID_UTF8"),
+            ("guide.txt", "text/plain", b"x" * 33, 413, "FILE_TOO_LARGE"),
+        )
+        for filename, media_type, body, status, code in cases:
+            with self.subTest(code=code):
+                response = await request(
+                    self.app,
+                    "POST",
+                    f"{API_PREFIX}/knowledge-bases/{value.kb_id}/documents",
+                    headers={
+                        "idempotency-key": str(uuid4()),
+                        "content-type": media_type,
+                        "x-document-filename": filename,
+                    },
+                    raw_body=body,
+                )
+                self.assertEqual(response.status, status)
+                self.assertEqual(response.json()["code"], code)
+        self.assertEqual(self.dependencies.source_file_service.calls, [])
 
 
 def dataclass_replace(value, **changes):

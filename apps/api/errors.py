@@ -11,6 +11,7 @@ from starlette.exceptions import HTTPException
 
 from rag_kb.auth import AccessDeniedError
 from rag_kb.services import (
+    FileAdmissionError,
     IdempotencyKeyReusedError,
     ResourceNameConflictError,
     ResourceNotFoundError,
@@ -60,6 +61,38 @@ def install_problem_handlers(app: FastAPI) -> None:
     app.add_exception_handler(ResourceNameConflictError, _resource_name_conflict_handler)  # type: ignore[arg-type]
     app.add_exception_handler(ResourceStateConflictError, _resource_state_conflict_handler)  # type: ignore[arg-type]
     app.add_exception_handler(IdempotencyKeyReusedError, _idempotency_reused_handler)  # type: ignore[arg-type]
+    app.add_exception_handler(FileAdmissionError, _file_admission_handler)  # type: ignore[arg-type]
+
+
+async def _file_admission_handler(
+    request: Request, error: FileAdmissionError
+) -> JSONResponse:
+    status = 422
+    if error.code is ErrorCode.FILE_TOO_LARGE:
+        status = 413
+    elif error.code in {
+        ErrorCode.FILE_MEDIA_TYPE_UNSUPPORTED,
+        ErrorCode.FILE_MEDIA_TYPE_MISMATCH,
+        ErrorCode.PARSER_NOT_CONFIGURED,
+    }:
+        status = 415
+    details = {
+        ErrorCode.FILE_NAME_INVALID: "The document filename is invalid.",
+        ErrorCode.FILE_MEDIA_TYPE_UNSUPPORTED: "The document media type is unsupported.",
+        ErrorCode.FILE_MEDIA_TYPE_MISMATCH: "The filename extension and media type do not match.",
+        ErrorCode.FILE_TOO_LARGE: "The document exceeds the configured byte limit.",
+        ErrorCode.FILE_INVALID_UTF8: "The document is not valid UTF-8 text.",
+        ErrorCode.FILE_LINE_LIMIT_EXCEEDED: "The document exceeds the configured line limit.",
+        ErrorCode.PARSER_NOT_CONFIGURED: "No parser is configured for this document format.",
+    }
+    return problem_response(
+        request,
+        code=error.code,
+        status=status,
+        title="Document upload rejected",
+        detail=details[error.code],
+        retryable=False,
+    )
 
 
 async def _resource_not_found_handler(request: Request, error: ResourceNotFoundError) -> JSONResponse:

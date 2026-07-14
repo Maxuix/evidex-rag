@@ -52,6 +52,15 @@ EnabledFlag = Annotated[Literal[True], BeforeValidator(parse_environment_boolean
 DisabledFlag = Annotated[Literal[False], BeforeValidator(parse_environment_boolean)]
 FixedDimension = Annotated[Literal[1024], BeforeValidator(parse_environment_integer)]
 FixedBatchSize = Annotated[Literal[10], BeforeValidator(parse_environment_integer)]
+FixedMaxUploadBytes = Annotated[
+    Literal[10_485_760], BeforeValidator(parse_environment_integer)
+]
+FixedMaxLines = Annotated[Literal[200_000], BeforeValidator(parse_environment_integer)]
+FixedMaxChunks = Annotated[Literal[20_000], BeforeValidator(parse_environment_integer)]
+FixedParserCpuSeconds = Annotated[Literal[20], BeforeValidator(parse_environment_integer)]
+FixedParserMemoryBytes = Annotated[
+    Literal[536_870_912], BeforeValidator(parse_environment_integer)
+]
 
 
 class StrictSettingsModel(BaseModel):
@@ -242,6 +251,26 @@ class FileStoreSettings(StrictSettingsModel):
         return self
 
 
+class FileAdmissionSettings(StrictSettingsModel):
+    max_bytes: FixedMaxUploadBytes = 10_485_760
+    max_lines: FixedMaxLines = 200_000
+
+
+class ParserSettings(StrictSettingsModel):
+    profile: Literal["plain_text_test_v1"] = "plain_text_test_v1"
+    max_chunks: FixedMaxChunks = 20_000
+    wall_seconds: PositiveFloat = 30.0
+
+    @field_validator("wall_seconds")
+    @classmethod
+    def require_fixed_wall_timeout(cls, value: float) -> float:
+        if value != 30.0:
+            raise ValueError("parser wall_seconds is fixed at 30")
+        return value
+    cpu_seconds: FixedParserCpuSeconds = 20
+    memory_bytes: FixedParserMemoryBytes = 536_870_912
+
+
 class VectorStoreSettings(StrictSettingsModel):
     backend: Literal["pgvector"] = "pgvector"
     exact_search: EnabledFlag = True
@@ -359,6 +388,8 @@ class Settings(BaseSettings):
     database: DatabaseSettings
     job_poller: JobPollerSettings = Field(default_factory=JobPollerSettings)
     file_store: FileStoreSettings = Field(default_factory=FileStoreSettings)
+    file_admission: FileAdmissionSettings = Field(default_factory=FileAdmissionSettings)
+    parser: ParserSettings = Field(default_factory=ParserSettings)
     vector_store: VectorStoreSettings = Field(default_factory=VectorStoreSettings)
     model_provider: ModelProviderSettings
     retrieval: RetrievalSettings = Field(default_factory=RetrievalSettings)

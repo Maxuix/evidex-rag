@@ -28,7 +28,12 @@ class ConfiguredCorsMiddleware:
                 allow_origins=list(origins),
                 allow_credentials=False,
                 allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-                allow_headers=["Content-Type", "Idempotency-Key"],
+                allow_headers=[
+                    "Content-Type",
+                    "Idempotency-Key",
+                    "X-Document-Filename",
+                    "X-Document-Display-Name",
+                ],
                 max_age=600,
             )
             self._configured[origins] = configured

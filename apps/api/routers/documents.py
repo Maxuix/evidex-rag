@@ -1,12 +1,13 @@
-"""Read and soft-delete document HTTP transport."""
+"""Bounded upload, read, version, and soft-delete document transport."""
 
 from __future__ import annotations
 
 from datetime import datetime
+import tempfile
 from typing import Annotated, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Header, Query, Request
 
 from apps.api.errors import ApiProblem
 from apps.api.idempotency import RequiredIdempotencyKey
@@ -14,12 +15,13 @@ from apps.api.openapi import problem_responses
 from apps.api.pagination import decode_cursor, encode_cursor
 from apps.api.security import get_auth_context
 from rag_kb.auth import AuthContext
-from rag_kb.services import Document, DocumentMutationResult
+from rag_kb.services import Document, DocumentMutationResult, FileAdmissionError
 from rag_kb.schemas import (
     CursorPayload,
     DocumentDeleteResponse,
     DocumentPage,
     DocumentResponse,
+    DocumentUploadResponse,
     DocumentVersionResponse,
     ErrorCode,
 )
@@ -27,6 +29,80 @@ from rag_kb.schemas import (
 
 router = APIRouter(tags=["documents"])
 DocumentSort = Literal["created_at", "-created_at", "display_name", "-display_name"]
+_BINARY_BODY = {
+    "requestBody": {
+        "required": True,
+        "content": {
+            "text/plain": {"schema": {"type": "string", "format": "binary"}},
+            "text/markdown": {"schema": {"type": "string", "format": "binary"}},
+        },
+    }
+}
+
+
+@router.post(
+    "/knowledge-bases/{kb_id}/documents",
+    response_model=DocumentUploadResponse,
+    status_code=202,
+    responses=problem_responses(404, 409, 413, 415, 422),
+    openapi_extra=_BINARY_BODY,
+)
+async def upload_document(
+    request: Request,
+    kb_id: UUID,
+    idempotency_key: RequiredIdempotencyKey,
+    context: Annotated[AuthContext, Depends(get_auth_context)],
+    original_filename: Annotated[
+        str, Header(alias="X-Document-Filename", min_length=1, max_length=255)
+    ],
+    display_name: Annotated[
+        str | None,
+        Header(alias="X-Document-Display-Name", min_length=1, max_length=255),
+    ] = None,
+) -> DocumentUploadResponse:
+    return await _accept_upload(
+        request,
+        context=context,
+        idempotency_key=idempotency_key,
+        kb_id=kb_id,
+        document_id=None,
+        original_filename=original_filename,
+        display_name=_clean_display_name(display_name or original_filename),
+    )
+
+
+@router.post(
+    "/documents/{document_id}/versions",
+    response_model=DocumentUploadResponse,
+    status_code=202,
+    responses=problem_responses(404, 409, 413, 415, 422),
+    openapi_extra=_BINARY_BODY,
+)
+async def upload_document_version(
+    request: Request,
+    document_id: UUID,
+    idempotency_key: RequiredIdempotencyKey,
+    context: Annotated[AuthContext, Depends(get_auth_context)],
+    original_filename: Annotated[
+        str, Header(alias="X-Document-Filename", min_length=1, max_length=255)
+    ],
+    display_name: Annotated[
+        str | None,
+        Header(alias="X-Document-Display-Name", min_length=1, max_length=255),
+    ] = None,
+) -> DocumentUploadResponse:
+    document = await request.app.state.dependencies.document_service.get(
+        context, document_id
+    )
+    return await _accept_upload(
+        request,
+        context=context,
+        idempotency_key=idempotency_key,
+        kb_id=document.kb_id,
+        document_id=document_id,
+        original_filename=original_filename,
+        display_name=_clean_display_name(display_name or document.display_name),
+    )
 
 
 @router.get(
@@ -147,4 +223,81 @@ def _delete_response(value: DocumentMutationResult) -> DocumentDeleteResponse:
         source_change_id=value.source_change_id,
         source_change_seq=value.source_change_seq,
         index_revision_id=value.index_revision_id,
+    )
+
+
+async def _accept_upload(
+    request: Request,
+    *,
+    context: AuthContext,
+    idempotency_key: UUID,
+    kb_id: UUID,
+    document_id: UUID | None,
+    original_filename: str,
+    display_name: str,
+) -> DocumentUploadResponse:
+    dependencies = request.app.state.dependencies
+    maximum = dependencies.file_admission_service.limits.max_bytes
+    source = tempfile.SpooledTemporaryFile(max_size=1024 * 1024, mode="w+b")
+    size = 0
+    try:
+        async for block in request.stream():
+            size += len(block)
+            if size > maximum:
+                raise FileAdmissionError(
+                    ErrorCode.FILE_TOO_LARGE, limit=maximum, observed=size
+                )
+            source.write(block)
+        source.seek(0)
+        admitted = dependencies.file_admission_service.validate(
+            source,
+            original_filename=original_filename,
+            media_type=request.headers.get("content-type", ""),
+        )
+        result = await dependencies.source_file_service.store_and_activate(
+            context,
+            idempotency_key,
+            kb_id=kb_id,
+            document_id=document_id,
+            display_name=display_name,
+            original_filename=admitted.original_filename,
+            media_type=admitted.media_type,
+            source=source,
+        )
+        return _upload_response(result)
+    finally:
+        source.close()
+
+
+def _clean_display_name(value: str) -> str:
+    cleaned = value.strip()
+    if not cleaned:
+        raise ApiProblem(
+            code=ErrorCode.REQUEST_VALIDATION_FAILED,
+            status=422,
+            title="Request validation failed",
+            detail="The document display name is invalid.",
+        )
+    return cleaned
+
+
+def _upload_response(value: DocumentMutationResult) -> DocumentUploadResponse:
+    if None in {
+        value.document_version_id,
+        value.source_change_id,
+        value.source_change_seq,
+        value.indexed_document_version_id,
+        value.index_revision_id,
+        value.job_id,
+    } or value.job_status != "queued":
+        raise RuntimeError("activated upload result is incomplete")
+    return DocumentUploadResponse(
+        document=_response(value.document),
+        document_version_id=value.document_version_id,
+        source_change_id=value.source_change_id,
+        source_change_seq=value.source_change_seq,
+        indexed_document_version_id=value.indexed_document_version_id,
+        index_revision_id=value.index_revision_id,
+        job_id=value.job_id,
+        job_status="queued",
     )

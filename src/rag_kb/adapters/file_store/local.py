@@ -66,6 +66,9 @@ class LocalFileStore:
     async def delete(self, identity: SourceFileIdentity) -> None:
         await asyncio.to_thread(self._delete, identity)
 
+    async def discard_staged(self, identity: SourceFileIdentity) -> None:
+        await asyncio.to_thread(self._discard_staged, identity)
+
     async def list_files(self) -> tuple[StoredSourceFile, ...]:
         return await asyncio.to_thread(self._list_files)
 
@@ -163,6 +166,9 @@ class LocalFileStore:
         for location in (FileLocation.STAGING, FileLocation.FINAL):
             path = self._path(identity, location)
             path.unlink(missing_ok=True)
+
+    def _discard_staged(self, identity: SourceFileIdentity) -> None:
+        self._path(identity, FileLocation.STAGING).unlink(missing_ok=True)
 
     def _list_files(self) -> tuple[StoredSourceFile, ...]:
         values: list[StoredSourceFile] = []

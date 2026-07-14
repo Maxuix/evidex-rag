@@ -74,6 +74,12 @@ class SettingsTests(unittest.TestCase):
             ("http://127.0.0.1:3000",),
         )
         self.assertFalse(settings.security.cors_allow_credentials)
+        self.assertEqual(settings.file_admission.max_bytes, 10 * 1024 * 1024)
+        self.assertEqual(settings.file_admission.max_lines, 200_000)
+        self.assertEqual(settings.parser.max_chunks, 20_000)
+        self.assertEqual(settings.parser.wall_seconds, 30.0)
+        self.assertEqual(settings.parser.cpu_seconds, 20)
+        self.assertEqual(settings.parser.memory_bytes, 512 * 1024 * 1024)
 
     def test_nested_environment_surface_loads_without_global_state(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

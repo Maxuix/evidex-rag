@@ -13,8 +13,15 @@ import asyncpg
 from rag_kb.adapters import LocalFileStore
 from rag_kb.auth import AuthContext, SingleWorkspaceAccessPolicy
 from rag_kb.db import DatabaseProcess, create_database_resources
-from rag_kb.domain import DocumentSource, EmbeddingSpaceDefinition, IndexProfileDefinition
-from rag_kb.services import FileReconciliationService, SourceFileService
+from rag_kb.domain import (
+    AdmissionLimits,
+    DocumentSource,
+    EmbeddingSpaceDefinition,
+    FileAdmissionError,
+    IdempotencyKeyReusedError,
+    IndexProfileDefinition,
+)
+from rag_kb.services import FileAdmissionService, FileReconciliationService, SourceFileService
 from rag_kb.services.content import DocumentService, KnowledgeBaseService
 from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWorkFactory
 
@@ -118,6 +125,93 @@ class FileConsistencyTests(unittest.IsolatedAsyncioTestCase):
             tuple(state),
             ("unavailable", "retired", "cancelled", 2, 2),
         )
+
+    async def test_admitted_upload_is_idempotent_and_never_serves_partial_content(self) -> None:
+        kb = await self._create_kb()
+        admission = FileAdmissionService(AdmissionLimits())
+        source_files = SourceFileService(self.documents, self.store)
+        key = uuid4()
+
+        source = io.BytesIO(b"# Guide\r\nrestart-safe")
+        admitted = admission.validate(
+            source,
+            original_filename="guide.md",
+            media_type="text/markdown; charset=utf-8",
+        )
+        first = await source_files.store_and_activate(
+            self.context,
+            key,
+            kb_id=kb.id,
+            document_id=None,
+            display_name="Guide",
+            original_filename=admitted.original_filename,
+            media_type=admitted.media_type,
+            source=source,
+        )
+
+        replay_source = io.BytesIO(b"# Guide\r\nrestart-safe")
+        replay_admitted = admission.validate(
+            replay_source,
+            original_filename="guide.md",
+            media_type="text/markdown",
+        )
+        replay = await source_files.store_and_activate(
+            self.context,
+            key,
+            kb_id=kb.id,
+            document_id=None,
+            display_name="Guide",
+            original_filename=replay_admitted.original_filename,
+            media_type=replay_admitted.media_type,
+            source=replay_source,
+        )
+        self.assertEqual(first.document_version_id, replay.document_version_id)
+        self.assertEqual(first.job_id, replay.job_id)
+
+        conflict_source = io.BytesIO(b"different")
+        conflict_admitted = admission.validate(
+            conflict_source,
+            original_filename="guide.md",
+            media_type="text/markdown",
+        )
+        with self.assertRaises(IdempotencyKeyReusedError):
+            await source_files.store_and_activate(
+                self.context,
+                key,
+                kb_id=kb.id,
+                document_id=None,
+                display_name="Guide",
+                original_filename=conflict_admitted.original_filename,
+                media_type=conflict_admitted.media_type,
+                source=conflict_source,
+            )
+
+        for bad in (b"\xff", b"1\n" * 200_001):
+            with self.assertRaises(FileAdmissionError):
+                admission.validate(
+                    io.BytesIO(bad),
+                    original_filename="bad.txt",
+                    media_type="text/plain",
+                )
+
+        connection = await asyncpg.connect(MIGRATION_DSN)
+        try:
+            state = await connection.fetchrow(
+                """
+                SELECT
+                    (SELECT count(*) FROM document_version) AS versions,
+                    (SELECT count(*) FROM source_change) AS changes,
+                    (SELECT count(*) FROM indexed_document_version) AS targets,
+                    (SELECT count(*) FROM indexing_job) AS jobs,
+                    (SELECT serving_status::text FROM indexed_document_version) AS serving,
+                    (SELECT status::text FROM indexing_job) AS job_status
+                """
+            )
+        finally:
+            await connection.close()
+        self.assertEqual(tuple(state), (1, 1, 1, 1, "candidate", "queued"))
+        stored = await self.store.list_files()
+        self.assertEqual(len(stored), 1)
 
     async def test_restart_recovers_staging_and_finalized_pending_mutations(self) -> None:
         kb = await self._create_kb()

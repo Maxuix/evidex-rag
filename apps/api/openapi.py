@@ -14,6 +14,8 @@ DESCRIPTIONS = {
     403: "Access denied",
     404: "Resource not found",
     409: "Idempotency or resource conflict",
+    413: "Request body too large",
+    415: "Unsupported document media type",
     422: "Request validation failed",
     500: "Internal server error",
 }

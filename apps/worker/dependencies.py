@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from rag_kb.auth import DevelopmentAuthProvider, SingleWorkspaceAccessPolicy
-from rag_kb.adapters import LocalFileStore
+from rag_kb.adapters import IsolatedPlainTextProcessor, LocalFileStore
 from rag_kb.config import (
     Settings,
     StartupValidation,
@@ -20,7 +20,7 @@ from rag_kb.db import (
     create_database_resources,
     validate_runtime_readiness,
 )
-from rag_kb.services import FileReconciliationService, build_content_services
+from rag_kb.services import FileReconciliationService, ParserLimits, build_content_services
 from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWorkFactory
 
 
@@ -36,6 +36,7 @@ class WorkerDependencies:
     access_policy: SingleWorkspaceAccessPolicy
     file_store: LocalFileStore
     reconciliation_service: FileReconciliationService
+    document_processor: IsolatedPlainTextProcessor
 
     async def close(self) -> None:
         """Release process-owned database resources during Worker shutdown."""
@@ -105,5 +106,13 @@ def build_worker_dependencies(
             cleanup_base_delay_seconds=(
                 resolved_settings.file_store.cleanup_base_delay_seconds
             ),
+        ),
+        document_processor=IsolatedPlainTextProcessor(
+            ParserLimits(
+                max_chunks=resolved_settings.parser.max_chunks,
+                wall_seconds=resolved_settings.parser.wall_seconds,
+                cpu_seconds=resolved_settings.parser.cpu_seconds,
+                memory_bytes=resolved_settings.parser.memory_bytes,
+            )
         ),
     )

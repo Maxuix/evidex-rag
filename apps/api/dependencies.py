@@ -21,7 +21,9 @@ from rag_kb.db import (
     validate_runtime_readiness,
 )
 from rag_kb.services import (
+    AdmissionLimits,
     DocumentService,
+    FileAdmissionService,
     KnowledgeBaseService,
     SourceFileService,
     build_content_services,
@@ -43,6 +45,7 @@ class ApiDependencies:
     document_service: DocumentService
     file_store: LocalFileStore
     source_file_service: SourceFileService
+    file_admission_service: FileAdmissionService
 
     async def close(self) -> None:
         """Release process-owned database resources during API shutdown."""
@@ -104,5 +107,11 @@ def build_api_dependencies(
         source_file_service=SourceFileService(
             content_services.documents,
             file_store,
+        ),
+        file_admission_service=FileAdmissionService(
+            AdmissionLimits(
+                max_bytes=resolved_settings.file_admission.max_bytes,
+                max_lines=resolved_settings.file_admission.max_lines,
+            )
         ),
     )

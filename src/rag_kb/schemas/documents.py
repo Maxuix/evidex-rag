@@ -40,3 +40,14 @@ class DocumentDeleteResponse(PublicSchema):
     source_change_id: UUID | None
     source_change_seq: int | None
     index_revision_id: UUID | None
+
+
+class DocumentUploadResponse(PublicSchema):
+    document: DocumentResponse
+    document_version_id: UUID
+    source_change_id: UUID
+    source_change_seq: int
+    indexed_document_version_id: UUID
+    index_revision_id: UUID
+    job_id: UUID
+    job_status: Literal["queued"]
