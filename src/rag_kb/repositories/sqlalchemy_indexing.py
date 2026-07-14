@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, exists, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from rag_kb.db.models import (
+    Document as DocumentRow,
     DocumentSourceStatus,
     DocumentVersion as DocumentVersionRow,
     EmbeddingSpace as EmbeddingSpaceRow,
@@ -23,6 +25,7 @@ from rag_kb.db.models import (
     IndexServingStatus,
     JobStatus,
     KnowledgeBase as KnowledgeBaseRow,
+    SourceChange as SourceChangeRow,
     VectorRecord as VectorRecordRow,
 )
 from rag_kb.domain import (
@@ -34,6 +37,10 @@ from rag_kb.domain import (
     IndexingExecutionError,
     IndexingPhase,
     IndexingTarget,
+    PromotionCommand,
+    PromotionReason,
+    PromotionResult,
+    PromotionStatus,
     VectorRecordWrite,
     stable_chunk_id,
 )
@@ -49,6 +56,180 @@ class SqlAlchemyIndexingRepository:
         self._session = session
         self._workspace_id = workspace_id
         self._ensure_active = ensure_active
+
+    async def promote(self, command: PromotionCommand) -> PromotionResult | None:
+        """Conditionally switch one complete candidate using lifecycle lock order."""
+
+        self._ensure_active()
+        document_id = await self._session.scalar(
+            select(IndexedDocumentVersionRow.document_id)
+            .join(
+                IndexingJobRow,
+                IndexingJobRow.indexed_document_version_id
+                == IndexedDocumentVersionRow.id,
+            )
+            .where(
+                IndexedDocumentVersionRow.workspace_id == self._workspace_id,
+                IndexingJobRow.workspace_id == self._workspace_id,
+                IndexedDocumentVersionRow.id
+                == command.indexed_document_version_id,
+                IndexingJobRow.id == command.job_id,
+            )
+        )
+        if document_id is None:
+            return None
+
+        document = await self._session.scalar(
+            select(DocumentRow)
+            .where(
+                DocumentRow.workspace_id == self._workspace_id,
+                DocumentRow.id == document_id,
+            )
+            .with_for_update(of=DocumentRow)
+        )
+        if document is None:
+            return None
+        knowledge_base = await self._session.scalar(
+            select(KnowledgeBaseRow)
+            .where(
+                KnowledgeBaseRow.workspace_id == self._workspace_id,
+                KnowledgeBaseRow.id == document.kb_id,
+            )
+            .with_for_update(of=KnowledgeBaseRow)
+        )
+        if knowledge_base is None:
+            return None
+
+        locked = (
+            await self._session.execute(
+                select(IndexingJobRow, IndexedDocumentVersionRow)
+                .join(
+                    IndexedDocumentVersionRow,
+                    IndexedDocumentVersionRow.id
+                    == IndexingJobRow.indexed_document_version_id,
+                )
+                .where(
+                    IndexingJobRow.workspace_id == self._workspace_id,
+                    IndexedDocumentVersionRow.workspace_id == self._workspace_id,
+                    IndexingJobRow.id == command.job_id,
+                    IndexedDocumentVersionRow.id
+                    == command.indexed_document_version_id,
+                    IndexedDocumentVersionRow.document_id == document.id,
+                )
+                .with_for_update(
+                    of=(IndexingJobRow, IndexedDocumentVersionRow)
+                )
+            )
+        ).one_or_none()
+        if locked is None:
+            return None
+        job, target = locked
+
+        associations = tuple(
+            (
+                await self._session.execute(
+                    select(IndexedDocumentVersionRow)
+                    .where(
+                        IndexedDocumentVersionRow.workspace_id
+                        == self._workspace_id,
+                        IndexedDocumentVersionRow.document_id == document.id,
+                        IndexedDocumentVersionRow.index_revision_id
+                        == target.index_revision_id,
+                    )
+                    .order_by(IndexedDocumentVersionRow.id)
+                    .with_for_update(of=IndexedDocumentVersionRow)
+                )
+            ).scalars()
+        )
+
+        if target.serving_status is IndexServingStatus.SERVING:
+            return _promotion_result(
+                command,
+                PromotionStatus.SERVING,
+                PromotionReason.ALREADY_SERVING,
+            )
+        if target.serving_status is IndexServingStatus.RETIRED:
+            return _promotion_result(
+                command,
+                PromotionStatus.RETIRED,
+                PromotionReason.ALREADY_RETIRED,
+            )
+        if target.build_status is not IndexBuildStatus.READY:
+            return _promotion_result(
+                command,
+                PromotionStatus.NOT_READY,
+                PromotionReason.NOT_READY,
+            )
+        if job.status is not JobStatus.COMPLETED:
+            return _promotion_result(
+                command,
+                PromotionStatus.NOT_READY,
+                PromotionReason.JOB_INCOMPLETE,
+            )
+
+        revision_status = await self._session.scalar(
+            select(IndexRevisionRow.status).where(
+                IndexRevisionRow.workspace_id == self._workspace_id,
+                IndexRevisionRow.kb_id == document.kb_id,
+                IndexRevisionRow.id == target.index_revision_id,
+            )
+        )
+        later_change = bool(
+            await self._session.scalar(
+                select(
+                    exists().where(
+                        SourceChangeRow.workspace_id == self._workspace_id,
+                        SourceChangeRow.kb_id == document.kb_id,
+                        SourceChangeRow.document_id == document.id,
+                        SourceChangeRow.source_change_seq
+                        > target.source_change_seq,
+                    )
+                )
+            )
+        )
+        retirement_reason: PromotionReason | None = None
+        if document.deleted_at is not None:
+            retirement_reason = PromotionReason.DOCUMENT_DELETED
+        elif (
+            knowledge_base.active_index_revision_id != target.index_revision_id
+            or revision_status is not IndexRevisionStatus.ACTIVE
+        ):
+            retirement_reason = PromotionReason.REVISION_INACTIVE
+        elif document.current_version_id != target.document_version_id:
+            retirement_reason = PromotionReason.SUPERSEDED
+        elif later_change:
+            retirement_reason = PromotionReason.LATER_SOURCE_CHANGE
+
+        now = datetime.now(UTC)
+        if retirement_reason is not None:
+            target.serving_status = IndexServingStatus.RETIRED
+            target.updated_at = now
+            await self._session.flush()
+            return _promotion_result(
+                command,
+                PromotionStatus.RETIRED,
+                retirement_reason,
+            )
+
+        previous_serving: UUID | None = None
+        for association in associations:
+            if (
+                association.id != target.id
+                and association.serving_status is IndexServingStatus.SERVING
+            ):
+                association.serving_status = IndexServingStatus.RETIRED
+                association.updated_at = now
+                previous_serving = association.id
+        await self._session.flush()
+        target.serving_status = IndexServingStatus.SERVING
+        target.updated_at = now
+        await self._session.flush()
+        return _promotion_result(
+            command,
+            PromotionStatus.SERVING,
+            PromotionReason.PROMOTED,
+            previous_serving_target_id=previous_serving,
+        )
 
     async def prepare(self, command: IndexingCommand) -> IndexingTarget | None:
         self._ensure_active()
@@ -435,3 +616,19 @@ def _execution_error(
     check: str,
 ) -> IndexingExecutionError:
     return IndexingExecutionError(code, phase=phase, diagnostic={"check": check})
+
+
+def _promotion_result(
+    command: PromotionCommand,
+    status: PromotionStatus,
+    reason: PromotionReason,
+    *,
+    previous_serving_target_id: UUID | None = None,
+) -> PromotionResult:
+    return PromotionResult(
+        job_id=command.job_id,
+        indexed_document_version_id=command.indexed_document_version_id,
+        status=status,
+        reason=reason,
+        previous_serving_target_id=previous_serving_target_id,
+    )

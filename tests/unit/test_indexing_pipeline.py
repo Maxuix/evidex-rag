@@ -17,6 +17,9 @@ from rag_kb.domain import (
     IndexingPhase,
     IndexingTarget,
     ParsedDocument,
+    PromotionReason,
+    PromotionResult,
+    PromotionStatus,
     ProcessedDocument,
     SourceFileIdentity,
     stable_chunk_id,
@@ -101,6 +104,11 @@ class IndexingPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(repository.vectors), 2)
         self.assertEqual(provider.calls, 2)
         self.assertEqual(repository.status, "completed")
+        self.assertEqual(
+            (result.serving_status, replay.serving_status),
+            ("serving", "serving"),
+        )
+        self.assertEqual(repository.serving, "serving")
 
     async def test_partial_embedding_failure_stays_non_serving_and_replay_converges(self) -> None:
         repository = _Repository(_target())
@@ -120,8 +128,28 @@ class IndexingPipelineTests(unittest.IsolatedAsyncioTestCase):
         provider.calls = 0
         result = await pipeline.execute(command)
         self.assertEqual((result.status, result.chunk_count), ("ready", 2))
+        self.assertEqual(result.serving_status, "serving")
         self.assertEqual(len(repository.chunks), 2)
         self.assertEqual(len(repository.vectors), 2)
+
+    async def test_completed_replay_compensates_interrupted_promotion(self) -> None:
+        repository = _Repository(_target())
+        repository.status = "completed"
+        repository.chunks = {0: object(), 1: object()}
+        factory = _Factory(repository)
+        provider = _Provider(factory)
+        pipeline = _pipeline(factory, provider)
+        command = IndexingCommand(
+            repository.target.job_id,
+            repository.target.indexed_document_version_id,
+        )
+
+        result = await pipeline.execute(command)
+
+        self.assertTrue(result.replayed)
+        self.assertEqual(result.serving_status, "serving")
+        self.assertEqual(repository.serving, "serving")
+        self.assertEqual(provider.calls, 0)
 
     async def test_parser_failure_persists_parser_phase_and_stable_code(self) -> None:
         repository = _Repository(_target())
@@ -194,6 +222,40 @@ class _Repository:
         self.status = "running"
         self.failure = None
         return self.target
+
+    async def promote(self, command):
+        self._active()
+        if (
+            command.job_id != self.target.job_id
+            or command.indexed_document_version_id
+            != self.target.indexed_document_version_id
+        ):
+            return None
+        if self.serving == "serving":
+            reason = PromotionReason.ALREADY_SERVING
+        elif self.serving == "retired":
+            return PromotionResult(
+                command.job_id,
+                command.indexed_document_version_id,
+                PromotionStatus.RETIRED,
+                PromotionReason.ALREADY_RETIRED,
+            )
+        elif self.status != "completed":
+            return PromotionResult(
+                command.job_id,
+                command.indexed_document_version_id,
+                PromotionStatus.NOT_READY,
+                PromotionReason.JOB_INCOMPLETE,
+            )
+        else:
+            self.serving = "serving"
+            reason = PromotionReason.PROMOTED
+        return PromotionResult(
+            command.job_id,
+            command.indexed_document_version_id,
+            PromotionStatus.SERVING,
+            reason,
+        )
 
     async def set_phase(self, command, phase):
         del command, phase

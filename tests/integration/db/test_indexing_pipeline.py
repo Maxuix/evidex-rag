@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import io
 import os
 import tempfile
@@ -22,8 +23,10 @@ from rag_kb.domain import (
     IndexingExecutionError,
     IndexingPhase,
     ParserLimits,
+    PromotionCommand,
+    PromotionReason,
 )
-from rag_kb.indexing import IndexingPipeline
+from rag_kb.indexing import CandidatePromotionService, IndexingPipeline
 from rag_kb.services import SourceFileService
 from rag_kb.services.content import DocumentService, KnowledgeBaseService
 from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWorkFactory
@@ -72,7 +75,7 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
         await self.database.close()
         self.temporary.cleanup()
 
-    async def test_txt_markdown_and_completed_replay_produce_one_non_serving_set(self) -> None:
+    async def test_txt_markdown_and_completed_replay_produce_serving_sets(self) -> None:
         kb = await self._create_kb()
         uploaded = (
             await self._upload(kb.id, "guide.txt", "text/plain", b"first\n\nsecond"),
@@ -85,6 +88,13 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
         )
         provider = _Provider()
         pipeline = self._pipeline(provider)
+        not_ready = await CandidatePromotionService(self.factory).promote(
+            _promotion_command(uploaded[0])
+        )
+        self.assertEqual(
+            (not_ready.status, not_ready.reason),
+            ("not_ready", PromotionReason.NOT_READY),
+        )
         results = []
         for item in uploaded:
             results.append(await pipeline.execute(_command(item)))
@@ -111,8 +121,8 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
             )
         finally:
             await connection.close()
-        self.assertEqual(state["ready_candidates"], 2)
-        self.assertEqual(state["serving"], 0)
+        self.assertEqual(state["ready_candidates"], 0)
+        self.assertEqual(state["serving"], 2)
         self.assertEqual(state["completed_jobs"], 2)
         self.assertEqual(state["chunks"], state["vectors"])
         self.assertTrue(state["dimensions_valid"])
@@ -141,8 +151,166 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
         replayed = await self._target_state(uploaded.indexed_document_version_id)
         self.assertEqual(
             tuple(replayed),
-            ("ready", "candidate", "completed", "completed", None, 2, 2),
+            ("ready", "serving", "completed", "completed", None, 2, 2),
         )
+
+    async def test_new_version_switches_atomically_after_ready(self) -> None:
+        kb = await self._create_kb()
+        first = await self._upload(kb.id, "guide.txt", "text/plain", b"version one")
+        pipeline = self._pipeline(_Provider())
+        await pipeline.execute(_command(first))
+
+        second = await self._upload(
+            kb.id,
+            "guide.txt",
+            "text/plain",
+            b"version two",
+            document_id=first.document.id,
+        )
+        self.assertEqual(
+            await self._serving_states(first.document.id),
+            (
+                (first.indexed_document_version_id, "serving"),
+                (second.indexed_document_version_id, "candidate"),
+            ),
+        )
+
+        promoted = await pipeline.execute(_command(second))
+
+        self.assertEqual(promoted.serving_status, "serving")
+        self.assertEqual(
+            await self._serving_states(first.document.id),
+            (
+                (first.indexed_document_version_id, "retired"),
+                (second.indexed_document_version_id, "serving"),
+            ),
+        )
+
+    async def test_reverse_completion_cannot_restore_superseded_version(self) -> None:
+        kb = await self._create_kb()
+        first = await self._upload(kb.id, "guide.txt", "text/plain", b"version one")
+        second = await self._upload(
+            kb.id,
+            "guide.txt",
+            "text/plain",
+            b"version two",
+            document_id=first.document.id,
+        )
+        pipeline = self._pipeline(_Provider())
+
+        current = await pipeline.execute(_command(second))
+        stale = await pipeline.execute(_command(first))
+        stale_replay = await pipeline.execute(_command(first))
+
+        self.assertEqual(
+            (
+                current.serving_status,
+                stale.serving_status,
+                stale_replay.serving_status,
+            ),
+            ("serving", "retired", "retired"),
+        )
+        self.assertTrue(stale_replay.replayed)
+        self.assertEqual(
+            await self._serving_states(first.document.id),
+            (
+                (first.indexed_document_version_id, "retired"),
+                (second.indexed_document_version_id, "serving"),
+            ),
+        )
+
+    async def test_late_worker_after_delete_cannot_restore_serving_state(self) -> None:
+        kb = await self._create_kb()
+        uploaded = await self._upload(kb.id, "guide.txt", "text/plain", b"safe")
+        await self.documents.delete(self.context, uuid4(), uploaded.document.id)
+
+        result = await self._pipeline(_Provider()).execute(_command(uploaded))
+
+        self.assertEqual(
+            (result.status, result.serving_status),
+            ("cancelled", "retired"),
+        )
+        self.assertEqual(
+            await self._serving_states(uploaded.document.id),
+            ((uploaded.indexed_document_version_id, "retired"),),
+        )
+
+    async def test_concurrent_promotions_converge_on_current_version(self) -> None:
+        kb = await self._create_kb()
+        first = await self._upload(kb.id, "guide.txt", "text/plain", b"version one")
+        second = await self._upload(
+            kb.id,
+            "guide.txt",
+            "text/plain",
+            b"version two",
+            document_id=first.document.id,
+        )
+        await self._mark_ready(first, second)
+        promotion = CandidatePromotionService(self.factory)
+
+        first_result, second_result = await asyncio.gather(
+            promotion.promote(_promotion_command(first)),
+            promotion.promote(_promotion_command(second)),
+        )
+
+        self.assertEqual(first_result.reason, PromotionReason.SUPERSEDED)
+        self.assertEqual(second_result.status, "serving")
+        self.assertEqual(
+            await self._serving_states(first.document.id),
+            (
+                (first.indexed_document_version_id, "retired"),
+                (second.indexed_document_version_id, "serving"),
+            ),
+        )
+
+    async def test_promotion_delete_race_always_ends_retired(self) -> None:
+        kb = await self._create_kb()
+        uploaded = await self._upload(kb.id, "guide.txt", "text/plain", b"safe")
+        await self._mark_ready(uploaded)
+        promotion = CandidatePromotionService(self.factory)
+
+        await asyncio.gather(
+            promotion.promote(_promotion_command(uploaded)),
+            self.documents.delete(self.context, uuid4(), uploaded.document.id),
+        )
+
+        self.assertEqual(
+            await self._serving_states(uploaded.document.id),
+            ((uploaded.indexed_document_version_id, "retired"),),
+        )
+
+    async def test_later_source_change_retires_otherwise_eligible_candidate(self) -> None:
+        kb = await self._create_kb()
+        uploaded = await self._upload(kb.id, "guide.txt", "text/plain", b"safe")
+        await self._mark_ready(uploaded)
+        connection = await asyncpg.connect(MIGRATION_DSN)
+        try:
+            async with connection.transaction():
+                await connection.execute(
+                    "UPDATE knowledge_base SET source_change_seq = 2 WHERE id = $1",
+                    kb.id,
+                )
+                await connection.execute(
+                    """
+                    INSERT INTO source_change(
+                        workspace_id, kb_id, source_change_seq, document_id,
+                        document_version_id, change_kind
+                    ) VALUES ($1, $2, 2, $3, $4, 'upsert')
+                    """,
+                    WORKSPACE,
+                    kb.id,
+                    uploaded.document.id,
+                    uploaded.document_version_id,
+                )
+        finally:
+            await connection.close()
+
+        result = await CandidatePromotionService(self.factory).promote(
+            _promotion_command(uploaded)
+        )
+
+        self.assertEqual(result.reason, PromotionReason.LATER_SOURCE_CHANGE)
+        self.assertEqual(result.status, "retired")
 
     async def test_embedding_mismatch_fails_before_any_derived_write(self) -> None:
         kb = await self._create_kb()
@@ -225,12 +393,20 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
             retrieval_defaults={"strategy": "exact_vector", "top_k": 10},
         )
 
-    async def _upload(self, kb_id, filename, media_type, content):
+    async def _upload(
+        self,
+        kb_id,
+        filename,
+        media_type,
+        content,
+        *,
+        document_id=None,
+    ):
         return await SourceFileService(self.documents, self.store).store_and_activate(
             self.context,
             uuid4(),
             kb_id=kb_id,
-            document_id=None,
+            document_id=document_id,
             display_name=filename,
             original_filename=filename,
             media_type=media_type,
@@ -258,6 +434,46 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 """,
                 target_id,
             )
+        finally:
+            await connection.close()
+
+    async def _serving_states(self, document_id):
+        connection = await asyncpg.connect(MIGRATION_DSN)
+        try:
+            rows = await connection.fetch(
+                """
+                SELECT id, serving_status::text
+                  FROM indexed_document_version
+                 WHERE document_id = $1
+                 ORDER BY source_change_seq
+                """,
+                document_id,
+            )
+            return tuple((row["id"], row["serving_status"]) for row in rows)
+        finally:
+            await connection.close()
+
+    async def _mark_ready(self, *uploaded):
+        connection = await asyncpg.connect(MIGRATION_DSN)
+        try:
+            async with connection.transaction():
+                for item in uploaded:
+                    await connection.execute(
+                        """
+                        UPDATE indexed_document_version
+                           SET build_status = 'ready'
+                         WHERE id = $1
+                        """,
+                        item.indexed_document_version_id,
+                    )
+                    await connection.execute(
+                        """
+                        UPDATE indexing_job
+                           SET status = 'completed', phase = 'completed'
+                         WHERE id = $1
+                        """,
+                        item.job_id,
+                    )
         finally:
             await connection.close()
 
@@ -291,6 +507,13 @@ class _Provider:
 
 def _command(uploaded):
     return IndexingCommand(
+        uploaded.job_id,
+        uploaded.indexed_document_version_id,
+    )
+
+
+def _promotion_command(uploaded):
+    return PromotionCommand(
         uploaded.job_id,
         uploaded.indexed_document_version_id,
     )

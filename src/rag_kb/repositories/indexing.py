@@ -9,12 +9,16 @@ from rag_kb.domain import (
     IndexingCommand,
     IndexingPhase,
     IndexingTarget,
+    PromotionCommand,
+    PromotionResult,
     VectorRecordWrite,
 )
 
 
 @runtime_checkable
 class IndexingRepository(Protocol):
+    async def promote(self, command: PromotionCommand) -> PromotionResult | None: ...
+
     async def prepare(self, command: IndexingCommand) -> IndexingTarget | None: ...
 
     async def set_phase(self, command: IndexingCommand, phase: IndexingPhase) -> bool: ...

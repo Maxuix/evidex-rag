@@ -25,12 +25,14 @@ from rag_kb.domain import (
     InvalidStorageIdentityError,
     ParserExecutionError,
     ParserSource,
+    PromotionCommand,
     SourceFileMissingError,
     VectorRecordWrite,
     stable_chunk_id,
     stable_vector_id,
     validate_embedding_vector,
 )
+from rag_kb.indexing.promotion import CandidatePromotionService
 from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, UnitOfWorkPurpose, execute_in_transaction
 
 
@@ -64,6 +66,7 @@ class IndexingPipeline:
         self._document_processor = document_processor
         self._embedding_provider = embedding_provider
         self._vector_space = vector_space
+        self._promotion = CandidatePromotionService(unit_of_work)
 
     async def execute(self, command: IndexingCommand) -> IndexingResult:
         phase = IndexingPhase.SOURCE_READ
@@ -74,14 +77,18 @@ class IndexingPipeline:
                     ErrorCode.INDEX_TARGET_INVALID,
                     phase=phase,
                     diagnostic={"check": "job_target_mapping"},
-                )
+            )
             if target.already_complete:
+                promotion = await self._promotion.promote(
+                    _promotion_command(command)
+                )
                 return IndexingResult(
                     command.job_id,
                     command.indexed_document_version_id,
                     "ready",
                     await self._stored_chunk_count(command),
                     replayed=True,
+                    serving_status=promotion.status.value,
                 )
             self._require_revision_profile(target)
             self._vector_space.require_compatible(
@@ -156,11 +163,13 @@ class IndexingPipeline:
             phase = IndexingPhase.VALIDATING
             await self._set_phase(command, phase)
             await self._complete(command, expected_chunks=len(processed.chunks))
+            promotion = await self._promotion.promote(_promotion_command(command))
             return IndexingResult(
                 command.job_id,
                 command.indexed_document_version_id,
                 "ready",
                 len(processed.chunks),
+                serving_status=promotion.status.value,
             )
         except IndexingCancelled:
             return IndexingResult(
@@ -168,6 +177,7 @@ class IndexingPipeline:
                 command.indexed_document_version_id,
                 "cancelled",
                 0,
+                serving_status="retired",
             )
         except IndexingExecutionError as error:
             await self._record_failure(command, error)
@@ -351,3 +361,10 @@ def _safe_diagnostic(value: dict) -> dict:
         "exit_kind",
     }
     return {key: item for key, item in value.items() if key in allowed}
+
+
+def _promotion_command(command: IndexingCommand) -> PromotionCommand:
+    return PromotionCommand(
+        job_id=command.job_id,
+        indexed_document_version_id=command.indexed_document_version_id,
+    )

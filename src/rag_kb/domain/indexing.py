@@ -25,10 +25,43 @@ class IndexingPhase(StrEnum):
     COMPLETED = "completed"
 
 
+class PromotionStatus(StrEnum):
+    SERVING = "serving"
+    RETIRED = "retired"
+    NOT_READY = "not_ready"
+
+
+class PromotionReason(StrEnum):
+    PROMOTED = "promoted"
+    ALREADY_SERVING = "already_serving"
+    ALREADY_RETIRED = "already_retired"
+    NOT_READY = "not_ready"
+    JOB_INCOMPLETE = "job_incomplete"
+    DOCUMENT_DELETED = "document_deleted"
+    SUPERSEDED = "superseded"
+    LATER_SOURCE_CHANGE = "later_source_change"
+    REVISION_INACTIVE = "revision_inactive"
+
+
 @dataclass(frozen=True, slots=True)
 class IndexingCommand:
     job_id: UUID
     indexed_document_version_id: UUID
+
+
+@dataclass(frozen=True, slots=True)
+class PromotionCommand:
+    job_id: UUID
+    indexed_document_version_id: UUID
+
+
+@dataclass(frozen=True, slots=True)
+class PromotionResult:
+    job_id: UUID
+    indexed_document_version_id: UUID
+    status: PromotionStatus
+    reason: PromotionReason
+    previous_serving_target_id: UUID | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +119,7 @@ class IndexingResult:
     status: str
     chunk_count: int
     replayed: bool = False
+    serving_status: str = "candidate"
 
 
 class IndexingExecutionError(RuntimeError):
