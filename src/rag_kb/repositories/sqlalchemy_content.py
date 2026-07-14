@@ -8,6 +8,7 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import and_, func, or_, select, text, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from rag_kb.db.models import (
@@ -26,6 +27,7 @@ from rag_kb.db.models import (
     KnowledgeBase as KnowledgeBaseRow,
     SourceChange as SourceChangeRow,
     SourceChangeKind,
+    SourceFileCleanup as SourceFileCleanupRow,
     Workspace as WorkspaceRow,
 )
 from rag_kb.domain import (
@@ -39,8 +41,11 @@ from rag_kb.domain import (
     IndexProfileDefinition,
     KnowledgeBase,
     Page,
+    PendingFileMutation,
     ResourceNameConflictError,
     ResourceStateConflictError,
+    SourceFileCleanup,
+    SourceFileReference,
 )
 
 
@@ -461,6 +466,7 @@ class SqlAlchemyDocumentRepository:
         current = None
         if document.current_version_id is not None:
             current = await self._session.get(DocumentVersionRow, document.current_version_id)
+        await self._schedule_file_cleanup(document.id)
         if document.deleted_at is not None:
             return DocumentMutationResult(document=_document(document, current))
         allocation = await self._session.execute(
@@ -528,6 +534,33 @@ class SqlAlchemyDocumentRepository:
             index_revision_id=allocated.active_index_revision_id,
         )
 
+    async def _schedule_file_cleanup(self, document_id: UUID) -> None:
+        versions = (
+            await self._session.execute(
+                select(DocumentVersionRow.id, DocumentVersionRow.storage_uri).where(
+                    DocumentVersionRow.workspace_id == self._workspace_id,
+                    DocumentVersionRow.document_id == document_id,
+                )
+            )
+        ).all()
+        if not versions:
+            return
+        await self._session.execute(
+            pg_insert(SourceFileCleanupRow)
+            .values(
+                [
+                    {
+                        "workspace_id": self._workspace_id,
+                        "document_version_id": version.id,
+                        "storage_uri": version.storage_uri,
+                        "reason": "document_deleted",
+                    }
+                    for version in versions
+                ]
+            )
+            .on_conflict_do_nothing(index_elements=["document_version_id"])
+        )
+
 
 class SqlAlchemyContentMutationRepository:
     def __init__(self, session: AsyncSession, workspace_id: UUID, ensure_active: Callable[[], None]) -> None:
@@ -582,7 +615,9 @@ class SqlAlchemyContentMutationRepository:
         await self._session.flush()
         return _mutation(row)
 
-    async def complete(self, scope: IdempotencyScope, result: DocumentMutationResult) -> ContentMutation:
+    async def complete(
+        self, scope: IdempotencyScope, result: DocumentMutationResult
+    ) -> ContentMutation:
         self._ensure_active()
         row = await self._session.scalar(
             select(ContentMutationRow).where(
@@ -601,6 +636,227 @@ class SqlAlchemyContentMutationRepository:
         row.updated_at = datetime.now(UTC)
         await self._session.flush()
         return _mutation(row)
+
+
+class SqlAlchemyFileConsistencyRepository:
+    def __init__(
+        self,
+        session: AsyncSession,
+        workspace_id: UUID,
+        ensure_active: Callable[[], None],
+    ) -> None:
+        self._session = session
+        self._workspace_id = workspace_id
+        self._ensure_active = ensure_active
+
+    async def list_references(self) -> tuple[SourceFileReference, ...]:
+        self._ensure_active()
+        rows = (
+            await self._session.execute(
+                select(DocumentVersionRow).where(
+                    DocumentVersionRow.workspace_id == self._workspace_id
+                )
+            )
+        ).scalars()
+        return tuple(
+            SourceFileReference(
+                document_id=row.document_id,
+                document_version_id=row.id,
+                source_status=row.source_status.value,
+                storage_uri=row.storage_uri,
+                checksum_sha256=row.checksum_sha256,
+                size_bytes=row.size_bytes,
+            )
+            for row in rows
+        )
+
+    async def list_pending_mutations(
+        self, *, limit: int
+    ) -> tuple[PendingFileMutation, ...]:
+        self._ensure_active()
+        rows = (
+            await self._session.execute(
+                select(ContentMutationRow, DocumentVersionRow)
+                .join(
+                    DocumentVersionRow,
+                    DocumentVersionRow.id == ContentMutationRow.document_version_id,
+                )
+                .where(
+                    ContentMutationRow.workspace_id == self._workspace_id,
+                    ContentMutationRow.status == "pending",
+                    ContentMutationRow.operation == "document.version.reserve",
+                    DocumentVersionRow.source_status == DocumentSourceStatus.UNAVAILABLE,
+                )
+                .order_by(ContentMutationRow.created_at, ContentMutationRow.id)
+                .limit(limit)
+            )
+        ).all()
+        return tuple(
+            PendingFileMutation(
+                scope=IdempotencyScope(
+                    mutation.principal_id,
+                    mutation.client_id,
+                    mutation.endpoint,
+                    mutation.idempotency_key,
+                ),
+                document_id=mutation.document_id,
+                document_version_id=version.id,
+                storage_uri=version.storage_uri,
+                checksum_sha256=version.checksum_sha256,
+                size_bytes=version.size_bytes,
+            )
+            for mutation, version in rows
+            if mutation.document_id is not None
+        )
+
+    async def list_due_cleanup(
+        self, *, now: datetime, limit: int
+    ) -> tuple[SourceFileCleanup, ...]:
+        self._ensure_active()
+        rows = (
+            await self._session.execute(
+                select(SourceFileCleanupRow)
+                .where(
+                    SourceFileCleanupRow.workspace_id == self._workspace_id,
+                    SourceFileCleanupRow.status == "pending",
+                    SourceFileCleanupRow.next_attempt_at <= now,
+                )
+                .order_by(SourceFileCleanupRow.next_attempt_at, SourceFileCleanupRow.id)
+                .limit(limit)
+            )
+        ).scalars()
+        return tuple(_file_cleanup(row) for row in rows)
+
+    async def schedule_cleanup(
+        self,
+        *,
+        document_version_id: UUID,
+        storage_uri: str,
+        reason: str,
+    ) -> None:
+        self._ensure_active()
+        await self._session.execute(
+            pg_insert(SourceFileCleanupRow)
+            .values(
+                workspace_id=self._workspace_id,
+                document_version_id=document_version_id,
+                storage_uri=storage_uri,
+                reason=reason,
+            )
+            .on_conflict_do_nothing(index_elements=["document_version_id"])
+        )
+
+    async def complete_cleanup(self, cleanup_id: UUID, *, now: datetime) -> bool:
+        self._ensure_active()
+        result = await self._session.execute(
+            update(SourceFileCleanupRow)
+            .where(
+                SourceFileCleanupRow.workspace_id == self._workspace_id,
+                SourceFileCleanupRow.id == cleanup_id,
+                SourceFileCleanupRow.status == "pending",
+            )
+            .values(
+                status="completed",
+                completed_at=now,
+                last_error_code=None,
+                updated_at=now,
+            )
+        )
+        return bool(result.rowcount)
+
+    async def fail_cleanup(
+        self,
+        cleanup_id: UUID,
+        *,
+        expected_attempt_count: int,
+        error_code: str,
+        next_attempt_at: datetime,
+        terminal: bool,
+    ) -> bool:
+        self._ensure_active()
+        result = await self._session.execute(
+            update(SourceFileCleanupRow)
+            .where(
+                SourceFileCleanupRow.workspace_id == self._workspace_id,
+                SourceFileCleanupRow.id == cleanup_id,
+                SourceFileCleanupRow.status == "pending",
+                SourceFileCleanupRow.attempt_count == expected_attempt_count,
+            )
+            .values(
+                status="failed" if terminal else "pending",
+                attempt_count=SourceFileCleanupRow.attempt_count + 1,
+                last_error_code=error_code,
+                next_attempt_at=next_attempt_at,
+                updated_at=func.now(),
+            )
+        )
+        return bool(result.rowcount)
+
+    async def compensate_missing_file(self, document_version_id: UUID) -> bool:
+        self._ensure_active()
+        version = await self._session.scalar(
+            select(DocumentVersionRow)
+            .where(
+                DocumentVersionRow.workspace_id == self._workspace_id,
+                DocumentVersionRow.id == document_version_id,
+            )
+            .with_for_update()
+        )
+        if version is None or version.source_status is not DocumentSourceStatus.AVAILABLE:
+            return False
+        document = await self._session.scalar(
+            select(DocumentRow)
+            .where(
+                DocumentRow.workspace_id == self._workspace_id,
+                DocumentRow.id == version.document_id,
+            )
+            .with_for_update()
+        )
+        if document is None:
+            return False
+        allocation = await self._session.execute(
+            update(KnowledgeBaseRow)
+            .where(
+                KnowledgeBaseRow.workspace_id == self._workspace_id,
+                KnowledgeBaseRow.id == version.kb_id,
+            )
+            .values(
+                source_change_seq=KnowledgeBaseRow.source_change_seq + 1,
+                updated_at=func.now(),
+            )
+            .returning(KnowledgeBaseRow.source_change_seq)
+        )
+        source_change_seq = allocation.scalar_one()
+        version.source_status = DocumentSourceStatus.UNAVAILABLE
+        self._session.add(
+            SourceChangeRow(
+                workspace_id=self._workspace_id,
+                kb_id=version.kb_id,
+                source_change_seq=source_change_seq,
+                document_id=version.document_id,
+                document_version_id=None,
+                change_kind=SourceChangeKind.DELETE,
+            )
+        )
+        targets = select(IndexedDocumentVersionRow.id).where(
+            IndexedDocumentVersionRow.workspace_id == self._workspace_id,
+            IndexedDocumentVersionRow.document_version_id == version.id,
+        )
+        await self._session.execute(
+            update(IndexedDocumentVersionRow)
+            .where(IndexedDocumentVersionRow.id.in_(targets))
+            .values(serving_status=IndexServingStatus.RETIRED, updated_at=func.now())
+        )
+        await self._session.execute(
+            update(IndexingJobRow)
+            .where(
+                IndexingJobRow.indexed_document_version_id.in_(targets),
+                IndexingJobRow.status.in_((JobStatus.QUEUED, JobStatus.RUNNING)),
+            )
+            .values(status=JobStatus.CANCELLED, phase="source_missing", updated_at=func.now())
+        )
+        await self._session.flush()
+        return True
 
 
 def _embedding_matches(row: EmbeddingSpaceRow, workspace_id: UUID, value: EmbeddingSpaceDefinition) -> bool:
@@ -679,6 +935,18 @@ def _mutation(row: ContentMutationRow) -> ContentMutation:
         indexed_document_version_id=row.indexed_document_version_id,
         index_revision_id=row.index_revision_id,
         job_id=row.job_id,
+    )
+
+
+def _file_cleanup(row: SourceFileCleanupRow) -> SourceFileCleanup:
+    return SourceFileCleanup(
+        id=row.id,
+        document_version_id=row.document_version_id,
+        storage_uri=row.storage_uri,
+        reason=row.reason,
+        status=row.status,
+        attempt_count=row.attempt_count,
+        next_attempt_at=row.next_attempt_at,
     )
 
 

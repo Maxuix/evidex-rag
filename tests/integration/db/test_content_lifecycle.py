@@ -173,6 +173,7 @@ class ContentLifecycleTests(unittest.IsolatedAsyncioTestCase):
                        (SELECT source_status::text FROM document_version WHERE id = $2) AS source_status,
                        (SELECT serving_status::text FROM indexed_document_version WHERE id = $3) AS serving_status,
                        (SELECT status::text FROM indexing_job WHERE id = $4) AS job_status
+                       ,(SELECT count(*) FROM source_file_cleanup WHERE document_version_id = $2) AS cleanup_count
                 FROM knowledge_base kb WHERE kb.id = $1
                 """,
                 kb.id,
@@ -182,7 +183,10 @@ class ContentLifecycleTests(unittest.IsolatedAsyncioTestCase):
             )
         finally:
             await connection.close()
-        self.assertEqual(tuple(state), (2, 2, "deleted", "retired", "cancelled"))
+        self.assertEqual(
+            tuple(state),
+            (2, 2, "deleted", "retired", "cancelled", 1),
+        )
 
     async def test_concurrent_version_activation_allocates_gapless_source_changes(self) -> None:
         kb = await self._create_kb()

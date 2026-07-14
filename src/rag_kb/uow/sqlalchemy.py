@@ -13,12 +13,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, AsyncSessionTransaction, async_
 from rag_kb.repositories import (
     ContentMutationRepository,
     DocumentRepository,
+    FileConsistencyRepository,
     KnowledgeBaseRepository,
     WorkspaceRepository,
 )
 from rag_kb.repositories.sqlalchemy_content import (
     SqlAlchemyContentMutationRepository,
     SqlAlchemyDocumentRepository,
+    SqlAlchemyFileConsistencyRepository,
     SqlAlchemyKnowledgeBaseRepository,
 )
 from rag_kb.repositories.sqlalchemy import SqlAlchemyWorkspaceRepository
@@ -59,6 +61,7 @@ class SqlAlchemyUnitOfWork:
         self._knowledge_base_repository: KnowledgeBaseRepository | None = None
         self._document_repository: DocumentRepository | None = None
         self._content_mutation_repository: ContentMutationRepository | None = None
+        self._file_consistency_repository: FileConsistencyRepository | None = None
         self._owner_task: asyncio.Task[object] | None = None
         self._state = _State.NEW
 
@@ -86,6 +89,12 @@ class SqlAlchemyUnitOfWork:
         assert self._content_mutation_repository is not None
         return self._content_mutation_repository
 
+    @property
+    def file_consistency(self) -> FileConsistencyRepository:
+        self._ensure_active()
+        assert self._file_consistency_repository is not None
+        return self._file_consistency_repository
+
     async def __aenter__(self) -> SqlAlchemyUnitOfWork:
         if self._state is not _State.NEW:
             raise UnitOfWorkStateError("a Unit of Work instance is single-use")
@@ -110,6 +119,9 @@ class SqlAlchemyUnitOfWork:
             session, self.workspace_id, self._ensure_active
         )
         self._content_mutation_repository = SqlAlchemyContentMutationRepository(
+            session, self.workspace_id, self._ensure_active
+        )
+        self._file_consistency_repository = SqlAlchemyFileConsistencyRepository(
             session, self.workspace_id, self._ensure_active
         )
         try:

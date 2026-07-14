@@ -8,7 +8,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 
-EXPECTED_REVISION = "0002_content_lifecycle"
+EXPECTED_REVISION = "0003_local_files"
 EXPECTED_POSTGRES_MAJOR = 18
 EXPECTED_PGVECTOR_VERSION = "0.8.2"
 EXPECTED_VECTOR_TABLE = "vector_record_1024"
@@ -34,6 +34,7 @@ EXPECTED_APPLICATION_TABLES = frozenset(
         "indexing_job",
         "knowledge_base",
         "source_change",
+        "source_file_cleanup",
         "vector_record_1024",
         "workspace",
     }

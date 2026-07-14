@@ -60,9 +60,12 @@ class RuntimeDiagnosticsTests(unittest.TestCase):
             method="GET",
             path="/health/live",
             status_code=200,
+            cleanup_completed=1,
+            error_type="OSError",
         )
         payload = json.loads(stream.getvalue())
         self.assertEqual(payload["trace_id"], "trace-1")
+        self.assertEqual(payload["cleanup_completed"], 1)
         self.assertNotIn("message", payload)
 
         with self.assertRaises(ValueError):

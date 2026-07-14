@@ -10,6 +10,7 @@ from uuid import UUID
 from rag_kb.repositories import (
     ContentMutationRepository,
     DocumentRepository,
+    FileConsistencyRepository,
     KnowledgeBaseRepository,
     WorkspaceRepository,
 )
@@ -55,6 +56,9 @@ class UnitOfWork(Protocol):
 
     @property
     def content_mutations(self) -> ContentMutationRepository: ...
+
+    @property
+    def file_consistency(self) -> FileConsistencyRepository: ...
 
     async def __aenter__(self) -> UnitOfWork: ...
 

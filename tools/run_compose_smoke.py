@@ -22,7 +22,7 @@ def available_port() -> int:
 class ComposeSmoke:
     def __init__(self, root: Path) -> None:
         self.root = root
-        self.project = f"rag-kb-s02-w07-{os.getpid()}"
+        self.project = f"rag-kb-s03-w02-{os.getpid()}"
         self.environment = {
             **os.environ,
             "POSTGRES_ADMIN_PASSWORD": "smoke-admin-password",
@@ -145,7 +145,7 @@ def main() -> int:
             "-T",
             "api",
             "touch",
-            "/var/lib/rag-kb/sources/final/s02-w07-smoke-marker",
+            "/var/lib/rag-kb/sources/final/s03-w02-smoke-marker",
         )
         smoke.run("restart", "api", "worker")
         smoke.run("up", "-d", "--wait", "--wait-timeout", "90", "api", "worker")
@@ -155,7 +155,7 @@ def main() -> int:
             "worker",
             "test",
             "-f",
-            "/var/lib/rag-kb/sources/final/s02-w07-smoke-marker",
+            "/var/lib/rag-kb/sources/final/s03-w02-smoke-marker",
         )
 
         smoke.http_json(

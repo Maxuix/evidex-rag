@@ -1,8 +1,10 @@
 # Enterprise Knowledge Base and RAG
 
 This repository is building a local-first enterprise knowledge base with
-evidence-grounded retrieval and answering. The current milestone is P0
-Foundation; application business capabilities are not implemented yet.
+evidence-grounded retrieval and answering. The current milestone is the P1A
+Core Vertical Slice. Knowledge-base/document lifecycle and local source-file
+consistency are implemented; the complete upload-to-answer path is still under
+construction.
 
 Authoritative project documents:
 
@@ -16,6 +18,7 @@ Authoritative project documents:
 - [Public API and error conventions](docs/architecture/api-conventions.md)
 - [Identity and security boundaries](docs/architecture/identity-security.md)
 - [Local runtime and diagnostics](docs/architecture/local-runtime.md)
+- [Local source-file consistency](docs/architecture/local-file-consistency.md)
 
 ## Current Layout
 
@@ -91,8 +94,10 @@ overrides, logs, checks, and the explicitly destructive clean reset.
 
 ## Current Boundary
 
-The Compose profile is a local foundation runtime. It does not yet provide
-upload, indexing, retrieval, chat, or frontend business screens. It has one
+The Compose profile is a local validation runtime. Knowledge-base management,
+document reads/deletion, and restart-safe local source storage exist, but public
+upload, parsing, indexing execution, retrieval, chat, and business frontend
+screens are not yet available. It has one
 fixed development identity and provides no enterprise authentication or
 authorization, durable audit system, formal backup/recovery, high availability,
 production hardening, or hostile multi-tenant isolation guarantee.

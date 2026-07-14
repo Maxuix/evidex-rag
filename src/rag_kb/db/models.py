@@ -381,6 +381,52 @@ class ContentMutation(Base):
     updated_at: Mapped[datetime] = updated_timestamp()
 
 
+class SourceFileCleanup(Base):
+    """Durable, idempotent physical deletion work for one source version."""
+
+    __tablename__ = "source_file_cleanup"
+    __table_args__ = (
+        UniqueConstraint("document_version_id"),
+        CheckConstraint(
+            "status IN ('pending', 'completed', 'failed')",
+            name="source_file_cleanup_status_supported",
+        ),
+        CheckConstraint(
+            "attempt_count >= 0",
+            name="source_file_cleanup_attempt_nonnegative",
+        ),
+        Index(
+            "ix_source_file_cleanup_due",
+            "workspace_id",
+            "status",
+            "next_attempt_at",
+        ),
+    )
+
+    id: Mapped[UUID] = uuid_primary_key()
+    workspace_id: Mapped[UUID] = mapped_column(
+        ForeignKey("workspace.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    document_version_id: Mapped[UUID] = mapped_column(
+        ForeignKey("document_version.id", ondelete="CASCADE"), nullable=False
+    )
+    storage_uri: Mapped[str] = mapped_column(Text, nullable=False)
+    reason: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(32), nullable=False, server_default=text("'pending'")
+    )
+    attempt_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
+    next_attempt_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+    last_error_code: Mapped[str | None] = mapped_column(String(128))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = created_timestamp()
+    updated_at: Mapped[datetime] = updated_timestamp()
+
+
 class IndexRevision(Base):
     __tablename__ = "index_revision"
     __table_args__ = (

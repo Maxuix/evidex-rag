@@ -218,6 +218,11 @@ class FileStoreSettings(StrictSettingsModel):
     root_path: Path = Path("/var/lib/rag-kb/sources")
     staging_path: Path = Path("/var/lib/rag-kb/sources/staging")
     final_path: Path = Path("/var/lib/rag-kb/sources/final")
+    reconciliation_interval_seconds: PositiveFloat = 30.0
+    orphan_grace_seconds: PositiveFloat = 300.0
+    reconciliation_batch_size: PositiveInt = 100
+    cleanup_max_attempts: PositiveInt = 5
+    cleanup_base_delay_seconds: PositiveFloat = 5.0
 
     @model_validator(mode="after")
     def require_one_absolute_storage_tree(self) -> Self:

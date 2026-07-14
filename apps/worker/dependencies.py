@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from rag_kb.auth import DevelopmentAuthProvider, SingleWorkspaceAccessPolicy
+from rag_kb.adapters import LocalFileStore
 from rag_kb.config import (
     Settings,
     StartupValidation,
@@ -19,6 +20,7 @@ from rag_kb.db import (
     create_database_resources,
     validate_runtime_readiness,
 )
+from rag_kb.services import FileReconciliationService, build_content_services
 from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWorkFactory
 
 
@@ -32,6 +34,8 @@ class WorkerDependencies:
     unit_of_work: SqlAlchemyUnitOfWorkFactory
     auth_provider: DevelopmentAuthProvider
     access_policy: SingleWorkspaceAccessPolicy
+    file_store: LocalFileStore
+    reconciliation_service: FileReconciliationService
 
     async def close(self) -> None:
         """Release process-owned database resources during Worker shutdown."""
@@ -58,25 +62,48 @@ def build_worker_dependencies(
     startup = validate_startup_environment(resolved_settings)
     database_settings = resolved_settings.database
     identity = resolved_settings.identity
+    access_policy = SingleWorkspaceAccessPolicy(identity.workspace_id)
     database = create_database_resources(
         database_settings.runtime_dsn.get_secret_value(),
         pool_size=database_settings.worker_pool_size,
         max_overflow=database_settings.worker_max_overflow,
         process=DatabaseProcess.WORKER,
     )
+    unit_of_work = SqlAlchemyUnitOfWorkFactory(
+        database.sessions,
+        identity.workspace_id,
+    )
+    content_services = build_content_services(
+        unit_of_work,
+        access_policy,
+        resolved_settings.model_provider.embedding,
+    )
+    file_store = LocalFileStore(
+        resolved_settings.file_store.staging_path,
+        resolved_settings.file_store.final_path,
+    )
     return WorkerDependencies(
         settings=resolved_settings,
         startup=startup,
         database=database,
-        unit_of_work=SqlAlchemyUnitOfWorkFactory(
-            database.sessions,
-            identity.workspace_id,
-        ),
+        unit_of_work=unit_of_work,
         auth_provider=DevelopmentAuthProvider(
             deployment_profile=resolved_settings.app.deployment_profile.value,
             principal_id=identity.principal_id,
             client_id=identity.client_id,
             workspace_id=identity.workspace_id,
         ),
-        access_policy=SingleWorkspaceAccessPolicy(identity.workspace_id),
+        access_policy=access_policy,
+        file_store=file_store,
+        reconciliation_service=FileReconciliationService(
+            unit_of_work,
+            content_services.documents,
+            file_store,
+            batch_size=resolved_settings.file_store.reconciliation_batch_size,
+            orphan_grace_seconds=resolved_settings.file_store.orphan_grace_seconds,
+            cleanup_max_attempts=resolved_settings.file_store.cleanup_max_attempts,
+            cleanup_base_delay_seconds=(
+                resolved_settings.file_store.cleanup_base_delay_seconds
+            ),
+        ),
     )

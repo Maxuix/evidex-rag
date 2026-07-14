@@ -49,10 +49,46 @@ async def serve() -> None:
             database="ready",
             queue="ready",
         )
+        janitor = asyncio.create_task(
+            _run_janitor(
+                dependencies,
+                stopped,
+                settings.file_store.reconciliation_interval_seconds,
+            )
+        )
         await stopped.wait()
+        await janitor
     finally:
         await dependencies.close()
         log_event(LOGGER, "process_stopped", process="worker")
+
+
+async def _run_janitor(dependencies, stopped: asyncio.Event, interval: float) -> None:
+    context = dependencies.auth_provider.get_context()
+    while not stopped.is_set():
+        try:
+            result = await dependencies.reconciliation_service.run_once(context)
+            log_event(
+                LOGGER,
+                "source_file_reconciliation_completed",
+                process="worker",
+                pending_activated=result.pending_activated,
+                missing_compensated=result.missing_compensated,
+                cleanup_completed=result.cleanup_completed,
+                cleanup_failed=result.cleanup_failed,
+                orphans_removed=result.orphans_removed,
+            )
+        except Exception as error:
+            log_event(
+                LOGGER,
+                "source_file_reconciliation_failed",
+                process="worker",
+                error_type=type(error).__name__,
+            )
+        try:
+            await asyncio.wait_for(stopped.wait(), timeout=interval)
+        except TimeoutError:
+            pass
 
 
 def main() -> int:

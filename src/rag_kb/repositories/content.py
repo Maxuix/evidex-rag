@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Protocol, runtime_checkable
 from uuid import UUID
 
@@ -15,6 +16,9 @@ from rag_kb.domain import (
     IndexProfileDefinition,
     KnowledgeBase,
     Page,
+    PendingFileMutation,
+    SourceFileCleanup,
+    SourceFileReference,
 )
 
 
@@ -101,3 +105,38 @@ class ContentMutationRepository(Protocol):
         scope: IdempotencyScope,
         result: DocumentMutationResult,
     ) -> ContentMutation: ...
+
+
+@runtime_checkable
+class FileConsistencyRepository(Protocol):
+    async def list_references(self) -> tuple[SourceFileReference, ...]: ...
+
+    async def list_pending_mutations(
+        self, *, limit: int
+    ) -> tuple[PendingFileMutation, ...]: ...
+
+    async def list_due_cleanup(
+        self, *, now: datetime, limit: int
+    ) -> tuple[SourceFileCleanup, ...]: ...
+
+    async def schedule_cleanup(
+        self,
+        *,
+        document_version_id: UUID,
+        storage_uri: str,
+        reason: str,
+    ) -> None: ...
+
+    async def complete_cleanup(self, cleanup_id: UUID, *, now: datetime) -> bool: ...
+
+    async def fail_cleanup(
+        self,
+        cleanup_id: UUID,
+        *,
+        expected_attempt_count: int,
+        error_code: str,
+        next_attempt_at: datetime,
+        terminal: bool,
+    ) -> bool: ...
+
+    async def compensate_missing_file(self, document_version_id: UUID) -> bool: ...

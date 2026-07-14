@@ -17,6 +17,21 @@ from rag_kb.domain.content import (
     ResourceStateConflictError,
 )
 from rag_kb.domain.errors import ErrorCode
+from rag_kb.domain.files import (
+    FileLocation,
+    FileReconciliationResult,
+    FileStoreError,
+    InvalidStorageIdentityError,
+    PendingFileMutation,
+    SourceFileCleanup,
+    SourceFileDigest,
+    SourceFileIdentity,
+    SourceFileIntegrityError,
+    SourceFileMissingError,
+    SourceFileReference,
+    StagedSourceFile,
+    StoredSourceFile,
+)
 from rag_kb.domain.idempotency import IdempotencyScope, canonical_request_hash
 from rag_kb.domain.workspaces import Workspace
 
@@ -29,14 +44,27 @@ __all__ = [
     "DocumentVersion",
     "EmbeddingSpaceDefinition",
     "ErrorCode",
+    "FileLocation",
+    "FileReconciliationResult",
+    "FileStoreError",
     "IdempotencyScope",
     "IdempotencyKeyReusedError",
     "IndexProfileDefinition",
+    "InvalidStorageIdentityError",
     "KnowledgeBase",
     "Page",
+    "PendingFileMutation",
     "ResourceNameConflictError",
     "ResourceNotFoundError",
     "ResourceStateConflictError",
+    "SourceFileCleanup",
+    "SourceFileDigest",
+    "SourceFileIdentity",
+    "SourceFileIntegrityError",
+    "SourceFileMissingError",
+    "SourceFileReference",
+    "StagedSourceFile",
+    "StoredSourceFile",
     "Workspace",
     "canonical_request_hash",
 ]

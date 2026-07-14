@@ -141,7 +141,7 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await engine.dispose()
 
-        self.assertEqual(report.application_table_count, 20)
+        self.assertEqual(report.application_table_count, 21)
         self.assertEqual(report.vector_type, "vector(1024)")
         self.assertEqual(readiness.database, "ready")
         self.assertEqual(readiness.queue, "ready")
@@ -162,7 +162,7 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
                     "UPDATE alembic_version SET version_num = 'runtime-mutation'"
                 )
             revision = await runtime.fetchval("SELECT version_num FROM alembic_version")
-            self.assertEqual(revision, "0002_content_lifecycle")
+            self.assertEqual(revision, "0003_local_files")
         finally:
             await runtime.close()
 

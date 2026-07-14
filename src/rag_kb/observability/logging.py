@@ -13,11 +13,17 @@ from uuid import UUID
 SAFE_FIELDS: Final = frozenset(
     {
         "client_id",
+        "cleanup_completed",
+        "cleanup_failed",
         "component",
         "database",
         "duration_ms",
+        "error_type",
         "method",
+        "missing_compensated",
+        "orphans_removed",
         "path",
+        "pending_activated",
         "principal_id",
         "process",
         "queue",

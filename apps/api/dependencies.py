@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from rag_kb.auth import DevelopmentAuthProvider, SingleWorkspaceAccessPolicy
+from rag_kb.adapters import LocalFileStore
 from rag_kb.config import (
     Settings,
     StartupValidation,
@@ -19,7 +20,12 @@ from rag_kb.db import (
     create_database_resources,
     validate_runtime_readiness,
 )
-from rag_kb.services import DocumentService, KnowledgeBaseService, build_content_services
+from rag_kb.services import (
+    DocumentService,
+    KnowledgeBaseService,
+    SourceFileService,
+    build_content_services,
+)
 from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWorkFactory
 
 
@@ -35,6 +41,8 @@ class ApiDependencies:
     access_policy: SingleWorkspaceAccessPolicy
     knowledge_base_service: KnowledgeBaseService
     document_service: DocumentService
+    file_store: LocalFileStore
+    source_file_service: SourceFileService
 
     async def close(self) -> None:
         """Release process-owned database resources during API shutdown."""
@@ -74,6 +82,10 @@ def build_api_dependencies(
     access_policy = SingleWorkspaceAccessPolicy(identity.workspace_id)
     embedding = resolved_settings.model_provider.embedding
     content_services = build_content_services(unit_of_work, access_policy, embedding)
+    file_store = LocalFileStore(
+        resolved_settings.file_store.staging_path,
+        resolved_settings.file_store.final_path,
+    )
     return ApiDependencies(
         settings=resolved_settings,
         startup=startup,
@@ -88,4 +100,9 @@ def build_api_dependencies(
         access_policy=access_policy,
         knowledge_base_service=content_services.knowledge_bases,
         document_service=content_services.documents,
+        file_store=file_store,
+        source_file_service=SourceFileService(
+            content_services.documents,
+            file_store,
+        ),
     )
