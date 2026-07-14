@@ -1,0 +1,266 @@
+from __future__ import annotations
+
+import copy
+import os
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from pydantic import ValidationError
+
+from apps.api.dependencies import build_api_dependencies
+from apps.worker.dependencies import build_worker_dependencies
+from rag_kb.config import StartupConfigurationError, validate_startup_environment
+from rag_kb.config.settings import Settings, load_settings
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def valid_payload(root: Path) -> dict[str, object]:
+    return {
+        "database": {
+            "runtime_dsn": (
+                "postgresql+asyncpg://rag_kb_runtime:runtime-secret@localhost/rag_kb"
+            ),
+            "migration_dsn": (
+                "postgresql+asyncpg://rag_kb_migration:migration-secret@localhost/rag_kb"
+            ),
+        },
+        "file_store": {
+            "root_path": root,
+            "staging_path": root / "staging",
+            "final_path": root / "final",
+        },
+        "model_provider": {
+            "chat": {
+                "base_url": "https://chat.example.invalid/v1",
+                "api_key": "chat-secret",
+            },
+            "embedding": {
+                "base_url": "https://embedding.example.invalid/v1",
+                "api_key": "embedding-secret",
+            },
+        },
+    }
+
+
+def build_settings(root: Path, **overrides: object) -> Settings:
+    payload = valid_payload(root)
+    payload.update(overrides)
+    return Settings(_env_file=None, **payload)  # type: ignore[arg-type]
+
+
+class SettingsTests(unittest.TestCase):
+    def test_valid_settings_use_frozen_p1a_contracts(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            settings = build_settings(Path(directory))
+
+        self.assertEqual(settings.app.deployment_profile.value, "development")
+        self.assertEqual(str(settings.app.bind_host), "127.0.0.1")
+        self.assertEqual(settings.database.configured_pool_capacity, 22)
+        self.assertEqual(settings.database.application_connection_budget, 40)
+        self.assertEqual(settings.model_provider.embedding.dimension, 1024)
+        self.assertEqual(settings.model_provider.embedding.metric, "cosine")
+        self.assertTrue(settings.vector_store.exact_search)
+        self.assertFalse(settings.vector_store.hnsw_enabled)
+
+    def test_nested_environment_surface_loads_without_global_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            environment = {
+                "RAG_KB__DATABASE__RUNTIME_DSN": (
+                    "postgresql+asyncpg://rag_kb_runtime:runtime-secret@localhost/rag_kb"
+                ),
+                "RAG_KB__DATABASE__MIGRATION_DSN": (
+                    "postgresql+asyncpg://rag_kb_migration:migration-secret@localhost/rag_kb"
+                ),
+                "RAG_KB__FILE_STORE__ROOT_PATH": str(root),
+                "RAG_KB__FILE_STORE__STAGING_PATH": str(root / "staging"),
+                "RAG_KB__FILE_STORE__FINAL_PATH": str(root / "final"),
+                "RAG_KB__MODEL_PROVIDER__CHAT__BASE_URL": (
+                    "https://chat.example.invalid/v1"
+                ),
+                "RAG_KB__MODEL_PROVIDER__CHAT__API_KEY": "chat-secret",
+                "RAG_KB__MODEL_PROVIDER__EMBEDDING__BASE_URL": (
+                    "https://embedding.example.invalid/v1"
+                ),
+                "RAG_KB__MODEL_PROVIDER__EMBEDDING__API_KEY": "embedding-secret",
+            }
+            with patch.dict(os.environ, environment, clear=True):
+                settings = load_settings(env_file=None)
+
+        self.assertEqual(settings.file_store.root_path, root)
+        self.assertEqual(settings.model_provider.chat.model, "deepseek-v4-flash")
+
+    def test_checked_in_environment_example_parses(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            settings = load_settings(env_file=PROJECT_ROOT / ".env.example")
+
+        self.assertEqual(settings.database.runtime_role, "rag_kb_runtime")
+        self.assertEqual(settings.workflow.runner, "direct")
+
+    def test_non_development_and_non_loopback_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for app in (
+                {"deployment_profile": "department"},
+                {"bind_host": "0.0.0.0"},
+            ):
+                with self.subTest(app=app), self.assertRaises(ValidationError):
+                    build_settings(root, app=app)
+
+    def test_database_roles_and_pool_budget_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            payload = valid_payload(root)
+            database = copy.deepcopy(payload["database"])
+            assert isinstance(database, dict)
+            database["runtime_role"] = "same_role"
+            database["migration_role"] = "same_role"
+            with self.assertRaises(ValidationError):
+                Settings(_env_file=None, **{**payload, "database": database})
+
+            database = copy.deepcopy(payload["database"])
+            assert isinstance(database, dict)
+            database["api_pool_size"] = 30
+            database["worker_pool_size"] = 30
+            with self.assertRaises(ValidationError):
+                Settings(_env_file=None, **{**payload, "database": database})
+
+    def test_fixed_embedding_space_rejects_in_place_changes(self) -> None:
+        changes = {
+            "dimension": 1536,
+            "model": "another-model",
+            "metric": "l2",
+            "configuration_fingerprint": "sha256:changed",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for field, value in changes.items():
+                payload = valid_payload(root)
+                providers = copy.deepcopy(payload["model_provider"])
+                assert isinstance(providers, dict)
+                embedding = providers["embedding"]
+                assert isinstance(embedding, dict)
+                embedding[field] = value
+                with self.subTest(field=field), self.assertRaises(ValidationError):
+                    Settings(
+                        _env_file=None,
+                        **{**payload, "model_provider": providers},
+                    )
+
+    def test_p1b_capabilities_cannot_be_enabled(self) -> None:
+        flags = (
+            "second_queue_enabled",
+            "retained_event_replay_enabled",
+            "multi_runner_recovery_enabled",
+            "outbox_delivery_enabled",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for flag in flags:
+                with self.subTest(flag=flag), self.assertRaises(ValidationError):
+                    build_settings(root, delivery_reliability={flag: True})
+
+    def test_later_retrieval_and_workflow_features_cannot_be_enabled(self) -> None:
+        overrides = (
+            {"vector_store": {"hnsw_enabled": True}},
+            {"retrieval": {"hybrid_enabled": True}},
+            {"retrieval": {"rerank_enabled": True}},
+            {"workflow": {"langgraph_enabled": True}},
+            {"workflow": {"checkpoint_recovery_enabled": True}},
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for override in overrides:
+                with self.subTest(override=override), self.assertRaises(
+                    ValidationError
+                ):
+                    build_settings(root, **override)
+
+    def test_file_store_paths_must_share_one_logical_root(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with self.assertRaises(ValidationError):
+                build_settings(
+                    root,
+                    file_store={
+                        "root_path": root,
+                        "staging_path": root / "staging",
+                        "final_path": root.parent / "outside-final",
+                    },
+                )
+
+    def test_secrets_are_redacted(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            settings = build_settings(Path(directory))
+
+        rendered = f"{settings!r}\n{settings.model_dump_json()}"
+        self.assertNotIn("runtime-secret", rendered)
+        self.assertNotIn("migration-secret", rendered)
+        self.assertNotIn("chat-secret", rendered)
+        self.assertNotIn("embedding-secret", rendered)
+
+    def test_invalid_secret_is_redacted_from_validation_error(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            payload = valid_payload(root)
+            database = copy.deepcopy(payload["database"])
+            assert isinstance(database, dict)
+            database["runtime_dsn"] = (
+                "mysql://rag_kb_runtime:must-not-leak@localhost/rag_kb"
+            )
+
+            with self.assertRaises(ValidationError) as raised:
+                Settings(_env_file=None, **{**payload, "database": database})
+
+        self.assertNotIn("must-not-leak", str(raised.exception))
+
+    def test_empty_provider_key_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            payload = valid_payload(root)
+            providers = copy.deepcopy(payload["model_provider"])
+            assert isinstance(providers, dict)
+            chat = providers["chat"]
+            assert isinstance(chat, dict)
+            chat["api_key"] = ""
+
+            with self.assertRaises(ValidationError):
+                Settings(
+                    _env_file=None,
+                    **{**payload, "model_provider": providers},
+                )
+
+
+class StartupValidationTests(unittest.TestCase):
+    def test_missing_storage_fails_without_provisioning(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "missing"
+            settings = build_settings(root)
+
+            with self.assertRaises(StartupConfigurationError):
+                validate_startup_environment(settings)
+
+            self.assertFalse(root.exists())
+
+    def test_api_and_worker_composition_roots_run_same_checks(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "staging").mkdir()
+            (root / "final").mkdir()
+            settings = build_settings(root)
+
+            api = build_api_dependencies(settings)
+            worker = build_worker_dependencies(settings)
+
+        self.assertIs(api.settings, settings)
+        self.assertIs(worker.settings, settings)
+        self.assertEqual(api.startup.storage_device, worker.startup.storage_device)
+        self.assertEqual(api.startup.configured_pool_capacity, 22)
+
+
+if __name__ == "__main__":
+    unittest.main()

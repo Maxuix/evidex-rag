@@ -10,6 +10,7 @@ Authoritative project documents:
 - [Implementation roadmap](docs/implementation-plans/00-implementation-roadmap.md)
 - [Execution tracker](docs/implementation-plans/EXECUTION-TRACKER.md)
 - [Module boundaries](docs/architecture/module-boundaries.md)
+- [Configuration and composition roots](docs/architecture/configuration.md)
 
 ## Current Layout
 
@@ -26,6 +27,10 @@ verification/         Stage 01 compatibility and provider evidence
 `apps/api` and `apps/worker` are composition roots for separately runnable
 processes. Business logic belongs under `src/rag_kb` and follows the dependency
 rules enforced by `architecture.toml`.
+
+Configuration is loaded explicitly from `RAG_KB__<GROUP>__<FIELD>` environment
+variables. [`.env.example`](.env.example) documents the complete development
+surface with non-working secret placeholders.
 
 ## Python Environment
 
