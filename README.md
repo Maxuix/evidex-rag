@@ -13,6 +13,7 @@ Authoritative project documents:
 - [Configuration and composition roots](docs/architecture/configuration.md)
 - [P0/P1A database schema](docs/architecture/database-schema.md)
 - [Async data access and transactions](docs/architecture/async-data-access.md)
+- [Public API and error conventions](docs/architecture/api-conventions.md)
 
 ## Current Layout
 
@@ -54,6 +55,8 @@ already present and tested in the frozen Stage 01 resolution.
 PYTHONPATH=src:. .venv/bin/python tools/check_architecture.py
 .venv/bin/python tools/check_application_lock.py
 PYTHONPATH=src:. .venv/bin/python -m unittest discover -s tests/unit -v
+PYTHONPATH=src:. .venv/bin/python -m unittest discover -s tests/contract -v
+PYTHONPATH=src:. .venv/bin/python tools/check_openapi_compatibility.py
 PYTHONPATH=src:. .venv/bin/python tools/run_db_integration.py
 ```
 
