@@ -86,6 +86,38 @@ class ReconciliationResult:
 
 
 @dataclass(frozen=True, slots=True)
+class IndexingJobSnapshot:
+    job_id: UUID
+    kb_id: UUID
+    document_id: UUID
+    document_version_id: UUID
+    indexed_document_version_id: UUID
+    index_revision_id: UUID
+    job_status: str
+    phase: str
+    attempt: int
+    build_status: str
+    serving_status: str
+    claimed_at: datetime | None
+    heartbeat_at: datetime | None
+    next_attempt_at: datetime | None
+    error_code: str | None
+    error_detail: dict[str, Any] | None
+    can_retry: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class IndexCleanupResult:
+    retired_targets_cleaned: int = 0
+    vectors_deleted: int = 0
+    chunks_deleted: int = 0
+    jobs_deleted: int = 0
+    file_cleanup_records_deleted: int = 0
+
+
+@dataclass(frozen=True, slots=True)
 class IndexingTarget:
     job_id: UUID
     indexed_document_version_id: UUID

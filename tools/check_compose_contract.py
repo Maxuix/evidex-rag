@@ -56,7 +56,15 @@ def named_mount(service: dict[str, Any], target: str) -> dict[str, Any] | None:
 def validate_compose(config: dict[str, Any], dockerfile: str) -> list[str]:
     errors: list[str] = []
     services = config.get("services", {})
-    required = {"api", "worker", "postgres", "storage-init", "migrate", "frontend"}
+    required = {
+        "api",
+        "worker",
+        "postgres",
+        "storage-init",
+        "migrate",
+        "maintenance",
+        "frontend",
+    }
     if set(services) != required:
         errors.append(f"service set differs: {sorted(set(services) ^ required)}")
         return errors
@@ -74,12 +82,20 @@ def validate_compose(config: dict[str, Any], dockerfile: str) -> list[str]:
     api_mount = named_mount(services["api"], SOURCE_TARGET)
     worker_mount = named_mount(services["worker"], SOURCE_TARGET)
     storage_mount = named_mount(services["storage-init"], SOURCE_TARGET)
-    if not api_mount or api_mount != worker_mount or api_mount != storage_mount:
-        errors.append("API, Worker, and storage initializer do not share one source volume")
+    maintenance_mount = named_mount(services["maintenance"], SOURCE_TARGET)
+    if (
+        not api_mount
+        or api_mount != worker_mount
+        or api_mount != storage_mount
+        or api_mount != maintenance_mount
+    ):
+        errors.append(
+            "API, Worker, maintenance, and storage initializer do not share one source volume"
+        )
     if named_mount(services["frontend"], SOURCE_TARGET):
         errors.append("frontend must not mount private source storage")
 
-    for name in ("api", "worker"):
+    for name in ("api", "worker", "maintenance"):
         environment = services[name].get("environment", {})
         migration_dsn = environment.get("RAG_KB__DATABASE__MIGRATION_DSN", "")
         runtime_dsn = environment.get("RAG_KB__DATABASE__RUNTIME_DSN", "")
@@ -102,6 +118,16 @@ def validate_compose(config: dict[str, Any], dockerfile: str) -> list[str]:
         errors.append("migration service does not receive the migration role DSN")
     if migrate.get("command") != ["python", "-m", "alembic", "upgrade", "head"]:
         errors.append("migration command is not the explicit Alembic upgrade")
+    maintenance = services["maintenance"]
+    if maintenance.get("profiles") != ["tools"]:
+        errors.append("maintenance service is not isolated behind the tools profile")
+    if maintenance.get("command") != [
+        "python",
+        "-m",
+        "apps.maintenance.main",
+        "cleanup",
+    ]:
+        errors.append("maintenance command is not the bounded cleanup entrypoint")
     for name in ("api", "worker"):
         if "alembic" in " ".join(services[name].get("command", [])):
             errors.append(f"{name} performs migrations at startup")
@@ -135,8 +161,8 @@ def main() -> int:
             print(error, file=sys.stderr)
         return 1
     print(
-        "Compose contract check passed: 6 services, loopback ports, "
-        "shared storage, isolated migration, and pinned images"
+        "Compose contract check passed: 7 services, loopback ports, shared "
+        "storage, isolated migration/maintenance tools, and pinned images"
     )
     return 0
 

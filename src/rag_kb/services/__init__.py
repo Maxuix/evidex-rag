@@ -23,6 +23,8 @@ from rag_kb.services.content import (
     embedding_space_definition,
 )
 from rag_kb.services.files import FileReconciliationService, SourceFileService
+from rag_kb.services.indexing import IndexingJobService
+from rag_kb.services.maintenance import MaintenanceCleanupResult, MaintenanceCleanupService
 from rag_kb.services.admission import FileAdmissionService
 
 __all__ = [
@@ -33,11 +35,14 @@ __all__ = [
     "DocumentService",
     "ErrorCode",
     "FileReconciliationService",
+    "IndexingJobService",
     "FileAdmissionService",
     "FileAdmissionError",
     "IdempotencyKeyReusedError",
     "KnowledgeBase",
     "KnowledgeBaseService",
+    "MaintenanceCleanupResult",
+    "MaintenanceCleanupService",
     "ParserLimits",
     "ParserExecutionError",
     "ParserSource",

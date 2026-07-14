@@ -106,9 +106,26 @@ class ContentMutationRepository(Protocol):
         result: DocumentMutationResult,
     ) -> ContentMutation: ...
 
+    async def add_indexing_retry(
+        self,
+        *,
+        scope: IdempotencyScope,
+        request_hash: str,
+        kb_id: UUID,
+        document_id: UUID,
+        document_version_id: UUID,
+        indexed_document_version_id: UUID,
+        index_revision_id: UUID,
+        job_id: UUID,
+    ) -> ContentMutation: ...
+
 
 @runtime_checkable
 class FileConsistencyRepository(Protocol):
+    async def delete_expired_cleanup_records(
+        self, *, before: datetime, limit: int
+    ) -> int: ...
+
     async def list_references(self) -> tuple[SourceFileReference, ...]: ...
 
     async def list_pending_mutations(

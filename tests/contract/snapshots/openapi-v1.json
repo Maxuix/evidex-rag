@@ -332,6 +332,180 @@
         "title": "FieldViolation",
         "type": "object"
       },
+      "IndexingErrorResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/ErrorCode"
+          },
+          "detail": {
+            "additionalProperties": true,
+            "title": "Detail",
+            "type": "object"
+          }
+        },
+        "required": [
+          "code",
+          "detail"
+        ],
+        "title": "IndexingErrorResponse",
+        "type": "object"
+      },
+      "IndexingJobResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "attempt": {
+            "title": "Attempt",
+            "type": "integer"
+          },
+          "build_status": {
+            "enum": [
+              "queued",
+              "processing",
+              "ready",
+              "failed"
+            ],
+            "title": "Build Status",
+            "type": "string"
+          },
+          "can_retry": {
+            "title": "Can Retry",
+            "type": "boolean"
+          },
+          "claimed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claimed At"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "document_id": {
+            "format": "uuid",
+            "title": "Document Id",
+            "type": "string"
+          },
+          "document_version_id": {
+            "format": "uuid",
+            "title": "Document Version Id",
+            "type": "string"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IndexingErrorResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "heartbeat_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Heartbeat At"
+          },
+          "index_revision_id": {
+            "format": "uuid",
+            "title": "Index Revision Id",
+            "type": "string"
+          },
+          "indexed_document_version_id": {
+            "format": "uuid",
+            "title": "Indexed Document Version Id",
+            "type": "string"
+          },
+          "job_id": {
+            "format": "uuid",
+            "title": "Job Id",
+            "type": "string"
+          },
+          "kb_id": {
+            "format": "uuid",
+            "title": "Kb Id",
+            "type": "string"
+          },
+          "next_attempt_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Attempt At"
+          },
+          "phase": {
+            "title": "Phase",
+            "type": "string"
+          },
+          "serving_status": {
+            "enum": [
+              "candidate",
+              "serving",
+              "retired"
+            ],
+            "title": "Serving Status",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "queued",
+              "running",
+              "completed",
+              "failed",
+              "cancelled"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id",
+          "kb_id",
+          "document_id",
+          "document_version_id",
+          "indexed_document_version_id",
+          "index_revision_id",
+          "status",
+          "phase",
+          "attempt",
+          "build_status",
+          "serving_status",
+          "claimed_at",
+          "heartbeat_at",
+          "next_attempt_at",
+          "error",
+          "can_retry",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "IndexingJobResponse",
+        "type": "object"
+      },
       "KnowledgeBaseCreate": {
         "additionalProperties": false,
         "properties": {
@@ -830,6 +1004,134 @@
         "summary": "Upload Document Version",
         "tags": [
           "documents"
+        ]
+      }
+    },
+    "/api/v1/indexing-jobs/{job_id}": {
+      "get": {
+        "operationId": "get_indexing_job_api_v1_indexing_jobs__job_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IndexingJobResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Request validation failed"
+          }
+        },
+        "summary": "Get Indexing Job",
+        "tags": [
+          "indexing"
+        ]
+      }
+    },
+    "/api/v1/indexing-jobs/{job_id}/retry": {
+      "post": {
+        "operationId": "retry_indexing_job_api_v1_indexing_jobs__job_id__retry_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Required UUID scoped by principal, client, and endpoint.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "description": "Required UUID scoped by principal, client, and endpoint.",
+              "format": "uuid",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IndexingJobResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Idempotency or resource conflict"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Request validation failed"
+          }
+        },
+        "summary": "Retry Indexing Job",
+        "tags": [
+          "indexing"
         ]
       }
     },

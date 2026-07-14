@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import and_, exists, func, or_, select, update
+from sqlalchemy import and_, delete, exists, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -32,10 +32,12 @@ from rag_kb.domain import (
     EmbeddingSpaceDefinition,
     ErrorCode,
     IndexChunkWrite,
+    IndexCleanupResult,
     IndexingCancelled,
     IndexingCommand,
     IndexingExecutionError,
     IndexingLease,
+    IndexingJobSnapshot,
     IndexingPhase,
     IndexingTarget,
     PromotionCommand,
@@ -43,6 +45,7 @@ from rag_kb.domain import (
     PromotionResult,
     PromotionStatus,
     ReconciliationResult,
+    ResourceStateConflictError,
     VectorRecordWrite,
     stable_chunk_id,
 )
@@ -58,6 +61,272 @@ class SqlAlchemyIndexingRepository:
         self._session = session
         self._workspace_id = workspace_id
         self._ensure_active = ensure_active
+
+    async def get_job(self, job_id: UUID) -> IndexingJobSnapshot | None:
+        self._ensure_active()
+        row = await self._job_row(job_id)
+        return _job_snapshot(row) if row is not None else None
+
+    async def retry_failed(
+        self,
+        job_id: UUID,
+        *,
+        observed_at: datetime,
+    ) -> IndexingJobSnapshot | None:
+        self._ensure_active()
+        identity = (
+            await self._session.execute(
+                select(
+                    IndexingJobRow.kb_id,
+                    IndexedDocumentVersionRow.document_id,
+                )
+                .join(
+                    IndexedDocumentVersionRow,
+                    IndexedDocumentVersionRow.id
+                    == IndexingJobRow.indexed_document_version_id,
+                )
+                .where(
+                    IndexingJobRow.workspace_id == self._workspace_id,
+                    IndexingJobRow.id == job_id,
+                )
+            )
+        ).one_or_none()
+        if identity is None:
+            return None
+        kb_id, document_id = identity
+        document = await self._session.scalar(
+            select(DocumentRow)
+            .where(
+                DocumentRow.workspace_id == self._workspace_id,
+                DocumentRow.id == document_id,
+            )
+            .with_for_update()
+        )
+        knowledge_base = await self._session.scalar(
+            select(KnowledgeBaseRow)
+            .where(
+                KnowledgeBaseRow.workspace_id == self._workspace_id,
+                KnowledgeBaseRow.id == kb_id,
+            )
+            .with_for_update()
+        )
+        locked = (
+            await self._session.execute(
+                select(
+                    IndexingJobRow,
+                    IndexedDocumentVersionRow,
+                    DocumentVersionRow,
+                    IndexRevisionRow,
+                )
+                .join(
+                    IndexedDocumentVersionRow,
+                    IndexedDocumentVersionRow.id
+                    == IndexingJobRow.indexed_document_version_id,
+                )
+                .join(
+                    DocumentVersionRow,
+                    DocumentVersionRow.id
+                    == IndexedDocumentVersionRow.document_version_id,
+                )
+                .join(
+                    IndexRevisionRow,
+                    IndexRevisionRow.id
+                    == IndexedDocumentVersionRow.index_revision_id,
+                )
+                .where(
+                    IndexingJobRow.workspace_id == self._workspace_id,
+                    IndexingJobRow.id == job_id,
+                )
+                .with_for_update(
+                    of=(IndexingJobRow, IndexedDocumentVersionRow)
+                )
+            )
+        ).one_or_none()
+        if locked is None or document is None or knowledge_base is None:
+            return None
+        job, target, version, revision = locked
+        eligible = (
+            job.status is JobStatus.FAILED
+            and target.serving_status is IndexServingStatus.CANDIDATE
+            and target.build_status is IndexBuildStatus.FAILED
+            and document.deleted_at is None
+            and document.current_version_id == target.document_version_id
+            and version.source_status is DocumentSourceStatus.AVAILABLE
+            and revision.status is IndexRevisionStatus.ACTIVE
+            and knowledge_base.active_index_revision_id == target.index_revision_id
+        )
+        if not eligible:
+            raise ResourceStateConflictError("indexing job is not retryable")
+        job.status = JobStatus.QUEUED
+        job.phase = "queued"
+        job.attempt = 0
+        job.claimed_by = None
+        job.claimed_at = None
+        job.heartbeat_at = None
+        job.next_attempt_at = observed_at
+        job.error_code = None
+        job.error_detail = None
+        job.updated_at = observed_at
+        target.build_status = IndexBuildStatus.QUEUED
+        target.error_code = None
+        target.error_detail = None
+        target.updated_at = observed_at
+        await self._session.flush()
+        row = await self._job_row(job_id)
+        assert row is not None
+        return _job_snapshot(row)
+
+    async def cleanup_retired(
+        self,
+        *,
+        data_before: datetime,
+        tasks_before: datetime,
+        limit: int,
+    ) -> IndexCleanupResult:
+        self._ensure_active()
+        targets = tuple(
+            (
+                await self._session.execute(
+                    select(IndexedDocumentVersionRow.id)
+                    .where(
+                        IndexedDocumentVersionRow.workspace_id
+                        == self._workspace_id,
+                        IndexedDocumentVersionRow.serving_status
+                        == IndexServingStatus.RETIRED,
+                        IndexedDocumentVersionRow.updated_at <= data_before,
+                        exists(
+                            select(IndexChunkRow.id).where(
+                                IndexChunkRow.workspace_id == self._workspace_id,
+                                IndexChunkRow.indexed_document_version_id
+                                == IndexedDocumentVersionRow.id,
+                            )
+                        ),
+                    )
+                    .order_by(
+                        IndexedDocumentVersionRow.updated_at,
+                        IndexedDocumentVersionRow.id,
+                    )
+                    .limit(limit)
+                    .with_for_update(skip_locked=True)
+                )
+            ).scalars()
+        )
+        chunk_ids: tuple[UUID, ...] = ()
+        if targets:
+            chunk_ids = tuple(
+                (
+                    await self._session.execute(
+                        select(IndexChunkRow.id).where(
+                            IndexChunkRow.workspace_id == self._workspace_id,
+                            IndexChunkRow.indexed_document_version_id.in_(targets),
+                        )
+                    )
+                ).scalars()
+            )
+        vectors_deleted = 0
+        chunks_deleted = 0
+        if chunk_ids:
+            vectors_deleted = int(
+                (
+                    await self._session.execute(
+                        delete(VectorRecordRow).where(
+                            VectorRecordRow.workspace_id == self._workspace_id,
+                            VectorRecordRow.index_chunk_id.in_(chunk_ids),
+                        )
+                    )
+                ).rowcount
+                or 0
+            )
+            chunks_deleted = int(
+                (
+                    await self._session.execute(
+                        delete(IndexChunkRow).where(
+                            IndexChunkRow.workspace_id == self._workspace_id,
+                            IndexChunkRow.id.in_(chunk_ids),
+                        )
+                    )
+                ).rowcount
+                or 0
+            )
+        expired_jobs = tuple(
+            (
+                await self._session.execute(
+                    select(IndexingJobRow.id)
+                    .join(
+                        IndexedDocumentVersionRow,
+                        IndexedDocumentVersionRow.id
+                        == IndexingJobRow.indexed_document_version_id,
+                    )
+                    .where(
+                        IndexingJobRow.workspace_id == self._workspace_id,
+                        IndexingJobRow.status.in_(
+                            (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED)
+                        ),
+                        IndexingJobRow.updated_at <= tasks_before,
+                        IndexedDocumentVersionRow.serving_status
+                        == IndexServingStatus.RETIRED,
+                    )
+                    .order_by(IndexingJobRow.updated_at, IndexingJobRow.id)
+                    .limit(limit)
+                    .with_for_update(of=IndexingJobRow, skip_locked=True)
+                )
+            ).scalars()
+        )
+        jobs_deleted = 0
+        if expired_jobs:
+            jobs_deleted = int(
+                (
+                    await self._session.execute(
+                        delete(IndexingJobRow).where(
+                            IndexingJobRow.workspace_id == self._workspace_id,
+                            IndexingJobRow.id.in_(expired_jobs),
+                        )
+                    )
+                ).rowcount
+                or 0
+            )
+        return IndexCleanupResult(
+            retired_targets_cleaned=len(targets),
+            vectors_deleted=vectors_deleted,
+            chunks_deleted=chunks_deleted,
+            jobs_deleted=jobs_deleted,
+        )
+
+    async def _job_row(self, job_id: UUID):
+        return (
+            await self._session.execute(
+                select(
+                    IndexingJobRow,
+                    IndexedDocumentVersionRow,
+                    DocumentRow,
+                    DocumentVersionRow,
+                    IndexRevisionRow,
+                    KnowledgeBaseRow,
+                )
+                .join(
+                    IndexedDocumentVersionRow,
+                    IndexedDocumentVersionRow.id
+                    == IndexingJobRow.indexed_document_version_id,
+                )
+                .join(DocumentRow, DocumentRow.id == IndexedDocumentVersionRow.document_id)
+                .join(
+                    DocumentVersionRow,
+                    DocumentVersionRow.id
+                    == IndexedDocumentVersionRow.document_version_id,
+                )
+                .join(
+                    IndexRevisionRow,
+                    IndexRevisionRow.id
+                    == IndexedDocumentVersionRow.index_revision_id,
+                )
+                .join(KnowledgeBaseRow, KnowledgeBaseRow.id == IndexingJobRow.kb_id)
+                .where(
+                    IndexingJobRow.workspace_id == self._workspace_id,
+                    IndexedDocumentVersionRow.workspace_id == self._workspace_id,
+                    IndexingJobRow.id == job_id,
+                )
+            )
+        ).one_or_none()
 
     async def claim(
         self,
@@ -940,4 +1209,43 @@ def _owned_execution(lease: IndexingLease, workspace_id: UUID) -> tuple[Any, ...
         IndexingJobRow.status.in_(
             (JobStatus.RUNNING, JobStatus.FAILED, JobStatus.COMPLETED)
         ),
+    )
+
+
+def _job_snapshot(row) -> IndexingJobSnapshot:
+    job, target, document, version, revision, knowledge_base = row
+    can_retry = (
+        job.status is JobStatus.FAILED
+        and target.build_status is IndexBuildStatus.FAILED
+        and target.serving_status is IndexServingStatus.CANDIDATE
+        and document.deleted_at is None
+        and document.current_version_id == target.document_version_id
+        and version.source_status is DocumentSourceStatus.AVAILABLE
+        and revision.status is IndexRevisionStatus.ACTIVE
+        and knowledge_base.active_index_revision_id == target.index_revision_id
+    )
+    return IndexingJobSnapshot(
+        job_id=job.id,
+        kb_id=job.kb_id,
+        document_id=target.document_id,
+        document_version_id=target.document_version_id,
+        indexed_document_version_id=target.id,
+        index_revision_id=target.index_revision_id,
+        job_status=job.status.value,
+        phase=job.phase,
+        attempt=job.attempt,
+        build_status=target.build_status.value,
+        serving_status=target.serving_status.value,
+        claimed_at=job.claimed_at,
+        heartbeat_at=job.heartbeat_at,
+        next_attempt_at=job.next_attempt_at,
+        error_code=job.error_code or target.error_code,
+        error_detail=(
+            dict(job.error_detail or target.error_detail or {})
+            if job.error_code or target.error_code
+            else None
+        ),
+        can_retry=can_retry,
+        created_at=job.created_at,
+        updated_at=job.updated_at,
     )

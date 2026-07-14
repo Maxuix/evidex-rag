@@ -35,9 +35,11 @@ from rag_kb.domain import (
     DocumentVersion,
     IdempotencyKeyReusedError,
     IdempotencyScope,
+    IndexingJobSnapshot,
     KnowledgeBase,
     Page,
     ResourceNotFoundError,
+    ResourceStateConflictError,
     canonical_request_hash,
 )
 from rag_kb.services import FileAdmissionService
@@ -538,6 +540,8 @@ class CommonContractTests(unittest.TestCase):
                 "/api/v1/knowledge-bases",
                 "/api/v1/knowledge-bases/{kb_id}",
                 "/api/v1/knowledge-bases/{kb_id}/documents",
+                "/api/v1/indexing-jobs/{job_id}",
+                "/api/v1/indexing-jobs/{job_id}/retry",
             },
         )
         upload = production["paths"]["/api/v1/knowledge-bases/{kb_id}/documents"]["post"]
@@ -657,6 +661,58 @@ class _FakeSourceFileService:
         )
 
 
+class _FakeIndexingJobService:
+    def __init__(self) -> None:
+        now = datetime(2026, 7, 14, tzinfo=UTC)
+        self.value = IndexingJobSnapshot(
+            job_id=UUID("01900000-0000-7000-8000-000000000027"),
+            kb_id=_knowledge_base_value().id,
+            document_id=_document_value().id,
+            document_version_id=_document_value().current_version.id,
+            indexed_document_version_id=UUID(
+                "01900000-0000-7000-8000-000000000026"
+            ),
+            index_revision_id=_knowledge_base_value().active_index_revision_id,
+            job_status="failed",
+            phase="embedding",
+            attempt=3,
+            build_status="failed",
+            serving_status="candidate",
+            claimed_at=None,
+            heartbeat_at=None,
+            next_attempt_at=None,
+            error_code="EMBEDDING_PROVIDER_UNAVAILABLE",
+            error_detail={"attempt": 3},
+            can_retry=True,
+            created_at=now,
+            updated_at=now,
+        )
+
+    async def get(self, context, job_id):
+        del context
+        if job_id != self.value.job_id:
+            raise ResourceNotFoundError("internal indexing detail")
+        return self.value
+
+    async def retry(self, context, key, job_id):
+        del context, key
+        if job_id != self.value.job_id:
+            raise ResourceNotFoundError("internal indexing detail")
+        if not self.value.can_retry:
+            raise ResourceStateConflictError("internal indexing state")
+        self.value = dataclass_replace(
+            self.value,
+            job_status="queued",
+            phase="queued",
+            attempt=0,
+            build_status="queued",
+            error_code=None,
+            error_detail=None,
+            can_retry=False,
+        )
+        return self.value
+
+
 class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.dependencies = StubApiDependencies()
@@ -668,6 +724,7 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
         self.dependencies.source_file_service = _FakeSourceFileService(
             self.dependencies.document_service
         )
+        self.dependencies.indexing_job_service = _FakeIndexingJobService()
         self.app = create_app(dependencies=self.dependencies)  # type: ignore[arg-type]
         self.lifespan = self.app.router.lifespan_context(self.app)
         await self.lifespan.__aenter__()
@@ -807,6 +864,53 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(response.status, status)
                 self.assertEqual(response.json()["code"], code)
         self.assertEqual(self.dependencies.source_file_service.calls, [])
+
+    async def test_indexing_status_and_explicit_retry_are_published(self) -> None:
+        service = self.dependencies.indexing_job_service
+        status = await request(
+            self.app,
+            "GET",
+            f"{API_PREFIX}/indexing-jobs/{service.value.job_id}",
+        )
+        self.assertEqual(status.status, 200)
+        self.assertEqual(status.json()["status"], "failed")
+        self.assertEqual(
+            status.json()["error"]["code"],
+            "EMBEDDING_PROVIDER_UNAVAILABLE",
+        )
+        self.assertTrue(status.json()["can_retry"])
+
+        missing_key = await request(
+            self.app,
+            "POST",
+            f"{API_PREFIX}/indexing-jobs/{service.value.job_id}/retry",
+        )
+        self.assertEqual(missing_key.status, 422)
+        self.assertEqual(missing_key.json()["code"], "INVALID_IDEMPOTENCY_KEY")
+
+        retried = await request(
+            self.app,
+            "POST",
+            f"{API_PREFIX}/indexing-jobs/{service.value.job_id}/retry",
+            headers={"idempotency-key": str(uuid4())},
+        )
+        self.assertEqual(retried.status, 202)
+        self.assertEqual(
+            retried.headers["location"],
+            f"/api/v1/indexing-jobs/{service.value.job_id}",
+        )
+        self.assertEqual(retried.json()["status"], "queued")
+        self.assertEqual(retried.json()["attempt"], 0)
+        self.assertIsNone(retried.json()["error"])
+
+    async def test_indexing_status_hides_cross_workspace_or_unknown_ids(self) -> None:
+        response = await request(
+            self.app,
+            "GET",
+            f"{API_PREFIX}/indexing-jobs/{uuid4()}",
+        )
+        self.assertEqual(response.status, 404)
+        self.assertNotIn("internal indexing", response.body.decode())
 
 
 def dataclass_replace(value, **changes):

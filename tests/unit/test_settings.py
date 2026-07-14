@@ -82,6 +82,19 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.parser.memory_bytes, 512 * 1024 * 1024)
         self.assertEqual(settings.job_poller.required_worker_connections, 7)
         self.assertEqual(settings.job_poller.indexing_deadline_seconds, 900)
+        self.assertEqual(settings.maintenance.batch_size, 100)
+        self.assertEqual(settings.maintenance.task_retention_seconds, 604_800)
+
+    def test_maintenance_retention_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(ValidationError):
+                build_settings(
+                    Path(directory),
+                    maintenance={
+                        "retired_data_grace_seconds": 300,
+                        "task_retention_seconds": 300,
+                    },
+                )
 
     def test_worker_lane_heartbeat_and_deadline_budget_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

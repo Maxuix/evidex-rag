@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import and_, func, or_, select, text, update
+from sqlalchemy import and_, delete, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -645,6 +645,40 @@ class SqlAlchemyContentMutationRepository:
         await self._session.flush()
         return _mutation(row)
 
+    async def add_indexing_retry(
+        self,
+        *,
+        scope: IdempotencyScope,
+        request_hash: str,
+        kb_id: UUID,
+        document_id: UUID,
+        document_version_id: UUID,
+        indexed_document_version_id: UUID,
+        index_revision_id: UUID,
+        job_id: UUID,
+    ) -> ContentMutation:
+        self._ensure_active()
+        row = ContentMutationRow(
+            workspace_id=self._workspace_id,
+            principal_id=scope.principal_id,
+            client_id=scope.client_id,
+            endpoint=scope.endpoint,
+            idempotency_key=scope.idempotency_key,
+            request_hash=request_hash,
+            operation="indexing_job.retry",
+            status="completed",
+            kb_id=kb_id,
+            document_id=document_id,
+            document_version_id=document_version_id,
+            source_change_id=None,
+            indexed_document_version_id=indexed_document_version_id,
+            index_revision_id=index_revision_id,
+            job_id=job_id,
+        )
+        self._session.add(row)
+        await self._session.flush()
+        return _mutation(row)
+
 
 class SqlAlchemyFileConsistencyRepository:
     def __init__(
@@ -656,6 +690,38 @@ class SqlAlchemyFileConsistencyRepository:
         self._session = session
         self._workspace_id = workspace_id
         self._ensure_active = ensure_active
+
+    async def delete_expired_cleanup_records(
+        self,
+        *,
+        before: datetime,
+        limit: int,
+    ) -> int:
+        self._ensure_active()
+        ids = tuple(
+            (
+                await self._session.execute(
+                    select(SourceFileCleanupRow.id)
+                    .where(
+                        SourceFileCleanupRow.workspace_id == self._workspace_id,
+                        SourceFileCleanupRow.status.in_(("completed", "failed")),
+                        SourceFileCleanupRow.updated_at <= before,
+                    )
+                    .order_by(SourceFileCleanupRow.updated_at, SourceFileCleanupRow.id)
+                    .limit(limit)
+                    .with_for_update(skip_locked=True)
+                )
+            ).scalars()
+        )
+        if not ids:
+            return 0
+        result = await self._session.execute(
+            delete(SourceFileCleanupRow).where(
+                SourceFileCleanupRow.workspace_id == self._workspace_id,
+                SourceFileCleanupRow.id.in_(ids),
+            )
+        )
+        return int(result.rowcount or 0)
 
     async def list_references(self) -> tuple[SourceFileReference, ...]:
         self._ensure_active()

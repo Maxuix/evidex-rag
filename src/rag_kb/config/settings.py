@@ -268,6 +268,20 @@ class FileStoreSettings(StrictSettingsModel):
         return self
 
 
+class MaintenanceSettings(StrictSettingsModel):
+    batch_size: PositiveInt = 100
+    retired_data_grace_seconds: PositiveFloat = 300.0
+    task_retention_seconds: PositiveFloat = 604_800.0
+
+    @model_validator(mode="after")
+    def require_task_retention_after_data_grace(self) -> Self:
+        if self.task_retention_seconds <= self.retired_data_grace_seconds:
+            raise ValueError(
+                "task_retention_seconds must exceed retired_data_grace_seconds"
+            )
+        return self
+
+
 class FileAdmissionSettings(StrictSettingsModel):
     max_bytes: FixedMaxUploadBytes = 10_485_760
     max_lines: FixedMaxLines = 200_000
@@ -405,6 +419,7 @@ class Settings(BaseSettings):
     database: DatabaseSettings
     job_poller: JobPollerSettings = Field(default_factory=JobPollerSettings)
     file_store: FileStoreSettings = Field(default_factory=FileStoreSettings)
+    maintenance: MaintenanceSettings = Field(default_factory=MaintenanceSettings)
     file_admission: FileAdmissionSettings = Field(default_factory=FileAdmissionSettings)
     parser: ParserSettings = Field(default_factory=ParserSettings)
     vector_store: VectorStoreSettings = Field(default_factory=VectorStoreSettings)

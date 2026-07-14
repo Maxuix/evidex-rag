@@ -24,6 +24,7 @@ from rag_kb.services import (
     AdmissionLimits,
     DocumentService,
     FileAdmissionService,
+    IndexingJobService,
     KnowledgeBaseService,
     SourceFileService,
     build_content_services,
@@ -46,6 +47,7 @@ class ApiDependencies:
     file_store: LocalFileStore
     source_file_service: SourceFileService
     file_admission_service: FileAdmissionService
+    indexing_job_service: IndexingJobService
 
     async def close(self) -> None:
         """Release process-owned database resources during API shutdown."""
@@ -114,4 +116,5 @@ def build_api_dependencies(
                 max_lines=resolved_settings.file_admission.max_lines,
             )
         ),
+        indexing_job_service=IndexingJobService(unit_of_work, access_policy),
     )

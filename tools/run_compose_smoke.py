@@ -23,7 +23,7 @@ def available_port() -> int:
 class ComposeSmoke:
     def __init__(self, root: Path) -> None:
         self.root = root
-        self.project = f"rag-kb-s03-w06-{os.getpid()}"
+        self.project = f"rag-kb-s03-w07-{os.getpid()}"
         self.embedding_stub = f"{self.project}-embedding-stub"
         self.environment = {
             **os.environ,
@@ -144,14 +144,14 @@ def main() -> int:
     root = Path(__file__).resolve().parents[1]
     smoke = ComposeSmoke(root)
     try:
-        print("[1/8] building the pinned application image", flush=True)
+        print("[1/9] building the pinned application image", flush=True)
         smoke.run("build", "api", timeout=600)
 
-        print("[2/8] starting clean PostgreSQL and source storage", flush=True)
+        print("[2/9] starting clean PostgreSQL and source storage", flush=True)
         smoke.run("up", "-d", "--wait", "--wait-timeout", "90", "postgres")
         smoke.run("run", "--rm", "--no-deps", "storage-init")
 
-        print("[3/8] proving runtime startup fails before explicit migration", flush=True)
+        print("[3/9] proving runtime startup fails before explicit migration", flush=True)
         before_migration = smoke.run(
             "run",
             "--rm",
@@ -165,7 +165,7 @@ def main() -> int:
         if before_migration.returncode == 0:
             raise RuntimeError("Worker unexpectedly became ready before migration")
 
-        print("[4/8] running the one-shot migration role", flush=True)
+        print("[4/9] running the one-shot migration role", flush=True)
         smoke.run("run", "--rm", "migrate")
 
         smoke.run(
@@ -180,7 +180,7 @@ def main() -> int:
         )
         time.sleep(0.5)
 
-        print("[5/8] starting API, Worker, and frontend shell", flush=True)
+        print("[5/9] starting API, Worker, and frontend shell", flush=True)
         smoke.run(
             "up",
             "-d",
@@ -198,7 +198,7 @@ def main() -> int:
         smoke.wait_http("RAG_KB_FRONTEND_PORT", "/")
         smoke.run("exec", "-T", "worker", "python", "-m", "apps.worker.parser_check")
 
-        print("[6/8] exercising bounded public upload", flush=True)
+        print("[6/9] exercising bounded public upload", flush=True)
         created = smoke.request_json(
             "POST",
             "/api/v1/knowledge-bases",
@@ -227,8 +227,14 @@ def main() -> int:
             str(uploaded["job_id"]),
             str(uploaded["indexed_document_version_id"]),
         )
+        status = smoke.http_json(
+            "RAG_KB_API_PORT",
+            f"/api/v1/indexing-jobs/{uploaded['job_id']}",
+        )
+        if status.get("status") != "completed" or status.get("can_retry"):
+            raise RuntimeError("public indexing status did not report completion")
 
-        print("[7/8] verifying shared same-filesystem storage across restart", flush=True)
+        print("[7/9] verifying shared same-filesystem storage across restart", flush=True)
         devices = {
             smoke.run("exec", "-T", service, "stat", "-c", "%d", path).stdout.strip()
             for service in ("api", "worker")
@@ -244,7 +250,7 @@ def main() -> int:
             "-T",
             "api",
             "touch",
-            "/var/lib/rag-kb/sources/final/s03-w06-smoke-marker",
+            "/var/lib/rag-kb/sources/final/s03-w07-smoke-marker",
         )
         document = smoke.http_json(
             "RAG_KB_API_PORT", f"/api/v1/documents/{uploaded['document']['id']}"
@@ -259,8 +265,19 @@ def main() -> int:
             "worker",
             "test",
             "-f",
-            "/var/lib/rag-kb/sources/final/s03-w06-smoke-marker",
+            "/var/lib/rag-kb/sources/final/s03-w07-smoke-marker",
         )
+
+        print("[8/9] running bounded idempotent maintenance", flush=True)
+        maintenance = smoke.run("run", "--rm", "maintenance").stdout
+        if '"retired_targets_cleaned"' not in maintenance:
+            raise RuntimeError("maintenance did not emit its bounded result")
+        preserved = smoke.http_json(
+            "RAG_KB_API_PORT",
+            f"/api/v1/indexing-jobs/{uploaded['job_id']}",
+        )
+        if preserved.get("serving_status") != "serving":
+            raise RuntimeError("maintenance changed active serving content")
 
         smoke.http_json(
             "RAG_KB_API_PORT",
@@ -278,7 +295,7 @@ def main() -> int:
         if '"event":"http_request_completed"' not in logs or '"trace_id"' not in logs:
             raise RuntimeError("structured request correlation fields were not emitted")
 
-        print("[8/8] exercising graceful process shutdown", flush=True)
+        print("[9/9] exercising graceful process shutdown", flush=True)
         smoke.run("stop", "--timeout", "15", "frontend", "api", "worker")
         stopped_logs = smoke.run("logs", "--no-color", "api", "worker").stdout
         if stopped_logs.count('"event":"process_stopped"') < 2:
@@ -289,7 +306,8 @@ def main() -> int:
     else:
         print(
             "Compose smoke passed: clean start, explicit migration, automatic "
-            "indexing, shared persistence, content-safe logs, and shutdown",
+            "indexing/status, bounded maintenance, shared persistence, "
+            "content-safe logs, and shutdown",
             flush=True,
         )
         return_code = 0

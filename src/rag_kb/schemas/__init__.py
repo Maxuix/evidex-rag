@@ -15,6 +15,7 @@ from rag_kb.schemas.documents import (
     DocumentUploadResponse,
     DocumentVersionResponse,
 )
+from rag_kb.schemas.indexing import IndexingErrorResponse, IndexingJobResponse
 from rag_kb.schemas.knowledge_bases import (
     KnowledgeBaseCreate,
     KnowledgeBasePage,
@@ -31,6 +32,8 @@ __all__ = [
     "DocumentResponse",
     "DocumentUploadResponse",
     "DocumentVersionResponse",
+    "IndexingErrorResponse",
+    "IndexingJobResponse",
     "ErrorCode",
     "FieldViolation",
     "KnowledgeBaseCreate",

@@ -3,7 +3,7 @@ x-runtime-environment: &runtime-environment
   RAG_KB__DATABASE__MIGRATION_DSN: postgresql+asyncpg://rag_kb_migration:not-available@migration-disabled.invalid/rag_kb
 
 x-app-image: &app-image
-  image: rag-kb-app:s03-w06
+  image: rag-kb-app:s03-w07
   build:
     context: .
     dockerfile: Dockerfile
@@ -62,6 +62,14 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    restart: "no"
+
+  maintenance:
+    <<: *runtime-service
+    profiles: ["tools"]
+    command: ["python", "-m", "apps.maintenance.main", "cleanup"]
+    volumes:
+      - source-data:/var/lib/rag-kb/sources
     restart: "no"
 
   api:

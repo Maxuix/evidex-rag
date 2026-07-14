@@ -4,11 +4,14 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any, Protocol, runtime_checkable
+from uuid import UUID
 
 from rag_kb.domain import (
     IndexChunkWrite,
+    IndexCleanupResult,
     IndexingCommand,
     IndexingLease,
+    IndexingJobSnapshot,
     IndexingPhase,
     IndexingTarget,
     PromotionCommand,
@@ -20,6 +23,20 @@ from rag_kb.domain import (
 
 @runtime_checkable
 class IndexingRepository(Protocol):
+    async def get_job(self, job_id: UUID) -> IndexingJobSnapshot | None: ...
+
+    async def retry_failed(
+        self, job_id: UUID, *, observed_at: datetime
+    ) -> IndexingJobSnapshot | None: ...
+
+    async def cleanup_retired(
+        self,
+        *,
+        data_before: datetime,
+        tasks_before: datetime,
+        limit: int,
+    ) -> IndexCleanupResult: ...
+
     async def claim(
         self, *, worker_id: str, observed_at: datetime, max_attempts: int
     ) -> IndexingLease | None: ...

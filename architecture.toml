@@ -57,4 +57,12 @@ scan_roots = ["src", "apps"]
   "rag_kb.adapters",
   "rag_kb.observability",
 ]
+"apps.maintenance" = [
+  "rag_kb.config",
+  "rag_kb.auth",
+  "rag_kb.services",
+  "rag_kb.uow",
+  "rag_kb.db",
+  "rag_kb.adapters",
+]
 "apps.web-test" = []

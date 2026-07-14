@@ -4,8 +4,9 @@ This repository is building a local-first enterprise knowledge base with
 evidence-grounded retrieval and answering. The current milestone is the P1A
 Core Vertical Slice. Knowledge-base/document lifecycle, bounded text upload,
 local source-file consistency, isolated parsing, retry-safe indexing execution,
-conditional current-version promotion, and PostgreSQL Worker scheduling are
-implemented; retrieval and answering are still under construction.
+conditional current-version promotion, PostgreSQL Worker scheduling, indexing
+status/retry, and bounded local maintenance are implemented; retrieval and
+answering are still under construction.
 
 Authoritative project documents:
 
@@ -24,11 +25,12 @@ Authoritative project documents:
 - [Indexing pipeline](docs/architecture/indexing-pipeline.md)
 - [Current-version promotion and deletion](docs/architecture/promotion-deletion.md)
 - [Single-Worker scheduling and recovery](docs/architecture/worker-scheduling.md)
+- [Indexing operations and local maintenance](docs/architecture/indexing-operations.md)
 
 ## Current Layout
 
 ```text
-apps/                 API, single Worker, and test-frontend entrypoint areas
+apps/                 API, Worker, maintenance, and test-frontend entrypoints
 src/rag_kb/           Domain, application, contracts, and infrastructure modules
 evaluation/           Versioned evaluation inputs and reports
 tests/                Unit, contract, integration, and end-to-end suites
@@ -37,9 +39,9 @@ tools/                Reproducible project and baseline checks
 verification/         Stage 01 compatibility and provider evidence
 ```
 
-`apps/api` and `apps/worker` are composition roots for separately runnable
-processes. Business logic belongs under `src/rag_kb` and follows the dependency
-rules enforced by `architecture.toml`.
+`apps/api`, `apps/worker`, and the one-shot `apps/maintenance` tool are
+composition roots. Business logic belongs under `src/rag_kb` and follows the
+dependency rules enforced by `architecture.toml`.
 
 Configuration is loaded explicitly from `RAG_KB__<GROUP>__<FIELD>` environment
 variables. [`.env.example`](.env.example) documents the complete development
@@ -91,6 +93,12 @@ docker compose --profile tools run --rm migrate
 docker compose up -d --wait api worker frontend
 ```
 
+Run one idempotent bounded cleanup pass with:
+
+```bash
+docker compose --profile tools run --rm maintenance
+```
+
 The shell is then available at `http://127.0.0.1:3000`, API documentation at
 `http://127.0.0.1:8000/api/v1/docs`, and diagnostics at `/health/live` and
 `/health/ready`. Stop processes while retaining data with `docker compose down`.
@@ -104,8 +112,8 @@ document reads/deletion, bounded `.txt`/`.md` upload, restart-safe local source
 storage, isolated transient parsing, an internal retry-safe command for durable
 Chunk/pgvector creation, and conditional promotion to one current serving
 version exist. The Worker polls PostgreSQL with bounded claims, independent
-heartbeats, deadlines, retries, and stale recovery. Indexing status APIs,
-retrieval, chat, and business frontend screens are not yet available. It has one
+heartbeats, deadlines, retries, and stale recovery. Indexing status and explicit
+retry are public; retrieval, chat, and business frontend screens are not yet available. It has one
 fixed development identity and provides no enterprise authentication or
 authorization, durable audit system, formal backup/recovery, high availability,
 production hardening, or hostile multi-tenant isolation guarantee.

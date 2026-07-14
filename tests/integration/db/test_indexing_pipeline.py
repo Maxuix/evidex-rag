@@ -26,10 +26,11 @@ from rag_kb.domain import (
     ParserLimits,
     PromotionCommand,
     PromotionReason,
+    ResourceStateConflictError,
 )
 from rag_kb.indexing import CandidatePromotionService, IndexingPipeline
 from rag_kb.scheduling import IndexingJobScheduler, RetryPolicy
-from rag_kb.services import SourceFileService
+from rag_kb.services import IndexingJobService, SourceFileService
 from rag_kb.services.content import DocumentService, KnowledgeBaseService
 from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWorkFactory
 from rag_kb.uow import UnitOfWorkPurpose, execute_in_transaction
@@ -476,6 +477,106 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
         claim = await self._job_claim_state(uploaded.job_id)
         self.assertEqual(claim["status"], "completed")
         self.assertIsNone(claim["claimed_by"])
+
+    async def test_status_and_idempotent_explicit_retry_reuse_the_same_target(self) -> None:
+        kb = await self._create_kb()
+        uploaded = await self._upload(kb.id, "guide.txt", "text/plain", b"safe")
+        provider = _Provider(fail_call=1)
+        with self.assertRaises(IndexingExecutionError):
+            await self._pipeline(provider).execute(_command(uploaded))
+        service = IndexingJobService(self.factory, self.policy)
+
+        failed = await service.get(self.context, uploaded.job_id)
+        self.assertEqual((failed.job_status, failed.build_status), ("failed", "failed"))
+        self.assertTrue(failed.can_retry)
+        key = uuid4()
+        retried = await service.retry(self.context, key, uploaded.job_id)
+        replay = await service.retry(self.context, key, uploaded.job_id)
+
+        self.assertEqual(retried.job_id, uploaded.job_id)
+        self.assertEqual(retried.indexed_document_version_id, uploaded.indexed_document_version_id)
+        self.assertEqual((retried.job_status, retried.build_status, retried.attempt), ("queued", "queued", 0))
+        self.assertEqual(replay.job_id, retried.job_id)
+        with self.assertRaises(ResourceStateConflictError):
+            await service.retry(self.context, uuid4(), uploaded.job_id)
+
+    async def test_cleanup_removes_only_retired_derived_data_and_expired_job(self) -> None:
+        kb = await self._create_kb()
+        first = await self._upload(kb.id, "guide.txt", "text/plain", b"version one")
+        pipeline = self._pipeline(_Provider())
+        await pipeline.execute(_command(first))
+        second = await self._upload(
+            kb.id,
+            "guide.txt",
+            "text/plain",
+            b"version two",
+            document_id=first.document.id,
+        )
+        await pipeline.execute(_command(second))
+        future = datetime.now(UTC) + timedelta(days=30)
+        past = datetime.now(UTC) - timedelta(days=30)
+
+        cleaned = await execute_in_transaction(
+            self.factory,
+            lambda uow: uow.indexing.cleanup_retired(
+                data_before=future,
+                tasks_before=past,
+                limit=10,
+            ),
+            purpose=UnitOfWorkPurpose.RECONCILIATION,
+        )
+        replay = await execute_in_transaction(
+            self.factory,
+            lambda uow: uow.indexing.cleanup_retired(
+                data_before=future,
+                tasks_before=past,
+                limit=10,
+            ),
+            purpose=UnitOfWorkPurpose.RECONCILIATION,
+        )
+        self.assertGreater(cleaned.chunks_deleted, 0)
+        self.assertEqual(cleaned.chunks_deleted, cleaned.vectors_deleted)
+        self.assertEqual(replay.chunks_deleted, 0)
+        connection = await asyncpg.connect(MIGRATION_DSN)
+        try:
+            counts = await connection.fetchrow(
+                """
+                SELECT
+                  (SELECT count(*) FROM index_chunk WHERE indexed_document_version_id = $1) AS retired_chunks,
+                  (SELECT count(*) FROM index_chunk WHERE indexed_document_version_id = $2) AS serving_chunks
+                """,
+                first.indexed_document_version_id,
+                second.indexed_document_version_id,
+            )
+        finally:
+            await connection.close()
+        self.assertEqual(counts["retired_chunks"], 0)
+        self.assertGreater(counts["serving_chunks"], 0)
+
+        expired = await execute_in_transaction(
+            self.factory,
+            lambda uow: uow.indexing.cleanup_retired(
+                data_before=past,
+                tasks_before=future,
+                limit=10,
+            ),
+            purpose=UnitOfWorkPurpose.RECONCILIATION,
+        )
+        self.assertEqual(expired.jobs_deleted, 1)
+        self.assertIsNone(
+            await execute_in_transaction(
+                self.factory,
+                lambda uow: uow.indexing.get_job(first.job_id),
+                purpose=UnitOfWorkPurpose.REQUEST,
+            )
+        )
+        serving = await execute_in_transaction(
+            self.factory,
+            lambda uow: uow.indexing.get_job(second.job_id),
+            purpose=UnitOfWorkPurpose.REQUEST,
+        )
+        self.assertIsNotNone(serving)
+        self.assertEqual(serving.serving_status, "serving")
 
     async def test_embedding_mismatch_fails_before_any_derived_write(self) -> None:
         kb = await self._create_kb()

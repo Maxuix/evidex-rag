@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import (
 class DatabaseProcess(StrEnum):
     API = "api"
     WORKER = "worker"
+    MAINTENANCE = "maintenance"
 
 
 @dataclass(slots=True)
