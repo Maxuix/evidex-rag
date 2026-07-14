@@ -14,6 +14,7 @@ Authoritative project documents:
 - [P0/P1A database schema](docs/architecture/database-schema.md)
 - [Async data access and transactions](docs/architecture/async-data-access.md)
 - [Public API and error conventions](docs/architecture/api-conventions.md)
+- [Identity and security boundaries](docs/architecture/identity-security.md)
 
 ## Current Layout
 

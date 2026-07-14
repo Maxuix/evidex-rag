@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from enum import StrEnum
 from types import TracebackType
+from uuid import UUID
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, AsyncSessionTransaction, async_sessionmaker
@@ -34,9 +35,11 @@ class SqlAlchemyUnitOfWork:
         self,
         sessions: async_sessionmaker[AsyncSession],
         *,
+        workspace_id: UUID,
         purpose: UnitOfWorkPurpose,
         mode: TransactionMode,
     ) -> None:
+        self.workspace_id = workspace_id
         self.purpose = purpose
         self.mode = mode
         self._sessions = sessions
@@ -66,6 +69,7 @@ class SqlAlchemyUnitOfWork:
         self._state = _State.ACTIVE
         self._workspace_repository = SqlAlchemyWorkspaceRepository(
             session,
+            self.workspace_id,
             self._ensure_active,
         )
         try:
@@ -145,8 +149,13 @@ class SqlAlchemyUnitOfWork:
 class SqlAlchemyUnitOfWorkFactory:
     """Create a fresh Unit of Work for every operation boundary."""
 
-    def __init__(self, sessions: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(
+        self,
+        sessions: async_sessionmaker[AsyncSession],
+        workspace_id: UUID,
+    ) -> None:
         self._sessions = sessions
+        self._workspace_id = workspace_id
 
     def __call__(
         self,
@@ -156,6 +165,7 @@ class SqlAlchemyUnitOfWorkFactory:
     ) -> SqlAlchemyUnitOfWork:
         return SqlAlchemyUnitOfWork(
             self._sessions,
+            workspace_id=self._workspace_id,
             purpose=purpose,
             mode=mode,
         )

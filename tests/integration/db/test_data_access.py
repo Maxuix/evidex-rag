@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import unittest
-from uuid import uuid4
+from uuid import UUID
 
 import asyncpg
 from sqlalchemy import text
@@ -23,6 +23,8 @@ from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWorkFactory
 
 MIGRATION_DSN = os.environ.get("RAG_KB_TEST_MIGRATION_DSN")
 RUNTIME_SQLALCHEMY_DSN = os.environ.get("RAG_KB_TEST_RUNTIME_SQLALCHEMY_DSN")
+WORKSPACE_ONE = UUID("01900000-0000-7000-8000-000000000101")
+WORKSPACE_TWO = UUID("01900000-0000-7000-8000-000000000102")
 
 
 @unittest.skipUnless(
@@ -43,7 +45,10 @@ class AsyncDataAccessTests(unittest.IsolatedAsyncioTestCase):
             max_overflow=0,
             process=DatabaseProcess.WORKER,
         )
-        self.factory = SqlAlchemyUnitOfWorkFactory(self.database.sessions)
+        self.factory = SqlAlchemyUnitOfWorkFactory(
+            self.database.sessions,
+            WORKSPACE_ONE,
+        )
 
     async def asyncTearDown(self) -> None:
         await self.database.close()
@@ -54,26 +59,25 @@ class AsyncDataAccessTests(unittest.IsolatedAsyncioTestCase):
             repository = unit_of_work.workspaces
             await unit_of_work.commit()
             with self.assertRaises(UnitOfWorkStateError):
-                await repository.get(created.id)
+                await repository.get()
 
         async with self.factory(purpose=UnitOfWorkPurpose.REQUEST) as unit_of_work:
-            loaded = await unit_of_work.workspaces.get(created.id)
+            loaded = await unit_of_work.workspaces.get()
             await unit_of_work.rollback()
 
         self.assertEqual(loaded, created)
 
     async def test_uncommitted_and_failed_work_rolls_back(self) -> None:
         async with self.factory() as unit_of_work:
-            uncommitted = await unit_of_work.workspaces.add("uncommitted")
+            await unit_of_work.workspaces.add("uncommitted")
 
         with self.assertRaisesRegex(RuntimeError, "injected failure"):
             async with self.factory() as unit_of_work:
-                failed = await unit_of_work.workspaces.add("failed")
+                await unit_of_work.workspaces.add("failed")
                 raise RuntimeError("injected failure")
 
         async with self.factory() as unit_of_work:
-            self.assertIsNone(await unit_of_work.workspaces.get(uncommitted.id))
-            self.assertIsNone(await unit_of_work.workspaces.get(failed.id))
+            self.assertIsNone(await unit_of_work.workspaces.get())
             await unit_of_work.rollback()
 
     async def test_unit_of_work_cannot_cross_asyncio_task_boundary(self) -> None:
@@ -81,24 +85,60 @@ class AsyncDataAccessTests(unittest.IsolatedAsyncioTestCase):
             purpose=UnitOfWorkPurpose.HEARTBEAT
         ) as unit_of_work:
             async def use_from_child_task() -> None:
-                await unit_of_work.workspaces.get(uuid4())
+                await unit_of_work.workspaces.get()
 
             with self.assertRaises(UnitOfWorkConcurrencyError):
                 await asyncio.create_task(use_from_child_task())
             await unit_of_work.rollback()
 
     async def test_each_concurrent_command_gets_an_independent_session(self) -> None:
-        async def create(name: str) -> Workspace:
-            async with self.factory(
+        second_factory = SqlAlchemyUnitOfWorkFactory(
+            self.database.sessions,
+            WORKSPACE_TWO,
+        )
+
+        async def create(factory, name: str) -> Workspace:
+            async with factory(
                 purpose=UnitOfWorkPurpose.COMMAND
             ) as unit_of_work:
                 workspace = await unit_of_work.workspaces.add(name)
                 await unit_of_work.commit()
                 return workspace
 
-        first, second = await asyncio.gather(create("first"), create("second"))
+        first, second = await asyncio.gather(
+            create(self.factory, "first"),
+            create(second_factory, "second"),
+        )
         self.assertNotEqual(first.id, second.id)
         self.assertEqual(self.database.engine.pool.checkedout(), 0)
+
+    async def test_repository_is_bound_to_one_workspace_scope(self) -> None:
+        second_factory = SqlAlchemyUnitOfWorkFactory(
+            self.database.sessions,
+            WORKSPACE_TWO,
+        )
+        async with self.factory() as unit_of_work:
+            first = await unit_of_work.workspaces.add("first-workspace")
+            self.assertEqual(unit_of_work.workspace_id, WORKSPACE_ONE)
+            await unit_of_work.commit()
+        async with second_factory() as unit_of_work:
+            second = await unit_of_work.workspaces.add("second-workspace")
+            self.assertEqual(unit_of_work.workspace_id, WORKSPACE_TWO)
+            await unit_of_work.commit()
+
+        async with self.factory() as unit_of_work:
+            self.assertEqual(await unit_of_work.workspaces.get(), first)
+            renamed = await unit_of_work.workspaces.rename("renamed-first")
+            await unit_of_work.commit()
+        async with second_factory() as unit_of_work:
+            loaded_second = await unit_of_work.workspaces.get()
+            await unit_of_work.rollback()
+
+        self.assertIsNotNone(renamed)
+        assert renamed is not None
+        self.assertEqual(renamed.id, WORKSPACE_ONE)
+        self.assertEqual(renamed.name, "renamed-first")
+        self.assertEqual(loaded_second, second)
 
     async def test_transaction_helper_releases_connection_before_external_io(
         self,
@@ -120,7 +160,7 @@ class AsyncDataAccessTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(external_io_observed)
 
         async with self.factory() as unit_of_work:
-            self.assertEqual(await unit_of_work.workspaces.get(created.id), created)
+            self.assertEqual(await unit_of_work.workspaces.get(), created)
             await unit_of_work.rollback()
 
     async def test_repeatable_read_only_mode_rejects_writes(self) -> None:

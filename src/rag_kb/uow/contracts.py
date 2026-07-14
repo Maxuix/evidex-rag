@@ -5,6 +5,7 @@ from __future__ import annotations
 from enum import StrEnum
 from types import TracebackType
 from typing import Protocol, runtime_checkable
+from uuid import UUID
 
 from rag_kb.repositories import WorkspaceRepository
 
@@ -36,6 +37,7 @@ class UnitOfWorkConcurrencyError(UnitOfWorkStateError):
 class UnitOfWork(Protocol):
     purpose: UnitOfWorkPurpose
     mode: TransactionMode
+    workspace_id: UUID
 
     @property
     def workspaces(self) -> WorkspaceRepository: ...

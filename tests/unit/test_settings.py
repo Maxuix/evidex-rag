@@ -67,6 +67,13 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.model_provider.embedding.metric, "cosine")
         self.assertTrue(settings.vector_store.exact_search)
         self.assertFalse(settings.vector_store.hnsw_enabled)
+        self.assertEqual(settings.identity.provider, "development_fixed")
+        self.assertEqual(settings.identity.workspace_id.version, 7)
+        self.assertEqual(
+            settings.security.allowed_cors_origins,
+            ("http://127.0.0.1:3000",),
+        )
+        self.assertFalse(settings.security.cors_allow_credentials)
 
     def test_nested_environment_surface_loads_without_global_state(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -112,6 +119,26 @@ class SettingsTests(unittest.TestCase):
             ):
                 with self.subTest(app=app), self.assertRaises(ValidationError):
                     build_settings(root, app=app)
+
+    def test_identity_and_cors_settings_fail_closed(self) -> None:
+        invalid_overrides = (
+            {"identity": {"workspace_id": "550e8400-e29b-41d4-a716-446655440000"}},
+            {"identity": {"principal_id": ""}},
+            {"identity": {"client_id": "client selected"}},
+            {"security": {"allowed_cors_origins": []}},
+            {"security": {"allowed_cors_origins": ["*"]}},
+            {"security": {"allowed_cors_origins": ["https://example.com"]}},
+            {"security": {"allowed_cors_origins": ["http://localhost/"]}},
+            {"security": {"allowed_cors_origins": ["http://localhost/a"]}},
+            {"security": {"cors_allow_credentials": True}},
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for override in invalid_overrides:
+                with self.subTest(override=override), self.assertRaises(
+                    ValidationError
+                ):
+                    build_settings(root, **override)
 
     def test_database_roles_and_pool_budget_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -273,6 +300,18 @@ class StartupValidationTests(unittest.TestCase):
             self.assertNotIn("runtime-secret", repr(worker))
             self.assertIsNot(api.unit_of_work(), api.unit_of_work())
             self.assertIsNot(worker.unit_of_work(), worker.unit_of_work())
+            api_context = api.auth_provider.get_context()
+            worker_context = worker.auth_provider.get_context()
+            self.assertEqual(api_context, worker_context)
+            self.assertEqual(api.unit_of_work().workspace_id, api_context.workspace_id)
+            self.assertEqual(
+                worker.unit_of_work().workspace_id,
+                worker_context.workspace_id,
+            )
+            self.assertEqual(
+                api.access_policy.metadata_filter(api_context).workspace_id,
+                api_context.workspace_id,
+            )
             asyncio.run(api.close())
             asyncio.run(worker.close())
 

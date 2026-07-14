@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from rag_kb.auth import DevelopmentAuthProvider, SingleWorkspaceAccessPolicy
 from rag_kb.config import (
     Settings,
     StartupValidation,
@@ -23,6 +24,8 @@ class WorkerDependencies:
     startup: StartupValidation
     database: DatabaseResources
     unit_of_work: SqlAlchemyUnitOfWorkFactory
+    auth_provider: DevelopmentAuthProvider
+    access_policy: SingleWorkspaceAccessPolicy
 
     async def close(self) -> None:
         """Release process-owned database resources during Worker shutdown."""
@@ -40,6 +43,7 @@ def build_worker_dependencies(
     resolved_settings = settings or load_settings(env_file=env_file)
     startup = validate_startup_environment(resolved_settings)
     database_settings = resolved_settings.database
+    identity = resolved_settings.identity
     database = create_database_resources(
         database_settings.runtime_dsn.get_secret_value(),
         pool_size=database_settings.worker_pool_size,
@@ -50,5 +54,15 @@ def build_worker_dependencies(
         settings=resolved_settings,
         startup=startup,
         database=database,
-        unit_of_work=SqlAlchemyUnitOfWorkFactory(database.sessions),
+        unit_of_work=SqlAlchemyUnitOfWorkFactory(
+            database.sessions,
+            identity.workspace_id,
+        ),
+        auth_provider=DevelopmentAuthProvider(
+            deployment_profile=resolved_settings.app.deployment_profile.value,
+            principal_id=identity.principal_id,
+            client_id=identity.client_id,
+            workspace_id=identity.workspace_id,
+        ),
+        access_policy=SingleWorkspaceAccessPolicy(identity.workspace_id),
     )

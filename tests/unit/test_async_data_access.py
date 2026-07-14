@@ -24,7 +24,7 @@ FORBIDDEN_SQLALCHEMY_SYMBOLS = {"Session", "create_engine", "sessionmaker"}
 class AsyncDataAccessContractTests(unittest.TestCase):
     def test_public_contracts_are_async(self) -> None:
         for contract, methods in (
-            (WorkspaceRepository, ("add", "get")),
+            (WorkspaceRepository, ("add", "get", "rename")),
             (UnitOfWork, ("__aenter__", "__aexit__", "commit", "rollback")),
         ):
             for method in methods:

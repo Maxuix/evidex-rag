@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
-from uuid import UUID
-
 from rag_kb.domain import Workspace
 
 
@@ -14,4 +12,6 @@ class WorkspaceRepository(Protocol):
 
     async def add(self, name: str) -> Workspace: ...
 
-    async def get(self, workspace_id: UUID) -> Workspace | None: ...
+    async def get(self) -> Workspace | None: ...
+
+    async def rename(self, name: str) -> Workspace | None: ...

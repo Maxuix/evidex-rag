@@ -9,6 +9,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException
 
+from rag_kb.auth import AccessDeniedError
 from rag_kb.schemas import ErrorCode, FieldViolation, ProblemDetails
 
 
@@ -37,6 +38,10 @@ class ApiProblem(Exception):
 def install_problem_handlers(app: FastAPI) -> None:
     app.add_exception_handler(ApiProblem, _api_problem_handler)  # type: ignore[arg-type]
     app.add_exception_handler(
+        AccessDeniedError,
+        _access_denied_handler,  # type: ignore[arg-type]
+    )
+    app.add_exception_handler(
         RequestValidationError,
         _request_validation_handler,  # type: ignore[arg-type]
     )
@@ -48,7 +53,7 @@ def install_problem_handlers(app: FastAPI) -> None:
 
 
 async def _api_problem_handler(request: Request, error: ApiProblem) -> JSONResponse:
-    return _problem_response(
+    return problem_response(
         request,
         code=error.code,
         status=error.status,
@@ -56,6 +61,21 @@ async def _api_problem_handler(request: Request, error: ApiProblem) -> JSONRespo
         detail=error.detail,
         retryable=error.retryable,
         errors=error.errors,
+    )
+
+
+async def _access_denied_handler(
+    request: Request,
+    error: AccessDeniedError,
+) -> JSONResponse:
+    del error
+    return problem_response(
+        request,
+        code=ErrorCode.ACCESS_DENIED,
+        status=403,
+        title="Access denied",
+        detail="The requested resource is not authorized for this identity.",
+        retryable=False,
     )
 
 
@@ -85,7 +105,7 @@ async def _request_validation_handler(
         code = ErrorCode.REQUEST_VALIDATION_FAILED
         title = "Request validation failed"
         detail = "One or more request fields are invalid."
-    return _problem_response(
+    return problem_response(
         request,
         code=code,
         status=422,
@@ -108,7 +128,7 @@ async def _http_exception_handler(
         code = ErrorCode.HTTP_ERROR
     title = _http_title(error.status_code)
     detail = error.detail if isinstance(error.detail, str) else title
-    return _problem_response(
+    return problem_response(
         request,
         code=code,
         status=error.status_code,
@@ -124,7 +144,7 @@ async def _unexpected_exception_handler(
     error: Exception,
 ) -> JSONResponse:
     del error
-    return _problem_response(
+    return problem_response(
         request,
         code=ErrorCode.INTERNAL_SERVER_ERROR,
         status=500,
@@ -134,7 +154,7 @@ async def _unexpected_exception_handler(
     )
 
 
-def _problem_response(
+def problem_response(
     request: Request,
     *,
     code: ErrorCode,

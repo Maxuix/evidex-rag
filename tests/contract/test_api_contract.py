@@ -4,21 +4,36 @@ import json
 import unittest
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Annotated
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field, ValidationError
 
 from apps.api.app import API_PREFIX, create_app
 from apps.api.errors import ApiProblem
 from apps.api.idempotency import RequiredIdempotencyKey
 from apps.api.pagination import decode_cursor, encode_cursor
+from apps.api.security import (
+    SafeRequestMetadata,
+    get_auth_context,
+    get_metadata_filter,
+)
+from rag_kb.auth import (
+    AccessDeniedError,
+    AuthContext,
+    DevelopmentAuthProvider,
+    MetadataFilter,
+    SingleWorkspaceAccessPolicy,
+)
 from rag_kb.domain import IdempotencyScope, canonical_request_hash
 from rag_kb.schemas import CursorPayload, ErrorCode, PaginationQuery
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+WORKSPACE = UUID("01900000-0000-7000-8000-000000000001")
+ALLOWED_ORIGIN = "http://127.0.0.1:3000"
 
 
 class ExampleInput(BaseModel):
@@ -43,6 +58,11 @@ async def unexpected() -> None:
     raise RuntimeError("internal-secret-must-not-leak")
 
 
+@router.get("/denied")
+async def denied() -> None:
+    raise AccessDeniedError("policy internals must not leak")
+
+
 @router.post("/validate")
 async def validate(payload: ExampleInput) -> dict[str, int]:
     return {"count": payload.count}
@@ -56,6 +76,47 @@ async def idempotency(key: RequiredIdempotencyKey) -> dict[str, str]:
 @router.get("/cursor")
 async def cursor(value: str) -> CursorPayload:
     return decode_cursor(value)
+
+
+@router.get("/identity")
+async def identity(
+    request: Request,
+    context: Annotated[AuthContext, Depends(get_auth_context)],
+    metadata_filter: Annotated[MetadataFilter, Depends(get_metadata_filter)],
+) -> dict[str, object]:
+    safe = SafeRequestMetadata.from_request(request, context)
+    return {
+        "principal_id": context.principal_id,
+        "client_id": context.client_id,
+        "workspace_id": context.workspace_id,
+        "filter_workspace_id": metadata_filter.workspace_id,
+        "safe_request_metadata": {
+            "trace_id": safe.trace_id,
+            "method": safe.method,
+            "path": safe.path,
+            "principal_id": safe.principal_id,
+            "client_id": safe.client_id,
+            "workspace_id": safe.workspace_id,
+        },
+    }
+
+
+class StubApiDependencies:
+    def __init__(self) -> None:
+        self.settings = SimpleNamespace(
+            security=SimpleNamespace(allowed_cors_origins=(ALLOWED_ORIGIN,))
+        )
+        self.auth_provider = DevelopmentAuthProvider(
+            deployment_profile="development",
+            principal_id="development-principal",
+            client_id="development-web",
+            workspace_id=WORKSPACE,
+        )
+        self.access_policy = SingleWorkspaceAccessPolicy(WORKSPACE)
+        self.closed = False
+
+    async def close(self) -> None:
+        self.closed = True
 
 
 @dataclass
@@ -142,7 +203,16 @@ async def request(
 
 class ApiContractTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
-        self.app = create_app(routers=(router,))
+        self.dependencies = StubApiDependencies()
+        self.app = create_app(
+            dependencies=self.dependencies,  # type: ignore[arg-type]
+            routers=(router,),
+        )
+        self.lifespan = self.app.router.lifespan_context(self.app)
+        await self.lifespan.__aenter__()
+
+    async def asyncTearDown(self) -> None:
+        await self.lifespan.__aexit__(None, None, None)
 
     async def test_problem_details_and_server_trace_id(self) -> None:
         response = await request(
@@ -199,6 +269,12 @@ class ApiContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body["code"], "INTERNAL_SERVER_ERROR")
         self.assertNotIn("internal-secret", response.body.decode("utf-8"))
 
+    async def test_access_denial_is_normalized_without_policy_details(self) -> None:
+        response = await request(self.app, "GET", f"{API_PREFIX}/denied")
+        self.assertEqual(response.status, 403)
+        self.assertEqual(response.json()["code"], "ACCESS_DENIED")
+        self.assertNotIn("policy internals", response.body.decode("utf-8"))
+
     async def test_unknown_route_uses_problem_details(self) -> None:
         response = await request(self.app, "GET", f"{API_PREFIX}/missing")
         self.assertEqual(response.status, 404)
@@ -229,6 +305,101 @@ class ApiContractTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(response.status, 200)
         self.assertEqual(response.json()["key"], str(key))
+
+    async def test_identity_is_server_owned_and_safe_metadata_excludes_input(self) -> None:
+        response = await request(
+            self.app,
+            "GET",
+            f"{API_PREFIX}/identity",
+            query="secret=must-not-appear",
+            headers={"x-api-key": "must-not-appear"},
+        )
+
+        body = response.json()
+        self.assertEqual(response.status, 200)
+        self.assertEqual(body["principal_id"], "development-principal")
+        self.assertEqual(body["client_id"], "development-web")
+        self.assertEqual(body["workspace_id"], str(WORKSPACE))
+        self.assertEqual(body["filter_workspace_id"], str(WORKSPACE))
+        self.assertEqual(
+            body["safe_request_metadata"]["path"],  # type: ignore[index]
+            f"{API_PREFIX}/identity",
+        )
+        rendered = response.body.decode("utf-8")
+        self.assertNotIn("must-not-appear", rendered)
+        self.assertNotIn("x-api-key", rendered)
+
+    async def test_identity_override_headers_are_rejected(self) -> None:
+        header_names = (
+            "authorization",
+            "x-auth-request-user",
+            "x-client-id",
+            "x-forwarded-user",
+            "x-principal-id",
+            "x-workspace-id",
+        )
+        for header_name in header_names:
+            with self.subTest(header_name=header_name):
+                response = await request(
+                    self.app,
+                    "GET",
+                    f"{API_PREFIX}/identity",
+                    headers={header_name: "client-selected-value"},
+                )
+                self.assertEqual(response.status, 400)
+                self.assertEqual(
+                    response.json()["code"],
+                    "IDENTITY_OVERRIDE_NOT_ALLOWED",
+                )
+                self.assertEqual(
+                    response.json()["trace_id"],
+                    response.headers["x-trace-id"],
+                )
+
+    async def test_cors_is_explicit_origin_only_and_never_credentialed(self) -> None:
+        allowed = await request(
+            self.app,
+            "GET",
+            f"{API_PREFIX}/identity",
+            headers={"origin": ALLOWED_ORIGIN},
+        )
+        self.assertEqual(allowed.headers["access-control-allow-origin"], ALLOWED_ORIGIN)
+        self.assertNotIn("access-control-allow-credentials", allowed.headers)
+
+        disallowed = await request(
+            self.app,
+            "GET",
+            f"{API_PREFIX}/identity",
+            headers={"origin": "https://attacker.example"},
+        )
+        self.assertNotIn("access-control-allow-origin", disallowed.headers)
+        self.assertNotIn("access-control-allow-credentials", disallowed.headers)
+
+    async def test_cors_preflight_allows_only_declared_method_and_header(self) -> None:
+        allowed = await request(
+            self.app,
+            "OPTIONS",
+            f"{API_PREFIX}/identity",
+            headers={
+                "origin": ALLOWED_ORIGIN,
+                "access-control-request-method": "GET",
+                "access-control-request-headers": "content-type",
+            },
+        )
+        self.assertEqual(allowed.status, 200)
+        self.assertEqual(allowed.headers["access-control-allow-origin"], ALLOWED_ORIGIN)
+        self.assertNotIn("access-control-allow-credentials", allowed.headers)
+
+        disallowed = await request(
+            self.app,
+            "OPTIONS",
+            f"{API_PREFIX}/identity",
+            headers={
+                "origin": ALLOWED_ORIGIN,
+                "access-control-request-method": "PUT",
+            },
+        )
+        self.assertEqual(disallowed.status, 400)
 
     async def test_lifespan_owns_dependency_shutdown(self) -> None:
         class StubDependencies:

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import ipaddress
 from pathlib import Path
 from typing import Annotated, Literal, Self
 from urllib.parse import urlsplit
+from uuid import UUID
 
 from pydantic import (
     AnyHttpUrl,
@@ -71,6 +73,60 @@ class AppSettings(StrictSettingsModel):
         if not self.bind_host.is_loopback:
             raise ValueError("development bind_host must be a loopback address")
         return self
+
+
+class IdentitySettings(StrictSettingsModel):
+    provider: Literal["development_fixed"] = "development_fixed"
+    principal_id: Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")] = (
+        "development-principal"
+    )
+    client_id: Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")] = (
+        "development-web"
+    )
+    workspace_id: UUID = UUID("01900000-0000-7000-8000-000000000001")
+
+    @field_validator("workspace_id")
+    @classmethod
+    def require_uuidv7_workspace(cls, value: UUID) -> UUID:
+        if value.version != 7:
+            raise ValueError("development workspace_id must be UUIDv7")
+        return value
+
+
+class SecuritySettings(StrictSettingsModel):
+    allowed_cors_origins: tuple[str, ...] = ("http://127.0.0.1:3000",)
+    cors_allow_credentials: DisabledFlag = False
+
+    @field_validator("allowed_cors_origins")
+    @classmethod
+    def require_explicit_loopback_origins(
+        cls,
+        value: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        if not value:
+            raise ValueError("at least one CORS origin is required")
+        if len(value) != len(set(value)):
+            raise ValueError("CORS origins must be unique")
+        for origin in value:
+            parsed = urlsplit(origin)
+            if origin == "*" or parsed.scheme not in {"http", "https"}:
+                raise ValueError("CORS origins must be explicit HTTP(S) origins")
+            if (
+                not parsed.hostname
+                or parsed.username
+                or parsed.password
+                or parsed.query
+                or parsed.fragment
+                or parsed.path
+            ):
+                raise ValueError("CORS origins cannot contain credentials or paths")
+            try:
+                loopback = ipaddress.ip_address(parsed.hostname).is_loopback
+            except ValueError:
+                loopback = parsed.hostname == "localhost"
+            if not loopback:
+                raise ValueError("development CORS origins must be loopback")
+        return value
 
 
 class DatabaseSettings(StrictSettingsModel):
@@ -293,6 +349,8 @@ class Settings(BaseSettings):
     )
 
     app: AppSettings = Field(default_factory=AppSettings)
+    identity: IdentitySettings = Field(default_factory=IdentitySettings)
+    security: SecuritySettings = Field(default_factory=SecuritySettings)
     database: DatabaseSettings
     job_poller: JobPollerSettings = Field(default_factory=JobPollerSettings)
     file_store: FileStoreSettings = Field(default_factory=FileStoreSettings)

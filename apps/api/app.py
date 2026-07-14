@@ -7,9 +7,11 @@ from contextlib import asynccontextmanager
 
 from fastapi import APIRouter, FastAPI
 
+from apps.api.cors import ConfiguredCorsMiddleware
 from apps.api.dependencies import ApiDependencies, build_api_dependencies
 from apps.api.errors import install_problem_handlers
 from apps.api.middleware import TraceIdMiddleware
+from apps.api.security import IdentityOverrideMiddleware
 
 
 API_PREFIX = "/api/v1"
@@ -41,6 +43,8 @@ def create_app(
         redoc_url=None,
         lifespan=lifespan,
     )
+    app.add_middleware(IdentityOverrideMiddleware)
+    app.add_middleware(ConfiguredCorsMiddleware)
     app.add_middleware(TraceIdMiddleware)
     install_problem_handlers(app)
     for router in routers:
