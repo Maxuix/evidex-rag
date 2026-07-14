@@ -11,6 +11,7 @@ Authoritative project documents:
 - [Execution tracker](docs/implementation-plans/EXECUTION-TRACKER.md)
 - [Module boundaries](docs/architecture/module-boundaries.md)
 - [Configuration and composition roots](docs/architecture/configuration.md)
+- [P0/P1A database schema](docs/architecture/database-schema.md)
 
 ## Current Layout
 
@@ -52,6 +53,7 @@ already present and tested in the frozen Stage 01 resolution.
 PYTHONPATH=src:. .venv/bin/python tools/check_architecture.py
 .venv/bin/python tools/check_application_lock.py
 PYTHONPATH=src:. .venv/bin/python -m unittest discover -s tests/unit -v
+PYTHONPATH=src:. .venv/bin/python tools/run_db_integration.py
 ```
 
 ## Current Boundary

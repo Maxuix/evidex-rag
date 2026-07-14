@@ -76,8 +76,8 @@ class AppSettings(StrictSettingsModel):
 class DatabaseSettings(StrictSettingsModel):
     runtime_dsn: SecretStr
     migration_dsn: SecretStr
-    runtime_role: str = "rag_kb_runtime"
-    migration_role: str = "rag_kb_migration"
+    runtime_role: Literal["rag_kb_runtime"] = "rag_kb_runtime"
+    migration_role: Literal["rag_kb_migration"] = "rag_kb_migration"
     server_connection_limit: PositiveInt = 50
     reserved_connections: NonNegativeInt = 10
     api_pool_size: PositiveInt = 5
