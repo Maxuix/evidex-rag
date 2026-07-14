@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "status": "approved",
+  "status": "current",
   "verified_at": "2026-07-13",
   "tested_platform": "linux/arm64",
   "images": [

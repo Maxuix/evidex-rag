@@ -7,8 +7,8 @@ These artifacts verify the Stage 01 component set; they are not the Stage 02 app
 - `requirements.in`: exact direct probe inputs.
 - `requirements.lock`: Python 3.12.13 / manylinux aarch64 resolution with distribution hashes.
 - `python-packages.txt`: exact installed set from the passing container.
-- `container-images-v1.0.json`: approved OCI index and platform-manifest digests.
-- `verification-report-v1.0.json`: canonical passing probe result for the approved baseline.
+- `container-images-v1.0.json`: current OCI index and platform-manifest digests.
+- `verification-report-v1.0.json`: canonical passing probe result for the current baseline.
 
 ## Reproduction outline
 
