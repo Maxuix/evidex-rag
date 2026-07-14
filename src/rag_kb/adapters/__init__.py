@@ -5,11 +5,19 @@ from rag_kb.adapters.parser import (
     IsolatedPlainTextProcessor,
     PlainTextTestParser,
 )
+from rag_kb.adapters.model_api import (
+    EmbeddingProvider,
+    OpenAICompatibleEmbeddingProvider,
+)
+from rag_kb.adapters.vector_store import FixedPgVectorSpace
 
 __all__ = [
     "DocumentProcessor",
+    "EmbeddingProvider",
+    "FixedPgVectorSpace",
     "IsolatedPlainTextProcessor",
     "LocalFileStore",
+    "OpenAICompatibleEmbeddingProvider",
     "PlainTextTestParser",
     "SourceFileStore",
 ]

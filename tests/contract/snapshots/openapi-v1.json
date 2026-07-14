@@ -280,7 +280,17 @@
           "PARSER_TIMEOUT",
           "PARSER_RESOURCE_LIMIT",
           "PARSER_CRASHED",
-          "PARSER_ISOLATION_FAILED"
+          "PARSER_ISOLATION_FAILED",
+          "INDEX_TARGET_INVALID",
+          "INDEX_REVISION_INCOMPATIBLE",
+          "SOURCE_NOT_AVAILABLE",
+          "SOURCE_FILE_MISSING",
+          "SOURCE_FILE_INTEGRITY",
+          "EMBEDDING_SPACE_MISMATCH",
+          "EMBEDDING_PROVIDER_UNAVAILABLE",
+          "EMBEDDING_RESPONSE_INVALID",
+          "INDEX_PERSISTENCE_FAILED",
+          "INDEX_INCOMPLETE"
         ],
         "title": "ErrorCode",
         "type": "string"

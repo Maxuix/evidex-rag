@@ -3,8 +3,9 @@
 This repository is building a local-first enterprise knowledge base with
 evidence-grounded retrieval and answering. The current milestone is the P1A
 Core Vertical Slice. Knowledge-base/document lifecycle, bounded text upload,
-local source-file consistency, and isolated parsing are implemented; indexing
-execution through answering is still under construction.
+local source-file consistency, isolated parsing, and the retry-safe indexing
+execution capability are implemented; automatic job scheduling, promotion,
+retrieval, and answering are still under construction.
 
 Authoritative project documents:
 
@@ -20,6 +21,7 @@ Authoritative project documents:
 - [Local runtime and diagnostics](docs/architecture/local-runtime.md)
 - [Local source-file consistency](docs/architecture/local-file-consistency.md)
 - [File admission and parser isolation](docs/architecture/file-admission-parser-isolation.md)
+- [Indexing pipeline](docs/architecture/indexing-pipeline.md)
 
 ## Current Layout
 
@@ -97,9 +99,10 @@ overrides, logs, checks, and the explicitly destructive clean reset.
 
 The Compose profile is a local validation runtime. Knowledge-base management,
 document reads/deletion, bounded `.txt`/`.md` upload, restart-safe local source
-storage, and isolated transient parsing exist. Indexing-job execution, durable
-chunks/vectors, retrieval, chat, and business frontend screens are not yet
-available. It has one
+storage, isolated transient parsing, and an internal retry-safe command for
+durable Chunk/pgvector creation exist. The Worker does not poll jobs yet, and
+candidate promotion, indexing status APIs, retrieval, chat, and business
+frontend screens are not yet available. It has one
 fixed development identity and provides no enterprise authentication or
 authorization, durable audit system, formal backup/recovery, high availability,
 production hardening, or hostile multi-tenant isolation guarantee.

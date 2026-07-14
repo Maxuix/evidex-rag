@@ -7,11 +7,13 @@ from rag_kb.repositories.content import (
     KnowledgeBaseRepository,
 )
 from rag_kb.repositories.workspaces import WorkspaceRepository
+from rag_kb.repositories.indexing import IndexingRepository
 
 __all__ = [
     "ContentMutationRepository",
     "DocumentRepository",
     "FileConsistencyRepository",
     "KnowledgeBaseRepository",
+    "IndexingRepository",
     "WorkspaceRepository",
 ]

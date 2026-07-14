@@ -6,7 +6,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from rag_kb.auth import DevelopmentAuthProvider, SingleWorkspaceAccessPolicy
-from rag_kb.adapters import IsolatedPlainTextProcessor, LocalFileStore
+from rag_kb.adapters import (
+    FixedPgVectorSpace,
+    IsolatedPlainTextProcessor,
+    LocalFileStore,
+    OpenAICompatibleEmbeddingProvider,
+)
 from rag_kb.config import (
     Settings,
     StartupValidation,
@@ -20,7 +25,13 @@ from rag_kb.db import (
     create_database_resources,
     validate_runtime_readiness,
 )
-from rag_kb.services import FileReconciliationService, ParserLimits, build_content_services
+from rag_kb.indexing import IndexingPipeline
+from rag_kb.services import (
+    FileReconciliationService,
+    ParserLimits,
+    build_content_services,
+    embedding_space_definition,
+)
 from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWorkFactory
 
 
@@ -37,6 +48,7 @@ class WorkerDependencies:
     file_store: LocalFileStore
     reconciliation_service: FileReconciliationService
     document_processor: IsolatedPlainTextProcessor
+    indexing_pipeline: IndexingPipeline
 
     async def close(self) -> None:
         """Release process-owned database resources during Worker shutdown."""
@@ -83,6 +95,25 @@ def build_worker_dependencies(
         resolved_settings.file_store.staging_path,
         resolved_settings.file_store.final_path,
     )
+    document_processor = IsolatedPlainTextProcessor(
+        ParserLimits(
+            max_chunks=resolved_settings.parser.max_chunks,
+            wall_seconds=resolved_settings.parser.wall_seconds,
+            cpu_seconds=resolved_settings.parser.cpu_seconds,
+            memory_bytes=resolved_settings.parser.memory_bytes,
+        )
+    )
+    embedding_settings = resolved_settings.model_provider.embedding
+    embedding_space = embedding_space_definition(embedding_settings)
+    embedding_provider = OpenAICompatibleEmbeddingProvider(
+        base_url=str(embedding_settings.base_url),
+        api_key=embedding_settings.api_key.get_secret_value(),
+        embedding_space=embedding_space,
+        max_batch_size=embedding_settings.max_batch_size,
+        timeout_seconds=embedding_settings.timeout_seconds,
+        max_retries=embedding_settings.max_retries,
+        max_concurrency=embedding_settings.max_concurrency,
+    )
     return WorkerDependencies(
         settings=resolved_settings,
         startup=startup,
@@ -107,12 +138,12 @@ def build_worker_dependencies(
                 resolved_settings.file_store.cleanup_base_delay_seconds
             ),
         ),
-        document_processor=IsolatedPlainTextProcessor(
-            ParserLimits(
-                max_chunks=resolved_settings.parser.max_chunks,
-                wall_seconds=resolved_settings.parser.wall_seconds,
-                cpu_seconds=resolved_settings.parser.cpu_seconds,
-                memory_bytes=resolved_settings.parser.memory_bytes,
-            )
+        document_processor=document_processor,
+        indexing_pipeline=IndexingPipeline(
+            unit_of_work,
+            file_store,
+            document_processor,
+            embedding_provider,
+            FixedPgVectorSpace(embedding_space),
         ),
     )

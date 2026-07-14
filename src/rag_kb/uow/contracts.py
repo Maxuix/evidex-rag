@@ -11,6 +11,7 @@ from rag_kb.repositories import (
     ContentMutationRepository,
     DocumentRepository,
     FileConsistencyRepository,
+    IndexingRepository,
     KnowledgeBaseRepository,
     WorkspaceRepository,
 )
@@ -24,6 +25,7 @@ class UnitOfWorkPurpose(StrEnum):
     HEARTBEAT = "heartbeat"
     RECONCILIATION = "reconciliation"
     READ_SNAPSHOT = "read_snapshot"
+    INDEXING = "indexing"
 
 
 class TransactionMode(StrEnum):
@@ -59,6 +61,9 @@ class UnitOfWork(Protocol):
 
     @property
     def file_consistency(self) -> FileConsistencyRepository: ...
+
+    @property
+    def indexing(self) -> IndexingRepository: ...
 
     async def __aenter__(self) -> UnitOfWork: ...
 

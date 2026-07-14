@@ -14,6 +14,7 @@ from rag_kb.repositories import (
     ContentMutationRepository,
     DocumentRepository,
     FileConsistencyRepository,
+    IndexingRepository,
     KnowledgeBaseRepository,
     WorkspaceRepository,
 )
@@ -24,6 +25,7 @@ from rag_kb.repositories.sqlalchemy_content import (
     SqlAlchemyKnowledgeBaseRepository,
 )
 from rag_kb.repositories.sqlalchemy import SqlAlchemyWorkspaceRepository
+from rag_kb.repositories.sqlalchemy_indexing import SqlAlchemyIndexingRepository
 from rag_kb.uow.contracts import (
     TransactionMode,
     UnitOfWorkConcurrencyError,
@@ -62,6 +64,7 @@ class SqlAlchemyUnitOfWork:
         self._document_repository: DocumentRepository | None = None
         self._content_mutation_repository: ContentMutationRepository | None = None
         self._file_consistency_repository: FileConsistencyRepository | None = None
+        self._indexing_repository: IndexingRepository | None = None
         self._owner_task: asyncio.Task[object] | None = None
         self._state = _State.NEW
 
@@ -95,6 +98,12 @@ class SqlAlchemyUnitOfWork:
         assert self._file_consistency_repository is not None
         return self._file_consistency_repository
 
+    @property
+    def indexing(self) -> IndexingRepository:
+        self._ensure_active()
+        assert self._indexing_repository is not None
+        return self._indexing_repository
+
     async def __aenter__(self) -> SqlAlchemyUnitOfWork:
         if self._state is not _State.NEW:
             raise UnitOfWorkStateError("a Unit of Work instance is single-use")
@@ -122,6 +131,9 @@ class SqlAlchemyUnitOfWork:
             session, self.workspace_id, self._ensure_active
         )
         self._file_consistency_repository = SqlAlchemyFileConsistencyRepository(
+            session, self.workspace_id, self._ensure_active
+        )
+        self._indexing_repository = SqlAlchemyIndexingRepository(
             session, self.workspace_id, self._ensure_active
         )
         try:

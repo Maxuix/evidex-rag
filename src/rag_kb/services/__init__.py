@@ -20,6 +20,7 @@ from rag_kb.services.content import (
     DocumentService,
     KnowledgeBaseService,
     build_content_services,
+    embedding_space_definition,
 )
 from rag_kb.services.files import FileReconciliationService, SourceFileService
 from rag_kb.services.admission import FileAdmissionService
@@ -45,4 +46,5 @@ __all__ = [
     "ResourceStateConflictError",
     "SourceFileService",
     "build_content_services",
+    "embedding_space_definition",
 ]

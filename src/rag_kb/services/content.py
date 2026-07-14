@@ -43,21 +43,7 @@ def build_content_services(
 ) -> ContentServices:
     """Construct content services without exposing domain configuration to the API."""
 
-    definition = EmbeddingSpaceDefinition(
-        provider_identity=embedding.provider_identity,
-        endpoint_identity=embedding.logical_endpoint_identity,
-        requested_model=embedding.model,
-        resolved_model=embedding.resolved_model,
-        model_version=embedding.model_version,
-        deployment_revision=None,
-        dimension=embedding.dimension,
-        distance_metric=embedding.metric,
-        vector_data_type=embedding.vector_data_type,
-        normalization=embedding.normalization,
-        configuration_fingerprint=embedding.configuration_fingerprint,
-        tokenizer_fingerprint=None,
-        compatibility_fingerprint=embedding.compatibility_fingerprint,
-    )
+    definition = embedding_space_definition(embedding)
     profile = IndexProfileDefinition(
         parser_config={
             "profile": "plain_text_test_v1",
@@ -80,6 +66,26 @@ def build_content_services(
             index_profile=profile,
         ),
         documents=DocumentService(unit_of_work, access_policy),
+    )
+
+
+def embedding_space_definition(embedding: Any) -> EmbeddingSpaceDefinition:
+    """Map immutable provider settings to the persisted compatibility fact."""
+
+    return EmbeddingSpaceDefinition(
+        provider_identity=embedding.provider_identity,
+        endpoint_identity=embedding.logical_endpoint_identity,
+        requested_model=embedding.model,
+        resolved_model=embedding.resolved_model,
+        model_version=embedding.model_version,
+        deployment_revision=None,
+        dimension=embedding.dimension,
+        distance_metric=embedding.metric,
+        vector_data_type=embedding.vector_data_type,
+        normalization=embedding.normalization,
+        configuration_fingerprint=embedding.configuration_fingerprint,
+        tokenizer_fingerprint=None,
+        compatibility_fingerprint=embedding.compatibility_fingerprint,
     )
 
 

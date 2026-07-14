@@ -9,7 +9,8 @@ The current unit suite covers structure, dependency boundaries, configuration,
 composition, and the async-only persistence contract. Database integration tests
 run the real migrations and exercise schema, role, lifecycle idempotency,
 immutable versions, atomic SourceChange allocation, concurrency, workspace-bound
-repositories, and Unit of Work behavior against the pinned PostgreSQL/pgvector
-image. Contract tests drive the ASGI application directly and freeze Problem
+repositories, Unit of Work behavior, retry-safe Chunk/Vector upserts, partial
+failure replay, fixed embedding compatibility, and non-serving completeness
+gates against the pinned PostgreSQL/pgvector image. Contract tests drive the ASGI application directly and freeze Problem
 Details, cursor, content DTO, idempotency, lifespan, and OpenAPI behavior.
 End-to-end tests are populated by later eligible work items.
