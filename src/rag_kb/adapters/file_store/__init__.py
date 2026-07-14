@@ -1,0 +1,1 @@
+"""File-store adapter boundary."""

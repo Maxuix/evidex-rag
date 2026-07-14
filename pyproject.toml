@@ -1,0 +1,18 @@
+[project]
+name = "rag-kb"
+version = "0.1.0"
+description = "Enterprise knowledge base and evidence-grounded RAG application"
+readme = "README.md"
+requires-python = "==3.12.13"
+dependencies = [
+  "alembic==1.18.5",
+  "asyncpg==0.31.0",
+  "fastapi==0.135.4",
+  "pgvector==0.4.2",
+  "pydantic==2.13.4",
+  "pydantic-settings==2.14.2",
+  "SQLAlchemy==2.0.51",
+]
+
+[tool.uv]
+package = false
