@@ -12,6 +12,7 @@ Authoritative project documents:
 - [Module boundaries](docs/architecture/module-boundaries.md)
 - [Configuration and composition roots](docs/architecture/configuration.md)
 - [P0/P1A database schema](docs/architecture/database-schema.md)
+- [Async data access and transactions](docs/architecture/async-data-access.md)
 
 ## Current Layout
 
@@ -58,9 +59,9 @@ PYTHONPATH=src:. .venv/bin/python tools/run_db_integration.py
 
 ## Current Boundary
 
-This skeleton does not yet provide upload, indexing, retrieval, chat, a frontend,
-database migrations, or a runnable Compose environment. Those capabilities are
-introduced only by their ordered work items in the execution tracker. Until the
-local-release stage is complete, this repository makes no claim of enterprise
-authentication, high availability, formal backup, production hardening, or
-multi-tenant isolation.
+This foundation does not yet provide upload, indexing, retrieval, chat, a
+frontend, public business APIs, or a runnable Compose environment. Those
+capabilities are introduced only by their ordered work items in the execution
+tracker. Until the local-release stage is complete, this repository makes no
+claim of enterprise authentication, high availability, formal backup,
+production hardening, or multi-tenant isolation.

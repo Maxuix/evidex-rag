@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import copy
 import os
 import tempfile
@@ -13,6 +14,7 @@ from apps.api.dependencies import build_api_dependencies
 from apps.worker.dependencies import build_worker_dependencies
 from rag_kb.config import StartupConfigurationError, validate_startup_environment
 from rag_kb.config.settings import Settings, load_settings
+from rag_kb.db import DatabaseProcess
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -256,10 +258,26 @@ class StartupValidationTests(unittest.TestCase):
             api = build_api_dependencies(settings)
             worker = build_worker_dependencies(settings)
 
-        self.assertIs(api.settings, settings)
-        self.assertIs(worker.settings, settings)
-        self.assertEqual(api.startup.storage_device, worker.startup.storage_device)
-        self.assertEqual(api.startup.configured_pool_capacity, 22)
+            self.assertIs(api.settings, settings)
+            self.assertIs(worker.settings, settings)
+            self.assertEqual(
+                api.startup.storage_device,
+                worker.startup.storage_device,
+            )
+            self.assertEqual(api.startup.configured_pool_capacity, 22)
+            self.assertIs(api.database.process, DatabaseProcess.API)
+            self.assertIs(worker.database.process, DatabaseProcess.WORKER)
+            self.assertTrue(api.database.engine.dialect.is_async)
+            self.assertTrue(worker.database.engine.dialect.is_async)
+            self.assertNotIn("runtime-secret", repr(api))
+            self.assertNotIn("runtime-secret", repr(worker))
+            self.assertIsNot(api.unit_of_work(), api.unit_of_work())
+            self.assertIsNot(worker.unit_of_work(), worker.unit_of_work())
+            asyncio.run(api.close())
+            asyncio.run(worker.close())
+
+        self.assertTrue(api.database._closed)
+        self.assertTrue(worker.database._closed)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run S02-W03 against the pinned PostgreSQL/pgvector container."""
+"""Run Stage 02 database checks against pinned PostgreSQL/pgvector."""
 
 from __future__ import annotations
 

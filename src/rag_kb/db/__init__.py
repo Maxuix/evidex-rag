@@ -6,10 +6,18 @@ from rag_kb.db.compatibility import (
     validate_database_compatibility,
 )
 from rag_kb.db.models import Base
+from rag_kb.db.session import (
+    DatabaseProcess,
+    DatabaseResources,
+    create_database_resources,
+)
 
 __all__ = [
     "Base",
     "DatabaseCompatibility",
     "DatabaseCompatibilityError",
+    "DatabaseProcess",
+    "DatabaseResources",
+    "create_database_resources",
     "validate_database_compatibility",
 ]

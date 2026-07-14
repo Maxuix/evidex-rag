@@ -5,6 +5,8 @@
 - `integration/`: checks using real infrastructure such as PostgreSQL/pgvector.
 - `e2e/`: externally observable application flows.
 
-`S02-W01` adds only standard-library unit checks for the repository structure and
-dependency-boundary tool. Later work items populate the other suites when their
-prerequisites are implemented.
+The current unit suite covers structure, dependency boundaries, configuration,
+composition, and the async-only persistence contract. Database integration tests
+run the real migration and exercise schema, role, concurrency, repository, and
+Unit of Work behavior against the pinned PostgreSQL/pgvector image. Contract and
+end-to-end suites are populated by later eligible work items.
