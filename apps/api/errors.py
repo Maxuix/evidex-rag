@@ -10,6 +10,12 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException
 
 from rag_kb.auth import AccessDeniedError
+from rag_kb.services import (
+    IdempotencyKeyReusedError,
+    ResourceNameConflictError,
+    ResourceNotFoundError,
+    ResourceStateConflictError,
+)
 from rag_kb.schemas import ErrorCode, FieldViolation, ProblemDetails
 
 
@@ -50,6 +56,58 @@ def install_problem_handlers(app: FastAPI) -> None:
         _http_exception_handler,  # type: ignore[arg-type]
     )
     app.add_exception_handler(Exception, _unexpected_exception_handler)
+    app.add_exception_handler(ResourceNotFoundError, _resource_not_found_handler)  # type: ignore[arg-type]
+    app.add_exception_handler(ResourceNameConflictError, _resource_name_conflict_handler)  # type: ignore[arg-type]
+    app.add_exception_handler(ResourceStateConflictError, _resource_state_conflict_handler)  # type: ignore[arg-type]
+    app.add_exception_handler(IdempotencyKeyReusedError, _idempotency_reused_handler)  # type: ignore[arg-type]
+
+
+async def _resource_not_found_handler(request: Request, error: ResourceNotFoundError) -> JSONResponse:
+    del error
+    return problem_response(
+        request,
+        code=ErrorCode.RESOURCE_NOT_FOUND,
+        status=404,
+        title="Resource not found",
+        detail="The requested resource was not found.",
+        retryable=False,
+    )
+
+
+async def _resource_name_conflict_handler(request: Request, error: ResourceNameConflictError) -> JSONResponse:
+    del error
+    return problem_response(
+        request,
+        code=ErrorCode.RESOURCE_NAME_CONFLICT,
+        status=409,
+        title="Resource name conflict",
+        detail="A resource with the requested name already exists.",
+        retryable=False,
+    )
+
+
+async def _resource_state_conflict_handler(request: Request, error: ResourceStateConflictError) -> JSONResponse:
+    del error
+    return problem_response(
+        request,
+        code=ErrorCode.RESOURCE_STATE_CONFLICT,
+        status=409,
+        title="Resource state conflict",
+        detail="The requested operation conflicts with the current resource state.",
+        retryable=False,
+    )
+
+
+async def _idempotency_reused_handler(request: Request, error: IdempotencyKeyReusedError) -> JSONResponse:
+    del error
+    return problem_response(
+        request,
+        code=ErrorCode.IDEMPOTENCY_KEY_REUSED,
+        status=409,
+        title="Idempotency-Key reused",
+        detail="The Idempotency-Key was already used with a different request.",
+        retryable=False,
+    )
 
 
 async def _api_problem_handler(request: Request, error: ApiProblem) -> JSONResponse:

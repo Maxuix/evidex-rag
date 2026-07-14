@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import unittest
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Annotated
@@ -27,7 +28,17 @@ from rag_kb.auth import (
     MetadataFilter,
     SingleWorkspaceAccessPolicy,
 )
-from rag_kb.domain import IdempotencyScope, canonical_request_hash
+from rag_kb.domain import (
+    Document,
+    DocumentMutationResult,
+    DocumentVersion,
+    IdempotencyKeyReusedError,
+    IdempotencyScope,
+    KnowledgeBase,
+    Page,
+    ResourceNotFoundError,
+    canonical_request_hash,
+)
 from rag_kb.schemas import CursorPayload, ErrorCode, PaginationQuery
 
 
@@ -501,7 +512,7 @@ class CommonContractTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             IdempotencyScope("principal", "client", "/api/v1/chat/runs", key)
 
-    def test_production_openapi_has_no_placeholder_business_routes(self) -> None:
+    def test_production_openapi_publishes_only_eligible_business_routes(self) -> None:
         production = create_app().openapi()
         snapshot = json.loads(
             (PROJECT_ROOT / "tests/contract/snapshots/openapi-v1.json").read_text(
@@ -509,7 +520,242 @@ class CommonContractTests(unittest.TestCase):
             )
         )
         self.assertEqual(production, snapshot)
-        self.assertEqual(production["paths"], {})
+        self.assertEqual(
+            set(production["paths"]),
+            {
+                "/api/v1/documents/{document_id}",
+                "/api/v1/knowledge-bases",
+                "/api/v1/knowledge-bases/{kb_id}",
+                "/api/v1/knowledge-bases/{kb_id}/documents",
+            },
+        )
+        self.assertNotIn(
+            "post",
+            production["paths"]["/api/v1/knowledge-bases/{kb_id}/documents"],
+        )
+        create_conflict = production["paths"]["/api/v1/knowledge-bases"][
+            "post"
+        ]["responses"]["409"]
+        self.assertEqual(
+            set(create_conflict["content"]), {"application/problem+json"}
+        )
+        self.assertEqual(
+            create_conflict["content"]["application/problem+json"]["schema"][
+                "$ref"
+            ],
+            "#/components/schemas/ProblemDetails",
+        )
+
+
+class _FakeKnowledgeBaseService:
+    def __init__(self) -> None:
+        self.value = _knowledge_base_value()
+
+    async def create(self, context, key, *, name, retrieval_defaults):
+        del context, key
+        self.value = dataclass_replace(
+            self.value, name=name, retrieval_defaults=retrieval_defaults
+        )
+        return self.value
+
+    async def get(self, context, kb_id):
+        del context
+        if kb_id != self.value.id:
+            raise ResourceNotFoundError("internal detail")
+        return self.value
+
+    async def list(self, context, *, limit, sort, after):
+        del context, limit, sort, after
+        return Page(items=(self.value,))
+
+    async def update(
+        self, context, key, kb_id, *, name, retrieval_defaults
+    ):
+        del context
+        if key == UUID("00000000-0000-0000-0000-000000000099"):
+            raise IdempotencyKeyReusedError("internal hash detail")
+        if kb_id != self.value.id:
+            raise ResourceNotFoundError("internal detail")
+        self.value = dataclass_replace(
+            self.value,
+            name=name or self.value.name,
+            retrieval_defaults=retrieval_defaults or self.value.retrieval_defaults,
+        )
+        return self.value
+
+
+class _FakeDocumentService:
+    def __init__(self) -> None:
+        self.value = _document_value()
+
+    async def get(self, context, document_id):
+        del context
+        if document_id != self.value.id:
+            raise ResourceNotFoundError("internal detail")
+        return self.value
+
+    async def list(self, context, *, kb_id, limit, sort, after):
+        del context, limit, sort, after
+        return Page(items=(self.value,)) if kb_id == self.value.kb_id else Page(items=())
+
+    async def delete(self, context, key, document_id):
+        del context, key
+        if document_id != self.value.id:
+            raise ResourceNotFoundError("internal detail")
+        return DocumentMutationResult(
+            document=self.value,
+            source_change_id=UUID("01900000-0000-7000-8000-000000000025"),
+            source_change_seq=2,
+            index_revision_id=UUID("01900000-0000-7000-8000-000000000012"),
+        )
+
+
+class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self.dependencies = StubApiDependencies()
+        self.dependencies.knowledge_base_service = _FakeKnowledgeBaseService()
+        self.dependencies.document_service = _FakeDocumentService()
+        self.app = create_app(dependencies=self.dependencies)  # type: ignore[arg-type]
+        self.lifespan = self.app.router.lifespan_context(self.app)
+        await self.lifespan.__aenter__()
+
+    async def asyncTearDown(self) -> None:
+        await self.lifespan.__aexit__(None, None, None)
+
+    async def test_knowledge_base_routes_require_idempotency_and_use_typed_dtos(self) -> None:
+        missing = await request(
+            self.app,
+            "POST",
+            f"{API_PREFIX}/knowledge-bases",
+            json_body={"name": "Engineering"},
+        )
+        self.assertEqual(missing.status, 422)
+        self.assertEqual(missing.json()["code"], "INVALID_IDEMPOTENCY_KEY")
+
+        created = await request(
+            self.app,
+            "POST",
+            f"{API_PREFIX}/knowledge-bases",
+            headers={"idempotency-key": str(uuid4())},
+            json_body={"name": "  Engineering  ", "retrieval_defaults": {"top_k": 8}},
+        )
+        self.assertEqual(created.status, 201)
+        self.assertEqual(created.json()["name"], "Engineering")
+        self.assertEqual(created.json()["retrieval_defaults"]["strategy"], "exact_vector")
+        self.assertEqual(created.json()["retrieval_defaults"]["top_k"], 8)
+
+        listed = await request(self.app, "GET", f"{API_PREFIX}/knowledge-bases")
+        self.assertEqual(listed.status, 200)
+        self.assertEqual(len(listed.json()["items"]), 1)
+
+        invalid_position = encode_cursor(
+            CursorPayload(sort="created_at", values=("not-a-time", "not-a-uuid"))
+        )
+        invalid = await request(
+            self.app,
+            "GET",
+            f"{API_PREFIX}/knowledge-bases",
+            query=f"cursor={invalid_position}",
+        )
+        self.assertEqual(invalid.status, 400)
+        self.assertEqual(invalid.json()["code"], "INVALID_CURSOR")
+
+    async def test_problem_mappings_redact_domain_details(self) -> None:
+        missing = await request(
+            self.app,
+            "GET",
+            f"{API_PREFIX}/knowledge-bases/{uuid4()}",
+        )
+        self.assertEqual(missing.status, 404)
+        self.assertEqual(missing.json()["code"], "RESOURCE_NOT_FOUND")
+        self.assertNotIn("internal detail", missing.body.decode())
+
+        conflict = await request(
+            self.app,
+            "PATCH",
+            f"{API_PREFIX}/knowledge-bases/{_knowledge_base_value().id}",
+            headers={
+                "idempotency-key": "00000000-0000-0000-0000-000000000099"
+            },
+            json_body={"name": "Changed"},
+        )
+        self.assertEqual(conflict.status, 409)
+        self.assertEqual(conflict.json()["code"], "IDEMPOTENCY_KEY_REUSED")
+        self.assertNotIn("internal hash", conflict.body.decode())
+
+    async def test_document_reads_and_delete_are_published_but_upload_is_not(self) -> None:
+        value = _document_value()
+        loaded = await request(
+            self.app, "GET", f"{API_PREFIX}/documents/{value.id}"
+        )
+        self.assertEqual(loaded.status, 200)
+        self.assertNotIn("storage_uri", loaded.json()["current_version"])
+
+        deleted = await request(
+            self.app,
+            "DELETE",
+            f"{API_PREFIX}/documents/{value.id}",
+            headers={"idempotency-key": str(uuid4())},
+        )
+        self.assertEqual(deleted.status, 200)
+        self.assertEqual(deleted.json()["source_change_seq"], 2)
+
+        unavailable_upload = await request(
+            self.app,
+            "POST",
+            f"{API_PREFIX}/knowledge-bases/{value.kb_id}/documents",
+            headers={"idempotency-key": str(uuid4())},
+            json_body={},
+        )
+        self.assertEqual(unavailable_upload.status, 405)
+
+
+def dataclass_replace(value, **changes):
+    from dataclasses import replace
+
+    return replace(value, **changes)
+
+
+def _knowledge_base_value() -> KnowledgeBase:
+    now = datetime(2026, 7, 14, tzinfo=UTC)
+    return KnowledgeBase(
+        id=UUID("01900000-0000-7000-8000-000000000010"),
+        workspace_id=WORKSPACE,
+        name="knowledge-base",
+        source_change_seq=0,
+        active_index_revision_id=UUID("01900000-0000-7000-8000-000000000012"),
+        embedding_space_id=UUID("01900000-0000-7000-8000-000000000013"),
+        retrieval_defaults={"strategy": "exact_vector", "top_k": 10},
+        provisioned_at=now,
+        created_at=now,
+        updated_at=now,
+    )
+
+
+def _document_value() -> Document:
+    now = datetime(2026, 7, 14, tzinfo=UTC)
+    document_id = UUID("01900000-0000-7000-8000-000000000020")
+    return Document(
+        id=document_id,
+        workspace_id=WORKSPACE,
+        kb_id=_knowledge_base_value().id,
+        display_name="guide.md",
+        current_version=DocumentVersion(
+            id=UUID("01900000-0000-7000-8000-000000000021"),
+            document_id=document_id,
+            version_number=1,
+            source_status="available",
+            checksum_sha256="0" * 64,
+            storage_uri="file:///must-not-be-public",
+            original_filename="guide.md",
+            media_type="text/markdown",
+            size_bytes=42,
+            created_at=now,
+        ),
+        deleted_at=None,
+        created_at=now,
+        updated_at=now,
+    )
 
 
 if __name__ == "__main__":

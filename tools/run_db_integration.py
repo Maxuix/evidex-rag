@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run Stage 02 database checks against pinned PostgreSQL/pgvector."""
+"""Run database checks against the pinned PostgreSQL/pgvector runtime."""
 
 from __future__ import annotations
 
@@ -130,7 +130,7 @@ async def verify_clean_downgrade(port: int) -> None:
 
 
 def main() -> int:
-    container_name = f"rag-kb-s02-w03-{os.getpid()}"
+    container_name = f"rag-kb-db-integration-{os.getpid()}"
     started = False
     try:
         run(

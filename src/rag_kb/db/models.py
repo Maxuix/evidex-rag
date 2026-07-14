@@ -321,6 +321,66 @@ class SourceChange(Base):
     created_at: Mapped[datetime] = created_timestamp()
 
 
+class ContentMutation(Base):
+    """Lifecycle-specific idempotency record committed with business state."""
+
+    __tablename__ = "content_mutation"
+    __table_args__ = (
+        UniqueConstraint(
+            "principal_id",
+            "client_id",
+            "endpoint",
+            "idempotency_key",
+            name="uq_content_mutation_idempotency_scope",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'completed')",
+            name="content_mutation_status_supported",
+        ),
+        CheckConstraint(
+            "kb_id IS NOT NULL OR document_id IS NOT NULL",
+            name="content_mutation_has_result",
+        ),
+    )
+
+    id: Mapped[UUID] = uuid_primary_key()
+    workspace_id: Mapped[UUID] = mapped_column(
+        ForeignKey("workspace.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    principal_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    client_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    endpoint: Mapped[str] = mapped_column(String(255), nullable=False)
+    idempotency_key: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), nullable=False
+    )
+    request_hash: Mapped[str] = mapped_column(String(71), nullable=False)
+    operation: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    kb_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("knowledge_base.id", ondelete="CASCADE"), nullable=True
+    )
+    document_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("document.id", ondelete="CASCADE"), nullable=True
+    )
+    document_version_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("document_version.id", ondelete="CASCADE"), nullable=True
+    )
+    source_change_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("source_change.id", ondelete="CASCADE"), nullable=True
+    )
+    indexed_document_version_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("indexed_document_version.id", ondelete="CASCADE"), nullable=True
+    )
+    index_revision_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("index_revision.id", ondelete="CASCADE"), nullable=True
+    )
+    job_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("indexing_job.id", ondelete="CASCADE"), nullable=True
+    )
+    created_at: Mapped[datetime] = created_timestamp()
+    updated_at: Mapped[datetime] = updated_timestamp()
+
+
 class IndexRevision(Base):
     __tablename__ = "index_revision"
     __table_args__ = (

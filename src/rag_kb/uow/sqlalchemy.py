@@ -10,7 +10,17 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, AsyncSessionTransaction, async_sessionmaker
 
-from rag_kb.repositories import WorkspaceRepository
+from rag_kb.repositories import (
+    ContentMutationRepository,
+    DocumentRepository,
+    KnowledgeBaseRepository,
+    WorkspaceRepository,
+)
+from rag_kb.repositories.sqlalchemy_content import (
+    SqlAlchemyContentMutationRepository,
+    SqlAlchemyDocumentRepository,
+    SqlAlchemyKnowledgeBaseRepository,
+)
 from rag_kb.repositories.sqlalchemy import SqlAlchemyWorkspaceRepository
 from rag_kb.uow.contracts import (
     TransactionMode,
@@ -46,6 +56,9 @@ class SqlAlchemyUnitOfWork:
         self._session: AsyncSession | None = None
         self._transaction: AsyncSessionTransaction | None = None
         self._workspace_repository: WorkspaceRepository | None = None
+        self._knowledge_base_repository: KnowledgeBaseRepository | None = None
+        self._document_repository: DocumentRepository | None = None
+        self._content_mutation_repository: ContentMutationRepository | None = None
         self._owner_task: asyncio.Task[object] | None = None
         self._state = _State.NEW
 
@@ -54,6 +67,24 @@ class SqlAlchemyUnitOfWork:
         self._ensure_active()
         assert self._workspace_repository is not None
         return self._workspace_repository
+
+    @property
+    def knowledge_bases(self) -> KnowledgeBaseRepository:
+        self._ensure_active()
+        assert self._knowledge_base_repository is not None
+        return self._knowledge_base_repository
+
+    @property
+    def documents(self) -> DocumentRepository:
+        self._ensure_active()
+        assert self._document_repository is not None
+        return self._document_repository
+
+    @property
+    def content_mutations(self) -> ContentMutationRepository:
+        self._ensure_active()
+        assert self._content_mutation_repository is not None
+        return self._content_mutation_repository
 
     async def __aenter__(self) -> SqlAlchemyUnitOfWork:
         if self._state is not _State.NEW:
@@ -71,6 +102,15 @@ class SqlAlchemyUnitOfWork:
             session,
             self.workspace_id,
             self._ensure_active,
+        )
+        self._knowledge_base_repository = SqlAlchemyKnowledgeBaseRepository(
+            session, self.workspace_id, self._ensure_active
+        )
+        self._document_repository = SqlAlchemyDocumentRepository(
+            session, self.workspace_id, self._ensure_active
+        )
+        self._content_mutation_repository = SqlAlchemyContentMutationRepository(
+            session, self.workspace_id, self._ensure_active
         )
         try:
             self._transaction = await session.begin()

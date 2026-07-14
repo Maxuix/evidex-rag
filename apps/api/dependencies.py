@@ -19,6 +19,7 @@ from rag_kb.db import (
     create_database_resources,
     validate_runtime_readiness,
 )
+from rag_kb.services import DocumentService, KnowledgeBaseService, build_content_services
 from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWorkFactory
 
 
@@ -32,6 +33,8 @@ class ApiDependencies:
     unit_of_work: SqlAlchemyUnitOfWorkFactory
     auth_provider: DevelopmentAuthProvider
     access_policy: SingleWorkspaceAccessPolicy
+    knowledge_base_service: KnowledgeBaseService
+    document_service: DocumentService
 
     async def close(self) -> None:
         """Release process-owned database resources during API shutdown."""
@@ -64,19 +67,25 @@ def build_api_dependencies(
         max_overflow=database_settings.api_max_overflow,
         process=DatabaseProcess.API,
     )
+    unit_of_work = SqlAlchemyUnitOfWorkFactory(
+        database.sessions,
+        identity.workspace_id,
+    )
+    access_policy = SingleWorkspaceAccessPolicy(identity.workspace_id)
+    embedding = resolved_settings.model_provider.embedding
+    content_services = build_content_services(unit_of_work, access_policy, embedding)
     return ApiDependencies(
         settings=resolved_settings,
         startup=startup,
         database=database,
-        unit_of_work=SqlAlchemyUnitOfWorkFactory(
-            database.sessions,
-            identity.workspace_id,
-        ),
+        unit_of_work=unit_of_work,
         auth_provider=DevelopmentAuthProvider(
             deployment_profile=resolved_settings.app.deployment_profile.value,
             principal_id=identity.principal_id,
             client_id=identity.client_id,
             workspace_id=identity.workspace_id,
         ),
-        access_policy=SingleWorkspaceAccessPolicy(identity.workspace_id),
+        access_policy=access_policy,
+        knowledge_base_service=content_services.knowledge_bases,
+        document_service=content_services.documents,
     )

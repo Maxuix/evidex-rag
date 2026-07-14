@@ -8,12 +8,34 @@ from rag_kb.schemas.common import (
     PaginationQuery,
     ProblemDetails,
 )
+from rag_kb.schemas.documents import (
+    DocumentDeleteResponse,
+    DocumentPage,
+    DocumentResponse,
+    DocumentVersionResponse,
+)
+from rag_kb.schemas.knowledge_bases import (
+    KnowledgeBaseCreate,
+    KnowledgeBasePage,
+    KnowledgeBaseResponse,
+    KnowledgeBaseUpdate,
+    RetrievalDefaults,
+)
 
 __all__ = [
     "CursorPage",
     "CursorPayload",
+    "DocumentDeleteResponse",
+    "DocumentPage",
+    "DocumentResponse",
+    "DocumentVersionResponse",
     "ErrorCode",
     "FieldViolation",
+    "KnowledgeBaseCreate",
+    "KnowledgeBasePage",
+    "KnowledgeBaseResponse",
+    "KnowledgeBaseUpdate",
     "PaginationQuery",
     "ProblemDetails",
+    "RetrievalDefaults",
 ]

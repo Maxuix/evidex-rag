@@ -7,7 +7,12 @@ from types import TracebackType
 from typing import Protocol, runtime_checkable
 from uuid import UUID
 
-from rag_kb.repositories import WorkspaceRepository
+from rag_kb.repositories import (
+    ContentMutationRepository,
+    DocumentRepository,
+    KnowledgeBaseRepository,
+    WorkspaceRepository,
+)
 
 
 class UnitOfWorkPurpose(StrEnum):
@@ -41,6 +46,15 @@ class UnitOfWork(Protocol):
 
     @property
     def workspaces(self) -> WorkspaceRepository: ...
+
+    @property
+    def knowledge_bases(self) -> KnowledgeBaseRepository: ...
+
+    @property
+    def documents(self) -> DocumentRepository: ...
+
+    @property
+    def content_mutations(self) -> ContentMutationRepository: ...
 
     async def __aenter__(self) -> UnitOfWork: ...
 

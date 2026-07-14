@@ -1,0 +1,9 @@
+"""Published business routers for the current eligible API surface."""
+
+from apps.api.routers.documents import router as documents_router
+from apps.api.routers.knowledge_bases import router as knowledge_bases_router
+
+
+BUSINESS_ROUTERS = (knowledge_bases_router, documents_router)
+
+__all__ = ["BUSINESS_ROUTERS"]
