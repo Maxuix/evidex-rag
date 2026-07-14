@@ -4,8 +4,8 @@ This repository is building a local-first enterprise knowledge base with
 evidence-grounded retrieval and answering. The current milestone is the P1A
 Core Vertical Slice. Knowledge-base/document lifecycle, bounded text upload,
 local source-file consistency, isolated parsing, retry-safe indexing execution,
-and conditional current-version promotion are implemented; automatic job
-scheduling, retrieval, and answering are still under construction.
+conditional current-version promotion, and PostgreSQL Worker scheduling are
+implemented; retrieval and answering are still under construction.
 
 Authoritative project documents:
 
@@ -23,6 +23,7 @@ Authoritative project documents:
 - [File admission and parser isolation](docs/architecture/file-admission-parser-isolation.md)
 - [Indexing pipeline](docs/architecture/indexing-pipeline.md)
 - [Current-version promotion and deletion](docs/architecture/promotion-deletion.md)
+- [Single-Worker scheduling and recovery](docs/architecture/worker-scheduling.md)
 
 ## Current Layout
 
@@ -102,7 +103,8 @@ The Compose profile is a local validation runtime. Knowledge-base management,
 document reads/deletion, bounded `.txt`/`.md` upload, restart-safe local source
 storage, isolated transient parsing, an internal retry-safe command for durable
 Chunk/pgvector creation, and conditional promotion to one current serving
-version exist. The Worker does not poll jobs yet, and indexing status APIs,
+version exist. The Worker polls PostgreSQL with bounded claims, independent
+heartbeats, deadlines, retries, and stale recovery. Indexing status APIs,
 retrieval, chat, and business frontend screens are not yet available. It has one
 fixed development identity and provides no enterprise authentication or
 authorization, durable audit system, formal backup/recovery, high availability,

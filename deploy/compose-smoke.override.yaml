@@ -1,0 +1,4 @@
+services:
+  worker:
+    environment:
+      RAG_KB__MODEL_PROVIDER__EMBEDDING__BASE_URL: http://${RAG_KB_SMOKE_EMBEDDING_HOST}:8089/v1

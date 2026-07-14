@@ -6,6 +6,7 @@ import os
 import tempfile
 import unittest
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -27,9 +28,11 @@ from rag_kb.domain import (
     PromotionReason,
 )
 from rag_kb.indexing import CandidatePromotionService, IndexingPipeline
+from rag_kb.scheduling import IndexingJobScheduler, RetryPolicy
 from rag_kb.services import SourceFileService
 from rag_kb.services.content import DocumentService, KnowledgeBaseService
 from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWorkFactory
+from rag_kb.uow import UnitOfWorkPurpose, execute_in_transaction
 
 
 MIGRATION_DSN = os.environ.get("RAG_KB_TEST_MIGRATION_DSN")
@@ -312,6 +315,168 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.reason, PromotionReason.LATER_SOURCE_CHANGE)
         self.assertEqual(result.status, "retired")
 
+    async def test_claim_heartbeat_and_due_retry_use_owner_attempt_cas(self) -> None:
+        kb = await self._create_kb()
+        uploaded = await self._upload(kb.id, "guide.txt", "text/plain", b"safe")
+        observed = datetime(2026, 7, 14, 9, 0, tzinfo=UTC)
+        first = self._scheduler_for(
+            self._pipeline(_Provider()),
+            worker_id="worker-a",
+            clock=lambda: observed,
+        )
+        second = self._scheduler_for(
+            self._pipeline(_Provider()),
+            worker_id="worker-b",
+            clock=lambda: observed,
+        )
+
+        lease = await first.claim_once()
+        self.assertIsNotNone(lease)
+        assert lease is not None
+        self.assertEqual(lease.attempt, 1)
+        self.assertIsNone(await second.claim_once())
+        wrong_owner = replace(lease, claimed_by="worker-b")
+        self.assertFalse(
+            await execute_in_transaction(
+                self.factory,
+                lambda uow: uow.indexing.heartbeat(
+                    wrong_owner,
+                    observed_at=observed + timedelta(seconds=1),
+                ),
+                purpose=UnitOfWorkPurpose.HEARTBEAT,
+            )
+        )
+        self.assertTrue(
+            await execute_in_transaction(
+                self.factory,
+                lambda uow: uow.indexing.heartbeat(
+                    lease,
+                    observed_at=observed + timedelta(seconds=1),
+                ),
+                purpose=UnitOfWorkPurpose.HEARTBEAT,
+            )
+        )
+        due = observed + timedelta(seconds=10)
+        self.assertTrue(
+            await execute_in_transaction(
+                self.factory,
+                lambda uow: uow.indexing.reschedule(
+                    lease,
+                    observed_at=observed + timedelta(seconds=2),
+                    next_attempt_at=due,
+                    error_code=ErrorCode.EMBEDDING_PROVIDER_UNAVAILABLE.value,
+                    error_detail={"attempt": 1},
+                ),
+                purpose=UnitOfWorkPurpose.RECONCILIATION,
+            )
+        )
+        self.assertIsNone(await second.claim_once())
+
+        due_scheduler = self._scheduler_for(
+            self._pipeline(_Provider()),
+            worker_id="worker-b",
+            clock=lambda: due,
+        )
+        retry = await due_scheduler.claim_once()
+        self.assertIsNotNone(retry)
+        assert retry is not None
+        self.assertEqual((retry.claimed_by, retry.attempt), ("worker-b", 2))
+
+    async def test_stale_reconciliation_requeues_then_exhausts(self) -> None:
+        kb = await self._create_kb()
+        await self._upload(kb.id, "guide.txt", "text/plain", b"safe")
+        current = [datetime(2026, 7, 14, 9, 0, tzinfo=UTC)]
+        scheduler = self._scheduler_for(
+            self._pipeline(_Provider()),
+            worker_id="worker-a",
+            clock=lambda: current[0],
+            max_attempts=2,
+            stale_after=10,
+        )
+
+        first = await scheduler.claim_once()
+        self.assertIsNotNone(first)
+        current[0] += timedelta(seconds=11)
+        recovered = await scheduler.reconcile_once()
+        self.assertEqual((recovered.requeued, recovered.failed), (1, 0))
+
+        current[0] += timedelta(seconds=2)
+        second = await scheduler.claim_once()
+        self.assertIsNotNone(second)
+        assert second is not None
+        self.assertEqual(second.attempt, 2)
+        current[0] += timedelta(seconds=11)
+        exhausted = await scheduler.reconcile_once()
+        self.assertEqual((exhausted.requeued, exhausted.failed), (0, 1))
+        state = await self._job_claim_state(second.job_id)
+        self.assertEqual(
+            (state["status"], state["attempt"], state["error_code"]),
+            ("failed", 2, ErrorCode.INDEXING_STALE_WORKER.value),
+        )
+        self.assertIsNone(state["claimed_by"])
+
+    async def test_two_schedulers_execute_one_job_once_and_promote(self) -> None:
+        kb = await self._create_kb()
+        uploaded = await self._upload(kb.id, "guide.txt", "text/plain", b"safe")
+        provider = _Provider()
+        pipeline = self._pipeline(provider)
+        first = self._scheduler_for(pipeline, worker_id="worker-a")
+        second = self._scheduler_for(pipeline, worker_id="worker-b")
+        stopped = asyncio.Event()
+        tasks = (
+            asyncio.create_task(first.run(stopped)),
+            asyncio.create_task(second.run(stopped)),
+        )
+        try:
+            for _ in range(1000):
+                state = await self._target_state(
+                    uploaded.indexed_document_version_id
+                )
+                if state[1] == "serving" and state[2] == "completed":
+                    break
+                await asyncio.sleep(0.01)
+            else:
+                claim = await self._job_claim_state(uploaded.job_id)
+                self.fail(f"schedulers did not complete the queued job: {dict(claim)}")
+        finally:
+            stopped.set()
+            await asyncio.gather(*tasks)
+
+        claim = await self._job_claim_state(uploaded.job_id)
+        self.assertEqual((claim["status"], claim["attempt"]), ("completed", 1))
+        self.assertIsNone(claim["claimed_by"])
+        self.assertEqual(provider.calls, 1)
+
+    async def test_scheduler_recovers_completed_candidate_before_promotion(self) -> None:
+        kb = await self._create_kb()
+        uploaded = await self._upload(kb.id, "guide.txt", "text/plain", b"safe")
+        await self._mark_ready(uploaded)
+        provider = _Provider()
+        scheduler = self._scheduler_for(
+            self._pipeline(provider),
+            worker_id="worker-a",
+        )
+        stopped = asyncio.Event()
+        task = asyncio.create_task(scheduler.run(stopped))
+        try:
+            for _ in range(500):
+                state = await self._target_state(
+                    uploaded.indexed_document_version_id
+                )
+                if state[1] == "serving":
+                    break
+                await asyncio.sleep(0.01)
+            else:
+                self.fail("completed candidate was not promoted by replay")
+        finally:
+            stopped.set()
+            await task
+
+        self.assertEqual(provider.calls, 0)
+        claim = await self._job_claim_state(uploaded.job_id)
+        self.assertEqual(claim["status"], "completed")
+        self.assertIsNone(claim["claimed_by"])
+
     async def test_embedding_mismatch_fails_before_any_derived_write(self) -> None:
         kb = await self._create_kb()
         uploaded = await self._upload(kb.id, "guide.txt", "text/plain", b"safe")
@@ -385,6 +550,29 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
             FixedPgVectorSpace(_embedding()),
         )
 
+    def _scheduler_for(
+        self,
+        pipeline,
+        *,
+        worker_id,
+        clock=None,
+        max_attempts=3,
+        stale_after=1,
+    ):
+        return IndexingJobScheduler(
+            self.factory,
+            pipeline,
+            worker_id=worker_id,
+            concurrency=1,
+            poll_interval_seconds=0.01,
+            heartbeat_interval_seconds=0.02,
+            stale_after_seconds=stale_after,
+            deadline_seconds=10,
+            retry_policy=RetryPolicy(max_attempts, 1, 2),
+            reconciliation_batch_size=10,
+            clock=clock,
+        )
+
     async def _create_kb(self):
         return await self.knowledge_bases.create(
             self.context,
@@ -433,6 +621,21 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
                  WHERE idv.id = $1
                 """,
                 target_id,
+            )
+        finally:
+            await connection.close()
+
+    async def _job_claim_state(self, job_id):
+        connection = await asyncpg.connect(MIGRATION_DSN)
+        try:
+            return await connection.fetchrow(
+                """
+                SELECT status::text, attempt, claimed_by, claimed_at,
+                       heartbeat_at, next_attempt_at, error_code
+                  FROM indexing_job
+                 WHERE id = $1
+                """,
+                job_id,
             )
         finally:
             await connection.close()

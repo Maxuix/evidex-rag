@@ -290,7 +290,10 @@
           "EMBEDDING_PROVIDER_UNAVAILABLE",
           "EMBEDDING_RESPONSE_INVALID",
           "INDEX_PERSISTENCE_FAILED",
-          "INDEX_INCOMPLETE"
+          "INDEX_INCOMPLETE",
+          "INDEXING_DEADLINE_EXCEEDED",
+          "INDEXING_STALE_WORKER",
+          "INDEXING_WORKER_STOPPED"
         ],
         "title": "ErrorCode",
         "type": "string"

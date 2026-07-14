@@ -212,6 +212,10 @@ class JobPollerSettings(StrictSettingsModel):
     heartbeat_interval_seconds: PositiveFloat = 10.0
     stale_after_seconds: PositiveFloat = 120.0
     max_attempts: PositiveInt = 3
+    retry_base_delay_seconds: PositiveFloat = 5.0
+    retry_max_delay_seconds: PositiveFloat = 60.0
+    indexing_deadline_seconds: PositiveFloat = 900.0
+    reconciliation_batch_size: PositiveInt = 100
 
     @model_validator(mode="after")
     def require_safe_stale_timeout(self) -> Self:
@@ -219,7 +223,20 @@ class JobPollerSettings(StrictSettingsModel):
             raise ValueError(
                 "stale_after_seconds must be greater than heartbeat_interval_seconds"
             )
+        if self.retry_max_delay_seconds < self.retry_base_delay_seconds:
+            raise ValueError(
+                "retry_max_delay_seconds must be at least retry_base_delay_seconds"
+            )
+        if self.indexing_deadline_seconds <= self.heartbeat_interval_seconds:
+            raise ValueError(
+                "indexing_deadline_seconds must exceed heartbeat_interval_seconds"
+            )
         return self
+
+    @property
+    def required_worker_connections(self) -> int:
+        lane_capacity = self.chat_concurrency + self.indexing_concurrency
+        return lane_capacity * 2 + 3
 
 
 class FileStoreSettings(StrictSettingsModel):
@@ -400,6 +417,26 @@ class Settings(BaseSettings):
     observability: ObservabilitySettings = Field(
         default_factory=ObservabilitySettings
     )
+
+    @model_validator(mode="after")
+    def require_worker_scheduling_budget(self) -> Self:
+        worker_capacity = (
+            self.database.worker_pool_size + self.database.worker_max_overflow
+        )
+        if worker_capacity < self.job_poller.required_worker_connections:
+            raise ValueError(
+                "Worker database pool cannot cover lanes, heartbeats, polling, "
+                "reconciliation, and safety margin"
+            )
+        longest_operation = max(
+            self.parser.wall_seconds,
+            self.model_provider.embedding.timeout_seconds,
+        )
+        if self.job_poller.stale_after_seconds <= longest_operation:
+            raise ValueError(
+                "stale_after_seconds must exceed every bounded indexing operation"
+            )
+        return self
 
 
 def load_settings(*, env_file: str | Path | None = ".env") -> Settings:

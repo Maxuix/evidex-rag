@@ -80,6 +80,40 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.parser.wall_seconds, 30.0)
         self.assertEqual(settings.parser.cpu_seconds, 20)
         self.assertEqual(settings.parser.memory_bytes, 512 * 1024 * 1024)
+        self.assertEqual(settings.job_poller.required_worker_connections, 7)
+        self.assertEqual(settings.job_poller.indexing_deadline_seconds, 900)
+
+    def test_worker_lane_heartbeat_and_deadline_budget_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            payload = valid_payload(root)
+            with self.assertRaises(ValidationError):
+                Settings(
+                    _env_file=None,
+                    **{
+                        **payload,
+                        "job_poller": {"indexing_concurrency": 10},
+                    },
+                )
+            with self.assertRaises(ValidationError):
+                Settings(
+                    _env_file=None,
+                    **{
+                        **payload,
+                        "job_poller": {"stale_after_seconds": 20},
+                    },
+                )
+            with self.assertRaises(ValidationError):
+                Settings(
+                    _env_file=None,
+                    **{
+                        **payload,
+                        "job_poller": {
+                            "retry_base_delay_seconds": 10,
+                            "retry_max_delay_seconds": 5,
+                        },
+                    },
+                )
 
     def test_nested_environment_surface_loads_without_global_state(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

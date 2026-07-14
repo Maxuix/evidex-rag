@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import and_, exists, func, select
+from sqlalchemy import and_, exists, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -35,12 +35,14 @@ from rag_kb.domain import (
     IndexingCancelled,
     IndexingCommand,
     IndexingExecutionError,
+    IndexingLease,
     IndexingPhase,
     IndexingTarget,
     PromotionCommand,
     PromotionReason,
     PromotionResult,
     PromotionStatus,
+    ReconciliationResult,
     VectorRecordWrite,
     stable_chunk_id,
 )
@@ -56,6 +58,293 @@ class SqlAlchemyIndexingRepository:
         self._session = session
         self._workspace_id = workspace_id
         self._ensure_active = ensure_active
+
+    async def claim(
+        self,
+        *,
+        worker_id: str,
+        observed_at: datetime,
+        max_attempts: int,
+    ) -> IndexingLease | None:
+        self._ensure_active()
+        row = (
+            await self._session.execute(
+                select(IndexingJobRow, IndexedDocumentVersionRow)
+                .join(
+                    IndexedDocumentVersionRow,
+                    IndexedDocumentVersionRow.id
+                    == IndexingJobRow.indexed_document_version_id,
+                )
+                .where(
+                    IndexingJobRow.workspace_id == self._workspace_id,
+                    IndexedDocumentVersionRow.workspace_id == self._workspace_id,
+                    or_(
+                        and_(
+                            IndexingJobRow.status == JobStatus.QUEUED,
+                            IndexingJobRow.attempt < max_attempts,
+                            or_(
+                                IndexingJobRow.next_attempt_at.is_(None),
+                                IndexingJobRow.next_attempt_at <= observed_at,
+                            ),
+                            IndexedDocumentVersionRow.build_status.in_(
+                                (IndexBuildStatus.QUEUED, IndexBuildStatus.FAILED)
+                            ),
+                        ),
+                        and_(
+                            IndexingJobRow.status == JobStatus.COMPLETED,
+                            IndexingJobRow.claimed_by.is_(None),
+                            IndexedDocumentVersionRow.build_status
+                            == IndexBuildStatus.READY,
+                        ),
+                    ),
+                    IndexedDocumentVersionRow.serving_status
+                    == IndexServingStatus.CANDIDATE,
+                )
+                .order_by(
+                    IndexingJobRow.next_attempt_at.asc().nullsfirst(),
+                    IndexingJobRow.created_at,
+                    IndexingJobRow.id,
+                )
+                .limit(1)
+                .with_for_update(of=IndexingJobRow, skip_locked=True)
+            )
+        ).one_or_none()
+        if row is None:
+            return None
+        job, target = row
+        if job.status is JobStatus.QUEUED:
+            job.status = JobStatus.RUNNING
+            job.phase = "claimed"
+            job.attempt += 1
+        elif job.attempt == 0:
+            job.attempt = 1
+        job.claimed_by = worker_id
+        job.claimed_at = observed_at
+        job.heartbeat_at = observed_at
+        job.next_attempt_at = None
+        job.error_code = None
+        job.error_detail = None
+        job.updated_at = observed_at
+        await self._session.flush()
+        return IndexingLease(
+            job_id=job.id,
+            indexed_document_version_id=target.id,
+            claimed_by=worker_id,
+            attempt=job.attempt,
+            claimed_at=observed_at,
+        )
+
+    async def heartbeat(
+        self,
+        lease: IndexingLease,
+        *,
+        observed_at: datetime,
+    ) -> bool:
+        self._ensure_active()
+        updated = await self._session.scalar(
+            update(IndexingJobRow)
+            .where(*_owned_execution(lease, self._workspace_id))
+            .values(heartbeat_at=observed_at, updated_at=observed_at)
+            .returning(IndexingJobRow.id)
+        )
+        return updated is not None
+
+    async def reschedule(
+        self,
+        lease: IndexingLease,
+        *,
+        observed_at: datetime,
+        next_attempt_at: datetime,
+        error_code: str,
+        error_detail: dict[str, Any],
+    ) -> bool:
+        self._ensure_active()
+        target_id = await self._session.scalar(
+            update(IndexingJobRow)
+            .where(
+                *_owned(lease, self._workspace_id),
+                IndexingJobRow.status.in_((JobStatus.RUNNING, JobStatus.FAILED)),
+            )
+            .values(
+                status=JobStatus.QUEUED,
+                phase="queued",
+                claimed_by=None,
+                claimed_at=None,
+                heartbeat_at=None,
+                next_attempt_at=next_attempt_at,
+                error_code=error_code,
+                error_detail=dict(error_detail),
+                updated_at=observed_at,
+            )
+            .returning(IndexingJobRow.indexed_document_version_id)
+        )
+        if target_id is None:
+            return False
+        await self._mark_target_failed(
+            target_id,
+            error_code=error_code,
+            error_detail=error_detail,
+            observed_at=observed_at,
+        )
+        return True
+
+    async def fail_owned(
+        self,
+        lease: IndexingLease,
+        *,
+        observed_at: datetime,
+        error_code: str,
+        error_detail: dict[str, Any],
+    ) -> bool:
+        self._ensure_active()
+        target_id = await self._session.scalar(
+            update(IndexingJobRow)
+            .where(
+                *_owned(lease, self._workspace_id),
+                IndexingJobRow.status.in_((JobStatus.RUNNING, JobStatus.FAILED)),
+            )
+            .values(
+                status=JobStatus.FAILED,
+                phase="failed",
+                claimed_by=None,
+                claimed_at=None,
+                heartbeat_at=None,
+                next_attempt_at=None,
+                error_code=error_code,
+                error_detail=dict(error_detail),
+                updated_at=observed_at,
+            )
+            .returning(IndexingJobRow.indexed_document_version_id)
+        )
+        if target_id is None:
+            return False
+        await self._mark_target_failed(
+            target_id,
+            error_code=error_code,
+            error_detail=error_detail,
+            observed_at=observed_at,
+        )
+        return True
+
+    async def release_terminal(self, lease: IndexingLease) -> bool:
+        self._ensure_active()
+        updated = await self._session.scalar(
+            update(IndexingJobRow)
+            .where(
+                *_owned(lease, self._workspace_id),
+                IndexingJobRow.status.in_(
+                    (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED)
+                ),
+            )
+            .values(
+                claimed_by=None,
+                claimed_at=None,
+                heartbeat_at=None,
+                next_attempt_at=None,
+                updated_at=func.now(),
+            )
+            .returning(IndexingJobRow.id)
+        )
+        return updated is not None
+
+    async def reconcile_stale(
+        self,
+        *,
+        stale_before: datetime,
+        observed_at: datetime,
+        max_attempts: int,
+        retry_at_by_attempt: tuple[datetime, ...],
+        limit: int,
+    ) -> ReconciliationResult:
+        self._ensure_active()
+        if len(retry_at_by_attempt) < max_attempts:
+            raise ValueError("retry schedule must cover every configured attempt")
+        rows = (
+            await self._session.execute(
+                select(IndexingJobRow, IndexedDocumentVersionRow)
+                .join(
+                    IndexedDocumentVersionRow,
+                    IndexedDocumentVersionRow.id
+                    == IndexingJobRow.indexed_document_version_id,
+                )
+                .where(
+                    IndexingJobRow.workspace_id == self._workspace_id,
+                    IndexedDocumentVersionRow.workspace_id == self._workspace_id,
+                    IndexingJobRow.status.in_(
+                        (JobStatus.RUNNING, JobStatus.COMPLETED)
+                    ),
+                    IndexingJobRow.heartbeat_at <= stale_before,
+                )
+                .order_by(IndexingJobRow.heartbeat_at, IndexingJobRow.id)
+                .limit(limit)
+                .with_for_update(
+                    of=(IndexingJobRow, IndexedDocumentVersionRow),
+                    skip_locked=True,
+                )
+            )
+        ).all()
+        requeued = 0
+        failed = 0
+        for job, target in rows:
+            if job.status is JobStatus.COMPLETED:
+                job.claimed_by = None
+                job.claimed_at = None
+                job.heartbeat_at = None
+                job.updated_at = observed_at
+                if (
+                    target.build_status is IndexBuildStatus.READY
+                    and target.serving_status is IndexServingStatus.CANDIDATE
+                ):
+                    requeued += 1
+                continue
+            detail = {"attempt": job.attempt, "stale": True}
+            target.build_status = IndexBuildStatus.FAILED
+            target.error_code = ErrorCode.INDEXING_STALE_WORKER.value
+            target.error_detail = detail
+            target.updated_at = observed_at
+            job.claimed_by = None
+            job.claimed_at = None
+            job.heartbeat_at = None
+            job.error_code = ErrorCode.INDEXING_STALE_WORKER.value
+            job.error_detail = detail
+            job.updated_at = observed_at
+            if job.attempt < max_attempts:
+                job.status = JobStatus.QUEUED
+                job.phase = "queued"
+                job.next_attempt_at = retry_at_by_attempt[job.attempt - 1]
+                requeued += 1
+            else:
+                job.status = JobStatus.FAILED
+                job.phase = "failed"
+                job.next_attempt_at = None
+                failed += 1
+        await self._session.flush()
+        return ReconciliationResult(requeued=requeued, failed=failed)
+
+    async def _mark_target_failed(
+        self,
+        target_id: UUID,
+        *,
+        error_code: str,
+        error_detail: dict[str, Any],
+        observed_at: datetime,
+    ) -> None:
+        await self._session.execute(
+            update(IndexedDocumentVersionRow)
+            .where(
+                IndexedDocumentVersionRow.workspace_id == self._workspace_id,
+                IndexedDocumentVersionRow.id == target_id,
+                IndexedDocumentVersionRow.serving_status
+                == IndexServingStatus.CANDIDATE,
+                IndexedDocumentVersionRow.build_status != IndexBuildStatus.READY,
+            )
+            .values(
+                build_status=IndexBuildStatus.FAILED,
+                error_code=error_code,
+                error_detail=dict(error_detail),
+                updated_at=observed_at,
+            )
+        )
 
     async def promote(self, command: PromotionCommand) -> PromotionResult | None:
         """Conditionally switch one complete candidate using lifecycle lock order."""
@@ -631,4 +920,24 @@ def _promotion_result(
         status=status,
         reason=reason,
         previous_serving_target_id=previous_serving_target_id,
+    )
+
+
+def _owned(lease: IndexingLease, workspace_id: UUID) -> tuple[Any, ...]:
+    return (
+        IndexingJobRow.workspace_id == workspace_id,
+        IndexingJobRow.id == lease.job_id,
+        IndexingJobRow.indexed_document_version_id
+        == lease.indexed_document_version_id,
+        IndexingJobRow.claimed_by == lease.claimed_by,
+        IndexingJobRow.attempt == lease.attempt,
+    )
+
+
+def _owned_execution(lease: IndexingLease, workspace_id: UUID) -> tuple[Any, ...]:
+    return (
+        *_owned(lease, workspace_id),
+        IndexingJobRow.status.in_(
+            (JobStatus.RUNNING, JobStatus.FAILED, JobStatus.COMPLETED)
+        ),
     )

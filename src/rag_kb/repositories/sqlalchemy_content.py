@@ -522,7 +522,15 @@ class SqlAlchemyDocumentRepository:
                     IndexingJobRow.indexed_document_version_id.in_(targets),
                     IndexingJobRow.status.in_((JobStatus.QUEUED, JobStatus.RUNNING)),
                 )
-                .values(status=JobStatus.CANCELLED, phase="cancelled", updated_at=func.now())
+                .values(
+                    status=JobStatus.CANCELLED,
+                    phase="cancelled",
+                    claimed_by=None,
+                    claimed_at=None,
+                    heartbeat_at=None,
+                    next_attempt_at=None,
+                    updated_at=func.now(),
+                )
             )
         await self._session.flush()
         if current is not None:
@@ -853,7 +861,15 @@ class SqlAlchemyFileConsistencyRepository:
                 IndexingJobRow.indexed_document_version_id.in_(targets),
                 IndexingJobRow.status.in_((JobStatus.QUEUED, JobStatus.RUNNING)),
             )
-            .values(status=JobStatus.CANCELLED, phase="source_missing", updated_at=func.now())
+            .values(
+                status=JobStatus.CANCELLED,
+                phase="source_missing",
+                claimed_by=None,
+                claimed_at=None,
+                heartbeat_at=None,
+                next_attempt_at=None,
+                updated_at=func.now(),
+            )
         )
         await self._session.flush()
         return True

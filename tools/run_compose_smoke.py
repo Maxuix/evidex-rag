@@ -23,7 +23,8 @@ def available_port() -> int:
 class ComposeSmoke:
     def __init__(self, root: Path) -> None:
         self.root = root
-        self.project = f"rag-kb-s03-w05-{os.getpid()}"
+        self.project = f"rag-kb-s03-w06-{os.getpid()}"
+        self.embedding_stub = f"{self.project}-embedding-stub"
         self.environment = {
             **os.environ,
             "POSTGRES_ADMIN_PASSWORD": "smoke-admin-password",
@@ -32,10 +33,15 @@ class ComposeSmoke:
             "RAG_KB_POSTGRES_PORT": str(available_port()),
             "RAG_KB_API_PORT": str(available_port()),
             "RAG_KB_FRONTEND_PORT": str(available_port()),
+            "RAG_KB_SMOKE_EMBEDDING_HOST": self.embedding_stub,
         }
         self.base = [
             "docker",
             "compose",
+            "-f",
+            "compose.yaml",
+            "-f",
+            "deploy/compose-smoke.override.yaml",
             "--env-file",
             ".env.example",
             "--profile",
@@ -105,6 +111,34 @@ class ComposeSmoke:
                 time.sleep(1)
         raise RuntimeError(f"timed out waiting for {path}: {last_error}")
 
+    def wait_indexing(self, job_id: str, target_id: str, timeout: float = 60) -> None:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            state = self.run(
+                "exec",
+                "-T",
+                "postgres",
+                "psql",
+                "-U",
+                "postgres",
+                "-d",
+                "rag_kb",
+                "-Atc",
+                (
+                    "SELECT job.status::text || '|' || target.build_status::text "
+                    "|| '|' || target.serving_status::text || '|' || job.attempt "
+                    "FROM indexing_job job JOIN indexed_document_version target "
+                    "ON target.id = job.indexed_document_version_id "
+                    f"WHERE job.id = '{job_id}' AND target.id = '{target_id}'"
+                ),
+            ).stdout.strip()
+            if state == "completed|ready|serving|1":
+                return
+            if state.startswith("failed|"):
+                raise RuntimeError(f"automatic indexing failed: {state}")
+            time.sleep(0.25)
+        raise RuntimeError("timed out waiting for automatic indexing")
+
 
 def main() -> int:
     root = Path(__file__).resolve().parents[1]
@@ -133,6 +167,18 @@ def main() -> int:
 
         print("[4/8] running the one-shot migration role", flush=True)
         smoke.run("run", "--rm", "migrate")
+
+        smoke.run(
+            "run",
+            "-d",
+            "--name",
+            smoke.embedding_stub,
+            "--no-deps",
+            "worker",
+            "python",
+            "/app/tools/embedding_stub.py",
+        )
+        time.sleep(0.5)
 
         print("[5/8] starting API, Worker, and frontend shell", flush=True)
         smoke.run(
@@ -177,6 +223,10 @@ def main() -> int:
         )
         if uploaded.get("job_status") != "queued":
             raise RuntimeError("upload did not return a queued durable job")
+        smoke.wait_indexing(
+            str(uploaded["job_id"]),
+            str(uploaded["indexed_document_version_id"]),
+        )
 
         print("[7/8] verifying shared same-filesystem storage across restart", flush=True)
         devices = {
@@ -194,7 +244,7 @@ def main() -> int:
             "-T",
             "api",
             "touch",
-            "/var/lib/rag-kb/sources/final/s03-w05-smoke-marker",
+            "/var/lib/rag-kb/sources/final/s03-w06-smoke-marker",
         )
         document = smoke.http_json(
             "RAG_KB_API_PORT", f"/api/v1/documents/{uploaded['document']['id']}"
@@ -209,7 +259,7 @@ def main() -> int:
             "worker",
             "test",
             "-f",
-            "/var/lib/rag-kb/sources/final/s03-w05-smoke-marker",
+            "/var/lib/rag-kb/sources/final/s03-w06-smoke-marker",
         )
 
         smoke.http_json(
@@ -238,8 +288,8 @@ def main() -> int:
         return_code = 1
     else:
         print(
-            "Compose smoke passed: clean start, explicit migration, bounded upload, "
-            "shared persistence, content-safe logs, and shutdown",
+            "Compose smoke passed: clean start, explicit migration, automatic "
+            "indexing, shared persistence, content-safe logs, and shutdown",
             flush=True,
         )
         return_code = 0

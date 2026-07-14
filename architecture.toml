@@ -10,6 +10,7 @@ scan_roots = ["src", "apps"]
 "rag_kb.db" = ["rag_kb.domain"]
 "rag_kb.adapters" = ["rag_kb.domain", "rag_kb.db"]
 "rag_kb.indexing" = ["rag_kb.domain", "rag_kb.repositories", "rag_kb.uow", "rag_kb.adapters"]
+"rag_kb.scheduling" = ["rag_kb.domain", "rag_kb.repositories", "rag_kb.uow", "rag_kb.indexing"]
 "rag_kb.retrieval" = ["rag_kb.auth", "rag_kb.domain", "rag_kb.repositories", "rag_kb.uow", "rag_kb.adapters"]
 "rag_kb.answering" = ["rag_kb.domain", "rag_kb.adapters"]
 "rag_kb.memory" = ["rag_kb.domain", "rag_kb.repositories", "rag_kb.uow", "rag_kb.adapters"]
@@ -49,6 +50,7 @@ scan_roots = ["src", "apps"]
   "rag_kb.services",
   "rag_kb.workflows",
   "rag_kb.indexing",
+  "rag_kb.scheduling",
   "rag_kb.repositories",
   "rag_kb.uow",
   "rag_kb.db",

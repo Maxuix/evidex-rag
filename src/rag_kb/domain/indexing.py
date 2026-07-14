@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 from typing import Any
 from uuid import UUID, uuid5
@@ -43,6 +44,11 @@ class PromotionReason(StrEnum):
     REVISION_INACTIVE = "revision_inactive"
 
 
+class WorkLane(StrEnum):
+    CHAT = "chat"
+    INDEXING = "indexing"
+
+
 @dataclass(frozen=True, slots=True)
 class IndexingCommand:
     job_id: UUID
@@ -62,6 +68,21 @@ class PromotionResult:
     status: PromotionStatus
     reason: PromotionReason
     previous_serving_target_id: UUID | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class IndexingLease:
+    job_id: UUID
+    indexed_document_version_id: UUID
+    claimed_by: str
+    attempt: int
+    claimed_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class ReconciliationResult:
+    requeued: int
+    failed: int
 
 
 @dataclass(frozen=True, slots=True)

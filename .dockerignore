@@ -7,4 +7,5 @@ docs
 evaluation
 tests
 tools
+!tools/embedding_stub.py
 verification

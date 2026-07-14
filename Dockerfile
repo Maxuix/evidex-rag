@@ -16,6 +16,7 @@ RUN python -m pip install --no-cache-dir --require-hashes -r /app/requirements.l
 COPY alembic.ini /app/alembic.ini
 COPY apps /app/apps
 COPY src /app/src
+COPY tools/embedding_stub.py /app/tools/embedding_stub.py
 
 USER 10001:10001
 

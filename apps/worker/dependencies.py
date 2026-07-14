@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from pathlib import Path
+import socket
+from uuid import uuid4
 
 from rag_kb.auth import DevelopmentAuthProvider, SingleWorkspaceAccessPolicy
 from rag_kb.adapters import (
@@ -26,6 +29,11 @@ from rag_kb.db import (
     validate_runtime_readiness,
 )
 from rag_kb.indexing import IndexingPipeline
+from rag_kb.scheduling import (
+    IndexingJobScheduler,
+    RetryPolicy,
+    WeightedLaneSelector,
+)
 from rag_kb.services import (
     FileReconciliationService,
     ParserLimits,
@@ -49,6 +57,8 @@ class WorkerDependencies:
     reconciliation_service: FileReconciliationService
     document_processor: IsolatedPlainTextProcessor
     indexing_pipeline: IndexingPipeline
+    indexing_scheduler: IndexingJobScheduler
+    lane_selector: WeightedLaneSelector
 
     async def close(self) -> None:
         """Release process-owned database resources during Worker shutdown."""
@@ -68,6 +78,7 @@ def build_worker_dependencies(
     settings: Settings | None = None,
     *,
     env_file: str | Path | None = ".env",
+    worker_id: str | None = None,
 ) -> WorkerDependencies:
     """Load configuration explicitly and fail before starting task polling."""
 
@@ -114,6 +125,30 @@ def build_worker_dependencies(
         max_retries=embedding_settings.max_retries,
         max_concurrency=embedding_settings.max_concurrency,
     )
+    indexing_pipeline = IndexingPipeline(
+        unit_of_work,
+        file_store,
+        document_processor,
+        embedding_provider,
+        FixedPgVectorSpace(embedding_space),
+    )
+    poller = resolved_settings.job_poller
+    indexing_scheduler = IndexingJobScheduler(
+        unit_of_work,
+        indexing_pipeline,
+        worker_id=worker_id or _worker_id(),
+        concurrency=poller.indexing_concurrency,
+        poll_interval_seconds=poller.poll_interval_seconds,
+        heartbeat_interval_seconds=poller.heartbeat_interval_seconds,
+        stale_after_seconds=poller.stale_after_seconds,
+        deadline_seconds=poller.indexing_deadline_seconds,
+        retry_policy=RetryPolicy(
+            max_attempts=poller.max_attempts,
+            base_delay_seconds=poller.retry_base_delay_seconds,
+            max_delay_seconds=poller.retry_max_delay_seconds,
+        ),
+        reconciliation_batch_size=poller.reconciliation_batch_size,
+    )
     return WorkerDependencies(
         settings=resolved_settings,
         startup=startup,
@@ -139,11 +174,15 @@ def build_worker_dependencies(
             ),
         ),
         document_processor=document_processor,
-        indexing_pipeline=IndexingPipeline(
-            unit_of_work,
-            file_store,
-            document_processor,
-            embedding_provider,
-            FixedPgVectorSpace(embedding_space),
+        indexing_pipeline=indexing_pipeline,
+        indexing_scheduler=indexing_scheduler,
+        lane_selector=WeightedLaneSelector(
+            chat_weight=poller.chat_weight,
+            indexing_weight=poller.indexing_weight,
+            aging_seconds=poller.aging_seconds,
         ),
     )
+
+
+def _worker_id() -> str:
+    return f"{socket.gethostname()}:{os.getpid()}:{uuid4().hex}"
