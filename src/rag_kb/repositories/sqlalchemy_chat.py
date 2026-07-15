@@ -21,6 +21,7 @@ from rag_kb.db.models import (
     Citation as CitationRow,
 )
 from rag_kb.domain import (
+    ChatCitation,
     ChatExecutionContext,
     ChatFailureSettlementCommand,
     ChatMessage,
@@ -501,8 +502,10 @@ class SqlAlchemyChatRepository:
             ChatRunRow.endpoint == scope.endpoint,
             ChatRunRow.idempotency_key == scope.idempotency_key,
         )
-        row = (await self._session.execute(statement)).one_or_none()
-        return _run(row[0], row[1]) if row is not None else None
+        rows = (await self._session.execute(statement)).all()
+        if not rows:
+            return None
+        return _run_rows(rows)
 
     async def get_run(
         self, run_id: UUID, *, principal_id: str, client_id: str
@@ -514,8 +517,10 @@ class SqlAlchemyChatRepository:
             ChatRunRow.principal_id == principal_id,
             ChatRunRow.client_id == client_id,
         )
-        row = (await self._session.execute(statement)).one_or_none()
-        return _run(row[0], row[1]) if row is not None else None
+        rows = (await self._session.execute(statement)).all()
+        if not rows:
+            return None
+        return _run_rows(rows)
 
     async def create_run(
         self,
@@ -576,16 +581,39 @@ class SqlAlchemyChatRepository:
         await self._session.flush()
         return _run(run, assistant)
 
-
 def _run_statement():
     return (
-        select(ChatRunRow, ChatMessageRow)
+        select(ChatRunRow, ChatMessageRow, CitationRow)
         .join(
             ChatMessageRow,
             (ChatMessageRow.chat_run_id == ChatRunRow.id)
             & (ChatMessageRow.role == ChatMessageRole.ASSISTANT),
         )
+        .outerjoin(
+            CitationRow,
+            (CitationRow.assistant_message_id == ChatMessageRow.id)
+            & (CitationRow.workspace_id == ChatRunRow.workspace_id),
+        )
+        .order_by(CitationRow.ordinal)
     )
+
+
+def _run_rows(rows) -> ChatRun:
+    run, assistant, _ = rows[0]
+    citations = tuple(
+        ChatCitation(
+            ordinal=citation.ordinal,
+            index_chunk_id=citation.index_chunk_id,
+            document_id=citation.document_id_snapshot,
+            document_version_id=citation.document_version_id_snapshot,
+            quoted_text=citation.quoted_text,
+            source_location=dict(citation.source_location),
+            score=citation.score,
+        )
+        for _, _, citation in rows
+        if citation is not None
+    )
+    return _run(run, assistant, citations)
 
 
 def _owns_running_lease(run: ChatRunRow, lease: ChatRunLease) -> bool:
@@ -767,7 +795,11 @@ def _message(row: ChatMessageRow) -> ChatMessage:
     )
 
 
-def _run(run: ChatRunRow, assistant: ChatMessageRow) -> ChatRun:
+def _run(
+    run: ChatRunRow,
+    assistant: ChatMessageRow,
+    citations: tuple[ChatCitation, ...] = (),
+) -> ChatRun:
     if run.effective_policy is None:
         raise RuntimeError("persisted ChatRun is missing its effective policy")
     if assistant.assistant_status is None:
@@ -792,6 +824,7 @@ def _run(run: ChatRunRow, assistant: ChatMessageRow) -> ChatRun:
         model_configuration=dict(run.model_configuration),
         assistant_status=assistant.assistant_status.value,
         assistant_content=assistant.content,
+        citations=citations,
         attempt=run.attempt,
         error_code=run.error_code,
         error_detail=dict(run.error_detail) if run.error_detail is not None else None,

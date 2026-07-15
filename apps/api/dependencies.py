@@ -27,7 +27,9 @@ from rag_kb.db import (
 )
 from rag_kb.services import (
     AdmissionLimits,
+    ChatSseConnectionLimiter,
     ChatService,
+    ChatTerminalWatcher,
     DocumentService,
     FileAdmissionService,
     IndexingJobService,
@@ -61,6 +63,8 @@ class ApiDependencies:
     vector_store: PgVectorStore
     retrieval_service: RetrievalService
     chat_service: ChatService
+    chat_terminal_watcher: ChatTerminalWatcher
+    chat_sse_connection_limiter: ChatSseConnectionLimiter
 
     async def close(self) -> None:
         """Release process-owned database resources during API shutdown."""
@@ -118,6 +122,14 @@ def build_api_dependencies(
         resolved_settings.file_store.staging_path,
         resolved_settings.file_store.final_path,
     )
+    chat_service = ChatService(
+        unit_of_work,
+        access_policy,
+        model_configuration=chat_model_configuration(
+            resolved_settings.model_provider.chat
+        ),
+    )
+    chat_delivery = resolved_settings.chat_delivery
     return ApiDependencies(
         settings=resolved_settings,
         startup=startup,
@@ -151,11 +163,16 @@ def build_api_dependencies(
             embedding_provider,
             vector_store,
         ),
-        chat_service=ChatService(
-            unit_of_work,
-            access_policy,
-            model_configuration=chat_model_configuration(
-                resolved_settings.model_provider.chat
+        chat_service=chat_service,
+        chat_terminal_watcher=ChatTerminalWatcher(
+            chat_service,
+            poll_interval_seconds=chat_delivery.poll_interval_seconds,
+            jitter_ratio=chat_delivery.jitter_ratio,
+            max_duration_seconds=(
+                chat_delivery.max_connection_duration_seconds
             ),
+        ),
+        chat_sse_connection_limiter=ChatSseConnectionLimiter(
+            chat_delivery.max_connections_per_principal_run
         ),
     )

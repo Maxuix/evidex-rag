@@ -17,6 +17,7 @@ DESCRIPTIONS = {
     413: "Request body too large",
     415: "Unsupported document media type",
     422: "Request validation failed",
+    429: "Connection limit exceeded",
     500: "Internal server error",
     502: "Invalid upstream provider response",
     503: "Required service unavailable",
@@ -46,15 +47,19 @@ def install_openapi_contract(app: FastAPI) -> None:
                     continue
                 for response in operation.get("responses", {}).values():
                     content = response.get("content", {})
-                    application_json = content.get("application/json")
-                    reference = (
-                        application_json.get("schema", {}).get("$ref", "")
-                        if application_json
-                        else ""
+                    problem_content = next(
+                        (
+                            item
+                            for item in content.values()
+                            if item.get("schema", {})
+                            .get("$ref", "")
+                            .endswith("/ProblemDetails")
+                        ),
+                        None,
                     )
-                    if reference.endswith("/ProblemDetails"):
+                    if problem_content is not None:
                         response["content"] = {
-                            "application/problem+json": application_json
+                            "application/problem+json": problem_content
                         }
         return document
 

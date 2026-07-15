@@ -135,6 +135,16 @@ class ChatRunRetrievalResponse(PublicSchema):
     rerank: Literal[False]
 
 
+class ChatCitationResponse(PublicSchema):
+    ordinal: Annotated[int, Field(ge=0)]
+    index_chunk_id: UUID | None
+    document_id: UUID
+    document_version_id: UUID
+    quoted_text: str
+    source_location: dict[str, Any]
+    score: float | None
+
+
 class ChatRunResponse(PublicSchema):
     run_id: UUID
     knowledge_base_id: UUID
@@ -145,6 +155,7 @@ class ChatRunResponse(PublicSchema):
     status: Literal["queued", "running", "completed", "failed", "cancelled"]
     assistant_status: Literal["generating", "completed", "failed"]
     answer: str | None
+    citations: tuple[ChatCitationResponse, ...]
     status_url: str
     events_url: str
     effective_answer_policy: EffectiveAnswerPolicyResponse
@@ -156,3 +167,20 @@ class ChatRunResponse(PublicSchema):
     created_at: datetime
     updated_at: datetime
     completed_at: datetime | None
+
+
+class ChatAnswerCompletedEvent(PublicSchema):
+    run_id: UUID
+    message_id: UUID
+    answer: str
+    citations: tuple[ChatCitationResponse, ...]
+    effective_answer_policy: EffectiveAnswerPolicyResponse
+    status_url: str
+
+
+class ChatRunFailedEvent(PublicSchema):
+    run_id: UUID
+    status: Literal["failed", "cancelled"]
+    error: ChatRunErrorResponse
+    effective_answer_policy: EffectiveAnswerPolicyResponse
+    status_url: str

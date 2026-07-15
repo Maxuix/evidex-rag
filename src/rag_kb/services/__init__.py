@@ -40,6 +40,11 @@ from rag_kb.services.chat_pipeline import (
     ChatRunCoordinator,
     DirectChatPipeline,
 )
+from rag_kb.services.chat_delivery import (
+    ChatSseConnectionLimiter,
+    ChatSseSubscription,
+    ChatTerminalWatcher,
+)
 from rag_kb.services.chat_terminal import (
     ChatFailureSettlementService,
     ChatResultPersistenceStep,
@@ -64,6 +69,9 @@ __all__ = [
     "DirectChatPipeline",
     "ChatFailureSettlementService",
     "ChatResultPersistenceStep",
+    "ChatSseConnectionLimiter",
+    "ChatSseSubscription",
+    "ChatTerminalWatcher",
     "ChatMessage",
     "ChatRun",
     "ChatSession",

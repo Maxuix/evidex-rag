@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import unittest
 from dataclasses import dataclass
@@ -32,6 +33,7 @@ from rag_kb.auth import (
 from rag_kb.domain import (
     AdmissionLimits,
     AnswerStyle,
+    ChatCitation,
     ChatMessage,
     ChatRun,
     ChatSession,
@@ -53,7 +55,11 @@ from rag_kb.domain import (
     RetrievalStrategy,
     canonical_request_hash,
 )
-from rag_kb.services import FileAdmissionService
+from rag_kb.services import (
+    ChatSseConnectionLimiter,
+    ChatTerminalWatcher,
+    FileAdmissionService,
+)
 from rag_kb.schemas import CursorPayload, ErrorCode, PaginationQuery
 from rag_kb.retrieval import RetrievalExecutionError
 
@@ -226,6 +232,7 @@ async def request(
     json_body: object | None = None,
     raw_body: bytes | None = None,
     suppress_application_error: bool = False,
+    disconnect_immediately: bool = True,
 ) -> AsgiResponse:
     if json_body is not None and raw_body is not None:
         raise ValueError("request cannot contain both JSON and raw body")
@@ -257,16 +264,24 @@ async def request(
     }
     sent_request = False
     messages: list[dict[str, object]] = []
+    response_complete = asyncio.Event()
 
     async def receive() -> dict[str, object]:
         nonlocal sent_request
         if not sent_request:
             sent_request = True
             return {"type": "http.request", "body": body, "more_body": False}
+        if not disconnect_immediately:
+            await response_complete.wait()
         return {"type": "http.disconnect"}
 
     async def send(message: dict[str, object]) -> None:
         messages.append(message)
+        if (
+            message["type"] == "http.response.body"
+            and not message.get("more_body", False)
+        ):
+            response_complete.set()
 
     try:
         await app(scope, receive, send)
@@ -606,10 +621,8 @@ class CommonContractTests(unittest.TestCase):
                 "/api/v1/chat/sessions/{session_id}/messages",
                 "/api/v1/chat/runs",
                 "/api/v1/chat/runs/{run_id}",
+                "/api/v1/chat/runs/{run_id}/events",
             },
-        )
-        self.assertNotIn(
-            "/api/v1/chat/runs/{run_id}/events", production["paths"]
         )
         upload = production["paths"]["/api/v1/knowledge-bases/{kb_id}/documents"]["post"]
         self.assertEqual(upload["responses"]["202"]["description"], "Successful Response")
@@ -628,6 +641,13 @@ class CommonContractTests(unittest.TestCase):
                 "$ref"
             ],
             "#/components/schemas/ProblemDetails",
+        )
+        event_limit = production["paths"][
+            "/api/v1/chat/runs/{run_id}/events"
+        ]["get"]["responses"]["429"]
+        self.assertEqual(
+            set(event_limit["content"]),
+            {"application/problem+json"},
         )
 
 
@@ -981,6 +1001,15 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
         )
         self.dependencies.indexing_job_service = _FakeIndexingJobService()
         self.dependencies.chat_service = _FakeChatService()
+        self.dependencies.chat_terminal_watcher = ChatTerminalWatcher(
+            self.dependencies.chat_service,  # type: ignore[arg-type]
+            poll_interval_seconds=0.001,
+            jitter_ratio=0,
+            max_duration_seconds=0.01,
+        )
+        self.dependencies.chat_sse_connection_limiter = (
+            ChatSseConnectionLimiter(2)
+        )
         self.app = create_app(dependencies=self.dependencies)  # type: ignore[arg-type]
         self.lifespan = self.app.router.lifespan_context(self.app)
         await self.lifespan.__aenter__()
@@ -1312,11 +1341,139 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(conflict.json()["code"], "IDEMPOTENCY_KEY_REUSED")
         self.assertNotIn("internal chat hash", conflict.body.decode())
 
+    async def test_terminal_sse_uses_committed_answer_and_native_headers(self) -> None:
+        chat = self.dependencies.chat_service
+        citation = ChatCitation(
+            ordinal=0,
+            index_chunk_id=UUID("01900000-0000-7000-8000-000000000041"),
+            document_id=UUID("01900000-0000-7000-8000-000000000042"),
+            document_version_id=UUID("01900000-0000-7000-8000-000000000043"),
+            quoted_text="Committed evidence",
+            source_location={"line": 4},
+            score=0.9,
+        )
+        chat.run = dataclass_replace(
+            chat.run,
+            status="completed",
+            assistant_status="completed",
+            assistant_content="Committed answer [1]",
+            citations=(citation,),
+            completed_at=datetime.now(UTC),
+        )
+
+        streamed = await request(
+            self.app,
+            "GET",
+            f"{API_PREFIX}/chat/runs/{chat.run.id}/events",
+            disconnect_immediately=False,
+        )
+        status_response = await request(
+            self.app, "GET", f"{API_PREFIX}/chat/runs/{chat.run.id}"
+        )
+
+        self.assertEqual(streamed.status, 200)
+        self.assertTrue(
+            streamed.headers["content-type"].startswith("text/event-stream")
+        )
+        self.assertEqual(streamed.headers["cache-control"], "no-cache")
+        self.assertEqual(streamed.headers["x-accel-buffering"], "no")
+        self.assertIn(b"event: answer.completed", streamed.body)
+        self.assertNotIn(b"id:", streamed.body)
+        event = _sse_data(streamed.body)
+        self.assertEqual(event["answer"], "Committed answer [1]")
+        self.assertEqual(event["citations"][0]["quoted_text"], "Committed evidence")
+        self.assertEqual(event["effective_answer_policy"], chat.run.effective_policy)
+        self.assertEqual(status_response.json()["citations"], event["citations"])
+        self.assertEqual(
+            await self.dependencies.chat_sse_connection_limiter.active(
+                "development-principal", chat.run.id
+            ),
+            0,
+        )
+
+    async def test_failed_sse_rejects_replay_and_enforces_connection_limit(self) -> None:
+        chat = self.dependencies.chat_service
+        chat.run = dataclass_replace(
+            chat.run,
+            status="failed",
+            assistant_status="failed",
+            error_code="CHAT_PROVIDER_UNAVAILABLE",
+            error_detail={"http_status": 503},
+            error_retryable=True,
+            completed_at=datetime.now(UTC),
+        )
+        path = f"{API_PREFIX}/chat/runs/{chat.run.id}/events"
+
+        failed = await request(
+            self.app, "GET", path, disconnect_immediately=False
+        )
+        self.assertIn(b"event: run.failed", failed.body)
+        self.assertEqual(
+            _sse_data(failed.body)["error"],
+            {
+                "code": "CHAT_PROVIDER_UNAVAILABLE",
+                "detail": {"http_status": 503},
+                "retryable": True,
+            },
+        )
+
+        replay = await request(
+            self.app,
+            "GET",
+            path,
+            headers={"last-event-id": "1"},
+        )
+        self.assertEqual(replay.status, 400)
+        self.assertEqual(replay.json()["code"], "REQUEST_VALIDATION_FAILED")
+
+        limiter = self.dependencies.chat_sse_connection_limiter
+        self.assertTrue(await limiter.acquire("development-principal", chat.run.id))
+        self.assertTrue(await limiter.acquire("development-principal", chat.run.id))
+        limited = await request(self.app, "GET", path)
+        self.assertEqual(limited.status, 429)
+        self.assertEqual(
+            limited.json()["code"], "CHAT_SSE_CONNECTION_LIMIT_EXCEEDED"
+        )
+        await limiter.release("development-principal", chat.run.id)
+        await limiter.release("development-principal", chat.run.id)
+
+        missing = await request(
+            self.app,
+            "GET",
+            f"{API_PREFIX}/chat/runs/{uuid4()}/events",
+        )
+        self.assertEqual(missing.status, 404)
+
+    async def test_sse_disconnect_releases_only_the_subscription(self) -> None:
+        chat = self.dependencies.chat_service
+        path = f"{API_PREFIX}/chat/runs/{chat.run.id}/events"
+
+        disconnected = await request(self.app, "GET", path)
+
+        self.assertEqual(disconnected.status, 200)
+        self.assertEqual(disconnected.body, b"")
+        self.assertEqual(chat.run.status, "queued")
+        self.assertEqual(
+            await self.dependencies.chat_sse_connection_limiter.active(
+                "development-principal", chat.run.id
+            ),
+            0,
+        )
+        recovered = await request(
+            self.app, "GET", f"{API_PREFIX}/chat/runs/{chat.run.id}"
+        )
+        self.assertEqual(recovered.json()["status"], "queued")
+
 
 def dataclass_replace(value, **changes):
     from dataclasses import replace
 
     return replace(value, **changes)
+
+
+def _sse_data(body: bytes) -> dict[str, object]:
+    line = next(item for item in body.splitlines() if item.startswith(b"data: "))
+    return json.loads(line.removeprefix(b"data: "))
 
 
 def _knowledge_base_value() -> KnowledgeBase:
@@ -1412,6 +1569,7 @@ def _chat_run_value(session: ChatSession) -> ChatRun:
         model_configuration={"configuration_fingerprint": "sha256:safe"},
         assistant_status="generating",
         assistant_content="",
+        citations=(),
         attempt=0,
         error_code=None,
         error_detail=None,

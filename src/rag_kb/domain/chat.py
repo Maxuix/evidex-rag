@@ -178,6 +178,21 @@ class ChatMessage:
 
 
 @dataclass(frozen=True, slots=True)
+class ChatCitation:
+    ordinal: int
+    index_chunk_id: UUID | None
+    document_id: UUID
+    document_version_id: UUID
+    quoted_text: str
+    source_location: dict[str, Any]
+    score: float | None
+
+    def __post_init__(self) -> None:
+        if self.ordinal < 0 or not self.quoted_text:
+            raise ValueError("chat citation snapshot is invalid")
+
+
+@dataclass(frozen=True, slots=True)
 class ChatRun:
     id: UUID
     workspace_id: UUID
@@ -198,6 +213,7 @@ class ChatRun:
     model_configuration: dict[str, Any]
     assistant_status: str
     assistant_content: str
+    citations: tuple[ChatCitation, ...]
     attempt: int
     error_code: str | None
     error_detail: dict[str, Any] | None

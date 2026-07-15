@@ -244,6 +244,13 @@ class JobPollerSettings(StrictSettingsModel):
         return lane_capacity * 2 + 3
 
 
+class ChatDeliverySettings(StrictSettingsModel):
+    poll_interval_seconds: PositiveFloat = 1.0
+    jitter_ratio: Annotated[float, Field(ge=0, le=0.5)] = 0.2
+    max_connection_duration_seconds: PositiveFloat = 600.0
+    max_connections_per_principal_run: PositiveInt = 2
+
+
 class FileStoreSettings(StrictSettingsModel):
     backend: Literal["local"] = "local"
     root_path: Path = Path("/var/lib/rag-kb/sources")
@@ -423,6 +430,7 @@ class Settings(BaseSettings):
     security: SecuritySettings = Field(default_factory=SecuritySettings)
     database: DatabaseSettings
     job_poller: JobPollerSettings = Field(default_factory=JobPollerSettings)
+    chat_delivery: ChatDeliverySettings = Field(default_factory=ChatDeliverySettings)
     file_store: FileStoreSettings = Field(default_factory=FileStoreSettings)
     maintenance: MaintenanceSettings = Field(default_factory=MaintenanceSettings)
     file_admission: FileAdmissionSettings = Field(default_factory=FileAdmissionSettings)

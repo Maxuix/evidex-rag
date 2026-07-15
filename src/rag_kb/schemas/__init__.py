@@ -10,11 +10,14 @@ from rag_kb.schemas.common import (
 )
 from rag_kb.schemas.chat import (
     AnswerPolicyOverrides,
+    ChatAnswerCompletedEvent,
+    ChatCitationResponse,
     ChatMessagePage,
     ChatMessageResponse,
     ChatRetrievalRequest,
     ChatRunCreate,
     ChatRunErrorResponse,
+    ChatRunFailedEvent,
     ChatRunResponse,
     ChatSessionCreate,
     ChatSessionPage,
@@ -47,11 +50,14 @@ from rag_kb.schemas.retrieval import (
 
 __all__ = [
     "AnswerPolicyOverrides",
+    "ChatAnswerCompletedEvent",
+    "ChatCitationResponse",
     "ChatMessagePage",
     "ChatMessageResponse",
     "ChatRetrievalRequest",
     "ChatRunCreate",
     "ChatRunErrorResponse",
+    "ChatRunFailedEvent",
     "ChatRunResponse",
     "ChatSessionCreate",
     "ChatSessionPage",

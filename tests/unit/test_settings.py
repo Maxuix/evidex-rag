@@ -83,6 +83,16 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.job_poller.required_worker_connections, 7)
         self.assertEqual(settings.job_poller.indexing_deadline_seconds, 900)
         self.assertEqual(settings.job_poller.chat_deadline_seconds, 120)
+        self.assertEqual(settings.chat_delivery.poll_interval_seconds, 1.0)
+        self.assertEqual(settings.chat_delivery.jitter_ratio, 0.2)
+        self.assertEqual(
+            settings.chat_delivery.max_connection_duration_seconds,
+            600.0,
+        )
+        self.assertEqual(
+            settings.chat_delivery.max_connections_per_principal_run,
+            2,
+        )
         self.assertEqual(settings.maintenance.batch_size, 100)
         self.assertEqual(settings.maintenance.task_retention_seconds, 604_800)
 
@@ -96,6 +106,18 @@ class SettingsTests(unittest.TestCase):
                         "task_retention_seconds": 300,
                     },
                 )
+
+    def test_chat_delivery_bounds_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for chat_delivery in (
+                {"jitter_ratio": 0.6},
+                {"max_connection_duration_seconds": 0},
+                {"max_connections_per_principal_run": 0},
+            ):
+                with self.subTest(chat_delivery=chat_delivery):
+                    with self.assertRaises(ValidationError):
+                        build_settings(root, chat_delivery=chat_delivery)
 
     def test_worker_lane_heartbeat_and_deadline_budget_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -362,6 +384,8 @@ class StartupValidationTests(unittest.TestCase):
             self.assertNotIn("runtime-secret", repr(worker))
             self.assertIsNot(api.unit_of_work(), api.unit_of_work())
             self.assertIsNot(worker.unit_of_work(), worker.unit_of_work())
+            self.assertIs(api.chat_terminal_watcher._chat, api.chat_service)
+            self.assertEqual(api.chat_sse_connection_limiter._maximum, 2)
             api_context = api.auth_provider.get_context()
             worker_context = worker.auth_provider.get_context()
             self.assertEqual(api_context, worker_context)

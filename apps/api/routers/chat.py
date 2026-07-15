@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from datetime import datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Request, Response, status
+from fastapi import APIRouter, Depends, Header, Query, Request, Response, status
+from fastapi.sse import EventSourceResponse, ServerSentEvent
 
 from apps.api.errors import ApiProblem
 from apps.api.idempotency import RequiredIdempotencyKey
@@ -14,12 +16,20 @@ from apps.api.openapi import problem_responses
 from apps.api.pagination import decode_cursor, encode_cursor
 from apps.api.security import get_auth_context
 from rag_kb.auth import AuthContext
-from rag_kb.services import ChatMessage, ChatRun, ChatSession
+from rag_kb.services import (
+    ChatMessage,
+    ChatRun,
+    ChatSession,
+    ChatSseSubscription,
+)
 from rag_kb.schemas import (
+    ChatAnswerCompletedEvent,
+    ChatCitationResponse,
     ChatMessagePage,
     ChatMessageResponse,
     ChatRunCreate,
     ChatRunErrorResponse,
+    ChatRunFailedEvent,
     ChatRunResponse,
     ChatSessionCreate,
     ChatSessionPage,
@@ -148,6 +158,84 @@ async def get_chat_run(
     )
 
 
+async def _prepare_chat_sse_subscription(
+    request: Request,
+    run_id: UUID,
+    context: Annotated[AuthContext, Depends(get_auth_context)],
+    last_event_id: Annotated[
+        str | None, Header(alias="Last-Event-ID", max_length=2048)
+    ] = None,
+) -> AsyncIterator[ChatSseSubscription]:
+    if last_event_id is not None:
+        raise ApiProblem(
+            code=ErrorCode.REQUEST_VALIDATION_FAILED,
+            status=400,
+            title="Event replay is not supported",
+            detail="Last-Event-ID is not accepted by the P1A terminal stream.",
+        )
+    chat = request.app.state.dependencies.chat_service
+    value = await chat.get_run(context, run_id)
+    limiter = request.app.state.dependencies.chat_sse_connection_limiter
+    acquired = await limiter.acquire(context.principal_id, run_id)
+    if not acquired:
+        raise ApiProblem(
+            code=ErrorCode.CHAT_SSE_CONNECTION_LIMIT_EXCEEDED,
+            status=429,
+            title="Chat event connection limit exceeded",
+            detail="Use the authoritative ChatRun status URL and retry later.",
+            retryable=True,
+        )
+    try:
+        yield ChatSseSubscription(context=context, run=value)
+    finally:
+        await limiter.release(context.principal_id, run_id)
+
+
+@router.get(
+    "/runs/{run_id}/events",
+    response_class=EventSourceResponse,
+    responses=problem_responses(400, 404, 429, 422),
+)
+async def stream_chat_run_events(
+    request: Request,
+    subscription: Annotated[
+        ChatSseSubscription, Depends(_prepare_chat_sse_subscription)
+    ],
+) -> AsyncIterator[ServerSentEvent]:
+    watcher = request.app.state.dependencies.chat_terminal_watcher
+    async for value in watcher.watch(
+        subscription.context,
+        subscription.run.id,
+        initial=subscription.run,
+        disconnected=request.is_disconnected,
+    ):
+        if value.status == "completed":
+            if not value.assistant_content:
+                raise RuntimeError("completed ChatRun is missing its answer")
+            yield ServerSentEvent(
+                event="answer.completed",
+                data=ChatAnswerCompletedEvent(
+                    run_id=value.id,
+                    message_id=value.assistant_message_id,
+                    answer=value.assistant_content,
+                    citations=_citation_responses(value),
+                    effective_answer_policy=_policy_response(value),
+                    status_url=_status_url(value.id),
+                ),
+            )
+        else:
+            yield ServerSentEvent(
+                event="run.failed",
+                data=ChatRunFailedEvent(
+                    run_id=value.id,
+                    status=value.status,
+                    error=_terminal_error(value),
+                    effective_answer_policy=_policy_response(value),
+                    status_url=_status_url(value.id),
+                ),
+            )
+
+
 def _session_response(value: ChatSession) -> ChatSessionResponse:
     return ChatSessionResponse(
         id=value.id,
@@ -171,13 +259,6 @@ def _message_response(value: ChatMessage) -> ChatMessageResponse:
 
 
 def _run_response(value: ChatRun) -> ChatRunResponse:
-    error = None
-    if value.error_code is not None:
-        error = ChatRunErrorResponse(
-            code=value.error_code,
-            detail=dict(value.error_detail or {}),
-            retryable=bool(value.error_retryable),
-        )
     return ChatRunResponse(
         run_id=value.id,
         knowledge_base_id=value.kb_id,
@@ -188,19 +269,68 @@ def _run_response(value: ChatRun) -> ChatRunResponse:
         status=value.status,
         assistant_status=value.assistant_status,
         answer=value.assistant_content or None,
+        citations=_citation_responses(value),
         status_url=_status_url(value.id),
         events_url=f"{_status_url(value.id)}/events",
-        effective_answer_policy=EffectiveAnswerPolicyResponse.model_validate(
-            value.effective_policy
-        ),
+        effective_answer_policy=_policy_response(value),
         retrieval=dict(value.retrieval_strategy),
         attempt=value.attempt,
-        error=error,
+        error=_run_error(value),
         usage=dict(value.usage) if value.usage is not None else None,
         timing=dict(value.timing) if value.timing is not None else None,
         created_at=value.created_at,
         updated_at=value.updated_at,
         completed_at=value.completed_at,
+    )
+
+
+def _citation_responses(value: ChatRun) -> tuple[ChatCitationResponse, ...]:
+    return tuple(
+        ChatCitationResponse(
+            ordinal=item.ordinal,
+            index_chunk_id=item.index_chunk_id,
+            document_id=item.document_id,
+            document_version_id=item.document_version_id,
+            quoted_text=item.quoted_text,
+            source_location=dict(item.source_location),
+            score=item.score,
+        )
+        for item in value.citations
+    )
+
+
+def _policy_response(value: ChatRun) -> EffectiveAnswerPolicyResponse:
+    return EffectiveAnswerPolicyResponse.model_validate(value.effective_policy)
+
+
+def _run_error(value: ChatRun) -> ChatRunErrorResponse | None:
+    if value.error_code is None:
+        return None
+    return ChatRunErrorResponse(
+        code=value.error_code,
+        detail=dict(value.error_detail or {}),
+        retryable=bool(value.error_retryable),
+    )
+
+
+def _cancelled_error() -> ChatRunErrorResponse:
+    return ChatRunErrorResponse(
+        code=ErrorCode.CHAT_RUN_CANCELLED.value,
+        detail={},
+        retryable=False,
+    )
+
+
+def _terminal_error(value: ChatRun) -> ChatRunErrorResponse:
+    committed = _run_error(value)
+    if committed is not None:
+        return committed
+    if value.status == "cancelled":
+        return _cancelled_error()
+    return ChatRunErrorResponse(
+        code=ErrorCode.INTERNAL_SERVER_ERROR.value,
+        detail={},
+        retryable=False,
     )
 
 

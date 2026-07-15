@@ -36,6 +36,69 @@
         "title": "AnswerStyle",
         "type": "string"
       },
+      "ChatCitationResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "document_id": {
+            "format": "uuid",
+            "title": "Document Id",
+            "type": "string"
+          },
+          "document_version_id": {
+            "format": "uuid",
+            "title": "Document Version Id",
+            "type": "string"
+          },
+          "index_chunk_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Index Chunk Id"
+          },
+          "ordinal": {
+            "minimum": 0.0,
+            "title": "Ordinal",
+            "type": "integer"
+          },
+          "quoted_text": {
+            "title": "Quoted Text",
+            "type": "string"
+          },
+          "score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Score"
+          },
+          "source_location": {
+            "additionalProperties": true,
+            "title": "Source Location",
+            "type": "object"
+          }
+        },
+        "required": [
+          "ordinal",
+          "index_chunk_id",
+          "document_id",
+          "document_version_id",
+          "quoted_text",
+          "source_location",
+          "score"
+        ],
+        "title": "ChatCitationResponse",
+        "type": "object"
+      },
       "ChatMessagePage": {
         "additionalProperties": false,
         "properties": {
@@ -253,6 +316,13 @@
             "title": "Attempt",
             "type": "integer"
           },
+          "citations": {
+            "items": {
+              "$ref": "#/components/schemas/ChatCitationResponse"
+            },
+            "title": "Citations",
+            "type": "array"
+          },
           "completed_at": {
             "anyOf": [
               {
@@ -370,6 +440,7 @@
           "status",
           "assistant_status",
           "answer",
+          "citations",
           "status_url",
           "events_url",
           "effective_answer_policy",
@@ -832,6 +903,8 @@
           "CHAT_PIPELINE_DEADLINE_EXCEEDED",
           "CHAT_PIPELINE_STEP_FAILED",
           "CHAT_PERSISTENCE_FAILED",
+          "CHAT_RUN_CANCELLED",
+          "CHAT_SSE_CONNECTION_LIMIT_EXCEEDED",
           "IDENTITY_OVERRIDE_NOT_ALLOWED",
           "ACCESS_DENIED",
           "RESOURCE_NOT_FOUND",
@@ -1789,6 +1862,111 @@
           }
         },
         "summary": "Get Chat Run",
+        "tags": [
+          "chat"
+        ]
+      }
+    },
+    "/api/v1/chat/runs/{run_id}/events": {
+      "get": {
+        "operationId": "stream_chat_run_events_api_v1_chat_runs__run_id__events_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Last-Event-ID",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 2048,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Last-Event-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "itemSchema": {
+                  "properties": {
+                    "data": {
+                      "type": "string"
+                    },
+                    "event": {
+                      "type": "string"
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "retry": {
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Invalid request or cursor"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Request validation failed"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Connection limit exceeded"
+          }
+        },
+        "summary": "Stream Chat Run Events",
         "tags": [
           "chat"
         ]

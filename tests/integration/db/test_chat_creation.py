@@ -50,6 +50,7 @@ from rag_kb.services import (
     ChatResultPersistenceStep,
     ChatRunCoordinator,
     ChatService,
+    ChatTerminalWatcher,
     KnowledgeBaseService,
 )
 from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWorkFactory
@@ -557,6 +558,70 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             {row["document_version_id_snapshot"] for row in rows}, {version_id}
         )
+        authoritative = await self.chat.get_run(self.context, run.id)
+        self.assertEqual(
+            [item.index_chunk_id for item in authoritative.citations],
+            [chunk_ids[1], chunk_ids[0]],
+        )
+        self.assertEqual(
+            [item.quoted_text for item in authoritative.citations],
+            ["第二段证据", "第一段证据"],
+        )
+
+    async def test_terminal_watcher_releases_database_connection_while_waiting(
+        self,
+    ) -> None:
+        kb = await self._create_kb("terminal-watcher")
+        session = await self.chat.create_session(self.context, kb_id=kb.id, title=None)
+        created = await self._create_run(session.id, kb.id, uuid4())
+        initial = await self.chat.get_run(self.context, created.id)
+        observed_at = datetime.now(UTC)
+
+        async def finish_during_wait(delay: float) -> None:
+            self.assertGreater(delay, 0)
+            self.assertEqual(self.database.engine.pool.checkedout(), 0)
+            lease = await ChatRunCoordinator(self.factory).claim(
+                worker_id="worker-watcher",
+                observed_at=observed_at,
+                max_attempts=3,
+            )
+            await ChatFailureSettlementService(
+                self.factory,
+                max_attempts=3,
+                base_delay_seconds=1,
+                max_delay_seconds=4,
+                clock=lambda: observed_at + timedelta(seconds=1),
+            ).settle(
+                lease,
+                ChatPipelineExecutionError(
+                    ErrorCode.CHAT_REVISION_MISMATCH,
+                    phase=ChatPipelinePhase.RETRIEVE_EVIDENCE,
+                ),
+            )
+            self.assertEqual(self.database.engine.pool.checkedout(), 0)
+
+        async def connected() -> bool:
+            return False
+
+        watcher = ChatTerminalWatcher(
+            self.chat,
+            poll_interval_seconds=0.01,
+            jitter_ratio=0,
+            max_duration_seconds=1,
+            sleep=finish_during_wait,
+        )
+        results = [
+            item
+            async for item in watcher.watch(
+                self.context,
+                created.id,
+                initial=initial,
+                disconnected=connected,
+            )
+        ]
+
+        self.assertEqual([item.status for item in results], ["failed"])
+        self.assertEqual(self.database.engine.pool.checkedout(), 0)
 
     async def test_retry_then_exhausted_failure_accumulates_attempt_ledgers(
         self,
