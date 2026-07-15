@@ -37,6 +37,8 @@ from rag_kb.scheduling import (
     WeightedLaneSelector,
 )
 from rag_kb.services import (
+    AnswerGenerationStep,
+    EvidenceAssessmentStep,
     FileReconciliationService,
     ParserLimits,
     build_content_services,
@@ -59,6 +61,8 @@ class WorkerDependencies:
     reconciliation_service: FileReconciliationService
     document_processor: IsolatedPlainTextProcessor
     chat_model_adapter: ChatModelAdapter
+    evidence_assessor: EvidenceAssessmentStep
+    answer_generator: AnswerGenerationStep
     indexing_pipeline: IndexingPipeline
     indexing_scheduler: IndexingJobScheduler
     lane_selector: WeightedLaneSelector
@@ -187,6 +191,8 @@ def build_worker_dependencies(
         ),
         document_processor=document_processor,
         chat_model_adapter=chat_model_adapter,
+        evidence_assessor=EvidenceAssessmentStep(chat_model_adapter),
+        answer_generator=AnswerGenerationStep(chat_model_adapter),
         indexing_pipeline=indexing_pipeline,
         indexing_scheduler=indexing_scheduler,
         lane_selector=WeightedLaneSelector(

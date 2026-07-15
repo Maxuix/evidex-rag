@@ -370,6 +370,14 @@ class StartupValidationTests(unittest.TestCase):
                 worker.unit_of_work().workspace_id,
                 worker_context.workspace_id,
             )
+            self.assertIs(
+                worker.evidence_assessor._model,
+                worker.chat_model_adapter,
+            )
+            self.assertIs(
+                worker.answer_generator._model,
+                worker.chat_model_adapter,
+            )
             self.assertEqual(
                 api.access_policy.metadata_filter(api_context).workspace_id,
                 api_context.workspace_id,

@@ -1,5 +1,18 @@
 """Framework-independent business models and rules."""
 
+from rag_kb.domain.answering import (
+    AnswerControlReason,
+    AnswerDraftCandidate,
+    AnswerDraftSource,
+    AnswerOutcome,
+    ChatAnsweringState,
+    ChatModelCallRecord,
+    ChatModelOperation,
+    EvidenceAssessment,
+    EvidenceCoverage,
+    EvidenceEnvelope,
+    PromptEvidence,
+)
 from rag_kb.domain.content import (
     ContentLifecycleError,
     ContentMutation,
@@ -122,6 +135,10 @@ from rag_kb.domain.retrieval import (
 from rag_kb.domain.workspaces import Workspace
 
 __all__ = [
+    "AnswerControlReason",
+    "AnswerDraftCandidate",
+    "AnswerDraftSource",
+    "AnswerOutcome",
     "AnswerStyle",
     "AnswerPolicyDefaults",
     "AnswerPolicyNotSupportedError",
@@ -131,6 +148,9 @@ __all__ = [
     "ChatMessage",
     "ChatRun",
     "ChatSession",
+    "ChatAnsweringState",
+    "ChatModelCallRecord",
+    "ChatModelOperation",
     "ChatExecutionCommand",
     "ChatExecutionContext",
     "ChatModelExecutionError",
@@ -154,6 +174,9 @@ __all__ = [
     "EffectiveAnswerPolicy",
     "GroundingPolicy",
     "Evidence",
+    "EvidenceAssessment",
+    "EvidenceCoverage",
+    "EvidenceEnvelope",
     "EvidencePack",
     "EvidenceScoreKind",
     "ErrorCode",
@@ -178,6 +201,7 @@ __all__ = [
     "InsufficiencyPolicy",
     "IterativeScanMode",
     "PromotionCommand",
+    "PromptEvidence",
     "PromotionReason",
     "PromotionResult",
     "PromotionStatus",

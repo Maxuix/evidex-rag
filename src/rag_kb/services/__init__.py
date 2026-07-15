@@ -1,5 +1,7 @@
 """Application services that coordinate use cases through public contracts."""
 
+from rag_kb.answering import AnswerGenerationStep, EvidenceAssessmentStep
+
 from rag_kb.domain import (
     AdmissionLimits,
     AnswerPolicyNotSupportedError,
@@ -43,6 +45,7 @@ from rag_kb.services.admission import FileAdmissionService
 __all__ = [
     "AdmissionLimits",
     "AnswerPolicyNotSupportedError",
+    "AnswerGenerationStep",
     "ContentServices",
     "ChatService",
     "ChatEvidenceRetriever",
@@ -57,6 +60,7 @@ __all__ = [
     "DocumentMutationResult",
     "DocumentService",
     "ErrorCode",
+    "EvidenceAssessmentStep",
     "EvaluationPersistenceService",
     "FileReconciliationService",
     "IndexingJobService",

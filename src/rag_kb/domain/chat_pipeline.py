@@ -10,6 +10,7 @@ from types import MappingProxyType
 from typing import Any
 from uuid import UUID
 
+from rag_kb.domain.answering import ChatAnsweringState
 from rag_kb.domain.errors import ErrorCode
 from rag_kb.domain.retrieval import EvidencePack
 
@@ -82,6 +83,7 @@ class ChatExecutionContext:
 class ChatPipelineState:
     context: ChatExecutionContext | None = None
     evidence_pack: EvidencePack | None = None
+    answering: ChatAnsweringState | None = None
     artifacts: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
