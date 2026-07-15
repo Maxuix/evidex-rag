@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import unittest
 from dataclasses import dataclass, replace
@@ -138,7 +139,7 @@ class ExactRetrievalDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 RetrievalRequest(other.kb_id, "cross workspace"),
             )
 
-    async def test_only_current_available_ready_serving_active_content_is_returned(self) -> None:
+    async def test_only_available_ready_serving_active_content_is_returned(self) -> None:
         foundation = await self._foundation()
         valid = UUID("01900000-0000-7000-8000-000000001201")
         await self._target(foundation, chunk_id=valid, vector=_axis_vector(0))
@@ -173,12 +174,6 @@ class ExactRetrievalDatabaseTests(unittest.IsolatedAsyncioTestCase):
             vector=_axis_vector(0),
             deleted=True,
         )
-        await self._target(
-            foundation,
-            chunk_id=UUID("01900000-0000-7000-8000-000000001207"),
-            vector=_axis_vector(0),
-            current=False,
-        )
         retired_revision = await self._revision(
             foundation,
             status="retired",
@@ -198,6 +193,209 @@ class ExactRetrievalDatabaseTests(unittest.IsolatedAsyncioTestCase):
             tuple(item.index_chunk_id for item in pack.evidence),
             (valid,),
         )
+
+    async def test_revision_activation_reads_are_complete_old_or_new_snapshots(self) -> None:
+        foundation = await self._foundation()
+        old_first = await self._target(
+            foundation,
+            chunk_id=UUID("01900000-0000-7000-8000-000000001301"),
+            vector=_axis_vector(0),
+        )
+        old_second = await self._target(
+            foundation,
+            chunk_id=UUID("01900000-0000-7000-8000-000000001302"),
+            vector=_axis_vector(0),
+        )
+        new_revision_id = await self._revision(foundation, status="ready")
+        new_foundation = replace(foundation, revision_id=new_revision_id)
+        new_first = await self._copy_target_to_revision(
+            new_foundation,
+            old_first,
+            chunk_id=UUID("01900000-0000-7000-8000-000000001311"),
+            vector=_axis_vector(0),
+        )
+        new_second = await self._copy_target_to_revision(
+            new_foundation,
+            old_second,
+            chunk_id=UUID("01900000-0000-7000-8000-000000001312"),
+            vector=_axis_vector(0),
+        )
+        old_snapshot = (
+            foundation.revision_id,
+            frozenset(
+                (
+                    (old_first.document_version_id, old_first.chunk_id),
+                    (old_second.document_version_id, old_second.chunk_id),
+                )
+            ),
+        )
+        new_snapshot = (
+            new_revision_id,
+            frozenset(
+                (
+                    (new_first.document_version_id, new_first.chunk_id),
+                    (new_second.document_version_id, new_second.chunk_id),
+                )
+            ),
+        )
+
+        writer = await asyncpg.connect(MIGRATION_DSN)
+        transaction = writer.transaction()
+        await transaction.start()
+        try:
+            await writer.execute(
+                """
+                UPDATE indexed_document_version
+                   SET serving_status = 'retired'
+                 WHERE index_revision_id = $1
+                """,
+                foundation.revision_id,
+            )
+            await writer.execute(
+                """
+                UPDATE indexed_document_version
+                   SET serving_status = 'serving'
+                 WHERE index_revision_id = $1
+                """,
+                new_revision_id,
+            )
+            await writer.execute(
+                "UPDATE index_revision SET status = 'retired' WHERE id = $1",
+                foundation.revision_id,
+            )
+            await writer.execute(
+                "UPDATE index_revision SET status = 'active' WHERE id = $1",
+                new_revision_id,
+            )
+            await writer.execute(
+                """
+                UPDATE knowledge_base
+                   SET active_index_revision_id = $1
+                 WHERE id = $2
+                """,
+                new_revision_id,
+                foundation.kb_id,
+            )
+            observations = await self._race_reads_through_commit(
+                foundation.kb_id,
+                transaction,
+            )
+        finally:
+            await writer.close()
+
+        self.assertEqual(set(observations), {old_snapshot, new_snapshot})
+
+    async def test_update_keeps_old_serving_until_atomic_promotion(self) -> None:
+        foundation = await self._foundation()
+        old = await self._target(
+            foundation,
+            chunk_id=UUID("01900000-0000-7000-8000-000000001401"),
+            vector=_axis_vector(0),
+        )
+        new = await self._append_version_target(
+            foundation,
+            old,
+            chunk_id=UUID("01900000-0000-7000-8000-000000001402"),
+            vector=_axis_vector(0),
+        )
+        old_snapshot = (
+            foundation.revision_id,
+            frozenset(((old.document_version_id, old.chunk_id),)),
+        )
+        new_snapshot = (
+            foundation.revision_id,
+            frozenset(((new.document_version_id, new.chunk_id),)),
+        )
+
+        before_promotion = await self.service.retrieve(
+            self.context,
+            RetrievalRequest(foundation.kb_id, "during update", top_k=10),
+        )
+        self.assertEqual(
+            (
+                before_promotion.index_revision_id,
+                frozenset(
+                    (item.document_version_id, item.index_chunk_id)
+                    for item in before_promotion.evidence
+                ),
+            ),
+            old_snapshot,
+        )
+
+        writer = await asyncpg.connect(MIGRATION_DSN)
+        transaction = writer.transaction()
+        await transaction.start()
+        try:
+            await writer.execute(
+                """
+                UPDATE indexed_document_version
+                   SET serving_status = 'retired'
+                 WHERE id = $1
+                """,
+                old.indexed_document_version_id,
+            )
+            await writer.execute(
+                """
+                UPDATE indexed_document_version
+                   SET serving_status = 'serving'
+                 WHERE id = $1
+                """,
+                new.indexed_document_version_id,
+            )
+            observations = await self._race_reads_through_commit(
+                foundation.kb_id,
+                transaction,
+            )
+        finally:
+            await writer.close()
+
+        self.assertEqual(set(observations), {old_snapshot, new_snapshot})
+
+    async def test_delete_commit_changes_visible_content_to_empty_atomically(self) -> None:
+        foundation = await self._foundation()
+        target = await self._target(
+            foundation,
+            chunk_id=UUID("01900000-0000-7000-8000-000000001501"),
+            vector=_axis_vector(0),
+        )
+        visible_snapshot = (
+            foundation.revision_id,
+            frozenset(((target.document_version_id, target.chunk_id),)),
+        )
+        empty_snapshot = (foundation.revision_id, frozenset())
+
+        writer = await asyncpg.connect(MIGRATION_DSN)
+        transaction = writer.transaction()
+        await transaction.start()
+        try:
+            await writer.execute(
+                "UPDATE document SET deleted_at = now() WHERE id = $1",
+                target.document_id,
+            )
+            await writer.execute(
+                """
+                UPDATE document_version
+                   SET source_status = 'deleted'
+                 WHERE document_id = $1
+                """,
+                target.document_id,
+            )
+            await writer.execute(
+                """
+                UPDATE indexed_document_version
+                   SET serving_status = 'retired'
+                 WHERE document_id = $1
+                """,
+                target.document_id,
+            )
+            observations = await self._race_reads_through_commit(
+                foundation.kb_id,
+                transaction,
+            )
+        finally:
+            await writer.close()
+
+        self.assertEqual(set(observations), {visible_snapshot, empty_snapshot})
 
     async def test_active_embedding_space_mismatch_fails_closed(self) -> None:
         foundation = await self._foundation(
@@ -313,8 +511,7 @@ class ExactRetrievalDatabaseTests(unittest.IsolatedAsyncioTestCase):
         serving_status: str = "serving",
         source_status: str = "available",
         deleted: bool = False,
-        current: bool = True,
-    ) -> None:
+    ) -> "_Target":
         connection = await asyncpg.connect(MIGRATION_DSN)
         try:
             async with connection.transaction():
@@ -337,70 +534,198 @@ class ExactRetrievalDatabaseTests(unittest.IsolatedAsyncioTestCase):
                     version_number=1,
                     source_status=source_status,
                 )
-                current_version_id = version_id
-                if not current:
-                    current_version_id = await self._document_version(
-                        connection,
-                        foundation,
-                        document_id,
-                        version_number=2,
-                        source_status="available",
-                    )
                 await connection.execute(
                     "UPDATE document SET current_version_id = $1 WHERE id = $2",
-                    current_version_id,
-                    document_id,
-                )
-                indexed_id = await connection.fetchval(
-                    """
-                    INSERT INTO indexed_document_version (
-                        workspace_id, kb_id, document_id, document_version_id,
-                        index_revision_id, source_change_seq, build_status,
-                        serving_status
-                    ) VALUES ($1, $2, $3, $4, $5, 1, $6, $7) RETURNING id
-                    """,
-                    foundation.workspace_id,
-                    foundation.kb_id,
-                    document_id,
                     version_id,
-                    foundation.revision_id,
-                    build_status,
-                    serving_status,
+                    document_id,
                 )
-                await connection.execute(
-                    """
-                    INSERT INTO index_chunk (
-                        id, workspace_id, kb_id, indexed_document_version_id,
-                        ordinal, content, content_hash, token_count,
-                        source_location, hierarchy, source_metadata
-                    ) VALUES (
-                        $1, $2, $3, $4, 0, $5, $6, 2,
-                        '{"line_start": 1, "line_end": 1}', '{}',
-                        '{"filename": "fixture.txt"}'
-                    )
-                    """,
-                    chunk_id,
-                    foundation.workspace_id,
-                    foundation.kb_id,
-                    indexed_id,
-                    f"evidence-{chunk_id}",
-                    chunk_id.hex.ljust(64, "0")[:64],
-                )
-                await connection.execute(
-                    """
-                    INSERT INTO vector_record_1024 (
-                        workspace_id, kb_id, index_chunk_id,
-                        embedding_space_id, embedding
-                    ) VALUES ($1, $2, $3, $4, $5::vector)
-                    """,
-                    foundation.workspace_id,
-                    foundation.kb_id,
-                    chunk_id,
-                    foundation.embedding_space_id,
-                    _vector_literal(vector),
+                target = await self._indexed_target(
+                    connection,
+                    foundation,
+                    document_id=document_id,
+                    document_version_id=version_id,
+                    chunk_id=chunk_id,
+                    vector=vector,
+                    source_change_seq=1,
+                    build_status=build_status,
+                    serving_status=serving_status,
                 )
         finally:
             await connection.close()
+        return target
+
+    async def _append_version_target(
+        self,
+        foundation: "_Foundation",
+        previous: "_Target",
+        *,
+        chunk_id: UUID,
+        vector: tuple[float, ...],
+        serving_status: str = "candidate",
+    ) -> "_Target":
+        connection = await asyncpg.connect(MIGRATION_DSN)
+        try:
+            async with connection.transaction():
+                version_id = await self._document_version(
+                    connection,
+                    foundation,
+                    previous.document_id,
+                    version_number=2,
+                    source_status="available",
+                )
+                await connection.execute(
+                    "UPDATE document SET current_version_id = $1 WHERE id = $2",
+                    version_id,
+                    previous.document_id,
+                )
+                return await self._indexed_target(
+                    connection,
+                    foundation,
+                    document_id=previous.document_id,
+                    document_version_id=version_id,
+                    chunk_id=chunk_id,
+                    vector=vector,
+                    source_change_seq=2,
+                    build_status="ready",
+                    serving_status=serving_status,
+                )
+        finally:
+            await connection.close()
+
+    async def _copy_target_to_revision(
+        self,
+        foundation: "_Foundation",
+        source: "_Target",
+        *,
+        chunk_id: UUID,
+        vector: tuple[float, ...],
+        serving_status: str = "candidate",
+    ) -> "_Target":
+        connection = await asyncpg.connect(MIGRATION_DSN)
+        try:
+            async with connection.transaction():
+                return await self._indexed_target(
+                    connection,
+                    foundation,
+                    document_id=source.document_id,
+                    document_version_id=source.document_version_id,
+                    chunk_id=chunk_id,
+                    vector=vector,
+                    source_change_seq=1,
+                    build_status="ready",
+                    serving_status=serving_status,
+                )
+        finally:
+            await connection.close()
+
+    async def _indexed_target(
+        self,
+        connection: asyncpg.Connection,
+        foundation: "_Foundation",
+        *,
+        document_id: UUID,
+        document_version_id: UUID,
+        chunk_id: UUID,
+        vector: tuple[float, ...],
+        source_change_seq: int,
+        build_status: str,
+        serving_status: str,
+    ) -> "_Target":
+        indexed_id = await connection.fetchval(
+            """
+            INSERT INTO indexed_document_version (
+                workspace_id, kb_id, document_id, document_version_id,
+                index_revision_id, source_change_seq, build_status,
+                serving_status
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id
+            """,
+            foundation.workspace_id,
+            foundation.kb_id,
+            document_id,
+            document_version_id,
+            foundation.revision_id,
+            source_change_seq,
+            build_status,
+            serving_status,
+        )
+        await connection.execute(
+            """
+            INSERT INTO index_chunk (
+                id, workspace_id, kb_id, indexed_document_version_id,
+                ordinal, content, content_hash, token_count,
+                source_location, hierarchy, source_metadata
+            ) VALUES (
+                $1, $2, $3, $4, 0, $5, $6, 2,
+                '{"line_start": 1, "line_end": 1}', '{}',
+                '{"filename": "fixture.txt"}'
+            )
+            """,
+            chunk_id,
+            foundation.workspace_id,
+            foundation.kb_id,
+            indexed_id,
+            f"evidence-{chunk_id}",
+            chunk_id.hex.ljust(64, "0")[:64],
+        )
+        await connection.execute(
+            """
+            INSERT INTO vector_record_1024 (
+                workspace_id, kb_id, index_chunk_id,
+                embedding_space_id, embedding
+            ) VALUES ($1, $2, $3, $4, $5::vector)
+            """,
+            foundation.workspace_id,
+            foundation.kb_id,
+            chunk_id,
+            foundation.embedding_space_id,
+            _vector_literal(vector),
+        )
+        return _Target(document_id, document_version_id, indexed_id, chunk_id)
+
+    async def _race_reads_through_commit(
+        self,
+        knowledge_base_id: UUID,
+        transaction: asyncpg.Transaction,
+    ) -> list[tuple[UUID, frozenset[tuple[UUID, UUID]]]]:
+        observations: list[tuple[UUID, frozenset[tuple[UUID, UUID]]]] = []
+        first_read = asyncio.Event()
+
+        async def read_repeatedly() -> None:
+            for _ in range(8):
+                pack = await self.service.retrieve(
+                    self.context,
+                    RetrievalRequest(knowledge_base_id, "race", top_k=100),
+                )
+                observations.append(
+                    (
+                        pack.index_revision_id,
+                        frozenset(
+                            (item.document_version_id, item.index_chunk_id)
+                            for item in pack.evidence
+                        ),
+                    )
+                )
+                first_read.set()
+                await asyncio.sleep(0)
+
+        readers = [asyncio.create_task(read_repeatedly()) for _ in range(3)]
+        await first_read.wait()
+        await transaction.commit()
+        await asyncio.gather(*readers)
+        final = await self.service.retrieve(
+            self.context,
+            RetrievalRequest(knowledge_base_id, "after commit", top_k=100),
+        )
+        observations.append(
+            (
+                final.index_revision_id,
+                frozenset(
+                    (item.document_version_id, item.index_chunk_id)
+                    for item in final.evidence
+                ),
+            )
+        )
+        return observations
 
     async def _document_version(
         self,
@@ -437,6 +762,14 @@ class _Foundation:
     kb_id: UUID
     revision_id: UUID
     embedding_space_id: UUID
+
+
+@dataclass(frozen=True, slots=True)
+class _Target:
+    document_id: UUID
+    document_version_id: UUID
+    indexed_document_version_id: UUID
+    chunk_id: UUID
 
 
 class _Provider:

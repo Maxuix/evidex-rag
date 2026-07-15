@@ -70,7 +70,7 @@ class RetrievalQueryPlan:
         if self.revision_selector is not RevisionSelector.ACTIVE:
             raise ValueError("the active revision selector is mandatory")
         if not self.current_document_version_only:
-            raise ValueError("the current document version filter is mandatory")
+            raise ValueError("the current retrievable version filter is mandatory")
         if self.build_status != "ready" or self.serving_status != "serving":
             raise ValueError("ready + serving filters are mandatory")
         if self.strategy is RetrievalStrategy.EXACT_VECTOR:
@@ -101,7 +101,7 @@ class VectorSearchHit:
     cosine_distance: float
     build_status: str
     serving_status: str
-    is_current_document_version: bool
+    is_current_serving_version: bool
 
     def __post_init__(self) -> None:
         if self.ordinal < 0:

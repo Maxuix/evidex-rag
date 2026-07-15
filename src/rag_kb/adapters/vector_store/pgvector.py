@@ -179,8 +179,6 @@ class PgVectorStore:
                 IndexedDocumentVersion.index_revision_id == IndexRevision.id,
                 IndexedDocumentVersion.build_status == IndexBuildStatus.READY,
                 IndexedDocumentVersion.serving_status == IndexServingStatus.SERVING,
-                Document.current_version_id
-                == IndexedDocumentVersion.document_version_id,
                 Document.deleted_at.is_(None),
                 DocumentVersion.source_status == DocumentSourceStatus.AVAILABLE,
                 VectorRecord.embedding_space_id == IndexRevision.embedding_space_id,
@@ -257,5 +255,5 @@ class PgVectorStore:
             cosine_distance=float(row["cosine_distance"]),
             build_status=row["build_status"].value,
             serving_status=row["serving_status"].value,
-            is_current_document_version=True,
+            is_current_serving_version=True,
         )

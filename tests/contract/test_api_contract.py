@@ -660,20 +660,40 @@ class RetrievalApiContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(retrieval_request.top_k, 5)
 
     async def test_client_cannot_inject_mandatory_filters(self) -> None:
-        response = await request(
-            self.app,
-            "POST",
-            f"{API_PREFIX}/retrieval/query",
-            json_body={
-                "knowledge_base_id": "01900000-0000-7000-8000-000000000091",
-                "query": "query",
-                "workspace_id": str(uuid4()),
-                "serving_status": "candidate",
-            },
+        forbidden_fields = (
+            "workspace_id",
+            "index_revision_id",
+            "revision_selector",
+            "current_document_version_only",
+            "build_status",
+            "serving_status",
+            "distance_metric",
+            "candidate_count",
+            "ef_search",
+            "iterative_scan",
+            "filters",
+            "debug",
         )
-
-        self.assertEqual(response.status, 422)
-        self.assertEqual(response.json()["code"], "REQUEST_VALIDATION_FAILED")
+        for field_name in forbidden_fields:
+            with self.subTest(field_name=field_name):
+                response = await request(
+                    self.app,
+                    "POST",
+                    f"{API_PREFIX}/retrieval/query",
+                    json_body={
+                        "knowledge_base_id": (
+                            "01900000-0000-7000-8000-000000000091"
+                        ),
+                        "query": "query",
+                        "include_debug": True,
+                        field_name: "client-controlled",
+                    },
+                )
+                self.assertEqual(response.status, 422)
+                self.assertEqual(
+                    response.json()["code"],
+                    "REQUEST_VALIDATION_FAILED",
+                )
         self.assertEqual(self.service.requests, [])
 
     async def test_retrieval_failures_are_content_safe_problem_details(self) -> None:

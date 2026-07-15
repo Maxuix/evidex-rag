@@ -40,10 +40,16 @@ class RetrievalTransportContractTests(unittest.TestCase):
         forbidden_fields = (
             "workspace_id",
             "index_revision_id",
+            "revision_selector",
             "build_status",
             "serving_status",
             "current_document_version_only",
+            "distance_metric",
+            "candidate_count",
             "ef_search",
+            "iterative_scan",
+            "filters",
+            "debug",
         )
         for field_name in forbidden_fields:
             with self.subTest(field_name=field_name), self.assertRaises(ValidationError):

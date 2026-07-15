@@ -160,7 +160,7 @@ class RetrievalService:
                 or hit.index_revision_id != result.resolved_active_revision_id
                 or hit.build_status != plan.build_status
                 or hit.serving_status != plan.serving_status
-                or not hit.is_current_document_version
+                or not hit.is_current_serving_version
             ):
                 raise RetrievalExecutionError(
                     ErrorCode.INTERNAL_SERVER_ERROR,

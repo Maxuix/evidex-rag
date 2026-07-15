@@ -18,6 +18,7 @@ from rag_kb.domain import (
     EmbeddingSpaceDefinition,
     ErrorCode,
     RetrievalExecutionError,
+    RetrievalQueryPlan,
     RetrievalRequest,
     RetrievalStrategy,
     VectorSearchHit,
@@ -52,10 +53,7 @@ class RetrievalContractTests(unittest.TestCase):
         self.assertIn("knowledge_base.active_index_revision_id", sql)
         self.assertIn("indexed_document_version.build_status", sql)
         self.assertIn("indexed_document_version.serving_status", sql)
-        self.assertIn(
-            "document.current_version_id = indexed_document_version.document_version_id",
-            sql,
-        )
+        self.assertNotIn("document.current_version_id", sql)
         self.assertIn("document.deleted_at IS NULL", sql)
         self.assertIn("document_version.source_status", sql)
         self.assertIn("vector_record_1024.embedding_space_id", sql)
@@ -78,6 +76,23 @@ class RetrievalContractTests(unittest.TestCase):
                 tuple(0.0 for _ in range(1024)),
             )
         self.assertEqual(capability.exception.code, ErrorCode.CAPABILITY_NOT_ENABLED)
+
+    def test_query_plan_rejects_relaxed_server_owned_filters(self) -> None:
+        plan = _plan()
+        relaxed = (
+            {"revision_selector": "retired"},
+            {"current_document_version_only": False},
+            {"build_status": "processing"},
+            {"serving_status": "candidate"},
+            {"distance_metric": "inner_product"},
+            {"candidate_count": 50},
+            {"ef_search": 100},
+            {"rerank": True},
+        )
+
+        for changes in relaxed:
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                replace(plan, **changes)
 
 
 class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
@@ -187,6 +202,10 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
             ),
             VectorSearchResult(
                 REVISION_ID,
+                (replace(_hit(CHUNK_1), is_current_serving_version=False),),
+            ),
+            VectorSearchResult(
+                REVISION_ID,
                 (_hit(CHUNK_1), _hit(CHUNK_1, ordinal=2)),
             ),
         )
@@ -257,9 +276,7 @@ def _context(workspace_id: UUID = WORKSPACE) -> AuthContext:
     return AuthContext("principal", "client", workspace_id)
 
 
-def _plan():
-    from rag_kb.domain import RetrievalQueryPlan
-
+def _plan() -> RetrievalQueryPlan:
     return RetrievalQueryPlan(
         workspace_id=WORKSPACE,
         knowledge_base_id=KB_ID,
@@ -310,5 +327,5 @@ def _hit(
         cosine_distance=distance,
         build_status="ready",
         serving_status="serving",
-        is_current_document_version=True,
+        is_current_serving_version=True,
     )
