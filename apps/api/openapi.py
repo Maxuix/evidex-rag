@@ -18,6 +18,8 @@ DESCRIPTIONS = {
     415: "Unsupported document media type",
     422: "Request validation failed",
     500: "Internal server error",
+    502: "Invalid upstream provider response",
+    503: "Required service unavailable",
 }
 
 

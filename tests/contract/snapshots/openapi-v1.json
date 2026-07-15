@@ -298,6 +298,137 @@
         "title": "ErrorCode",
         "type": "string"
       },
+      "EvidencePackResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "debug": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RetrievalDebugResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "evidence": {
+            "items": {
+              "$ref": "#/components/schemas/EvidenceResponse"
+            },
+            "title": "Evidence",
+            "type": "array"
+          },
+          "index_revision_id": {
+            "format": "uuid",
+            "title": "Index Revision Id",
+            "type": "string"
+          },
+          "knowledge_base_id": {
+            "format": "uuid",
+            "title": "Knowledge Base Id",
+            "type": "string"
+          },
+          "strategy": {
+            "$ref": "#/components/schemas/RetrievalStrategy"
+          }
+        },
+        "required": [
+          "knowledge_base_id",
+          "index_revision_id",
+          "strategy",
+          "evidence"
+        ],
+        "title": "EvidencePackResponse",
+        "type": "object"
+      },
+      "EvidenceResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "document_id": {
+            "format": "uuid",
+            "title": "Document Id",
+            "type": "string"
+          },
+          "document_version_id": {
+            "format": "uuid",
+            "title": "Document Version Id",
+            "type": "string"
+          },
+          "hierarchy": {
+            "additionalProperties": true,
+            "title": "Hierarchy",
+            "type": "object"
+          },
+          "index_chunk_id": {
+            "format": "uuid",
+            "title": "Index Chunk Id",
+            "type": "string"
+          },
+          "index_revision_id": {
+            "format": "uuid",
+            "title": "Index Revision Id",
+            "type": "string"
+          },
+          "indexed_document_version_id": {
+            "format": "uuid",
+            "title": "Indexed Document Version Id",
+            "type": "string"
+          },
+          "ordinal": {
+            "title": "Ordinal",
+            "type": "integer"
+          },
+          "rank": {
+            "title": "Rank",
+            "type": "integer"
+          },
+          "score": {
+            "title": "Score",
+            "type": "number"
+          },
+          "score_kind": {
+            "$ref": "#/components/schemas/EvidenceScoreKind"
+          },
+          "source_location": {
+            "additionalProperties": true,
+            "title": "Source Location",
+            "type": "object"
+          },
+          "source_metadata": {
+            "additionalProperties": true,
+            "title": "Source Metadata",
+            "type": "object"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "rank",
+          "index_chunk_id",
+          "indexed_document_version_id",
+          "document_id",
+          "document_version_id",
+          "index_revision_id",
+          "ordinal",
+          "text",
+          "source_location",
+          "hierarchy",
+          "source_metadata",
+          "score",
+          "score_kind"
+        ],
+        "title": "EvidenceResponse",
+        "type": "object"
+      },
+      "EvidenceScoreKind": {
+        "enum": [
+          "cosine_similarity"
+        ],
+        "title": "EvidenceScoreKind",
+        "type": "string"
+      },
       "FieldViolation": {
         "additionalProperties": false,
         "properties": {
@@ -506,6 +637,13 @@
         "title": "IndexingJobResponse",
         "type": "object"
       },
+      "IterativeScanMode": {
+        "enum": [
+          "disabled"
+        ],
+        "title": "IterativeScanMode",
+        "type": "string"
+      },
       "KnowledgeBaseCreate": {
         "additionalProperties": false,
         "properties": {
@@ -712,6 +850,30 @@
         "title": "ProblemDetails",
         "type": "object"
       },
+      "RetrievalDebugResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "query_plan": {
+            "$ref": "#/components/schemas/RetrievalQueryPlanResponse"
+          },
+          "resolved_active_revision_id": {
+            "format": "uuid",
+            "title": "Resolved Active Revision Id",
+            "type": "string"
+          },
+          "result_count": {
+            "title": "Result Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "query_plan",
+          "resolved_active_revision_id",
+          "result_count"
+        ],
+        "title": "RetrievalDebugResponse",
+        "type": "object"
+      },
       "RetrievalDefaults": {
         "additionalProperties": false,
         "properties": {
@@ -731,6 +893,152 @@
         },
         "title": "RetrievalDefaults",
         "type": "object"
+      },
+      "RetrievalQueryPlanResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "build_status": {
+            "title": "Build Status",
+            "type": "string"
+          },
+          "candidate_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Candidate Count"
+          },
+          "current_document_version_only": {
+            "title": "Current Document Version Only",
+            "type": "boolean"
+          },
+          "distance_metric": {
+            "title": "Distance Metric",
+            "type": "string"
+          },
+          "ef_search": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ef Search"
+          },
+          "iterative_scan": {
+            "$ref": "#/components/schemas/IterativeScanMode"
+          },
+          "knowledge_base_id": {
+            "format": "uuid",
+            "title": "Knowledge Base Id",
+            "type": "string"
+          },
+          "rerank": {
+            "title": "Rerank",
+            "type": "boolean"
+          },
+          "revision_selector": {
+            "$ref": "#/components/schemas/RevisionSelector"
+          },
+          "serving_status": {
+            "title": "Serving Status",
+            "type": "string"
+          },
+          "strategy": {
+            "$ref": "#/components/schemas/RetrievalStrategy"
+          },
+          "top_k": {
+            "title": "Top K",
+            "type": "integer"
+          },
+          "workspace_id": {
+            "format": "uuid",
+            "title": "Workspace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "knowledge_base_id",
+          "strategy",
+          "top_k",
+          "revision_selector",
+          "current_document_version_only",
+          "build_status",
+          "serving_status",
+          "distance_metric",
+          "candidate_count",
+          "ef_search",
+          "iterative_scan",
+          "rerank"
+        ],
+        "title": "RetrievalQueryPlanResponse",
+        "type": "object"
+      },
+      "RetrievalQueryRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "include_debug": {
+            "default": false,
+            "title": "Include Debug",
+            "type": "boolean"
+          },
+          "knowledge_base_id": {
+            "format": "uuid",
+            "title": "Knowledge Base Id",
+            "type": "string"
+          },
+          "query": {
+            "minLength": 1,
+            "title": "Query",
+            "type": "string"
+          },
+          "rerank": {
+            "default": false,
+            "title": "Rerank",
+            "type": "boolean"
+          },
+          "strategy": {
+            "$ref": "#/components/schemas/RetrievalStrategy",
+            "default": "exact_vector"
+          },
+          "top_k": {
+            "default": 10,
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Top K",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "knowledge_base_id",
+          "query"
+        ],
+        "title": "RetrievalQueryRequest",
+        "type": "object"
+      },
+      "RetrievalStrategy": {
+        "enum": [
+          "exact_vector",
+          "ann_vector",
+          "lexical",
+          "hybrid"
+        ],
+        "title": "RetrievalStrategy",
+        "type": "string"
+      },
+      "RevisionSelector": {
+        "enum": [
+          "active"
+        ],
+        "title": "RevisionSelector",
+        "type": "string"
       }
     }
   },
@@ -1668,6 +1976,97 @@
         "summary": "Upload Document",
         "tags": [
           "documents"
+        ]
+      }
+    },
+    "/api/v1/retrieval/query": {
+      "post": {
+        "operationId": "query_retrieval_api_v1_retrieval_query_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RetrievalQueryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvidencePackResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Idempotency or resource conflict"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Request validation failed"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Internal server error"
+          },
+          "502": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Invalid upstream provider response"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Required service unavailable"
+          }
+        },
+        "summary": "Query Retrieval",
+        "tags": [
+          "retrieval"
         ]
       }
     }

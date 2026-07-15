@@ -18,6 +18,7 @@ from rag_kb.services import (
     ResourceStateConflictError,
 )
 from rag_kb.schemas import ErrorCode, FieldViolation, ProblemDetails
+from rag_kb.retrieval import RetrievalExecutionError
 
 
 class ApiProblem(Exception):
@@ -62,6 +63,56 @@ def install_problem_handlers(app: FastAPI) -> None:
     app.add_exception_handler(ResourceStateConflictError, _resource_state_conflict_handler)  # type: ignore[arg-type]
     app.add_exception_handler(IdempotencyKeyReusedError, _idempotency_reused_handler)  # type: ignore[arg-type]
     app.add_exception_handler(FileAdmissionError, _file_admission_handler)  # type: ignore[arg-type]
+    app.add_exception_handler(RetrievalExecutionError, _retrieval_execution_handler)  # type: ignore[arg-type]
+
+
+async def _retrieval_execution_handler(
+    request: Request,
+    error: RetrievalExecutionError,
+) -> JSONResponse:
+    mapping = {
+        ErrorCode.CAPABILITY_NOT_ENABLED: (
+            409,
+            "Capability not enabled",
+            "The requested retrieval capability is not enabled.",
+            False,
+        ),
+        ErrorCode.EMBEDDING_PROVIDER_UNAVAILABLE: (
+            503,
+            "Embedding provider unavailable",
+            "The query embedding provider is temporarily unavailable.",
+            True,
+        ),
+        ErrorCode.EMBEDDING_RESPONSE_INVALID: (
+            502,
+            "Embedding response invalid",
+            "The query embedding provider returned an invalid response.",
+            False,
+        ),
+        ErrorCode.EMBEDDING_SPACE_MISMATCH: (
+            503,
+            "Retrieval configuration unavailable",
+            "The active index is incompatible with the configured retrieval space.",
+            False,
+        ),
+    }
+    status, title, detail, retryable = mapping.get(
+        error.code,
+        (
+            500,
+            "Internal Server Error",
+            "The retrieval request could not be completed.",
+            False,
+        ),
+    )
+    return problem_response(
+        request,
+        code=error.code,
+        status=status,
+        title=title,
+        detail=detail,
+        retryable=retryable,
+    )
 
 
 async def _file_admission_handler(

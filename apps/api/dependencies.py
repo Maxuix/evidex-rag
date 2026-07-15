@@ -6,7 +6,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from rag_kb.auth import DevelopmentAuthProvider, SingleWorkspaceAccessPolicy
-from rag_kb.adapters import LocalFileStore
+from rag_kb.adapters import (
+    FixedPgVectorSpace,
+    LocalFileStore,
+    OpenAICompatibleEmbeddingProvider,
+    PgVectorStore,
+)
 from rag_kb.config import (
     Settings,
     StartupValidation,
@@ -28,7 +33,9 @@ from rag_kb.services import (
     KnowledgeBaseService,
     SourceFileService,
     build_content_services,
+    embedding_space_definition,
 )
+from rag_kb.retrieval import RetrievalService
 from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWorkFactory
 
 
@@ -48,6 +55,9 @@ class ApiDependencies:
     source_file_service: SourceFileService
     file_admission_service: FileAdmissionService
     indexing_job_service: IndexingJobService
+    embedding_provider: OpenAICompatibleEmbeddingProvider
+    vector_store: PgVectorStore
+    retrieval_service: RetrievalService
 
     async def close(self) -> None:
         """Release process-owned database resources during API shutdown."""
@@ -86,6 +96,20 @@ def build_api_dependencies(
     )
     access_policy = SingleWorkspaceAccessPolicy(identity.workspace_id)
     embedding = resolved_settings.model_provider.embedding
+    embedding_space = embedding_space_definition(embedding)
+    embedding_provider = OpenAICompatibleEmbeddingProvider(
+        base_url=str(embedding.base_url),
+        api_key=embedding.api_key.get_secret_value(),
+        embedding_space=embedding_space,
+        max_batch_size=embedding.max_batch_size,
+        timeout_seconds=embedding.timeout_seconds,
+        max_retries=embedding.max_retries,
+        max_concurrency=embedding.max_concurrency,
+    )
+    vector_store = PgVectorStore(
+        database.sessions,
+        FixedPgVectorSpace(embedding_space),
+    )
     content_services = build_content_services(unit_of_work, access_policy, embedding)
     file_store = LocalFileStore(
         resolved_settings.file_store.staging_path,
@@ -117,4 +141,11 @@ def build_api_dependencies(
             )
         ),
         indexing_job_service=IndexingJobService(unit_of_work, access_policy),
+        embedding_provider=embedding_provider,
+        vector_store=vector_store,
+        retrieval_service=RetrievalService(
+            access_policy,
+            embedding_provider,
+            vector_store,
+        ),
     )

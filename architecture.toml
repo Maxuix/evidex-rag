@@ -42,6 +42,7 @@ scan_roots = ["src", "apps"]
   "rag_kb.uow",
   "rag_kb.db",
   "rag_kb.adapters",
+  "rag_kb.retrieval",
   "rag_kb.observability",
 ]
 "apps.worker" = [

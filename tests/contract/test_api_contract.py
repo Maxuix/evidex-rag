@@ -16,6 +16,7 @@ from apps.api.app import API_PREFIX, create_app
 from apps.api.errors import ApiProblem
 from apps.api.idempotency import RequiredIdempotencyKey
 from apps.api.pagination import decode_cursor, encode_cursor
+from apps.api.routers.retrieval import router as retrieval_router
 from apps.api.security import (
     SafeRequestMetadata,
     get_auth_context,
@@ -33,6 +34,8 @@ from rag_kb.domain import (
     Document,
     DocumentMutationResult,
     DocumentVersion,
+    Evidence,
+    EvidencePack,
     IdempotencyKeyReusedError,
     IdempotencyScope,
     IndexingJobSnapshot,
@@ -40,10 +43,14 @@ from rag_kb.domain import (
     Page,
     ResourceNotFoundError,
     ResourceStateConflictError,
+    RetrievalDebug,
+    RetrievalQueryPlan,
+    RetrievalStrategy,
     canonical_request_hash,
 )
 from rag_kb.services import FileAdmissionService
 from rag_kb.schemas import CursorPayload, ErrorCode, PaginationQuery
+from rag_kb.retrieval import RetrievalExecutionError
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -145,6 +152,53 @@ class StubApiDependencies:
 
     async def close(self) -> None:
         self.closed = True
+
+
+class StubRetrievalService:
+    def __init__(self) -> None:
+        self.requests = []
+        self.failure: RetrievalExecutionError | None = None
+
+    async def retrieve(self, context, retrieval_request):
+        self.requests.append((context, retrieval_request))
+        if self.failure is not None:
+            raise self.failure
+        revision_id = UUID("01900000-0000-7000-8000-000000000092")
+        plan = RetrievalQueryPlan(
+            workspace_id=context.workspace_id,
+            knowledge_base_id=retrieval_request.knowledge_base_id,
+            strategy=RetrievalStrategy.EXACT_VECTOR,
+            top_k=retrieval_request.top_k,
+        )
+        evidence = Evidence(
+            rank=1,
+            index_chunk_id=UUID("01900000-0000-7000-8000-000000000093"),
+            indexed_document_version_id=UUID(
+                "01900000-0000-7000-8000-000000000094"
+            ),
+            document_id=UUID("01900000-0000-7000-8000-000000000095"),
+            document_version_id=UUID(
+                "01900000-0000-7000-8000-000000000096"
+            ),
+            index_revision_id=revision_id,
+            ordinal=0,
+            text="safe evidence",
+            source_location={"line_start": 1, "line_end": 1},
+            hierarchy={},
+            source_metadata={"filename": "safe.txt"},
+            score=1.0,
+        )
+        return EvidencePack(
+            knowledge_base_id=retrieval_request.knowledge_base_id,
+            index_revision_id=revision_id,
+            strategy=RetrievalStrategy.EXACT_VECTOR,
+            evidence=(evidence,),
+            debug=(
+                RetrievalDebug(plan, revision_id, 1)
+                if retrieval_request.include_debug
+                else None
+            ),
+        )
 
 
 @dataclass
@@ -542,6 +596,7 @@ class CommonContractTests(unittest.TestCase):
                 "/api/v1/knowledge-bases/{kb_id}/documents",
                 "/api/v1/indexing-jobs/{job_id}",
                 "/api/v1/indexing-jobs/{job_id}/retry",
+                "/api/v1/retrieval/query",
             },
         )
         upload = production["paths"]["/api/v1/knowledge-bases/{kb_id}/documents"]["post"]
@@ -562,6 +617,95 @@ class CommonContractTests(unittest.TestCase):
             ],
             "#/components/schemas/ProblemDetails",
         )
+
+
+class RetrievalApiContractTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self.dependencies = StubApiDependencies()
+        self.service = StubRetrievalService()
+        self.dependencies.retrieval_service = self.service
+        self.app = create_app(
+            dependencies=self.dependencies,  # type: ignore[arg-type]
+            routers=(retrieval_router,),
+        )
+        self.lifespan = self.app.router.lifespan_context(self.app)
+        await self.lifespan.__aenter__()
+
+    async def asyncTearDown(self) -> None:
+        await self.lifespan.__aexit__(None, None, None)
+
+    async def test_exact_retrieval_returns_evidence_and_authorized_safe_debug(self) -> None:
+        kb_id = UUID("01900000-0000-7000-8000-000000000091")
+        response = await request(
+            self.app,
+            "POST",
+            f"{API_PREFIX}/retrieval/query",
+            json_body={
+                "knowledge_base_id": str(kb_id),
+                "query": "  查询 ABC-42  ",
+                "top_k": 5,
+                "strategy": "exact_vector",
+                "include_debug": True,
+            },
+        )
+
+        self.assertEqual(response.status, 200)
+        body = response.json()
+        self.assertEqual(body["knowledge_base_id"], str(kb_id))
+        self.assertEqual(body["evidence"][0]["text"], "safe evidence")
+        self.assertEqual(body["debug"]["query_plan"]["revision_selector"], "active")
+        self.assertNotIn("query", body["debug"]["query_plan"])
+        _, retrieval_request = self.service.requests[0]
+        self.assertEqual(retrieval_request.query, "查询 ABC-42")
+        self.assertEqual(retrieval_request.top_k, 5)
+
+    async def test_client_cannot_inject_mandatory_filters(self) -> None:
+        response = await request(
+            self.app,
+            "POST",
+            f"{API_PREFIX}/retrieval/query",
+            json_body={
+                "knowledge_base_id": "01900000-0000-7000-8000-000000000091",
+                "query": "query",
+                "workspace_id": str(uuid4()),
+                "serving_status": "candidate",
+            },
+        )
+
+        self.assertEqual(response.status, 422)
+        self.assertEqual(response.json()["code"], "REQUEST_VALIDATION_FAILED")
+        self.assertEqual(self.service.requests, [])
+
+    async def test_retrieval_failures_are_content_safe_problem_details(self) -> None:
+        cases = (
+            (ErrorCode.CAPABILITY_NOT_ENABLED, 409, False),
+            (ErrorCode.EMBEDDING_PROVIDER_UNAVAILABLE, 503, True),
+            (ErrorCode.EMBEDDING_RESPONSE_INVALID, 502, False),
+            (ErrorCode.EMBEDDING_SPACE_MISMATCH, 503, False),
+            (ErrorCode.INTERNAL_SERVER_ERROR, 500, False),
+        )
+        for code, status, retryable in cases:
+            with self.subTest(code=code):
+                self.service.failure = RetrievalExecutionError(
+                    code,
+                    diagnostic={"secret": "must-not-leak"},
+                )
+                response = await request(
+                    self.app,
+                    "POST",
+                    f"{API_PREFIX}/retrieval/query",
+                    json_body={
+                        "knowledge_base_id": (
+                            "01900000-0000-7000-8000-000000000091"
+                        ),
+                        "query": "query",
+                    },
+                )
+                body = response.json()
+                self.assertEqual(response.status, status)
+                self.assertEqual(body["code"], code.value)
+                self.assertEqual(body["retryable"], retryable)
+                self.assertNotIn("must-not-leak", response.body.decode())
 
 
 class _FakeKnowledgeBaseService:

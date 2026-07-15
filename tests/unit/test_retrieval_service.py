@@ -4,6 +4,9 @@ import unittest
 from dataclasses import replace
 from uuid import UUID
 
+from sqlalchemy.dialects import postgresql
+
+from rag_kb.adapters import FixedPgVectorSpace, PgVectorStore
 from rag_kb.auth import (
     AccessDeniedError,
     AuthContext,
@@ -39,6 +42,42 @@ class RetrievalContractTests(unittest.TestCase):
             RetrievalRequest(KB_ID, "   ")
         with self.assertRaises(ValueError):
             RetrievalRequest(KB_ID, "query", top_k=101)
+
+    def test_pgvector_statement_is_one_exact_filtered_snapshot_shape(self) -> None:
+        statement = PgVectorStore._statement()  # noqa: SLF001 - SQL contract
+        sql = str(statement.compile(dialect=postgresql.dialect()))
+
+        self.assertIn("LEFT OUTER JOIN LATERAL", sql)
+        self.assertIn("vector_record_1024.embedding <=>", sql)
+        self.assertIn("knowledge_base.active_index_revision_id", sql)
+        self.assertIn("indexed_document_version.build_status", sql)
+        self.assertIn("indexed_document_version.serving_status", sql)
+        self.assertIn(
+            "document.current_version_id = indexed_document_version.document_version_id",
+            sql,
+        )
+        self.assertIn("document.deleted_at IS NULL", sql)
+        self.assertIn("document_version.source_status", sql)
+        self.assertIn("vector_record_1024.embedding_space_id", sql)
+        self.assertIn("ORDER BY cosine_distance ASC, index_chunk.id ASC", sql)
+        self.assertIn("LIMIT %(top_k)s", sql)
+        self.assertNotIn("hnsw", sql.lower())
+
+    def test_pgvector_adapter_rejects_non_exact_or_wrong_dimension(self) -> None:
+        definition = replace(_embedding_space(), dimension=1024)
+        store = PgVectorStore(None, FixedPgVectorSpace(definition))  # type: ignore[arg-type]
+        exact = _plan()
+
+        with self.assertRaises(RetrievalExecutionError) as dimension:
+            store._require_exact_plan(exact, (1.0, 0.0))  # noqa: SLF001
+        self.assertEqual(dimension.exception.code, ErrorCode.EMBEDDING_RESPONSE_INVALID)
+
+        with self.assertRaises(RetrievalExecutionError) as capability:
+            store._require_exact_plan(  # noqa: SLF001
+                replace(exact, strategy=RetrievalStrategy.HYBRID),
+                tuple(0.0 for _ in range(1024)),
+            )
+        self.assertEqual(capability.exception.code, ErrorCode.CAPABILITY_NOT_ENABLED)
 
 
 class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
@@ -216,6 +255,17 @@ class _DebugDeniedPolicy:
 
 def _context(workspace_id: UUID = WORKSPACE) -> AuthContext:
     return AuthContext("principal", "client", workspace_id)
+
+
+def _plan():
+    from rag_kb.domain import RetrievalQueryPlan
+
+    return RetrievalQueryPlan(
+        workspace_id=WORKSPACE,
+        knowledge_base_id=KB_ID,
+        strategy=RetrievalStrategy.EXACT_VECTOR,
+        top_k=5,
+    )
 
 
 def _embedding_space() -> EmbeddingSpaceDefinition:
