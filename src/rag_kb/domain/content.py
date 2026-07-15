@@ -51,6 +51,7 @@ class KnowledgeBase:
     active_index_revision_id: UUID
     embedding_space_id: UUID
     retrieval_defaults: dict[str, Any]
+    answer_policy_defaults: dict[str, Any]
     provisioned_at: datetime
     created_at: datetime
     updated_at: datetime

@@ -6,7 +6,8 @@ from datetime import datetime
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
+from pydantic_core import PydanticCustomError
 
 from rag_kb.domain import AnswerStyle, InsufficiencyPolicy
 from rag_kb.schemas.common import OpaqueCursor, PublicSchema
@@ -58,6 +59,37 @@ class ChatMessagePage(PublicSchema):
 class AnswerPolicyOverrides(PublicSchema):
     answer_style: AnswerStyle | None = None
     insufficiency_policy: InsufficiencyPolicy | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_non_override_dimensions(cls, value: Any) -> Any:
+        if isinstance(value, dict):
+            unsupported = set(value) - {"answer_style", "insufficiency_policy"}
+            if unsupported:
+                raise PydanticCustomError(
+                    "answer_policy_not_supported",
+                    "answer policy contains unsupported dimensions",
+                )
+        return value
+
+    @field_validator("answer_style", mode="before")
+    @classmethod
+    def validate_answer_style(cls, value: Any) -> Any:
+        if value is None or value in {item.value for item in AnswerStyle}:
+            return value
+        raise PydanticCustomError(
+            "answer_policy_not_supported", "answer style is not supported"
+        )
+
+    @field_validator("insufficiency_policy", mode="before")
+    @classmethod
+    def validate_insufficiency_policy(cls, value: Any) -> Any:
+        if value is None or value in {item.value for item in InsufficiencyPolicy}:
+            return value
+        raise PydanticCustomError(
+            "answer_policy_not_supported",
+            "insufficiency policy is not supported",
+        )
 
 
 class ChatRetrievalRequest(PublicSchema):

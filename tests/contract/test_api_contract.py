@@ -744,10 +744,15 @@ class _FakeKnowledgeBaseService:
     def __init__(self) -> None:
         self.value = _knowledge_base_value()
 
-    async def create(self, context, key, *, name, retrieval_defaults):
+    async def create(
+        self, context, key, *, name, retrieval_defaults, answer_policy_defaults
+    ):
         del context, key
         self.value = dataclass_replace(
-            self.value, name=name, retrieval_defaults=retrieval_defaults
+            self.value,
+            name=name,
+            retrieval_defaults=retrieval_defaults,
+            answer_policy_defaults=answer_policy_defaults,
         )
         return self.value
 
@@ -762,7 +767,14 @@ class _FakeKnowledgeBaseService:
         return Page(items=(self.value,))
 
     async def update(
-        self, context, key, kb_id, *, name, retrieval_defaults
+        self,
+        context,
+        key,
+        kb_id,
+        *,
+        name,
+        retrieval_defaults,
+        answer_policy_defaults,
     ):
         del context
         if key == UUID("00000000-0000-0000-0000-000000000099"):
@@ -773,6 +785,9 @@ class _FakeKnowledgeBaseService:
             self.value,
             name=name or self.value.name,
             retrieval_defaults=retrieval_defaults or self.value.retrieval_defaults,
+            answer_policy_defaults=(
+                answer_policy_defaults or self.value.answer_policy_defaults
+            ),
         )
         return self.value
 
@@ -994,6 +1009,28 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(created.json()["name"], "Engineering")
         self.assertEqual(created.json()["retrieval_defaults"]["strategy"], "exact_vector")
         self.assertEqual(created.json()["retrieval_defaults"]["top_k"], 8)
+        self.assertEqual(
+            created.json()["answer_policy_defaults"],
+            {"answer_style": "concise", "insufficiency_policy": "refuse"},
+        )
+
+        updated = await request(
+            self.app,
+            "PATCH",
+            f"{API_PREFIX}/knowledge-bases/{_knowledge_base_value().id}",
+            headers={"idempotency-key": str(uuid4())},
+            json_body={
+                "answer_policy_defaults": {
+                    "answer_style": "summary",
+                    "insufficiency_policy": "partial_answer",
+                }
+            },
+        )
+        self.assertEqual(updated.status, 200)
+        self.assertEqual(
+            updated.json()["answer_policy_defaults"],
+            {"answer_style": "summary", "insufficiency_policy": "partial_answer"},
+        )
 
         listed = await request(self.app, "GET", f"{API_PREFIX}/knowledge-bases")
         self.assertEqual(listed.status, 200)
@@ -1231,21 +1268,35 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_chat_rejects_policy_weakening_and_redacts_conflicts(self) -> None:
         chat = self.dependencies.chat_service
-        forbidden = await request(
-            self.app,
-            "POST",
-            f"{API_PREFIX}/chat/runs",
-            headers={"idempotency-key": str(uuid4())},
-            json_body={
-                **_chat_run_request(chat.session.id),
-                "answer_policy": {
-                    "answer_style": "concise",
-                    "grounding_policy": "model_knowledge_allowed",
-                },
+        unsupported_policies = (
+            {
+                "answer_style": "concise",
+                "grounding_policy": "model_knowledge_allowed",
             },
+            {"answer_style": "detailed"},
+            {"insufficiency_policy": "ask_for_clarification"},
+            {"citation_required": False},
+            {"citation_granularity": "paragraph_level"},
+            {"answer_task": "report"},
+            {"policy_version": "client-version"},
         )
-        self.assertEqual(forbidden.status, 422)
-        self.assertEqual(forbidden.json()["code"], "REQUEST_VALIDATION_FAILED")
+        for answer_policy in unsupported_policies:
+            with self.subTest(answer_policy=answer_policy):
+                forbidden = await request(
+                    self.app,
+                    "POST",
+                    f"{API_PREFIX}/chat/runs",
+                    headers={"idempotency-key": str(uuid4())},
+                    json_body={
+                        **_chat_run_request(chat.session.id),
+                        "answer_policy": answer_policy,
+                    },
+                )
+                self.assertEqual(forbidden.status, 422)
+                self.assertEqual(
+                    forbidden.json()["code"], "ANSWER_POLICY_NOT_SUPPORTED"
+                )
+                self.assertNotIn("client-version", forbidden.body.decode())
         self.assertEqual(chat.create_run_calls, [])
 
         conflict = await request(
@@ -1278,6 +1329,10 @@ def _knowledge_base_value() -> KnowledgeBase:
         active_index_revision_id=UUID("01900000-0000-7000-8000-000000000012"),
         embedding_space_id=UUID("01900000-0000-7000-8000-000000000013"),
         retrieval_defaults={"strategy": "exact_vector", "top_k": 10},
+        answer_policy_defaults={
+            "answer_style": "concise",
+            "insufficiency_policy": "refuse",
+        },
         provisioned_at=now,
         created_at=now,
         updated_at=now,

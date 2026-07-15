@@ -19,6 +19,7 @@ from rag_kb.schemas import (
     CursorPayload,
     ErrorCode,
     KnowledgeBaseCreate,
+    KnowledgeBaseAnswerPolicyDefaults,
     KnowledgeBasePage,
     KnowledgeBaseResponse,
     KnowledgeBaseUpdate,
@@ -47,6 +48,7 @@ async def create_knowledge_base(
         idempotency_key,
         name=payload.name,
         retrieval_defaults=payload.retrieval_defaults.model_dump(mode="json"),
+        answer_policy_defaults=payload.answer_policy_defaults.model_dump(mode="json"),
     )
     return _response(created)
 
@@ -115,6 +117,11 @@ async def update_knowledge_base(
             if payload.retrieval_defaults is not None
             else None
         ),
+        answer_policy_defaults=(
+            payload.answer_policy_defaults.model_dump(mode="json")
+            if payload.answer_policy_defaults is not None
+            else None
+        ),
     )
     return _response(updated)
 
@@ -153,6 +160,9 @@ def _response(value: KnowledgeBase) -> KnowledgeBaseResponse:
         active_index_revision_id=value.active_index_revision_id,
         embedding_space_id=value.embedding_space_id,
         retrieval_defaults=RetrievalDefaults.model_validate(value.retrieval_defaults),
+        answer_policy_defaults=KnowledgeBaseAnswerPolicyDefaults.model_validate(
+            value.answer_policy_defaults
+        ),
         provisioned_at=value.provisioned_at,
         created_at=value.created_at,
         updated_at=value.updated_at,

@@ -165,6 +165,97 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 after=None,
             )
 
+    async def test_kb_defaults_request_precedence_and_frozen_replay(self) -> None:
+        kb = await self.knowledge_bases.create(
+            self.context,
+            uuid4(),
+            name="policy-defaults",
+            retrieval_defaults={"strategy": "exact_vector", "top_k": 10},
+            answer_policy_defaults={
+                "answer_style": "summary",
+                "insufficiency_policy": "partial_answer",
+            },
+        )
+        session = await self.chat.create_session(
+            self.context, kb_id=kb.id, title="Policy precedence"
+        )
+        key = uuid4()
+        from_defaults = await self.chat.create_run(
+            self.context,
+            key,
+            session_id=session.id,
+            kb_id=kb.id,
+            message="Use knowledge-base policy defaults",
+            answer_style=None,
+            insufficiency_policy=None,
+            retrieval_mode="vector",
+            top_k=10,
+        )
+        self.assertEqual(from_defaults.effective_policy["answer_style"], "summary")
+        self.assertEqual(
+            from_defaults.effective_policy["insufficiency_policy"],
+            "partial_answer",
+        )
+
+        await self.knowledge_bases.update(
+            self.context,
+            uuid4(),
+            kb.id,
+            name=None,
+            retrieval_defaults=None,
+            answer_policy_defaults={
+                "answer_style": "concise",
+                "insufficiency_policy": "refuse",
+            },
+        )
+        replay, concurrent_replay = await asyncio.gather(
+            self.chat.create_run(
+                self.context,
+                key,
+                session_id=session.id,
+                kb_id=kb.id,
+                message="Use knowledge-base policy defaults",
+                answer_style=None,
+                insufficiency_policy=None,
+                retrieval_mode="vector",
+                top_k=10,
+            ),
+            self.chat.create_run(
+                self.context,
+                key,
+                session_id=session.id,
+                kb_id=kb.id,
+                message="Use knowledge-base policy defaults",
+                answer_style=None,
+                insufficiency_policy=None,
+                retrieval_mode="vector",
+                top_k=10,
+            ),
+        )
+        self.assertEqual(replay.id, from_defaults.id)
+        self.assertEqual(concurrent_replay.id, from_defaults.id)
+        self.assertEqual(replay.effective_policy, from_defaults.effective_policy)
+
+        request_override = await self.chat.create_run(
+            self.context,
+            uuid4(),
+            session_id=session.id,
+            kb_id=kb.id,
+            message="Override only the answer style",
+            answer_style=AnswerStyle.SUMMARY,
+            insufficiency_policy=None,
+            retrieval_mode="vector",
+            top_k=10,
+        )
+        self.assertEqual(request_override.effective_policy["answer_style"], "summary")
+        self.assertEqual(
+            request_override.effective_policy["insufficiency_policy"], "refuse"
+        )
+        self.assertEqual(
+            request_override.effective_policy["grounding_policy"], "evidence_only"
+        )
+        self.assertTrue(request_override.effective_policy["citation_required"])
+
     async def _create_kb(self, name: str):
         return await self.knowledge_bases.create(
             self.context,

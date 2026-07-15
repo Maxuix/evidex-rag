@@ -161,10 +161,6 @@ class ChatService:
             requested_policy["answer_style"] = answer_style.value
         if insufficiency_policy is not None:
             requested_policy["insufficiency_policy"] = insufficiency_policy.value
-        effective_policy = resolve_p1_policy(
-            answer_style=answer_style,
-            insufficiency_policy=insufficiency_policy,
-        ).as_dict()
         requested_retrieval = {"mode": retrieval_mode, "top_k": top_k}
         retrieval_strategy = {
             "strategy": "exact_vector",
@@ -204,6 +200,10 @@ class ChatService:
             knowledge_base = await uow.knowledge_bases.get(kb_id)
             if knowledge_base is None:
                 raise ResourceNotFoundError("knowledge base was not found")
+            effective_policy = resolve_p1_policy(
+                requested_policy=requested_policy,
+                knowledge_base_defaults=knowledge_base.answer_policy_defaults,
+            ).as_dict()
             return await uow.chat.create_run(
                 scope=scope,
                 request_hash=request_hash,

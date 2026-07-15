@@ -7,6 +7,7 @@ from uuid import UUID
 from pydantic import ValidationError
 
 from rag_kb.domain import (
+    AnswerPolicyNotSupportedError,
     AnswerStyle,
     InsufficiencyPolicy,
     resolve_p1_policy,
@@ -18,8 +19,11 @@ from rag_kb.services import chat_model_configuration
 class ChatCreationContractTests(unittest.TestCase):
     def test_safe_defaults_and_all_four_override_pairs_are_complete(self) -> None:
         default = resolve_p1_policy(
-            answer_style=None,
-            insufficiency_policy=None,
+            requested_policy={},
+            knowledge_base_defaults={
+                "answer_style": "concise",
+                "insufficiency_policy": "refuse",
+            },
         ).as_dict()
         self.assertEqual(default["answer_style"], "concise")
         self.assertEqual(default["insufficiency_policy"], "refuse")
@@ -31,18 +35,66 @@ class ChatCreationContractTests(unittest.TestCase):
         pairs = {
             (
                 resolve_p1_policy(
-                    answer_style=style,
-                    insufficiency_policy=insufficiency,
+                    requested_policy={
+                        "answer_style": style,
+                        "insufficiency_policy": insufficiency,
+                    },
+                    knowledge_base_defaults={
+                        "answer_style": "concise",
+                        "insufficiency_policy": "refuse",
+                    },
                 ).answer_style,
                 resolve_p1_policy(
-                    answer_style=style,
-                    insufficiency_policy=insufficiency,
+                    requested_policy={
+                        "answer_style": style,
+                        "insufficiency_policy": insufficiency,
+                    },
+                    knowledge_base_defaults={
+                        "answer_style": "concise",
+                        "insufficiency_policy": "refuse",
+                    },
                 ).insufficiency_policy,
             )
             for style in AnswerStyle
             for insufficiency in InsufficiencyPolicy
         }
         self.assertEqual(len(pairs), 4)
+
+    def test_request_overrides_kb_defaults_while_server_constraints_remain_fixed(self) -> None:
+        resolved = resolve_p1_policy(
+            requested_policy={"answer_style": "concise"},
+            knowledge_base_defaults={
+                "answer_style": "summary",
+                "insufficiency_policy": "partial_answer",
+            },
+        )
+        self.assertIs(resolved.answer_style, AnswerStyle.CONCISE)
+        self.assertIs(
+            resolved.insufficiency_policy, InsufficiencyPolicy.PARTIAL_ANSWER
+        )
+        self.assertEqual(resolved.grounding_policy, "evidence_only")
+        self.assertTrue(resolved.citation_required)
+        self.assertEqual(resolved.citation_granularity, "claim_level")
+        self.assertEqual(resolved.answer_task, "answer")
+        self.assertEqual(resolved.policy_version, "p1")
+
+    def test_resolver_rejects_unknown_dimensions_and_invalid_defaults(self) -> None:
+        cases = (
+            (
+                {"grounding_policy": "model_knowledge_allowed"},
+                {"answer_style": "concise", "insufficiency_policy": "refuse"},
+            ),
+            ({}, {"answer_style": "detailed", "insufficiency_policy": "refuse"}),
+            ({}, {}),
+        )
+        for requested, defaults in cases:
+            with self.subTest(requested=requested, defaults=defaults), self.assertRaises(
+                AnswerPolicyNotSupportedError
+            ):
+                resolve_p1_policy(
+                    requested_policy=requested,
+                    knowledge_base_defaults=defaults,
+                )
 
     def test_public_request_normalizes_content_and_rejects_policy_weakening(self) -> None:
         request = ChatRunCreate.model_validate(
@@ -69,7 +121,7 @@ class ChatCreationContractTests(unittest.TestCase):
         ):
             with self.subTest(field_name=field_name), self.assertRaises(
                 ValidationError
-            ):
+            ) as captured:
                 ChatRunCreate.model_validate(
                     {
                         "session_id": "01900000-0000-7000-8000-000000000101",
@@ -78,6 +130,10 @@ class ChatCreationContractTests(unittest.TestCase):
                         "answer_policy": {field_name: "client-controlled"},
                     }
                 )
+            self.assertEqual(
+                captured.exception.errors()[0]["type"],
+                "answer_policy_not_supported",
+            )
 
     def test_model_snapshot_excludes_url_key_and_runtime_controls(self) -> None:
         settings = SimpleNamespace(

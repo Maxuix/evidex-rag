@@ -8,6 +8,7 @@ from uuid import UUID
 
 from rag_kb.auth import AccessPolicy, AuthContext
 from rag_kb.domain import (
+    AnswerPolicyDefaults,
     Document,
     DocumentMutationResult,
     DocumentSource,
@@ -19,6 +20,7 @@ from rag_kb.domain import (
     Page,
     ResourceNotFoundError,
     canonical_request_hash,
+    validate_p1_answer_policy_defaults,
 )
 from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, UnitOfWorkPurpose, execute_in_transaction
 
@@ -110,10 +112,27 @@ class KnowledgeBaseService:
         *,
         name: str,
         retrieval_defaults: dict[str, Any],
+        answer_policy_defaults: dict[str, Any] | None = None,
     ) -> KnowledgeBase:
         self._authorize(context)
-        scope = IdempotencyScope(context.principal_id, context.client_id, CREATE_KB_ENDPOINT, idempotency_key)
-        request_hash = canonical_request_hash({"name": name, "retrieval_defaults": retrieval_defaults})
+        resolved_answer_defaults = (
+            AnswerPolicyDefaults().as_dict()
+            if answer_policy_defaults is None
+            else validate_p1_answer_policy_defaults(answer_policy_defaults).as_dict()
+        )
+        scope = IdempotencyScope(
+            context.principal_id,
+            context.client_id,
+            CREATE_KB_ENDPOINT,
+            idempotency_key,
+        )
+        request_hash = canonical_request_hash(
+            {
+                "name": name,
+                "retrieval_defaults": retrieval_defaults,
+                "answer_policy_defaults": resolved_answer_defaults,
+            }
+        )
 
         async def persist(uow: UnitOfWork) -> KnowledgeBase:
             _require_scope(uow, context)
@@ -129,6 +148,7 @@ class KnowledgeBaseService:
             created = await uow.knowledge_bases.create(
                 name=name,
                 retrieval_defaults=retrieval_defaults,
+                answer_policy_defaults=resolved_answer_defaults,
                 embedding_space=self._embedding_space,
                 index_profile=self._index_profile,
             )
@@ -179,11 +199,26 @@ class KnowledgeBaseService:
         *,
         name: str | None,
         retrieval_defaults: dict[str, Any] | None,
+        answer_policy_defaults: dict[str, Any] | None = None,
     ) -> KnowledgeBase:
         self._authorize(context)
-        scope = IdempotencyScope(context.principal_id, context.client_id, PATCH_KB_ENDPOINT, idempotency_key)
+        if answer_policy_defaults is not None:
+            answer_policy_defaults = validate_p1_answer_policy_defaults(
+                answer_policy_defaults
+            ).as_dict()
+        scope = IdempotencyScope(
+            context.principal_id,
+            context.client_id,
+            PATCH_KB_ENDPOINT,
+            idempotency_key,
+        )
         request_hash = canonical_request_hash(
-            {"kb_id": str(kb_id), "name": name, "retrieval_defaults": retrieval_defaults}
+            {
+                "kb_id": str(kb_id),
+                "name": name,
+                "retrieval_defaults": retrieval_defaults,
+                "answer_policy_defaults": answer_policy_defaults,
+            }
         )
 
         async def persist(uow: UnitOfWork) -> KnowledgeBase:
@@ -198,7 +233,10 @@ class KnowledgeBaseService:
                     raise ResourceNotFoundError("knowledge base was not found")
                 return replay
             updated = await uow.knowledge_bases.update(
-                kb_id, name=name, retrieval_defaults=retrieval_defaults
+                kb_id,
+                name=name,
+                retrieval_defaults=retrieval_defaults,
+                answer_policy_defaults=answer_policy_defaults,
             )
             if updated is None:
                 raise ResourceNotFoundError("knowledge base was not found")

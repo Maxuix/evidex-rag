@@ -30,6 +30,7 @@ from rag_kb.schemas.documents import (
 )
 from rag_kb.schemas.indexing import IndexingErrorResponse, IndexingJobResponse
 from rag_kb.schemas.knowledge_bases import (
+    KnowledgeBaseAnswerPolicyDefaults,
     KnowledgeBaseCreate,
     KnowledgeBasePage,
     KnowledgeBaseResponse,
@@ -68,6 +69,7 @@ __all__ = [
     "EffectiveAnswerPolicyResponse",
     "FieldViolation",
     "KnowledgeBaseCreate",
+    "KnowledgeBaseAnswerPolicyDefaults",
     "KnowledgeBasePage",
     "KnowledgeBaseResponse",
     "KnowledgeBaseUpdate",

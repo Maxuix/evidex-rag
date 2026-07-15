@@ -823,6 +823,7 @@
           "INVALID_IDEMPOTENCY_KEY",
           "IDEMPOTENCY_KEY_REUSED",
           "CAPABILITY_NOT_ENABLED",
+          "ANSWER_POLICY_NOT_SUPPORTED",
           "IDENTITY_OVERRIDE_NOT_ALLOWED",
           "ACCESS_DENIED",
           "RESOURCE_NOT_FOUND",
@@ -1214,9 +1215,31 @@
         "title": "IterativeScanMode",
         "type": "string"
       },
+      "KnowledgeBaseAnswerPolicyDefaults": {
+        "additionalProperties": false,
+        "properties": {
+          "answer_style": {
+            "$ref": "#/components/schemas/AnswerStyle",
+            "default": "concise"
+          },
+          "insufficiency_policy": {
+            "$ref": "#/components/schemas/InsufficiencyPolicy",
+            "default": "refuse"
+          }
+        },
+        "title": "KnowledgeBaseAnswerPolicyDefaults",
+        "type": "object"
+      },
       "KnowledgeBaseCreate": {
         "additionalProperties": false,
         "properties": {
+          "answer_policy_defaults": {
+            "$ref": "#/components/schemas/KnowledgeBaseAnswerPolicyDefaults",
+            "default": {
+              "answer_style": "concise",
+              "insufficiency_policy": "refuse"
+            }
+          },
           "name": {
             "maxLength": 255,
             "minLength": 1,
@@ -1275,6 +1298,13 @@
             "title": "Active Index Revision Id",
             "type": "string"
           },
+          "answer_policy_defaults": {
+            "$ref": "#/components/schemas/KnowledgeBaseAnswerPolicyDefaults",
+            "default": {
+              "answer_style": "concise",
+              "insufficiency_policy": "refuse"
+            }
+          },
           "created_at": {
             "format": "date-time",
             "title": "Created At",
@@ -1329,6 +1359,16 @@
       "KnowledgeBaseUpdate": {
         "additionalProperties": false,
         "properties": {
+          "answer_policy_defaults": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/KnowledgeBaseAnswerPolicyDefaults"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "name": {
             "anyOf": [
               {

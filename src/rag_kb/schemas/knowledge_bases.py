@@ -8,6 +8,7 @@ from uuid import UUID
 
 from pydantic import Field, field_validator, model_validator
 
+from rag_kb.domain import AnswerStyle, InsufficiencyPolicy
 from rag_kb.schemas.common import OpaqueCursor, PublicSchema
 
 
@@ -19,9 +20,17 @@ class RetrievalDefaults(PublicSchema):
     top_k: Annotated[int, Field(ge=1, le=100)] = 10
 
 
+class KnowledgeBaseAnswerPolicyDefaults(PublicSchema):
+    answer_style: AnswerStyle = AnswerStyle.CONCISE
+    insufficiency_policy: InsufficiencyPolicy = InsufficiencyPolicy.REFUSE
+
+
 class KnowledgeBaseCreate(PublicSchema):
     name: KnowledgeBaseName
     retrieval_defaults: RetrievalDefaults = RetrievalDefaults()
+    answer_policy_defaults: KnowledgeBaseAnswerPolicyDefaults = (
+        KnowledgeBaseAnswerPolicyDefaults()
+    )
 
     @field_validator("name")
     @classmethod
@@ -35,6 +44,7 @@ class KnowledgeBaseCreate(PublicSchema):
 class KnowledgeBaseUpdate(PublicSchema):
     name: KnowledgeBaseName | None = None
     retrieval_defaults: RetrievalDefaults | None = None
+    answer_policy_defaults: KnowledgeBaseAnswerPolicyDefaults | None = None
 
     @field_validator("name")
     @classmethod
@@ -48,7 +58,11 @@ class KnowledgeBaseUpdate(PublicSchema):
 
     @model_validator(mode="after")
     def require_change(self) -> Self:
-        if self.name is None and self.retrieval_defaults is None:
+        if (
+            self.name is None
+            and self.retrieval_defaults is None
+            and self.answer_policy_defaults is None
+        ):
             raise ValueError("at least one knowledge-base field must be supplied")
         return self
 
@@ -60,6 +74,9 @@ class KnowledgeBaseResponse(PublicSchema):
     active_index_revision_id: UUID
     embedding_space_id: UUID
     retrieval_defaults: RetrievalDefaults
+    answer_policy_defaults: KnowledgeBaseAnswerPolicyDefaults = (
+        KnowledgeBaseAnswerPolicyDefaults()
+    )
     provisioned_at: datetime
     created_at: datetime
     updated_at: datetime

@@ -2,6 +2,7 @@
 
 from rag_kb.domain import (
     AdmissionLimits,
+    AnswerPolicyNotSupportedError,
     ChatMessage,
     ChatRun,
     ChatSession,
@@ -34,6 +35,7 @@ from rag_kb.services.admission import FileAdmissionService
 
 __all__ = [
     "AdmissionLimits",
+    "AnswerPolicyNotSupportedError",
     "ContentServices",
     "ChatService",
     "ChatMessage",

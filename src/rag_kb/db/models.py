@@ -184,6 +184,14 @@ class KnowledgeBase(Base):
     retrieval_defaults: Mapped[dict[str, Any]] = mapped_column(
         JSONB, nullable=False, server_default=text("'{}'::jsonb")
     )
+    answer_policy_defaults: Mapped[dict[str, Any]] = mapped_column(
+        JSONB,
+        nullable=False,
+        server_default=text(
+            "'{\"answer_style\": \"concise\", "
+            "\"insufficiency_policy\": \"refuse\"}'::jsonb"
+        ),
+    )
     created_at: Mapped[datetime] = created_timestamp()
     updated_at: Mapped[datetime] = updated_timestamp()
 

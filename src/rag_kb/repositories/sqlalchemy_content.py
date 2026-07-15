@@ -65,6 +65,7 @@ class SqlAlchemyKnowledgeBaseRepository:
         *,
         name: str,
         retrieval_defaults: dict[str, Any],
+        answer_policy_defaults: dict[str, Any],
         embedding_space: EmbeddingSpaceDefinition,
         index_profile: IndexProfileDefinition,
     ) -> KnowledgeBase:
@@ -125,6 +126,7 @@ class SqlAlchemyKnowledgeBaseRepository:
             workspace_id=self._workspace_id,
             name=name,
             retrieval_defaults=dict(retrieval_defaults),
+            answer_policy_defaults=dict(answer_policy_defaults),
         )
         self._session.add(kb)
         await self._session.flush()
@@ -201,6 +203,7 @@ class SqlAlchemyKnowledgeBaseRepository:
         *,
         name: str | None,
         retrieval_defaults: dict[str, Any] | None,
+        answer_policy_defaults: dict[str, Any] | None,
     ) -> KnowledgeBase | None:
         self._ensure_active()
         kb = await self._session.scalar(
@@ -224,6 +227,8 @@ class SqlAlchemyKnowledgeBaseRepository:
             kb.name = name
         if retrieval_defaults is not None:
             kb.retrieval_defaults = dict(retrieval_defaults)
+        if answer_policy_defaults is not None:
+            kb.answer_policy_defaults = dict(answer_policy_defaults)
         kb.updated_at = datetime.now(UTC)
         await self._session.flush()
         assert kb.active_index_revision_id is not None
@@ -970,6 +975,7 @@ def _knowledge_base(row: KnowledgeBaseRow, embedding_space_id: UUID) -> Knowledg
         active_index_revision_id=row.active_index_revision_id,
         embedding_space_id=embedding_space_id,
         retrieval_defaults=dict(row.retrieval_defaults),
+        answer_policy_defaults=dict(row.answer_policy_defaults),
         provisioned_at=row.provisioned_at,
         created_at=row.created_at,
         updated_at=row.updated_at,

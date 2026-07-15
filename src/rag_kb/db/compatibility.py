@@ -8,7 +8,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 
-EXPECTED_REVISION = "0004_chat_request_hash"
+EXPECTED_REVISION = "0005_answer_policy_defaults"
 EXPECTED_POSTGRES_MAJOR = 18
 EXPECTED_PGVECTOR_VERSION = "0.8.2"
 EXPECTED_VECTOR_TABLE = "vector_record_1024"

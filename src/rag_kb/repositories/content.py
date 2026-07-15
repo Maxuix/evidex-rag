@@ -29,6 +29,7 @@ class KnowledgeBaseRepository(Protocol):
         *,
         name: str,
         retrieval_defaults: dict[str, Any],
+        answer_policy_defaults: dict[str, Any],
         embedding_space: EmbeddingSpaceDefinition,
         index_profile: IndexProfileDefinition,
     ) -> KnowledgeBase: ...
@@ -49,6 +50,7 @@ class KnowledgeBaseRepository(Protocol):
         *,
         name: str | None,
         retrieval_defaults: dict[str, Any] | None,
+        answer_policy_defaults: dict[str, Any] | None,
     ) -> KnowledgeBase | None: ...
 
 
