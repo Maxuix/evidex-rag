@@ -27,6 +27,13 @@ from rag_kb.services.content import (
     embedding_space_definition,
 )
 from rag_kb.services.chat import ChatService, chat_model_configuration
+from rag_kb.services.chat_pipeline import (
+    ChatEvidenceRetriever,
+    ChatExecutionContextLoader,
+    ChatPipelineStep,
+    ChatRunCoordinator,
+    DirectChatPipeline,
+)
 from rag_kb.services.evaluation import EvaluationPersistenceService
 from rag_kb.services.files import FileReconciliationService, SourceFileService
 from rag_kb.services.indexing import IndexingJobService
@@ -38,6 +45,11 @@ __all__ = [
     "AnswerPolicyNotSupportedError",
     "ContentServices",
     "ChatService",
+    "ChatEvidenceRetriever",
+    "ChatExecutionContextLoader",
+    "ChatPipelineStep",
+    "ChatRunCoordinator",
+    "DirectChatPipeline",
     "ChatMessage",
     "ChatRun",
     "ChatSession",

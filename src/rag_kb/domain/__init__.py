@@ -32,6 +32,18 @@ from rag_kb.domain.chat import (
     resolve_p1_policy,
     validate_p1_answer_policy_defaults,
 )
+from rag_kb.domain.chat_pipeline import (
+    ChatExecutionCommand,
+    ChatExecutionContext,
+    ChatModelExecutionError,
+    ChatModelMessage,
+    ChatModelRequest,
+    ChatModelResponse,
+    ChatPipelineExecutionError,
+    ChatPipelinePhase,
+    ChatPipelineState,
+    ChatRunLease,
+)
 from rag_kb.domain.errors import ErrorCode
 from rag_kb.domain.evaluation import (
     EvaluationCaseDefinition,
@@ -119,6 +131,16 @@ __all__ = [
     "ChatMessage",
     "ChatRun",
     "ChatSession",
+    "ChatExecutionCommand",
+    "ChatExecutionContext",
+    "ChatModelExecutionError",
+    "ChatModelMessage",
+    "ChatModelRequest",
+    "ChatModelResponse",
+    "ChatPipelineExecutionError",
+    "ChatPipelinePhase",
+    "ChatPipelineState",
+    "ChatRunLease",
     "ContentLifecycleError",
     "AdmittedFile",
     "AdmissionLimits",

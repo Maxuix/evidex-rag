@@ -4,7 +4,17 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from rag_kb.domain import EmbeddingBatch, EmbeddingSpaceDefinition
+from rag_kb.domain import (
+    ChatModelRequest,
+    ChatModelResponse,
+    EmbeddingBatch,
+    EmbeddingSpaceDefinition,
+)
+
+
+@runtime_checkable
+class ChatModelAdapter(Protocol):
+    async def complete(self, request: ChatModelRequest) -> ChatModelResponse: ...
 
 
 @runtime_checkable

@@ -7,8 +7,9 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import Select, select, text
+from sqlalchemy import Select, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from rag_kb.db.models import (
     AssistantMessageStatus,
@@ -19,8 +20,10 @@ from rag_kb.db.models import (
     ChatSession as ChatSessionRow,
 )
 from rag_kb.domain import (
+    ChatExecutionContext,
     ChatMessage,
     ChatRun,
+    ChatRunLease,
     ChatSession,
     IdempotencyScope,
     Page,
@@ -37,6 +40,118 @@ class SqlAlchemyChatRepository:
         self._session = session
         self._workspace_id = workspace_id
         self._ensure_active = ensure_active
+
+    async def claim_run(
+        self, *, worker_id: str, observed_at: datetime, max_attempts: int
+    ) -> ChatRunLease | None:
+        self._ensure_active()
+        if not worker_id.strip() or max_attempts < 1:
+            raise ValueError("worker_id and max_attempts must be valid")
+        row = await self._session.scalar(
+            select(ChatRunRow)
+            .where(
+                ChatRunRow.workspace_id == self._workspace_id,
+                ChatRunRow.status == ChatRunStatus.QUEUED,
+                ChatRunRow.attempt < max_attempts,
+                or_(
+                    ChatRunRow.next_attempt_at.is_(None),
+                    ChatRunRow.next_attempt_at <= observed_at,
+                ),
+            )
+            .order_by(
+                ChatRunRow.next_attempt_at.asc().nullsfirst(),
+                ChatRunRow.created_at.asc(),
+                ChatRunRow.id.asc(),
+            )
+            .with_for_update(skip_locked=True)
+            .limit(1)
+        )
+        if row is None:
+            return None
+        row.status = ChatRunStatus.RUNNING
+        row.attempt += 1
+        row.claimed_by = worker_id
+        row.claimed_at = observed_at
+        row.heartbeat_at = observed_at
+        row.next_attempt_at = None
+        row.error_code = None
+        row.error_detail = None
+        row.error_retryable = None
+        await self._session.flush()
+        return ChatRunLease(
+            run_id=row.id,
+            workspace_id=row.workspace_id,
+            claimed_by=worker_id,
+            attempt=row.attempt,
+            claimed_at=observed_at,
+        )
+
+    async def heartbeat_run(
+        self, lease: ChatRunLease, *, observed_at: datetime
+    ) -> bool:
+        self._ensure_active()
+        if lease.workspace_id != self._workspace_id:
+            return False
+        result = await self._session.execute(
+            update(ChatRunRow)
+            .where(
+                ChatRunRow.workspace_id == self._workspace_id,
+                ChatRunRow.id == lease.run_id,
+                ChatRunRow.status == ChatRunStatus.RUNNING,
+                ChatRunRow.claimed_by == lease.claimed_by,
+                ChatRunRow.attempt == lease.attempt,
+            )
+            .values(heartbeat_at=observed_at, updated_at=observed_at)
+        )
+        return bool(result.rowcount == 1)
+
+    async def load_execution_context(
+        self, lease: ChatRunLease
+    ) -> ChatExecutionContext | None:
+        self._ensure_active()
+        if lease.workspace_id != self._workspace_id:
+            return None
+        user = aliased(ChatMessageRow)
+        assistant = aliased(ChatMessageRow)
+        statement = (
+            select(ChatRunRow, user, assistant)
+            .join(user, user.id == ChatRunRow.user_message_id)
+            .join(
+                assistant,
+                (assistant.chat_run_id == ChatRunRow.id)
+                & (assistant.role == ChatMessageRole.ASSISTANT),
+            )
+            .where(
+                ChatRunRow.workspace_id == self._workspace_id,
+                ChatRunRow.id == lease.run_id,
+                ChatRunRow.status == ChatRunStatus.RUNNING,
+                ChatRunRow.claimed_by == lease.claimed_by,
+                ChatRunRow.attempt == lease.attempt,
+                user.role == ChatMessageRole.USER,
+            )
+        )
+        result = (await self._session.execute(statement)).one_or_none()
+        if result is None:
+            return None
+        run, user_message, assistant_message = result
+        if run.effective_policy is None:
+            return None
+        return ChatExecutionContext(
+            run_id=run.id,
+            workspace_id=run.workspace_id,
+            knowledge_base_id=run.kb_id,
+            session_id=run.session_id,
+            user_message_id=run.user_message_id,
+            assistant_message_id=assistant_message.id,
+            index_revision_id=run.index_revision_id,
+            principal_id=run.principal_id,
+            client_id=run.client_id,
+            query=user_message.content,
+            effective_policy=run.effective_policy,
+            retrieval_strategy=run.retrieval_strategy,
+            model_configuration=run.model_configuration,
+            attempt=run.attempt,
+        )
 
     async def create_session(
         self, *, kb_id: UUID, principal_id: str, title: str | None

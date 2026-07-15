@@ -10,9 +10,11 @@ from uuid import uuid4
 
 from rag_kb.auth import DevelopmentAuthProvider, SingleWorkspaceAccessPolicy
 from rag_kb.adapters import (
+    ChatModelAdapter,
     FixedPgVectorSpace,
     IsolatedPlainTextProcessor,
     LocalFileStore,
+    OpenAICompatibleChatModelAdapter,
     OpenAICompatibleEmbeddingProvider,
 )
 from rag_kb.config import (
@@ -56,6 +58,7 @@ class WorkerDependencies:
     file_store: LocalFileStore
     reconciliation_service: FileReconciliationService
     document_processor: IsolatedPlainTextProcessor
+    chat_model_adapter: ChatModelAdapter
     indexing_pipeline: IndexingPipeline
     indexing_scheduler: IndexingJobScheduler
     lane_selector: WeightedLaneSelector
@@ -125,6 +128,15 @@ def build_worker_dependencies(
         max_retries=embedding_settings.max_retries,
         max_concurrency=embedding_settings.max_concurrency,
     )
+    chat_settings = resolved_settings.model_provider.chat
+    chat_model_adapter = OpenAICompatibleChatModelAdapter(
+        base_url=str(chat_settings.base_url),
+        api_key=chat_settings.api_key.get_secret_value(),
+        model=chat_settings.model,
+        timeout_seconds=chat_settings.timeout_seconds,
+        max_retries=chat_settings.max_retries,
+        max_concurrency=chat_settings.max_concurrency,
+    )
     indexing_pipeline = IndexingPipeline(
         unit_of_work,
         file_store,
@@ -174,6 +186,7 @@ def build_worker_dependencies(
             ),
         ),
         document_processor=document_processor,
+        chat_model_adapter=chat_model_adapter,
         indexing_pipeline=indexing_pipeline,
         indexing_scheduler=indexing_scheduler,
         lane_selector=WeightedLaneSelector(

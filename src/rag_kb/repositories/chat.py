@@ -2,14 +2,35 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Protocol, runtime_checkable
 from uuid import UUID
 
-from rag_kb.domain import ChatMessage, ChatRun, ChatSession, IdempotencyScope, Page
+from rag_kb.domain import (
+    ChatExecutionContext,
+    ChatMessage,
+    ChatRun,
+    ChatRunLease,
+    ChatSession,
+    IdempotencyScope,
+    Page,
+)
 
 
 @runtime_checkable
 class ChatRepository(Protocol):
+    async def claim_run(
+        self, *, worker_id: str, observed_at: datetime, max_attempts: int
+    ) -> ChatRunLease | None: ...
+
+    async def heartbeat_run(
+        self, lease: ChatRunLease, *, observed_at: datetime
+    ) -> bool: ...
+
+    async def load_execution_context(
+        self, lease: ChatRunLease
+    ) -> ChatExecutionContext | None: ...
+
     async def create_session(
         self, *, kb_id: UUID, principal_id: str, title: str | None
     ) -> ChatSession: ...

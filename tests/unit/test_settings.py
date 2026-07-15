@@ -82,6 +82,7 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.parser.memory_bytes, 512 * 1024 * 1024)
         self.assertEqual(settings.job_poller.required_worker_connections, 7)
         self.assertEqual(settings.job_poller.indexing_deadline_seconds, 900)
+        self.assertEqual(settings.job_poller.chat_deadline_seconds, 120)
         self.assertEqual(settings.maintenance.batch_size, 100)
         self.assertEqual(settings.maintenance.task_retention_seconds, 604_800)
 
@@ -125,6 +126,14 @@ class SettingsTests(unittest.TestCase):
                             "retry_base_delay_seconds": 10,
                             "retry_max_delay_seconds": 5,
                         },
+                    },
+                )
+            with self.assertRaises(ValidationError):
+                Settings(
+                    _env_file=None,
+                    **{
+                        **payload,
+                        "job_poller": {"chat_deadline_seconds": 10},
                     },
                 )
 

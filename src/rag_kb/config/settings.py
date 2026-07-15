@@ -214,6 +214,7 @@ class JobPollerSettings(StrictSettingsModel):
     max_attempts: PositiveInt = 3
     retry_base_delay_seconds: PositiveFloat = 5.0
     retry_max_delay_seconds: PositiveFloat = 60.0
+    chat_deadline_seconds: PositiveFloat = 120.0
     indexing_deadline_seconds: PositiveFloat = 900.0
     reconciliation_batch_size: PositiveInt = 100
 
@@ -230,6 +231,10 @@ class JobPollerSettings(StrictSettingsModel):
         if self.indexing_deadline_seconds <= self.heartbeat_interval_seconds:
             raise ValueError(
                 "indexing_deadline_seconds must exceed heartbeat_interval_seconds"
+            )
+        if self.chat_deadline_seconds <= self.heartbeat_interval_seconds:
+            raise ValueError(
+                "chat_deadline_seconds must exceed heartbeat_interval_seconds"
             )
         return self
 
@@ -445,6 +450,7 @@ class Settings(BaseSettings):
             )
         longest_operation = max(
             self.parser.wall_seconds,
+            self.model_provider.chat.timeout_seconds,
             self.model_provider.embedding.timeout_seconds,
         )
         if self.job_poller.stale_after_seconds <= longest_operation:

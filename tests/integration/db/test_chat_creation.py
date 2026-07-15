@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 import os
 import unittest
 from uuid import UUID, uuid4
@@ -11,6 +13,7 @@ from rag_kb.auth import AuthContext, SingleWorkspaceAccessPolicy
 from rag_kb.db import DatabaseProcess, create_database_resources
 from rag_kb.domain import (
     AnswerStyle,
+    ChatExecutionCommand,
     EmbeddingSpaceDefinition,
     IdempotencyKeyReusedError,
     IndexProfileDefinition,
@@ -18,7 +21,12 @@ from rag_kb.domain import (
     ResourceNotFoundError,
     ResourceStateConflictError,
 )
-from rag_kb.services import ChatService, KnowledgeBaseService
+from rag_kb.services import (
+    ChatExecutionContextLoader,
+    ChatRunCoordinator,
+    ChatService,
+    KnowledgeBaseService,
+)
 from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWorkFactory
 
 
@@ -255,6 +263,66 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
             request_override.effective_policy["grounding_policy"], "evidence_only"
         )
         self.assertTrue(request_override.effective_policy["citation_required"])
+
+    async def test_competing_claims_and_lease_cas_load_one_frozen_context(self) -> None:
+        kb = await self._create_kb("claimable")
+        session = await self.chat.create_session(
+            self.context, kb_id=kb.id, title="Claim behavior"
+        )
+        run = await self._create_run(session.id, kb.id, uuid4())
+        coordinator = ChatRunCoordinator(self.factory)
+        observed_at = datetime.now(UTC)
+
+        claims = await asyncio.gather(
+            coordinator.claim(
+                worker_id="worker-a", observed_at=observed_at, max_attempts=3
+            ),
+            coordinator.claim(
+                worker_id="worker-b", observed_at=observed_at, max_attempts=3
+            ),
+        )
+        leases = [lease for lease in claims if lease is not None]
+        self.assertEqual(len(leases), 1)
+        lease = leases[0]
+        self.assertEqual(lease.run_id, run.id)
+        self.assertEqual(lease.attempt, 1)
+
+        execution_context = await ChatExecutionContextLoader(self.factory).load(
+            ChatExecutionCommand(lease)
+        )
+        self.assertEqual(execution_context.query, "How should RUN-ORD-14 be handled?")
+        self.assertEqual(execution_context.index_revision_id, run.index_revision_id)
+        self.assertEqual(execution_context.effective_policy, run.effective_policy)
+        self.assertEqual(execution_context.retrieval_strategy, run.retrieval_strategy)
+        self.assertEqual(execution_context.model_configuration, run.model_configuration)
+        self.assertEqual(self.database.engine.pool.checkedout(), 0)
+
+        heartbeat_at = observed_at + timedelta(seconds=1)
+        self.assertTrue(
+            await coordinator.heartbeat(lease, observed_at=heartbeat_at)
+        )
+        self.assertFalse(
+            await coordinator.heartbeat(
+                replace(lease, attempt=2),
+                observed_at=heartbeat_at + timedelta(seconds=1),
+            )
+        )
+
+        connection = await asyncpg.connect(MIGRATION_DSN)
+        try:
+            persisted = await connection.fetchrow(
+                """
+                SELECT status, attempt, claimed_by, heartbeat_at
+                FROM chat_run WHERE id = $1
+                """,
+                run.id,
+            )
+        finally:
+            await connection.close()
+        self.assertEqual(persisted["status"], "running")
+        self.assertEqual(persisted["attempt"], 1)
+        self.assertEqual(persisted["claimed_by"], lease.claimed_by)
+        self.assertEqual(persisted["heartbeat_at"], heartbeat_at)
 
     async def _create_kb(self, name: str):
         return await self.knowledge_bases.create(
