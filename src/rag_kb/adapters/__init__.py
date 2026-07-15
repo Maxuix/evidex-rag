@@ -9,7 +9,7 @@ from rag_kb.adapters.model_api import (
     EmbeddingProvider,
     OpenAICompatibleEmbeddingProvider,
 )
-from rag_kb.adapters.vector_store import FixedPgVectorSpace
+from rag_kb.adapters.vector_store import FixedPgVectorSpace, VectorStore
 
 __all__ = [
     "DocumentProcessor",
@@ -20,4 +20,5 @@ __all__ = [
     "OpenAICompatibleEmbeddingProvider",
     "PlainTextTestParser",
     "SourceFileStore",
+    "VectorStore",
 ]

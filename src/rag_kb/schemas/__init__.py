@@ -23,6 +23,13 @@ from rag_kb.schemas.knowledge_bases import (
     KnowledgeBaseUpdate,
     RetrievalDefaults,
 )
+from rag_kb.schemas.retrieval import (
+    EvidencePackResponse,
+    EvidenceResponse,
+    RetrievalDebugResponse,
+    RetrievalQueryPlanResponse,
+    RetrievalQueryRequest,
+)
 
 __all__ = [
     "CursorPage",
@@ -43,4 +50,9 @@ __all__ = [
     "PaginationQuery",
     "ProblemDetails",
     "RetrievalDefaults",
+    "EvidencePackResponse",
+    "EvidenceResponse",
+    "RetrievalDebugResponse",
+    "RetrievalQueryPlanResponse",
+    "RetrievalQueryRequest",
 ]

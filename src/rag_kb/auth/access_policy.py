@@ -16,6 +16,8 @@ class AccessDeniedError(RuntimeError):
 class AccessPolicy(Protocol):
     def metadata_filter(self, context: AuthContext) -> MetadataFilter: ...
 
+    def authorize_retrieval_debug(self, context: AuthContext) -> None: ...
+
     def require_workspace(
         self,
         context: AuthContext,
@@ -43,3 +45,8 @@ class SingleWorkspaceAccessPolicy:
         if workspace_id != metadata_filter.workspace_id:
             raise AccessDeniedError("requested workspace is not authorized")
         return metadata_filter
+
+    def authorize_retrieval_debug(self, context: AuthContext) -> None:
+        """The one authenticated development principal may inspect safe plans."""
+
+        self.metadata_filter(context)
