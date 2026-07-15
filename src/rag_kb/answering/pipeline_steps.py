@@ -6,6 +6,11 @@ import json
 from typing import Any
 
 from rag_kb.adapters.model_api import ChatModelAdapter
+from rag_kb.answering.model_execution import (
+    complete_model,
+    model_call_record,
+    require_frozen_model,
+)
 from rag_kb.answering.prompt_builder import (
     build_assessment_request,
     build_evidence_envelope,
@@ -19,11 +24,7 @@ from rag_kb.domain import (
     AnswerStyle,
     ChatAnsweringState,
     ChatExecutionContext,
-    ChatModelCallRecord,
-    ChatModelExecutionError,
     ChatModelOperation,
-    ChatModelRequest,
-    ChatModelResponse,
     ChatPipelineExecutionError,
     ChatPipelinePhase,
     ChatPipelineState,
@@ -52,12 +53,12 @@ class EvidenceAssessmentStep:
             )
             answering = ChatAnsweringState(evidence=evidence, assessment=assessment)
         else:
-            response = await _complete(
+            response = await complete_model(
                 self._model,
                 build_assessment_request(context, evidence),
                 phase=ChatPipelinePhase.ASSESS_EVIDENCE,
             )
-            _require_frozen_model(
+            require_frozen_model(
                 context, response, phase=ChatPipelinePhase.ASSESS_EVIDENCE
             )
             assessment = _parse_assessment(response.content, evidence)
@@ -65,7 +66,9 @@ class EvidenceAssessmentStep:
                 evidence=evidence,
                 assessment=assessment,
                 model_calls=(
-                    _call_record(ChatModelOperation.ASSESS_EVIDENCE, response),
+                    model_call_record(
+                        ChatModelOperation.ASSESS_EVIDENCE, response
+                    ),
                 ),
             )
         return ChatPipelineState(
@@ -95,7 +98,7 @@ class AnswerGenerationStep:
             draft = _deterministic_refusal(route)
             calls = answering.model_calls
         else:
-            response = await _complete(
+            response = await complete_model(
                 self._model,
                 build_generation_request(
                     context,
@@ -105,7 +108,7 @@ class AnswerGenerationStep:
                 ),
                 phase=ChatPipelinePhase.GENERATE_OR_REFUSE,
             )
-            _require_frozen_model(
+            require_frozen_model(
                 context, response, phase=ChatPipelinePhase.GENERATE_OR_REFUSE
             )
             draft = AnswerDraftCandidate(
@@ -114,7 +117,7 @@ class AnswerGenerationStep:
                 source=AnswerDraftSource.PROVIDER,
             )
             calls = answering.model_calls + (
-                _call_record(ChatModelOperation.GENERATE_ANSWER, response),
+                model_call_record(ChatModelOperation.GENERATE_ANSWER, response),
             )
         return ChatPipelineState(
             context=context,
@@ -193,39 +196,6 @@ def _deterministic_refusal(reason: AnswerControlReason) -> AnswerDraftCandidate:
     )
 
 
-async def _complete(
-    model: ChatModelAdapter,
-    request: ChatModelRequest,
-    *,
-    phase: ChatPipelinePhase,
-) -> ChatModelResponse:
-    try:
-        return await model.complete(request)
-    except ChatModelExecutionError as error:
-        raise ChatPipelineExecutionError(
-            error.code,
-            phase=phase,
-            diagnostic=error.diagnostic,
-        ) from error
-
-
-def _require_frozen_model(
-    context: ChatExecutionContext,
-    response: ChatModelResponse,
-    *,
-    phase: ChatPipelinePhase,
-) -> None:
-    expected = context.model_configuration.get("resolved_model")
-    if not isinstance(expected, str):
-        raise _context_error(phase, "model_snapshot")
-    if response.model != expected:
-        raise ChatPipelineExecutionError(
-            ErrorCode.CHAT_RESPONSE_INVALID,
-            phase=phase,
-            diagnostic={"check": "resolved_model"},
-        )
-
-
 def _require_policy(
     context: ChatExecutionContext,
 ) -> tuple[AnswerStyle, InsufficiencyPolicy]:
@@ -264,15 +234,4 @@ def _context_error(
         ErrorCode.CHAT_CONTEXT_INVALID,
         phase=phase,
         diagnostic={"check": check},
-    )
-
-
-def _call_record(
-    operation: ChatModelOperation, response: ChatModelResponse
-) -> ChatModelCallRecord:
-    return ChatModelCallRecord(
-        operation=operation,
-        model=response.model,
-        provider_request_id=response.provider_request_id,
-        usage=response.usage,
     )

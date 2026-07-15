@@ -1,6 +1,10 @@
 """Application services that coordinate use cases through public contracts."""
 
-from rag_kb.answering import AnswerGenerationStep, EvidenceAssessmentStep
+from rag_kb.answering import (
+    AnswerGenerationStep,
+    AnswerStructureValidationStep,
+    EvidenceAssessmentStep,
+)
 
 from rag_kb.domain import (
     AdmissionLimits,
@@ -46,6 +50,7 @@ __all__ = [
     "AdmissionLimits",
     "AnswerPolicyNotSupportedError",
     "AnswerGenerationStep",
+    "AnswerStructureValidationStep",
     "ContentServices",
     "ChatService",
     "ChatEvidenceRetriever",

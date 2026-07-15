@@ -1,10 +1,13 @@
 """Framework-independent business models and rules."""
 
 from rag_kb.domain.answering import (
+    AnswerClaim,
     AnswerControlReason,
     AnswerDraftCandidate,
     AnswerDraftSource,
     AnswerOutcome,
+    AnswerValidationIssue,
+    AnswerValidationRecord,
     ChatAnsweringState,
     ChatModelCallRecord,
     ChatModelOperation,
@@ -12,6 +15,9 @@ from rag_kb.domain.answering import (
     EvidenceCoverage,
     EvidenceEnvelope,
     PromptEvidence,
+    RenderedAnswer,
+    RenderedCitation,
+    ValidatedAnswer,
 )
 from rag_kb.domain.content import (
     ContentLifecycleError,
@@ -135,10 +141,13 @@ from rag_kb.domain.retrieval import (
 from rag_kb.domain.workspaces import Workspace
 
 __all__ = [
+    "AnswerClaim",
     "AnswerControlReason",
     "AnswerDraftCandidate",
     "AnswerDraftSource",
     "AnswerOutcome",
+    "AnswerValidationIssue",
+    "AnswerValidationRecord",
     "AnswerStyle",
     "AnswerPolicyDefaults",
     "AnswerPolicyNotSupportedError",
@@ -202,6 +211,8 @@ __all__ = [
     "IterativeScanMode",
     "PromotionCommand",
     "PromptEvidence",
+    "RenderedAnswer",
+    "RenderedCitation",
     "PromotionReason",
     "PromotionResult",
     "PromotionStatus",
@@ -238,6 +249,7 @@ __all__ = [
     "WorkLane",
     "ProcessedDocument",
     "Workspace",
+    "ValidatedAnswer",
     "EvaluationCaseDefinition",
     "EvaluationCaseResult",
     "EvaluationConflictError",
