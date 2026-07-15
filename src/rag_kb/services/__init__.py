@@ -22,6 +22,7 @@ from rag_kb.services.content import (
     build_content_services,
     embedding_space_definition,
 )
+from rag_kb.services.evaluation import EvaluationPersistenceService
 from rag_kb.services.files import FileReconciliationService, SourceFileService
 from rag_kb.services.indexing import IndexingJobService
 from rag_kb.services.maintenance import MaintenanceCleanupResult, MaintenanceCleanupService
@@ -34,6 +35,7 @@ __all__ = [
     "DocumentMutationResult",
     "DocumentService",
     "ErrorCode",
+    "EvaluationPersistenceService",
     "FileReconciliationService",
     "IndexingJobService",
     "FileAdmissionService",

@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, AsyncSessionTransaction, async_
 from rag_kb.repositories import (
     ContentMutationRepository,
     DocumentRepository,
+    EvaluationRepository,
     FileConsistencyRepository,
     IndexingRepository,
     KnowledgeBaseRepository,
@@ -24,8 +25,9 @@ from rag_kb.repositories.sqlalchemy_content import (
     SqlAlchemyFileConsistencyRepository,
     SqlAlchemyKnowledgeBaseRepository,
 )
-from rag_kb.repositories.sqlalchemy import SqlAlchemyWorkspaceRepository
+from rag_kb.repositories.sqlalchemy_evaluation import SqlAlchemyEvaluationRepository
 from rag_kb.repositories.sqlalchemy_indexing import SqlAlchemyIndexingRepository
+from rag_kb.repositories.sqlalchemy import SqlAlchemyWorkspaceRepository
 from rag_kb.uow.contracts import (
     TransactionMode,
     UnitOfWorkConcurrencyError,
@@ -65,6 +67,7 @@ class SqlAlchemyUnitOfWork:
         self._content_mutation_repository: ContentMutationRepository | None = None
         self._file_consistency_repository: FileConsistencyRepository | None = None
         self._indexing_repository: IndexingRepository | None = None
+        self._evaluation_repository: EvaluationRepository | None = None
         self._owner_task: asyncio.Task[object] | None = None
         self._state = _State.NEW
 
@@ -104,6 +107,12 @@ class SqlAlchemyUnitOfWork:
         assert self._indexing_repository is not None
         return self._indexing_repository
 
+    @property
+    def evaluations(self) -> EvaluationRepository:
+        self._ensure_active()
+        assert self._evaluation_repository is not None
+        return self._evaluation_repository
+
     async def __aenter__(self) -> SqlAlchemyUnitOfWork:
         if self._state is not _State.NEW:
             raise UnitOfWorkStateError("a Unit of Work instance is single-use")
@@ -134,6 +143,9 @@ class SqlAlchemyUnitOfWork:
             session, self.workspace_id, self._ensure_active
         )
         self._indexing_repository = SqlAlchemyIndexingRepository(
+            session, self.workspace_id, self._ensure_active
+        )
+        self._evaluation_repository = SqlAlchemyEvaluationRepository(
             session, self.workspace_id, self._ensure_active
         )
         try:

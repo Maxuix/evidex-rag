@@ -17,6 +17,15 @@ from rag_kb.domain.content import (
     ResourceStateConflictError,
 )
 from rag_kb.domain.errors import ErrorCode
+from rag_kb.domain.evaluation import (
+    EvaluationCaseDefinition,
+    EvaluationCaseResult,
+    EvaluationConflictError,
+    EvaluationDatasetDefinition,
+    EvaluationRunDefinition,
+    EvaluationRunSnapshot,
+    EvaluationRunState,
+)
 from rag_kb.domain.files import (
     FileLocation,
     FileReconciliationResult,
@@ -155,6 +164,13 @@ __all__ = [
     "WorkLane",
     "ProcessedDocument",
     "Workspace",
+    "EvaluationCaseDefinition",
+    "EvaluationCaseResult",
+    "EvaluationConflictError",
+    "EvaluationDatasetDefinition",
+    "EvaluationRunDefinition",
+    "EvaluationRunSnapshot",
+    "EvaluationRunState",
     "canonical_request_hash",
     "stable_chunk_id",
     "stable_vector_id",
