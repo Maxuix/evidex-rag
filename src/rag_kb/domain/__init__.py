@@ -16,6 +16,15 @@ from rag_kb.domain.content import (
     ResourceNotFoundError,
     ResourceStateConflictError,
 )
+from rag_kb.domain.chat import (
+    AnswerStyle,
+    ChatMessage,
+    ChatRun,
+    ChatSession,
+    EffectiveAnswerPolicy,
+    InsufficiencyPolicy,
+    resolve_p1_policy,
+)
 from rag_kb.domain.errors import ErrorCode
 from rag_kb.domain.evaluation import (
     EvaluationCaseDefinition,
@@ -94,6 +103,10 @@ from rag_kb.domain.retrieval import (
 from rag_kb.domain.workspaces import Workspace
 
 __all__ = [
+    "AnswerStyle",
+    "ChatMessage",
+    "ChatRun",
+    "ChatSession",
     "ContentLifecycleError",
     "AdmittedFile",
     "AdmissionLimits",
@@ -104,6 +117,7 @@ __all__ = [
     "DocumentVersion",
     "EmbeddingSpaceDefinition",
     "EmbeddingBatch",
+    "EffectiveAnswerPolicy",
     "Evidence",
     "EvidencePack",
     "EvidenceScoreKind",
@@ -126,6 +140,7 @@ __all__ = [
     "IndexingPhase",
     "IndexingResult",
     "IndexingTarget",
+    "InsufficiencyPolicy",
     "IterativeScanMode",
     "PromotionCommand",
     "PromotionReason",
@@ -172,6 +187,7 @@ __all__ = [
     "EvaluationRunSnapshot",
     "EvaluationRunState",
     "canonical_request_hash",
+    "resolve_p1_policy",
     "stable_chunk_id",
     "stable_vector_id",
     "validate_embedding_vector",

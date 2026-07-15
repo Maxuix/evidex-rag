@@ -1,0 +1,126 @@
+"""Public chat session, history, and durable run DTOs."""
+
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Annotated, Any, Literal
+from uuid import UUID
+
+from pydantic import Field, field_validator
+
+from rag_kb.domain import AnswerStyle, InsufficiencyPolicy
+from rag_kb.schemas.common import OpaqueCursor, PublicSchema
+
+
+class ChatSessionCreate(PublicSchema):
+    knowledge_base_id: UUID
+    title: Annotated[str, Field(min_length=1, max_length=512)] | None = None
+
+    @field_validator("title")
+    @classmethod
+    def normalize_title(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("title must contain non-whitespace characters")
+        return normalized
+
+
+class ChatSessionResponse(PublicSchema):
+    id: UUID
+    knowledge_base_id: UUID
+    title: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ChatSessionPage(PublicSchema):
+    items: tuple[ChatSessionResponse, ...]
+    next_cursor: OpaqueCursor | None = None
+
+
+class ChatMessageResponse(PublicSchema):
+    id: UUID
+    session_id: UUID
+    run_id: UUID | None
+    role: Literal["user", "assistant"]
+    assistant_status: Literal["generating", "completed", "failed"] | None
+    content: str
+    created_at: datetime
+
+
+class ChatMessagePage(PublicSchema):
+    items: tuple[ChatMessageResponse, ...]
+    next_cursor: OpaqueCursor | None = None
+
+
+class AnswerPolicyOverrides(PublicSchema):
+    answer_style: AnswerStyle | None = None
+    insufficiency_policy: InsufficiencyPolicy | None = None
+
+
+class ChatRetrievalRequest(PublicSchema):
+    mode: Literal["vector"] = "vector"
+    top_k: Annotated[int, Field(ge=1, le=100)] = 10
+
+
+class ChatRunCreate(PublicSchema):
+    session_id: UUID
+    knowledge_base_id: UUID
+    message: Annotated[str, Field(min_length=1, max_length=32768)]
+    answer_policy: AnswerPolicyOverrides = AnswerPolicyOverrides()
+    retrieval: ChatRetrievalRequest = ChatRetrievalRequest()
+
+    @field_validator("message")
+    @classmethod
+    def normalize_message(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("message must contain non-whitespace characters")
+        return normalized
+
+
+class EffectiveAnswerPolicyResponse(PublicSchema):
+    grounding_policy: Literal["evidence_only"]
+    answer_style: AnswerStyle
+    insufficiency_policy: InsufficiencyPolicy
+    citation_required: Literal[True]
+    citation_granularity: Literal["claim_level"]
+    answer_task: Literal["answer"]
+    policy_version: Literal["p1"]
+
+
+class ChatRunErrorResponse(PublicSchema):
+    code: str
+    detail: dict[str, Any]
+    retryable: bool
+
+
+class ChatRunRetrievalResponse(PublicSchema):
+    strategy: Literal["exact_vector"]
+    top_k: Annotated[int, Field(ge=1, le=100)]
+    rerank: Literal[False]
+
+
+class ChatRunResponse(PublicSchema):
+    run_id: UUID
+    knowledge_base_id: UUID
+    session_id: UUID
+    user_message_id: UUID
+    assistant_message_id: UUID
+    index_revision_id: UUID
+    status: Literal["queued", "running", "completed", "failed", "cancelled"]
+    assistant_status: Literal["generating", "completed", "failed"]
+    answer: str | None
+    status_url: str
+    events_url: str
+    effective_answer_policy: EffectiveAnswerPolicyResponse
+    retrieval: ChatRunRetrievalResponse
+    attempt: int
+    error: ChatRunErrorResponse | None
+    usage: dict[str, Any] | None
+    timing: dict[str, Any] | None
+    created_at: datetime
+    updated_at: datetime
+    completed_at: datetime | None

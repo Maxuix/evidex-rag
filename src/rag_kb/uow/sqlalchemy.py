@@ -11,6 +11,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, AsyncSessionTransaction, async_sessionmaker
 
 from rag_kb.repositories import (
+    ChatRepository,
     ContentMutationRepository,
     DocumentRepository,
     EvaluationRepository,
@@ -25,6 +26,7 @@ from rag_kb.repositories.sqlalchemy_content import (
     SqlAlchemyFileConsistencyRepository,
     SqlAlchemyKnowledgeBaseRepository,
 )
+from rag_kb.repositories.sqlalchemy_chat import SqlAlchemyChatRepository
 from rag_kb.repositories.sqlalchemy_evaluation import SqlAlchemyEvaluationRepository
 from rag_kb.repositories.sqlalchemy_indexing import SqlAlchemyIndexingRepository
 from rag_kb.repositories.sqlalchemy import SqlAlchemyWorkspaceRepository
@@ -64,6 +66,7 @@ class SqlAlchemyUnitOfWork:
         self._workspace_repository: WorkspaceRepository | None = None
         self._knowledge_base_repository: KnowledgeBaseRepository | None = None
         self._document_repository: DocumentRepository | None = None
+        self._chat_repository: ChatRepository | None = None
         self._content_mutation_repository: ContentMutationRepository | None = None
         self._file_consistency_repository: FileConsistencyRepository | None = None
         self._indexing_repository: IndexingRepository | None = None
@@ -88,6 +91,12 @@ class SqlAlchemyUnitOfWork:
         self._ensure_active()
         assert self._document_repository is not None
         return self._document_repository
+
+    @property
+    def chat(self) -> ChatRepository:
+        self._ensure_active()
+        assert self._chat_repository is not None
+        return self._chat_repository
 
     @property
     def content_mutations(self) -> ContentMutationRepository:
@@ -134,6 +143,9 @@ class SqlAlchemyUnitOfWork:
             session, self.workspace_id, self._ensure_active
         )
         self._document_repository = SqlAlchemyDocumentRepository(
+            session, self.workspace_id, self._ensure_active
+        )
+        self._chat_repository = SqlAlchemyChatRepository(
             session, self.workspace_id, self._ensure_active
         )
         self._content_mutation_repository = SqlAlchemyContentMutationRepository(

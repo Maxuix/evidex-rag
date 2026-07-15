@@ -1,0 +1,61 @@
+"""Async persistence contract for durable chat state."""
+
+from __future__ import annotations
+
+from typing import Any, Protocol, runtime_checkable
+from uuid import UUID
+
+from rag_kb.domain import ChatMessage, ChatRun, ChatSession, IdempotencyScope, Page
+
+
+@runtime_checkable
+class ChatRepository(Protocol):
+    async def create_session(
+        self, *, kb_id: UUID, principal_id: str, title: str | None
+    ) -> ChatSession: ...
+
+    async def get_session(
+        self, session_id: UUID, *, principal_id: str
+    ) -> ChatSession | None: ...
+
+    async def list_sessions(
+        self,
+        *,
+        principal_id: str,
+        limit: int,
+        sort: str,
+        after: tuple[str, ...] | None,
+    ) -> Page[ChatSession]: ...
+
+    async def list_messages(
+        self,
+        *,
+        session_id: UUID,
+        principal_id: str,
+        limit: int,
+        sort: str,
+        after: tuple[str, ...] | None,
+    ) -> Page[ChatMessage] | None: ...
+
+    async def lock_idempotency(self, scope: IdempotencyScope) -> None: ...
+
+    async def get_run_by_scope(self, scope: IdempotencyScope) -> ChatRun | None: ...
+
+    async def get_run(
+        self, run_id: UUID, *, principal_id: str, client_id: str
+    ) -> ChatRun | None: ...
+
+    async def create_run(
+        self,
+        *,
+        scope: IdempotencyScope,
+        request_hash: str,
+        kb_id: UUID,
+        session_id: UUID,
+        index_revision_id: UUID,
+        message: str,
+        requested_policy: dict[str, Any],
+        effective_policy: dict[str, Any],
+        retrieval_strategy: dict[str, Any],
+        model_configuration: dict[str, Any],
+    ) -> ChatRun: ...

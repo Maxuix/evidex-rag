@@ -27,12 +27,14 @@ from rag_kb.db import (
 )
 from rag_kb.services import (
     AdmissionLimits,
+    ChatService,
     DocumentService,
     FileAdmissionService,
     IndexingJobService,
     KnowledgeBaseService,
     SourceFileService,
     build_content_services,
+    chat_model_configuration,
     embedding_space_definition,
 )
 from rag_kb.retrieval import RetrievalService
@@ -58,6 +60,7 @@ class ApiDependencies:
     embedding_provider: OpenAICompatibleEmbeddingProvider
     vector_store: PgVectorStore
     retrieval_service: RetrievalService
+    chat_service: ChatService
 
     async def close(self) -> None:
         """Release process-owned database resources during API shutdown."""
@@ -147,5 +150,12 @@ def build_api_dependencies(
             access_policy,
             embedding_provider,
             vector_store,
+        ),
+        chat_service=ChatService(
+            unit_of_work,
+            access_policy,
+            model_configuration=chat_model_configuration(
+                resolved_settings.model_provider.chat
+            ),
         ),
     )

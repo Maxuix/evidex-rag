@@ -1,6 +1,521 @@
 {
   "components": {
     "schemas": {
+      "AnswerPolicyOverrides": {
+        "additionalProperties": false,
+        "properties": {
+          "answer_style": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AnswerStyle"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "insufficiency_policy": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InsufficiencyPolicy"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "AnswerPolicyOverrides",
+        "type": "object"
+      },
+      "AnswerStyle": {
+        "enum": [
+          "concise",
+          "summary"
+        ],
+        "title": "AnswerStyle",
+        "type": "string"
+      },
+      "ChatMessagePage": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ChatMessageResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "maxLength": 2048,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "ChatMessagePage",
+        "type": "object"
+      },
+      "ChatMessageResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "assistant_status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "generating",
+                  "completed",
+                  "failed"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assistant Status"
+          },
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "role": {
+            "enum": [
+              "user",
+              "assistant"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "session_id",
+          "run_id",
+          "role",
+          "assistant_status",
+          "content",
+          "created_at"
+        ],
+        "title": "ChatMessageResponse",
+        "type": "object"
+      },
+      "ChatRetrievalRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "const": "vector",
+            "default": "vector",
+            "title": "Mode",
+            "type": "string"
+          },
+          "top_k": {
+            "default": 10,
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Top K",
+            "type": "integer"
+          }
+        },
+        "title": "ChatRetrievalRequest",
+        "type": "object"
+      },
+      "ChatRunCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "answer_policy": {
+            "$ref": "#/components/schemas/AnswerPolicyOverrides",
+            "default": {}
+          },
+          "knowledge_base_id": {
+            "format": "uuid",
+            "title": "Knowledge Base Id",
+            "type": "string"
+          },
+          "message": {
+            "maxLength": 32768,
+            "minLength": 1,
+            "title": "Message",
+            "type": "string"
+          },
+          "retrieval": {
+            "$ref": "#/components/schemas/ChatRetrievalRequest",
+            "default": {
+              "mode": "vector",
+              "top_k": 10
+            }
+          },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "knowledge_base_id",
+          "message"
+        ],
+        "title": "ChatRunCreate",
+        "type": "object"
+      },
+      "ChatRunErrorResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "detail": {
+            "additionalProperties": true,
+            "title": "Detail",
+            "type": "object"
+          },
+          "retryable": {
+            "title": "Retryable",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "code",
+          "detail",
+          "retryable"
+        ],
+        "title": "ChatRunErrorResponse",
+        "type": "object"
+      },
+      "ChatRunResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "answer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Answer"
+          },
+          "assistant_message_id": {
+            "format": "uuid",
+            "title": "Assistant Message Id",
+            "type": "string"
+          },
+          "assistant_status": {
+            "enum": [
+              "generating",
+              "completed",
+              "failed"
+            ],
+            "title": "Assistant Status",
+            "type": "string"
+          },
+          "attempt": {
+            "title": "Attempt",
+            "type": "integer"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "effective_answer_policy": {
+            "$ref": "#/components/schemas/EffectiveAnswerPolicyResponse"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatRunErrorResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "events_url": {
+            "title": "Events Url",
+            "type": "string"
+          },
+          "index_revision_id": {
+            "format": "uuid",
+            "title": "Index Revision Id",
+            "type": "string"
+          },
+          "knowledge_base_id": {
+            "format": "uuid",
+            "title": "Knowledge Base Id",
+            "type": "string"
+          },
+          "retrieval": {
+            "$ref": "#/components/schemas/ChatRunRetrievalResponse"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "queued",
+              "running",
+              "completed",
+              "failed",
+              "cancelled"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "status_url": {
+            "title": "Status Url",
+            "type": "string"
+          },
+          "timing": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timing"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Usage"
+          },
+          "user_message_id": {
+            "format": "uuid",
+            "title": "User Message Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "knowledge_base_id",
+          "session_id",
+          "user_message_id",
+          "assistant_message_id",
+          "index_revision_id",
+          "status",
+          "assistant_status",
+          "answer",
+          "status_url",
+          "events_url",
+          "effective_answer_policy",
+          "retrieval",
+          "attempt",
+          "error",
+          "usage",
+          "timing",
+          "created_at",
+          "updated_at",
+          "completed_at"
+        ],
+        "title": "ChatRunResponse",
+        "type": "object"
+      },
+      "ChatRunRetrievalResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "rerank": {
+            "const": false,
+            "title": "Rerank",
+            "type": "boolean"
+          },
+          "strategy": {
+            "const": "exact_vector",
+            "title": "Strategy",
+            "type": "string"
+          },
+          "top_k": {
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Top K",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "strategy",
+          "top_k",
+          "rerank"
+        ],
+        "title": "ChatRunRetrievalResponse",
+        "type": "object"
+      },
+      "ChatSessionCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "knowledge_base_id": {
+            "format": "uuid",
+            "title": "Knowledge Base Id",
+            "type": "string"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          }
+        },
+        "required": [
+          "knowledge_base_id"
+        ],
+        "title": "ChatSessionCreate",
+        "type": "object"
+      },
+      "ChatSessionPage": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ChatSessionResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "maxLength": 2048,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "ChatSessionPage",
+        "type": "object"
+      },
+      "ChatSessionResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "knowledge_base_id": {
+            "format": "uuid",
+            "title": "Knowledge Base Id",
+            "type": "string"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "knowledge_base_id",
+          "title",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "ChatSessionResponse",
+        "type": "object"
+      },
       "DocumentDeleteResponse": {
         "additionalProperties": false,
         "properties": {
@@ -252,6 +767,53 @@
           "created_at"
         ],
         "title": "DocumentVersionResponse",
+        "type": "object"
+      },
+      "EffectiveAnswerPolicyResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "answer_style": {
+            "$ref": "#/components/schemas/AnswerStyle"
+          },
+          "answer_task": {
+            "const": "answer",
+            "title": "Answer Task",
+            "type": "string"
+          },
+          "citation_granularity": {
+            "const": "claim_level",
+            "title": "Citation Granularity",
+            "type": "string"
+          },
+          "citation_required": {
+            "const": true,
+            "title": "Citation Required",
+            "type": "boolean"
+          },
+          "grounding_policy": {
+            "const": "evidence_only",
+            "title": "Grounding Policy",
+            "type": "string"
+          },
+          "insufficiency_policy": {
+            "$ref": "#/components/schemas/InsufficiencyPolicy"
+          },
+          "policy_version": {
+            "const": "p1",
+            "title": "Policy Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "grounding_policy",
+          "answer_style",
+          "insufficiency_policy",
+          "citation_required",
+          "citation_granularity",
+          "answer_task",
+          "policy_version"
+        ],
+        "title": "EffectiveAnswerPolicyResponse",
         "type": "object"
       },
       "ErrorCode": {
@@ -636,6 +1198,14 @@
         ],
         "title": "IndexingJobResponse",
         "type": "object"
+      },
+      "InsufficiencyPolicy": {
+        "enum": [
+          "refuse",
+          "partial_answer"
+        ],
+        "title": "InsufficiencyPolicy",
+        "type": "string"
       },
       "IterativeScanMode": {
         "enum": [
@@ -1048,6 +1618,379 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/chat/runs": {
+      "post": {
+        "operationId": "create_chat_run_api_v1_chat_runs_post",
+        "parameters": [
+          {
+            "description": "Required UUID scoped by principal, client, and endpoint.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "description": "Required UUID scoped by principal, client, and endpoint.",
+              "format": "uuid",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatRunCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatRunResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Idempotency or resource conflict"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Request validation failed"
+          }
+        },
+        "summary": "Create Chat Run",
+        "tags": [
+          "chat"
+        ]
+      }
+    },
+    "/api/v1/chat/runs/{run_id}": {
+      "get": {
+        "operationId": "get_chat_run_api_v1_chat_runs__run_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatRunResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Request validation failed"
+          }
+        },
+        "summary": "Get Chat Run",
+        "tags": [
+          "chat"
+        ]
+      }
+    },
+    "/api/v1/chat/sessions": {
+      "get": {
+        "operationId": "list_chat_sessions_api_v1_chat_sessions_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 2048,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "default": "-updated_at",
+              "enum": [
+                "created_at",
+                "-created_at",
+                "updated_at",
+                "-updated_at"
+              ],
+              "title": "Sort",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatSessionPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Invalid request or cursor"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Request validation failed"
+          }
+        },
+        "summary": "List Chat Sessions",
+        "tags": [
+          "chat"
+        ]
+      },
+      "post": {
+        "operationId": "create_chat_session_api_v1_chat_sessions_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatSessionCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatSessionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Request validation failed"
+          }
+        },
+        "summary": "Create Chat Session",
+        "tags": [
+          "chat"
+        ]
+      }
+    },
+    "/api/v1/chat/sessions/{session_id}/messages": {
+      "get": {
+        "operationId": "list_chat_messages_api_v1_chat_sessions__session_id__messages_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 2048,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "default": "created_at",
+              "enum": [
+                "created_at",
+                "-created_at"
+              ],
+              "title": "Sort",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatMessagePage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Invalid request or cursor"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Request validation failed"
+          }
+        },
+        "summary": "List Chat Messages",
+        "tags": [
+          "chat"
+        ]
+      }
+    },
     "/api/v1/documents/{document_id}": {
       "delete": {
         "operationId": "delete_document_api_v1_documents__document_id__delete",

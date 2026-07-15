@@ -736,7 +736,7 @@ class ChatRun(Base):
     client_id: Mapped[str] = mapped_column(String(255), nullable=False)
     endpoint: Mapped[str] = mapped_column(String(255), nullable=False)
     idempotency_key: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), nullable=False)
-    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    request_hash: Mapped[str] = mapped_column(String(71), nullable=False)
     requested_policy: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     effective_policy: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     retrieval_strategy: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)

@@ -31,6 +31,10 @@ from rag_kb.auth import (
 )
 from rag_kb.domain import (
     AdmissionLimits,
+    AnswerStyle,
+    ChatMessage,
+    ChatRun,
+    ChatSession,
     Document,
     DocumentMutationResult,
     DocumentVersion,
@@ -38,6 +42,7 @@ from rag_kb.domain import (
     EvidencePack,
     IdempotencyKeyReusedError,
     IdempotencyScope,
+    InsufficiencyPolicy,
     IndexingJobSnapshot,
     KnowledgeBase,
     Page,
@@ -597,7 +602,14 @@ class CommonContractTests(unittest.TestCase):
                 "/api/v1/indexing-jobs/{job_id}",
                 "/api/v1/indexing-jobs/{job_id}/retry",
                 "/api/v1/retrieval/query",
+                "/api/v1/chat/sessions",
+                "/api/v1/chat/sessions/{session_id}/messages",
+                "/api/v1/chat/runs",
+                "/api/v1/chat/runs/{run_id}",
             },
+        )
+        self.assertNotIn(
+            "/api/v1/chat/runs/{run_id}/events", production["paths"]
         )
         upload = production["paths"]["/api/v1/knowledge-bases/{kb_id}/documents"]["post"]
         self.assertEqual(upload["responses"]["202"]["description"], "Successful Response")
@@ -877,6 +889,70 @@ class _FakeIndexingJobService:
         return self.value
 
 
+class _FakeChatService:
+    def __init__(self) -> None:
+        self.session = _chat_session_value()
+        self.run = _chat_run_value(self.session)
+        self.create_run_calls: list[dict[str, object]] = []
+
+    async def create_session(self, context, *, kb_id, title):
+        del context
+        if kb_id != _knowledge_base_value().id:
+            raise ResourceNotFoundError("internal chat knowledge-base detail")
+        self.session = dataclass_replace(self.session, kb_id=kb_id, title=title)
+        self.run = _chat_run_value(self.session)
+        return self.session
+
+    async def list_sessions(self, context, *, limit, sort, after):
+        del context, limit, sort, after
+        return Page(items=(self.session,))
+
+    async def list_messages(
+        self, context, session_id, *, limit, sort, after
+    ):
+        del context, limit, sort, after
+        if session_id != self.session.id:
+            raise ResourceNotFoundError("internal chat session detail")
+        return Page(items=_chat_messages(self.run))
+
+    async def create_run(self, context, key, **values):
+        del context
+        self.create_run_calls.append({"key": key, **values})
+        if key == UUID("00000000-0000-0000-0000-000000000099"):
+            raise IdempotencyKeyReusedError("internal chat hash detail")
+        if values["session_id"] != self.session.id:
+            raise ResourceNotFoundError("internal chat session detail")
+        policy = {
+            "grounding_policy": "evidence_only",
+            "answer_style": (
+                values["answer_style"] or AnswerStyle.CONCISE
+            ).value,
+            "insufficiency_policy": (
+                values["insufficiency_policy"] or InsufficiencyPolicy.REFUSE
+            ).value,
+            "citation_required": True,
+            "citation_granularity": "claim_level",
+            "answer_task": "answer",
+            "policy_version": "p1",
+        }
+        self.run = dataclass_replace(
+            self.run,
+            effective_policy=policy,
+            retrieval_strategy={
+                "strategy": "exact_vector",
+                "top_k": values["top_k"],
+                "rerank": False,
+            },
+        )
+        return self.run
+
+    async def get_run(self, context, run_id):
+        del context
+        if run_id != self.run.id:
+            raise ResourceNotFoundError("internal chat run detail")
+        return self.run
+
+
 class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.dependencies = StubApiDependencies()
@@ -889,6 +965,7 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
             self.dependencies.document_service
         )
         self.dependencies.indexing_job_service = _FakeIndexingJobService()
+        self.dependencies.chat_service = _FakeChatService()
         self.app = create_app(dependencies=self.dependencies)  # type: ignore[arg-type]
         self.lifespan = self.app.router.lifespan_context(self.app)
         await self.lifespan.__aenter__()
@@ -1076,6 +1153,114 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status, 404)
         self.assertNotIn("internal indexing", response.body.decode())
 
+    async def test_chat_session_run_history_and_status_contracts(self) -> None:
+        chat = self.dependencies.chat_service
+        session = await request(
+            self.app,
+            "POST",
+            f"{API_PREFIX}/chat/sessions",
+            json_body={
+                "knowledge_base_id": str(_knowledge_base_value().id),
+                "title": "  Incident response  ",
+            },
+        )
+        self.assertEqual(session.status, 201)
+        self.assertEqual(session.json()["title"], "Incident response")
+        self.assertEqual(
+            session.headers["location"],
+            f"/api/v1/chat/sessions/{chat.session.id}/messages",
+        )
+
+        missing_key = await request(
+            self.app,
+            "POST",
+            f"{API_PREFIX}/chat/runs",
+            json_body=_chat_run_request(chat.session.id),
+        )
+        self.assertEqual(missing_key.status, 422)
+        self.assertEqual(missing_key.json()["code"], "INVALID_IDEMPOTENCY_KEY")
+
+        key = uuid4()
+        created = await request(
+            self.app,
+            "POST",
+            f"{API_PREFIX}/chat/runs",
+            headers={"idempotency-key": str(key)},
+            json_body=_chat_run_request(chat.session.id),
+        )
+        body = created.json()
+        self.assertEqual(created.status, 202)
+        self.assertEqual(created.headers["location"], body["status_url"])
+        self.assertEqual(body["status"], "queued")
+        self.assertEqual(body["assistant_status"], "generating")
+        self.assertIsNone(body["answer"])
+        self.assertEqual(
+            body["events_url"], f"{body['status_url']}/events"
+        )
+        self.assertEqual(
+            body["effective_answer_policy"],
+            {
+                "grounding_policy": "evidence_only",
+                "answer_style": "summary",
+                "insufficiency_policy": "partial_answer",
+                "citation_required": True,
+                "citation_granularity": "claim_level",
+                "answer_task": "answer",
+                "policy_version": "p1",
+            },
+        )
+        self.assertEqual(chat.create_run_calls[0]["key"], key)
+        self.assertEqual(chat.create_run_calls[0]["message"], "查询 RUN-ORD-14")
+
+        status_response = await request(
+            self.app, "GET", f"{API_PREFIX}/chat/runs/{chat.run.id}"
+        )
+        history = await request(
+            self.app,
+            "GET",
+            f"{API_PREFIX}/chat/sessions/{chat.session.id}/messages",
+        )
+        listed = await request(self.app, "GET", f"{API_PREFIX}/chat/sessions")
+        self.assertEqual(status_response.status, 200)
+        self.assertEqual(status_response.json()["run_id"], str(chat.run.id))
+        self.assertEqual(
+            [item["role"] for item in history.json()["items"]],
+            ["user", "assistant"],
+        )
+        self.assertEqual(listed.json()["items"][0]["id"], str(chat.session.id))
+
+    async def test_chat_rejects_policy_weakening_and_redacts_conflicts(self) -> None:
+        chat = self.dependencies.chat_service
+        forbidden = await request(
+            self.app,
+            "POST",
+            f"{API_PREFIX}/chat/runs",
+            headers={"idempotency-key": str(uuid4())},
+            json_body={
+                **_chat_run_request(chat.session.id),
+                "answer_policy": {
+                    "answer_style": "concise",
+                    "grounding_policy": "model_knowledge_allowed",
+                },
+            },
+        )
+        self.assertEqual(forbidden.status, 422)
+        self.assertEqual(forbidden.json()["code"], "REQUEST_VALIDATION_FAILED")
+        self.assertEqual(chat.create_run_calls, [])
+
+        conflict = await request(
+            self.app,
+            "POST",
+            f"{API_PREFIX}/chat/runs",
+            headers={
+                "idempotency-key": "00000000-0000-0000-0000-000000000099"
+            },
+            json_body=_chat_run_request(chat.session.id),
+        )
+        self.assertEqual(conflict.status, 409)
+        self.assertEqual(conflict.json()["code"], "IDEMPOTENCY_KEY_REUSED")
+        self.assertNotIn("internal chat hash", conflict.body.decode())
+
 
 def dataclass_replace(value, **changes):
     from dataclasses import replace
@@ -1123,6 +1308,103 @@ def _document_value() -> Document:
         created_at=now,
         updated_at=now,
     )
+
+
+def _chat_session_value() -> ChatSession:
+    now = datetime(2026, 7, 15, tzinfo=UTC)
+    return ChatSession(
+        id=UUID("01900000-0000-7000-8000-000000000030"),
+        workspace_id=WORKSPACE,
+        kb_id=_knowledge_base_value().id,
+        principal_id="development-principal",
+        title=None,
+        created_at=now,
+        updated_at=now,
+    )
+
+
+def _chat_run_value(session: ChatSession) -> ChatRun:
+    now = datetime(2026, 7, 15, tzinfo=UTC)
+    return ChatRun(
+        id=UUID("01900000-0000-7000-8000-000000000031"),
+        workspace_id=WORKSPACE,
+        kb_id=session.kb_id,
+        session_id=session.id,
+        user_message_id=UUID("01900000-0000-7000-8000-000000000032"),
+        assistant_message_id=UUID("01900000-0000-7000-8000-000000000033"),
+        index_revision_id=_knowledge_base_value().active_index_revision_id,
+        status="queued",
+        principal_id="development-principal",
+        client_id="development-web",
+        endpoint="POST /api/v1/chat/runs",
+        idempotency_key=UUID("01900000-0000-7000-8000-000000000034"),
+        request_hash="sha256:" + "1" * 64,
+        requested_policy={},
+        effective_policy={
+            "grounding_policy": "evidence_only",
+            "answer_style": "concise",
+            "insufficiency_policy": "refuse",
+            "citation_required": True,
+            "citation_granularity": "claim_level",
+            "answer_task": "answer",
+            "policy_version": "p1",
+        },
+        retrieval_strategy={
+            "strategy": "exact_vector",
+            "top_k": 10,
+            "rerank": False,
+        },
+        model_configuration={"configuration_fingerprint": "sha256:safe"},
+        assistant_status="generating",
+        assistant_content="",
+        attempt=0,
+        error_code=None,
+        error_detail=None,
+        error_retryable=None,
+        usage=None,
+        timing=None,
+        created_at=now,
+        updated_at=now,
+        completed_at=None,
+    )
+
+
+def _chat_messages(run: ChatRun) -> tuple[ChatMessage, ChatMessage]:
+    return (
+        ChatMessage(
+            id=run.user_message_id,
+            session_id=run.session_id,
+            chat_run_id=None,
+            role="user",
+            assistant_status=None,
+            client_request_id=run.idempotency_key,
+            content="查询 RUN-ORD-14",
+            created_at=run.created_at,
+        ),
+        ChatMessage(
+            id=run.assistant_message_id,
+            session_id=run.session_id,
+            chat_run_id=run.id,
+            role="assistant",
+            assistant_status="generating",
+            client_request_id=None,
+            content="",
+            created_at=run.created_at,
+        ),
+    )
+
+
+def _chat_run_request(session_id: UUID) -> dict[str, object]:
+    return {
+        "session_id": str(session_id),
+        "knowledge_base_id": str(_knowledge_base_value().id),
+        "message": "  查询 RUN-ORD-14  ",
+        "answer_policy": {
+            "answer_style": "summary",
+            "insufficiency_policy": "partial_answer",
+        },
+        "retrieval": {"mode": "vector", "top_k": 8},
+    }
 
 
 if __name__ == "__main__":

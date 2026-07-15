@@ -8,6 +8,19 @@ from rag_kb.schemas.common import (
     PaginationQuery,
     ProblemDetails,
 )
+from rag_kb.schemas.chat import (
+    AnswerPolicyOverrides,
+    ChatMessagePage,
+    ChatMessageResponse,
+    ChatRetrievalRequest,
+    ChatRunCreate,
+    ChatRunErrorResponse,
+    ChatRunResponse,
+    ChatSessionCreate,
+    ChatSessionPage,
+    ChatSessionResponse,
+    EffectiveAnswerPolicyResponse,
+)
 from rag_kb.schemas.documents import (
     DocumentDeleteResponse,
     DocumentPage,
@@ -32,6 +45,16 @@ from rag_kb.schemas.retrieval import (
 )
 
 __all__ = [
+    "AnswerPolicyOverrides",
+    "ChatMessagePage",
+    "ChatMessageResponse",
+    "ChatRetrievalRequest",
+    "ChatRunCreate",
+    "ChatRunErrorResponse",
+    "ChatRunResponse",
+    "ChatSessionCreate",
+    "ChatSessionPage",
+    "ChatSessionResponse",
     "CursorPage",
     "CursorPayload",
     "DocumentDeleteResponse",
@@ -42,6 +65,7 @@ __all__ = [
     "IndexingErrorResponse",
     "IndexingJobResponse",
     "ErrorCode",
+    "EffectiveAnswerPolicyResponse",
     "FieldViolation",
     "KnowledgeBaseCreate",
     "KnowledgeBasePage",

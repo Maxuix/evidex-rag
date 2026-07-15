@@ -8,6 +8,7 @@ from typing import Protocol, runtime_checkable
 from uuid import UUID
 
 from rag_kb.repositories import (
+    ChatRepository,
     ContentMutationRepository,
     DocumentRepository,
     EvaluationRepository,
@@ -56,6 +57,9 @@ class UnitOfWork(Protocol):
 
     @property
     def documents(self) -> DocumentRepository: ...
+
+    @property
+    def chat(self) -> ChatRepository: ...
 
     @property
     def content_mutations(self) -> ContentMutationRepository: ...
