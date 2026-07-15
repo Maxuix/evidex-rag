@@ -18,6 +18,7 @@ from rag_kb.domain import (
     EvidencePack,
     RetrievalRequest,
     RetrievalStrategy,
+    ReconciliationResult,
 )
 from rag_kb.retrieval import RetrievalService
 from rag_kb.uow import (
@@ -37,6 +38,19 @@ class ChatRunCoordinator:
 
     def __init__(self, unit_of_work: UnitOfWorkFactory) -> None:
         self._unit_of_work = unit_of_work
+
+    async def oldest_claimable_at(
+        self, *, observed_at: datetime, max_attempts: int
+    ) -> datetime | None:
+        async def load(uow: UnitOfWork) -> datetime | None:
+            return await uow.chat.oldest_claimable_at(
+                observed_at=observed_at,
+                max_attempts=max_attempts,
+            )
+
+        return await execute_in_transaction(
+            self._unit_of_work, load, purpose=UnitOfWorkPurpose.POLL
+        )
 
     async def claim(
         self, *, worker_id: str, observed_at: datetime, max_attempts: int
@@ -60,6 +74,30 @@ class ChatRunCoordinator:
 
         return await execute_in_transaction(
             self._unit_of_work, persist, purpose=UnitOfWorkPurpose.HEARTBEAT
+        )
+
+    async def reconcile_stale(
+        self,
+        *,
+        stale_before: datetime,
+        observed_at: datetime,
+        max_attempts: int,
+        retry_at_by_attempt: tuple[datetime, ...],
+        limit: int,
+    ) -> ReconciliationResult:
+        async def persist(uow: UnitOfWork) -> ReconciliationResult:
+            return await uow.chat.reconcile_stale_runs(
+                stale_before=stale_before,
+                observed_at=observed_at,
+                max_attempts=max_attempts,
+                retry_at_by_attempt=retry_at_by_attempt,
+                limit=limit,
+            )
+
+        return await execute_in_transaction(
+            self._unit_of_work,
+            persist,
+            purpose=UnitOfWorkPurpose.RECONCILIATION,
         )
 
 

@@ -16,6 +16,9 @@ from rag_kb.adapters import FixedPgVectorSpace, IsolatedPlainTextProcessor, Loca
 from rag_kb.auth import AuthContext, SingleWorkspaceAccessPolicy
 from rag_kb.db import DatabaseProcess, create_database_resources
 from rag_kb.domain import (
+    AnswerStyle,
+    ChatPipelineExecutionError,
+    ChatPipelinePhase,
     EmbeddingBatch,
     EmbeddingSpaceDefinition,
     ErrorCode,
@@ -23,14 +26,27 @@ from rag_kb.domain import (
     IndexingCommand,
     IndexingExecutionError,
     IndexingPhase,
+    InsufficiencyPolicy,
     ParserLimits,
     PromotionCommand,
     PromotionReason,
     ResourceStateConflictError,
 )
 from rag_kb.indexing import CandidatePromotionService, IndexingPipeline
-from rag_kb.scheduling import IndexingJobScheduler, RetryPolicy
-from rag_kb.services import IndexingJobService, SourceFileService
+from rag_kb.scheduling import (
+    ChatRunScheduler,
+    FairWorkerScheduler,
+    IndexingJobScheduler,
+    RetryPolicy,
+    WeightedLaneSelector,
+)
+from rag_kb.services import (
+    ChatFailureSettlementService,
+    ChatRunCoordinator,
+    ChatService,
+    IndexingJobService,
+    SourceFileService,
+)
 from rag_kb.services.content import DocumentService, KnowledgeBaseService
 from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWorkFactory
 from rag_kb.uow import UnitOfWorkPurpose, execute_in_transaction
@@ -448,6 +464,105 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(claim["claimed_by"])
         self.assertEqual(provider.calls, 1)
 
+    async def test_fair_worker_starts_chat_under_indexing_load_without_starvation(
+        self,
+    ) -> None:
+        kb = await self._create_kb()
+        uploads = [
+            await self._upload(
+                kb.id,
+                f"load-{ordinal}.txt",
+                "text/plain",
+                f"load {ordinal}".encode(),
+            )
+            for ordinal in range(3)
+        ]
+        chat = ChatService(
+            self.factory,
+            self.policy,
+            model_configuration={
+                "provider_identity": "chat-provider",
+                "logical_endpoint_identity": "chat-endpoint",
+                "requested_model": "chat-model",
+                "resolved_model": "chat-model",
+                "model_version": "v1",
+                "structured_output_mode": "json_object",
+                "configuration_fingerprint": "sha256:" + "c" * 64,
+                "capability_fingerprint": "sha256:" + "d" * 64,
+            },
+        )
+        session = await chat.create_session(self.context, kb_id=kb.id, title=None)
+        run = await chat.create_run(
+            self.context,
+            uuid4(),
+            session_id=session.id,
+            kb_id=kb.id,
+            message="start while indexing is busy",
+            answer_style=AnswerStyle.CONCISE,
+            insufficiency_policy=InsufficiencyPolicy.REFUSE,
+            retrieval_mode="vector",
+            top_k=5,
+        )
+        retry = RetryPolicy(3, 0.01, 0.02)
+        provider = _Provider(delay=0.05)
+        indexing = self._scheduler_for(
+            self._pipeline(provider),
+            worker_id="worker-fair",
+        )
+        chat_scheduler = ChatRunScheduler(
+            ChatRunCoordinator(self.factory),
+            _FailingChatPipeline(),
+            ChatFailureSettlementService(
+                self.factory,
+                max_attempts=3,
+                base_delay_seconds=0.01,
+                max_delay_seconds=0.02,
+            ),
+            worker_id="worker-fair",
+            heartbeat_interval_seconds=0.01,
+            stale_after_seconds=1,
+            retry_policy=retry,
+            reconciliation_batch_size=10,
+        )
+        fair = FairWorkerScheduler(
+            chat_scheduler,
+            indexing,
+            WeightedLaneSelector(
+                chat_weight=3,
+                indexing_weight=1,
+                aging_seconds=0.05,
+            ),
+            chat_concurrency=1,
+            indexing_concurrency=1,
+            poll_interval_seconds=0.01,
+        )
+        stopped = asyncio.Event()
+        started = asyncio.get_running_loop().time()
+        task = asyncio.create_task(fair.run(stopped))
+        try:
+            for _ in range(400):
+                state = await chat.get_run(self.context, run.id)
+                if state.status == "failed" and provider.calls >= 1:
+                    break
+                await asyncio.sleep(0.01)
+            else:
+                self.fail("fair worker did not advance both lanes")
+        finally:
+            stopped.set()
+            await task
+
+        elapsed = asyncio.get_running_loop().time() - started
+        self.assertLess(elapsed, 2.0)
+        self.assertEqual(state.error_code, ErrorCode.CHAT_REVISION_MISMATCH.value)
+        self.assertGreaterEqual(provider.calls, 1)
+        claim_states = [
+            await self._job_claim_state(item.job_id) for item in uploads
+        ]
+        self.assertTrue(
+            any(item["attempt"] >= 1 for item in claim_states)
+        )
+        self.assertEqual(self.database.engine.pool.checkedout(), 0)
+
     async def test_scheduler_recovers_completed_candidate_before_promotion(self) -> None:
         kb = await self._create_kb()
         uploaded = await self._upload(kb.id, "guide.txt", "text/plain", b"safe")
@@ -789,14 +904,17 @@ class _Provider:
         embedding_space=None,
         max_batch_size=10,
         fail_call=None,
+        delay=0,
     ) -> None:
         self.embedding_space = embedding_space or _embedding()
         self.max_batch_size = max_batch_size
         self.fail_call = fail_call
+        self.delay = delay
         self.calls = 0
 
     async def embed(self, texts):
         self.calls += 1
+        await asyncio.sleep(self.delay)
         if self.calls == self.fail_call:
             raise IndexingExecutionError(
                 ErrorCode.EMBEDDING_PROVIDER_UNAVAILABLE,
@@ -806,6 +924,17 @@ class _Provider:
         return EmbeddingBatch(
             model=self.embedding_space.resolved_model,
             vectors=tuple(_vector() for _ in texts),
+        )
+
+
+class _FailingChatPipeline:
+    async def execute(self, command):
+        del command
+        await asyncio.sleep(0.02)
+        raise ChatPipelineExecutionError(
+            ErrorCode.CHAT_REVISION_MISMATCH,
+            phase=ChatPipelinePhase.RETRIEVE_EVIDENCE,
+            diagnostic={"check": "load_test"},
         )
 
 

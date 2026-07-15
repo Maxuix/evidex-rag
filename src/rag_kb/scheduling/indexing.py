@@ -83,6 +83,24 @@ class IndexingJobScheduler:
         self._reconciliation_batch_size = reconciliation_batch_size
         self._clock = clock or (lambda: datetime.now(UTC))
 
+    async def oldest_claimable_at(self) -> datetime | None:
+        observed_at = self._clock()
+        return await execute_in_transaction(
+            self._unit_of_work,
+            lambda uow: uow.indexing.oldest_claimable_at(
+                observed_at=observed_at,
+                max_attempts=self._retry.max_attempts,
+            ),
+            purpose=UnitOfWorkPurpose.POLL,
+        )
+
+    async def execute(
+        self,
+        lease: IndexingLease,
+        stopped: asyncio.Event,
+    ) -> None:
+        await self._execute(lease, stopped)
+
     async def run(self, stopped: asyncio.Event) -> None:
         active: set[asyncio.Task[None]] = set()
         try:

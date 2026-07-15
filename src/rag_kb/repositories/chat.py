@@ -12,16 +12,31 @@ from rag_kb.domain import (
     ChatMessage,
     ChatRun,
     ChatRunLease,
+    ChatSession,
     ChatTerminalSuccessCommand,
     ChatTerminalWriteStatus,
-    ChatSession,
     IdempotencyScope,
     Page,
+    ReconciliationResult,
 )
 
 
 @runtime_checkable
 class ChatRepository(Protocol):
+    async def oldest_claimable_at(
+        self, *, observed_at: datetime, max_attempts: int
+    ) -> datetime | None: ...
+
+    async def reconcile_stale_runs(
+        self,
+        *,
+        stale_before: datetime,
+        observed_at: datetime,
+        max_attempts: int,
+        retry_at_by_attempt: tuple[datetime, ...],
+        limit: int,
+    ) -> ReconciliationResult: ...
+
     async def complete_owned_run(
         self, command: ChatTerminalSuccessCommand
     ) -> ChatTerminalWriteStatus: ...

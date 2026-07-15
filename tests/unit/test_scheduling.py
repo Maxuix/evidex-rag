@@ -5,8 +5,23 @@ import unittest
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
-from rag_kb.domain import IndexingLease, IndexingResult, WorkLane
-from rag_kb.scheduling import IndexingJobScheduler, RetryPolicy, WeightedLaneSelector
+from rag_kb.domain import (
+    ChatPipelineExecutionError,
+    ChatPipelinePhase,
+    ChatRunLease,
+    ErrorCode,
+    IndexingLease,
+    IndexingResult,
+    ReconciliationResult,
+    WorkLane,
+)
+from rag_kb.scheduling import (
+    ChatRunScheduler,
+    FairWorkerScheduler,
+    IndexingJobScheduler,
+    RetryPolicy,
+    WeightedLaneSelector,
+)
 
 
 NOW = datetime(2026, 7, 14, 9, 0, tzinfo=UTC)
@@ -102,6 +117,100 @@ class IndexingSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(repository.rescheduled["error_code"], "INDEXING_WORKER_STOPPED")
 
 
+class ChatSchedulerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_heartbeat_and_pipeline_failure_are_settled(self) -> None:
+        coordinator = _ChatCoordinator()
+        settler = _ChatSettler()
+        scheduler = _chat_scheduler(
+            coordinator,
+            _ChatPipeline(
+                delay=0.03,
+                error=ChatPipelineExecutionError(
+                    ErrorCode.CHAT_PROVIDER_UNAVAILABLE,
+                    phase=ChatPipelinePhase.GENERATE_OR_REFUSE,
+                ),
+            ),
+            settler,
+        )
+
+        await scheduler.execute(_chat_lease(), asyncio.Event())
+
+        self.assertGreaterEqual(coordinator.heartbeats, 1)
+        self.assertEqual(settler.errors[0].code, ErrorCode.CHAT_PROVIDER_UNAVAILABLE)
+
+    async def test_stop_requeues_through_stable_failure(self) -> None:
+        coordinator = _ChatCoordinator()
+        settler = _ChatSettler()
+        scheduler = _chat_scheduler(
+            coordinator,
+            _ChatPipeline(never=True),
+            settler,
+        )
+        stopped = asyncio.Event()
+        execution = asyncio.create_task(
+            scheduler.execute(_chat_lease(), stopped)
+        )
+        await asyncio.sleep(0.01)
+
+        stopped.set()
+        await execution
+
+        self.assertEqual(settler.errors[0].code, ErrorCode.CHAT_WORKER_STOPPED)
+
+    async def test_reconciliation_uses_bounded_retry_schedule(self) -> None:
+        coordinator = _ChatCoordinator()
+        scheduler = _chat_scheduler(
+            coordinator,
+            _ChatPipeline(),
+            _ChatSettler(),
+        )
+
+        result = await scheduler.reconcile_once()
+
+        self.assertEqual(result, ReconciliationResult(1, 0))
+        self.assertEqual(
+            coordinator.reconciliation["retry_at_by_attempt"],
+            (
+                NOW + timedelta(seconds=0.01),
+                NOW + timedelta(seconds=0.02),
+            ),
+        )
+
+
+class FairWorkerSchedulerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_reserved_lane_capacity_starts_chat_under_indexing_load(self) -> None:
+        release = asyncio.Event()
+        chat = _Lane(WorkLane.CHAT, ["chat-1", "chat-2"], release)
+        indexing = _Lane(
+            WorkLane.INDEXING,
+            ["index-1", "index-2", "index-3"],
+            release,
+        )
+        scheduler = FairWorkerScheduler(
+            chat,
+            indexing,
+            WeightedLaneSelector(
+                chat_weight=3,
+                indexing_weight=1,
+                aging_seconds=30,
+            ),
+            chat_concurrency=1,
+            indexing_concurrency=1,
+            poll_interval_seconds=0.01,
+            clock=lambda: NOW,
+        )
+        active = {}
+
+        await scheduler._dispatch(active, asyncio.Event())  # noqa: SLF001
+        await asyncio.sleep(0)
+
+        self.assertEqual(set(active.values()), {WorkLane.CHAT, WorkLane.INDEXING})
+        self.assertEqual(chat.claimed, ["chat-1"])
+        self.assertEqual(indexing.claimed, ["index-1"])
+        release.set()
+        await asyncio.gather(*active)
+
+
 class _Factory:
     def __init__(self, repository) -> None:
         self.repository = repository
@@ -174,8 +283,84 @@ class _Pipeline:
         return IndexingResult(uuid4(), uuid4(), "ready", 1, serving_status="serving")
 
 
+class _ChatCoordinator:
+    def __init__(self) -> None:
+        self.heartbeats = 0
+        self.reconciliation = None
+
+    async def heartbeat(self, lease, *, observed_at):
+        del lease, observed_at
+        self.heartbeats += 1
+        return True
+
+    async def reconcile_stale(self, **values):
+        self.reconciliation = values
+        return ReconciliationResult(1, 0)
+
+    async def oldest_claimable_at(self, **values):
+        del values
+        return NOW
+
+    async def claim(self, **values):
+        del values
+        return _chat_lease()
+
+
+class _ChatPipeline:
+    def __init__(self, *, delay=0, never=False, error=None) -> None:
+        self.delay = delay
+        self.never = never
+        self.error = error
+
+    async def execute(self, command):
+        del command
+        if self.never:
+            await asyncio.Event().wait()
+        await asyncio.sleep(self.delay)
+        if self.error is not None:
+            raise self.error
+
+
+class _ChatSettler:
+    def __init__(self) -> None:
+        self.errors = []
+
+    async def settle(self, lease, error):
+        del lease
+        self.errors.append(error)
+
+
+class _Lane:
+    def __init__(self, lane, leases, release) -> None:
+        self.lane = lane
+        self.leases = list(leases)
+        self.release = release
+        self.claimed = []
+
+    async def oldest_claimable_at(self):
+        return NOW if self.leases else None
+
+    async def claim_once(self):
+        if not self.leases:
+            return None
+        lease = self.leases.pop(0)
+        self.claimed.append(lease)
+        return lease
+
+    async def reconcile_once(self):
+        return ReconciliationResult(0, 0)
+
+    async def execute(self, lease, stopped):
+        del lease, stopped
+        await self.release.wait()
+
+
 def _lease(*, attempt):
     return IndexingLease(uuid4(), uuid4(), "worker-a", attempt, NOW)
+
+
+def _chat_lease():
+    return ChatRunLease(uuid4(), uuid4(), "worker-a", 1, NOW)
 
 
 def _scheduler(factory, pipeline, *, deadline):
@@ -188,6 +373,20 @@ def _scheduler(factory, pipeline, *, deadline):
         heartbeat_interval_seconds=0.005,
         stale_after_seconds=1,
         deadline_seconds=deadline,
+        retry_policy=RetryPolicy(2, 0.01, 0.02),
+        reconciliation_batch_size=10,
+        clock=lambda: NOW,
+    )
+
+
+def _chat_scheduler(coordinator, pipeline, settler):
+    return ChatRunScheduler(
+        coordinator,
+        pipeline,
+        settler,
+        worker_id="worker-a",
+        heartbeat_interval_seconds=0.005,
+        stale_after_seconds=1,
         retry_policy=RetryPolicy(2, 0.01, 0.02),
         reconciliation_batch_size=10,
         clock=lambda: NOW,

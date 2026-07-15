@@ -16,6 +16,7 @@ from rag_kb.adapters import (
     LocalFileStore,
     OpenAICompatibleChatModelAdapter,
     OpenAICompatibleEmbeddingProvider,
+    PgVectorStore,
 )
 from rag_kb.config import (
     Settings,
@@ -32,6 +33,8 @@ from rag_kb.db import (
 )
 from rag_kb.indexing import IndexingPipeline
 from rag_kb.scheduling import (
+    ChatRunScheduler,
+    FairWorkerScheduler,
     IndexingJobScheduler,
     RetryPolicy,
     WeightedLaneSelector,
@@ -39,11 +42,16 @@ from rag_kb.scheduling import (
 from rag_kb.services import (
     AnswerGenerationStep,
     AnswerStructureValidationStep,
+    ChatEvidenceRetriever,
+    ChatExecutionContextLoader,
     ChatFailureSettlementService,
     ChatResultPersistenceStep,
+    ChatRunCoordinator,
+    DirectChatPipeline,
     EvidenceAssessmentStep,
     FileReconciliationService,
     ParserLimits,
+    RetrievalService,
     build_content_services,
     embedding_space_definition,
 )
@@ -63,15 +71,21 @@ class WorkerDependencies:
     file_store: LocalFileStore
     reconciliation_service: FileReconciliationService
     document_processor: IsolatedPlainTextProcessor
+    embedding_provider: OpenAICompatibleEmbeddingProvider
+    vector_store: PgVectorStore
+    retrieval_service: RetrievalService
     chat_model_adapter: ChatModelAdapter
     evidence_assessor: EvidenceAssessmentStep
     answer_generator: AnswerGenerationStep
     structure_validator: AnswerStructureValidationStep
     result_persister: ChatResultPersistenceStep
     failure_settler: ChatFailureSettlementService
+    chat_pipeline: DirectChatPipeline
+    chat_scheduler: ChatRunScheduler
     indexing_pipeline: IndexingPipeline
     indexing_scheduler: IndexingJobScheduler
     lane_selector: WeightedLaneSelector
+    worker_scheduler: FairWorkerScheduler
 
     async def close(self) -> None:
         """Release process-owned database resources during Worker shutdown."""
@@ -155,21 +169,75 @@ def build_worker_dependencies(
         FixedPgVectorSpace(embedding_space),
     )
     poller = resolved_settings.job_poller
+    resolved_worker_id = worker_id or _worker_id()
+    retry_policy = RetryPolicy(
+        max_attempts=poller.max_attempts,
+        base_delay_seconds=poller.retry_base_delay_seconds,
+        max_delay_seconds=poller.retry_max_delay_seconds,
+    )
+    vector_store = PgVectorStore(
+        database.sessions,
+        FixedPgVectorSpace(embedding_space),
+    )
+    retrieval_service = RetrievalService(
+        access_policy,
+        embedding_provider,
+        vector_store,
+    )
+    evidence_assessor = EvidenceAssessmentStep(chat_model_adapter)
+    answer_generator = AnswerGenerationStep(chat_model_adapter)
+    structure_validator = AnswerStructureValidationStep(chat_model_adapter)
+    result_persister = ChatResultPersistenceStep(unit_of_work)
+    failure_settler = ChatFailureSettlementService(
+        unit_of_work,
+        max_attempts=poller.max_attempts,
+        base_delay_seconds=poller.retry_base_delay_seconds,
+        max_delay_seconds=poller.retry_max_delay_seconds,
+    )
+    chat_coordinator = ChatRunCoordinator(unit_of_work)
+    chat_pipeline = DirectChatPipeline(
+        ChatExecutionContextLoader(unit_of_work),
+        ChatEvidenceRetriever(retrieval_service),
+        evidence_assessor,
+        answer_generator,
+        structure_validator,
+        result_persister,
+        deadline_seconds=poller.chat_deadline_seconds,
+    )
+    chat_scheduler = ChatRunScheduler(
+        chat_coordinator,
+        chat_pipeline,
+        failure_settler,
+        worker_id=resolved_worker_id,
+        heartbeat_interval_seconds=poller.heartbeat_interval_seconds,
+        stale_after_seconds=poller.stale_after_seconds,
+        retry_policy=retry_policy,
+        reconciliation_batch_size=poller.reconciliation_batch_size,
+    )
     indexing_scheduler = IndexingJobScheduler(
         unit_of_work,
         indexing_pipeline,
-        worker_id=worker_id or _worker_id(),
+        worker_id=resolved_worker_id,
         concurrency=poller.indexing_concurrency,
         poll_interval_seconds=poller.poll_interval_seconds,
         heartbeat_interval_seconds=poller.heartbeat_interval_seconds,
         stale_after_seconds=poller.stale_after_seconds,
         deadline_seconds=poller.indexing_deadline_seconds,
-        retry_policy=RetryPolicy(
-            max_attempts=poller.max_attempts,
-            base_delay_seconds=poller.retry_base_delay_seconds,
-            max_delay_seconds=poller.retry_max_delay_seconds,
-        ),
+        retry_policy=retry_policy,
         reconciliation_batch_size=poller.reconciliation_batch_size,
+    )
+    lane_selector = WeightedLaneSelector(
+        chat_weight=poller.chat_weight,
+        indexing_weight=poller.indexing_weight,
+        aging_seconds=poller.aging_seconds,
+    )
+    worker_scheduler = FairWorkerScheduler(
+        chat_scheduler,
+        indexing_scheduler,
+        lane_selector,
+        chat_concurrency=poller.chat_concurrency,
+        indexing_concurrency=poller.indexing_concurrency,
+        poll_interval_seconds=poller.poll_interval_seconds,
     )
     return WorkerDependencies(
         settings=resolved_settings,
@@ -196,24 +264,21 @@ def build_worker_dependencies(
             ),
         ),
         document_processor=document_processor,
+        embedding_provider=embedding_provider,
+        vector_store=vector_store,
+        retrieval_service=retrieval_service,
         chat_model_adapter=chat_model_adapter,
-        evidence_assessor=EvidenceAssessmentStep(chat_model_adapter),
-        answer_generator=AnswerGenerationStep(chat_model_adapter),
-        structure_validator=AnswerStructureValidationStep(chat_model_adapter),
-        result_persister=ChatResultPersistenceStep(unit_of_work),
-        failure_settler=ChatFailureSettlementService(
-            unit_of_work,
-            max_attempts=poller.max_attempts,
-            base_delay_seconds=poller.retry_base_delay_seconds,
-            max_delay_seconds=poller.retry_max_delay_seconds,
-        ),
+        evidence_assessor=evidence_assessor,
+        answer_generator=answer_generator,
+        structure_validator=structure_validator,
+        result_persister=result_persister,
+        failure_settler=failure_settler,
+        chat_pipeline=chat_pipeline,
+        chat_scheduler=chat_scheduler,
         indexing_pipeline=indexing_pipeline,
         indexing_scheduler=indexing_scheduler,
-        lane_selector=WeightedLaneSelector(
-            chat_weight=poller.chat_weight,
-            indexing_weight=poller.indexing_weight,
-            aging_seconds=poller.aging_seconds,
-        ),
+        lane_selector=lane_selector,
+        worker_scheduler=worker_scheduler,
     )
 
 

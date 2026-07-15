@@ -53,6 +53,7 @@ from rag_kb.services import (
     ChatTerminalWatcher,
     KnowledgeBaseService,
 )
+from rag_kb.scheduling import ChatRunScheduler, RetryPolicy
 from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWorkFactory
 from rag_kb.uow import execute_in_transaction
 
@@ -623,6 +624,94 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item.status for item in results], ["failed"])
         self.assertEqual(self.database.engine.pool.checkedout(), 0)
 
+    async def test_chat_scheduler_claims_and_completes_independently(self) -> None:
+        kb = await self._create_kb("scheduled-chat")
+        session = await self.chat.create_session(self.context, kb_id=kb.id, title=None)
+        created = await self._create_run(session.id, kb.id, uuid4())
+        coordinator = _CountingCoordinator(ChatRunCoordinator(self.factory))
+        pipeline = _PersistingPipeline(self.factory)
+        scheduler = ChatRunScheduler(
+            coordinator,
+            pipeline,
+            ChatFailureSettlementService(
+                self.factory,
+                max_attempts=3,
+                base_delay_seconds=1,
+                max_delay_seconds=4,
+            ),
+            worker_id="worker-scheduled-chat",
+            heartbeat_interval_seconds=0.005,
+            stale_after_seconds=1,
+            retry_policy=RetryPolicy(3, 1, 4),
+            reconciliation_batch_size=10,
+        )
+
+        self.assertIsNotNone(await scheduler.oldest_claimable_at())
+        lease = await scheduler.claim_once()
+        self.assertIsNotNone(lease)
+        await scheduler.execute(lease, asyncio.Event())
+
+        terminal = await self.chat.get_run(self.context, created.id)
+        self.assertEqual(terminal.status, "completed")
+        self.assertEqual(terminal.assistant_status, "completed")
+        self.assertEqual(terminal.assistant_content, "无法基于当前证据回答。")
+        self.assertGreaterEqual(coordinator.heartbeats, 1)
+        self.assertEqual(self.database.engine.pool.checkedout(), 0)
+
+    async def test_stale_chat_reconciliation_requeues_then_exhausts(self) -> None:
+        kb = await self._create_kb("stale-chat")
+        session = await self.chat.create_session(self.context, kb_id=kb.id, title=None)
+        created = await self._create_run(session.id, kb.id, uuid4())
+        coordinator = ChatRunCoordinator(self.factory)
+        started_at = datetime.now(UTC)
+        first = await coordinator.claim(
+            worker_id="worker-stale",
+            observed_at=started_at,
+            max_attempts=2,
+        )
+        observed_at = started_at + timedelta(seconds=10)
+
+        first_result = await coordinator.reconcile_stale(
+            stale_before=observed_at - timedelta(seconds=1),
+            observed_at=observed_at,
+            max_attempts=2,
+            retry_at_by_attempt=(
+                observed_at + timedelta(seconds=1),
+                observed_at + timedelta(seconds=2),
+            ),
+            limit=10,
+        )
+        self.assertEqual((first_result.requeued, first_result.failed), (1, 0))
+        second = await coordinator.claim(
+            worker_id="worker-stale",
+            observed_at=observed_at + timedelta(seconds=2),
+            max_attempts=2,
+        )
+        self.assertEqual(second.attempt, 2)
+        finished_at = observed_at + timedelta(seconds=5)
+        second_result = await coordinator.reconcile_stale(
+            stale_before=finished_at,
+            observed_at=finished_at,
+            max_attempts=2,
+            retry_at_by_attempt=(
+                finished_at + timedelta(seconds=1),
+                finished_at + timedelta(seconds=2),
+            ),
+            limit=10,
+        )
+
+        self.assertEqual((second_result.requeued, second_result.failed), (0, 1))
+        terminal = await self.chat.get_run(self.context, created.id)
+        self.assertEqual(terminal.status, "failed")
+        self.assertEqual(terminal.assistant_status, "failed")
+        self.assertEqual(terminal.error_code, "CHAT_STALE_WORKER")
+        self.assertTrue(terminal.error_retryable)
+        self.assertEqual(
+            set(terminal.timing["attempts"]),
+            {"1", "2"},
+        )
+        self.assertEqual(self.database.engine.pool.checkedout(), 0)
+
     async def test_retry_then_exhausted_failure_accumulates_attempt_ledgers(
         self,
     ) -> None:
@@ -915,6 +1004,36 @@ def _refusal_state(context) -> ChatPipelineState:
             validation=AnswerValidationRecord(initial_issues=()),
         ),
     )
+
+
+class _PersistingPipeline:
+    def __init__(self, factory) -> None:
+        self.factory = factory
+
+    async def execute(self, command):
+        context = await ChatExecutionContextLoader(self.factory).load(command)
+        await asyncio.sleep(0.02)
+        state = _refusal_state(context)
+        return await ChatResultPersistenceStep(self.factory).run(state)
+
+
+class _CountingCoordinator:
+    def __init__(self, coordinator) -> None:
+        self.coordinator = coordinator
+        self.heartbeats = 0
+
+    async def oldest_claimable_at(self, **values):
+        return await self.coordinator.oldest_claimable_at(**values)
+
+    async def claim(self, **values):
+        return await self.coordinator.claim(**values)
+
+    async def heartbeat(self, lease, **values):
+        self.heartbeats += 1
+        return await self.coordinator.heartbeat(lease, **values)
+
+    async def reconcile_stale(self, **values):
+        return await self.coordinator.reconcile_stale(**values)
 
 
 if __name__ == "__main__":

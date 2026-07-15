@@ -56,23 +56,21 @@ async def serve() -> None:
                 settings.file_store.reconciliation_interval_seconds,
             )
         )
-        scheduler = asyncio.create_task(
-            dependencies.indexing_scheduler.run(stopped)
-        )
+        scheduler = asyncio.create_task(dependencies.worker_scheduler.run(stopped))
         log_event(
             LOGGER,
-            "indexing_scheduler_started",
+            "worker_scheduler_started",
             process="worker",
             queue_backend="postgresql",
-            lane="indexing",
+            lane="chat,indexing",
         )
         await stopped.wait()
         await asyncio.gather(janitor, scheduler)
         log_event(
             LOGGER,
-            "indexing_scheduler_stopped",
+            "worker_scheduler_stopped",
             process="worker",
-            lane="indexing",
+            lane="chat,indexing",
         )
     finally:
         await dependencies.close()

@@ -62,6 +62,28 @@ class SqlAlchemyIndexingRepository:
         self._workspace_id = workspace_id
         self._ensure_active = ensure_active
 
+    async def oldest_claimable_at(
+        self, *, observed_at: datetime, max_attempts: int
+    ) -> datetime | None:
+        self._ensure_active()
+        if max_attempts < 1:
+            raise ValueError("max_attempts must be positive")
+        return await self._session.scalar(
+            select(IndexingJobRow.created_at)
+            .join(
+                IndexedDocumentVersionRow,
+                IndexedDocumentVersionRow.id
+                == IndexingJobRow.indexed_document_version_id,
+            )
+            .where(
+                IndexingJobRow.workspace_id == self._workspace_id,
+                IndexedDocumentVersionRow.workspace_id == self._workspace_id,
+                *_claimable_job(observed_at, max_attempts),
+            )
+            .order_by(IndexingJobRow.created_at, IndexingJobRow.id)
+            .limit(1)
+        )
+
     async def get_job(self, job_id: UUID) -> IndexingJobSnapshot | None:
         self._ensure_active()
         row = await self._job_row(job_id)
@@ -347,27 +369,7 @@ class SqlAlchemyIndexingRepository:
                 .where(
                     IndexingJobRow.workspace_id == self._workspace_id,
                     IndexedDocumentVersionRow.workspace_id == self._workspace_id,
-                    or_(
-                        and_(
-                            IndexingJobRow.status == JobStatus.QUEUED,
-                            IndexingJobRow.attempt < max_attempts,
-                            or_(
-                                IndexingJobRow.next_attempt_at.is_(None),
-                                IndexingJobRow.next_attempt_at <= observed_at,
-                            ),
-                            IndexedDocumentVersionRow.build_status.in_(
-                                (IndexBuildStatus.QUEUED, IndexBuildStatus.FAILED)
-                            ),
-                        ),
-                        and_(
-                            IndexingJobRow.status == JobStatus.COMPLETED,
-                            IndexingJobRow.claimed_by.is_(None),
-                            IndexedDocumentVersionRow.build_status
-                            == IndexBuildStatus.READY,
-                        ),
-                    ),
-                    IndexedDocumentVersionRow.serving_status
-                    == IndexServingStatus.CANDIDATE,
+                    *_claimable_job(observed_at, max_attempts),
                 )
                 .order_by(
                     IndexingJobRow.next_attempt_at.asc().nullsfirst(),
@@ -1200,6 +1202,34 @@ def _owned(lease: IndexingLease, workspace_id: UUID) -> tuple[Any, ...]:
         == lease.indexed_document_version_id,
         IndexingJobRow.claimed_by == lease.claimed_by,
         IndexingJobRow.attempt == lease.attempt,
+    )
+
+
+def _claimable_job(
+    observed_at: datetime,
+    max_attempts: int,
+) -> tuple[Any, ...]:
+    return (
+        or_(
+            and_(
+                IndexingJobRow.status == JobStatus.QUEUED,
+                IndexingJobRow.attempt < max_attempts,
+                or_(
+                    IndexingJobRow.next_attempt_at.is_(None),
+                    IndexingJobRow.next_attempt_at <= observed_at,
+                ),
+                IndexedDocumentVersionRow.build_status.in_(
+                    (IndexBuildStatus.QUEUED, IndexBuildStatus.FAILED)
+                ),
+            ),
+            and_(
+                IndexingJobRow.status == JobStatus.COMPLETED,
+                IndexingJobRow.claimed_by.is_(None),
+                IndexedDocumentVersionRow.build_status == IndexBuildStatus.READY,
+            ),
+        ),
+        IndexedDocumentVersionRow.serving_status
+        == IndexServingStatus.CANDIDATE,
     )
 
 

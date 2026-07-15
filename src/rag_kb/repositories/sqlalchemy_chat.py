@@ -30,8 +30,10 @@ from rag_kb.domain import (
     ChatTerminalSuccessCommand,
     ChatTerminalWriteStatus,
     ChatSession,
+    ErrorCode,
     IdempotencyScope,
     Page,
+    ReconciliationResult,
 )
 
 
@@ -46,6 +48,25 @@ class SqlAlchemyChatRepository:
         self._workspace_id = workspace_id
         self._ensure_active = ensure_active
 
+    async def oldest_claimable_at(
+        self, *, observed_at: datetime, max_attempts: int
+    ) -> datetime | None:
+        self._ensure_active()
+        if max_attempts < 1:
+            raise ValueError("max_attempts must be positive")
+        return await self._session.scalar(
+            select(ChatRunRow.created_at)
+            .where(
+                *_claimable_run(
+                    observed_at,
+                    max_attempts,
+                    self._workspace_id,
+                )
+            )
+            .order_by(ChatRunRow.created_at, ChatRunRow.id)
+            .limit(1)
+        )
+
     async def claim_run(
         self, *, worker_id: str, observed_at: datetime, max_attempts: int
     ) -> ChatRunLease | None:
@@ -54,15 +75,7 @@ class SqlAlchemyChatRepository:
             raise ValueError("worker_id and max_attempts must be valid")
         row = await self._session.scalar(
             select(ChatRunRow)
-            .where(
-                ChatRunRow.workspace_id == self._workspace_id,
-                ChatRunRow.status == ChatRunStatus.QUEUED,
-                ChatRunRow.attempt < max_attempts,
-                or_(
-                    ChatRunRow.next_attempt_at.is_(None),
-                    ChatRunRow.next_attempt_at <= observed_at,
-                ),
-            )
+            .where(*_claimable_run(observed_at, max_attempts, self._workspace_id))
             .order_by(
                 ChatRunRow.next_attempt_at.asc().nullsfirst(),
                 ChatRunRow.created_at.asc(),
@@ -90,6 +103,90 @@ class SqlAlchemyChatRepository:
             attempt=row.attempt,
             claimed_at=observed_at,
         )
+
+    async def reconcile_stale_runs(
+        self,
+        *,
+        stale_before: datetime,
+        observed_at: datetime,
+        max_attempts: int,
+        retry_at_by_attempt: tuple[datetime, ...],
+        limit: int,
+    ) -> ReconciliationResult:
+        self._ensure_active()
+        if max_attempts < 1 or limit < 1:
+            raise ValueError("reconciliation limits must be positive")
+        if len(retry_at_by_attempt) < max_attempts:
+            raise ValueError("retry schedule must cover every configured attempt")
+        rows = (
+            await self._session.execute(
+                select(ChatRunRow, ChatMessageRow)
+                .join(
+                    ChatMessageRow,
+                    (ChatMessageRow.chat_run_id == ChatRunRow.id)
+                    & (ChatMessageRow.role == ChatMessageRole.ASSISTANT),
+                )
+                .where(
+                    ChatRunRow.workspace_id == self._workspace_id,
+                    ChatMessageRow.workspace_id == self._workspace_id,
+                    ChatRunRow.status == ChatRunStatus.RUNNING,
+                    ChatRunRow.heartbeat_at <= stale_before,
+                )
+                .order_by(ChatRunRow.heartbeat_at, ChatRunRow.id)
+                .limit(limit)
+                .with_for_update(
+                    of=(ChatRunRow, ChatMessageRow),
+                    skip_locked=True,
+                )
+            )
+        ).all()
+        requeued = 0
+        failed = 0
+        for run, assistant in rows:
+            claimed_at = run.claimed_at or run.created_at
+            exhausted = run.attempt >= max_attempts
+            next_attempt_at = (
+                None
+                if exhausted
+                else retry_at_by_attempt[run.attempt - 1]
+            )
+            result = "failed" if exhausted else "requeued"
+            record = {
+                "result": result,
+                "phase": "load_context",
+                "error_code": ErrorCode.CHAT_STALE_WORKER.value,
+                "retryable": True,
+                "exhausted": exhausted,
+                "diagnostic": {"check": "stale_heartbeat"},
+                "claimed_by": run.claimed_by or "unknown",
+                "claimed_at": claimed_at.isoformat(),
+                "finished_at": observed_at.isoformat(),
+                "duration_ms": _duration_ms(claimed_at, observed_at),
+            }
+            run.timing = _merge_timing(run.timing, run.attempt, record)
+            run.status = (
+                ChatRunStatus.FAILED if exhausted else ChatRunStatus.QUEUED
+            )
+            run.error_code = ErrorCode.CHAT_STALE_WORKER.value
+            run.error_detail = {"check": "stale_heartbeat"}
+            run.error_retryable = True
+            run.next_attempt_at = next_attempt_at
+            run.claimed_by = None
+            run.claimed_at = None
+            run.heartbeat_at = None
+            run.completed_at = observed_at if exhausted else None
+            assistant.content = ""
+            assistant.assistant_status = (
+                AssistantMessageStatus.FAILED
+                if exhausted
+                else AssistantMessageStatus.GENERATING
+            )
+            if exhausted:
+                failed += 1
+            else:
+                requeued += 1
+        await self._session.flush()
+        return ReconciliationResult(requeued=requeued, failed=failed)
 
     async def complete_owned_run(
         self, command: ChatTerminalSuccessCommand
@@ -581,6 +678,7 @@ class SqlAlchemyChatRepository:
         await self._session.flush()
         return _run(run, assistant)
 
+
 def _run_statement():
     return (
         select(ChatRunRow, ChatMessageRow, CitationRow)
@@ -595,6 +693,22 @@ def _run_statement():
             & (CitationRow.workspace_id == ChatRunRow.workspace_id),
         )
         .order_by(CitationRow.ordinal)
+    )
+
+
+def _claimable_run(
+    observed_at: datetime,
+    max_attempts: int,
+    workspace_id: UUID,
+):
+    return (
+        ChatRunRow.workspace_id == workspace_id,
+        ChatRunRow.status == ChatRunStatus.QUEUED,
+        ChatRunRow.attempt < max_attempts,
+        or_(
+            ChatRunRow.next_attempt_at.is_(None),
+            ChatRunRow.next_attempt_at <= observed_at,
+        ),
     )
 
 

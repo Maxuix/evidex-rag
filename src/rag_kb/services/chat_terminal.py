@@ -139,6 +139,8 @@ _RETRYABLE_CODES = frozenset(
         ErrorCode.CHAT_ASSESSMENT_INVALID,
         ErrorCode.CHAT_PIPELINE_DEADLINE_EXCEEDED,
         ErrorCode.CHAT_PERSISTENCE_FAILED,
+        ErrorCode.CHAT_STALE_WORKER,
+        ErrorCode.CHAT_WORKER_STOPPED,
     }
 )
 _SAFE_DIAGNOSTIC_KEYS = frozenset(

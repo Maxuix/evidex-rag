@@ -15,6 +15,7 @@ from apps.worker.dependencies import build_worker_dependencies
 from rag_kb.config import StartupConfigurationError, validate_startup_environment
 from rag_kb.config.settings import Settings, load_settings
 from rag_kb.db import DatabaseProcess
+from rag_kb.domain import WorkLane
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -83,6 +84,8 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.job_poller.required_worker_connections, 7)
         self.assertEqual(settings.job_poller.indexing_deadline_seconds, 900)
         self.assertEqual(settings.job_poller.chat_deadline_seconds, 120)
+        self.assertEqual(settings.job_poller.chat_start_target_seconds, 2.0)
+        self.assertEqual(settings.database.required_api_connections, 3)
         self.assertEqual(settings.chat_delivery.poll_interval_seconds, 1.0)
         self.assertEqual(settings.chat_delivery.jitter_ratio, 0.2)
         self.assertEqual(
@@ -137,6 +140,17 @@ class SettingsTests(unittest.TestCase):
                     **{
                         **payload,
                         "job_poller": {"stale_after_seconds": 20},
+                    },
+                )
+            with self.assertRaises(ValidationError):
+                Settings(
+                    _env_file=None,
+                    **{
+                        **payload,
+                        "job_poller": {
+                            "poll_interval_seconds": 2,
+                            "chat_start_target_seconds": 1,
+                        },
                     },
                 )
             with self.assertRaises(ValidationError):
@@ -239,6 +253,13 @@ class SettingsTests(unittest.TestCase):
             assert isinstance(database, dict)
             database["api_pool_size"] = 30
             database["worker_pool_size"] = 30
+            with self.assertRaises(ValidationError):
+                Settings(_env_file=None, **{**payload, "database": database})
+
+            database = copy.deepcopy(payload["database"])
+            assert isinstance(database, dict)
+            database["api_pool_size"] = 1
+            database["api_max_overflow"] = 0
             with self.assertRaises(ValidationError):
                 Settings(_env_file=None, **{**payload, "database": database})
 
@@ -413,6 +434,20 @@ class StartupValidationTests(unittest.TestCase):
             self.assertIs(
                 worker.failure_settler._unit_of_work,
                 worker.unit_of_work,
+            )
+            self.assertIs(
+                worker.chat_pipeline._evidence_retriever._retrieval,
+                worker.retrieval_service,
+            )
+            self.assertIs(
+                worker.chat_scheduler._pipeline,
+                worker.chat_pipeline,
+            )
+            self.assertIs(
+                worker.worker_scheduler._schedulers[
+                    WorkLane.CHAT
+                ],
+                worker.chat_scheduler,
             )
             self.assertEqual(
                 api.access_policy.metadata_filter(api_context).workspace_id,
