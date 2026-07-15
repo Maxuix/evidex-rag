@@ -39,6 +39,8 @@ from rag_kb.scheduling import (
 from rag_kb.services import (
     AnswerGenerationStep,
     AnswerStructureValidationStep,
+    ChatFailureSettlementService,
+    ChatResultPersistenceStep,
     EvidenceAssessmentStep,
     FileReconciliationService,
     ParserLimits,
@@ -65,6 +67,8 @@ class WorkerDependencies:
     evidence_assessor: EvidenceAssessmentStep
     answer_generator: AnswerGenerationStep
     structure_validator: AnswerStructureValidationStep
+    result_persister: ChatResultPersistenceStep
+    failure_settler: ChatFailureSettlementService
     indexing_pipeline: IndexingPipeline
     indexing_scheduler: IndexingJobScheduler
     lane_selector: WeightedLaneSelector
@@ -196,6 +200,13 @@ def build_worker_dependencies(
         evidence_assessor=EvidenceAssessmentStep(chat_model_adapter),
         answer_generator=AnswerGenerationStep(chat_model_adapter),
         structure_validator=AnswerStructureValidationStep(chat_model_adapter),
+        result_persister=ChatResultPersistenceStep(unit_of_work),
+        failure_settler=ChatFailureSettlementService(
+            unit_of_work,
+            max_attempts=poller.max_attempts,
+            base_delay_seconds=poller.retry_base_delay_seconds,
+            max_delay_seconds=poller.retry_max_delay_seconds,
+        ),
         indexing_pipeline=indexing_pipeline,
         indexing_scheduler=indexing_scheduler,
         lane_selector=WeightedLaneSelector(

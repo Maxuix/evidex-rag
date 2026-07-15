@@ -155,9 +155,16 @@ class DirectChatPipeline:
 
     async def execute(self, command: ChatExecutionCommand) -> ChatPipelineState:
         phase = ChatPipelinePhase.LOAD_CONTEXT
+        state: ChatPipelineState | None = None
         try:
             async with asyncio.timeout(self._deadline_seconds):
                 context = await self._context_loader.load(command)
+                if context.lease != command.lease:
+                    raise ChatPipelineExecutionError(
+                        ErrorCode.CHAT_CONTEXT_INVALID,
+                        phase=ChatPipelinePhase.LOAD_CONTEXT,
+                        diagnostic={"check": "claimed_lease"},
+                    )
                 phase = ChatPipelinePhase.RETRIEVE_EVIDENCE
                 pack = await self._evidence_retriever.retrieve(context)
                 state = ChatPipelineState(context=context, evidence_pack=pack)
@@ -171,16 +178,24 @@ class DirectChatPipeline:
                         raise TypeError("chat pipeline step changed frozen inputs")
                 return state
         except TimeoutError as error:
-            raise ChatPipelineExecutionError(
+            failure = ChatPipelineExecutionError(
                 ErrorCode.CHAT_PIPELINE_DEADLINE_EXCEEDED,
                 phase=phase,
                 diagnostic={"check": "task_deadline"},
-            ) from error
-        except ChatPipelineExecutionError:
+            )
+            if state is not None and state.answering is not None:
+                failure.retain_model_calls(state.answering.model_calls)
+            raise failure from error
+        except ChatPipelineExecutionError as error:
+            if state is not None and state.answering is not None:
+                error.retain_model_calls(state.answering.model_calls)
             raise
         except Exception as error:
-            raise ChatPipelineExecutionError(
+            failure = ChatPipelineExecutionError(
                 ErrorCode.CHAT_PIPELINE_STEP_FAILED,
                 phase=phase,
                 diagnostic={"check": "step_contract"},
-            ) from error
+            )
+            if state is not None and state.answering is not None:
+                failure.retain_model_calls(state.answering.model_calls)
+            raise failure from error

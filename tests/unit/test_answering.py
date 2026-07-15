@@ -66,9 +66,18 @@ def _context(
     insufficiency: str = "refuse",
     answer_style: str = "concise",
 ) -> ChatExecutionContext:
+    run_id = uuid4()
+    workspace_id = uuid4()
     return ChatExecutionContext(
-        run_id=uuid4(),
-        workspace_id=uuid4(),
+        lease=ChatRunLease(
+            run_id=run_id,
+            workspace_id=workspace_id,
+            claimed_by="worker",
+            attempt=1,
+            claimed_at=datetime.now(UTC),
+        ),
+        run_id=run_id,
+        workspace_id=workspace_id,
         knowledge_base_id=uuid4(),
         session_id=uuid4(),
         user_message_id=uuid4(),
@@ -185,15 +194,7 @@ class AnswerPolicyRoutingTests(unittest.IsolatedAsyncioTestCase):
             _PassStep(),
             deadline_seconds=1,
         )
-        command = ChatExecutionCommand(
-            ChatRunLease(
-                run_id=context.run_id,
-                workspace_id=context.workspace_id,
-                claimed_by="worker",
-                attempt=1,
-                claimed_at=datetime.now(UTC),
-            )
-        )
+        command = ChatExecutionCommand(context.lease)
 
         result = await pipeline.execute(command)
 
@@ -371,6 +372,11 @@ class AnsweringSafetyTests(unittest.IsolatedAsyncioTestCase):
                 )
                 self.assertEqual(
                     raised.exception.phase, ChatPipelinePhase.ASSESS_EVIDENCE
+                )
+                self.assertEqual(len(raised.exception.model_calls), 1)
+                self.assertEqual(
+                    raised.exception.model_calls[0].provider_request_id,
+                    "request-1",
                 )
 
     async def test_model_drift_and_provider_content_fail_safely(self) -> None:

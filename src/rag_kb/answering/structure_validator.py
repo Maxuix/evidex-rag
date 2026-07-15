@@ -96,14 +96,16 @@ class AnswerStructureValidationStep:
                 ),
                 phase=ChatPipelinePhase.VALIDATE_STRUCTURE,
             )
-            require_frozen_model(
-                context,
-                response,
-                phase=ChatPipelinePhase.VALIDATE_STRUCTURE,
-            )
-            calls += (
-                model_call_record(ChatModelOperation.REPAIR_ANSWER, response),
-            )
+            call = model_call_record(ChatModelOperation.REPAIR_ANSWER, response)
+            try:
+                require_frozen_model(
+                    context,
+                    response,
+                    phase=ChatPipelinePhase.VALIDATE_STRUCTURE,
+                )
+            except ChatPipelineExecutionError as error:
+                raise error.retain_model_calls(calls + (call,))
+            calls += (call,)
             repaired = AnswerDraftCandidate(
                 raw_json=response.content,
                 expected_outcome=answering.draft.expected_outcome,

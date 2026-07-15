@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import Select, or_, select, text, update
+from sqlalchemy import Select, delete, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -18,12 +18,16 @@ from rag_kb.db.models import (
     ChatRun as ChatRunRow,
     ChatRunStatus,
     ChatSession as ChatSessionRow,
+    Citation as CitationRow,
 )
 from rag_kb.domain import (
     ChatExecutionContext,
+    ChatFailureSettlementCommand,
     ChatMessage,
     ChatRun,
     ChatRunLease,
+    ChatTerminalSuccessCommand,
+    ChatTerminalWriteStatus,
     ChatSession,
     IdempotencyScope,
     Page,
@@ -86,6 +90,209 @@ class SqlAlchemyChatRepository:
             claimed_at=observed_at,
         )
 
+    async def complete_owned_run(
+        self, command: ChatTerminalSuccessCommand
+    ) -> ChatTerminalWriteStatus:
+        self._ensure_active()
+        locked = await self._lock_terminal_rows(command.lease)
+        if locked is None:
+            return ChatTerminalWriteStatus.STALE
+        run, assistant = locked
+        calls = _serialized_calls(command.lease.attempt, command.model_calls)
+        validation = _serialized_validation(command)
+        stable_success = {
+            **validation,
+            "claimed_by": command.lease.claimed_by,
+            "claimed_at": command.lease.claimed_at.isoformat(),
+        }
+        citations = await self._citation_rows(assistant.id)
+
+        if run.status == ChatRunStatus.COMPLETED:
+            if (
+                assistant.id == command.assistant_message_id
+                and assistant.assistant_status == AssistantMessageStatus.COMPLETED
+                and assistant.content == command.rendered.content
+                and _citations_equal(citations, command)
+                and _stored_attempt_calls(run.usage, command.lease.attempt) == calls
+                and _stored_success_facts(run.timing, command.lease.attempt)
+                == stable_success
+            ):
+                return ChatTerminalWriteStatus.IDEMPOTENT
+            return ChatTerminalWriteStatus.STALE
+
+        if not _owns_running_lease(run, command.lease) or (
+            assistant.id != command.assistant_message_id
+            or assistant.assistant_status != AssistantMessageStatus.GENERATING
+        ):
+            return ChatTerminalWriteStatus.STALE
+        if citations:
+            return ChatTerminalWriteStatus.STALE
+
+        usage = _merge_usage(run.usage, calls)
+        timing = _merge_timing(
+            run.timing,
+            command.lease.attempt,
+            {
+                **validation,
+                "claimed_by": command.lease.claimed_by,
+                "claimed_at": command.lease.claimed_at.isoformat(),
+                "finished_at": command.finished_at.isoformat(),
+                "duration_ms": _duration_ms(
+                    command.lease.claimed_at, command.finished_at
+                ),
+            },
+        )
+        assistant.assistant_status = AssistantMessageStatus.COMPLETED
+        assistant.content = command.rendered.content
+        self._session.add_all(
+            [
+                CitationRow(
+                    workspace_id=self._workspace_id,
+                    assistant_message_id=assistant.id,
+                    ordinal=item.ordinal,
+                    index_chunk_id=item.index_chunk_id,
+                    document_id_snapshot=item.document_id,
+                    document_version_id_snapshot=item.document_version_id,
+                    quoted_text=item.quoted_text,
+                    source_location=dict(item.source_location),
+                    score=item.score,
+                )
+                for item in command.rendered.citations
+            ]
+        )
+        run.status = ChatRunStatus.COMPLETED
+        run.usage = usage
+        run.timing = timing
+        run.error_code = None
+        run.error_detail = None
+        run.error_retryable = None
+        run.next_attempt_at = None
+        run.claimed_by = None
+        run.claimed_at = None
+        run.heartbeat_at = None
+        run.completed_at = command.finished_at
+        await self._session.flush()
+        return ChatTerminalWriteStatus.APPLIED
+
+    async def settle_owned_failure(
+        self, command: ChatFailureSettlementCommand
+    ) -> ChatTerminalWriteStatus:
+        self._ensure_active()
+        locked = await self._lock_terminal_rows(command.lease)
+        if locked is None:
+            return ChatTerminalWriteStatus.STALE
+        run, assistant = locked
+        calls = _serialized_calls(command.lease.attempt, command.model_calls)
+        facts = _serialized_failure(command)
+        stable_failure = {
+            **facts,
+            "claimed_by": command.lease.claimed_by,
+            "claimed_at": command.lease.claimed_at.isoformat(),
+        }
+        expected_status = (
+            ChatRunStatus.QUEUED
+            if command.next_attempt_at is not None
+            else ChatRunStatus.FAILED
+        )
+        expected_assistant = (
+            AssistantMessageStatus.GENERATING
+            if expected_status == ChatRunStatus.QUEUED
+            else AssistantMessageStatus.FAILED
+        )
+        if run.status == expected_status:
+            if (
+                assistant.assistant_status == expected_assistant
+                and assistant.content == ""
+                and _stored_attempt_calls(run.usage, command.lease.attempt) == calls
+                and _stored_failure_facts(run.timing, command.lease.attempt)
+                == stable_failure
+            ):
+                return ChatTerminalWriteStatus.IDEMPOTENT
+            return ChatTerminalWriteStatus.STALE
+        if not _owns_running_lease(run, command.lease):
+            return ChatTerminalWriteStatus.STALE
+
+        usage = _merge_usage(run.usage, calls)
+        timing = _merge_timing(
+            run.timing,
+            command.lease.attempt,
+            {
+                **facts,
+                "claimed_by": command.lease.claimed_by,
+                "claimed_at": command.lease.claimed_at.isoformat(),
+                "finished_at": command.finished_at.isoformat(),
+                "duration_ms": _duration_ms(
+                    command.lease.claimed_at, command.finished_at
+                ),
+            },
+        )
+        await self._session.execute(
+            delete(CitationRow).where(
+                CitationRow.workspace_id == self._workspace_id,
+                CitationRow.assistant_message_id == assistant.id,
+            )
+        )
+        assistant.content = ""
+        assistant.assistant_status = expected_assistant
+        run.status = expected_status
+        run.usage = usage
+        run.timing = timing
+        run.error_code = command.code.value
+        run.error_detail = dict(command.diagnostic)
+        run.error_retryable = command.retryable
+        run.next_attempt_at = command.next_attempt_at
+        run.claimed_by = None
+        run.claimed_at = None
+        run.heartbeat_at = None
+        run.completed_at = (
+            command.finished_at if expected_status == ChatRunStatus.FAILED else None
+        )
+        await self._session.flush()
+        return ChatTerminalWriteStatus.APPLIED
+
+    async def _lock_terminal_rows(
+        self, lease: ChatRunLease
+    ) -> tuple[ChatRunRow, ChatMessageRow] | None:
+        if lease.workspace_id != self._workspace_id:
+            return None
+        run = await self._session.scalar(
+            select(ChatRunRow)
+            .where(
+                ChatRunRow.workspace_id == self._workspace_id,
+                ChatRunRow.id == lease.run_id,
+            )
+            .with_for_update()
+        )
+        if run is None:
+            return None
+        assistant = await self._session.scalar(
+            select(ChatMessageRow)
+            .where(
+                ChatMessageRow.workspace_id == self._workspace_id,
+                ChatMessageRow.chat_run_id == run.id,
+                ChatMessageRow.role == ChatMessageRole.ASSISTANT,
+            )
+            .with_for_update()
+        )
+        if assistant is None:
+            return None
+        return run, assistant
+
+    async def _citation_rows(self, assistant_message_id: UUID):
+        return tuple(
+            (
+                await self._session.scalars(
+                    select(CitationRow)
+                    .where(
+                        CitationRow.workspace_id == self._workspace_id,
+                        CitationRow.assistant_message_id == assistant_message_id,
+                    )
+                    .order_by(CitationRow.ordinal)
+                    .with_for_update()
+                )
+            ).all()
+        )
+
     async def heartbeat_run(
         self, lease: ChatRunLease, *, observed_at: datetime
     ) -> bool:
@@ -137,6 +344,7 @@ class SqlAlchemyChatRepository:
         if run.effective_policy is None:
             return None
         return ChatExecutionContext(
+            lease=lease,
             run_id=run.id,
             workspace_id=run.workspace_id,
             knowledge_base_id=run.kb_id,
@@ -378,6 +586,138 @@ def _run_statement():
             & (ChatMessageRow.role == ChatMessageRole.ASSISTANT),
         )
     )
+
+
+def _owns_running_lease(run: ChatRunRow, lease: ChatRunLease) -> bool:
+    return bool(
+        run.status == ChatRunStatus.RUNNING
+        and run.workspace_id == lease.workspace_id
+        and run.id == lease.run_id
+        and run.claimed_by == lease.claimed_by
+        and run.attempt == lease.attempt
+    )
+
+
+def _serialized_calls(attempt: int, calls) -> dict[str, dict[str, Any]]:
+    return {
+        f"{attempt}:{sequence}:{call.operation.value}": {
+            "attempt": attempt,
+            "sequence": sequence,
+            "operation": call.operation.value,
+            "model": call.model,
+            "provider_request_id": call.provider_request_id,
+            "usage": dict(call.usage),
+        }
+        for sequence, call in enumerate(calls, start=1)
+    }
+
+
+def _merge_usage(
+    stored: dict[str, Any] | None, calls: dict[str, dict[str, Any]]
+) -> dict[str, Any]:
+    existing = dict((stored or {}).get("calls", {}))
+    for key, value in calls.items():
+        if key in existing and existing[key] != value:
+            raise RuntimeError("chat model call ledger conflict")
+        existing[key] = value
+    totals: dict[str, int] = {}
+    for item in existing.values():
+        for name, value in item["usage"].items():
+            totals[name] = totals.get(name, 0) + value
+    return {"calls": existing, "totals": totals}
+
+
+def _stored_attempt_calls(
+    stored: dict[str, Any] | None, attempt: int
+) -> dict[str, dict[str, Any]]:
+    prefix = f"{attempt}:"
+    return {
+        key: value
+        for key, value in (stored or {}).get("calls", {}).items()
+        if key.startswith(prefix)
+    }
+
+
+def _merge_timing(
+    stored: dict[str, Any] | None, attempt: int, record: dict[str, Any]
+) -> dict[str, Any]:
+    attempts = dict((stored or {}).get("attempts", {}))
+    key = str(attempt)
+    if key in attempts and attempts[key] != record:
+        raise RuntimeError("chat attempt timing ledger conflict")
+    attempts[key] = record
+    return {"attempts": attempts}
+
+
+def _serialized_validation(command: ChatTerminalSuccessCommand) -> dict[str, Any]:
+    validation = command.validation
+    return {
+        "result": "completed",
+        "phase": "persist_result",
+        "outcome": command.rendered.outcome.value,
+        "citation_ids": [item.citation_id for item in command.rendered.citations],
+        "validation": {
+            "initial_issues": [item.value for item in validation.initial_issues],
+            "repair_issues": [item.value for item in validation.repair_issues],
+            "repair_attempted": validation.repair_attempted,
+            "repair_succeeded": validation.repair_succeeded,
+            "safe_fallback": validation.safe_fallback,
+        },
+    }
+
+
+def _serialized_failure(command: ChatFailureSettlementCommand) -> dict[str, Any]:
+    return {
+        "result": "requeued" if command.next_attempt_at is not None else "failed",
+        "phase": command.phase.value,
+        "error_code": command.code.value,
+        "retryable": command.retryable,
+        "exhausted": command.exhausted,
+        "diagnostic": dict(command.diagnostic),
+    }
+
+
+def _stable_attempt_facts(
+    stored: dict[str, Any] | None, attempt: int
+) -> dict[str, Any] | None:
+    record = (stored or {}).get("attempts", {}).get(str(attempt))
+    if record is None:
+        return None
+    return {
+        key: value
+        for key, value in record.items()
+        if key not in {"finished_at", "duration_ms"}
+    }
+
+
+def _stored_success_facts(
+    stored: dict[str, Any] | None, attempt: int
+) -> dict[str, Any] | None:
+    return _stable_attempt_facts(stored, attempt)
+
+
+def _stored_failure_facts(
+    stored: dict[str, Any] | None, attempt: int
+) -> dict[str, Any] | None:
+    return _stable_attempt_facts(stored, attempt)
+
+
+def _citations_equal(rows, command: ChatTerminalSuccessCommand) -> bool:
+    expected = command.rendered.citations
+    return len(rows) == len(expected) and all(
+        row.ordinal == item.ordinal
+        and row.index_chunk_id == item.index_chunk_id
+        and row.document_id_snapshot == item.document_id
+        and row.document_version_id_snapshot == item.document_version_id
+        and row.quoted_text == item.quoted_text
+        and row.source_location == dict(item.source_location)
+        and row.score == item.score
+        for row, item in zip(rows, expected, strict=True)
+    )
+
+
+def _duration_ms(started_at: datetime, finished_at: datetime) -> int:
+    return max(0, round((finished_at - started_at).total_seconds() * 1000))
 
 
 def _with_after(

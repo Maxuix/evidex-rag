@@ -58,17 +58,19 @@ class EvidenceAssessmentStep:
                 build_assessment_request(context, evidence),
                 phase=ChatPipelinePhase.ASSESS_EVIDENCE,
             )
-            require_frozen_model(
-                context, response, phase=ChatPipelinePhase.ASSESS_EVIDENCE
-            )
-            assessment = _parse_assessment(response.content, evidence)
+            call = model_call_record(ChatModelOperation.ASSESS_EVIDENCE, response)
+            try:
+                require_frozen_model(
+                    context, response, phase=ChatPipelinePhase.ASSESS_EVIDENCE
+                )
+                assessment = _parse_assessment(response.content, evidence)
+            except ChatPipelineExecutionError as error:
+                raise error.retain_model_calls((call,))
             answering = ChatAnsweringState(
                 evidence=evidence,
                 assessment=assessment,
                 model_calls=(
-                    model_call_record(
-                        ChatModelOperation.ASSESS_EVIDENCE, response
-                    ),
+                    call,
                 ),
             )
         return ChatPipelineState(
@@ -108,16 +110,20 @@ class AnswerGenerationStep:
                 ),
                 phase=ChatPipelinePhase.GENERATE_OR_REFUSE,
             )
-            require_frozen_model(
-                context, response, phase=ChatPipelinePhase.GENERATE_OR_REFUSE
-            )
+            call = model_call_record(ChatModelOperation.GENERATE_ANSWER, response)
+            try:
+                require_frozen_model(
+                    context, response, phase=ChatPipelinePhase.GENERATE_OR_REFUSE
+                )
+            except ChatPipelineExecutionError as error:
+                raise error.retain_model_calls(answering.model_calls + (call,))
             draft = AnswerDraftCandidate(
                 raw_json=response.content,
                 expected_outcome=route,
                 source=AnswerDraftSource.PROVIDER,
             )
             calls = answering.model_calls + (
-                model_call_record(ChatModelOperation.GENERATE_ANSWER, response),
+                call,
             )
         return ChatPipelineState(
             context=context,

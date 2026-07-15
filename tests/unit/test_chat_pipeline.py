@@ -30,9 +30,18 @@ from rag_kb.workflows import DirectGraphRunner, GraphRunner
 
 
 def context() -> ChatExecutionContext:
+    run_id = uuid4()
+    workspace_id = uuid4()
     return ChatExecutionContext(
-        run_id=uuid4(),
-        workspace_id=uuid4(),
+        lease=ChatRunLease(
+            run_id=run_id,
+            workspace_id=workspace_id,
+            claimed_by="worker",
+            attempt=1,
+            claimed_at=datetime.now(UTC),
+        ),
+        run_id=run_id,
+        workspace_id=workspace_id,
         knowledge_base_id=uuid4(),
         session_id=uuid4(),
         user_message_id=uuid4(),
@@ -109,15 +118,7 @@ class DirectPipelineTests(unittest.IsolatedAsyncioTestCase):
         )
         runner = DirectGraphRunner(pipeline)
         self.assertIsInstance(runner, GraphRunner)
-        command = ChatExecutionCommand(
-            ChatRunLease(
-                run_id=execution_context.run_id,
-                workspace_id=execution_context.workspace_id,
-                claimed_by="worker",
-                attempt=1,
-                claimed_at=datetime.now(UTC),
-            )
-        )
+        command = ChatExecutionCommand(execution_context.lease)
 
         result = await runner.run(command)
 
@@ -149,15 +150,7 @@ class DirectPipelineTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaises(ChatPipelineExecutionError) as raised:
             await pipeline.execute(
-                ChatExecutionCommand(
-                    ChatRunLease(
-                        execution_context.run_id,
-                        execution_context.workspace_id,
-                        "worker",
-                        1,
-                        datetime.now(UTC),
-                    )
-                )
+                ChatExecutionCommand(execution_context.lease)
             )
 
         self.assertEqual(raised.exception.code, ErrorCode.CHAT_PIPELINE_STEP_FAILED)
@@ -208,13 +201,7 @@ class DirectPipelineTests(unittest.IsolatedAsyncioTestCase):
             _Step("persist_result", events),
             deadline_seconds=0.001,
         )
-        lease = ChatRunLease(
-            execution_context.run_id,
-            execution_context.workspace_id,
-            "worker",
-            1,
-            datetime.now(UTC),
-        )
+        lease = execution_context.lease
 
         with self.assertRaises(ChatPipelineExecutionError) as raised:
             await pipeline.execute(ChatExecutionCommand(lease))

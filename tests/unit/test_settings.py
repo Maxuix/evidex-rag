@@ -382,6 +382,14 @@ class StartupValidationTests(unittest.TestCase):
                 worker.structure_validator._model,
                 worker.chat_model_adapter,
             )
+            self.assertIs(
+                worker.result_persister._unit_of_work,
+                worker.unit_of_work,
+            )
+            self.assertIs(
+                worker.failure_settler._unit_of_work,
+                worker.unit_of_work,
+            )
             self.assertEqual(
                 api.access_policy.metadata_filter(api_context).workspace_id,
                 api_context.workspace_id,

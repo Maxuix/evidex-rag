@@ -40,6 +40,10 @@ from rag_kb.services.chat_pipeline import (
     ChatRunCoordinator,
     DirectChatPipeline,
 )
+from rag_kb.services.chat_terminal import (
+    ChatFailureSettlementService,
+    ChatResultPersistenceStep,
+)
 from rag_kb.services.evaluation import EvaluationPersistenceService
 from rag_kb.services.files import FileReconciliationService, SourceFileService
 from rag_kb.services.indexing import IndexingJobService
@@ -58,6 +62,8 @@ __all__ = [
     "ChatPipelineStep",
     "ChatRunCoordinator",
     "DirectChatPipeline",
+    "ChatFailureSettlementService",
+    "ChatResultPersistenceStep",
     "ChatMessage",
     "ChatRun",
     "ChatSession",

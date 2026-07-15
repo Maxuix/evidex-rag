@@ -8,9 +8,12 @@ from uuid import UUID
 
 from rag_kb.domain import (
     ChatExecutionContext,
+    ChatFailureSettlementCommand,
     ChatMessage,
     ChatRun,
     ChatRunLease,
+    ChatTerminalSuccessCommand,
+    ChatTerminalWriteStatus,
     ChatSession,
     IdempotencyScope,
     Page,
@@ -19,6 +22,14 @@ from rag_kb.domain import (
 
 @runtime_checkable
 class ChatRepository(Protocol):
+    async def complete_owned_run(
+        self, command: ChatTerminalSuccessCommand
+    ) -> ChatTerminalWriteStatus: ...
+
+    async def settle_owned_failure(
+        self, command: ChatFailureSettlementCommand
+    ) -> ChatTerminalWriteStatus: ...
+
     async def claim_run(
         self, *, worker_id: str, observed_at: datetime, max_attempts: int
     ) -> ChatRunLease | None: ...

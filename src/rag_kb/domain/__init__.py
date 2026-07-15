@@ -63,6 +63,11 @@ from rag_kb.domain.chat_pipeline import (
     ChatPipelineState,
     ChatRunLease,
 )
+from rag_kb.domain.chat_terminal import (
+    ChatFailureSettlementCommand,
+    ChatTerminalSuccessCommand,
+    ChatTerminalWriteStatus,
+)
 from rag_kb.domain.errors import ErrorCode
 from rag_kb.domain.evaluation import (
     EvaluationCaseDefinition,
@@ -170,6 +175,9 @@ __all__ = [
     "ChatPipelinePhase",
     "ChatPipelineState",
     "ChatRunLease",
+    "ChatFailureSettlementCommand",
+    "ChatTerminalSuccessCommand",
+    "ChatTerminalWriteStatus",
     "ContentLifecycleError",
     "AdmittedFile",
     "AdmissionLimits",

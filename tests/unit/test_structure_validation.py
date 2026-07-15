@@ -72,9 +72,18 @@ class _PassStep:
 
 
 def _context() -> ChatExecutionContext:
+    run_id = uuid4()
+    workspace_id = uuid4()
     return ChatExecutionContext(
-        run_id=uuid4(),
-        workspace_id=uuid4(),
+        lease=ChatRunLease(
+            run_id=run_id,
+            workspace_id=workspace_id,
+            claimed_by="worker",
+            attempt=1,
+            claimed_at=datetime.now(UTC),
+        ),
+        run_id=run_id,
+        workspace_id=workspace_id,
         knowledge_base_id=uuid4(),
         session_id=uuid4(),
         user_message_id=uuid4(),
@@ -501,6 +510,14 @@ class StructureValidationTests(unittest.IsolatedAsyncioTestCase):
             ).run(_state("not-json"))
         self.assertEqual(drift.exception.code, ErrorCode.CHAT_RESPONSE_INVALID)
         self.assertEqual(drift.exception.phase, ChatPipelinePhase.VALIDATE_STRUCTURE)
+        self.assertEqual(
+            drift.exception.model_calls[-1].operation,
+            ChatModelOperation.REPAIR_ANSWER,
+        )
+        self.assertEqual(
+            drift.exception.model_calls[-1].provider_request_id,
+            "repair-request",
+        )
 
         class FailedModel:
             async def complete(self, request: ChatModelRequest) -> ChatModelResponse:
@@ -540,15 +557,7 @@ class StructureValidationTests(unittest.IsolatedAsyncioTestCase):
         )
 
         result = await pipeline.execute(
-            ChatExecutionCommand(
-                ChatRunLease(
-                    run_id=context.run_id,
-                    workspace_id=context.workspace_id,
-                    claimed_by="worker",
-                    attempt=1,
-                    claimed_at=datetime.now(UTC),
-                )
-            )
+            ChatExecutionCommand(context.lease)
         )
 
         assert result.answering is not None

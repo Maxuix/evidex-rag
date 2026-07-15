@@ -10,7 +10,7 @@ from types import MappingProxyType
 from typing import Any
 from uuid import UUID
 
-from rag_kb.domain.answering import ChatAnsweringState
+from rag_kb.domain.answering import ChatAnsweringState, ChatModelCallRecord
 from rag_kb.domain.errors import ErrorCode
 from rag_kb.domain.retrieval import EvidencePack
 
@@ -48,6 +48,7 @@ class ChatExecutionCommand:
 
 @dataclass(frozen=True, slots=True)
 class ChatExecutionContext:
+    lease: ChatRunLease
     run_id: UUID
     workspace_id: UUID
     knowledge_base_id: UUID
@@ -68,6 +69,12 @@ class ChatExecutionContext:
             raise ValueError("chat query must not be empty")
         if self.attempt < 1:
             raise ValueError("attempt must be positive")
+        if (
+            self.lease.run_id != self.run_id
+            or self.lease.workspace_id != self.workspace_id
+            or self.lease.attempt != self.attempt
+        ):
+            raise ValueError("execution context must preserve its claimed lease")
         object.__setattr__(
             self, "effective_policy", _frozen_mapping(self.effective_policy)
         )
@@ -139,11 +146,22 @@ class ChatPipelineExecutionError(RuntimeError):
         *,
         phase: ChatPipelinePhase,
         diagnostic: Mapping[str, Any] | None = None,
+        model_calls: tuple[ChatModelCallRecord, ...] = (),
     ) -> None:
         super().__init__(code.value)
         self.code = code
         self.phase = phase
         self.diagnostic = dict(diagnostic or {})
+        self.model_calls = model_calls
+
+    def retain_model_calls(
+        self, calls: tuple[ChatModelCallRecord, ...]
+    ) -> ChatPipelineExecutionError:
+        """Retain completed provider calls without duplicating an existing prefix."""
+
+        if len(calls) > len(self.model_calls):
+            self.model_calls = calls
+        return self
 
 
 class ChatModelExecutionError(RuntimeError):
