@@ -5,8 +5,8 @@ evidence-grounded retrieval and answering. The current milestone is the P1A
 Core Vertical Slice. Knowledge-base/document lifecycle, bounded text upload,
 local source-file consistency, isolated parsing, retry-safe indexing execution,
 conditional current-version promotion, PostgreSQL Worker scheduling, indexing
-status/retry, and bounded local maintenance are implemented; retrieval and
-answering are still under construction.
+status/retry, exact retrieval, durable evidence-grounded answering, and a local
+public-API observation frontend are implemented.
 
 Authoritative project documents:
 
@@ -26,6 +26,7 @@ Authoritative project documents:
 - [Current-version promotion and deletion](docs/architecture/promotion-deletion.md)
 - [Single-Worker scheduling and recovery](docs/architecture/worker-scheduling.md)
 - [Indexing operations and local maintenance](docs/architecture/indexing-operations.md)
+- [Test frontend observation boundary](docs/architecture/test-frontend.md)
 
 ## Current Layout
 
@@ -66,9 +67,11 @@ already present and tested in the frozen Stage 01 resolution.
 ```bash
 PYTHONPATH=src:. .venv/bin/python tools/check_architecture.py
 .venv/bin/python tools/check_application_lock.py
+.venv/bin/python tools/check_frontend_lock.py
 PYTHONPATH=src:. .venv/bin/python -m unittest discover -s tests/unit -v
 PYTHONPATH=src:. .venv/bin/python -m unittest discover -s tests/contract -v
 PYTHONPATH=src:. .venv/bin/python tools/check_openapi_compatibility.py
+.venv/bin/python tools/check_frontend_api_contract.py
 .venv/bin/python tools/check_compose_contract.py
 PYTHONPATH=src:. .venv/bin/python tools/run_db_integration.py
 .venv/bin/python tools/run_compose_smoke.py
@@ -99,7 +102,7 @@ Run one idempotent bounded cleanup pass with:
 docker compose --profile tools run --rm maintenance
 ```
 
-The shell is then available at `http://127.0.0.1:3000`, API documentation at
+The observation frontend is then available at `http://127.0.0.1:3000`, API documentation at
 `http://127.0.0.1:8000/api/v1/docs`, and diagnostics at `/health/live` and
 `/health/ready`. Stop processes while retaining data with `docker compose down`.
 See the [local runtime guide](docs/architecture/local-runtime.md) for port
@@ -112,8 +115,8 @@ document reads/deletion, bounded `.txt`/`.md` upload, restart-safe local source
 storage, isolated transient parsing, an internal retry-safe command for durable
 Chunk/pgvector creation, and conditional promotion to one current serving
 version exist. The Worker polls PostgreSQL with bounded claims, independent
-heartbeats, deadlines, retries, and stale recovery. Indexing status and explicit
-retry are public; retrieval, chat, and business frontend screens are not yet available. It has one
-fixed development identity and provides no enterprise authentication or
+heartbeats, deadlines, retries, and stale recovery. Exact retrieval, durable
+chat/status/terminal SSE, and the Documents, Chat, and Retrieval Debug frontend
+views are public. The runtime has one fixed development identity and provides no enterprise authentication or
 authorization, durable audit system, formal backup/recovery, high availability,
 production hardening, or hostile multi-tenant isolation guarantee.

@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
   "status": "current",
-  "verified_at": "2026-07-13",
+  "verified_at": "2026-07-16",
   "tested_platform": "linux/arm64",
   "images": [
     {
@@ -17,6 +17,23 @@
       "observed_version": "Python 3.12.13",
       "tested": true,
       "test_scope": "linux/arm64 only; amd64 manifest recorded but not executed"
+    },
+    {
+      "purpose": "Stage 06 test-frontend build toolchain",
+      "repository": "docker.io/library/node",
+      "tag": "24.18.0-bookworm-slim",
+      "pinned_reference": "docker.io/library/node:24.18.0-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d",
+      "index_digest": "sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d",
+      "platform_manifests": {
+        "linux/amd64": "sha256:d45d78e7929b46875bbd4e29bea672d5bc48186c6c3588306521c815e78352d6",
+        "linux/arm64": "sha256:af01d58b748ec92b1d6e8e11429aad424fd1e68c848185399dca0596a1ab8f5c"
+      },
+      "observed_versions": {
+        "node": "24.18.0",
+        "npm": "11.16.0"
+      },
+      "tested": true,
+      "test_scope": "linux/arm64 frontend npm ci, dependency tree, audit/signature verification, type checking, 27 component/contract tests, and production build; amd64 manifest recorded but not executed"
     },
     {
       "purpose": "PostgreSQL with pgvector",

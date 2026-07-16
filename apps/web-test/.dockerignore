@@ -1,0 +1,11 @@
+node_modules
+dist
+__pycache__
+*.pyc
+README.md
+src/test
+src/**/*.test.ts
+src/**/*.test.tsx
+.env
+.env.*
+.npmrc

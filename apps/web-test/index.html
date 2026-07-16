@@ -1,27 +1,17 @@
 <!doctype html>
 <html lang="en">
   <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>RAG KB — Local Foundation</title>
-    <style>
-      :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
-      body { max-width: 48rem; margin: 10vh auto; padding: 0 1.5rem; line-height: 1.6; }
-      .status { border-left: .3rem solid #2a9d5b; padding-left: 1rem; }
-      a { margin-right: 1rem; }
-    </style>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="Local observation frontend for the enterprise knowledge base and grounded RAG pipeline."
+    />
+    <meta name="color-scheme" content="light" />
+    <title>RAG KB — Observation Studio</title>
   </head>
   <body>
-    <main>
-      <p>Enterprise Knowledge Base and RAG</p>
-      <h1>Local foundation runtime</h1>
-      <p class="status">The Stage 02 frontend shell is running.</p>
-      <p>Document, retrieval, and chat screens are intentionally deferred to Stage 06.</p>
-      <nav>
-        <a href="http://127.0.0.1:8000/health/live">API liveness</a>
-        <a href="http://127.0.0.1:8000/health/ready">API readiness</a>
-        <a href="http://127.0.0.1:8000/api/v1/docs">API docs</a>
-      </nav>
-    </main>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

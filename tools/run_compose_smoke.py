@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise a clean Stage 03 Compose start, upload, storage, and shutdown."""
+"""Exercise a clean local Compose start, frontend, upload, and shutdown."""
 
 from __future__ import annotations
 
@@ -9,9 +9,28 @@ import socket
 import subprocess
 import sys
 import time
+from http.client import HTTPMessage
+import urllib.error
 import urllib.request
 import uuid
 from pathlib import Path
+
+
+SENSITIVE_COMPOSE_ENVIRONMENT = {
+    "POSTGRES_ADMIN_PASSWORD",
+    "RAG_KB_MIGRATION_PASSWORD",
+    "RAG_KB_RUNTIME_PASSWORD",
+}
+
+
+def inherited_smoke_environment() -> dict[str, str]:
+    """Keep host tooling context without inheriting project runtime inputs."""
+
+    return {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("RAG_KB") and key not in SENSITIVE_COMPOSE_ENVIRONMENT
+    }
 
 
 def available_port() -> int:
@@ -23,10 +42,10 @@ def available_port() -> int:
 class ComposeSmoke:
     def __init__(self, root: Path) -> None:
         self.root = root
-        self.project = f"rag-kb-s03-w07-{os.getpid()}"
+        self.project = f"rag-kb-s06-w01-{os.getpid()}"
         self.embedding_stub = f"{self.project}-embedding-stub"
         self.environment = {
-            **os.environ,
+            **inherited_smoke_environment(),
             "POSTGRES_ADMIN_PASSWORD": "smoke-admin-password",
             "RAG_KB_MIGRATION_PASSWORD": "smoke-migration-password",
             "RAG_KB_RUNTIME_PASSWORD": "smoke-runtime-password",
@@ -34,6 +53,7 @@ class ComposeSmoke:
             "RAG_KB_API_PORT": str(available_port()),
             "RAG_KB_FRONTEND_PORT": str(available_port()),
             "RAG_KB_SMOKE_EMBEDDING_HOST": self.embedding_stub,
+            "RAG_KB_ENV_FILE": ".env.example",
         }
         self.base = [
             "docker",
@@ -67,13 +87,34 @@ class ComposeSmoke:
         )
 
     def http_bytes(self, port_name: str, path: str) -> bytes:
+        _, body = self.http_response(port_name, path)
+        return body
+
+    def http_response(
+        self,
+        port_name: str,
+        path: str,
+        *,
+        method: str = "GET",
+        headers: dict[str, str] | None = None,
+        expected_status: int = 200,
+    ) -> tuple[HTTPMessage, bytes]:
         port = self.environment[port_name]
-        with urllib.request.urlopen(
-            f"http://127.0.0.1:{port}{path}", timeout=5
-        ) as response:
-            if response.status != 200:
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{port}{path}",
+            method=method,
+            headers=headers or {},
+        )
+        try:
+            response = urllib.request.urlopen(request, timeout=5)
+        except urllib.error.HTTPError as error:
+            if error.code != expected_status:
+                raise RuntimeError(f"{path} returned {error.code}") from error
+            return error.headers, error.read()
+        with response:
+            if response.status != expected_status:
                 raise RuntimeError(f"{path} returned {response.status}")
-            return response.read()
+            return response.headers, response.read()
 
     def http_json(self, port_name: str, path: str) -> dict[str, object]:
         return json.loads(self.http_bytes(port_name, path))
@@ -143,9 +184,10 @@ class ComposeSmoke:
 def main() -> int:
     root = Path(__file__).resolve().parents[1]
     smoke = ComposeSmoke(root)
+    cleanup_error: Exception | None = None
     try:
-        print("[1/9] building the pinned application image", flush=True)
-        smoke.run("build", "api", timeout=600)
+        print("[1/9] building the pinned backend and frontend images", flush=True)
+        smoke.run("build", "api", "frontend", timeout=600)
 
         print("[2/9] starting clean PostgreSQL and source storage", flush=True)
         smoke.run("up", "-d", "--wait", "--wait-timeout", "90", "postgres")
@@ -180,7 +222,7 @@ def main() -> int:
         )
         time.sleep(0.5)
 
-        print("[5/9] starting API, Worker, and frontend shell", flush=True)
+        print("[5/9] starting API, Worker, and observation frontend", flush=True)
         smoke.run(
             "up",
             "-d",
@@ -195,7 +237,137 @@ def main() -> int:
         readiness = smoke.http_json("RAG_KB_API_PORT", "/health/ready")
         if readiness.get("status") != "ready":
             raise RuntimeError("API readiness did not report ready")
-        smoke.wait_http("RAG_KB_FRONTEND_PORT", "/")
+        smoke.wait_http("RAG_KB_FRONTEND_PORT", "/health")
+        frontend_config = smoke.http_json(
+            "RAG_KB_FRONTEND_PORT", "/runtime-config.json"
+        )
+        expected_api_base = (
+            "http://127.0.0.1:"
+            f"{smoke.environment['RAG_KB_API_PORT']}/api/v1"
+        )
+        if frontend_config != {"api_base_url": expected_api_base}:
+            raise RuntimeError(f"frontend runtime config mismatch: {frontend_config}")
+        config_headers, _ = smoke.http_response(
+            "RAG_KB_FRONTEND_PORT", "/runtime-config.json"
+        )
+        if config_headers.get("Cache-Control") != "no-store":
+            raise RuntimeError("frontend runtime config is cacheable")
+        alias_headers, alias_body = smoke.http_response(
+            "RAG_KB_FRONTEND_PORT", "/runtime-config%2Ejson"
+        )
+        if (
+            json.loads(alias_body) != frontend_config
+            or alias_headers.get("Cache-Control") != "no-store"
+        ):
+            raise RuntimeError("frontend runtime config alias bypassed dynamic delivery")
+
+        frontend_headers, frontend_html = smoke.http_response(
+            "RAG_KB_FRONTEND_PORT", "/"
+        )
+        decoded_frontend = frontend_html.decode("utf-8")
+        if "id=\"root\"" not in decoded_frontend or "/assets/" not in decoded_frontend:
+            raise RuntimeError("frontend did not serve the compiled application shell")
+        if frontend_headers.get("Cache-Control") != "no-cache":
+            raise RuntimeError("frontend application shell has an unsafe cache policy")
+        content_security_policy = frontend_headers.get("Content-Security-Policy", "")
+        expected_api_origin = expected_api_base.removesuffix("/api/v1")
+        if f"connect-src 'self' {expected_api_origin};" not in content_security_policy:
+            raise RuntimeError("frontend security headers are missing")
+        asset_paths = [
+            token.split('"', 1)[0]
+            for marker in ('src="/assets/', 'href="/assets/')
+            for token in decoded_frontend.split(marker)[1:]
+        ]
+        if not asset_paths:
+            raise RuntimeError("frontend application shell has no compiled assets")
+        for asset in asset_paths:
+            asset_headers, asset_body = smoke.http_response(
+                "RAG_KB_FRONTEND_PORT", f"/assets/{asset}"
+            )
+            if not asset_body:
+                raise RuntimeError(f"frontend asset is empty: {asset}")
+            if asset_headers.get("Cache-Control") != (
+                "public, max-age=31536000, immutable"
+            ):
+                raise RuntimeError(f"frontend asset cache policy is unsafe: {asset}")
+            media_type = asset_headers.get("Content-Type", "").split(";", 1)[0]
+            expected_media_types = (
+                {"text/javascript", "application/javascript"}
+                if asset.endswith(".js")
+                else {"text/css"}
+                if asset.endswith(".css")
+                else set()
+            )
+            if expected_media_types and media_type not in expected_media_types:
+                raise RuntimeError(
+                    f"frontend asset MIME type is unsafe: {asset} -> {media_type}"
+                )
+        deep_link = smoke.http_bytes("RAG_KB_FRONTEND_PORT", "/chat")
+        if deep_link != frontend_html:
+            raise RuntimeError("frontend SPA deep link did not return the application shell")
+        smoke.http_response(
+            "RAG_KB_FRONTEND_PORT",
+            "/assets/not-present.js",
+            expected_status=404,
+        )
+
+        frontend_origin = (
+            "http://127.0.0.1:"
+            f"{smoke.environment['RAG_KB_FRONTEND_PORT']}"
+        )
+        cors_headers, _ = smoke.http_response(
+            "RAG_KB_API_PORT",
+            "/api/v1/knowledge-bases",
+            method="OPTIONS",
+            headers={
+                "Origin": frontend_origin,
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": (
+                    "content-type,idempotency-key,x-document-filename,"
+                    "x-document-display-name"
+                ),
+            },
+        )
+        if cors_headers.get("Access-Control-Allow-Origin") != frontend_origin:
+            raise RuntimeError("API did not echo the configured frontend CORS origin")
+        if cors_headers.get("Access-Control-Allow-Credentials") is not None:
+            raise RuntimeError("API unexpectedly allowed browser credentials")
+        allowed_headers = {
+            value.strip().lower()
+            for value in cors_headers.get("Access-Control-Allow-Headers", "").split(",")
+        }
+        required_headers = {
+            "content-type",
+            "idempotency-key",
+            "x-document-filename",
+            "x-document-display-name",
+        }
+        if not required_headers.issubset(allowed_headers):
+            raise RuntimeError(f"API CORS upload headers are incomplete: {allowed_headers}")
+
+        frontend_uid = smoke.run("exec", "-T", "frontend", "id", "-u").stdout.strip()
+        if frontend_uid != "10001":
+            raise RuntimeError(f"frontend runs as unexpected UID {frontend_uid}")
+        frontend_environment = smoke.run(
+            "exec", "-T", "frontend", "env"
+        ).stdout.lower()
+        if "rag_kb__" in frontend_environment or "password" in frontend_environment:
+            raise RuntimeError("frontend received privileged application environment")
+        smoke.run(
+            "exec",
+            "-T",
+            "frontend",
+            "sh",
+            "-c",
+            (
+                "test -f /app/dist/index.html "
+                "&& test -f /app/server.py "
+                "&& test ! -e /app/apps "
+                "&& test ! -e /app/src "
+                "&& test ! -e /app/node_modules "
+                "&& test ! -e /app/dist/runtime-config.json"
+            ),
+        )
         smoke.run("exec", "-T", "worker", "python", "-m", "apps.worker.parser_check")
 
         print("[6/9] exercising bounded public upload", flush=True)
@@ -283,7 +455,7 @@ def main() -> int:
             "RAG_KB_API_PORT",
             "/health/live?request-content-must-not-appear",
         )
-        logs = smoke.run("logs", "--no-color", "api", "worker").stdout
+        logs = smoke.run("logs", "--no-color", "frontend", "api", "worker").stdout
         for forbidden in (
             "request-content-must-not-appear",
             "smoke-admin-password",
@@ -304,18 +476,31 @@ def main() -> int:
         print(f"Compose smoke failed: {error}", file=sys.stderr)
         return_code = 1
     else:
-        print(
-            "Compose smoke passed: clean start, explicit migration, automatic "
-            "indexing/status, bounded maintenance, shared persistence, "
-            "content-safe logs, and shutdown",
-            flush=True,
-        )
         return_code = 0
     finally:
         try:
-            smoke.run("down", "--volumes", "--remove-orphans", check=False)
-        except (OSError, subprocess.SubprocessError):
-            pass
+            cleanup = smoke.run(
+                "down",
+                "--volumes",
+                "--remove-orphans",
+                check=False,
+            )
+            if cleanup.returncode != 0:
+                cleanup_error = RuntimeError(
+                    f"Compose cleanup returned {cleanup.returncode}"
+                )
+        except (OSError, subprocess.SubprocessError) as error:
+            cleanup_error = error
+    if cleanup_error is not None:
+        print(f"Compose smoke cleanup failed: {cleanup_error}", file=sys.stderr)
+        return 1
+    if return_code == 0:
+        print(
+            "Compose smoke passed: clean start, explicit migration, automatic "
+            "indexing/status, bounded maintenance, shared persistence, "
+            "isolated frontend delivery, content-safe logs, and shutdown",
+            flush=True,
+        )
     return return_code
 
 
