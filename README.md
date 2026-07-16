@@ -45,6 +45,7 @@ tests/                Unit, contract, integration, and end-to-end suites
 deploy/               Local deployment assets (implemented in S02-W07)
 tools/                Reproducible project and baseline checks
 verification/         Stage 01 compatibility and provider evidence
+start-local.sh        One-command local startup, migration, and health wait
 ```
 
 `apps/api`, `apps/worker`, and the one-shot `apps/maintenance` tool are
@@ -89,27 +90,29 @@ PYTHONPATH=src:. .venv/bin/python tools/run_operations_recovery.py \
   --report /tmp/s06-w04-report-v1.0.json
 PYTHONPATH=src:. .venv/bin/python tools/check_release_package.py
 PYTHONPATH=src:. .venv/bin/python tools/run_p1a_release_validation.py \
-  --report /tmp/p1a-local-release-v1.0.json
+  --report /tmp/p1a-local-release.json
 ```
 
 ## Local Compose Runtime
 
-Copy the checked example, replace its application placeholders as needed, and
-provide the three Compose database passwords in the shell. `RAG_KB_ENV_FILE`
-selects the application settings file without injecting that control variable
-into the application process.
+Copy the checked example once and replace its model-provider placeholders:
 
 ```bash
 cp .env.example .env
-export RAG_KB_ENV_FILE=.env
-export POSTGRES_ADMIN_PASSWORD='replace-with-a-local-password'
-export RAG_KB_MIGRATION_PASSWORD='replace-with-a-different-local-password'
-export RAG_KB_RUNTIME_PASSWORD='replace-with-another-local-password'
-
-docker compose up -d --wait postgres storage-init
-docker compose --profile tools run --rm migrate
-docker compose up -d --wait api worker frontend
 ```
+
+Then start or resume the complete local stack with one command:
+
+```bash
+./start-local.sh
+```
+
+The script safely creates or reuses one local database password for all three
+database roles in the ignored, mode-`0600` `.env.local`, runs the explicit
+migration, starts all long-lived services, waits for health, and prints the
+local URLs. Existing containers are imported without printing their
+credentials; an existing volume without recoverable credentials is never
+silently re-keyed.
 
 Run one idempotent bounded cleanup pass with:
 

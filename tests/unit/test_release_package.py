@@ -18,11 +18,13 @@ class ReleasePackageTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[2]
         result = check_release_package(root)
         self.assertEqual(result.release_documents, 5)
+        self.assertEqual(result.startup_scripts, 1)
         self.assertEqual(result.public_paths, 13)
         self.assertEqual(result.error_codes, 51)
         self.assertEqual(result.immutable_images, 3)
         self.assertEqual(result.provider_fingerprints, 2)
         self.assertEqual(result.prior_reports, 4)
+        self.assertEqual(result.required_commands, 12)
         self.assertGreaterEqual(result.markdown_links, 10)
 
     def test_heading_parser_normalizes_markdown_levels(self) -> None:

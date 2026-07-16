@@ -1,10 +1,14 @@
 # P1A Local Release Evidence
 
-`p1a-local-release-v1.0.json` is the final Stage 06 release report produced by:
+`p1a-local-release-v1.0.json` is the immutable Stage 06 completion report.
+It predates the later `start-local.sh` usability amendment. That small
+amendment was verified with focused unit tests and a real
+`docker compose down` followed by successful one-command recovery of all four
+healthy services; the complete release matrix was intentionally not rerun.
 
 ```bash
 PYTHONPATH=src:. .venv/bin/python tools/run_p1a_release_validation.py \
-  --report /tmp/p1a-local-release-v1.0.json
+  --report /tmp/p1a-local-release.json
 ```
 
 The runner first validates the release package, then executes the complete

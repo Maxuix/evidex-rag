@@ -32,6 +32,7 @@ EVIDENCE_INPUTS = (
     "apps/web-test/Dockerfile",
     "compose.yaml",
     ".env.example",
+    "start-local.sh",
     "docs/release/README.md",
     "docs/release/local-development-guide.md",
     "docs/release/capability-matrix.md",
@@ -41,6 +42,7 @@ EVIDENCE_INPUTS = (
     "tools/run_p1a_release_validation.py",
     "tests/unit/test_release_package.py",
     "tests/unit/test_p1a_release_runner.py",
+    "tests/unit/test_start_local_script.py",
     "src/rag_kb/domain/errors.py",
     "tests/contract/snapshots/openapi-v1.json",
     "verification/compatibility/container-images-v1.0.json",
@@ -209,6 +211,7 @@ def build_report(
         "validation": results,
         "release_package": {
             "release_documents": package.release_documents,
+            "startup_scripts": package.startup_scripts,
             "markdown_links": package.markdown_links,
             "public_paths": package.public_paths,
             "stable_error_codes": package.error_codes,
@@ -240,6 +243,7 @@ def build_report(
             "tested_platform": operations.get("tested_platform"),
         },
         "coverage": {
+            "one_command_local_start_migration_health_and_secret_reuse": True,
             "clean_checkout_migrate_start_and_public_closed_loop": True,
             "documents_retrieval_chat_citations_and_history": True,
             "frontend_contract_typecheck_build_and_manual_browser_evidence": True,

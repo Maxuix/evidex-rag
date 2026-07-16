@@ -26,6 +26,12 @@ and frontend/API/Worker/PostgreSQL restart persistence. It uses only public
 application APIs and a network-isolated deterministic model-provider test double.
 Real-browser rendering was manually accepted by Maxui; automated frontend
 behavior remains covered by the component suite without adding a browser binary.
+`tests/unit/test_start_local_script.py` runs the root one-command starter
+against an isolated fake Docker command. It verifies existing-container
+credential import, mode-`0600` persistence, subsequent reuse, exact
+storage/migration/service ordering, shared local-password handling, content-safe
+output, and fail-closed behavior for partial role credentials or an existing
+volume with no recoverable password.
 
 `tools/quality_security_evaluation.py` replays all 18 reviewed golden cases
 through the real assessment, generation, validation, citation, refusal, and
@@ -44,7 +50,8 @@ destructive-reset confirmation, and a freshly migrated empty state. Direct SQL
 is limited to dead-owner fault injection and assertions; business operations use
 public `/api/v1`.
 
-`tools/check_release_package.py` validates the final operator documentation,
+`tools/check_release_package.py` validates the executable `start-local.sh`,
+final operator documentation,
 all internal links, public OpenAPI paths, 51 stable error codes, exact dependency
 versions, immutable image references, model fingerprints, required commands,
 limitations, and prior Stage 06 evidence. `tools/run_p1a_release_validation.py`

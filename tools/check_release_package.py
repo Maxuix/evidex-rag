@@ -20,6 +20,7 @@ RELEASE_DOCUMENTS = (
     "docs/release/known-limitations.md",
     "docs/release/p1a-implementation-summary.md",
 )
+STARTUP_SCRIPT = "start-local.sh"
 PRIOR_REPORTS = {
     "frontend": "verification/compatibility/frontend-build-v1.0.json",
     "e2e": "verification/e2e/s06-w02-report-v1.0.json",
@@ -39,12 +40,15 @@ REQUIRED_GUIDE_HEADINGS = (
     "Troubleshooting",
 )
 REQUIRED_COMMANDS = (
-    "docker compose up -d --wait postgres storage-init",
-    "docker compose --profile tools run --rm migrate",
-    "docker compose up -d --wait api worker frontend",
+    "./start-local.sh",
+    "docker compose --env-file .env.local up -d --wait postgres",
+    "docker compose --env-file .env.local up -d storage-init",
+    "docker compose --env-file .env.local wait storage-init",
+    "docker compose --env-file .env.local --profile tools run --rm migrate",
+    "docker compose --env-file .env.local up -d --wait api worker frontend",
     "curl --fail http://127.0.0.1:8000/health/live",
     "curl --fail http://127.0.0.1:8000/health/ready",
-    "docker compose --profile tools run --rm maintenance",
+    "docker compose --env-file .env.local --profile tools run --rm maintenance",
     "DESTROY_RAG_KB_LOCAL_DATA",
     "tools/run_e2e_integration.py",
     "tools/run_p1a_release_validation.py",
@@ -84,6 +88,7 @@ class ReleasePackageError(RuntimeError):
 @dataclass(frozen=True, slots=True)
 class ReleaseCheckResult:
     release_documents: int
+    startup_scripts: int
     markdown_links: int
     public_paths: int
     error_codes: int
@@ -159,6 +164,32 @@ def check_release_package(root: Path) -> ReleaseCheckResult:
     combined = "\n".join(texts.values())
     validate_no_secrets(combined)
 
+    startup_path = root / STARTUP_SCRIPT
+    if not startup_path.is_file() or not startup_path.stat().st_mode & 0o111:
+        raise ReleasePackageError("start-local.sh is missing or not executable")
+    startup = startup_path.read_text(encoding="utf-8")
+    _require_all(
+        startup,
+        (
+            "set -eu",
+            ".env.local",
+            "chmod 600",
+            "docker inspect --format",
+            "docker volume inspect",
+            "up -d --wait postgres",
+            "up -d storage-init",
+            "wait storage-init",
+            "--profile tools run --rm migrate",
+            "up -d --wait api worker frontend",
+            "values are not printed",
+        ),
+        "one-command startup safeguards",
+    )
+    if "set -x" in startup:
+        raise ReleasePackageError("start-local.sh must not enable shell tracing")
+    if ".env.*" not in (root / ".gitignore").read_text(encoding="utf-8"):
+        raise ReleasePackageError(".env.local is not covered by .gitignore")
+
     guide = texts["docs/release/local-development-guide.md"]
     headings = markdown_headings(guide)
     missing_headings = tuple(
@@ -225,6 +256,7 @@ def check_release_package(root: Path) -> ReleaseCheckResult:
 
     return ReleaseCheckResult(
         release_documents=len(RELEASE_DOCUMENTS),
+        startup_scripts=1,
         markdown_links=validate_links(root, RELEASE_DOCUMENTS),
         public_paths=len(paths),
         error_codes=len(codes),
