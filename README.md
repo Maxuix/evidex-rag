@@ -20,6 +20,8 @@ Authoritative project documents:
 - [Public API and error conventions](docs/architecture/api-conventions.md)
 - [Identity and security boundaries](docs/architecture/identity-security.md)
 - [Local runtime and diagnostics](docs/architecture/local-runtime.md)
+- [End-to-end integration boundary](docs/architecture/end-to-end-integration.md)
+- [Quality and security regression](docs/architecture/quality-security-regression.md)
 - [Local source-file consistency](docs/architecture/local-file-consistency.md)
 - [File admission and parser isolation](docs/architecture/file-admission-parser-isolation.md)
 - [Indexing pipeline](docs/architecture/indexing-pipeline.md)
@@ -76,6 +78,8 @@ PYTHONPATH=src:. .venv/bin/python tools/check_openapi_compatibility.py
 PYTHONPATH=src:. .venv/bin/python tools/run_db_integration.py
 .venv/bin/python tools/run_compose_smoke.py
 .venv/bin/python tools/run_e2e_integration.py
+.venv/bin/python tools/run_quality_security_regression.py \
+  --report /tmp/s06-w03-quality-security-report.json
 ```
 
 ## Local Compose Runtime

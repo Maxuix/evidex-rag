@@ -26,3 +26,11 @@ and frontend/API/Worker/PostgreSQL restart persistence. It uses only public
 application APIs and a network-isolated deterministic model-provider test double.
 Real-browser rendering was manually accepted by Maxui; automated frontend
 behavior remains covered by the component suite without adding a browser binary.
+
+`tools/quality_security_evaluation.py` replays all 18 reviewed golden cases
+through the real assessment, generation, validation, citation, refusal, and
+rendering boundary with a network-free deterministic adapter. Four explicit
+malicious-document probes cover prompt authority, mandatory access filters,
+fabricated citations, and credential/tool requests. The complete
+`tools/run_quality_security_regression.py` matrix also runs unit, contract,
+frontend, real-PostgreSQL scheduling-load, E2E, and Compose smoke checks.
