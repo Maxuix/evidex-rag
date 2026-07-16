@@ -34,3 +34,12 @@ malicious-document probes cover prompt authority, mandatory access filters,
 fabricated citations, and credential/tool requests. The complete
 `tools/run_quality_security_regression.py` matrix also runs unit, contract,
 frontend, real-PostgreSQL scheduling-load, E2E, and Compose smoke checks.
+
+`tools/run_operations_recovery.py` creates a separate disposable Compose
+project with per-run database credentials and a network-only deterministic
+Provider. It exercises abnormal API/Worker exits, indexing/chat stale ownership,
+finite and explicit retry, duplicate-business-fact checks, staging/final orphan
+cleanup, retired-derived cleanup, shared source-volume persistence, the exact
+destructive-reset confirmation, and a freshly migrated empty state. Direct SQL
+is limited to dead-owner fault injection and assertions; business operations use
+public `/api/v1`.

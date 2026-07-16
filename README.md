@@ -22,6 +22,7 @@ Authoritative project documents:
 - [Local runtime and diagnostics](docs/architecture/local-runtime.md)
 - [End-to-end integration boundary](docs/architecture/end-to-end-integration.md)
 - [Quality and security regression](docs/architecture/quality-security-regression.md)
+- [Local operations and recovery exercises](docs/architecture/operations-recovery-exercises.md)
 - [Local source-file consistency](docs/architecture/local-file-consistency.md)
 - [File admission and parser isolation](docs/architecture/file-admission-parser-isolation.md)
 - [Indexing pipeline](docs/architecture/indexing-pipeline.md)
@@ -80,6 +81,8 @@ PYTHONPATH=src:. .venv/bin/python tools/run_db_integration.py
 .venv/bin/python tools/run_e2e_integration.py
 .venv/bin/python tools/run_quality_security_regression.py \
   --report /tmp/s06-w03-quality-security-report.json
+PYTHONPATH=src:. .venv/bin/python tools/run_operations_recovery.py \
+  --report /tmp/s06-w04-report-v1.0.json
 ```
 
 ## Local Compose Runtime
