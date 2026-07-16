@@ -210,8 +210,8 @@ class DirectChatPipeline:
                     state = await step.run(state)
                     if (
                         not isinstance(state, ChatPipelineState)
-                        or state.context != context
-                        or state.evidence_pack != pack
+                        or state.context is not context
+                        or state.evidence_pack is not pack
                     ):
                         raise TypeError("chat pipeline step changed frozen inputs")
                 return state

@@ -16,6 +16,7 @@ from rag_kb.domain import (
     ReconciliationResult,
 )
 from rag_kb.scheduling.indexing import RetryPolicy
+from rag_kb.workflows import GraphRunner
 
 
 Clock = Callable[[], datetime]
@@ -31,10 +32,6 @@ class ChatCoordinator(Protocol):
     async def reconcile_stale(self, **values: Any) -> ReconciliationResult: ...
 
 
-class ChatPipeline(Protocol):
-    async def execute(self, command: ChatExecutionCommand) -> Any: ...
-
-
 class FailureSettler(Protocol):
     async def settle(
         self, lease: ChatRunLease, error: ChatPipelineExecutionError
@@ -47,7 +44,7 @@ class ChatRunScheduler:
     def __init__(
         self,
         coordinator: ChatCoordinator,
-        pipeline: ChatPipeline,
+        runner: GraphRunner,
         failure_settler: FailureSettler,
         *,
         worker_id: str,
@@ -65,7 +62,7 @@ class ChatRunScheduler:
         ):
             raise ValueError("chat scheduler limits are invalid")
         self._coordinator = coordinator
-        self._pipeline = pipeline
+        self._runner = runner
         self._failure_settler = failure_settler
         self._worker_id = worker_id
         self._heartbeat_interval_seconds = heartbeat_interval_seconds
@@ -108,7 +105,7 @@ class ChatRunScheduler:
         stopped: asyncio.Event,
     ) -> None:
         pipeline_task = asyncio.create_task(
-            self._pipeline.execute(ChatExecutionCommand(lease))
+            self._runner.execute(ChatExecutionCommand(lease))
         )
         ownership_lost = asyncio.Event()
         heartbeat_task = asyncio.create_task(

@@ -120,7 +120,7 @@ class DirectPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(runner, GraphRunner)
         command = ChatExecutionCommand(execution_context.lease)
 
-        result = await runner.run(command)
+        result = await runner.execute(command)
 
         self.assertEqual(
             events,

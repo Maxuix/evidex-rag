@@ -15,6 +15,7 @@ from rag_kb.domain import (
     ChatModelExecutionError,
     ChatModelRequest,
     ChatModelResponse,
+    ChatOutputSchema,
     ChatPipelineExecutionError,
     ChatPipelinePhase,
     ChatPipelineState,
@@ -204,6 +205,14 @@ class AnswerPolicyRoutingTests(unittest.IsolatedAsyncioTestCase):
             result.answering.draft.expected_outcome, AnswerOutcome.ANSWERED
         )
         self.assertEqual(len(result.answering.model_calls), 2)
+        self.assertEqual(
+            model.requests[0].output_schema,
+            ChatOutputSchema.ASSESSMENT_V1,
+        )
+        self.assertEqual(
+            model.requests[1].output_schema,
+            ChatOutputSchema.ANSWER_V1,
+        )
 
     async def test_empty_evidence_is_none_and_never_calls_the_model(self) -> None:
         for insufficiency in ("refuse", "partial_answer"):

@@ -19,6 +19,9 @@ class BasicProjectTests(unittest.TestCase):
             "rag_kb.retrieval",
             "rag_kb.answering",
             "rag_kb.db",
+            "langchain_core",
+            "langchain_openai",
+            "langgraph",
         )
         for module in modules:
             with self.subTest(module=module):

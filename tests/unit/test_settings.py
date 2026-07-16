@@ -12,10 +12,15 @@ from pydantic import ValidationError
 
 from apps.api.dependencies import build_api_dependencies
 from apps.worker.dependencies import build_worker_dependencies
+from rag_kb.adapters import (
+    LangChainChatModelAdapter,
+    OpenAICompatibleChatModelAdapter,
+)
 from rag_kb.config import StartupConfigurationError, validate_startup_environment
 from rag_kb.config.settings import Settings, load_settings
 from rag_kb.db import DatabaseProcess
 from rag_kb.domain import WorkLane
+from rag_kb.workflows import DirectGraphRunner, LangGraphRunner
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -98,6 +103,8 @@ class SettingsTests(unittest.TestCase):
         )
         self.assertEqual(settings.maintenance.batch_size, 100)
         self.assertEqual(settings.maintenance.task_retention_seconds, 604_800)
+        self.assertEqual(settings.model_adapter_backend, "langchain")
+        self.assertEqual(settings.chat_workflow_backend, "langgraph")
 
     def test_maintenance_retention_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -194,12 +201,28 @@ class SettingsTests(unittest.TestCase):
                     "https://embedding.example.invalid/v1"
                 ),
                 "RAG_KB__MODEL_PROVIDER__EMBEDDING__API_KEY": "embedding-secret",
+                "RAG_KB__MODEL_ADAPTER_BACKEND": "langchain",
+                "RAG_KB__CHAT_WORKFLOW_BACKEND": "langgraph",
             }
             with patch.dict(os.environ, environment, clear=True):
                 settings = load_settings(env_file=None)
 
         self.assertEqual(settings.file_store.root_path, root)
         self.assertEqual(settings.model_provider.chat.model, "deepseek-v4-flash")
+        self.assertEqual(settings.model_adapter_backend, "langchain")
+        self.assertEqual(settings.chat_workflow_backend, "langgraph")
+
+    def test_unknown_ai_implementation_backends_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for override in (
+                {"model_adapter_backend": "automatic"},
+                {"chat_workflow_backend": "agent"},
+            ):
+                with self.subTest(override=override), self.assertRaises(
+                    ValidationError
+                ):
+                    build_settings(root, **override)
 
     def test_checked_in_environment_example_parses(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
@@ -207,6 +230,8 @@ class SettingsTests(unittest.TestCase):
 
         self.assertEqual(settings.database.runtime_role, "rag_kb_runtime")
         self.assertEqual(settings.workflow.runner, "direct")
+        self.assertEqual(settings.model_adapter_backend, "langchain")
+        self.assertEqual(settings.chat_workflow_backend, "langgraph")
 
     def test_non_development_and_non_loopback_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -370,6 +395,33 @@ class SettingsTests(unittest.TestCase):
 
 
 class StartupValidationTests(unittest.TestCase):
+    def test_all_chat_backend_combinations_compose(self) -> None:
+        cases = (
+            ("legacy", "direct", OpenAICompatibleChatModelAdapter, DirectGraphRunner),
+            ("langchain", "direct", LangChainChatModelAdapter, DirectGraphRunner),
+            ("legacy", "langgraph", OpenAICompatibleChatModelAdapter, LangGraphRunner),
+            ("langchain", "langgraph", LangChainChatModelAdapter, LangGraphRunner),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "staging").mkdir()
+            (root / "final").mkdir()
+            for model_backend, workflow_backend, adapter_type, runner_type in cases:
+                with self.subTest(
+                    model_backend=model_backend,
+                    workflow_backend=workflow_backend,
+                ):
+                    settings = build_settings(
+                        root,
+                        model_adapter_backend=model_backend,
+                        chat_workflow_backend=workflow_backend,
+                    )
+                    worker = build_worker_dependencies(settings)
+                    self.assertIsInstance(worker.chat_model_adapter, adapter_type)
+                    self.assertIsInstance(worker.chat_runner, runner_type)
+                    self.assertIs(worker.chat_scheduler._runner, worker.chat_runner)
+                    asyncio.run(worker.close())
+
     def test_missing_storage_fails_without_provisioning(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "missing"
@@ -440,8 +492,13 @@ class StartupValidationTests(unittest.TestCase):
                 worker.retrieval_service,
             )
             self.assertIs(
-                worker.chat_scheduler._pipeline,
-                worker.chat_pipeline,
+                worker.chat_scheduler._runner,
+                worker.chat_runner,
+            )
+            self.assertIsInstance(worker.chat_runner, LangGraphRunner)
+            self.assertIsInstance(
+                worker.chat_model_adapter,
+                LangChainChatModelAdapter,
             )
             self.assertIs(
                 worker.worker_scheduler._schedulers[
@@ -458,6 +515,35 @@ class StartupValidationTests(unittest.TestCase):
 
         self.assertTrue(api.database._closed)
         self.assertTrue(worker.database._closed)
+
+    def test_worker_selects_langchain_chat_adapter_by_process_setting(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "staging").mkdir()
+            (root / "final").mkdir()
+            settings = build_settings(root, model_adapter_backend="langchain")
+
+            worker = build_worker_dependencies(settings)
+
+            self.assertIsInstance(
+                worker.chat_model_adapter,
+                LangChainChatModelAdapter,
+            )
+            asyncio.run(worker.close())
+
+    def test_worker_selects_compiled_langgraph_runner_by_process_setting(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "staging").mkdir()
+            (root / "final").mkdir()
+            settings = build_settings(root, chat_workflow_backend="langgraph")
+
+            worker = build_worker_dependencies(settings)
+
+            self.assertIsInstance(worker.chat_runner, LangGraphRunner)
+            self.assertIs(worker.chat_scheduler._runner, worker.chat_runner)
+            self.assertIsNone(worker.chat_runner._graph.checkpointer)
+            asyncio.run(worker.close())
 
 
 if __name__ == "__main__":

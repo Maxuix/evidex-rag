@@ -24,6 +24,7 @@ from rag_kb.domain import (
     ChatModelOperation,
     ChatModelRequest,
     ChatModelResponse,
+    ChatOutputSchema,
     ChatPipelineExecutionError,
     ChatPipelinePhase,
     ChatPipelineState,
@@ -468,6 +469,10 @@ class StructureValidationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("no tools", system)
         self.assertEqual(payload["untrusted_original_draft"], malicious)
         self.assertEqual(payload["validation_issues"], ["json_invalid"])
+        self.assertEqual(
+            model.requests[0].output_schema,
+            ChatOutputSchema.ANSWER_V1,
+        )
         self.assertNotIn("source_metadata", payload["evidence"][0])
         assert result.answering is not None
         assert result.answering.rendered is not None

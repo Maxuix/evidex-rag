@@ -27,6 +27,8 @@ from rag_kb.config.profiles import DeploymentProfile
 PositiveInt = Annotated[int, Field(gt=0)]
 NonNegativeInt = Annotated[int, Field(ge=0)]
 PositiveFloat = Annotated[float, Field(gt=0)]
+ModelAdapterBackend = Literal["legacy", "langchain"]
+ChatWorkflowBackend = Literal["direct", "langgraph"]
 
 
 def parse_environment_boolean(value: object) -> object:
@@ -446,6 +448,8 @@ class Settings(BaseSettings):
     file_admission: FileAdmissionSettings = Field(default_factory=FileAdmissionSettings)
     parser: ParserSettings = Field(default_factory=ParserSettings)
     vector_store: VectorStoreSettings = Field(default_factory=VectorStoreSettings)
+    model_adapter_backend: ModelAdapterBackend = "langchain"
+    chat_workflow_backend: ChatWorkflowBackend = "langgraph"
     model_provider: ModelProviderSettings
     retrieval: RetrievalSettings = Field(default_factory=RetrievalSettings)
     workflow: WorkflowSettings = Field(default_factory=WorkflowSettings)

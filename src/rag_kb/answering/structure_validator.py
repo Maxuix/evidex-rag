@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Literal
+from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import ValidationError
 
 from rag_kb.adapters.model_api import ChatModelAdapter
 from rag_kb.answering.model_execution import (
@@ -14,6 +14,7 @@ from rag_kb.answering.model_execution import (
     require_frozen_model,
 )
 from rag_kb.answering.prompt_builder import build_repair_request
+from rag_kb.answering.wire_schemas import WireAnswer
 from rag_kb.domain import (
     AnswerClaim,
     AnswerControlReason,
@@ -34,21 +35,6 @@ from rag_kb.domain import (
     RenderedCitation,
     ValidatedAnswer,
 )
-
-
-class _WireClaim(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    text: str = Field(max_length=4000)
-    citation_ids: list[str] = Field(max_length=100)
-
-
-class _WireAnswer(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    outcome: Literal["answered", "partial", "refused"]
-    claims: list[_WireClaim] = Field(max_length=100)
-    missing_aspects: list[str] = Field(max_length=100)
 
 
 class AnswerStructureValidationStep:
@@ -241,14 +227,14 @@ def _validate_and_render(
 
 def _parse_wire_answer(
     raw_json: str,
-) -> tuple[_WireAnswer | None, AnswerValidationIssue]:
+) -> tuple[WireAnswer | None, AnswerValidationIssue]:
     try:
         value: Any = json.loads(raw_json)
     except json.JSONDecodeError:
         return None, AnswerValidationIssue.JSON_INVALID
     try:
         return (
-            _WireAnswer.model_validate(value, strict=True),
+            WireAnswer.model_validate(value, strict=True),
             AnswerValidationIssue.SCHEMA_INVALID,
         )
     except ValidationError:

@@ -10,6 +10,7 @@ from rag_kb.domain import (
     ChatExecutionContext,
     ChatModelMessage,
     ChatModelRequest,
+    ChatOutputSchema,
     EvidenceAssessment,
     EvidenceEnvelope,
     EvidencePack,
@@ -66,7 +67,8 @@ def build_assessment_request(
         (
             ChatModelMessage("system", _ASSESSMENT_SYSTEM),
             ChatModelMessage("user", _json(payload)),
-        )
+        ),
+        output_schema=ChatOutputSchema.ASSESSMENT_V1,
     )
 
 
@@ -97,7 +99,8 @@ def build_generation_request(
         (
             ChatModelMessage("system", _GENERATION_SYSTEM),
             ChatModelMessage("user", _json(payload)),
-        )
+        ),
+        output_schema=ChatOutputSchema.ANSWER_V1,
     )
 
 
@@ -140,7 +143,8 @@ def build_repair_request(
         (
             ChatModelMessage("system", _REPAIR_SYSTEM),
             ChatModelMessage("user", _json(payload)),
-        )
+        ),
+        output_schema=ChatOutputSchema.ANSWER_V1,
     )
 
 

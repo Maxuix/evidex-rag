@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+
+from pydantic import ValidationError
 
 from rag_kb.adapters.model_api import ChatModelAdapter
 from rag_kb.answering.model_execution import (
@@ -16,6 +17,7 @@ from rag_kb.answering.prompt_builder import (
     build_evidence_envelope,
     build_generation_request,
 )
+from rag_kb.answering.wire_schemas import WireEvidenceAssessment
 from rag_kb.domain import (
     AnswerControlReason,
     AnswerDraftCandidate,
@@ -140,34 +142,16 @@ class AnswerGenerationStep:
 
 def _parse_assessment(raw_json: str, evidence: EvidenceEnvelope) -> EvidenceAssessment:
     try:
-        value: Any = json.loads(raw_json)
-        if not isinstance(value, dict) or set(value) != {
-            "coverage",
-            "usable_citation_ids",
-            "supported_aspects",
-            "missing_aspects",
-        }:
-            raise TypeError
-        lists = (
-            value["usable_citation_ids"],
-            value["supported_aspects"],
-            value["missing_aspects"],
-        )
-        if any(
-            not isinstance(items, list)
-            or any(not isinstance(item, str) for item in items)
-            for items in lists
-        ):
-            raise TypeError
+        value = WireEvidenceAssessment.model_validate_json(raw_json, strict=True)
         assessment = EvidenceAssessment(
-            coverage=EvidenceCoverage(value["coverage"]),
-            usable_citation_ids=tuple(value["usable_citation_ids"]),
-            supported_aspects=tuple(value["supported_aspects"]),
-            missing_aspects=tuple(value["missing_aspects"]),
+            coverage=EvidenceCoverage(value.coverage),
+            usable_citation_ids=tuple(value.usable_citation_ids),
+            supported_aspects=tuple(value.supported_aspects),
+            missing_aspects=tuple(value.missing_aspects),
         )
         if not set(assessment.usable_citation_ids) <= evidence.citation_ids:
             raise ValueError
-    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+    except (ValidationError, ValueError) as error:
         raise ChatPipelineExecutionError(
             ErrorCode.CHAT_ASSESSMENT_INVALID,
             phase=ChatPipelinePhase.ASSESS_EVIDENCE,

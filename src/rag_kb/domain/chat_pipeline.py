@@ -24,6 +24,11 @@ class ChatPipelinePhase(StrEnum):
     PERSIST_RESULT = "persist_result"
 
 
+class ChatOutputSchema(StrEnum):
+    ASSESSMENT_V1 = "assessment_v1"
+    ANSWER_V1 = "answer_v1"
+
+
 @dataclass(frozen=True, slots=True)
 class ChatRunLease:
     run_id: UUID
@@ -112,6 +117,7 @@ class ChatModelMessage:
 @dataclass(frozen=True, slots=True)
 class ChatModelRequest:
     messages: tuple[ChatModelMessage, ...]
+    output_schema: ChatOutputSchema | None = None
 
     def __post_init__(self) -> None:
         if not self.messages:

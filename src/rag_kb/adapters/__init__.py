@@ -8,6 +8,7 @@ from rag_kb.adapters.parser import (
 from rag_kb.adapters.model_api import (
     ChatModelAdapter,
     EmbeddingProvider,
+    LangChainChatModelAdapter,
     OpenAICompatibleChatModelAdapter,
     OpenAICompatibleEmbeddingProvider,
 )
@@ -19,6 +20,7 @@ __all__ = [
     "EmbeddingProvider",
     "FixedPgVectorSpace",
     "IsolatedPlainTextProcessor",
+    "LangChainChatModelAdapter",
     "LocalFileStore",
     "OpenAICompatibleEmbeddingProvider",
     "OpenAICompatibleChatModelAdapter",

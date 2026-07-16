@@ -19,6 +19,13 @@ Open:
 The starter manages the local database password in ignored `.env.local`, runs
 migrations, starts PostgreSQL, API, Worker, and frontend, and waits for health.
 
+Chat model integration defaults to LangChain and the fixed evidence-only chat
+workflow defaults to a checkpoint-free LangGraph `StateGraph`. PostgreSQL
+`ChatRun` remains the durable execution state, while the existing pgvector and
+embedding adapters remain responsible for indexing and retrieval. See the
+[local development guide](docs/release/local-development-guide.md) for the two
+configuration-only rollback switches.
+
 ## Basic Check
 
 ```bash

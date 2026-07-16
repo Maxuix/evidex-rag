@@ -10,12 +10,12 @@ from rag_kb.services.chat_pipeline import DirectChatPipeline
 
 @runtime_checkable
 class GraphRunner(Protocol):
-    async def run(self, command: ChatExecutionCommand) -> ChatPipelineState: ...
+    async def execute(self, command: ChatExecutionCommand) -> ChatPipelineState: ...
 
 
 class DirectGraphRunner:
     def __init__(self, pipeline: DirectChatPipeline) -> None:
         self._pipeline = pipeline
 
-    async def run(self, command: ChatExecutionCommand) -> ChatPipelineState:
+    async def execute(self, command: ChatExecutionCommand) -> ChatPipelineState:
         return await self._pipeline.execute(command)
