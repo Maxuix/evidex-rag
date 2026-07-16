@@ -43,3 +43,12 @@ cleanup, retired-derived cleanup, shared source-volume persistence, the exact
 destructive-reset confirmation, and a freshly migrated empty state. Direct SQL
 is limited to dead-owner fault injection and assertions; business operations use
 public `/api/v1`.
+
+`tools/check_release_package.py` validates the final operator documentation,
+all internal links, public OpenAPI paths, 51 stable error codes, exact dependency
+versions, immutable image references, model fingerprints, required commands,
+limitations, and prior Stage 06 evidence. `tools/run_p1a_release_validation.py`
+then reruns that check, the complete 18-check quality/security matrix, and the
+9-scenario operations/recovery suite to produce the final release report. It
+scrubs inherited project credentials and records only hashes and safe numeric
+facts.

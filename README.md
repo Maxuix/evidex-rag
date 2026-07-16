@@ -10,6 +10,10 @@ public-API observation frontend are implemented.
 
 Authoritative project documents:
 
+- [P1A local development release](docs/release/README.md)
+- [P1A local development guide](docs/release/local-development-guide.md)
+- [P1A capability matrix](docs/release/capability-matrix.md)
+- [P1A known limitations](docs/release/known-limitations.md)
 - [Architecture design](docs/Enterprise-knowledge-base-design.md)
 - [Implementation roadmap](docs/implementation-plans/00-implementation-roadmap.md)
 - [Execution tracker](docs/implementation-plans/EXECUTION-TRACKER.md)
@@ -83,6 +87,9 @@ PYTHONPATH=src:. .venv/bin/python tools/run_db_integration.py
   --report /tmp/s06-w03-quality-security-report.json
 PYTHONPATH=src:. .venv/bin/python tools/run_operations_recovery.py \
   --report /tmp/s06-w04-report-v1.0.json
+PYTHONPATH=src:. .venv/bin/python tools/check_release_package.py
+PYTHONPATH=src:. .venv/bin/python tools/run_p1a_release_validation.py \
+  --report /tmp/p1a-local-release-v1.0.json
 ```
 
 ## Local Compose Runtime
@@ -115,6 +122,9 @@ The observation frontend is then available at `http://127.0.0.1:3000`, API docum
 `/health/ready`. Stop processes while retaining data with `docker compose down`.
 See the [local runtime guide](docs/architecture/local-runtime.md) for port
 overrides, logs, checks, and the explicitly destructive clean reset.
+For a clean-checkout walkthrough, synthetic sample import, closed-loop demo,
+evaluation, troubleshooting, and release limits, use the
+[P1A local development guide](docs/release/local-development-guide.md).
 
 ## Current Boundary
 

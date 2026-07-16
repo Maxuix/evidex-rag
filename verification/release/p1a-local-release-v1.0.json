@@ -1,0 +1,138 @@
+{
+  "schema_version": "1.0",
+  "artifact": "p1a-local-development-release",
+  "status": "passed",
+  "verified_at": "2026-07-16T08:31:03.210592Z",
+  "started_at": "2026-07-16T08:26:25.959244Z",
+  "duration_seconds": 277.241,
+  "tested_host_platform": "darwin/arm64",
+  "validation": [
+    {
+      "check_id": "release_package",
+      "command": ".venv/bin/python tools/check_release_package.py",
+      "status": "passed",
+      "duration_seconds": 0.059,
+      "observations": {}
+    },
+    {
+      "check_id": "quality_security_regression",
+      "command": ".venv/bin/python tools/run_quality_security_regression.py --report <temporary>/quality-security.json",
+      "status": "passed",
+      "duration_seconds": 194.157,
+      "observations": {
+        "check_count": 18
+      }
+    },
+    {
+      "check_id": "operations_recovery",
+      "command": ".venv/bin/python tools/run_operations_recovery.py --report <temporary>/operations-recovery.json",
+      "status": "passed",
+      "duration_seconds": 83.023,
+      "observations": {
+        "scenario_count": 9
+      }
+    }
+  ],
+  "release_package": {
+    "release_documents": 5,
+    "markdown_links": 14,
+    "public_paths": 13,
+    "stable_error_codes": 51,
+    "immutable_images": 3,
+    "core_versions": 8,
+    "provider_fingerprints": 2,
+    "prior_reports": 4,
+    "required_commands": 9,
+    "required_limits": 9
+  },
+  "fresh_quality_security": {
+    "checks": 18,
+    "unit_tests": 180,
+    "asgi_contract_tests": 34,
+    "postgresql_pgvector_tests": 61,
+    "frontend_test_files": 6,
+    "frontend_tests": 27,
+    "golden_metrics": {
+      "citation_identifier_validity": 1.0,
+      "label_source": "version-controlled human-reviewed synthetic fact labels",
+      "malicious_instruction_bypass_count": 0,
+      "partial_answer_accuracy": 1.0,
+      "refusal_accuracy": 1.0,
+      "semantic_support_rate": 1.0,
+      "structural_claim_coverage": 1.0,
+      "unsupported_claim_rate": 0.0
+    },
+    "security_assertions": {
+      "prompt_authority": "passed",
+      "mandatory_access_filters": "passed",
+      "citation_authority": "passed",
+      "credential_and_tool_authority": "passed",
+      "safe_refusal_and_output": "passed",
+      "content_safe_logs_errors_api_frontend": "passed",
+      "runtime_role_no_ddl": "passed",
+      "non_development_profiles_fail_closed": "passed"
+    },
+    "tested_platform": "darwin/arm64"
+  },
+  "fresh_operations_recovery": {
+    "scenarios": 9,
+    "metrics": {
+      "stale_indexing_final_attempt": 2,
+      "stale_chat_final_attempt": 2,
+      "automatic_indexing_attempt_limit": 3,
+      "orphan_files_removed": 2,
+      "retired_targets_cleaned": 1,
+      "persisted_source_files": 3,
+      "post_reset_knowledge_bases": 0,
+      "post_reset_source_files": 0
+    },
+    "tested_platform": "linux/arm64"
+  },
+  "coverage": {
+    "clean_checkout_migrate_start_and_public_closed_loop": true,
+    "documents_retrieval_chat_citations_and_history": true,
+    "frontend_contract_typecheck_build_and_manual_browser_evidence": true,
+    "quality_security_and_malicious_documents": true,
+    "real_postgresql_pgvector_migrations_and_scheduling": true,
+    "abnormal_exit_recovery_cleanup_and_reset": true,
+    "release_docs_capabilities_errors_dependencies_and_limits": true
+  },
+  "inputs": {
+    "algorithm": "sha256",
+    "files": {
+      ".python-version": "aa0d6581054e6e4ff3f91839deca7a854ad37221b8784d060b42d0f847ff1a3b",
+      "requirements.lock": "19f15123f158441fbf1efb2722c6e496df1cd675b3341350281d15f0e41c3f0d",
+      "apps/web-test/package-lock.json": "361f8469c100fc6c9720572b8adf7ec373a725aa985b34297e1a75bb7927b689",
+      "Dockerfile": "d80675cab5dbe825b72dd90111469ae29f76ad7824d51c838136ebf7375d64d4",
+      "apps/web-test/Dockerfile": "ef5fcbb6f54d7473589a63854fc4f6b3875ebb976aff7614928814f20a4ecff0",
+      "compose.yaml": "8b28a52daa0fafea823f73087c35da1cb3217d40e53e6eb3d13abb458cd486fa",
+      ".env.example": "666c9d7e4cd182568496ab4f3fc328adb26661dc57427b1dbd098f39b0aa02c0",
+      "docs/release/README.md": "46ae15f34e39f46d42ceb172ac9162badce851c060faf6445e4ca43cb173145a",
+      "docs/release/local-development-guide.md": "2615b34001c5bd6b23ccb773bf16df29fa476f988e75c433ed150d042f5102dd",
+      "docs/release/capability-matrix.md": "8b0f1eae41818e1e6d1e4c080287296ca038ce918d38a0b3f0368e93e1d33cf8",
+      "docs/release/known-limitations.md": "96182ca1f23d7483ffa24f64c09bd9c4a2812a470df6d1c021b929a3f73b35d4",
+      "docs/release/p1a-implementation-summary.md": "32dad333a4dd63d92bbed6bc96d6f4537d90ad25c8321805023260b8dbb300cc",
+      "tools/check_release_package.py": "94aa25ba249528815f4df1010611e9941a90894af41f82edc55b4f1aaf61c035",
+      "tools/run_p1a_release_validation.py": "cdad64bef6f2e2b1f6a5701d2df62e6f36c3c13e597a07f34679c4a25d7e4369",
+      "tests/unit/test_release_package.py": "7c56b9ccfff98b2b03ddc1f61299bb707dc8a6668627cfb1a590056f519d6f86",
+      "tests/unit/test_p1a_release_runner.py": "09cdaafc68560598848ace2161414fab6dfb1a7525f41a25c46e2328b09b16f1",
+      "src/rag_kb/domain/errors.py": "e516d05cae08247692ee4b5df3e4f29009017e99adc8e2878e87845477a32d76",
+      "tests/contract/snapshots/openapi-v1.json": "c415e7c0f2a64e011d7072292899a1c0d08f9524e2481ef3b08549ce89cee8c8",
+      "verification/compatibility/container-images-v1.0.json": "852e81be2f5f7a4caaa453234db9ab01b07837725d1368aed1b5bd8f2665a630",
+      "verification/compatibility/frontend-build-v1.0.json": "50e05db0786a9a94d646f4f4b5fb2b5668f8a2330c9ece541866216c11b63f69",
+      "verification/providers/provider-declarations-deepseek-qwen-v1.0.json": "cae1128973b5cd88cbac4948496f5f3e794abbef6d2860aeb55b92fe2bb55b0c",
+      "verification/e2e/s06-w02-report-v1.0.json": "7e3708762c819ee1bfd98a852befc26c0315f3971ae7fdd719b886fa56394759",
+      "verification/quality-security/s06-w03-report-v1.0.json": "d6efc4808f56510fec8bf9958532fa3973e57333fd47c451173c46a0f43bc109",
+      "verification/operations-recovery/s06-w04-report-v1.0.json": "e9c1eb4a83a5eb0cd2c2a8a69132cecdb6a94bf5898ee77b21fee938d7e820bb",
+      "verification/release/README.md": "f9027cad1794911f3d995bbcd85e8473e381aefa43bc4d1fe60201cee11bad93"
+    }
+  },
+  "recorded_limits": [
+    "P1A is a loopback-only local-development release with one fixed identity and workspace",
+    "no production security, backup/restore, host-failure recovery, RPO/RTO, high availability, compliance, or hostile multi-tenant claim is made",
+    "the deterministic suites make no external provider call and do not establish real-provider robustness or latency",
+    "the synthetic corpus and 18 reviewed cases are not representative enterprise quality or capacity evidence",
+    "linux/amd64 immutable manifests are recorded but remain unexecuted",
+    "real-browser behavior was manually accepted by Maxui; automation uses component tests and real HTTP/SSE without a browser binary"
+  ]
+}
