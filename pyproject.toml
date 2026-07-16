@@ -1,7 +1,7 @@
 [project]
 name = "rag-kb"
 version = "0.1.0"
-description = "Enterprise knowledge base and evidence-grounded RAG application"
+description = "Local knowledge base and evidence-grounded RAG application"
 readme = "README.md"
 requires-python = "==3.12.13"
 dependencies = [

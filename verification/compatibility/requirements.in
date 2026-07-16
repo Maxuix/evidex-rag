@@ -1,9 +1,0 @@
-# Direct packages exercised by the Stage 01 compatibility probe.
-alembic==1.18.5
-asyncpg==0.31.0
-fastapi==0.135.4
-greenlet==3.5.3
-pgvector==0.4.2
-pydantic-settings==2.14.2
-SQLAlchemy==2.0.51
-uvicorn==0.51.0

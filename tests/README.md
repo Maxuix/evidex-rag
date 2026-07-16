@@ -1,61 +1,17 @@
-# Test Layout
+# Basic Tests
 
-- `unit/`: isolated domain, service, and tooling behavior.
-- `contract/`: public repository, adapter, workflow, and API contracts.
-- `integration/`: checks using real infrastructure such as PostgreSQL/pgvector.
-- `e2e/`: externally observable application flows.
+The normal project check is intentionally small:
 
-The current unit suite covers structure, dependency boundaries, configuration,
-composition, and the async-only persistence contract. Database integration tests
-run the real migrations and exercise schema, role, lifecycle idempotency,
-immutable versions, atomic SourceChange allocation, concurrency, workspace-bound
-repositories, Unit of Work behavior, retry-safe Chunk/Vector upserts, partial
-failure replay, fixed embedding compatibility, and non-serving completeness
-gates against the pinned PostgreSQL/pgvector image. Contract tests drive the ASGI
-application directly and freeze Problem Details, cursor, content DTO,
-idempotency, lifespan, and OpenAPI behavior.
+```bash
+PYTHONPATH=src:. .venv/bin/python -m unittest discover -s tests/basic -v
+```
 
-`apps/web-test/src/*.test.tsx` and `src/api/*.test.ts` cover the Stage 06 frontend
-with Vitest, jsdom, and Testing Library. Python tooling tests freeze the frontend
-dependency lock/licenses, static server, consumed OpenAPI subset, deterministic
-smoke environment, and independent Compose image boundary.
-`tools/run_e2e_integration.py` adds the clean external HTTP/SSE closure for
-knowledge-base creation, upload/indexing, retrieval, grounded answer/citation,
-history, version cutover, delete, failure/retry, disconnect/timeout recovery,
-and frontend/API/Worker/PostgreSQL restart persistence. It uses only public
-application APIs and a network-isolated deterministic model-provider test double.
-Real-browser rendering was manually accepted by Maxui; automated frontend
-behavior remains covered by the component suite without adding a browser binary.
-`tests/unit/test_start_local_script.py` runs the root one-command starter
-against an isolated fake Docker command. It verifies existing-container
-credential import, mode-`0600` persistence, subsequent reuse, exact
-storage/migration/service ordering, shared local-password handling, content-safe
-output, and fail-closed behavior for partial role credentials or an existing
-volume with no recoverable password.
+For a running local stack:
 
-`tools/quality_security_evaluation.py` replays all 18 reviewed golden cases
-through the real assessment, generation, validation, citation, refusal, and
-rendering boundary with a network-free deterministic adapter. Four explicit
-malicious-document probes cover prompt authority, mandatory access filters,
-fabricated citations, and credential/tool requests. The complete
-`tools/run_quality_security_regression.py` matrix also runs unit, contract,
-frontend, real-PostgreSQL scheduling-load, E2E, and Compose smoke checks.
+```bash
+PYTHONPATH=src:. .venv/bin/python tools/smoke_local.py
+```
 
-`tools/run_operations_recovery.py` creates a separate disposable Compose
-project with per-run database credentials and a network-only deterministic
-Provider. It exercises abnormal API/Worker exits, indexing/chat stale ownership,
-finite and explicit retry, duplicate-business-fact checks, staging/final orphan
-cleanup, retired-derived cleanup, shared source-volume persistence, the exact
-destructive-reset confirmation, and a freshly migrated empty state. Direct SQL
-is limited to dead-owner fault injection and assertions; business operations use
-public `/api/v1`.
-
-`tools/check_release_package.py` validates the executable `start-local.sh`,
-final operator documentation,
-all internal links, public OpenAPI paths, 51 stable error codes, exact dependency
-versions, immutable image references, model fingerprints, required commands,
-limitations, and prior Stage 06 evidence. `tools/run_p1a_release_validation.py`
-then reruns that check, the complete 18-check quality/security matrix, and the
-9-scenario operations/recovery suite to produce the final release report. It
-scrubs inherited project credentials and records only hashes and safe numeric
-facts.
+Core unit, API contract, and database behavior tests remain for targeted defect
+work. They are not part of the default workflow. Do not add broad matrices or
+versioned reports unless Maxui explicitly requests them.
