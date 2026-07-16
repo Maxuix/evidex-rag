@@ -1,0 +1,49 @@
+services:
+  provider-stub:
+    image: rag-kb-e2e-provider:s06-w02
+    build:
+      context: ./tools
+      dockerfile: provider-stub.Dockerfile
+    depends_on: {}
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8089/health', timeout=2).read()"
+      interval: 1s
+      timeout: 2s
+      retries: 20
+    restart: "no"
+
+  api:
+    environment:
+      RAG_KB__MODEL_PROVIDER__CHAT__BASE_URL: http://provider-stub:8089/v1
+      RAG_KB__MODEL_PROVIDER__CHAT__MAX_RETRIES: "0"
+      RAG_KB__MODEL_PROVIDER__EMBEDDING__BASE_URL: http://provider-stub:8089/v1
+      RAG_KB__MODEL_PROVIDER__EMBEDDING__MAX_RETRIES: "0"
+      RAG_KB__CHAT_DELIVERY__POLL_INTERVAL_SECONDS: "0.2"
+      RAG_KB__CHAT_DELIVERY__JITTER_RATIO: "0"
+      RAG_KB__CHAT_DELIVERY__MAX_CONNECTION_DURATION_SECONDS: "1.5"
+    depends_on:
+      provider-stub:
+        condition: service_healthy
+
+  worker:
+    environment:
+      RAG_KB__MODEL_PROVIDER__CHAT__BASE_URL: http://provider-stub:8089/v1
+      RAG_KB__MODEL_PROVIDER__CHAT__MAX_RETRIES: "0"
+      RAG_KB__MODEL_PROVIDER__EMBEDDING__BASE_URL: http://provider-stub:8089/v1
+      RAG_KB__MODEL_PROVIDER__EMBEDDING__MAX_RETRIES: "0"
+      RAG_KB__JOB_POLLER__POLL_INTERVAL_SECONDS: "0.2"
+      RAG_KB__JOB_POLLER__AGING_SECONDS: "1"
+      RAG_KB__JOB_POLLER__CHAT_START_TARGET_SECONDS: "1"
+      RAG_KB__JOB_POLLER__HEARTBEAT_INTERVAL_SECONDS: "1"
+      RAG_KB__JOB_POLLER__STALE_AFTER_SECONDS: "35"
+      RAG_KB__JOB_POLLER__RETRY_BASE_DELAY_SECONDS: "0.5"
+      RAG_KB__JOB_POLLER__RETRY_MAX_DELAY_SECONDS: "0.5"
+      RAG_KB__JOB_POLLER__CHAT_DEADLINE_SECONDS: "15"
+      RAG_KB__JOB_POLLER__INDEXING_DEADLINE_SECONDS: "15"
+    depends_on:
+      provider-stub:
+        condition: service_healthy

@@ -128,7 +128,13 @@
   },
   "recorded_limits": [
     "linux/amd64 manifests are recorded but this frontend validation executed only linux/arm64",
-    "the in-app browser runtime exposed no available browser, so visual browser QA was not executed; jsdom/component, server, image, and clean Compose checks passed",
-    "full automated upload-to-citation browser closure and broader failure/restart scenarios remain S06-W02"
-  ]
+    "the agent in-app browser runtime exposed no available browser; Maxui later completed real-browser manual QA without finding an issue",
+    "repeatable browser behavior uses jsdom/component tests; S06-W02 adds real public HTTP/SSE upload-to-citation and failure/restart automation without a browser binary"
+  ],
+  "supplemental_manual_browser_qa": {
+    "status": "passed",
+    "verified_at": "2026-07-16",
+    "reported_by": "Maxui",
+    "issues_found": 0
+  }
 }

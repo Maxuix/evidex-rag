@@ -75,6 +75,7 @@ PYTHONPATH=src:. .venv/bin/python tools/check_openapi_compatibility.py
 .venv/bin/python tools/check_compose_contract.py
 PYTHONPATH=src:. .venv/bin/python tools/run_db_integration.py
 .venv/bin/python tools/run_compose_smoke.py
+.venv/bin/python tools/run_e2e_integration.py
 ```
 
 ## Local Compose Runtime

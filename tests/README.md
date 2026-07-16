@@ -19,4 +19,10 @@ idempotency, lifespan, and OpenAPI behavior.
 with Vitest, jsdom, and Testing Library. Python tooling tests freeze the frontend
 dependency lock/licenses, static server, consumed OpenAPI subset, deterministic
 smoke environment, and independent Compose image boundary.
-Full externally observable upload-to-citation browser flows begin in `S06-W02`.
+`tools/run_e2e_integration.py` adds the clean external HTTP/SSE closure for
+knowledge-base creation, upload/indexing, retrieval, grounded answer/citation,
+history, version cutover, delete, failure/retry, disconnect/timeout recovery,
+and frontend/API/Worker/PostgreSQL restart persistence. It uses only public
+application APIs and a network-isolated deterministic model-provider test double.
+Real-browser rendering was manually accepted by Maxui; automated frontend
+behavior remains covered by the component suite without adding a browser binary.

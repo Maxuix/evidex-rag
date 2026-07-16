@@ -1,0 +1,62 @@
+{
+  "schema_version": "1.0",
+  "artifact": "stage06-end-to-end-integration",
+  "status": "passed",
+  "verified_at": "2026-07-16T06:28:05.685076Z",
+  "started_at": "2026-07-16T06:26:11.450720Z",
+  "duration_seconds": 114.231,
+  "tested_platform": "linux/arm64",
+  "inputs": {
+    "algorithm": "sha256",
+    "files": {
+      ".dockerignore": "738d9d1a9bf9d517961307af2c5ef910fa6bb553456ed1af75f8cf52f2e5ddc7",
+      "Dockerfile": "d80675cab5dbe825b72dd90111469ae29f76ad7824d51c838136ebf7375d64d4",
+      "compose.yaml": "8b28a52daa0fafea823f73087c35da1cb3217d40e53e6eb3d13abb458cd486fa",
+      "deploy/compose-e2e.override.yaml": "36a12f10c632e3753d2bc3f5f7320c3ee6edc2bf18f583127206ab27134e53ee",
+      "tools/.dockerignore": "7f6e2644e90ab6ed333b968b0de401f530da9834c5a718e3de96fa3c1a8fbab0",
+      "tools/model_provider_stub.py": "feda39b88ad991e9875a19ed2fd0d7e7d0fbdc276079ed6c62f60398fb933bd7",
+      "tools/provider-stub.Dockerfile": "21e427f35189edf1dd896261bbb9f03af03658ee5c00999ce4d993f367d6bc9c",
+      "tools/run_e2e_integration.py": "3d4b33061c3b186264d5aea208a9d695849426f6ee4fd17159ae4fb70dd89b0c",
+      "tests/e2e/fixtures/handbook-v1.md": "51cc8a88735f05737a6318d9e155ca681c27ae5811bf8da35ecb6f4d4b8a3e95",
+      "tests/e2e/fixtures/handbook-v2.md": "28814d5f23be843ca50c5b9deb143b0b4c602bd55dc6b362e457d4c0abf63b79",
+      "tests/e2e/fixtures/index-failure.md": "6cbabcbeebf90aa8c2801891a4e298ce792dd9497e4d55b75a1f20f149ae26cf"
+    }
+  },
+  "isolation": {
+    "disposable_compose_project": true,
+    "randomized_loopback_ports": true,
+    "temporary_database_credentials": true,
+    "host_project_runtime_inputs_inherited": false,
+    "external_model_credentials": false,
+    "provider_host_port_published": false
+  },
+  "provider": {
+    "protocol": "OpenAI-compatible deterministic test double",
+    "embedding_dimension": 1024,
+    "indexing_failures_before_recovery": 3,
+    "chat_failure": "stable HTTP 503",
+    "delayed_chat_seconds": 2.5
+  },
+  "scenarios": {
+    "clean_migrate_start": "passed",
+    "upload_index_retrieval": "passed",
+    "answer_sse_citation": "passed",
+    "version_update_cutover": "passed",
+    "indexing_failure_retry": "passed",
+    "sse_disconnect_timeout_recovery": "passed",
+    "chat_failure_history": "passed",
+    "runtime_restart_persistence": "passed",
+    "delete_and_citation_snapshot": "passed",
+    "content_safe_logs_shutdown": "passed"
+  },
+  "public_boundary": {
+    "application_business_calls": "/api/v1 only",
+    "database_business_mutation": false,
+    "private_application_endpoint": false
+  },
+  "recorded_limits": [
+    "the deterministic provider proves orchestration and contracts, not real-provider quality or latency",
+    "browser rendering was manually accepted by Maxui; the reproducible suite uses real HTTP/SSE plus the separately automated frontend components",
+    "linux/amd64 remains recorded but was not executed"
+  ]
+}
