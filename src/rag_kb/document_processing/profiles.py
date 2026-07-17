@@ -20,16 +20,21 @@ UNSTRUCTURED_PARSER_CONFIG = {
 }
 
 UNSTRUCTURED_CHUNKING_CONFIG = {
-    "profile": "unstructured_by_title_v1",
+    "profile": "unstructured_by_title_token_v2",
     "strategy": "by_title",
-    "max_characters": 2_000,
-    "new_after_n_chars": 1_800,
-    "overlap": 200,
+    "max_tokens": 800,
+    "new_after_n_tokens": 600,
+    "tokenizer": "cl100k_base",
+    "tokenizer_library": "tiktoken",
+    "tokenizer_version": "0.13.0",
+    "overlap": 100,
+    "overlap_unit": "tokens",
     "overlap_all": False,
-    "combine_text_under_n_chars": 500,
+    "combine_text_under_n_chars": 300,
+    "combine_text_under_n_chars_unit": "characters",
     "multipage_sections": False,
     "include_orig_elements": True,
-    "metadata_policy": "bounded_v1",
+    "metadata_policy": "bounded_v2",
 }
 
 

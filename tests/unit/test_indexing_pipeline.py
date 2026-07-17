@@ -6,7 +6,7 @@ from dataclasses import replace
 from uuid import UUID, uuid4
 
 from rag_kb.adapters import FixedPgVectorSpace
-from rag_kb.document_processing import index_profile
+from rag_kb.document_processing import UNSTRUCTURED_CHUNKING_CONFIG, index_profile
 from rag_kb.domain import (
     EmbeddingBatch,
     EmbeddingSpaceDefinition,
@@ -33,6 +33,24 @@ CONTENT = b"first\n\nsecond"
 
 
 class IndexingDomainTests(unittest.TestCase):
+    def test_index_profile_uses_one_fixed_token_chunking_identity(self) -> None:
+        profile = index_profile()
+
+        self.assertEqual(
+            profile.chunking_config["profile"],
+            "unstructured_by_title_token_v2",
+        )
+        self.assertEqual(
+            (
+                profile.chunking_config["max_tokens"],
+                profile.chunking_config["new_after_n_tokens"],
+                profile.chunking_config["tokenizer"],
+            ),
+            (800, 600, "cl100k_base"),
+        )
+        self.assertNotIn("max_characters", UNSTRUCTURED_CHUNKING_CONFIG)
+        self.assertNotIn("new_after_n_chars", UNSTRUCTURED_CHUNKING_CONFIG)
+
     def test_stable_chunk_and_vector_business_keys(self) -> None:
         target = uuid4()
         space = uuid4()
@@ -74,6 +92,10 @@ class IndexingPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((replay.replayed, replay.chunk_count), (True, 2))
         self.assertEqual(len(repository.chunks), 2)
         self.assertEqual(len(repository.vectors), 2)
+        self.assertEqual(
+            [repository.chunks[ordinal].token_count for ordinal in range(2)],
+            [11, 12],
+        )
         self.assertEqual(provider.calls, 2)
         self.assertEqual(repository.status, "completed")
         self.assertEqual(
@@ -298,6 +320,7 @@ class _Processor:
             IndexChunkDraft(
                 ordinal=ordinal,
                 text=text,
+                token_count=ordinal + 11,
                 source_location={
                     "page_start": ordinal + 1,
                     "page_end": ordinal + 1,

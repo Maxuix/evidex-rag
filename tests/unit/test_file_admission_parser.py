@@ -13,6 +13,10 @@ from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
 from rag_kb.adapters import DocumentProcessor, IsolatedUnstructuredProcessor
 from rag_kb.adapters.parser.langchain_unstructured import process_with_unstructured
+from rag_kb.document_processing import (
+    UNSTRUCTURED_CHUNKING_CONFIG,
+    count_chunk_tokens,
+)
 from rag_kb.domain import (
     AdmissionLimits,
     ErrorCode,
@@ -280,6 +284,14 @@ class UnstructuredParserTests(unittest.TestCase):
                 self.assertTrue(all(chunk.text for chunk in first.chunks))
                 self.assertTrue(
                     all(
+                        chunk.token_count == count_chunk_tokens(chunk.text)
+                        and chunk.token_count
+                        <= UNSTRUCTURED_CHUNKING_CONFIG["max_tokens"]
+                        for chunk in first.chunks
+                    )
+                )
+                self.assertTrue(
+                    all(
                         chunk.processing_metadata["integration"]
                         == "langchain-unstructured"
                         for chunk in first.chunks
@@ -289,6 +301,32 @@ class UnstructuredParserTests(unittest.TestCase):
                     first.extracted_character_count,
                     sum(len(chunk.text) for chunk in first.chunks),
                 )
+
+    def test_long_mixed_text_uses_the_fixed_token_window(self) -> None:
+        source = ParserSource(
+            "mixed.md",
+            "text/markdown",
+            (
+                "# 统一窗口 / Unified Window\n\n"
+                + "这是统一 token 切分的中文证据。 English evidence uses the same window. "
+                * 70
+            ).encode(),
+        )
+
+        result = process_with_unstructured(source, ParserLimits())
+
+        self.assertGreater(len(result.chunks), 1)
+        self.assertTrue(
+            all(
+                chunk.token_count == count_chunk_tokens(chunk.text)
+                and chunk.token_count
+                <= UNSTRUCTURED_CHUNKING_CONFIG["max_tokens"]
+                for chunk in result.chunks
+            )
+        )
+        self.assertTrue(
+            all("languages" not in chunk.processing_metadata for chunk in result.chunks)
+        )
 
     def test_unicode_normalization_and_output_limits_fail_closed(self) -> None:
         source = ParserSource(

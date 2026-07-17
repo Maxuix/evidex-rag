@@ -12,7 +12,10 @@ from io import BytesIO
 from pathlib import PurePath
 from typing import Any
 
-from rag_kb.document_processing import UNSTRUCTURED_CHUNKING_CONFIG
+from rag_kb.document_processing import (
+    UNSTRUCTURED_CHUNKING_CONFIG,
+    count_chunk_tokens,
+)
 from rag_kb.domain import (
     ErrorCode,
     IndexChunkDraft,
@@ -61,8 +64,9 @@ def process_with_unstructured(
         strategy="fast",
         include_page_breaks=True,
         chunking_strategy="by_title",
-        max_characters=UNSTRUCTURED_CHUNKING_CONFIG["max_characters"],
-        new_after_n_chars=UNSTRUCTURED_CHUNKING_CONFIG["new_after_n_chars"],
+        max_tokens=UNSTRUCTURED_CHUNKING_CONFIG["max_tokens"],
+        new_after_n_tokens=UNSTRUCTURED_CHUNKING_CONFIG["new_after_n_tokens"],
+        tokenizer=UNSTRUCTURED_CHUNKING_CONFIG["tokenizer"],
         overlap=UNSTRUCTURED_CHUNKING_CONFIG["overlap"],
         overlap_all=UNSTRUCTURED_CHUNKING_CONFIG["overlap_all"],
         combine_text_under_n_chars=UNSTRUCTURED_CHUNKING_CONFIG[
@@ -80,6 +84,12 @@ def process_with_unstructured(
             text = _canonical_text(document.page_content)
             if not text:
                 continue
+            token_count = count_chunk_tokens(text)
+            if token_count > UNSTRUCTURED_CHUNKING_CONFIG["max_tokens"]:
+                raise ParserExecutionError(
+                    ErrorCode.PARSER_OUTPUT_INVALID,
+                    diagnostic={"check": "chunk_token_limit"},
+                )
             if len(drafts) >= limits.max_chunks:
                 raise ParserExecutionError(
                     ErrorCode.PARSER_CHUNK_LIMIT_EXCEEDED,
@@ -114,6 +124,7 @@ def process_with_unstructured(
                 IndexChunkDraft(
                     ordinal=len(drafts),
                     text=text,
+                    token_count=token_count,
                     source_location=source_location,
                     hierarchy=hierarchy,
                     processing_metadata=processing_metadata,
@@ -298,15 +309,6 @@ def _processing_metadata(
         "integration": "langchain-unstructured",
         "category": _safe_metadata_value(metadata.get("category")),
     }
-    languages = metadata.get("languages")
-    if isinstance(languages, (list, tuple)):
-        safe_languages = [
-            item
-            for item in languages
-            if isinstance(item, str) and _SAFE_VALUE.fullmatch(item)
-        ][:16]
-        if safe_languages:
-            result["languages"] = safe_languages
     element_types = sorted(
         {
             name

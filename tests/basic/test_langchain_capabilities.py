@@ -20,6 +20,7 @@ class _StructuredProbe(BaseModel):
 class LangChainCapabilityTests(unittest.IsolatedAsyncioTestCase):
     def test_langchain_unstructured_public_local_loader_capability(self) -> None:
         self.assertEqual(version("langchain-unstructured"), "1.0.1")
+        self.assertEqual(version("tiktoken"), "0.13.0")
         self.assertEqual(version("unstructured"), "0.24.1")
 
         loader = UnstructuredLoader(
@@ -29,11 +30,12 @@ class LangChainCapabilityTests(unittest.IsolatedAsyncioTestCase):
             partition_via_api=False,
             strategy="fast",
             chunking_strategy="by_title",
-            max_characters=2_000,
-            new_after_n_chars=1_800,
-            overlap=200,
+            max_tokens=800,
+            new_after_n_tokens=600,
+            tokenizer="cl100k_base",
+            overlap=100,
             overlap_all=False,
-            combine_text_under_n_chars=500,
+            combine_text_under_n_chars=300,
             multipage_sections=False,
             include_orig_elements=True,
         )

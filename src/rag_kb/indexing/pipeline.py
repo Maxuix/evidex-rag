@@ -302,7 +302,7 @@ class IndexingPipeline:
                     ordinal=draft.ordinal,
                     content=draft.text,
                     content_hash=draft.content_sha256,
-                    token_count=len(draft.text),
+                    token_count=draft.token_count,
                     source_location=dict(draft.source_location),
                     hierarchy=dict(draft.hierarchy),
                     source_metadata={

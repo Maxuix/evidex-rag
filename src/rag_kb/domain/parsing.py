@@ -46,6 +46,7 @@ class ParserSource:
 class IndexChunkDraft:
     ordinal: int
     text: str
+    token_count: int
     source_location: dict[str, Any]
     hierarchy: dict[str, Any]
     processing_metadata: dict[str, Any]
