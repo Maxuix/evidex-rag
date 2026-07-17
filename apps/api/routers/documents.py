@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 import tempfile
 from typing import Annotated, Literal
+import unicodedata
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, Query, Request
@@ -14,6 +15,7 @@ from apps.api.idempotency import RequiredIdempotencyKey
 from apps.api.openapi import problem_responses
 from apps.api.pagination import decode_cursor, encode_cursor
 from apps.api.security import get_auth_context
+from apps.api.upload_metadata import resolve_upload_metadata
 from rag_kb.auth import AuthContext
 from rag_kb.services import Document, DocumentMutationResult, FileAdmissionError
 from rag_kb.schemas import (
@@ -52,22 +54,34 @@ async def upload_document(
     kb_id: UUID,
     idempotency_key: RequiredIdempotencyKey,
     context: Annotated[AuthContext, Depends(get_auth_context)],
+    encoded_metadata: Annotated[
+        str | None,
+        Header(alias="X-Document-Metadata", min_length=1, max_length=4096),
+    ] = None,
     original_filename: Annotated[
-        str, Header(alias="X-Document-Filename", min_length=1, max_length=255)
-    ],
+        str | None,
+        Header(alias="X-Document-Filename", min_length=1, max_length=255),
+    ] = None,
     display_name: Annotated[
         str | None,
         Header(alias="X-Document-Display-Name", min_length=1, max_length=255),
     ] = None,
 ) -> DocumentUploadResponse:
+    metadata = resolve_upload_metadata(
+        encoded_metadata=encoded_metadata,
+        legacy_filename=original_filename,
+        legacy_display_name=display_name,
+    )
     return await _accept_upload(
         request,
         context=context,
         idempotency_key=idempotency_key,
         kb_id=kb_id,
         document_id=None,
-        original_filename=original_filename,
-        display_name=_clean_display_name(display_name or original_filename),
+        original_filename=metadata.original_filename,
+        display_name=_clean_display_name(
+            metadata.display_name or metadata.original_filename
+        ),
     )
 
 
@@ -83,14 +97,24 @@ async def upload_document_version(
     document_id: UUID,
     idempotency_key: RequiredIdempotencyKey,
     context: Annotated[AuthContext, Depends(get_auth_context)],
+    encoded_metadata: Annotated[
+        str | None,
+        Header(alias="X-Document-Metadata", min_length=1, max_length=4096),
+    ] = None,
     original_filename: Annotated[
-        str, Header(alias="X-Document-Filename", min_length=1, max_length=255)
-    ],
+        str | None,
+        Header(alias="X-Document-Filename", min_length=1, max_length=255),
+    ] = None,
     display_name: Annotated[
         str | None,
         Header(alias="X-Document-Display-Name", min_length=1, max_length=255),
     ] = None,
 ) -> DocumentUploadResponse:
+    metadata = resolve_upload_metadata(
+        encoded_metadata=encoded_metadata,
+        legacy_filename=original_filename,
+        legacy_display_name=display_name,
+    )
     document = await request.app.state.dependencies.document_service.get(
         context, document_id
     )
@@ -100,8 +124,10 @@ async def upload_document_version(
         idempotency_key=idempotency_key,
         kb_id=document.kb_id,
         document_id=document_id,
-        original_filename=original_filename,
-        display_name=_clean_display_name(display_name or document.display_name),
+        original_filename=metadata.original_filename,
+        display_name=_clean_display_name(
+            metadata.display_name or document.display_name
+        ),
     )
 
 
@@ -270,8 +296,15 @@ async def _accept_upload(
 
 
 def _clean_display_name(value: str) -> str:
-    cleaned = value.strip()
-    if not cleaned:
+    cleaned = unicodedata.normalize("NFC", value.strip())
+    if (
+        not cleaned
+        or len(cleaned) > 255
+        or any(
+            unicodedata.category(character) in {"Cc", "Cs"}
+            for character in cleaned
+        )
+    ):
         raise ApiProblem(
             code=ErrorCode.REQUEST_VALIDATION_FAILED,
             status=422,

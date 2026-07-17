@@ -2373,13 +2373,38 @@
           },
           {
             "in": "header",
-            "name": "X-Document-Filename",
-            "required": true,
+            "name": "X-Document-Metadata",
+            "required": false,
             "schema": {
-              "maxLength": 255,
-              "minLength": 1,
-              "title": "X-Document-Filename",
-              "type": "string"
+              "anyOf": [
+                {
+                  "maxLength": 4096,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Document-Metadata"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Document-Filename",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 255,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Document-Filename"
             }
           },
           {
@@ -3037,13 +3062,38 @@
           },
           {
             "in": "header",
-            "name": "X-Document-Filename",
-            "required": true,
+            "name": "X-Document-Metadata",
+            "required": false,
             "schema": {
-              "maxLength": 255,
-              "minLength": 1,
-              "title": "X-Document-Filename",
-              "type": "string"
+              "anyOf": [
+                {
+                  "maxLength": 4096,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Document-Metadata"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Document-Filename",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 255,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Document-Filename"
             }
           },
           {

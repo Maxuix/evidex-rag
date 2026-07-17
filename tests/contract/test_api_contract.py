@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import unittest
 from dataclasses import dataclass
@@ -67,6 +68,19 @@ from rag_kb.retrieval import RetrievalExecutionError
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 WORKSPACE = UUID("01900000-0000-7000-8000-000000000001")
 ALLOWED_ORIGIN = "http://127.0.0.1:3000"
+
+
+def _encode_upload_metadata(
+    filename: str,
+    display_name: str | None = None,
+    *,
+    version: int = 1,
+) -> str:
+    payload: dict[str, object] = {"v": version, "filename": filename}
+    if display_name is not None:
+        payload["display_name"] = display_name
+    raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
 
 
 class ExampleInput(BaseModel):
@@ -529,8 +543,7 @@ class ApiContractTests(unittest.IsolatedAsyncioTestCase):
                 "origin": ALLOWED_ORIGIN,
                 "access-control-request-method": "GET",
                 "access-control-request-headers": (
-                    "content-type,idempotency-key,x-document-filename,"
-                    "x-document-display-name"
+                    "content-type,idempotency-key,x-document-metadata"
                 ),
             },
         )
@@ -1124,14 +1137,20 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
             headers={
                 "idempotency-key": str(uuid4()),
                 "content-type": "text/markdown; charset=utf-8",
-                "x-document-filename": "guide.md",
-                "x-document-display-name": "Guide",
+                "x-document-metadata": _encode_upload_metadata(
+                    "项目说明（终版）.md",
+                    "项目说明",
+                ),
             },
             raw_body=b"# Guide\ncontent",
         )
         self.assertEqual(uploaded.status, 202)
         self.assertEqual(uploaded.json()["job_status"], "queued")
-        self.assertEqual(uploaded.json()["document"]["display_name"], "Guide")
+        self.assertEqual(uploaded.json()["document"]["display_name"], "项目说明")
+        self.assertEqual(
+            uploaded.json()["document"]["current_version"]["original_filename"],
+            "项目说明（终版）.md",
+        )
 
         versioned = await request(
             self.app,
@@ -1146,6 +1165,72 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(versioned.status, 202)
         self.assertEqual(len(self.dependencies.source_file_service.calls), 2)
+
+    async def test_upload_metadata_rejects_invalid_or_ambiguous_values_before_handoff(
+        self,
+    ) -> None:
+        value = _document_value()
+        missing = await request(
+            self.app,
+            "POST",
+            f"{API_PREFIX}/knowledge-bases/{value.kb_id}/documents",
+            headers={
+                "idempotency-key": str(uuid4()),
+                "content-type": "text/markdown",
+            },
+            raw_body=b"safe",
+        )
+        self.assertEqual(missing.status, 422)
+        self.assertEqual(missing.json()["code"], "REQUEST_VALIDATION_FAILED")
+        self.assertEqual(missing.json()["errors"][0]["error_type"], "missing")
+
+        invalid_utf8 = base64.urlsafe_b64encode(b"\xff").rstrip(b"=").decode()
+        invalid_values = (
+            ("%%%", {}, "upload_metadata_encoding"),
+            (invalid_utf8, {}, "upload_metadata_utf8"),
+            (
+                _encode_upload_metadata("guide.md", version=2),
+                {},
+                "upload_metadata_version",
+            ),
+            (
+                _encode_upload_metadata("bad\nname.md"),
+                {},
+                None,
+            ),
+            (
+                _encode_upload_metadata("guide.md", "x" * 256),
+                {},
+                None,
+            ),
+            (
+                _encode_upload_metadata("guide.md"),
+                {"x-document-filename": "guide.md"},
+                "upload_metadata_conflict",
+            ),
+        )
+        for metadata, extra_headers, error_type in invalid_values:
+            with self.subTest(error_type=error_type, metadata=metadata):
+                response = await request(
+                    self.app,
+                    "POST",
+                    f"{API_PREFIX}/knowledge-bases/{value.kb_id}/documents",
+                    headers={
+                        "idempotency-key": str(uuid4()),
+                        "content-type": "text/markdown",
+                        "x-document-metadata": metadata,
+                        **extra_headers,
+                    },
+                    raw_body=b"safe",
+                )
+                self.assertEqual(response.status, 422)
+                if error_type is not None:
+                    self.assertEqual(response.json()["code"], "REQUEST_VALIDATION_FAILED")
+                    self.assertEqual(
+                        response.json()["errors"][0]["error_type"],
+                        error_type,
+                    )
+        self.assertEqual(self.dependencies.source_file_service.calls, [])
 
     async def test_upload_admission_failures_are_problem_details_and_do_not_handoff(self) -> None:
         value = _document_value()

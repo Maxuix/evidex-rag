@@ -259,8 +259,6 @@ export class ApiClient {
     displayName: string,
     idempotencyKey: UUID,
   ): Promise<DocumentUpload> {
-    assertSafeHeaderValue(file.name, "filename");
-    assertSafeHeaderValue(displayName, "display name");
     const extension = file.name.toLowerCase().split(".").pop();
     const mediaType = extension === "md"
       ? "text/markdown"
@@ -277,8 +275,7 @@ export class ApiClient {
       headers: {
         "Content-Type": mediaType,
         "Idempotency-Key": idempotencyKey,
-        "X-Document-Filename": file.name,
-        "X-Document-Display-Name": displayName,
+        "X-Document-Metadata": encodeUploadMetadata(file.name, displayName),
       },
       body: file,
     });
@@ -360,13 +357,20 @@ function isApiPath(pathname: string): boolean {
   return pathname === API_PATH || pathname.startsWith(`${API_PATH}/`);
 }
 
-function assertSafeHeaderValue(value: string, label: string): void {
-  if (!value || !/^[\x20-\x7E]+$/.test(value)) {
-    throw new ApiClientError(
-      `The document ${label} must use printable ASCII characters in this local release.`,
-      { code: "FRONTEND_HEADER_VALUE_UNSUPPORTED" },
-    );
+function encodeUploadMetadata(filename: string, displayName: string): string {
+  const bytes = new TextEncoder().encode(JSON.stringify({
+    v: 1,
+    filename,
+    display_name: displayName,
+  }));
+  let binary = "";
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
   }
+  return btoa(binary)
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
 }
 
 async function problemFromResponse(response: Response): Promise<ApiClientError> {

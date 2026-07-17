@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from pathlib import PurePath
 from typing import BinaryIO
+import unicodedata
 
 from rag_kb.domain import (
     AdmittedFile,
@@ -29,11 +30,15 @@ class FileAdmissionService:
         original_filename: str,
         media_type: str,
     ) -> AdmittedFile:
-        filename = original_filename.strip()
+        filename = unicodedata.normalize("NFC", original_filename.strip())
         if (
             not _FILENAME.fullmatch(filename)
             or PurePath(filename).name != filename
             or filename in {".", ".."}
+            or any(
+                unicodedata.category(character) in {"Cc", "Cs"}
+                for character in filename
+            )
         ):
             raise FileAdmissionError(ErrorCode.FILE_NAME_INVALID)
 

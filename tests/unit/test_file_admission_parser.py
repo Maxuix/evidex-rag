@@ -93,6 +93,27 @@ class FileAdmissionTests(unittest.TestCase):
                 self.assertEqual(admitted.line_count, lines)
                 self.assertEqual(source.tell(), 0)
 
+    def test_unicode_filename_is_normalized_and_control_characters_are_rejected(
+        self,
+    ) -> None:
+        admitted = self.service.validate(
+            io.BytesIO(b"ok"),
+            original_filename="re\u0301sume\u0301-报告-📄.md",
+            media_type="text/markdown",
+        )
+        self.assertEqual(admitted.original_filename, "résumé-报告-📄.md")
+
+        for filename in ("bad\nname.txt", "bad\u007fname.txt", "bad\ud800name.txt"):
+            with self.subTest(filename=repr(filename)), self.assertRaises(
+                FileAdmissionError
+            ) as raised:
+                self.service.validate(
+                    io.BytesIO(b"ok"),
+                    original_filename=filename,
+                    media_type="text/plain",
+                )
+            self.assertEqual(raised.exception.code, ErrorCode.FILE_NAME_INVALID)
+
     def test_format_media_utf8_size_and_line_failures_are_stable(self) -> None:
         cases = (
             ("../guide.txt", "text/plain", b"ok", ErrorCode.FILE_NAME_INVALID),

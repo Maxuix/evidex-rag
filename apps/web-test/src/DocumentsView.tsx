@@ -357,7 +357,7 @@ export function DocumentsView({
               }}
             />
             <span className="field-hint">
-              This release requires printable ASCII in filename headers.
+              Unicode filenames are supported for UTF-8 .txt and .md files.
             </span>
           </label>
           <label>
