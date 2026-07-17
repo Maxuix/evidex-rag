@@ -32,17 +32,23 @@ class OpenAICompatibleChatModelAdapter:
         timeout_seconds: float,
         max_retries: int,
         max_concurrency: int,
+        temperature: float = 0.1,
+        max_tokens: int = 2048,
         retryable_statuses: frozenset[int] = frozenset({429, 500, 503}),
     ) -> None:
         if not api_key or not model:
             raise ValueError("chat API key and model are required")
         if timeout_seconds <= 0 or max_concurrency <= 0 or max_retries < 0:
             raise ValueError("chat provider limits are invalid")
+        if not 0.0 <= temperature <= 2.0 or max_tokens <= 0:
+            raise ValueError("chat generation limits are invalid")
         self._url = f"{base_url.rstrip('/')}/chat/completions"
         self._api_key = api_key
         self._model = model
         self._timeout_seconds = timeout_seconds
         self._max_retries = max_retries
+        self._temperature = temperature
+        self._max_tokens = max_tokens
         self._retryable_statuses = retryable_statuses
         self._semaphore = asyncio.Semaphore(max_concurrency)
 
@@ -81,6 +87,8 @@ class OpenAICompatibleChatModelAdapter:
                     {"role": item.role, "content": item.content}
                     for item in request_value.messages
                 ],
+                "temperature": self._temperature,
+                "max_tokens": self._max_tokens,
                 "response_format": {"type": "json_object"},
                 "stream": False,
             },

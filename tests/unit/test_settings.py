@@ -104,6 +104,8 @@ class SettingsTests(unittest.TestCase):
         )
         self.assertEqual(settings.maintenance.batch_size, 100)
         self.assertEqual(settings.maintenance.task_retention_seconds, 604_800)
+        self.assertEqual(settings.model_provider.chat.temperature, 0.1)
+        self.assertEqual(settings.model_provider.chat.max_tokens, 2048)
         self.assertEqual(settings.model_adapter_backend, "langchain")
         self.assertEqual(settings.chat_workflow_backend, "langgraph")
 
@@ -403,6 +405,27 @@ class SettingsTests(unittest.TestCase):
                     _env_file=None,
                     **{**payload, "model_provider": providers},
                 )
+
+    def test_chat_generation_limits_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for generation_override in (
+                {"temperature": -0.1},
+                {"temperature": 2.1},
+                {"max_tokens": 0},
+            ):
+                payload = valid_payload(root)
+                providers = copy.deepcopy(payload["model_provider"])
+                assert isinstance(providers, dict)
+                chat = providers["chat"]
+                assert isinstance(chat, dict)
+                chat.update(generation_override)
+                with self.subTest(generation_override=generation_override):
+                    with self.assertRaises(ValidationError):
+                        Settings(
+                            _env_file=None,
+                            **{**payload, "model_provider": providers},
+                        )
 
 
 class StartupValidationTests(unittest.TestCase):

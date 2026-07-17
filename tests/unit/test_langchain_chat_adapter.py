@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import unittest
+from unittest.mock import patch
 
 import httpx
 import openai
@@ -79,6 +80,27 @@ def _adapter(
 
 
 class LangChainChatAdapterTests(unittest.IsolatedAsyncioTestCase):
+    def test_constructor_configures_knowledge_base_generation_limits(self) -> None:
+        model = _FakeChatModel(_message())
+        with patch(
+            "rag_kb.adapters.model_api.langchain_chat.ChatOpenAI",
+            return_value=model,
+        ) as constructor:
+            LangChainChatModelAdapter(
+                base_url="https://provider.invalid/v1",
+                api_key="secret",
+                model="configured-model",
+                timeout_seconds=30,
+                max_retries=2,
+                max_concurrency=2,
+                temperature=0.1,
+                max_tokens=2048,
+            )
+
+        arguments = constructor.call_args.kwargs
+        self.assertEqual(arguments["temperature"], 0.1)
+        self.assertEqual(arguments["extra_body"], {"max_tokens": 2048})
+
     async def test_real_chatopenai_json_mode_round_trip_uses_public_api(self) -> None:
         def respond(request: httpx.Request) -> httpx.Response:
             payload = json.loads(request.content)

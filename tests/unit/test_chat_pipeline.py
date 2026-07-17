@@ -5,6 +5,7 @@ import json
 import time
 import unittest
 from datetime import UTC, datetime
+from unittest.mock import patch
 from uuid import uuid4
 
 from rag_kb.adapters.model_api.openai_compatible_chat import (
@@ -244,6 +245,35 @@ class ChatModelAdapterTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ChatModelExecutionError) as raised:
             self.adapter()._decode(b"{}", provider_request_id=None)
         self.assertEqual(raised.exception.code, ErrorCode.CHAT_RESPONSE_INVALID)
+
+    def test_request_includes_knowledge_base_generation_limits(self) -> None:
+        class _Response:
+            headers = {"x-request-id": "request-1"}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args) -> None:
+                return None
+
+            def read(self, limit: int) -> bytes:
+                return (
+                    b'{"model":"fixed-model","choices":['
+                    b'{"message":{"content":"{}"},"finish_reason":"stop"}]}'
+                )
+
+        with patch(
+            "rag_kb.adapters.model_api.openai_compatible_chat.urlopen",
+            return_value=_Response(),
+        ) as request_call:
+            self.adapter()._request(
+                ChatModelRequest((ChatModelMessage("user", "hello"),))
+            )
+
+        request = request_call.call_args.args[0]
+        payload = json.loads(request.data)
+        self.assertEqual(payload["temperature"], 0.1)
+        self.assertEqual(payload["max_tokens"], 2048)
 
     async def test_retry_is_finite_and_concurrency_is_bounded(self) -> None:
         adapter = self.adapter()

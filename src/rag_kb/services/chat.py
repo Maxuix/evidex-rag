@@ -223,7 +223,7 @@ class ChatService:
         self._access_policy.metadata_filter(context)
 
 
-def chat_model_configuration(settings: Any) -> dict[str, str]:
+def chat_model_configuration(settings: Any) -> dict[str, Any]:
     """Return the reproducibility snapshot without endpoint URLs or secrets."""
 
     return {
@@ -232,6 +232,8 @@ def chat_model_configuration(settings: Any) -> dict[str, str]:
         "requested_model": settings.model,
         "resolved_model": settings.resolved_model,
         "model_version": settings.model_version,
+        "temperature": settings.temperature,
+        "max_tokens": settings.max_tokens,
         "structured_output_mode": settings.structured_output_mode,
         "configuration_fingerprint": settings.configuration_fingerprint,
         "capability_fingerprint": settings.capability_fingerprint,

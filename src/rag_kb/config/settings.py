@@ -357,6 +357,8 @@ class ChatProviderSettings(ProviderSettings):
     model: Literal["deepseek-v4-flash"] = "deepseek-v4-flash"
     resolved_model: Literal["deepseek-v4-flash"] = "deepseek-v4-flash"
     model_version: Literal["DeepSeek-V4-Flash"] = "DeepSeek-V4-Flash"
+    temperature: Annotated[float, Field(ge=0.0, le=2.0)] = 0.1
+    max_tokens: PositiveInt = 2048
     structured_output_mode: Literal["json_object"] = "json_object"
     configuration_fingerprint: Literal[
         "sha256:f65fee43dc8b5886c78ceb1116514e407d539d7f4b9378a8b8073e2de8620b04"

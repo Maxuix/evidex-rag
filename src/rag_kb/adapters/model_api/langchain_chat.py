@@ -42,6 +42,8 @@ class LangChainChatModelAdapter:
         timeout_seconds: float,
         max_retries: int,
         max_concurrency: int,
+        temperature: float = 0.1,
+        max_tokens: int = 2048,
         structured_output_mode: str = "json_object",
         chat_model: BaseChatModel | None = None,
     ) -> None:
@@ -49,6 +51,8 @@ class LangChainChatModelAdapter:
             raise ValueError("chat API key and model are required")
         if timeout_seconds <= 0 or max_concurrency <= 0 or max_retries < 0:
             raise ValueError("chat provider limits are invalid")
+        if not 0.0 <= temperature <= 2.0 or max_tokens <= 0:
+            raise ValueError("chat generation limits are invalid")
         if structured_output_mode not in {"json_object", "json_schema"}:
             raise ValueError("unsupported structured output mode")
         self._timeout_seconds = timeout_seconds
@@ -63,8 +67,10 @@ class LangChainChatModelAdapter:
             base_url=base_url,
             timeout=timeout_seconds,
             max_retries=max_retries,
+            temperature=temperature,
             include_response_headers=True,
             use_responses_api=False,
+            extra_body={"max_tokens": max_tokens},
             model_kwargs={"response_format": {"type": "json_object"}},
         )
 

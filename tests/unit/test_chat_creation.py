@@ -142,6 +142,8 @@ class ChatCreationContractTests(unittest.TestCase):
             model="requested",
             resolved_model="resolved",
             model_version="version",
+            temperature=0.1,
+            max_tokens=2048,
             structured_output_mode="json_object",
             configuration_fingerprint="sha256:configuration",
             capability_fingerprint="sha256:capability",
@@ -152,6 +154,8 @@ class ChatCreationContractTests(unittest.TestCase):
         )
         snapshot = chat_model_configuration(settings)
         self.assertEqual(snapshot["resolved_model"], "resolved")
+        self.assertEqual(snapshot["temperature"], 0.1)
+        self.assertEqual(snapshot["max_tokens"], 2048)
         self.assertNotIn("base_url", snapshot)
         self.assertNotIn("api_key", snapshot)
         self.assertNotIn("timeout_seconds", snapshot)

@@ -163,6 +163,8 @@ def build_worker_dependencies(
         "timeout_seconds": chat_settings.timeout_seconds,
         "max_retries": chat_settings.max_retries,
         "max_concurrency": chat_settings.max_concurrency,
+        "temperature": chat_settings.temperature,
+        "max_tokens": chat_settings.max_tokens,
     }
     if resolved_settings.model_adapter_backend == "langchain":
         chat_model_adapter = LangChainChatModelAdapter(
