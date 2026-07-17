@@ -15,7 +15,6 @@ from rag_kb.adapters import (
     IsolatedPlainTextProcessor,
     LangChainChatModelAdapter,
     LocalFileStore,
-    OpenAICompatibleChatModelAdapter,
     OpenAICompatibleEmbeddingProvider,
     PgVectorStore,
 )
@@ -49,7 +48,6 @@ from rag_kb.services import (
     ChatResultPersistenceStep,
     ChatRunCoordinator,
     CosineEvidenceAssessmentStep,
-    DirectChatPipeline,
     FileReconciliationService,
     ParserLimits,
     RetrievalService,
@@ -57,7 +55,7 @@ from rag_kb.services import (
     embedding_space_definition,
 )
 from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWorkFactory
-from rag_kb.workflows import DirectGraphRunner, GraphRunner, LangGraphRunner
+from rag_kb.workflows import GraphRunner, LangGraphRunner
 
 
 @dataclass(frozen=True)
@@ -82,7 +80,6 @@ class WorkerDependencies:
     structure_validator: AnswerStructureValidationStep
     result_persister: ChatResultPersistenceStep
     failure_settler: ChatFailureSettlementService
-    chat_pipeline: DirectChatPipeline
     chat_runner: GraphRunner
     chat_scheduler: ChatRunScheduler
     indexing_pipeline: IndexingPipeline
@@ -166,15 +163,10 @@ def build_worker_dependencies(
         "temperature": chat_settings.temperature,
         "max_tokens": chat_settings.max_tokens,
     }
-    if resolved_settings.model_adapter_backend == "langchain":
-        chat_model_adapter = LangChainChatModelAdapter(
-            **chat_adapter_arguments,
-            structured_output_mode=chat_settings.structured_output_mode,
-        )
-    else:
-        chat_model_adapter = OpenAICompatibleChatModelAdapter(
-            **chat_adapter_arguments,
-        )
+    chat_model_adapter = LangChainChatModelAdapter(
+        **chat_adapter_arguments,
+        structured_output_mode=chat_settings.structured_output_mode,
+    )
     indexing_pipeline = IndexingPipeline(
         unit_of_work,
         file_store,
@@ -213,7 +205,7 @@ def build_worker_dependencies(
     chat_coordinator = ChatRunCoordinator(unit_of_work)
     context_loader = ChatExecutionContextLoader(unit_of_work)
     evidence_retriever = ChatEvidenceRetriever(retrieval_service)
-    chat_pipeline = DirectChatPipeline(
+    chat_runner = LangGraphRunner(
         context_loader,
         evidence_retriever,
         evidence_assessor,
@@ -222,18 +214,6 @@ def build_worker_dependencies(
         result_persister,
         deadline_seconds=poller.chat_deadline_seconds,
     )
-    if resolved_settings.chat_workflow_backend == "langgraph":
-        chat_runner = LangGraphRunner(
-            context_loader,
-            evidence_retriever,
-            evidence_assessor,
-            answer_generator,
-            structure_validator,
-            result_persister,
-            deadline_seconds=poller.chat_deadline_seconds,
-        )
-    else:
-        chat_runner = DirectGraphRunner(chat_pipeline)
     chat_scheduler = ChatRunScheduler(
         chat_coordinator,
         chat_runner,
@@ -303,7 +283,6 @@ def build_worker_dependencies(
         structure_validator=structure_validator,
         result_persister=result_persister,
         failure_settler=failure_settler,
-        chat_pipeline=chat_pipeline,
         chat_runner=chat_runner,
         chat_scheduler=chat_scheduler,
         indexing_pipeline=indexing_pipeline,

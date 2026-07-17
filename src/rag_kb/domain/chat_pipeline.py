@@ -1,4 +1,4 @@
-"""Immutable contracts for one claimed direct chat execution."""
+"""Immutable contracts for one claimed LangGraph chat execution."""
 
 from __future__ import annotations
 
@@ -143,7 +143,7 @@ class ChatModelResponse:
 
 
 class ChatPipelineExecutionError(RuntimeError):
-    """Stable, content-safe failure at a direct pipeline boundary."""
+    """Stable, content-safe failure at the Chat pipeline boundary."""
 
     def __init__(
         self,

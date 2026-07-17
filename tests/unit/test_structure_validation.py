@@ -36,7 +36,7 @@ from rag_kb.domain import (
     EvidencePack,
     RetrievalStrategy,
 )
-from rag_kb.services import DirectChatPipeline
+from rag_kb.workflows import LangGraphRunner
 
 
 class _Model:
@@ -539,11 +539,11 @@ class StructureValidationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(failed.exception.phase, ChatPipelinePhase.VALIDATE_STRUCTURE)
         self.assertNotIn("not-json", str(failed.exception.diagnostic))
 
-    async def test_concrete_validator_runs_inside_direct_pipeline(self) -> None:
+    async def test_concrete_validator_runs_inside_langgraph_pipeline(self) -> None:
         context = _context()
         pack = _pack(context)
         model = _Model(_response(_answered()))
-        pipeline = DirectChatPipeline(
+        runner = LangGraphRunner(
             _Loader(context),  # type: ignore[arg-type]
             _Retriever(pack),  # type: ignore[arg-type]
             CosineEvidenceAssessmentStep(0.6),
@@ -553,7 +553,7 @@ class StructureValidationTests(unittest.IsolatedAsyncioTestCase):
             deadline_seconds=1,
         )
 
-        result = await pipeline.execute(
+        result = await runner.execute(
             ChatExecutionCommand(context.lease)
         )
 

@@ -33,12 +33,11 @@ from rag_kb.services.content import (
     embedding_space_definition,
 )
 from rag_kb.services.chat import ChatService, chat_model_configuration
-from rag_kb.services.chat_pipeline import (
+from rag_kb.services.chat_execution import (
     ChatEvidenceRetriever,
     ChatExecutionContextLoader,
     ChatPipelineStep,
     ChatRunCoordinator,
-    DirectChatPipeline,
 )
 from rag_kb.services.chat_delivery import (
     ChatSseConnectionLimiter,
@@ -67,7 +66,6 @@ __all__ = [
     "ChatExecutionContextLoader",
     "ChatPipelineStep",
     "ChatRunCoordinator",
-    "DirectChatPipeline",
     "ChatFailureSettlementService",
     "ChatResultPersistenceStep",
     "ChatSseConnectionLimiter",

@@ -11,7 +11,7 @@ from rag_kb.domain import (
     ChatPipelineState,
     ErrorCode,
 )
-from rag_kb.services.chat_pipeline import (
+from rag_kb.services.chat_execution import (
     ChatEvidenceRetriever,
     ChatExecutionContextLoader,
     ChatPipelineStep,

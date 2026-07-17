@@ -1,8 +1,7 @@
-"""Application services for claimed direct chat execution."""
+"""Application services for claimed LangGraph chat execution."""
 
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime
 from typing import Protocol
 
@@ -164,76 +163,3 @@ class ChatEvidenceRetriever:
             )
         return pack
 
-
-class DirectChatPipeline:
-    """Execute the frozen P1A sequence without checkpoint or graph recovery."""
-
-    def __init__(
-        self,
-        context_loader: ChatExecutionContextLoader,
-        evidence_retriever: ChatEvidenceRetriever,
-        evidence_assessor: ChatPipelineStep,
-        answer_generator: ChatPipelineStep,
-        structure_validator: ChatPipelineStep,
-        result_persister: ChatPipelineStep,
-        *,
-        deadline_seconds: float,
-    ) -> None:
-        if deadline_seconds <= 0:
-            raise ValueError("chat pipeline deadline must be positive")
-        self._context_loader = context_loader
-        self._evidence_retriever = evidence_retriever
-        self._steps = (
-            (ChatPipelinePhase.ASSESS_EVIDENCE, evidence_assessor),
-            (ChatPipelinePhase.GENERATE_OR_REFUSE, answer_generator),
-            (ChatPipelinePhase.VALIDATE_STRUCTURE, structure_validator),
-            (ChatPipelinePhase.PERSIST_RESULT, result_persister),
-        )
-        self._deadline_seconds = deadline_seconds
-
-    async def execute(self, command: ChatExecutionCommand) -> ChatPipelineState:
-        phase = ChatPipelinePhase.LOAD_CONTEXT
-        state: ChatPipelineState | None = None
-        try:
-            async with asyncio.timeout(self._deadline_seconds):
-                context = await self._context_loader.load(command)
-                if context.lease != command.lease:
-                    raise ChatPipelineExecutionError(
-                        ErrorCode.CHAT_CONTEXT_INVALID,
-                        phase=ChatPipelinePhase.LOAD_CONTEXT,
-                        diagnostic={"check": "claimed_lease"},
-                    )
-                phase = ChatPipelinePhase.RETRIEVE_EVIDENCE
-                pack = await self._evidence_retriever.retrieve(context)
-                state = ChatPipelineState(context=context, evidence_pack=pack)
-                for phase, step in self._steps:
-                    state = await step.run(state)
-                    if (
-                        not isinstance(state, ChatPipelineState)
-                        or state.context is not context
-                        or state.evidence_pack is not pack
-                    ):
-                        raise TypeError("chat pipeline step changed frozen inputs")
-                return state
-        except TimeoutError as error:
-            failure = ChatPipelineExecutionError(
-                ErrorCode.CHAT_PIPELINE_DEADLINE_EXCEEDED,
-                phase=phase,
-                diagnostic={"check": "task_deadline"},
-            )
-            if state is not None and state.answering is not None:
-                failure.retain_model_calls(state.answering.model_calls)
-            raise failure from error
-        except ChatPipelineExecutionError as error:
-            if state is not None and state.answering is not None:
-                error.retain_model_calls(state.answering.model_calls)
-            raise
-        except Exception as error:
-            failure = ChatPipelineExecutionError(
-                ErrorCode.CHAT_PIPELINE_STEP_FAILED,
-                phase=phase,
-                diagnostic={"check": "step_contract"},
-            )
-            if state is not None and state.answering is not None:
-                failure.retain_model_calls(state.answering.model_calls)
-            raise failure from error

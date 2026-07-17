@@ -23,7 +23,7 @@ from rag_kb.domain import (
     EvidencePack,
     RetrievalStrategy,
 )
-from rag_kb.services import DirectChatPipeline
+from rag_kb.workflows import LangGraphRunner
 
 
 class _Model:
@@ -165,13 +165,13 @@ async def _assess_and_generate(
 
 
 class AnswerPolicyRoutingTests(unittest.IsolatedAsyncioTestCase):
-    async def test_concrete_steps_run_inside_the_fixed_direct_pipeline(self) -> None:
+    async def test_concrete_steps_run_inside_the_fixed_langgraph_pipeline(self) -> None:
         context = _context(insufficiency="partial_answer")
         pack = _pack(context, "complete evidence")
         model = _Model(
             _response('{"unvalidated":true}', request_id="generation"),
         )
-        pipeline = DirectChatPipeline(
+        runner = LangGraphRunner(
             _Loader(context),  # type: ignore[arg-type]
             _Retriever(pack),  # type: ignore[arg-type]
             CosineEvidenceAssessmentStep(0.6),
@@ -182,7 +182,7 @@ class AnswerPolicyRoutingTests(unittest.IsolatedAsyncioTestCase):
         )
         command = ChatExecutionCommand(context.lease)
 
-        result = await pipeline.execute(command)
+        result = await runner.execute(command)
 
         assert result.answering is not None
         assert result.answering.draft is not None

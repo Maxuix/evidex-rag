@@ -19,8 +19,7 @@ from rag_kb.domain import (
     EvidenceCoverage,
     EvidencePack,
 )
-from rag_kb.services import DirectChatPipeline
-from rag_kb.workflows import DirectGraphRunner, LangGraphRunner
+from rag_kb.workflows import LangGraphRunner
 from rag_kb.workflows.chat_graph import CHAT_GRAPH_NODES
 from tests.unit.test_answering import (
     _Model,
@@ -93,7 +92,6 @@ def _answer(outcome: AnswerOutcome) -> str:
 
 
 def _build(
-    kind: str,
     *,
     context,
     pack: EvidencePack,
@@ -118,9 +116,6 @@ def _build(
         validator,
         persister,
     )
-    if kind == "direct":
-        pipeline = DirectChatPipeline(*values, deadline_seconds=deadline)  # type: ignore[arg-type]
-        return DirectGraphRunner(pipeline), model, persister
     return (
         LangGraphRunner(*values, deadline_seconds=deadline),  # type: ignore[arg-type]
         model,
@@ -129,7 +124,7 @@ def _build(
 
 
 class LangGraphRunnerTests(unittest.IsolatedAsyncioTestCase):
-    async def test_direct_and_langgraph_answer_routes_are_equivalent(self) -> None:
+    async def test_answer_routes_cover_generation_refusal_and_repair(self) -> None:
         cases = (
             (
                 "sufficient",
@@ -158,26 +153,18 @@ class LangGraphRunnerTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(name=name):
                 context = _context(insufficiency="partial_answer")
                 pack = _pack(context, *texts)
-                results = []
-                call_counts = []
-                for kind in ("direct", "langgraph"):
-                    runner, model, persister = _build(
-                        kind,
-                        context=context,
-                        pack=pack,
-                        responses=responses,
-                    )
-                    result = await runner.execute(ChatExecutionCommand(context.lease))
-                    self.assertEqual(persister.calls, 1)
-                    results.append(result)
-                    call_counts.append(len(model.requests))
+                runner, model, persister = _build(
+                    context=context,
+                    pack=pack,
+                    responses=responses,
+                )
+                result = await runner.execute(ChatExecutionCommand(context.lease))
 
-                direct, graph = results
-                self.assertEqual(direct.answering, graph.answering)
-                self.assertEqual(direct.artifacts, graph.artifacts)
-                self.assertEqual(call_counts[0], call_counts[1])
+                self.assertEqual(persister.calls, 1)
+                self.assertTrue(result.artifacts["persisted"])
+                self.assertEqual(len(model.requests), len(responses))
 
-    async def test_errors_deadline_and_revision_mapping_match_direct(self) -> None:
+    async def test_errors_and_deadline_map_to_the_active_phase(self) -> None:
         context = _context()
         pack = _pack(context, "evidence")
         cases = (
@@ -215,27 +202,26 @@ class LangGraphRunnerTests(unittest.IsolatedAsyncioTestCase):
         )
         for name, overrides, retriever, assessor, code, phase in cases:
             with self.subTest(name=name):
-                observed = []
-                for kind in ("direct", "langgraph"):
-                    runner, _, _ = _build(
-                        kind,
-                        context=context,
-                        pack=pack,
-                        responses=(),
-                        retriever=retriever,
-                        assessor=assessor,
-                        **overrides,
-                    )
-                    with self.assertRaises(ChatPipelineExecutionError) as raised:
-                        await runner.execute(ChatExecutionCommand(context.lease))
-                    observed.append((raised.exception.code, raised.exception.phase))
-                    self.assertNotIn("sensitive", str(raised.exception.diagnostic))
-                self.assertEqual(observed, [(code, phase), (code, phase)])
+                runner, _, _ = _build(
+                    context=context,
+                    pack=pack,
+                    responses=(),
+                    retriever=retriever,
+                    assessor=assessor,
+                    **overrides,
+                )
+                with self.assertRaises(ChatPipelineExecutionError) as raised:
+                    await runner.execute(ChatExecutionCommand(context.lease))
+
+                self.assertEqual(
+                    (raised.exception.code, raised.exception.phase),
+                    (code, phase),
+                )
+                self.assertNotIn("sensitive", str(raised.exception.diagnostic))
 
     async def test_graph_is_fixed_compiled_once_and_has_no_checkpointer(self) -> None:
         context = _context()
         runner, _, _ = _build(
-            "langgraph",
             context=context,
             pack=_pack(context),
         )

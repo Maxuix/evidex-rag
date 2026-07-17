@@ -12,15 +12,12 @@ from pydantic import ValidationError
 
 from apps.api.dependencies import build_api_dependencies
 from apps.worker.dependencies import build_worker_dependencies
-from rag_kb.adapters import (
-    LangChainChatModelAdapter,
-    OpenAICompatibleChatModelAdapter,
-)
+from rag_kb.adapters import LangChainChatModelAdapter
 from rag_kb.config import StartupConfigurationError, validate_startup_environment
 from rag_kb.config.settings import Settings, load_settings
 from rag_kb.db import DatabaseProcess
 from rag_kb.domain import WorkLane
-from rag_kb.workflows import DirectGraphRunner, LangGraphRunner
+from rag_kb.workflows import LangGraphRunner
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -106,8 +103,6 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.maintenance.task_retention_seconds, 604_800)
         self.assertEqual(settings.model_provider.chat.temperature, 0.1)
         self.assertEqual(settings.model_provider.chat.max_tokens, 2048)
-        self.assertEqual(settings.model_adapter_backend, "langchain")
-        self.assertEqual(settings.chat_workflow_backend, "langgraph")
 
     def test_maintenance_retention_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -204,23 +199,20 @@ class SettingsTests(unittest.TestCase):
                     "https://embedding.example.invalid/v1"
                 ),
                 "RAG_KB__MODEL_PROVIDER__EMBEDDING__API_KEY": "embedding-secret",
-                "RAG_KB__MODEL_ADAPTER_BACKEND": "langchain",
-                "RAG_KB__CHAT_WORKFLOW_BACKEND": "langgraph",
             }
             with patch.dict(os.environ, environment, clear=True):
                 settings = load_settings(env_file=None)
 
         self.assertEqual(settings.file_store.root_path, root)
         self.assertEqual(settings.model_provider.chat.model, "deepseek-v4-flash")
-        self.assertEqual(settings.model_adapter_backend, "langchain")
-        self.assertEqual(settings.chat_workflow_backend, "langgraph")
 
-    def test_unknown_ai_implementation_backends_fail_closed(self) -> None:
+    def test_removed_ai_implementation_switches_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for override in (
-                {"model_adapter_backend": "automatic"},
-                {"chat_workflow_backend": "agent"},
+                {"model_adapter_backend": "langchain"},
+                {"chat_workflow_backend": "langgraph"},
+                {"workflow": {"runner": "direct"}},
             ):
                 with self.subTest(override=override), self.assertRaises(
                     ValidationError
@@ -232,9 +224,7 @@ class SettingsTests(unittest.TestCase):
             settings = load_settings(env_file=PROJECT_ROOT / ".env.example")
 
         self.assertEqual(settings.database.runtime_role, "rag_kb_runtime")
-        self.assertEqual(settings.workflow.runner, "direct")
-        self.assertEqual(settings.model_adapter_backend, "langchain")
-        self.assertEqual(settings.chat_workflow_backend, "langgraph")
+        self.assertEqual(settings.model_provider.chat.model, "deepseek-v4-flash")
 
     def test_non_development_and_non_loopback_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -326,13 +316,11 @@ class SettingsTests(unittest.TestCase):
                 with self.subTest(flag=flag), self.assertRaises(ValidationError):
                     build_settings(root, delivery_reliability={flag: True})
 
-    def test_later_retrieval_and_workflow_features_cannot_be_enabled(self) -> None:
+    def test_later_retrieval_features_cannot_be_enabled(self) -> None:
         overrides = (
             {"vector_store": {"hnsw_enabled": True}},
             {"retrieval": {"hybrid_enabled": True}},
             {"retrieval": {"rerank_enabled": True}},
-            {"workflow": {"langgraph_enabled": True}},
-            {"workflow": {"checkpoint_recovery_enabled": True}},
         )
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -429,32 +417,21 @@ class SettingsTests(unittest.TestCase):
 
 
 class StartupValidationTests(unittest.TestCase):
-    def test_all_chat_backend_combinations_compose(self) -> None:
-        cases = (
-            ("legacy", "direct", OpenAICompatibleChatModelAdapter, DirectGraphRunner),
-            ("langchain", "direct", LangChainChatModelAdapter, DirectGraphRunner),
-            ("legacy", "langgraph", OpenAICompatibleChatModelAdapter, LangGraphRunner),
-            ("langchain", "langgraph", LangChainChatModelAdapter, LangGraphRunner),
-        )
+    def test_worker_composes_only_the_active_chat_path(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "staging").mkdir()
             (root / "final").mkdir()
-            for model_backend, workflow_backend, adapter_type, runner_type in cases:
-                with self.subTest(
-                    model_backend=model_backend,
-                    workflow_backend=workflow_backend,
-                ):
-                    settings = build_settings(
-                        root,
-                        model_adapter_backend=model_backend,
-                        chat_workflow_backend=workflow_backend,
-                    )
-                    worker = build_worker_dependencies(settings)
-                    self.assertIsInstance(worker.chat_model_adapter, adapter_type)
-                    self.assertIsInstance(worker.chat_runner, runner_type)
-                    self.assertIs(worker.chat_scheduler._runner, worker.chat_runner)
-                    asyncio.run(worker.close())
+            worker = build_worker_dependencies(build_settings(root))
+
+            self.assertIsInstance(
+                worker.chat_model_adapter,
+                LangChainChatModelAdapter,
+            )
+            self.assertIsInstance(worker.chat_runner, LangGraphRunner)
+            self.assertIs(worker.chat_scheduler._runner, worker.chat_runner)
+            self.assertIsNone(worker.chat_runner._graph.checkpointer)
+            asyncio.run(worker.close())
 
     def test_missing_storage_fails_without_provisioning(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -522,7 +499,7 @@ class StartupValidationTests(unittest.TestCase):
                 worker.unit_of_work,
             )
             self.assertIs(
-                worker.chat_pipeline._evidence_retriever._retrieval,
+                worker.chat_runner._evidence_retriever._retrieval,
                 worker.retrieval_service,
             )
             self.assertIs(
@@ -549,36 +526,6 @@ class StartupValidationTests(unittest.TestCase):
 
         self.assertTrue(api.database._closed)
         self.assertTrue(worker.database._closed)
-
-    def test_worker_selects_langchain_chat_adapter_by_process_setting(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            (root / "staging").mkdir()
-            (root / "final").mkdir()
-            settings = build_settings(root, model_adapter_backend="langchain")
-
-            worker = build_worker_dependencies(settings)
-
-            self.assertIsInstance(
-                worker.chat_model_adapter,
-                LangChainChatModelAdapter,
-            )
-            asyncio.run(worker.close())
-
-    def test_worker_selects_compiled_langgraph_runner_by_process_setting(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            (root / "staging").mkdir()
-            (root / "final").mkdir()
-            settings = build_settings(root, chat_workflow_backend="langgraph")
-
-            worker = build_worker_dependencies(settings)
-
-            self.assertIsInstance(worker.chat_runner, LangGraphRunner)
-            self.assertIs(worker.chat_scheduler._runner, worker.chat_runner)
-            self.assertIsNone(worker.chat_runner._graph.checkpointer)
-            asyncio.run(worker.close())
-
 
 if __name__ == "__main__":
     unittest.main()

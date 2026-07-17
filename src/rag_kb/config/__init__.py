@@ -1,12 +1,7 @@
 """Typed configuration and deployment-profile boundary."""
 
 from rag_kb.config.profiles import DeploymentProfile
-from rag_kb.config.settings import (
-    ChatWorkflowBackend,
-    ModelAdapterBackend,
-    Settings,
-    load_settings,
-)
+from rag_kb.config.settings import Settings, load_settings
 from rag_kb.config.validation import (
     StartupConfigurationError,
     StartupValidation,
@@ -15,8 +10,6 @@ from rag_kb.config.validation import (
 
 __all__ = [
     "DeploymentProfile",
-    "ChatWorkflowBackend",
-    "ModelAdapterBackend",
     "Settings",
     "StartupConfigurationError",
     "StartupValidation",
