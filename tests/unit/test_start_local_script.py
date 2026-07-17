@@ -101,13 +101,10 @@ class StartLocalScriptTests(unittest.TestCase):
                 calls,
             )
             self.assertIn(
-                f"compose --env-file {state_file} up -d storage-init",
+                f"compose --env-file {state_file} up storage-init",
                 calls,
             )
-            self.assertIn(
-                f"compose --env-file {state_file} wait storage-init",
-                calls,
-            )
+            self.assertNotIn("wait storage-init", calls)
             self.assertIn(
                 f"compose --env-file {state_file} --profile tools run --rm migrate",
                 calls,
