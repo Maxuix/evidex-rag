@@ -190,23 +190,25 @@ def _deny_network() -> None:
 
 
 def _configure_environment(scratch: str) -> None:
+    tiktoken_cache_dir = os.environ.get("TIKTOKEN_CACHE_DIR")
+    isolated_environment = {
+        "HOME": scratch,
+        "HF_HOME": scratch,
+        "HF_HUB_OFFLINE": "1",
+        "MKL_NUM_THREADS": "1",
+        "MPLCONFIGDIR": scratch,
+        "NUMBA_CACHE_DIR": scratch,
+        "NUMEXPR_NUM_THREADS": "1",
+        "OMP_NUM_THREADS": "1",
+        "OPENBLAS_NUM_THREADS": "1",
+        "TOKENIZERS_PARALLELISM": "false",
+        "TRANSFORMERS_OFFLINE": "1",
+        "XDG_CACHE_HOME": scratch,
+    }
+    if tiktoken_cache_dir is not None:
+        isolated_environment["TIKTOKEN_CACHE_DIR"] = tiktoken_cache_dir
     os.environ.clear()
-    os.environ.update(
-        {
-            "HOME": scratch,
-            "HF_HOME": scratch,
-            "HF_HUB_OFFLINE": "1",
-            "MKL_NUM_THREADS": "1",
-            "MPLCONFIGDIR": scratch,
-            "NUMBA_CACHE_DIR": scratch,
-            "NUMEXPR_NUM_THREADS": "1",
-            "OMP_NUM_THREADS": "1",
-            "OPENBLAS_NUM_THREADS": "1",
-            "TOKENIZERS_PARALLELISM": "false",
-            "TRANSFORMERS_OFFLINE": "1",
-            "XDG_CACHE_HOME": scratch,
-        }
-    )
+    os.environ.update(isolated_environment)
 
 
 def _verify_isolation(scratch: str) -> None:
@@ -224,8 +226,20 @@ def _verify_isolation(scratch: str) -> None:
         "TRANSFORMERS_OFFLINE",
         "XDG_CACHE_HOME",
     }
+    tiktoken_cache_dir = os.environ.get("TIKTOKEN_CACHE_DIR")
+    if tiktoken_cache_dir is not None:
+        expected_keys.add("TIKTOKEN_CACHE_DIR")
+        if (
+            not os.path.isabs(tiktoken_cache_dir)
+            or not os.path.isdir(tiktoken_cache_dir)
+        ):
+            raise ParserExecutionError(
+                ErrorCode.PARSER_ISOLATION_FAILED,
+                diagnostic={"check": "tokenizer_cache"},
+            )
     if set(os.environ) != expected_keys or any(
-        key.endswith(("HOME", "CACHE_HOME", "CONFIGDIR", "CACHE_DIR"))
+        key != "TIKTOKEN_CACHE_DIR"
+        and key.endswith(("HOME", "CACHE_HOME", "CONFIGDIR", "CACHE_DIR"))
         and value != scratch
         for key, value in os.environ.items()
     ):

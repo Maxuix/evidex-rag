@@ -4,14 +4,17 @@ import io
 import os
 import signal
 import sys
+import tempfile
 import time
 import unittest
+from unittest.mock import patch
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
 from rag_kb.adapters import DocumentProcessor, IsolatedUnstructuredProcessor
+from rag_kb.adapters.parser.isolated import _configure_environment
 from rag_kb.adapters.parser.langchain_unstructured import process_with_unstructured
 from rag_kb.document_processing import (
     UNSTRUCTURED_CHUNKING_CONFIG,
@@ -351,6 +354,47 @@ class UnstructuredParserTests(unittest.TestCase):
 
 
 class IsolatedParserTests(unittest.IsolatedAsyncioTestCase):
+    async def test_environment_preserves_only_the_tokenizer_cache_path(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as scratch,
+            tempfile.TemporaryDirectory() as tokenizer_cache,
+            patch.dict(
+                os.environ,
+                {
+                    "RAG_KB_SECRET_TEST": "credential-must-not-leak",
+                    "TIKTOKEN_CACHE_DIR": tokenizer_cache,
+                },
+                clear=True,
+            ),
+        ):
+            _configure_environment(scratch)
+
+            self.assertEqual(os.environ["TIKTOKEN_CACHE_DIR"], tokenizer_cache)
+            self.assertEqual(os.environ["HOME"], scratch)
+            self.assertNotIn("RAG_KB_SECRET_TEST", os.environ)
+
+    async def test_invalid_tokenizer_cache_path_fails_isolation(self) -> None:
+        processor = IsolatedUnstructuredProcessor(ParserLimits())
+        with (
+            patch.dict(
+                os.environ,
+                {"TIKTOKEN_CACHE_DIR": "relative-tokenizer-cache"},
+            ),
+            self.assertRaises(ParserExecutionError) as raised,
+        ):
+            await processor.process(
+                ParserSource("guide.txt", "text/plain", b"isolated parser")
+            )
+
+        self.assertEqual(
+            raised.exception.code,
+            ErrorCode.PARSER_ISOLATION_FAILED,
+        )
+        self.assertEqual(
+            raised.exception.diagnostic,
+            {"check": "tokenizer_cache"},
+        )
+
     async def test_supported_input_runs_through_the_isolated_contract(self) -> None:
         processor = IsolatedUnstructuredProcessor(
             ParserLimits(
