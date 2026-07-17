@@ -73,6 +73,7 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.model_provider.embedding.metric, "cosine")
         self.assertTrue(settings.vector_store.exact_search)
         self.assertFalse(settings.vector_store.hnsw_enabled)
+        self.assertEqual(settings.retrieval.min_cosine_similarity, 0.60)
         self.assertEqual(settings.identity.provider, "development_fixed")
         self.assertEqual(settings.identity.workspace_id.version, 7)
         self.assertEqual(
@@ -339,6 +340,16 @@ class SettingsTests(unittest.TestCase):
                 ):
                     build_settings(root, **override)
 
+    def test_cosine_evidence_threshold_is_bounded(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for value in (-1.01, 1.01):
+                with self.subTest(value=value), self.assertRaises(ValidationError):
+                    build_settings(
+                        root,
+                        retrieval={"min_cosine_similarity": value},
+                    )
+
     def test_file_store_paths_must_share_one_logical_root(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -467,9 +478,9 @@ class StartupValidationTests(unittest.TestCase):
                 worker.unit_of_work().workspace_id,
                 worker_context.workspace_id,
             )
-            self.assertIs(
-                worker.evidence_assessor._model,
-                worker.chat_model_adapter,
+            self.assertEqual(
+                worker.evidence_assessor._min_cosine_similarity,
+                settings.retrieval.min_cosine_similarity,
             )
             self.assertIs(
                 worker.answer_generator._model,

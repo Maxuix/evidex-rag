@@ -1,10 +1,8 @@
-"""Concrete W04 evidence-assessment and generation pipeline steps."""
+"""Deterministic evidence admission and grounded generation pipeline steps."""
 
 from __future__ import annotations
 
 import json
-
-from pydantic import ValidationError
 
 from rag_kb.adapters.model_api import ChatModelAdapter
 from rag_kb.answering.model_execution import (
@@ -13,11 +11,9 @@ from rag_kb.answering.model_execution import (
     require_frozen_model,
 )
 from rag_kb.answering.prompt_builder import (
-    build_assessment_request,
     build_evidence_envelope,
     build_generation_request,
 )
-from rag_kb.answering.wire_schemas import WireEvidenceAssessment
 from rag_kb.domain import (
     AnswerControlReason,
     AnswerDraftCandidate,
@@ -30,7 +26,6 @@ from rag_kb.domain import (
     ChatPipelineExecutionError,
     ChatPipelinePhase,
     ChatPipelineState,
-    ErrorCode,
     EvidenceAssessment,
     EvidenceCoverage,
     EvidenceEnvelope,
@@ -39,42 +34,38 @@ from rag_kb.domain import (
 )
 
 
-class EvidenceAssessmentStep:
-    def __init__(self, model: ChatModelAdapter) -> None:
-        self._model = model
+class CosineEvidenceAssessmentStep:
+    """Admit retrieved evidence whose cosine similarity meets a fixed threshold."""
+
+    def __init__(self, min_cosine_similarity: float) -> None:
+        if not -1.0 <= min_cosine_similarity <= 1.0:
+            raise ValueError("min_cosine_similarity must be between -1 and 1")
+        self._min_cosine_similarity = float(min_cosine_similarity)
 
     async def run(self, state: ChatPipelineState) -> ChatPipelineState:
         context, pack = _require_inputs(state, ChatPipelinePhase.ASSESS_EVIDENCE)
         evidence = build_evidence_envelope(pack)
-        if not evidence.items:
+        usable_citation_ids = tuple(
+            item.citation_id
+            for item in evidence.items
+            if item.score is not None
+            and item.score >= self._min_cosine_similarity
+        )
+        if not usable_citation_ids:
             assessment = EvidenceAssessment(
                 coverage=EvidenceCoverage.NONE,
                 usable_citation_ids=(),
                 supported_aspects=(),
                 missing_aspects=(),
             )
-            answering = ChatAnsweringState(evidence=evidence, assessment=assessment)
         else:
-            response = await complete_model(
-                self._model,
-                build_assessment_request(context, evidence),
-                phase=ChatPipelinePhase.ASSESS_EVIDENCE,
+            assessment = EvidenceAssessment(
+                coverage=EvidenceCoverage.SUFFICIENT,
+                usable_citation_ids=usable_citation_ids,
+                supported_aspects=("question",),
+                missing_aspects=(),
             )
-            call = model_call_record(ChatModelOperation.ASSESS_EVIDENCE, response)
-            try:
-                require_frozen_model(
-                    context, response, phase=ChatPipelinePhase.ASSESS_EVIDENCE
-                )
-                assessment = _parse_assessment(response.content, evidence)
-            except ChatPipelineExecutionError as error:
-                raise error.retain_model_calls((call,))
-            answering = ChatAnsweringState(
-                evidence=evidence,
-                assessment=assessment,
-                model_calls=(
-                    call,
-                ),
-            )
+        answering = ChatAnsweringState(evidence=evidence, assessment=assessment)
         return ChatPipelineState(
             context=context,
             evidence_pack=pack,
@@ -138,27 +129,6 @@ class AnswerGenerationStep:
             ),
             artifacts=state.artifacts,
         )
-
-
-def _parse_assessment(raw_json: str, evidence: EvidenceEnvelope) -> EvidenceAssessment:
-    try:
-        value = WireEvidenceAssessment.model_validate_json(raw_json, strict=True)
-        assessment = EvidenceAssessment(
-            coverage=EvidenceCoverage(value.coverage),
-            usable_citation_ids=tuple(value.usable_citation_ids),
-            supported_aspects=tuple(value.supported_aspects),
-            missing_aspects=tuple(value.missing_aspects),
-        )
-        if not set(assessment.usable_citation_ids) <= evidence.citation_ids:
-            raise ValueError
-    except (ValidationError, ValueError) as error:
-        raise ChatPipelineExecutionError(
-            ErrorCode.CHAT_ASSESSMENT_INVALID,
-            phase=ChatPipelinePhase.ASSESS_EVIDENCE,
-            diagnostic={"check": "assessment_structure"},
-        ) from error
-    return assessment
-
 
 def _route(
     coverage: EvidenceCoverage, insufficiency: InsufficiencyPolicy

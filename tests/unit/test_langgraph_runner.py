@@ -7,7 +7,7 @@ import unittest
 from rag_kb.answering import (
     AnswerGenerationStep,
     AnswerStructureValidationStep,
-    EvidenceAssessmentStep,
+    CosineEvidenceAssessmentStep,
 )
 from rag_kb.domain import (
     AnswerOutcome,
@@ -24,7 +24,6 @@ from rag_kb.workflows import DirectGraphRunner, LangGraphRunner
 from rag_kb.workflows.chat_graph import CHAT_GRAPH_NODES
 from tests.unit.test_answering import (
     _Model,
-    _assessment,
     _context,
     _pack,
     _response,
@@ -107,7 +106,7 @@ def _build(
     model = _Model(*responses)
     context_loader = loader or _Loader(context)
     evidence_retriever = retriever or _Retriever(pack)
-    evidence_assessor = assessor or EvidenceAssessmentStep(model)
+    evidence_assessor = assessor or CosineEvidenceAssessmentStep(0.6)
     answer_generator = AnswerGenerationStep(model)
     validator = AnswerStructureValidationStep(model)
     persister = _Persister()
@@ -134,45 +133,28 @@ class LangGraphRunnerTests(unittest.IsolatedAsyncioTestCase):
         cases = (
             (
                 "sufficient",
-                EvidenceCoverage.SUFFICIENT,
                 ("evidence",),
-                (_response(_assessment(EvidenceCoverage.SUFFICIENT)), _response(_answer(AnswerOutcome.ANSWERED))),
+                (_response(_answer(AnswerOutcome.ANSWERED)),),
             ),
-            (
-                "partial",
-                EvidenceCoverage.PARTIAL,
-                ("partial evidence",),
-                (_response(_assessment(EvidenceCoverage.PARTIAL)), _response(_answer(AnswerOutcome.PARTIAL))),
-            ),
-            ("no_evidence", EvidenceCoverage.NONE, (), ()),
-            (
-                "ambiguous",
-                EvidenceCoverage.AMBIGUOUS,
-                ("evidence",),
-                (_response(_assessment(EvidenceCoverage.AMBIGUOUS)),),
-            ),
+            ("no_evidence", (), ()),
             (
                 "repair_success",
-                EvidenceCoverage.SUFFICIENT,
                 ("evidence",),
                 (
-                    _response(_assessment(EvidenceCoverage.SUFFICIENT)),
                     _response("not-json"),
                     _response(_answer(AnswerOutcome.ANSWERED)),
                 ),
             ),
             (
                 "repair_fallback",
-                EvidenceCoverage.SUFFICIENT,
                 ("evidence",),
                 (
-                    _response(_assessment(EvidenceCoverage.SUFFICIENT)),
                     _response("not-json"),
                     _response('{"still":"invalid"}'),
                 ),
             ),
         )
-        for name, _coverage, texts, responses in cases:
+        for name, texts, responses in cases:
             with self.subTest(name=name):
                 context = _context(insufficiency="partial_answer")
                 pack = _pack(context, *texts)

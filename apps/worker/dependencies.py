@@ -48,8 +48,8 @@ from rag_kb.services import (
     ChatFailureSettlementService,
     ChatResultPersistenceStep,
     ChatRunCoordinator,
+    CosineEvidenceAssessmentStep,
     DirectChatPipeline,
-    EvidenceAssessmentStep,
     FileReconciliationService,
     ParserLimits,
     RetrievalService,
@@ -77,7 +77,7 @@ class WorkerDependencies:
     vector_store: PgVectorStore
     retrieval_service: RetrievalService
     chat_model_adapter: ChatModelAdapter
-    evidence_assessor: EvidenceAssessmentStep
+    evidence_assessor: CosineEvidenceAssessmentStep
     answer_generator: AnswerGenerationStep
     structure_validator: AnswerStructureValidationStep
     result_persister: ChatResultPersistenceStep
@@ -196,7 +196,9 @@ def build_worker_dependencies(
         embedding_provider,
         vector_store,
     )
-    evidence_assessor = EvidenceAssessmentStep(chat_model_adapter)
+    evidence_assessor = CosineEvidenceAssessmentStep(
+        resolved_settings.retrieval.min_cosine_similarity
+    )
     answer_generator = AnswerGenerationStep(chat_model_adapter)
     structure_validator = AnswerStructureValidationStep(chat_model_adapter)
     result_persister = ChatResultPersistenceStep(unit_of_work)

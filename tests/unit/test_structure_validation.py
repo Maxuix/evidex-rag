@@ -8,7 +8,7 @@ from uuid import uuid4
 from rag_kb.answering import (
     AnswerGenerationStep,
     AnswerStructureValidationStep,
-    EvidenceAssessmentStep,
+    CosineEvidenceAssessmentStep,
     build_evidence_envelope,
 )
 from rag_kb.domain import (
@@ -542,19 +542,11 @@ class StructureValidationTests(unittest.IsolatedAsyncioTestCase):
     async def test_concrete_validator_runs_inside_direct_pipeline(self) -> None:
         context = _context()
         pack = _pack(context)
-        assessment = json.dumps(
-            {
-                "coverage": "sufficient",
-                "usable_citation_ids": ["cite_1"],
-                "supported_aspects": ["policy"],
-                "missing_aspects": [],
-            }
-        )
-        model = _Model(_response(assessment), _response(_answered()))
+        model = _Model(_response(_answered()))
         pipeline = DirectChatPipeline(
             _Loader(context),  # type: ignore[arg-type]
             _Retriever(pack),  # type: ignore[arg-type]
-            EvidenceAssessmentStep(model),
+            CosineEvidenceAssessmentStep(0.6),
             AnswerGenerationStep(model),
             AnswerStructureValidationStep(model),
             _PassStep(),
@@ -568,7 +560,7 @@ class StructureValidationTests(unittest.IsolatedAsyncioTestCase):
         assert result.answering is not None
         assert result.answering.rendered is not None
         self.assertEqual(result.answering.rendered.outcome, AnswerOutcome.ANSWERED)
-        self.assertEqual(len(result.answering.model_calls), 2)
+        self.assertEqual(len(result.answering.model_calls), 1)
 
 
 if __name__ == "__main__":

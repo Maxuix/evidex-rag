@@ -25,7 +25,6 @@ class ChatPipelinePhase(StrEnum):
 
 
 class ChatOutputSchema(StrEnum):
-    ASSESSMENT_V1 = "assessment_v1"
     ANSWER_V1 = "answer_v1"
 
 

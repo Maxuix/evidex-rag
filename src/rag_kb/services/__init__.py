@@ -3,7 +3,7 @@
 from rag_kb.answering import (
     AnswerGenerationStep,
     AnswerStructureValidationStep,
-    EvidenceAssessmentStep,
+    CosineEvidenceAssessmentStep,
 )
 
 from rag_kb.domain import (
@@ -80,7 +80,7 @@ __all__ = [
     "DocumentMutationResult",
     "DocumentService",
     "ErrorCode",
-    "EvidenceAssessmentStep",
+    "CosineEvidenceAssessmentStep",
     "EvaluationPersistenceService",
     "FileReconciliationService",
     "IndexingJobService",

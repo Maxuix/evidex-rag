@@ -51,3 +51,14 @@ The reset command permanently removes local application data.
 
 See the [local development guide](docs/release/local-development-guide.md) for
 configuration, sample import, and troubleshooting.
+
+## Project Documentation
+
+- [Current complete architecture](docs/Enterprise-knowledge-base-design.md)
+- [Current execution tracker](docs/implementation-plans/EXECUTION-TRACKER.md)
+- [Implementation-plan workflow and template](docs/implementation-plans/README.md)
+
+The architecture document records current implementation facts, the tracker
+records the active plan and phase, and a dated implementation plan must be
+created before each new work item. Keep all three synchronized with changes in
+the same work.

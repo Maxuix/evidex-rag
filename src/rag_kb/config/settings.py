@@ -400,6 +400,7 @@ class ModelProviderSettings(StrictSettingsModel):
 class RetrievalSettings(StrictSettingsModel):
     strategy: Literal["exact_vector"] = "exact_vector"
     top_k: Annotated[int, Field(ge=1, le=100)] = 10
+    min_cosine_similarity: Annotated[float, Field(ge=-1.0, le=1.0)] = 0.60
     hybrid_enabled: DisabledFlag = False
     rerank_enabled: DisabledFlag = False
 

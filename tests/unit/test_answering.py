@@ -2,25 +2,22 @@ from __future__ import annotations
 
 import json
 import unittest
+from dataclasses import replace
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from rag_kb.answering import AnswerGenerationStep, EvidenceAssessmentStep
+from rag_kb.answering import AnswerGenerationStep, CosineEvidenceAssessmentStep
 from rag_kb.domain import (
     AnswerControlReason,
     AnswerDraftSource,
     AnswerOutcome,
     ChatExecutionCommand,
     ChatExecutionContext,
-    ChatModelExecutionError,
     ChatModelRequest,
     ChatModelResponse,
     ChatOutputSchema,
-    ChatPipelineExecutionError,
-    ChatPipelinePhase,
     ChatPipelineState,
     ChatRunLease,
-    ErrorCode,
     Evidence,
     EvidenceCoverage,
     EvidencePack,
@@ -142,39 +139,28 @@ def _response(content: str, *, request_id: str = "request-1") -> ChatModelRespon
     )
 
 
-def _assessment(coverage: EvidenceCoverage) -> str:
-    values = {
-        EvidenceCoverage.SUFFICIENT: {
-            "usable_citation_ids": ["cite_1"],
-            "supported_aspects": ["policy and deadline"],
-            "missing_aspects": [],
-        },
-        EvidenceCoverage.PARTIAL: {
-            "usable_citation_ids": ["cite_1"],
-            "supported_aspects": ["policy"],
-            "missing_aspects": ["deadline"],
-        },
-        EvidenceCoverage.NONE: {
-            "usable_citation_ids": [],
-            "supported_aspects": [],
-            "missing_aspects": ["policy and deadline"],
-        },
-        EvidenceCoverage.AMBIGUOUS: {
-            "usable_citation_ids": [],
-            "supported_aspects": [],
-            "missing_aspects": ["which policy"],
-        },
-    }[coverage]
-    return json.dumps({"coverage": coverage.value, **values})
+def _pack_with_scores(
+    context: ChatExecutionContext, *scores: float
+) -> EvidencePack:
+    pack = _pack(context, *(f"evidence {rank}" for rank in range(1, len(scores) + 1)))
+    return replace(
+        pack,
+        evidence=tuple(
+            replace(item, score=score)
+            for item, score in zip(pack.evidence, scores, strict=True)
+        ),
+    )
 
 
 async def _assess_and_generate(
     context: ChatExecutionContext,
     pack: EvidencePack,
     model: _Model,
+    *,
+    min_cosine_similarity: float = 0.6,
 ) -> ChatPipelineState:
     state = ChatPipelineState(context=context, evidence_pack=pack)
-    state = await EvidenceAssessmentStep(model).run(state)
+    state = await CosineEvidenceAssessmentStep(min_cosine_similarity).run(state)
     return await AnswerGenerationStep(model).run(state)
 
 
@@ -183,13 +169,12 @@ class AnswerPolicyRoutingTests(unittest.IsolatedAsyncioTestCase):
         context = _context(insufficiency="partial_answer")
         pack = _pack(context, "complete evidence")
         model = _Model(
-            _response(_assessment(EvidenceCoverage.SUFFICIENT)),
             _response('{"unvalidated":true}', request_id="generation"),
         )
         pipeline = DirectChatPipeline(
             _Loader(context),  # type: ignore[arg-type]
             _Retriever(pack),  # type: ignore[arg-type]
-            EvidenceAssessmentStep(model),
+            CosineEvidenceAssessmentStep(0.6),
             AnswerGenerationStep(model),
             _PassStep(),
             _PassStep(),
@@ -204,13 +189,9 @@ class AnswerPolicyRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             result.answering.draft.expected_outcome, AnswerOutcome.ANSWERED
         )
-        self.assertEqual(len(result.answering.model_calls), 2)
+        self.assertEqual(len(result.answering.model_calls), 1)
         self.assertEqual(
             model.requests[0].output_schema,
-            ChatOutputSchema.ASSESSMENT_V1,
-        )
-        self.assertEqual(
-            model.requests[1].output_schema,
             ChatOutputSchema.ANSWER_V1,
         )
 
@@ -235,91 +216,64 @@ class AnswerPolicyRoutingTests(unittest.IsolatedAsyncioTestCase):
                 )
                 self.assertEqual(model.requests, [])
 
-    async def test_all_coverage_and_policy_routes_are_fail_closed(self) -> None:
-        cases = (
-            (EvidenceCoverage.SUFFICIENT, "refuse", AnswerOutcome.ANSWERED, 2),
-            (
-                EvidenceCoverage.SUFFICIENT,
-                "partial_answer",
-                AnswerOutcome.ANSWERED,
-                2,
-            ),
-            (
-                EvidenceCoverage.PARTIAL,
-                "refuse",
-                AnswerOutcome.REFUSED,
-                1,
-            ),
-            (
-                EvidenceCoverage.PARTIAL,
-                "partial_answer",
-                AnswerOutcome.PARTIAL,
-                2,
-            ),
-            (EvidenceCoverage.NONE, "refuse", AnswerOutcome.REFUSED, 1),
-            (
-                EvidenceCoverage.NONE,
-                "partial_answer",
-                AnswerOutcome.REFUSED,
-                1,
-            ),
-            (EvidenceCoverage.AMBIGUOUS, "refuse", AnswerOutcome.REFUSED, 1),
-            (
-                EvidenceCoverage.AMBIGUOUS,
-                "partial_answer",
-                AnswerOutcome.REFUSED,
-                1,
-            ),
+    async def test_threshold_is_inclusive_and_assessment_never_calls_model(self) -> None:
+        context = _context()
+        state = ChatPipelineState(
+            context=context,
+            evidence_pack=_pack_with_scores(context, 0.61, 0.60, 0.59),
         )
-        for coverage, insufficiency, outcome, call_count in cases:
-            with self.subTest(coverage=coverage, insufficiency=insufficiency):
-                context = _context(insufficiency=insufficiency)
-                model = _Model(
-                    _response(_assessment(coverage), request_id="assessment"),
-                    _response('{"unvalidated":true}', request_id="generation"),
-                )
 
-                result = await _assess_and_generate(
-                    context, _pack(context, "policy evidence"), model
-                )
+        result = await CosineEvidenceAssessmentStep(0.60).run(state)
 
-                assert result.answering is not None
-                assert result.answering.draft is not None
-                self.assertEqual(result.answering.draft.expected_outcome, outcome)
-                self.assertEqual(len(model.requests), call_count)
-                self.assertEqual(len(result.answering.model_calls), call_count)
-                if outcome is AnswerOutcome.REFUSED:
-                    self.assertEqual(
-                        result.answering.draft.source,
-                        AnswerDraftSource.DETERMINISTIC,
-                    )
-                    self.assertEqual(
-                        json.loads(result.answering.draft.raw_json)["claims"], []
-                    )
-                else:
-                    self.assertEqual(
-                        result.answering.draft.raw_json, '{"unvalidated":true}'
-                    )
+        assert result.answering is not None
+        self.assertEqual(
+            result.answering.assessment.coverage,
+            EvidenceCoverage.SUFFICIENT,
+        )
+        self.assertEqual(
+            result.answering.assessment.usable_citation_ids,
+            ("cite_1", "cite_2"),
+        )
+        self.assertEqual(result.answering.model_calls, ())
 
-    async def test_partial_generation_receives_only_supported_evidence(self) -> None:
+    async def test_evidence_below_threshold_refuses_without_model_call(self) -> None:
+        context = _context()
+        model = _Model()
+
+        result = await _assess_and_generate(
+            context,
+            _pack_with_scores(context, 0.59, 0.10),
+            model,
+        )
+
+        assert result.answering is not None
+        assert result.answering.draft is not None
+        self.assertEqual(result.answering.assessment.coverage, EvidenceCoverage.NONE)
+        self.assertEqual(
+            result.answering.draft.control_reason,
+            AnswerControlReason.NO_USABLE_EVIDENCE,
+        )
+        self.assertEqual(model.requests, [])
+
+    async def test_generation_receives_only_evidence_above_threshold(self) -> None:
         context = _context(
             insufficiency="partial_answer", answer_style="summary"
         )
         model = _Model(
-            _response(_assessment(EvidenceCoverage.PARTIAL)),
-            _response('{"outcome":"partial"}', request_id="generation"),
+            _response('{"outcome":"answered"}', request_id="generation"),
         )
 
         result = await _assess_and_generate(
             context,
-            _pack(context, "supported policy", "unrelated deadline"),
+            _pack_with_scores(context, 0.89, 0.88),
             model,
+            min_cosine_similarity=0.885,
         )
 
-        generation_payload = json.loads(model.requests[1].messages[1].content)
-        self.assertEqual(generation_payload["required_outcome"], "partial")
+        generation_payload = json.loads(model.requests[0].messages[1].content)
+        self.assertEqual(generation_payload["required_outcome"], "answered")
         self.assertEqual(generation_payload["answer_style"], "summary")
-        self.assertEqual(generation_payload["missing_aspects"], ["deadline"])
+        self.assertEqual(generation_payload["missing_aspects"], [])
         self.assertEqual(
             [item["citation_id"] for item in generation_payload["evidence"]],
             ["cite_1"],
@@ -327,7 +281,7 @@ class AnswerPolicyRoutingTests(unittest.IsolatedAsyncioTestCase):
         assert result.answering is not None
         self.assertEqual(
             [call.provider_request_id for call in result.answering.model_calls],
-            ["request-1", "generation"],
+            ["generation"],
         )
 
 
@@ -339,7 +293,6 @@ class AnsweringSafetyTests(unittest.IsolatedAsyncioTestCase):
             "workspace."
         )
         model = _Model(
-            _response(_assessment(EvidenceCoverage.SUFFICIENT)),
             _response('{"outcome":"answered"}'),
         )
 
@@ -349,73 +302,9 @@ class AnsweringSafetyTests(unittest.IsolatedAsyncioTestCase):
         payload = json.loads(model.requests[0].messages[1].content)
         self.assertIn("untrusted data", system)
         self.assertIn("no tools", system)
-        self.assertIn("untrusted data", model.requests[1].messages[0].content)
-        self.assertIn("no tools", model.requests[1].messages[0].content)
         self.assertEqual(payload["evidence"][0]["untrusted_excerpt"], malicious)
         self.assertNotIn("source_metadata", payload["evidence"][0])
         self.assertFalse(hasattr(model.requests[0], "tools"))
-
-    async def test_fabricated_citation_and_invalid_assessment_are_rejected(self) -> None:
-        context = _context()
-        invalid_values = (
-            "not-json",
-            json.dumps(
-                {
-                    "coverage": "sufficient",
-                    "usable_citation_ids": ["cite_999"],
-                    "supported_aspects": ["fabricated"],
-                    "missing_aspects": [],
-                }
-            ),
-        )
-        for value in invalid_values:
-            with self.subTest(value=value):
-                state = ChatPipelineState(
-                    context=context,
-                    evidence_pack=_pack(context, "real evidence"),
-                )
-                with self.assertRaises(ChatPipelineExecutionError) as raised:
-                    await EvidenceAssessmentStep(_Model(_response(value))).run(state)
-                self.assertEqual(
-                    raised.exception.code, ErrorCode.CHAT_ASSESSMENT_INVALID
-                )
-                self.assertEqual(
-                    raised.exception.phase, ChatPipelinePhase.ASSESS_EVIDENCE
-                )
-                self.assertEqual(len(raised.exception.model_calls), 1)
-                self.assertEqual(
-                    raised.exception.model_calls[0].provider_request_id,
-                    "request-1",
-                )
-
-    async def test_model_drift_and_provider_content_fail_safely(self) -> None:
-        context = _context()
-        drift = ChatModelResponse(
-            content=_assessment(EvidenceCoverage.SUFFICIENT),
-            model="different-model",
-            finish_reason="stop",
-            provider_request_id=None,
-            usage={},
-        )
-        state = ChatPipelineState(
-            context=context,
-            evidence_pack=_pack(context, "evidence"),
-        )
-        with self.assertRaises(ChatPipelineExecutionError) as raised:
-            await EvidenceAssessmentStep(_Model(drift)).run(state)
-        self.assertEqual(raised.exception.code, ErrorCode.CHAT_RESPONSE_INVALID)
-
-        class FailedModel:
-            async def complete(self, request: ChatModelRequest) -> ChatModelResponse:
-                raise ChatModelExecutionError(
-                    ErrorCode.CHAT_PROVIDER_UNAVAILABLE,
-                    diagnostic={"check": "retry_exhausted"},
-                )
-
-        with self.assertRaises(ChatPipelineExecutionError) as provider:
-            await EvidenceAssessmentStep(FailedModel()).run(state)  # type: ignore[arg-type]
-        self.assertEqual(provider.exception.code, ErrorCode.CHAT_PROVIDER_UNAVAILABLE)
-        self.assertNotIn("evidence", str(provider.exception.diagnostic))
 
 
 if __name__ == "__main__":

@@ -9,15 +9,6 @@ from pydantic import BaseModel, ConfigDict, Field
 from rag_kb.domain import ChatOutputSchema
 
 
-class WireEvidenceAssessment(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    coverage: Literal["sufficient", "partial", "none", "ambiguous"]
-    usable_citation_ids: list[str] = Field(max_length=100)
-    supported_aspects: list[str] = Field(max_length=100)
-    missing_aspects: list[str] = Field(max_length=100)
-
-
 class WireAnswerClaim(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -34,6 +25,5 @@ class WireAnswer(BaseModel):
 
 
 OUTPUT_SCHEMAS: dict[ChatOutputSchema, type[BaseModel]] = {
-    ChatOutputSchema.ASSESSMENT_V1: WireEvidenceAssessment,
     ChatOutputSchema.ANSWER_V1: WireAnswer,
 }
