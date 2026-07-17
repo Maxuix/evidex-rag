@@ -16,6 +16,7 @@ from rag_kb.auth import (
 from rag_kb.domain import (
     EmbeddingSpaceDefinition,
     ErrorCode,
+    EvidenceScoreKind,
     RetrievalExecutionError,
     RetrievalQueryPlan,
     RetrievalRequest,
@@ -163,6 +164,45 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
         assert pack.debug is not None
         self.assertEqual(pack.debug.resolved_active_revision_id, REVISION_ID)
         self.assertEqual(pack.debug.result_count, 2)
+
+    async def test_rerank_retrieval_uses_service_weights_and_returns_hybrid_scores(
+        self,
+    ) -> None:
+        generic = replace(
+            _hit(CHUNK_1, distance=0.05, ordinal=1),
+            text="general handbook introduction",
+        )
+        matching = replace(
+            _hit(CHUNK_2, distance=0.20, ordinal=2),
+            text="policy deadline is Friday",
+        )
+        store = _Store(VectorSearchResult(REVISION_ID, (generic, matching)))
+        service = RetrievalService(
+            SingleWorkspaceAccessPolicy(WORKSPACE),
+            _Provider(),
+            store,
+        )
+
+        pack = await service.retrieve(
+            _context(),
+            RetrievalRequest(
+                KB_ID,
+                "policy deadline",
+                top_k=2,
+                rerank=True,
+                include_debug=True,
+            ),
+        )
+
+        self.assertTrue(store.plans[0].rerank)
+        self.assertEqual(store.plans[0].candidate_count, 8)
+        self.assertEqual(len(pack.evidence), 2)
+        self.assertEqual(pack.evidence[0].index_chunk_id, CHUNK_2)
+        self.assertEqual(
+            pack.evidence[0].score_kind,
+            EvidenceScoreKind.HYBRID_RERANK,
+        )
+        self.assertGreater(pack.evidence[0].lexical_score or 0.0, 0.0)
 
     async def test_empty_and_underfilled_results_are_valid_without_filter_relaxation(self) -> None:
         store = _Store(VectorSearchResult(REVISION_ID))

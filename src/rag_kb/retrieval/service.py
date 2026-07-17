@@ -157,8 +157,8 @@ class RetrievalService:
             )
         return normalized
 
-    @staticmethod
     def _normalize(
+        self,
         plan: RetrievalQueryPlan,
         result: VectorSearchResult,
         *,
