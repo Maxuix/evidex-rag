@@ -21,6 +21,7 @@ from rag_kb.domain import (
     Evidence,
     EvidenceCoverage,
     EvidencePack,
+    EvidenceScoreKind,
     RetrievalStrategy,
 )
 from rag_kb.workflows import LangGraphRunner
@@ -165,6 +166,38 @@ async def _assess_and_generate(
 
 
 class AnswerPolicyRoutingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_hybrid_assessment_uses_rerank_score_and_vector_floor(self) -> None:
+        context = _context()
+        pack = _pack(context, "matching evidence", "semantic noise")
+        pack = replace(
+            pack,
+            evidence=(
+                replace(
+                    pack.evidence[0],
+                    score=0.72,
+                    score_kind=EvidenceScoreKind.HYBRID_RERANK,
+                    vector_similarity=0.41,
+                    lexical_score=0.91,
+                    lexical_coverage=1.0,
+                ),
+                replace(
+                    pack.evidence[1],
+                    score=0.80,
+                    score_kind=EvidenceScoreKind.HYBRID_RERANK,
+                    vector_similarity=0.34,
+                    lexical_score=0.98,
+                    lexical_coverage=1.0,
+                ),
+            ),
+        )
+
+        result = await CosineEvidenceAssessmentStep(0.35, 0.45).run(
+            ChatPipelineState(context=context, evidence_pack=pack)
+        )
+
+        assert result.answering is not None
+        self.assertEqual(result.answering.assessment.usable_citation_ids, ("cite_1",))
+
     async def test_concrete_steps_run_inside_the_fixed_langgraph_pipeline(self) -> None:
         context = _context(insufficiency="partial_answer")
         pack = _pack(context, "complete evidence")

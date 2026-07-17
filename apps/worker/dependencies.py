@@ -194,9 +194,15 @@ def build_worker_dependencies(
         access_policy,
         embedding_provider,
         vector_store,
+        candidate_multiplier=resolved_settings.retrieval.candidate_multiplier,
+        max_candidate_count=resolved_settings.retrieval.max_candidate_count,
+        vector_weight=resolved_settings.retrieval.vector_weight,
+        lexical_weight=resolved_settings.retrieval.lexical_weight,
+        mmr_lambda=resolved_settings.retrieval.mmr_lambda,
     )
     evidence_assessor = CosineEvidenceAssessmentStep(
-        resolved_settings.retrieval.min_cosine_similarity
+        resolved_settings.retrieval.min_cosine_similarity,
+        resolved_settings.retrieval.min_rerank_score,
     )
     answer_generator = AnswerGenerationStep(chat_model_adapter)
     structure_validator = AnswerStructureValidationStep(chat_model_adapter)

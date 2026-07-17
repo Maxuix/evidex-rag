@@ -68,6 +68,9 @@ class EvidenceResponse(RetrievalPublicSchema):
     source_metadata: dict[str, Any]
     score: float
     score_kind: EvidenceScoreKind
+    vector_similarity: float | None = None
+    lexical_score: float = 0.0
+    lexical_coverage: float = 0.0
 
 
 class RetrievalDebugResponse(RetrievalPublicSchema):

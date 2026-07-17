@@ -10,6 +10,7 @@ from rag_kb.domain import (
     RetrievalStrategy,
 )
 from rag_kb.retrieval.service import RetrievalService
+from rag_kb.retrieval.reranker import RerankedHit, rerank_hits
 
 __all__ = [
     "Evidence",
@@ -20,4 +21,6 @@ __all__ = [
     "RetrievalRequest",
     "RetrievalService",
     "RetrievalStrategy",
+    "RerankedHit",
+    "rerank_hits",
 ]

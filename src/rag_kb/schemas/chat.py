@@ -95,6 +95,7 @@ class AnswerPolicyOverrides(PublicSchema):
 class ChatRetrievalRequest(PublicSchema):
     mode: Literal["vector"] = "vector"
     top_k: Annotated[int, Field(ge=1, le=100)] = 10
+    rerank: bool | None = None
 
 
 class ChatRunCreate(PublicSchema):
@@ -132,7 +133,7 @@ class ChatRunErrorResponse(PublicSchema):
 class ChatRunRetrievalResponse(PublicSchema):
     strategy: Literal["exact_vector"]
     top_k: Annotated[int, Field(ge=1, le=100)]
-    rerank: Literal[False]
+    rerank: bool
 
 
 class ChatCitationResponse(PublicSchema):

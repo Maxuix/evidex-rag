@@ -28,6 +28,7 @@ class IterativeScanMode(StrEnum):
 
 class EvidenceScoreKind(StrEnum):
     COSINE_SIMILARITY = "cosine_similarity"
+    HYBRID_RERANK = "hybrid_rerank"
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,12 +77,21 @@ class RetrievalQueryPlan:
         if self.strategy is RetrievalStrategy.EXACT_VECTOR:
             if self.distance_metric != "cosine":
                 raise ValueError("exact-vector retrieval uses cosine distance")
-            if self.candidate_count is not None or self.ef_search is not None:
+            if self.ef_search is not None:
                 raise ValueError("exact-vector retrieval has no ANN parameters")
             if self.iterative_scan is not IterativeScanMode.DISABLED:
                 raise ValueError("exact-vector retrieval has no iterative scan")
             if self.rerank:
-                raise ValueError("reranking is not enabled for exact-vector retrieval")
+                candidate_count = self.candidate_count
+                if candidate_count is None:
+                    candidate_count = max(self.top_k, min(self.top_k * 4, 40))
+                    object.__setattr__(self, "candidate_count", candidate_count)
+                if not self.top_k <= candidate_count <= 100:
+                    raise ValueError(
+                        "rerank candidate_count must be between top_k and 100"
+                    )
+            elif self.candidate_count is not None:
+                raise ValueError("candidate_count requires reranking")
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,6 +152,9 @@ class Evidence:
     source_metadata: dict[str, Any]
     score: float
     score_kind: EvidenceScoreKind = EvidenceScoreKind.COSINE_SIMILARITY
+    vector_similarity: float | None = None
+    lexical_score: float = 0.0
+    lexical_coverage: float = 0.0
 
     def __post_init__(self) -> None:
         if self.rank < 1:
@@ -150,6 +163,27 @@ class Evidence:
             raise ValueError("chunk ordinal must be non-negative")
         if not math.isfinite(self.score):
             raise ValueError("evidence score must be finite")
+        try:
+            object.__setattr__(self, "score_kind", EvidenceScoreKind(self.score_kind))
+        except ValueError as error:
+            raise ValueError("unsupported evidence score kind") from error
+        for name, value in (
+            ("vector_similarity", self.vector_similarity),
+            ("lexical_score", self.lexical_score),
+            ("lexical_coverage", self.lexical_coverage),
+        ):
+            if value is not None and (
+                not isinstance(value, (int, float))
+                or isinstance(value, bool)
+                or not math.isfinite(value)
+            ):
+                raise ValueError(f"{name} must be finite when provided")
+        if self.lexical_score < 0.0 or self.lexical_coverage < 0.0:
+            raise ValueError("lexical scores must not be negative")
+        if self.vector_similarity is not None and not -1.0 <= self.vector_similarity <= 1.0:
+            raise ValueError("vector similarity must be between -1 and 1")
+        if self.lexical_score > 1.0 or self.lexical_coverage > 1.0:
+            raise ValueError("lexical scores must be at most one")
         object.__setattr__(self, "source_location", dict(self.source_location))
         object.__setattr__(self, "hierarchy", dict(self.hierarchy))
         object.__setattr__(self, "source_metadata", dict(self.source_metadata))

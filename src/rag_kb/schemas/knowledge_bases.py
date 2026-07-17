@@ -18,6 +18,7 @@ KnowledgeBaseName = Annotated[str, Field(min_length=1, max_length=255)]
 class RetrievalDefaults(PublicSchema):
     strategy: Literal["exact_vector"] = "exact_vector"
     top_k: Annotated[int, Field(ge=1, le=100)] = 10
+    rerank: bool = True
 
 
 class KnowledgeBaseAnswerPolicyDefaults(PublicSchema):

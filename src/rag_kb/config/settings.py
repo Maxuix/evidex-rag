@@ -417,9 +417,21 @@ class ModelProviderSettings(StrictSettingsModel):
 class RetrievalSettings(StrictSettingsModel):
     strategy: Literal["exact_vector"] = "exact_vector"
     top_k: Annotated[int, Field(ge=1, le=100)] = 10
-    min_cosine_similarity: Annotated[float, Field(ge=-1.0, le=1.0)] = 0.60
+    min_cosine_similarity: Annotated[float, Field(ge=-1.0, le=1.0)] = 0.35
+    min_rerank_score: Annotated[float, Field(ge=0.0, le=1.0)] = 0.45
+    candidate_multiplier: Annotated[int, Field(ge=2, le=8)] = 4
+    max_candidate_count: Annotated[int, Field(ge=10, le=100)] = 40
+    vector_weight: Annotated[float, Field(ge=0.0, le=1.0)] = 0.65
+    lexical_weight: Annotated[float, Field(ge=0.0, le=1.0)] = 0.35
+    mmr_lambda: Annotated[float, Field(gt=0.0, le=1.0)] = 0.75
     hybrid_enabled: DisabledFlag = False
-    rerank_enabled: DisabledFlag = False
+    rerank_enabled: bool = True
+
+    @model_validator(mode="after")
+    def require_rerank_weights_sum_to_one(self) -> Self:
+        if abs(self.vector_weight + self.lexical_weight - 1.0) > 1e-9:
+            raise ValueError("rerank weights must sum to one")
+        return self
 
 
 class DeliveryReliabilitySettings(StrictSettingsModel):

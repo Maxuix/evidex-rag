@@ -30,26 +30,33 @@ from rag_kb.domain import (
     EvidenceCoverage,
     EvidenceEnvelope,
     EvidencePack,
+    EvidenceScoreKind,
     InsufficiencyPolicy,
 )
 
 
 class CosineEvidenceAssessmentStep:
-    """Admit retrieved evidence whose cosine similarity meets a fixed threshold."""
+    """Admit evidence using rerank quality with a semantic-similarity floor."""
 
-    def __init__(self, min_cosine_similarity: float) -> None:
+    def __init__(
+        self,
+        min_cosine_similarity: float,
+        min_rerank_score: float = 0.45,
+    ) -> None:
         if not -1.0 <= min_cosine_similarity <= 1.0:
             raise ValueError("min_cosine_similarity must be between -1 and 1")
+        if not 0.0 <= min_rerank_score <= 1.0:
+            raise ValueError("min_rerank_score must be between 0 and 1")
         self._min_cosine_similarity = float(min_cosine_similarity)
+        self._min_rerank_score = float(min_rerank_score)
 
     async def run(self, state: ChatPipelineState) -> ChatPipelineState:
         context, pack = _require_inputs(state, ChatPipelinePhase.ASSESS_EVIDENCE)
         evidence = build_evidence_envelope(pack)
         usable_citation_ids = tuple(
-            item.citation_id
-            for item in evidence.items
-            if item.score is not None
-            and item.score >= self._min_cosine_similarity
+            prompt_item.citation_id
+            for item, prompt_item in zip(pack.evidence, evidence.items, strict=True)
+            if self._usable(item)
         )
         if not usable_citation_ids:
             assessment = EvidenceAssessment(
@@ -71,6 +78,22 @@ class CosineEvidenceAssessmentStep:
             evidence_pack=pack,
             answering=answering,
             artifacts=state.artifacts,
+        )
+
+    def _usable(self, item) -> bool:
+        if item.score is None:
+            return False
+        if item.score_kind is not EvidenceScoreKind.HYBRID_RERANK:
+            return item.score >= self._min_cosine_similarity
+        vector_similarity = item.vector_similarity
+        return (
+            vector_similarity is not None
+            and vector_similarity >= self._min_cosine_similarity
+            and item.score >= self._min_rerank_score
+            and (
+                item.lexical_coverage > 0.0
+                or item.score >= max(self._min_rerank_score + 0.10, 0.55)
+            )
         )
 
 

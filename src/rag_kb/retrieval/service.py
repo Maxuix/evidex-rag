@@ -11,6 +11,7 @@ from rag_kb.domain import (
     ErrorCode,
     Evidence,
     EvidencePack,
+    EvidenceScoreKind,
     IndexingExecutionError,
     ResourceNotFoundError,
     RetrievalDebug,
@@ -20,6 +21,7 @@ from rag_kb.domain import (
     RetrievalStrategy,
     VectorSearchResult,
 )
+from rag_kb.retrieval.reranker import RerankedHit, rerank_hits
 
 
 class RetrievalService:
@@ -30,10 +32,29 @@ class RetrievalService:
         access_policy: AccessPolicy,
         embedding_provider: EmbeddingModelAdapter,
         vector_store: VectorStore,
+        *,
+        candidate_multiplier: int = 4,
+        max_candidate_count: int = 40,
+        vector_weight: float = 0.65,
+        lexical_weight: float = 0.35,
+        mmr_lambda: float = 0.75,
     ) -> None:
+        if candidate_multiplier < 2:
+            raise ValueError("candidate_multiplier must be at least two")
+        if max_candidate_count < 10:
+            raise ValueError("max_candidate_count must be at least ten")
+        if not math.isclose(vector_weight + lexical_weight, 1.0, abs_tol=1e-9):
+            raise ValueError("rerank weights must sum to one")
+        if not 0.0 < mmr_lambda <= 1.0:
+            raise ValueError("mmr_lambda must be between zero and one")
         self._access_policy = access_policy
         self._embedding_provider = embedding_provider
         self._vector_store = vector_store
+        self._candidate_multiplier = candidate_multiplier
+        self._max_candidate_count = max_candidate_count
+        self._vector_weight = vector_weight
+        self._lexical_weight = lexical_weight
+        self._mmr_lambda = mmr_lambda
 
     async def retrieve(
         self,
@@ -50,13 +71,24 @@ class RetrievalService:
             knowledge_base_id=request.knowledge_base_id,
             strategy=request.strategy,
             top_k=request.top_k,
+            candidate_count=(
+                max(
+                    request.top_k,
+                    min(
+                        request.top_k * self._candidate_multiplier,
+                        self._max_candidate_count,
+                    ),
+                )
+                if request.rerank
+                else None
+            ),
             rerank=request.rerank,
         )
         query_embedding = await self._embed_query(request.query)
         result = await self._vector_store.search(plan, query_embedding)
         if result is None:
             raise ResourceNotFoundError("knowledge base or active revision was not found")
-        evidence = self._normalize(plan, result)
+        evidence = self._normalize(plan, result, query=request.query)
         debug = (
             RetrievalDebug(
                 query_plan=plan,
@@ -80,11 +112,6 @@ class RetrievalService:
             raise RetrievalExecutionError(
                 ErrorCode.CAPABILITY_NOT_ENABLED,
                 diagnostic={"capability": request.strategy.value},
-            )
-        if request.rerank:
-            raise RetrievalExecutionError(
-                ErrorCode.CAPABILITY_NOT_ENABLED,
-                diagnostic={"capability": "rerank"},
             )
 
     async def _embed_query(self, query: str) -> tuple[float, ...]:
@@ -134,8 +161,11 @@ class RetrievalService:
     def _normalize(
         plan: RetrievalQueryPlan,
         result: VectorSearchResult,
+        *,
+        query: str,
     ) -> tuple[Evidence, ...]:
-        if len(result.hits) > plan.top_k:
+        result_limit = plan.candidate_count or plan.top_k
+        if len(result.hits) > result_limit:
             raise RetrievalExecutionError(
                 ErrorCode.INTERNAL_SERVER_ERROR,
                 diagnostic={"check": "result_limit"},
@@ -159,10 +189,23 @@ class RetrievalService:
                     ErrorCode.INTERNAL_SERVER_ERROR,
                     diagnostic={"check": "mandatory_scope"},
                 )
+        if plan.rerank:
+            ordered_reranked = rerank_hits(
+                query,
+                result.hits,
+                top_k=plan.top_k,
+                vector_weight=self._vector_weight,
+                lexical_weight=self._lexical_weight,
+                mmr_lambda=self._mmr_lambda,
+            )
+            return tuple(
+                RetrievalService._evidence_from_reranked(rank, item)
+                for rank, item in enumerate(ordered_reranked, start=1)
+            )
         ordered = sorted(
             result.hits,
             key=lambda hit: (hit.cosine_distance, hit.index_chunk_id.int),
-        )
+        )[: plan.top_k]
         return tuple(
             Evidence(
                 rank=rank,
@@ -179,4 +222,26 @@ class RetrievalService:
                 score=1.0 - hit.cosine_distance,
             )
             for rank, hit in enumerate(ordered, start=1)
+        )
+
+    @staticmethod
+    def _evidence_from_reranked(rank: int, item: RerankedHit) -> Evidence:
+        hit = item.hit
+        return Evidence(
+            rank=rank,
+            index_chunk_id=hit.index_chunk_id,
+            indexed_document_version_id=hit.indexed_document_version_id,
+            document_id=hit.document_id,
+            document_version_id=hit.document_version_id,
+            index_revision_id=hit.index_revision_id,
+            ordinal=hit.ordinal,
+            text=hit.text,
+            source_location=hit.source_location,
+            hierarchy=hit.hierarchy,
+            source_metadata=hit.source_metadata,
+            score=item.score,
+            score_kind=EvidenceScoreKind.HYBRID_RERANK,
+            vector_similarity=item.vector_similarity,
+            lexical_score=item.lexical_score,
+            lexical_coverage=item.lexical_coverage,
         )

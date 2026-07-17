@@ -41,6 +41,7 @@ export interface KnowledgeBase {
   retrieval_defaults: {
     strategy: "exact_vector";
     top_k: number;
+    rerank: boolean;
   };
   answer_policy_defaults: {
     answer_style: AnswerStyle;
@@ -165,7 +166,7 @@ export interface ChatRun {
   retrieval: {
     strategy: "exact_vector";
     top_k: number;
-    rerank: false;
+    rerank: boolean;
   };
   attempt: number;
   error: ChatRunError | null;
@@ -187,6 +188,7 @@ export interface ChatRunCreate {
   retrieval: {
     mode: "vector";
     top_k: number;
+    rerank?: boolean;
   };
 }
 
@@ -220,7 +222,7 @@ export interface RetrievalQueryPlan {
   candidate_count: number | null;
   ef_search: number | null;
   iterative_scan: "disabled";
-  rerank: false;
+  rerank: boolean;
 }
 
 export interface Evidence {
@@ -236,7 +238,10 @@ export interface Evidence {
   hierarchy: JsonMap;
   source_metadata: JsonMap;
   score: number;
-  score_kind: "cosine_similarity";
+  score_kind: "cosine_similarity" | "hybrid_rerank";
+  vector_similarity: number | null;
+  lexical_score: number;
+  lexical_coverage: number;
 }
 
 export interface EvidencePack {

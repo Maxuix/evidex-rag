@@ -55,7 +55,7 @@ class PgVectorStore:
             "workspace_id": plan.workspace_id,
             "knowledge_base_id": plan.knowledge_base_id,
             "query_embedding": list(query_embedding),
-            "top_k": plan.top_k,
+            "top_k": plan.candidate_count or plan.top_k,
         }
         async with self._sessions() as session:
             result = await session.execute(statement, parameters)
@@ -91,10 +91,8 @@ class PgVectorStore:
         if (
             plan.strategy is not RetrievalStrategy.EXACT_VECTOR
             or plan.distance_metric != "cosine"
-            or plan.candidate_count is not None
             or plan.ef_search is not None
             or plan.iterative_scan.value != "disabled"
-            or plan.rerank
         ):
             raise RetrievalExecutionError(
                 ErrorCode.CAPABILITY_NOT_ENABLED,

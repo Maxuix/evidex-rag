@@ -204,7 +204,7 @@ export class ApiClient {
         query,
         top_k: topK,
         strategy: "exact_vector",
-        rerank: false,
+        rerank: true,
         include_debug: true,
       }),
     });

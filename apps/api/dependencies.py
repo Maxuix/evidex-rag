@@ -129,6 +129,7 @@ def build_api_dependencies(
         model_configuration=chat_model_configuration(
             resolved_settings.model_provider.chat
         ),
+        default_rerank=resolved_settings.retrieval.rerank_enabled,
     )
     chat_delivery = resolved_settings.chat_delivery
     return ApiDependencies(
@@ -169,6 +170,11 @@ def build_api_dependencies(
             access_policy,
             embedding_provider,
             vector_store,
+            candidate_multiplier=resolved_settings.retrieval.candidate_multiplier,
+            max_candidate_count=resolved_settings.retrieval.max_candidate_count,
+            vector_weight=resolved_settings.retrieval.vector_weight,
+            lexical_weight=resolved_settings.retrieval.lexical_weight,
+            mmr_lambda=resolved_settings.retrieval.mmr_lambda,
         ),
         chat_service=chat_service,
         chat_terminal_watcher=ChatTerminalWatcher(

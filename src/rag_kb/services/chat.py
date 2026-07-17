@@ -35,10 +35,12 @@ class ChatService:
         access_policy: AccessPolicy,
         *,
         model_configuration: dict[str, Any],
+        default_rerank: bool = False,
     ) -> None:
         self._unit_of_work = unit_of_work
         self._access_policy = access_policy
         self._model_configuration = dict(model_configuration)
+        self._default_rerank = default_rerank
 
     async def create_session(
         self,
@@ -142,6 +144,7 @@ class ChatService:
         insufficiency_policy: InsufficiencyPolicy | None,
         retrieval_mode: str,
         top_k: int,
+        rerank: bool | None = None,
     ) -> ChatRun:
         self._authorize(context)
         if retrieval_mode != "vector":
@@ -161,11 +164,16 @@ class ChatService:
             requested_policy["answer_style"] = answer_style.value
         if insufficiency_policy is not None:
             requested_policy["insufficiency_policy"] = insufficiency_policy.value
-        requested_retrieval = {"mode": retrieval_mode, "top_k": top_k}
+        resolved_rerank = self._default_rerank if rerank is None else rerank
+        requested_retrieval = {
+            "mode": retrieval_mode,
+            "top_k": top_k,
+            "rerank": resolved_rerank,
+        }
         retrieval_strategy = {
             "strategy": "exact_vector",
             "top_k": top_k,
-            "rerank": False,
+            "rerank": resolved_rerank,
         }
         request_hash = canonical_request_hash(
             {

@@ -340,7 +340,7 @@ export function ChatView({
           answer_style: answerStyle,
           insufficiency_policy: insufficiencyPolicy,
         },
-        retrieval: { mode: "vector", top_k: topK },
+        retrieval: { mode: "vector", top_k: topK, rerank: true },
       },
     };
     setPendingSubmission(pending);

@@ -209,6 +209,17 @@
             "title": "Mode",
             "type": "string"
           },
+          "rerank": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rerank"
+          },
           "top_k": {
             "default": 10,
             "maximum": 100.0,
@@ -460,7 +471,6 @@
         "additionalProperties": false,
         "properties": {
           "rerank": {
-            "const": false,
             "title": "Rerank",
             "type": "boolean"
           },
@@ -1023,6 +1033,16 @@
             "title": "Indexed Document Version Id",
             "type": "string"
           },
+          "lexical_coverage": {
+            "default": 0.0,
+            "title": "Lexical Coverage",
+            "type": "number"
+          },
+          "lexical_score": {
+            "default": 0.0,
+            "title": "Lexical Score",
+            "type": "number"
+          },
           "ordinal": {
             "title": "Ordinal",
             "type": "integer"
@@ -1051,6 +1071,17 @@
           "text": {
             "title": "Text",
             "type": "string"
+          },
+          "vector_similarity": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vector Similarity"
           }
         },
         "required": [
@@ -1073,7 +1104,8 @@
       },
       "EvidenceScoreKind": {
         "enum": [
-          "cosine_similarity"
+          "cosine_similarity",
+          "hybrid_rerank"
         ],
         "title": "EvidenceScoreKind",
         "type": "string"
@@ -1335,6 +1367,7 @@
           "retrieval_defaults": {
             "$ref": "#/components/schemas/RetrievalDefaults",
             "default": {
+              "rerank": true,
               "strategy": "exact_vector",
               "top_k": 10
             }
@@ -1573,6 +1606,11 @@
       "RetrievalDefaults": {
         "additionalProperties": false,
         "properties": {
+          "rerank": {
+            "default": true,
+            "title": "Rerank",
+            "type": "boolean"
+          },
           "strategy": {
             "const": "exact_vector",
             "default": "exact_vector",

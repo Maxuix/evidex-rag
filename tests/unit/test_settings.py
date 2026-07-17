@@ -73,7 +73,9 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.model_provider.embedding.metric, "cosine")
         self.assertTrue(settings.vector_store.exact_search)
         self.assertFalse(settings.vector_store.hnsw_enabled)
-        self.assertEqual(settings.retrieval.min_cosine_similarity, 0.60)
+        self.assertEqual(settings.retrieval.min_cosine_similarity, 0.35)
+        self.assertEqual(settings.retrieval.min_rerank_score, 0.45)
+        self.assertTrue(settings.retrieval.rerank_enabled)
         self.assertEqual(settings.identity.provider, "development_fixed")
         self.assertEqual(settings.identity.workspace_id.version, 7)
         self.assertEqual(
@@ -331,7 +333,6 @@ class SettingsTests(unittest.TestCase):
         overrides = (
             {"vector_store": {"hnsw_enabled": True}},
             {"retrieval": {"hybrid_enabled": True}},
-            {"retrieval": {"rerank_enabled": True}},
         )
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -340,6 +341,21 @@ class SettingsTests(unittest.TestCase):
                     ValidationError
                 ):
                     build_settings(root, **override)
+
+    def test_reranking_can_be_disabled_as_a_runtime_rollback(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            settings = build_settings(
+                Path(directory), retrieval={"rerank_enabled": False}
+            )
+        self.assertFalse(settings.retrieval.rerank_enabled)
+
+    def test_rerank_weights_must_sum_to_one(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(ValidationError):
+                build_settings(
+                    Path(directory),
+                    retrieval={"vector_weight": 0.7, "lexical_weight": 0.35},
+                )
 
     def test_cosine_evidence_threshold_is_bounded(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

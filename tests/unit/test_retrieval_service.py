@@ -24,6 +24,7 @@ from rag_kb.domain import (
     VectorSearchResult,
 )
 from rag_kb.retrieval import RetrievalService
+from rag_kb.retrieval.reranker import rerank_hits
 
 
 WORKSPACE = UUID("01900000-0000-7000-8000-000000000801")
@@ -86,15 +87,45 @@ class RetrievalContractTests(unittest.TestCase):
             {"distance_metric": "inner_product"},
             {"candidate_count": 50},
             {"ef_search": 100},
-            {"rerank": True},
         )
 
         for changes in relaxed:
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 replace(plan, **changes)
 
+        reranked = replace(plan, rerank=True)
+        self.assertEqual(reranked.candidate_count, 20)
+
 
 class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
+    def test_reranker_fuses_query_terms_and_removes_duplicate_chunks(self) -> None:
+        generic = replace(
+            _hit(CHUNK_1, distance=0.05, ordinal=1),
+            text="general handbook introduction",
+        )
+        matching = replace(
+            _hit(CHUNK_2, distance=0.20, ordinal=2),
+            text="policy deadline is Friday",
+        )
+        duplicate = replace(
+            _hit(UUID("01900000-0000-7000-8000-000000000813"), distance=0.10, ordinal=3),
+            text="policy deadline is Friday with more detail",
+        )
+        distinct = replace(
+            _hit(UUID("01900000-0000-7000-8000-000000000814"), distance=0.35, ordinal=4),
+            text="policy escalation contact and owner",
+        )
+
+        ranked = rerank_hits(
+            "policy deadline",
+            (generic, matching, duplicate, distinct),
+            top_k=2,
+        )
+
+        self.assertEqual(ranked[0].hit.index_chunk_id, CHUNK_2)
+        self.assertNotEqual(ranked[1].hit.index_chunk_id, duplicate.index_chunk_id)
+        self.assertGreater(ranked[0].lexical_coverage, 0.9)
+
     async def test_builds_mandatory_plan_and_returns_deterministic_evidence(self) -> None:
         provider = _Provider()
         store = _Store(
@@ -151,7 +182,6 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_unsupported_strategy_and_rerank_fail_before_external_io(self) -> None:
         for request in (
             RetrievalRequest(KB_ID, "query", strategy=RetrievalStrategy.HYBRID),
-            RetrievalRequest(KB_ID, "query", rerank=True),
         ):
             provider = _Provider()
             store = _Store(VectorSearchResult(REVISION_ID))

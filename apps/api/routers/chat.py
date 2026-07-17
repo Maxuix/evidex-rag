@@ -138,6 +138,7 @@ async def create_chat_run(
         insufficiency_policy=payload.answer_policy.insufficiency_policy,
         retrieval_mode=payload.retrieval.mode,
         top_k=payload.retrieval.top_k,
+        rerank=payload.retrieval.rerank,
     )
     response.headers["Location"] = _status_url(value.id)
     return _run_response(value)
