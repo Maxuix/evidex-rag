@@ -7,9 +7,10 @@ from pathlib import Path
 
 from rag_kb.auth import DevelopmentAuthProvider, SingleWorkspaceAccessPolicy
 from rag_kb.adapters import (
+    EmbeddingModelAdapter,
     FixedPgVectorSpace,
+    LangChainEmbeddingModelAdapter,
     LocalFileStore,
-    OpenAICompatibleEmbeddingProvider,
     PgVectorStore,
 )
 from rag_kb.config import (
@@ -59,7 +60,7 @@ class ApiDependencies:
     source_file_service: SourceFileService
     file_admission_service: FileAdmissionService
     indexing_job_service: IndexingJobService
-    embedding_provider: OpenAICompatibleEmbeddingProvider
+    embedding_provider: EmbeddingModelAdapter
     vector_store: PgVectorStore
     retrieval_service: RetrievalService
     chat_service: ChatService
@@ -104,7 +105,7 @@ def build_api_dependencies(
     access_policy = SingleWorkspaceAccessPolicy(identity.workspace_id)
     embedding = resolved_settings.model_provider.embedding
     embedding_space = embedding_space_definition(embedding)
-    embedding_provider = OpenAICompatibleEmbeddingProvider(
+    embedding_provider = LangChainEmbeddingModelAdapter(
         base_url=str(embedding.base_url),
         api_key=embedding.api_key.get_secret_value(),
         embedding_space=embedding_space,

@@ -7,21 +7,21 @@ from rag_kb.adapters.parser import (
 )
 from rag_kb.adapters.model_api import (
     ChatModelAdapter,
-    EmbeddingProvider,
+    EmbeddingModelAdapter,
     LangChainChatModelAdapter,
-    OpenAICompatibleEmbeddingProvider,
+    LangChainEmbeddingModelAdapter,
 )
 from rag_kb.adapters.vector_store import FixedPgVectorSpace, PgVectorStore, VectorStore
 
 __all__ = [
     "DocumentProcessor",
     "ChatModelAdapter",
-    "EmbeddingProvider",
+    "EmbeddingModelAdapter",
     "FixedPgVectorSpace",
     "IsolatedPlainTextProcessor",
     "LangChainChatModelAdapter",
+    "LangChainEmbeddingModelAdapter",
     "LocalFileStore",
-    "OpenAICompatibleEmbeddingProvider",
     "PlainTextTestParser",
     "PgVectorStore",
     "SourceFileStore",

@@ -8,7 +8,7 @@ from typing import TypeVar
 
 from rag_kb.adapters import (
     DocumentProcessor,
-    EmbeddingProvider,
+    EmbeddingModelAdapter,
     FixedPgVectorSpace,
     SourceFileStore,
 )
@@ -58,7 +58,7 @@ class IndexingPipeline:
         unit_of_work: UnitOfWorkFactory,
         file_store: SourceFileStore,
         document_processor: DocumentProcessor,
-        embedding_provider: EmbeddingProvider,
+        embedding_provider: EmbeddingModelAdapter,
         vector_space: FixedPgVectorSpace,
     ) -> None:
         self._unit_of_work = unit_of_work
@@ -126,7 +126,7 @@ class IndexingPipeline:
             for offset in range(0, len(processed.chunks), batch_size):
                 drafts = processed.chunks[offset : offset + batch_size]
                 try:
-                    embedded = await self._embedding_provider.embed(
+                    embedded = await self._embedding_provider.embed_documents(
                         tuple(draft.text for draft in drafts)
                     )
                 except IndexingExecutionError:
@@ -137,12 +137,6 @@ class IndexingPipeline:
                         phase=phase,
                         diagnostic={"check": "provider_contract"},
                     ) from error
-                if embedded.model != target.embedding_space.resolved_model:
-                    raise IndexingExecutionError(
-                        ErrorCode.EMBEDDING_SPACE_MISMATCH,
-                        phase=phase,
-                        diagnostic={"fields": ("resolved_model",)},
-                    )
                 if len(embedded.vectors) != len(drafts):
                     raise IndexingExecutionError(
                         ErrorCode.EMBEDDING_RESPONSE_INVALID,

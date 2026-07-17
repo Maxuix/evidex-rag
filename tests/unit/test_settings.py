@@ -12,7 +12,10 @@ from pydantic import ValidationError
 
 from apps.api.dependencies import build_api_dependencies
 from apps.worker.dependencies import build_worker_dependencies
-from rag_kb.adapters import LangChainChatModelAdapter
+from rag_kb.adapters import (
+    LangChainChatModelAdapter,
+    LangChainEmbeddingModelAdapter,
+)
 from rag_kb.config import StartupConfigurationError, validate_startup_environment
 from rag_kb.config.settings import Settings, load_settings
 from rag_kb.db import DatabaseProcess
@@ -417,7 +420,7 @@ class SettingsTests(unittest.TestCase):
 
 
 class StartupValidationTests(unittest.TestCase):
-    def test_worker_composes_only_the_active_chat_path(self) -> None:
+    def test_worker_composes_only_the_active_ai_paths(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "staging").mkdir()
@@ -427,6 +430,10 @@ class StartupValidationTests(unittest.TestCase):
             self.assertIsInstance(
                 worker.chat_model_adapter,
                 LangChainChatModelAdapter,
+            )
+            self.assertIsInstance(
+                worker.embedding_provider,
+                LangChainEmbeddingModelAdapter,
             )
             self.assertIsInstance(worker.chat_runner, LangGraphRunner)
             self.assertIs(worker.chat_scheduler._runner, worker.chat_runner)
@@ -510,6 +517,14 @@ class StartupValidationTests(unittest.TestCase):
             self.assertIsInstance(
                 worker.chat_model_adapter,
                 LangChainChatModelAdapter,
+            )
+            self.assertIsInstance(
+                api.embedding_provider,
+                LangChainEmbeddingModelAdapter,
+            )
+            self.assertIsInstance(
+                worker.embedding_provider,
+                LangChainEmbeddingModelAdapter,
             )
             self.assertIs(
                 worker.worker_scheduler._schedulers[

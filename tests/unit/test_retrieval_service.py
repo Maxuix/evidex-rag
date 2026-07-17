@@ -14,7 +14,6 @@ from rag_kb.auth import (
     SingleWorkspaceAccessPolicy,
 )
 from rag_kb.domain import (
-    EmbeddingBatch,
     EmbeddingSpaceDefinition,
     ErrorCode,
     RetrievalExecutionError,
@@ -116,7 +115,7 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
             RetrievalRequest(KB_ID, " query ", top_k=5, include_debug=True),
         )
 
-        self.assertEqual(provider.queries, [("query",)])
+        self.assertEqual(provider.queries, ["query"])
         self.assertEqual(store.embeddings, [(0.6, 0.8)])
         plan = store.plans[0]
         self.assertEqual((plan.workspace_id, plan.knowledge_base_id), (WORKSPACE, KB_ID))
@@ -222,8 +221,8 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
                     failure.exception.code, ErrorCode.INTERNAL_SERVER_ERROR
                 )
 
-    async def test_invalid_query_embedding_cardinality_is_rejected(self) -> None:
-        provider = _Provider(vectors=())
+    async def test_invalid_query_embedding_dimension_is_rejected(self) -> None:
+        provider = _Provider(vector=())
         store = _Store(VectorSearchResult(REVISION_ID))
         service = RetrievalService(
             SingleWorkspaceAccessPolicy(WORKSPACE), provider, store
@@ -239,14 +238,14 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
 class _Provider:
     max_batch_size = 10
 
-    def __init__(self, *, vectors: tuple[tuple[float, ...], ...] = ((0.6, 0.8),)) -> None:
+    def __init__(self, *, vector: tuple[float, ...] = (0.6, 0.8)) -> None:
         self.embedding_space = _embedding_space()
-        self.vectors = vectors
-        self.queries: list[tuple[str, ...]] = []
+        self.vector = vector
+        self.queries: list[str] = []
 
-    async def embed(self, texts: tuple[str, ...]) -> EmbeddingBatch:
-        self.queries.append(texts)
-        return EmbeddingBatch(model="test-embedding", vectors=self.vectors)
+    async def embed_query(self, text: str) -> tuple[float, ...]:
+        self.queries.append(text)
+        return self.vector
 
 
 class _Store:

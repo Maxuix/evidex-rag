@@ -11,11 +11,12 @@ from uuid import uuid4
 from rag_kb.auth import DevelopmentAuthProvider, SingleWorkspaceAccessPolicy
 from rag_kb.adapters import (
     ChatModelAdapter,
+    EmbeddingModelAdapter,
     FixedPgVectorSpace,
     IsolatedPlainTextProcessor,
     LangChainChatModelAdapter,
+    LangChainEmbeddingModelAdapter,
     LocalFileStore,
-    OpenAICompatibleEmbeddingProvider,
     PgVectorStore,
 )
 from rag_kb.config import (
@@ -71,7 +72,7 @@ class WorkerDependencies:
     file_store: LocalFileStore
     reconciliation_service: FileReconciliationService
     document_processor: IsolatedPlainTextProcessor
-    embedding_provider: OpenAICompatibleEmbeddingProvider
+    embedding_provider: EmbeddingModelAdapter
     vector_store: PgVectorStore
     retrieval_service: RetrievalService
     chat_model_adapter: ChatModelAdapter
@@ -143,7 +144,7 @@ def build_worker_dependencies(
     )
     embedding_settings = resolved_settings.model_provider.embedding
     embedding_space = embedding_space_definition(embedding_settings)
-    embedding_provider = OpenAICompatibleEmbeddingProvider(
+    embedding_provider = LangChainEmbeddingModelAdapter(
         base_url=str(embedding_settings.base_url),
         api_key=embedding_settings.api_key.get_secret_value(),
         embedding_space=embedding_space,

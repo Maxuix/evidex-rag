@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import unittest
 from dataclasses import replace
 from uuid import UUID, uuid4
 
-from rag_kb.adapters import FixedPgVectorSpace, OpenAICompatibleEmbeddingProvider
+from rag_kb.adapters import FixedPgVectorSpace
 from rag_kb.domain import (
     EmbeddingBatch,
     EmbeddingSpaceDefinition,
@@ -59,33 +58,6 @@ class IndexingDomainTests(unittest.TestCase):
             with self.assertRaises(IndexingExecutionError) as response:
                 validate_embedding_vector(invalid, expected)
             self.assertEqual(response.exception.code, ErrorCode.EMBEDDING_RESPONSE_INVALID)
-
-    def test_openai_wire_response_is_ordered_and_bounded(self) -> None:
-        provider = OpenAICompatibleEmbeddingProvider(
-            base_url="https://provider.invalid/v1",
-            api_key="secret",
-            embedding_space=_embedding(),
-            max_batch_size=10,
-            timeout_seconds=1,
-            max_retries=0,
-            max_concurrency=1,
-        )
-        decoded = provider._decode(  # noqa: SLF001 - focused wire contract test
-            json.dumps(
-                {
-                    "model": "text-embedding-v4",
-                    "data": [
-                        {"index": 1, "embedding": [0, 1]},
-                        {"index": 0, "embedding": [1, 0]},
-                    ],
-                }
-            ).encode(),
-            expected_count=2,
-        )
-        self.assertEqual(decoded.vectors, ((1.0, 0.0), (0.0, 1.0)))
-        with self.assertRaises(IndexingExecutionError):
-            provider._decode(b'{"model":"x","data":[]}', expected_count=1)  # noqa: SLF001
-
 
 class IndexingPipelineTests(unittest.IsolatedAsyncioTestCase):
     async def test_external_operations_hold_no_transaction_and_replay_is_idempotent(self) -> None:
@@ -344,7 +316,7 @@ class _Provider:
         self.calls = 0
         self.fail_call = fail_call
 
-    async def embed(self, texts):
+    async def embed_documents(self, texts):
         if self.factory.active:
             raise AssertionError("provider ran inside transaction")
         self.calls += 1
@@ -354,7 +326,7 @@ class _Provider:
                 phase=IndexingPhase.EMBEDDING,
                 diagnostic={"retry_exhausted": True},
             )
-        return EmbeddingBatch("text-embedding-v4", tuple(_vector() for _ in texts))
+        return EmbeddingBatch(tuple(_vector() for _ in texts))
 
 
 class _FailingProcessor:

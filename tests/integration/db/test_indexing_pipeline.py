@@ -912,7 +912,7 @@ class _Provider:
         self.delay = delay
         self.calls = 0
 
-    async def embed(self, texts):
+    async def embed_documents(self, texts):
         self.calls += 1
         await asyncio.sleep(self.delay)
         if self.calls == self.fail_call:
@@ -921,10 +921,7 @@ class _Provider:
                 phase=IndexingPhase.EMBEDDING,
                 diagnostic={"retry_exhausted": True},
             )
-        return EmbeddingBatch(
-            model=self.embedding_space.resolved_model,
-            vectors=tuple(_vector() for _ in texts),
-        )
+        return EmbeddingBatch(tuple(_vector() for _ in texts))
 
 
 class _FailingChatPipeline:

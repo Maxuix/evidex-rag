@@ -13,7 +13,6 @@ from rag_kb.adapters import FixedPgVectorSpace, PgVectorStore
 from rag_kb.auth import AuthContext, SingleWorkspaceAccessPolicy
 from rag_kb.db import DatabaseProcess, create_database_resources
 from rag_kb.domain import (
-    EmbeddingBatch,
     EmbeddingSpaceDefinition,
     ErrorCode,
     ResourceNotFoundError,
@@ -783,13 +782,10 @@ class _Provider:
         self.embedding_space = embedding_space
         self.vector = vector
 
-    async def embed(self, texts: tuple[str, ...]) -> EmbeddingBatch:
-        if len(texts) != 1:
-            raise AssertionError("retrieval embeds exactly one query")
-        return EmbeddingBatch(
-            model=self.embedding_space.resolved_model,
-            vectors=(self.vector,),
-        )
+    async def embed_query(self, text: str) -> tuple[float, ...]:
+        if not text:
+            raise AssertionError("retrieval embeds one non-empty query")
+        return self.vector
 
 
 def _embedding_space() -> EmbeddingSpaceDefinition:

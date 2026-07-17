@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 
-from rag_kb.adapters.model_api import EmbeddingProvider
+from rag_kb.adapters.model_api import EmbeddingModelAdapter
 from rag_kb.adapters.vector_store import VectorStore
 from rag_kb.auth import AccessPolicy, AuthContext
 from rag_kb.domain import (
@@ -28,7 +28,7 @@ class RetrievalService:
     def __init__(
         self,
         access_policy: AccessPolicy,
-        embedding_provider: EmbeddingProvider,
+        embedding_provider: EmbeddingModelAdapter,
         vector_store: VectorStore,
     ) -> None:
         self._access_policy = access_policy
@@ -89,7 +89,7 @@ class RetrievalService:
 
     async def _embed_query(self, query: str) -> tuple[float, ...]:
         try:
-            batch = await self._embedding_provider.embed((query,))
+            vector = await self._embedding_provider.embed_query(query)
         except IndexingExecutionError as error:
             raise RetrievalExecutionError(
                 error.code,
@@ -100,16 +100,9 @@ class RetrievalService:
                 ErrorCode.EMBEDDING_PROVIDER_UNAVAILABLE,
                 diagnostic={"check": "provider_contract"},
             ) from error
-        if len(batch.vectors) != 1:
-            raise RetrievalExecutionError(
-                ErrorCode.EMBEDDING_RESPONSE_INVALID,
-                diagnostic={"check": "query_cardinality"},
-            )
-        vector = batch.vectors[0]
         definition = self._embedding_provider.embedding_space
         if (
-            batch.model != definition.resolved_model
-            or definition.distance_metric != "cosine"
+            definition.distance_metric != "cosine"
             or definition.vector_data_type != "float32"
             or definition.normalization != "l2"
         ):

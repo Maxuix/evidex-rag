@@ -161,7 +161,6 @@ class VectorRecordWrite:
 
 @dataclass(frozen=True, slots=True)
 class EmbeddingBatch:
-    model: str
     vectors: tuple[tuple[float, ...], ...]
 
 
