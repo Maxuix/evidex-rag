@@ -921,12 +921,15 @@
           "FILE_TOO_LARGE",
           "FILE_INVALID_UTF8",
           "FILE_LINE_LIMIT_EXCEEDED",
+          "FILE_CONTENT_INVALID",
+          "FILE_ARCHIVE_LIMIT_EXCEEDED",
           "PARSER_NOT_CONFIGURED",
           "PARSER_CHUNK_LIMIT_EXCEEDED",
           "PARSER_TIMEOUT",
           "PARSER_RESOURCE_LIMIT",
           "PARSER_CRASHED",
           "PARSER_ISOLATION_FAILED",
+          "PARSER_OUTPUT_INVALID",
           "INDEX_TARGET_INVALID",
           "INDEX_REVISION_INCOMPATIBLE",
           "SOURCE_NOT_AVAILABLE",
@@ -2428,6 +2431,18 @@
         ],
         "requestBody": {
           "content": {
+            "application/pdf": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            },
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            },
             "text/markdown": {
               "schema": {
                 "format": "binary",
@@ -3117,6 +3132,18 @@
         ],
         "requestBody": {
           "content": {
+            "application/pdf": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            },
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            },
             "text/markdown": {
               "schema": {
                 "format": "binary",

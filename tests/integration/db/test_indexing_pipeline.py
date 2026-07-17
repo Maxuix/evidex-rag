@@ -12,9 +12,14 @@ from uuid import UUID, uuid4
 
 import asyncpg
 
-from rag_kb.adapters import FixedPgVectorSpace, IsolatedPlainTextProcessor, LocalFileStore
+from rag_kb.adapters import (
+    FixedPgVectorSpace,
+    IsolatedUnstructuredProcessor,
+    LocalFileStore,
+)
 from rag_kb.auth import AuthContext, SingleWorkspaceAccessPolicy
 from rag_kb.db import DatabaseProcess, create_database_resources
+from rag_kb.document_processing import index_profile
 from rag_kb.domain import (
     AnswerStyle,
     ChatPipelineExecutionError,
@@ -22,7 +27,6 @@ from rag_kb.domain import (
     EmbeddingBatch,
     EmbeddingSpaceDefinition,
     ErrorCode,
-    IndexProfileDefinition,
     IndexingCommand,
     IndexingExecutionError,
     IndexingPhase,
@@ -89,7 +93,7 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
         (self.root / "staging").mkdir()
         (self.root / "final").mkdir()
         self.store = LocalFileStore(self.root / "staging", self.root / "final")
-        self.processor = IsolatedPlainTextProcessor(ParserLimits())
+        self.processor = IsolatedUnstructuredProcessor(ParserLimits())
 
     async def asyncTearDown(self) -> None:
         await self.database.close()
@@ -968,20 +972,7 @@ def _embedding():
 
 
 def _profile():
-    return IndexProfileDefinition(
-        parser_config={
-            "profile": "plain_text_test_v1",
-            "encoding": "utf-8",
-            "bom": "optional",
-            "line_endings": "lf",
-        },
-        chunking_config={
-            "profile": "paragraph_window_v1",
-            "boundary_order": ["paragraph", "line", "codepoint"],
-            "max_characters": 2000,
-            "overlap_characters": 200,
-        },
-    )
+    return index_profile()
 
 
 def _vector():

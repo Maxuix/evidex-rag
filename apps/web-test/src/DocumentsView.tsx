@@ -343,11 +343,11 @@ export function DocumentsView({
             </label>
           ) : null}
           <label>
-            Text file
+            Document file
             <input
               id="document-file"
               type="file"
-              accept=".txt,.md,text/plain,text/markdown"
+              accept=".txt,.md,.pdf,.docx,text/plain,text/markdown,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
               required
               disabled={loading || mutationPending}
               onChange={(event) => {
@@ -357,7 +357,7 @@ export function DocumentsView({
               }}
             />
             <span className="field-hint">
-              Unicode filenames are supported for UTF-8 .txt and .md files.
+              Supports UTF-8 .txt/.md, text-based .pdf, and .docx files.
             </span>
           </label>
           <label>

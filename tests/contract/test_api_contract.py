@@ -1235,7 +1235,7 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
     async def test_upload_admission_failures_are_problem_details_and_do_not_handoff(self) -> None:
         value = _document_value()
         cases = (
-            ("guide.pdf", "application/pdf", b"binary", 415, "PARSER_NOT_CONFIGURED"),
+            ("guide.rtf", "application/rtf", b"binary", 415, "PARSER_NOT_CONFIGURED"),
             ("guide.md", "text/plain", b"text", 415, "FILE_MEDIA_TYPE_MISMATCH"),
             ("guide.txt", "text/plain", b"\xff", 422, "FILE_INVALID_UTF8"),
             ("guide.txt", "text/plain", b"x" * 33, 413, "FILE_TOO_LARGE"),

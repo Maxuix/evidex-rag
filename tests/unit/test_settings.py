@@ -83,10 +83,18 @@ class SettingsTests(unittest.TestCase):
         self.assertFalse(settings.security.cors_allow_credentials)
         self.assertEqual(settings.file_admission.max_bytes, 10 * 1024 * 1024)
         self.assertEqual(settings.file_admission.max_lines, 200_000)
+        self.assertEqual(settings.file_admission.max_archive_entries, 10_000)
+        self.assertEqual(
+            settings.file_admission.max_expanded_bytes,
+            100 * 1024 * 1024,
+        )
+        self.assertEqual(settings.parser.profile, "unstructured_local_v1")
         self.assertEqual(settings.parser.max_chunks, 20_000)
-        self.assertEqual(settings.parser.wall_seconds, 30.0)
-        self.assertEqual(settings.parser.cpu_seconds, 20)
-        self.assertEqual(settings.parser.memory_bytes, 512 * 1024 * 1024)
+        self.assertEqual(settings.parser.max_extracted_characters, 5_000_000)
+        self.assertEqual(settings.parser.max_metadata_bytes, 65_536)
+        self.assertEqual(settings.parser.wall_seconds, 60.0)
+        self.assertEqual(settings.parser.cpu_seconds, 45)
+        self.assertEqual(settings.parser.memory_bytes, 4 * 1024 * 1024 * 1024)
         self.assertEqual(settings.job_poller.required_worker_connections, 7)
         self.assertEqual(settings.job_poller.indexing_deadline_seconds, 900)
         self.assertEqual(settings.job_poller.chat_deadline_seconds, 120)

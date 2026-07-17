@@ -5,7 +5,7 @@ x-runtime-environment: &runtime-environment
   RAG_KB__SECURITY__CORS_ALLOW_CREDENTIALS: "false"
 
 x-app-image: &app-image
-  image: rag-kb-app:s03-w07
+  image: rag-kb-app:unstructured-v1
   build:
     context: .
     dockerfile: Dockerfile

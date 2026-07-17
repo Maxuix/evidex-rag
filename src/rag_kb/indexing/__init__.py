@@ -1,7 +1,6 @@
 """Document indexing capability boundary."""
 
-from rag_kb.adapters.parser.plain_text import process_plain_text
 from rag_kb.indexing.pipeline import IndexingPipeline
 from rag_kb.indexing.promotion import CandidatePromotionService
 
-__all__ = ["CandidatePromotionService", "IndexingPipeline", "process_plain_text"]
+__all__ = ["CandidatePromotionService", "IndexingPipeline"]

@@ -37,6 +37,10 @@ _BINARY_BODY = {
         "content": {
             "text/plain": {"schema": {"type": "string", "format": "binary"}},
             "text/markdown": {"schema": {"type": "string", "format": "binary"}},
+            "application/pdf": {"schema": {"type": "string", "format": "binary"}},
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document": {
+                "schema": {"type": "string", "format": "binary"}
+            },
         },
     }
 }

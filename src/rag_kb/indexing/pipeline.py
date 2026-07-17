@@ -32,22 +32,13 @@ from rag_kb.domain import (
     stable_vector_id,
     validate_embedding_vector,
 )
+from rag_kb.document_processing import (
+    UNSTRUCTURED_CHUNKING_CONFIG,
+    UNSTRUCTURED_PARSER_CONFIG,
+)
 from rag_kb.indexing.promotion import CandidatePromotionService
 from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, UnitOfWorkPurpose, execute_in_transaction
 
-
-EXPECTED_PARSER_CONFIG = {
-    "profile": "plain_text_test_v1",
-    "encoding": "utf-8",
-    "bom": "optional",
-    "line_endings": "lf",
-}
-EXPECTED_CHUNKING_CONFIG = {
-    "profile": "paragraph_window_v1",
-    "boundary_order": ["paragraph", "line", "codepoint"],
-    "max_characters": 2000,
-    "overlap_characters": 200,
-}
 
 ResultT = TypeVar("ResultT")
 
@@ -290,8 +281,8 @@ class IndexingPipeline:
     @staticmethod
     def _require_revision_profile(target: IndexingTarget) -> None:
         if (
-            target.parser_config != EXPECTED_PARSER_CONFIG
-            or target.chunking_config != EXPECTED_CHUNKING_CONFIG
+            target.parser_config != UNSTRUCTURED_PARSER_CONFIG
+            or target.chunking_config != UNSTRUCTURED_CHUNKING_CONFIG
         ):
             raise IndexingExecutionError(
                 ErrorCode.INDEX_REVISION_INCOMPATIBLE,
@@ -312,17 +303,15 @@ class IndexingPipeline:
                     content=draft.text,
                     content_hash=draft.content_sha256,
                     token_count=len(draft.text),
-                    source_location={
-                        "start_character": draft.start_character,
-                        "end_character": draft.end_character,
-                    },
-                    hierarchy={"headings": list(draft.heading_hierarchy)},
+                    source_location=dict(draft.source_location),
+                    hierarchy=dict(draft.hierarchy),
                     source_metadata={
                         "document_id": str(target.document_id),
                         "document_version_id": str(target.document_version_id),
                         "original_filename": target.original_filename,
                         "media_type": target.media_type,
                         "checksum_sha256": target.checksum_sha256,
+                        "processing": dict(draft.processing_metadata),
                     },
                 )
             )

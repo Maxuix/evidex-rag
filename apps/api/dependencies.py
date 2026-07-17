@@ -154,6 +154,12 @@ def build_api_dependencies(
             AdmissionLimits(
                 max_bytes=resolved_settings.file_admission.max_bytes,
                 max_lines=resolved_settings.file_admission.max_lines,
+                max_archive_entries=(
+                    resolved_settings.file_admission.max_archive_entries
+                ),
+                max_expanded_bytes=(
+                    resolved_settings.file_admission.max_expanded_bytes
+                ),
             )
         ),
         indexing_job_service=IndexingJobService(unit_of_work, access_policy),

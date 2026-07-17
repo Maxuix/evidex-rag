@@ -6,6 +6,7 @@ from dataclasses import replace
 from uuid import UUID, uuid4
 
 from rag_kb.adapters import FixedPgVectorSpace
+from rag_kb.document_processing import index_profile
 from rag_kb.domain import (
     EmbeddingBatch,
     EmbeddingSpaceDefinition,
@@ -15,7 +16,6 @@ from rag_kb.domain import (
     IndexingExecutionError,
     IndexingPhase,
     IndexingTarget,
-    ParsedDocument,
     PromotionReason,
     PromotionResult,
     PromotionStatus,
@@ -298,14 +298,20 @@ class _Processor:
             IndexChunkDraft(
                 ordinal=ordinal,
                 text=text,
-                start_character=ordinal * 7,
-                end_character=ordinal * 7 + len(text),
-                heading_hierarchy=(),
+                source_location={
+                    "page_start": ordinal + 1,
+                    "page_end": ordinal + 1,
+                },
+                hierarchy={"titles": []},
+                processing_metadata={"integration": "test"},
                 content_sha256=hashlib.sha256(text.encode()).hexdigest(),
             )
             for ordinal, text in enumerate(("first", "second"))
         )
-        return ProcessedDocument(ParsedDocument("first\n\nsecond", ()), drafts)
+        return ProcessedDocument(
+            chunks=drafts,
+            extracted_character_count=sum(len(draft.text) for draft in drafts),
+        )
 
 
 class _Provider:
@@ -360,6 +366,7 @@ def _pipeline(factory, provider):
 def _target():
     version = uuid4()
     target = uuid4()
+    profile = index_profile()
     return IndexingTarget(
         job_id=uuid4(),
         indexed_document_version_id=target,
@@ -375,18 +382,8 @@ def _target():
         size_bytes=len(CONTENT),
         original_filename="guide.txt",
         media_type="text/plain",
-        parser_config={
-            "profile": "plain_text_test_v1",
-            "encoding": "utf-8",
-            "bom": "optional",
-            "line_endings": "lf",
-        },
-        chunking_config={
-            "profile": "paragraph_window_v1",
-            "boundary_order": ["paragraph", "line", "codepoint"],
-            "max_characters": 2000,
-            "overlap_characters": 200,
-        },
+        parser_config=profile.parser_config,
+        chunking_config=profile.chunking_config,
         embedding_space=_embedding(),
     )
 

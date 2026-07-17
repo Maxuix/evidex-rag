@@ -1,4 +1,4 @@
-"""Spawn-isolated P1A text parser with bounded resources and no network."""
+"""Spawn-isolated local Unstructured processor with bounded resources and no network."""
 
 from __future__ import annotations
 
@@ -7,10 +7,12 @@ import multiprocessing
 import os
 import signal
 import sys
+import tempfile
 from collections.abc import Callable
 from multiprocessing.connection import Connection
 from typing import Any
 
+from rag_kb.adapters.parser.langchain_unstructured import process_with_unstructured
 from rag_kb.domain import (
     ErrorCode,
     ParserExecutionError,
@@ -18,26 +20,19 @@ from rag_kb.domain import (
     ParserSource,
     ProcessedDocument,
 )
-from rag_kb.adapters.parser.plain_text import process_plain_text
 
 
-ChildTarget = Callable[[Connection, ParserSource, ParserLimits, int, int], None]
+ChildTarget = Callable[[Connection, ParserSource, ParserLimits], None]
 
 
-class IsolatedPlainTextProcessor:
+class IsolatedUnstructuredProcessor:
     def __init__(
         self,
         limits: ParserLimits,
         *,
-        max_characters: int = 2_000,
-        overlap_characters: int = 200,
         child_target: ChildTarget | None = None,
     ) -> None:
-        if overlap_characters >= max_characters:
-            raise ValueError("overlap_characters must be less than max_characters")
         self._limits = limits
-        self._max_characters = max_characters
-        self._overlap_characters = overlap_characters
         self._child_target = child_target or _parser_child
 
     async def process(self, source: ParserSource) -> ProcessedDocument:
@@ -48,7 +43,7 @@ class IsolatedPlainTextProcessor:
         parent, child = context.Pipe(duplex=False)
         process = context.Process(
             target=self._child_target,
-            args=(child, source, self._limits, self._max_characters, self._overlap_characters),
+            args=(child, source, self._limits),
             name="rag-kb-parser",
         )
         process.start()
@@ -58,7 +53,10 @@ class IsolatedPlainTextProcessor:
                 _stop(process)
                 raise ParserExecutionError(
                     ErrorCode.PARSER_TIMEOUT,
-                    diagnostic={"limit_name": "wall_seconds", "limit": self._limits.wall_seconds},
+                    diagnostic={
+                        "limit_name": "wall_seconds",
+                        "limit": self._limits.wall_seconds,
+                    },
                 )
             try:
                 message = parent.recv()
@@ -92,36 +90,45 @@ def _parser_child(
     connection: Connection,
     source: ParserSource,
     limits: ParserLimits,
-    max_characters: int,
-    overlap_characters: int,
 ) -> None:
     try:
         _apply_resource_limits(limits)
-        os.environ.clear()
-        _deny_network()
-        _verify_isolation()
-        result = process_plain_text(
-            source,
-            max_characters=max_characters,
-            overlap_characters=overlap_characters,
-            max_chunks=limits.max_chunks,
-        )
-        connection.send(("ok", result))
+        with tempfile.TemporaryDirectory(prefix="rag-kb-parser-") as scratch:
+            _configure_environment(scratch)
+            _deny_network()
+            _verify_isolation(scratch)
+            connection.send(("ok", process_with_unstructured(source, limits)))
     except ParserExecutionError as error:
-        connection.send(("error", {"code": error.code.value, "diagnostic": error.diagnostic}))
+        connection.send(
+            (
+                "error",
+                {"code": error.code.value, "diagnostic": error.diagnostic},
+            )
+        )
     except MemoryError:
         connection.send(
             (
                 "error",
                 {
                     "code": ErrorCode.PARSER_RESOURCE_LIMIT.value,
-                    "diagnostic": {"limit_name": "memory_bytes", "limit": limits.memory_bytes},
+                    "diagnostic": {
+                        "limit_name": "memory_bytes",
+                        "limit": limits.memory_bytes,
+                    },
                 },
             )
         )
     except BaseException:
         try:
-            connection.send(("error", {"code": ErrorCode.PARSER_CRASHED.value, "diagnostic": {}}))
+            connection.send(
+                (
+                    "error",
+                    {
+                        "code": ErrorCode.PARSER_CRASHED.value,
+                        "diagnostic": {},
+                    },
+                )
+            )
         except BaseException:
             pass
     finally:
@@ -161,16 +168,67 @@ def _apply_resource_limits(limits: ParserLimits) -> None:
 
 
 def _deny_network() -> None:
+    import socket
+
+    network_families = {socket.AF_INET, socket.AF_INET6}
+
     def audit(event: str, args: tuple[Any, ...]) -> None:
-        del args
-        if event.startswith("socket."):
+        if (
+            event == "socket.__new__"
+            and len(args) >= 2
+            and args[1] in network_families
+        ) or event in {
+            "socket.connect",
+            "socket.connect_ex",
+            "socket.getaddrinfo",
+            "socket.gethostbyaddr",
+            "socket.gethostbyname",
+        }:
             raise PermissionError("network disabled")
 
     sys.addaudithook(audit)
 
 
-def _verify_isolation() -> None:
-    if os.environ:
+def _configure_environment(scratch: str) -> None:
+    os.environ.clear()
+    os.environ.update(
+        {
+            "HOME": scratch,
+            "HF_HOME": scratch,
+            "HF_HUB_OFFLINE": "1",
+            "MKL_NUM_THREADS": "1",
+            "MPLCONFIGDIR": scratch,
+            "NUMBA_CACHE_DIR": scratch,
+            "NUMEXPR_NUM_THREADS": "1",
+            "OMP_NUM_THREADS": "1",
+            "OPENBLAS_NUM_THREADS": "1",
+            "TOKENIZERS_PARALLELISM": "false",
+            "TRANSFORMERS_OFFLINE": "1",
+            "XDG_CACHE_HOME": scratch,
+        }
+    )
+
+
+def _verify_isolation(scratch: str) -> None:
+    expected_keys = {
+        "HOME",
+        "HF_HOME",
+        "HF_HUB_OFFLINE",
+        "MKL_NUM_THREADS",
+        "MPLCONFIGDIR",
+        "NUMBA_CACHE_DIR",
+        "NUMEXPR_NUM_THREADS",
+        "OMP_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "TOKENIZERS_PARALLELISM",
+        "TRANSFORMERS_OFFLINE",
+        "XDG_CACHE_HOME",
+    }
+    if set(os.environ) != expected_keys or any(
+        key.endswith(("HOME", "CACHE_HOME", "CONFIGDIR", "CACHE_DIR"))
+        and value != scratch
+        for key, value in os.environ.items()
+    ):
         raise ParserExecutionError(
             ErrorCode.PARSER_ISOLATION_FAILED,
             diagnostic={"check": "environment"},

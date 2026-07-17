@@ -12,14 +12,18 @@ from rag_kb.domain.errors import ErrorCode
 class AdmissionLimits:
     max_bytes: int = 10 * 1024 * 1024
     max_lines: int = 200_000
+    max_archive_entries: int = 10_000
+    max_expanded_bytes: int = 100 * 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)
 class ParserLimits:
     max_chunks: int = 20_000
-    wall_seconds: float = 30.0
-    cpu_seconds: int = 20
-    memory_bytes: int = 512 * 1024 * 1024
+    max_extracted_characters: int = 5_000_000
+    max_metadata_bytes: int = 65_536
+    wall_seconds: float = 60.0
+    cpu_seconds: int = 45
+    memory_bytes: int = 4 * 1024 * 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,7 +32,7 @@ class AdmittedFile:
     extension: str
     media_type: str
     size_bytes: int
-    line_count: int
+    line_count: int | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,33 +43,19 @@ class ParserSource:
 
 
 @dataclass(frozen=True, slots=True)
-class ParsedBlock:
-    text: str
-    start_character: int
-    end_character: int
-    heading_hierarchy: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
-class ParsedDocument:
-    canonical_text: str
-    blocks: tuple[ParsedBlock, ...]
-
-
-@dataclass(frozen=True, slots=True)
 class IndexChunkDraft:
     ordinal: int
     text: str
-    start_character: int
-    end_character: int
-    heading_hierarchy: tuple[str, ...]
+    source_location: dict[str, Any]
+    hierarchy: dict[str, Any]
+    processing_metadata: dict[str, Any]
     content_sha256: str
 
 
 @dataclass(frozen=True, slots=True)
 class ProcessedDocument:
-    parsed: ParsedDocument
     chunks: tuple[IndexChunkDraft, ...]
+    extracted_character_count: int
 
 
 class FileAdmissionError(ValueError):

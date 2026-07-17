@@ -56,10 +56,22 @@ FixedMaxUploadBytes = Annotated[
     Literal[10_485_760], BeforeValidator(parse_environment_integer)
 ]
 FixedMaxLines = Annotated[Literal[200_000], BeforeValidator(parse_environment_integer)]
+FixedMaxArchiveEntries = Annotated[
+    Literal[10_000], BeforeValidator(parse_environment_integer)
+]
+FixedMaxExpandedBytes = Annotated[
+    Literal[104_857_600], BeforeValidator(parse_environment_integer)
+]
 FixedMaxChunks = Annotated[Literal[20_000], BeforeValidator(parse_environment_integer)]
-FixedParserCpuSeconds = Annotated[Literal[20], BeforeValidator(parse_environment_integer)]
+FixedMaxExtractedCharacters = Annotated[
+    Literal[5_000_000], BeforeValidator(parse_environment_integer)
+]
+FixedMaxMetadataBytes = Annotated[
+    Literal[65_536], BeforeValidator(parse_environment_integer)
+]
+FixedParserCpuSeconds = Annotated[Literal[45], BeforeValidator(parse_environment_integer)]
 FixedParserMemoryBytes = Annotated[
-    Literal[536_870_912], BeforeValidator(parse_environment_integer)
+    Literal[4_294_967_296], BeforeValidator(parse_environment_integer)
 ]
 
 
@@ -307,21 +319,26 @@ class MaintenanceSettings(StrictSettingsModel):
 class FileAdmissionSettings(StrictSettingsModel):
     max_bytes: FixedMaxUploadBytes = 10_485_760
     max_lines: FixedMaxLines = 200_000
+    max_archive_entries: FixedMaxArchiveEntries = 10_000
+    max_expanded_bytes: FixedMaxExpandedBytes = 104_857_600
 
 
 class ParserSettings(StrictSettingsModel):
-    profile: Literal["plain_text_test_v1"] = "plain_text_test_v1"
+    profile: Literal["unstructured_local_v1"] = "unstructured_local_v1"
     max_chunks: FixedMaxChunks = 20_000
-    wall_seconds: PositiveFloat = 30.0
+    max_extracted_characters: FixedMaxExtractedCharacters = 5_000_000
+    max_metadata_bytes: FixedMaxMetadataBytes = 65_536
+    wall_seconds: PositiveFloat = 60.0
 
     @field_validator("wall_seconds")
     @classmethod
     def require_fixed_wall_timeout(cls, value: float) -> float:
-        if value != 30.0:
-            raise ValueError("parser wall_seconds is fixed at 30")
+        if value != 60.0:
+            raise ValueError("parser wall_seconds is fixed at 60")
         return value
-    cpu_seconds: FixedParserCpuSeconds = 20
-    memory_bytes: FixedParserMemoryBytes = 536_870_912
+
+    cpu_seconds: FixedParserCpuSeconds = 45
+    memory_bytes: FixedParserMemoryBytes = 4_294_967_296
 
 
 class VectorStoreSettings(StrictSettingsModel):

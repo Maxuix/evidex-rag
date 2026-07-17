@@ -138,7 +138,10 @@ async def _file_admission_handler(
     request: Request, error: FileAdmissionError
 ) -> JSONResponse:
     status = 422
-    if error.code is ErrorCode.FILE_TOO_LARGE:
+    if error.code in {
+        ErrorCode.FILE_TOO_LARGE,
+        ErrorCode.FILE_ARCHIVE_LIMIT_EXCEEDED,
+    }:
         status = 413
     elif error.code in {
         ErrorCode.FILE_MEDIA_TYPE_UNSUPPORTED,
@@ -153,6 +156,8 @@ async def _file_admission_handler(
         ErrorCode.FILE_TOO_LARGE: "The document exceeds the configured byte limit.",
         ErrorCode.FILE_INVALID_UTF8: "The document is not valid UTF-8 text.",
         ErrorCode.FILE_LINE_LIMIT_EXCEEDED: "The document exceeds the configured line limit.",
+        ErrorCode.FILE_CONTENT_INVALID: "The document content does not match the declared format.",
+        ErrorCode.FILE_ARCHIVE_LIMIT_EXCEEDED: "The document archive exceeds a configured safety limit.",
         ErrorCode.PARSER_NOT_CONFIGURED: "No parser is configured for this document format.",
     }
     return problem_response(

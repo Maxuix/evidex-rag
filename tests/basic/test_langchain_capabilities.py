@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import json
 import unittest
+from importlib.metadata import version
+from io import BytesIO
 
 import httpx
 from pydantic import BaseModel
 
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_unstructured import UnstructuredLoader
 from langgraph.graph import END, START, StateGraph
 
 
@@ -15,6 +18,33 @@ class _StructuredProbe(BaseModel):
 
 
 class LangChainCapabilityTests(unittest.IsolatedAsyncioTestCase):
+    def test_langchain_unstructured_public_local_loader_capability(self) -> None:
+        self.assertEqual(version("langchain-unstructured"), "1.0.1")
+        self.assertEqual(version("unstructured"), "0.24.1")
+
+        loader = UnstructuredLoader(
+            file=BytesIO(b"# Overview\n\nLocal parsing evidence."),
+            metadata_filename="guide.md",
+            content_type="text/markdown",
+            partition_via_api=False,
+            strategy="fast",
+            chunking_strategy="by_title",
+            max_characters=2_000,
+            new_after_n_chars=1_800,
+            overlap=200,
+            overlap_all=False,
+            combine_text_under_n_chars=500,
+            multipage_sections=False,
+            include_orig_elements=True,
+        )
+
+        documents = list(loader.lazy_load())
+
+        self.assertEqual(len(documents), 1)
+        self.assertIn("Overview", documents[0].page_content)
+        self.assertEqual(documents[0].metadata["category"], "CompositeElement")
+        self.assertIn("orig_elements", documents[0].metadata)
+
     async def test_chat_openai_public_async_and_metadata_capabilities(self) -> None:
         def respond(request: httpx.Request) -> httpx.Response:
             self.assertEqual(request.url.path, "/v1/chat/completions")

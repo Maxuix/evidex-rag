@@ -2,8 +2,7 @@
 from rag_kb.adapters.file_store import LocalFileStore, SourceFileStore
 from rag_kb.adapters.parser import (
     DocumentProcessor,
-    IsolatedPlainTextProcessor,
-    PlainTextTestParser,
+    IsolatedUnstructuredProcessor,
 )
 from rag_kb.adapters.model_api import (
     ChatModelAdapter,
@@ -18,11 +17,10 @@ __all__ = [
     "ChatModelAdapter",
     "EmbeddingModelAdapter",
     "FixedPgVectorSpace",
-    "IsolatedPlainTextProcessor",
+    "IsolatedUnstructuredProcessor",
     "LangChainChatModelAdapter",
     "LangChainEmbeddingModelAdapter",
     "LocalFileStore",
-    "PlainTextTestParser",
     "PgVectorStore",
     "SourceFileStore",
     "VectorStore",

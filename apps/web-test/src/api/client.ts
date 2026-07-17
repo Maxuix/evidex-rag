@@ -264,9 +264,13 @@ export class ApiClient {
       ? "text/markdown"
       : extension === "txt"
         ? "text/plain"
-        : null;
+        : extension === "pdf"
+          ? "application/pdf"
+          : extension === "docx"
+            ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            : null;
     if (!mediaType) {
-      throw new ApiClientError("Choose a .txt or .md file.", {
+      throw new ApiClientError("Choose a .txt, .md, .pdf, or .docx file.", {
         code: "FRONTEND_FILE_TYPE_UNSUPPORTED",
       });
     }

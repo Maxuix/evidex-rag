@@ -9,6 +9,7 @@ import asyncpg
 
 from rag_kb.auth import AuthContext, SingleWorkspaceAccessPolicy
 from rag_kb.db import DatabaseProcess, create_database_resources
+from rag_kb.document_processing import index_profile
 from rag_kb.domain import (
     DocumentSource,
     EmbeddingSpaceDefinition,
@@ -328,14 +329,7 @@ def _embedding() -> EmbeddingSpaceDefinition:
 
 
 def _profile() -> IndexProfileDefinition:
-    return IndexProfileDefinition(
-        parser_config={"profile": "plain_text_test_v1"},
-        chunking_config={
-            "profile": "paragraph_window_v1",
-            "max_characters": 2000,
-            "overlap_characters": 200,
-        },
-    )
+    return index_profile()
 
 
 def _source(ordinal: str) -> DocumentSource:

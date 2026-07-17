@@ -7,6 +7,7 @@ from typing import Any
 from uuid import UUID
 
 from rag_kb.auth import AccessPolicy, AuthContext
+from rag_kb.document_processing import index_profile
 from rag_kb.domain import (
     AnswerPolicyDefaults,
     Document,
@@ -46,20 +47,7 @@ def build_content_services(
     """Construct content services without exposing domain configuration to the API."""
 
     definition = embedding_space_definition(embedding)
-    profile = IndexProfileDefinition(
-        parser_config={
-            "profile": "plain_text_test_v1",
-            "encoding": "utf-8",
-            "bom": "optional",
-            "line_endings": "lf",
-        },
-        chunking_config={
-            "profile": "paragraph_window_v1",
-            "boundary_order": ["paragraph", "line", "codepoint"],
-            "max_characters": 2000,
-            "overlap_characters": 200,
-        },
-    )
+    profile = index_profile()
     return ContentServices(
         knowledge_bases=KnowledgeBaseService(
             unit_of_work,
