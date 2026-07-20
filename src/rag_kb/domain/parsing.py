@@ -21,9 +21,6 @@ class ParserLimits:
     max_chunks: int = 20_000
     max_extracted_characters: int = 5_000_000
     max_metadata_bytes: int = 65_536
-    wall_seconds: float = 60.0
-    cpu_seconds: int = 45
-    memory_bytes: int = 4 * 1024 * 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)

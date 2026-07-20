@@ -333,9 +333,7 @@ def _is_retryable(error: IndexingExecutionError) -> bool:
     if error.code is ErrorCode.INDEX_PERSISTENCE_FAILED:
         return "operation" in error.diagnostic
     return error.code in {
-        ErrorCode.PARSER_TIMEOUT,
         ErrorCode.PARSER_CRASHED,
-        ErrorCode.PARSER_ISOLATION_FAILED,
         ErrorCode.EMBEDDING_PROVIDER_UNAVAILABLE,
         ErrorCode.INDEX_INCOMPLETE,
     }

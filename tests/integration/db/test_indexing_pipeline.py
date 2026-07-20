@@ -14,8 +14,8 @@ import asyncpg
 
 from rag_kb.adapters import (
     FixedPgVectorSpace,
-    IsolatedUnstructuredProcessor,
     LocalFileStore,
+    UnstructuredProcessor,
 )
 from rag_kb.auth import AuthContext, SingleWorkspaceAccessPolicy
 from rag_kb.db import DatabaseProcess, create_database_resources
@@ -93,7 +93,7 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
         (self.root / "staging").mkdir()
         (self.root / "final").mkdir()
         self.store = LocalFileStore(self.root / "staging", self.root / "final")
-        self.processor = IsolatedUnstructuredProcessor(ParserLimits())
+        self.processor = UnstructuredProcessor(ParserLimits())
 
     async def asyncTearDown(self) -> None:
         await self.database.close()

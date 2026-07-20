@@ -69,10 +69,6 @@ FixedMaxExtractedCharacters = Annotated[
 FixedMaxMetadataBytes = Annotated[
     Literal[65_536], BeforeValidator(parse_environment_integer)
 ]
-FixedParserCpuSeconds = Annotated[Literal[45], BeforeValidator(parse_environment_integer)]
-FixedParserMemoryBytes = Annotated[
-    Literal[4_294_967_296], BeforeValidator(parse_environment_integer)
-]
 
 
 class StrictSettingsModel(BaseModel):
@@ -328,17 +324,6 @@ class ParserSettings(StrictSettingsModel):
     max_chunks: FixedMaxChunks = 20_000
     max_extracted_characters: FixedMaxExtractedCharacters = 5_000_000
     max_metadata_bytes: FixedMaxMetadataBytes = 65_536
-    wall_seconds: PositiveFloat = 60.0
-
-    @field_validator("wall_seconds")
-    @classmethod
-    def require_fixed_wall_timeout(cls, value: float) -> float:
-        if value != 60.0:
-            raise ValueError("parser wall_seconds is fixed at 60")
-        return value
-
-    cpu_seconds: FixedParserCpuSeconds = 45
-    memory_bytes: FixedParserMemoryBytes = 4_294_967_296
 
 
 class VectorStoreSettings(StrictSettingsModel):
@@ -497,7 +482,6 @@ class Settings(BaseSettings):
                 "reconciliation, and safety margin"
             )
         longest_operation = max(
-            self.parser.wall_seconds,
             self.model_provider.chat.timeout_seconds,
             self.model_provider.embedding.timeout_seconds,
         )

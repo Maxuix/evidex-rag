@@ -13,11 +13,11 @@ from rag_kb.adapters import (
     ChatModelAdapter,
     EmbeddingModelAdapter,
     FixedPgVectorSpace,
-    IsolatedUnstructuredProcessor,
     LangChainChatModelAdapter,
     LangChainEmbeddingModelAdapter,
     LocalFileStore,
     PgVectorStore,
+    UnstructuredProcessor,
 )
 from rag_kb.config import (
     Settings,
@@ -71,7 +71,7 @@ class WorkerDependencies:
     access_policy: SingleWorkspaceAccessPolicy
     file_store: LocalFileStore
     reconciliation_service: FileReconciliationService
-    document_processor: IsolatedUnstructuredProcessor
+    document_processor: UnstructuredProcessor
     embedding_provider: EmbeddingModelAdapter
     vector_store: PgVectorStore
     retrieval_service: RetrievalService
@@ -134,16 +134,13 @@ def build_worker_dependencies(
         resolved_settings.file_store.staging_path,
         resolved_settings.file_store.final_path,
     )
-    document_processor = IsolatedUnstructuredProcessor(
+    document_processor = UnstructuredProcessor(
         ParserLimits(
             max_chunks=resolved_settings.parser.max_chunks,
             max_extracted_characters=(
                 resolved_settings.parser.max_extracted_characters
             ),
             max_metadata_bytes=resolved_settings.parser.max_metadata_bytes,
-            wall_seconds=resolved_settings.parser.wall_seconds,
-            cpu_seconds=resolved_settings.parser.cpu_seconds,
-            memory_bytes=resolved_settings.parser.memory_bytes,
         )
     )
     embedding_settings = resolved_settings.model_provider.embedding

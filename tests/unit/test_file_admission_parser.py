@@ -2,10 +2,7 @@ from __future__ import annotations
 
 import io
 import os
-import signal
-import sys
-import tempfile
-import time
+import socket
 import unittest
 from unittest.mock import patch
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -13,8 +10,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
-from rag_kb.adapters import DocumentProcessor, IsolatedUnstructuredProcessor
-from rag_kb.adapters.parser.isolated import _configure_environment
+from rag_kb.adapters import DocumentProcessor, UnstructuredProcessor
 from rag_kb.adapters.parser.langchain_unstructured import process_with_unstructured
 from rag_kb.document_processing import (
     UNSTRUCTURED_CHUNKING_CONFIG,
@@ -29,57 +25,6 @@ from rag_kb.domain import (
     ParserSource,
 )
 from rag_kb.services import FileAdmissionService
-
-
-def _hang_child(connection, source, limits) -> None:
-    del connection, source, limits
-    time.sleep(60)
-
-
-def _crash_child(connection, source, limits) -> None:
-    del connection, source, limits
-    os._exit(7)
-
-
-def _resource_child(connection, source, limits) -> None:
-    del connection, source, limits
-    os.kill(os.getpid(), signal.SIGKILL)
-
-
-def _cpu_hog_child(connection, source, limits) -> None:
-    del connection, source
-    import resource
-
-    _, hard = resource.getrlimit(resource.RLIMIT_CPU)
-    resource.setrlimit(resource.RLIMIT_CPU, (limits.cpu_seconds, hard))
-    while True:
-        pass
-
-
-def _memory_hog_child(connection, source, limits) -> None:
-    del source
-    import resource
-
-    _, hard = resource.getrlimit(resource.RLIMIT_AS)
-    resource.setrlimit(resource.RLIMIT_AS, (limits.memory_bytes, hard))
-    try:
-        bytearray(limits.memory_bytes * 4)
-    except MemoryError:
-        connection.send(
-            (
-                "error",
-                {
-                    "code": ErrorCode.PARSER_RESOURCE_LIMIT.value,
-                    "diagnostic": {
-                        "limit_name": "memory_bytes",
-                        "limit": limits.memory_bytes,
-                    },
-                },
-            )
-        )
-    finally:
-        connection.close()
-
 
 def _minimal_docx() -> bytes:
     target = io.BytesIO()
@@ -274,7 +219,7 @@ class UnstructuredParserTests(unittest.TestCase):
                 _minimal_docx(),
             ),
         )
-        limits = ParserLimits(wall_seconds=60, cpu_seconds=45)
+        limits = ParserLimits()
         for source in cases:
             with self.subTest(filename=source.original_filename):
                 first = process_with_unstructured(source, limits)
@@ -353,129 +298,41 @@ class UnstructuredParserTests(unittest.TestCase):
         )
 
 
-class IsolatedParserTests(unittest.IsolatedAsyncioTestCase):
-    async def test_environment_preserves_only_the_tokenizer_cache_path(self) -> None:
-        with (
-            tempfile.TemporaryDirectory() as scratch,
-            tempfile.TemporaryDirectory() as tokenizer_cache,
-            patch.dict(
-                os.environ,
-                {
-                    "RAG_KB_SECRET_TEST": "credential-must-not-leak",
-                    "TIKTOKEN_CACHE_DIR": tokenizer_cache,
-                },
-                clear=True,
-            ),
-        ):
-            _configure_environment(scratch)
-
-            self.assertEqual(os.environ["TIKTOKEN_CACHE_DIR"], tokenizer_cache)
-            self.assertEqual(os.environ["HOME"], scratch)
-            self.assertNotIn("RAG_KB_SECRET_TEST", os.environ)
-
-    async def test_invalid_tokenizer_cache_path_fails_isolation(self) -> None:
-        processor = IsolatedUnstructuredProcessor(ParserLimits())
-        with (
-            patch.dict(
-                os.environ,
-                {"TIKTOKEN_CACHE_DIR": "relative-tokenizer-cache"},
-            ),
-            self.assertRaises(ParserExecutionError) as raised,
-        ):
-            await processor.process(
-                ParserSource("guide.txt", "text/plain", b"isolated parser")
-            )
-
-        self.assertEqual(
-            raised.exception.code,
-            ErrorCode.PARSER_ISOLATION_FAILED,
-        )
-        self.assertEqual(
-            raised.exception.diagnostic,
-            {"check": "tokenizer_cache"},
-        )
-
-    async def test_supported_input_runs_through_the_isolated_contract(self) -> None:
-        processor = IsolatedUnstructuredProcessor(
-            ParserLimits(
-                max_chunks=20,
-                wall_seconds=60,
-                cpu_seconds=45,
-                memory_bytes=4 * 1024 * 1024 * 1024,
-            )
-        )
+class UnstructuredProcessorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_supported_input_runs_in_process_with_inherited_environment(
+        self,
+    ) -> None:
+        processor = UnstructuredProcessor(ParserLimits(max_chunks=20))
         self.assertIsInstance(processor, DocumentProcessor)
-        result = await processor.process(
-            ParserSource("guide.txt", "text/plain", b"isolated parser")
-        )
-        self.assertEqual(result.chunks[0].text, "isolated parser")
+        worker_pid = os.getpid()
+        observed: dict[str, object] = {}
+        original = process_with_unstructured
 
-    async def test_timeout_crash_and_resource_exit_are_distinct_and_redacted(self) -> None:
-        cases = (
-            (_hang_child, ErrorCode.PARSER_TIMEOUT, 0.05),
-            (_crash_child, ErrorCode.PARSER_CRASHED, 5.0),
-            (_resource_child, ErrorCode.PARSER_RESOURCE_LIMIT, 5.0),
-        )
-        os.environ["RAG_KB_SECRET_TEST"] = "credential-must-not-leak"
-        try:
-            for target, code, wall in cases:
-                processor = IsolatedUnstructuredProcessor(
-                    ParserLimits(
-                        max_chunks=20,
-                        wall_seconds=wall,
-                        cpu_seconds=1,
-                        memory_bytes=512 * 1024 * 1024,
-                    ),
-                    child_target=target,
-                )
-                with self.subTest(code=code), self.assertRaises(
-                    ParserExecutionError
-                ) as raised:
-                    await processor.process(
-                        ParserSource(
-                            "guide.txt",
-                            "text/plain",
-                            b"secret-source-must-not-leak",
-                        )
-                    )
-                self.assertEqual(raised.exception.code, code)
-                rendered = f"{raised.exception} {raised.exception.diagnostic}"
-                self.assertNotIn("credential-must-not-leak", rendered)
-                self.assertNotIn("secret-source-must-not-leak", rendered)
-        finally:
-            del os.environ["RAG_KB_SECRET_TEST"]
+        def process_in_worker(source: ParserSource, limits: ParserLimits):
+            observed["pid"] = os.getpid()
+            observed["environment"] = os.environ.get("RAG_KB_LOCAL_PARSER_TEST")
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM):
+                observed["network_socket"] = True
+            return original(source, limits)
 
-    async def test_cpu_budget_is_enforced_by_the_child_kernel_limit(self) -> None:
-        processor = IsolatedUnstructuredProcessor(
-            ParserLimits(
-                max_chunks=20,
-                wall_seconds=4,
-                cpu_seconds=1,
-                memory_bytes=512 * 1024 * 1024,
+        with (
+            patch.dict(
+                os.environ,
+                {"RAG_KB_LOCAL_PARSER_TEST": "inherited"},
             ),
-            child_target=_cpu_hog_child,
-        )
-        with self.assertRaises(ParserExecutionError) as raised:
-            await processor.process(ParserSource("guide.txt", "text/plain", b"cpu"))
-        self.assertEqual(raised.exception.code, ErrorCode.PARSER_RESOURCE_LIMIT)
-
-    @unittest.skipIf(sys.platform == "darwin", "Darwin rejects lowering RLIMIT_AS")
-    async def test_memory_budget_is_enforced_by_the_child_kernel_limit(self) -> None:
-        processor = IsolatedUnstructuredProcessor(
-            ParserLimits(
-                max_chunks=20,
-                wall_seconds=4,
-                cpu_seconds=2,
-                memory_bytes=128 * 1024 * 1024,
+            patch(
+                "rag_kb.adapters.parser.local.process_with_unstructured",
+                side_effect=process_in_worker,
             ),
-            child_target=_memory_hog_child,
-        )
-        with self.assertRaises(ParserExecutionError) as raised:
-            await processor.process(
-                ParserSource("guide.txt", "text/plain", b"memory")
+        ):
+            result = await processor.process(
+                ParserSource("guide.txt", "text/plain", b"in-process parser")
             )
-        self.assertEqual(raised.exception.code, ErrorCode.PARSER_RESOURCE_LIMIT)
-        self.assertEqual(raised.exception.diagnostic["limit_name"], "memory_bytes")
+
+        self.assertEqual(result.chunks[0].text, "in-process parser")
+        self.assertEqual(observed["pid"], worker_pid)
+        self.assertEqual(observed["environment"], "inherited")
+        self.assertTrue(observed["network_socket"])
 
 
 if __name__ == "__main__":

@@ -52,7 +52,7 @@ def process_with_unstructured(
         from langchain_unstructured import UnstructuredLoader
     except ImportError as error:
         raise ParserExecutionError(
-            ErrorCode.PARSER_ISOLATION_FAILED,
+            ErrorCode.PARSER_NOT_CONFIGURED,
             diagnostic={"check": "unstructured_dependency"},
         ) from error
 

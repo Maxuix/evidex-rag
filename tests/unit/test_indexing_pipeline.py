@@ -164,8 +164,8 @@ class IndexingPipelineTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaises(IndexingExecutionError) as failure:
             await pipeline.execute(command)
-        self.assertEqual(failure.exception.code, ErrorCode.PARSER_TIMEOUT)
-        self.assertEqual(repository.failure[0:2], ("parsing", "PARSER_TIMEOUT"))
+        self.assertEqual(failure.exception.code, ErrorCode.PARSER_CRASHED)
+        self.assertEqual(repository.failure[0:2], ("parsing", "PARSER_CRASHED"))
         self.assertEqual(repository.serving, "candidate")
 
 
@@ -369,8 +369,8 @@ class _FailingProcessor:
         from rag_kb.domain import ParserExecutionError
 
         raise ParserExecutionError(
-            ErrorCode.PARSER_TIMEOUT,
-            diagnostic={"limit_name": "wall_seconds", "limit": 30},
+            ErrorCode.PARSER_CRASHED,
+            diagnostic={"check": "unstructured_loader"},
         )
 
 
