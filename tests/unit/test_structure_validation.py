@@ -75,7 +75,9 @@ class _PassStep:
         return state
 
 
-def _context() -> ChatExecutionContext:
+def _context(
+    *, query: str = "What policy applies and when is the deadline?"
+) -> ChatExecutionContext:
     run_id = uuid4()
     workspace_id = uuid4()
     return ChatExecutionContext(
@@ -95,7 +97,7 @@ def _context() -> ChatExecutionContext:
         index_revision_id=uuid4(),
         principal_id="principal",
         client_id="client",
-        query="What policy applies and when is the deadline?",
+        query=query,
         effective_policy={
             "grounding_policy": "evidence_only",
             "answer_style": "concise",
@@ -159,8 +161,9 @@ def _state(
     partial: bool = False,
     source: AnswerDraftSource = AnswerDraftSource.PROVIDER,
     reason: AnswerControlReason | None = None,
+    query: str = "What policy applies and when is the deadline?",
 ) -> ChatPipelineState:
-    context = _context()
+    context = _context(query=query)
     pack = _pack(context)
     return ChatPipelineState(
         context=context,
@@ -201,6 +204,33 @@ def _answered() -> str:
 
 
 class StructureValidationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_acknowledgement_is_non_substantive_and_needs_no_citation(
+        self,
+    ) -> None:
+        raw = json.dumps(
+            {
+                "outcome": "acknowledged",
+                "claims": [],
+                "missing_aspects": [],
+            }
+        )
+
+        result = await AnswerStructureValidationStep(_Model()).run(
+            _state(raw, query="我知道了")
+        )
+
+        assert result.answering is not None
+        assert result.answering.validated is not None
+        assert result.answering.rendered is not None
+        assert result.answering.validation is not None
+        self.assertEqual(
+            result.answering.validated.outcome,
+            AnswerOutcome.ACKNOWLEDGED,
+        )
+        self.assertEqual(result.answering.rendered.content, "好的，明白了。")
+        self.assertEqual(result.answering.rendered.citations, ())
+        self.assertFalse(result.answering.validation.repair_attempted)
+
     async def test_answered_claims_render_unique_first_use_citations(self) -> None:
         raw = json.dumps(
             {

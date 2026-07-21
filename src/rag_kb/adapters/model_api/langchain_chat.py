@@ -92,6 +92,8 @@ class LangChainChatModelAdapter:
                     ErrorCode.CHAT_PROVIDER_UNAVAILABLE,
                     diagnostic={"check": "total_timeout"},
                 ) from error
+            except openai.LengthFinishReasonError as error:
+                response = _truncated_response(error)
             except openai.APIStatusError as error:
                 status = error.status_code
                 raise ChatModelExecutionError(
@@ -163,6 +165,32 @@ def _model_with_output_limit(model: Any, max_tokens: int) -> Any:
         extra_body["max_tokens"] = max_tokens
         return model_copy(update={"extra_body": extra_body})
     return model.bind(max_tokens=max_tokens)
+
+
+def _truncated_response(error: openai.LengthFinishReasonError) -> ChatModelResponse:
+    completion = error.completion
+    if not completion.choices or not completion.model:
+        raise ChatModelExecutionError(
+            ErrorCode.CHAT_RESPONSE_INVALID,
+            diagnostic={"check": "truncated_completion"},
+        ) from error
+    usage: dict[str, int] = {}
+    if completion.usage is not None:
+        for source, target in (
+            ("prompt_tokens", "prompt_tokens"),
+            ("completion_tokens", "completion_tokens"),
+            ("total_tokens", "total_tokens"),
+        ):
+            value = getattr(completion.usage, source, None)
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                usage[target] = value
+    return ChatModelResponse(
+        content='{"_response_truncated":true}',
+        model=completion.model,
+        finish_reason=completion.choices[0].finish_reason,
+        provider_request_id=completion.id or None,
+        usage=usage,
+    )
 
 
 def _request_content_bytes(request: ChatModelRequest) -> int:

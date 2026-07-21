@@ -27,7 +27,7 @@ class WireAnswerClaim(BaseModel):
 class WireAnswer(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    outcome: Literal["answered", "partial", "refused"]
+    outcome: Literal["answered", "partial", "acknowledged", "refused"]
     claims: list[WireAnswerClaim] = Field(max_length=100)
     missing_aspects: list[str] = Field(max_length=100)
 

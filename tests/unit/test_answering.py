@@ -370,6 +370,7 @@ class AnswerPolicyRoutingTests(unittest.IsolatedAsyncioTestCase):
         )
 
         generation_payload = json.loads(model.requests[0].messages[1].content)
+        self.assertIn('"acknowledged"', model.requests[0].messages[0].content)
         self.assertEqual(generation_payload["required_outcome"], "answered")
         self.assertEqual(generation_payload["answer_style"], "summary")
         self.assertEqual(generation_payload["missing_aspects"], [])

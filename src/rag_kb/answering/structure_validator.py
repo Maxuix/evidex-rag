@@ -59,6 +59,7 @@ class AnswerStructureValidationStep:
             answering.draft,
             answering.evidence,
             answering.assessment,
+            current_query=context.query,
         )
         calls = answering.model_calls
         if validated is not None and rendered is not None:
@@ -102,6 +103,7 @@ class AnswerStructureValidationStep:
                 repaired,
                 answering.evidence,
                 answering.assessment,
+                current_query=context.query,
             )
             if validated is not None and rendered is not None:
                 record = AnswerValidationRecord(
@@ -139,6 +141,8 @@ def _validate_and_render(
     draft: AnswerDraftCandidate,
     evidence: EvidenceEnvelope,
     assessment: EvidenceAssessment,
+    *,
+    current_query: str,
 ) -> tuple[
     ValidatedAnswer | None,
     RenderedAnswer | None,
@@ -155,7 +159,10 @@ def _validate_and_render(
             issues.append(issue)
 
     outcome = AnswerOutcome(parsed.outcome)
-    if outcome is not draft.expected_outcome:
+    if (
+        outcome is not draft.expected_outcome
+        and outcome is not AnswerOutcome.ACKNOWLEDGED
+    ):
         add(AnswerValidationIssue.OUTCOME_MISMATCH)
 
     normalized_missing = tuple(value.strip() for value in parsed.missing_aspects)
@@ -221,7 +228,11 @@ def _validate_and_render(
             source=source,
             control_reason=control_reason,
         )
-        rendered = render_validated_answer(validated, evidence)
+        rendered = render_validated_answer(
+            validated,
+            evidence,
+            current_query=current_query,
+        )
     except ValueError:
         return None, None, (AnswerValidationIssue.RENDER_LIMIT_EXCEEDED,)
     return validated, rendered, ()
@@ -244,7 +255,10 @@ def _parse_wire_answer(
 
 
 def render_validated_answer(
-    answer: ValidatedAnswer, evidence: EvidenceEnvelope
+    answer: ValidatedAnswer,
+    evidence: EvidenceEnvelope,
+    *,
+    current_query: str | None = None,
 ) -> RenderedAnswer:
     if answer.outcome is AnswerOutcome.REFUSED:
         reason = answer.control_reason
@@ -267,6 +281,20 @@ def render_validated_answer(
         return RenderedAnswer(
             outcome=answer.outcome,
             content=messages[reason],
+            citations=(),
+        )
+
+    if answer.outcome is AnswerOutcome.ACKNOWLEDGED:
+        if current_query is None:
+            raise ValueError("acknowledgement rendering requires the current query")
+        content = (
+            "好的，明白了。"
+            if any("\u4e00" <= character <= "\u9fff" for character in current_query)
+            else "Understood."
+        )
+        return RenderedAnswer(
+            outcome=answer.outcome,
+            content=content,
             citations=(),
         )
 

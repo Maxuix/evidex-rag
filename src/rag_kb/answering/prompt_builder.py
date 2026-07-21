@@ -37,6 +37,12 @@ citation IDs for every factual claim. Return exactly one JSON object with keys
 outcome, claims, and missing_aspects. Each claim is an object with text and
 citation_ids. Do not add prose outside the JSON object."""
 
+_ACKNOWLEDGEMENT_RULE = """If and only if the current message merely acknowledges or
+accepts the prior answer and asks for no new information, return outcome
+"acknowledged" with empty claims and missing_aspects. In that case do not repeat,
+summarize, extend, or cite the prior answer. For every substantive request, ignore
+this exception and follow required_outcome."""
+
 
 def build_evidence_envelope(pack: EvidencePack) -> EvidenceEnvelope:
     return EvidenceEnvelope(
@@ -84,7 +90,9 @@ def build_generation_request(
     }
     return ChatModelRequest(
         (
-            ChatModelMessage("system", _GENERATION_SYSTEM),
+            ChatModelMessage(
+                "system", f"{_GENERATION_SYSTEM}\n\n{_ACKNOWLEDGEMENT_RULE}"
+            ),
             ChatModelMessage("user", _json(payload)),
         ),
         output_schema=ChatOutputSchema.ANSWER_V1,
@@ -132,7 +140,9 @@ def build_repair_request(
     }
     return ChatModelRequest(
         (
-            ChatModelMessage("system", _REPAIR_SYSTEM),
+            ChatModelMessage(
+                "system", f"{_REPAIR_SYSTEM}\n\n{_ACKNOWLEDGEMENT_RULE}"
+            ),
             ChatModelMessage("user", _json(payload)),
         ),
         output_schema=ChatOutputSchema.ANSWER_V1,

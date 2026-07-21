@@ -223,10 +223,29 @@ class QueryContextualizerTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("untrusted_invalid_output", repair_payload)
 
+    async def test_truncated_first_pass_is_repaired_and_usage_is_retained(self) -> None:
+        context = _context((_turn(1, content="AGENT SELF-EVOLUTION"),))
+        model = _Model(
+            '{"_response_truncated":true}',
+            '{"standalone_query":"什么是 Agent 自我进化"}',
+        )
+
+        value = await SessionQueryContextualizer(
+            model, _Store()
+        ).contextualize(context)
+
+        self.assertIs(value.rewrite_source, QueryRewriteSource.REPAIR)
+        self.assertEqual(value.standalone_query, "什么是 Agent 自我进化")
+        self.assertEqual(len(value.model_calls), 2)
+        self.assertEqual(value.model_calls[0].usage["completion_tokens"], 2)
+
     async def test_double_invalid_wire_uses_non_empty_bounded_fallback(self) -> None:
         turn = _turn(1, content="AGENT SELF-EVOLUTION")
         context = _context((turn,))
-        model = _Model("not-json", '{"wrong":"shape"}')
+        model = _Model(
+            '{"_response_truncated":true}',
+            '{"_response_truncated":true}',
+        )
 
         value = await SessionQueryContextualizer(
             model, _Store()

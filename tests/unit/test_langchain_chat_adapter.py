@@ -157,6 +157,99 @@ class LangChainChatAdapterTests(unittest.IsolatedAsyncioTestCase):
             '{"claims":[],"missing_aspects":[],"outcome":"answered"}',
         )
 
+    async def test_length_finish_is_returned_as_invalid_wire_not_provider_outage(
+        self,
+    ) -> None:
+        def respond(request: httpx.Request) -> httpx.Response:
+            del request
+            return httpx.Response(
+                200,
+                json={
+                    "id": "truncated-completion",
+                    "object": "chat.completion",
+                    "created": 1,
+                    "model": "resolved-model",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {"role": "assistant", "content": ""},
+                            "finish_reason": "length",
+                        }
+                    ],
+                    "usage": {
+                        "prompt_tokens": 100,
+                        "completion_tokens": 256,
+                        "total_tokens": 356,
+                    },
+                },
+            )
+
+        async_client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+        try:
+            model = ChatOpenAI(
+                model="configured-model",
+                api_key="probe-key",
+                base_url="https://provider.invalid/v1",
+                max_retries=0,
+                include_response_headers=True,
+                use_responses_api=False,
+                http_async_client=async_client,
+                model_kwargs={"response_format": {"type": "json_object"}},
+            )
+            response = await _adapter(model).complete(
+                ChatModelRequest(
+                    (ChatModelMessage("user", "acknowledged"),),
+                    output_schema=ChatOutputSchema.CONTEXTUAL_QUERY_V2,
+                    max_output_tokens=256,
+                )
+            )
+        finally:
+            await async_client.aclose()
+
+        self.assertEqual(response.content, '{"_response_truncated":true}')
+        self.assertEqual(response.finish_reason, "length")
+        self.assertEqual(response.provider_request_id, "truncated-completion")
+        self.assertEqual(response.usage["completion_tokens"], 256)
+
+    async def test_empty_structured_message_is_returned_for_business_repair(
+        self,
+    ) -> None:
+        raw = _message(
+            content="",
+            metadata={
+                "model_name": "resolved-model",
+                "finish_reason": "length",
+                "headers": {"x-request-id": "empty-structured-request"},
+                "token_usage": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 2048,
+                    "total_tokens": 2148,
+                },
+            },
+        )
+
+        class _Runnable:
+            async def ainvoke(self, messages: list[object]) -> dict[str, object]:
+                del messages
+                return {"raw": raw, "parsed": None, "parsing_error": ValueError()}
+
+        class _StructuredModel:
+            def with_structured_output(self, *args, **kwargs) -> _Runnable:
+                del args, kwargs
+                return _Runnable()
+
+        response = await _adapter(_StructuredModel()).complete(
+            ChatModelRequest(
+                (ChatModelMessage("user", "answer"),),
+                output_schema=ChatOutputSchema.ANSWER_V1,
+            )
+        )
+
+        self.assertEqual(response.content, '{"_response_truncated":true}')
+        self.assertEqual(response.finish_reason, "length")
+        self.assertEqual(response.provider_request_id, "empty-structured-request")
+        self.assertEqual(response.usage["completion_tokens"], 2048)
+
     async def test_structured_output_maps_schema_and_preserves_raw_metadata(self) -> None:
         raw = _message(content="provider formatting is replaced")
         parsed = WireAnswer(
@@ -352,7 +445,7 @@ class LangChainChatAdapterTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_invalid_visible_response_metadata_fails_closed(self) -> None:
         cases = (
-            AIMessage(content="", response_metadata={"model_name": "model"}),
+            AIMessage(content="", response_metadata={}),
             AIMessage(content="{}", response_metadata={}),
             AIMessage(
                 content="{}",

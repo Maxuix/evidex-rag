@@ -20,6 +20,7 @@ class EvidenceCoverage(StrEnum):
 class AnswerOutcome(StrEnum):
     ANSWERED = "answered"
     PARTIAL = "partial"
+    ACKNOWLEDGED = "acknowledged"
     REFUSED = "refused"
 
 
@@ -216,7 +217,7 @@ class ValidatedAnswer:
             if not self.claims or not self.missing_aspects:
                 raise ValueError("partial results require claims and gaps")
         elif self.claims or self.missing_aspects:
-            raise ValueError("refused results cannot contain answer content")
+            raise ValueError("non-substantive results cannot contain answer content")
         if self.source is AnswerDraftSource.DETERMINISTIC:
             if (
                 self.outcome is not AnswerOutcome.REFUSED
@@ -227,7 +228,7 @@ class ValidatedAnswer:
             self.control_reason is not None
             or self.outcome is AnswerOutcome.REFUSED
         ):
-            raise ValueError("provider validated results must be substantive")
+            raise ValueError("provider validated results cannot be refusals")
 
 
 @dataclass(frozen=True, slots=True)
@@ -267,9 +268,15 @@ class RenderedAnswer:
             raise ValueError("rendered citations must be contiguous")
         if len({item.citation_id for item in self.citations}) != len(self.citations):
             raise ValueError("rendered citations must be unique")
-        if self.outcome is AnswerOutcome.REFUSED and self.citations:
-            raise ValueError("refused results cannot contain citations")
-        if self.outcome is not AnswerOutcome.REFUSED and not self.citations:
+        if self.outcome in {
+            AnswerOutcome.REFUSED,
+            AnswerOutcome.ACKNOWLEDGED,
+        } and self.citations:
+            raise ValueError("non-substantive results cannot contain citations")
+        if self.outcome in {
+            AnswerOutcome.ANSWERED,
+            AnswerOutcome.PARTIAL,
+        } and not self.citations:
             raise ValueError("substantive results require citations")
 
 

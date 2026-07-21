@@ -15,6 +15,9 @@ from rag_kb.domain import (
 )
 
 
+_INVALID_WIRE_RESPONSE = '{"_response_truncated":true}'
+
+
 def to_langchain_messages(
     messages: tuple[ChatModelMessage, ...],
 ) -> list[BaseMessage]:
@@ -37,7 +40,7 @@ def to_langchain_messages(
 def from_langchain_message(message: BaseMessage) -> ChatModelResponse:
     if not isinstance(message, AIMessage):
         raise _invalid("message_type")
-    if not isinstance(message.content, str) or not message.content:
+    if not isinstance(message.content, str):
         raise _invalid("content")
 
     metadata = message.response_metadata
@@ -49,10 +52,11 @@ def from_langchain_message(message: BaseMessage) -> ChatModelResponse:
     finish_reason = _metadata_string(metadata, "finish_reason")
     request_id = _request_id(metadata, message.additional_kwargs)
     usage = _usage(metadata.get("token_usage"), message.usage_metadata)
+    content = message.content or _INVALID_WIRE_RESPONSE
 
     try:
         return ChatModelResponse(
-            content=message.content,
+            content=content,
             model=model,
             finish_reason=finish_reason,
             provider_request_id=request_id,
