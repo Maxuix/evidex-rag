@@ -13,17 +13,24 @@ from rag_kb.domain import (
     AnswerOutcome,
     ChatExecutionCommand,
     ChatExecutionContext,
+    ChatModelCallRecord,
+    ChatModelOperation,
     ChatModelRequest,
     ChatModelResponse,
     ChatOutputSchema,
     ChatPipelineState,
     ChatRunLease,
+    ContextualizedQuery,
+    ConversationTurn,
     Evidence,
     EvidenceCoverage,
     EvidencePack,
     EvidenceScoreKind,
+    QueryContextStatus,
+    QueryRewriteSource,
     RetrievalStrategy,
 )
+from rag_kb.memory import select_conversation_context
 from rag_kb.workflows import LangGraphRunner
 
 
@@ -169,6 +176,62 @@ async def _assess_and_generate(
 
 
 class AnswerPolicyRoutingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_generation_receives_native_history_and_current_message(self) -> None:
+        turn = ConversationTurn(
+            user_message_id=uuid4(),
+            user_content="什么是 AGENT SELF-EVOLUTION",
+            assistant_message_id=uuid4(),
+            assistant_content="上一轮的原生回答",
+        )
+        context = replace(
+            _context(insufficiency="partial_answer"),
+            query="我没听明白呀",
+            conversation_context=select_conversation_context((turn,)),
+        )
+        query_context = ContextualizedQuery(
+            version="contextual_query_v2",
+            status=QueryContextStatus.CONTEXTUALIZED,
+            original_query=context.query,
+            standalone_query="请通俗解释什么是 AGENT SELF-EVOLUTION",
+            context_hash=context.conversation_context.content_hash,
+            model_calls=(
+                ChatModelCallRecord(
+                    operation=ChatModelOperation.CONTEXTUALIZE_QUERY,
+                    model="fixed-model",
+                    provider_request_id="rewrite-call",
+                    usage={},
+                ),
+            ),
+            created_at=datetime.now(UTC),
+            origin_attempt=1,
+            rewrite_source=QueryRewriteSource.MODEL,
+        )
+        pack = _pack(context, "AGENT SELF-EVOLUTION is supported evidence")
+        model = _Model(_response('{"outcome":"answered","claims":[],"missing_aspects":[]}'))
+        state = ChatPipelineState(
+            context=context,
+            query_context=query_context,
+            evidence_pack=pack,
+        )
+        state = await CosineEvidenceAssessmentStep(0.6).run(state)
+
+        await AnswerGenerationStep(model).run(state)
+
+        system, user = model.requests[0].messages
+        payload = json.loads(user.content)
+        self.assertIn("current message is authoritative", system.content)
+        self.assertEqual(payload["current_question"], "我没听明白呀")
+        self.assertEqual(
+            payload["standalone_query"],
+            "请通俗解释什么是 AGENT SELF-EVOLUTION",
+        )
+        self.assertEqual(
+            payload["conversation_context"]["turns"][0]["assistant"][
+                "untrusted_content"
+            ],
+            "上一轮的原生回答",
+        )
+
     async def test_hybrid_assessment_uses_rerank_score_and_vector_floor(self) -> None:
         context = _context()
         pack = _pack(context, "matching evidence", "semantic noise")

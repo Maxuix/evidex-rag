@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 from typing import Protocol
 
-from rag_kb.answering.pipeline_steps import build_clarification_state
 from rag_kb.domain import (
     CONTEXTUAL_QUERY_VERSION,
     ChatExecutionCommand,
@@ -16,6 +15,7 @@ from rag_kb.domain import (
     ErrorCode,
     ContextualizedQuery,
     QueryContextStatus,
+    QueryRewriteSource,
 )
 from rag_kb.services.chat_execution import (
     ChatEvidenceRetriever,
@@ -78,11 +78,9 @@ class LangGraphRunner:
                 "retrieve_evidence": self._retrieve_evidence,
                 "assess_evidence": self._assess_evidence,
                 "generate_or_refuse": self._generate_or_refuse,
-                "build_clarification": self._build_clarification,
                 "validate_structure": self._validate_structure,
                 "persist_result": self._persist_result,
             },
-            self._route_after_contextualization,
         )
 
     async def execute(self, command: ChatExecutionCommand) -> ChatPipelineState:
@@ -154,28 +152,6 @@ class LangGraphRunner:
         )
         return {"query_context": value}
 
-    def _route_after_contextualization(self, graph: ChatGraphState) -> str:
-        value = graph["query_context"]
-        if value.status is QueryContextStatus.NEEDS_CLARIFICATION:
-            return "needs_clarification"
-        if value.standalone_query is None:
-            raise TypeError("ready query context is missing standalone query")
-        return "ready"
-
-    async def _build_clarification(
-        self, graph: ChatGraphState
-    ) -> dict[str, object]:
-        progress = graph["progress"]
-        progress.phase = ChatPipelinePhase.BUILD_CLARIFICATION
-        state = build_clarification_state(
-            graph["context"], graph["query_context"]
-        )
-        retain_progress(progress, state)
-        return {
-            "evidence_pack": state.evidence_pack,
-            "pipeline_state": state,
-        }
-
     async def _assess_evidence(self, graph: ChatGraphState) -> dict[str, object]:
         return await self._run_step(graph, "assess_evidence")
 
@@ -232,4 +208,5 @@ class _OriginalOnlyContextualizer:
             original_query=context.query,
             standalone_query=context.query,
             context_hash=context.conversation_context.content_hash,
+            rewrite_source=QueryRewriteSource.ORIGINAL,
         )

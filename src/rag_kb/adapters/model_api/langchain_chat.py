@@ -60,7 +60,7 @@ class LangChainChatModelAdapter:
         self._structured_output_method = (
             "json_schema" if structured_output_mode == "json_schema" else "json_mode"
         )
-        self._structured_models: dict[object, Any] = {}
+        self._structured_models: dict[tuple[object, int | None], Any] = {}
         self._model = chat_model or ChatOpenAI(
             model=model,
             api_key=api_key,
@@ -126,23 +126,43 @@ class LangChainChatModelAdapter:
 
     async def _invoke(self, request: ChatModelRequest, messages: list[Any]) -> Any:
         if request.output_schema is None:
-            return await self._model.ainvoke(messages)
+            invoke_arguments = (
+                {"max_tokens": request.max_output_tokens}
+                if request.max_output_tokens is not None
+                else {}
+            )
+            return await self._model.ainvoke(messages, **invoke_arguments)
         schema = OUTPUT_SCHEMAS.get(request.output_schema)
         if schema is None:
             raise ChatModelExecutionError(
                 ErrorCode.CHAT_RESPONSE_INVALID,
                 diagnostic={"check": "output_schema"},
             )
-        runnable = self._structured_models.get(request.output_schema)
+        cache_key = (request.output_schema, request.max_output_tokens)
+        runnable = self._structured_models.get(cache_key)
         if runnable is None:
-            runnable = self._model.with_structured_output(
+            model = (
+                _model_with_output_limit(self._model, request.max_output_tokens)
+                if request.max_output_tokens is not None
+                else self._model
+            )
+            runnable = model.with_structured_output(
                 schema,
                 method=self._structured_output_method,
                 include_raw=True,
             )
-            self._structured_models[request.output_schema] = runnable
+            self._structured_models[cache_key] = runnable
         result = await runnable.ainvoke(messages)
         return _structured_message(result, schema)
+
+
+def _model_with_output_limit(model: Any, max_tokens: int) -> Any:
+    model_copy = getattr(model, "model_copy", None)
+    if callable(model_copy):
+        extra_body = dict(getattr(model, "extra_body", None) or {})
+        extra_body["max_tokens"] = max_tokens
+        return model_copy(update={"extra_body": extra_body})
+    return model.bind(max_tokens=max_tokens)
 
 
 def _request_content_bytes(request: ChatModelRequest) -> int:

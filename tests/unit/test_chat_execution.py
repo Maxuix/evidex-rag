@@ -16,6 +16,7 @@ from rag_kb.domain import (
     RetrievalStrategy,
     ContextualizedQuery,
     QueryContextStatus,
+    QueryRewriteSource,
 )
 from rag_kb.services.chat_execution import ChatEvidenceRetriever
 
@@ -85,6 +86,7 @@ class ChatExecutionServiceTests(unittest.IsolatedAsyncioTestCase):
             ),
             created_at=datetime.now(UTC),
             origin_attempt=1,
+            rewrite_source=QueryRewriteSource.MODEL,
         )
 
         await ChatEvidenceRetriever(retrieval).retrieve(context, query_context)  # type: ignore[arg-type]

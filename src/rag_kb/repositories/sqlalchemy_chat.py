@@ -21,6 +21,8 @@ from rag_kb.db.models import (
     Citation as CitationRow,
 )
 from rag_kb.domain import (
+    CONTEXTUAL_QUERY_VERSION,
+    LEGACY_CONTEXTUAL_QUERY_VERSION,
     ChatCitation,
     ChatExecutionContext,
     ChatFailureSettlementCommand,
@@ -169,6 +171,7 @@ class SqlAlchemyChatRepository:
                 "claimed_at": claimed_at.isoformat(),
                 "finished_at": observed_at.isoformat(),
                 "duration_ms": _duration_ms(claimed_at, observed_at),
+                "query_rewrite": _query_rewrite_facts(run),
             }
             context_calls = _contextualization_calls(run)
             if context_calls:
@@ -210,7 +213,10 @@ class SqlAlchemyChatRepository:
             _contextualization_calls(run),
             _serialized_calls(command.lease.attempt, command.model_calls),
         )
-        validation = _serialized_validation(command)
+        validation = {
+            **_serialized_validation(command),
+            "query_rewrite": _query_rewrite_facts(run),
+        }
         stable_success = {
             **validation,
             "claimed_by": command.lease.claimed_by,
@@ -297,7 +303,10 @@ class SqlAlchemyChatRepository:
             _contextualization_calls(run),
             _serialized_calls(command.lease.attempt, command.model_calls),
         )
-        facts = _serialized_failure(command)
+        facts = {
+            **_serialized_failure(command),
+            "query_rewrite": _query_rewrite_facts(run),
+        }
         stable_failure = {
             **facts,
             "claimed_by": command.lease.claimed_by,
@@ -574,6 +583,11 @@ class SqlAlchemyChatRepository:
                     ChatRunRow.kb_id == kb_id,
                     ChatRunRow.principal_id == principal_id,
                     ChatRunRow.status == ChatRunStatus.COMPLETED,
+                    or_(
+                        ChatRunRow.contextualized_query.is_(None),
+                        ChatRunRow.contextualized_query["status"].astext
+                        != "needs_clarification",
+                    ),
                     user.workspace_id == self._workspace_id,
                     user.session_id == session_id,
                     user.role == ChatMessageRole.USER,
@@ -627,9 +641,19 @@ class SqlAlchemyChatRepository:
             await self._session.flush()
             return value
         try:
-            return hydrate_contextualized_query(row.contextualized_query)
+            existing = hydrate_contextualized_query(row.contextualized_query)
         except (TypeError, ValueError):
             return None
+        if (
+            existing.version == LEGACY_CONTEXTUAL_QUERY_VERSION
+            and value.version == CONTEXTUAL_QUERY_VERSION
+            and existing.original_query == value.original_query
+            and existing.context_hash == value.context_hash
+        ):
+            row.contextualized_query = serialize_contextualized_query(value)
+            await self._session.flush()
+            return value
+        return existing
 
     async def list_sessions(
         self,
@@ -941,6 +965,43 @@ def _merge_usage(
         for name, value in item["usage"].items():
             totals[name] = totals.get(name, 0) + value
     return {"calls": existing, "totals": totals}
+
+
+def _query_rewrite_facts(run: ChatRunRow) -> dict[str, Any]:
+    if run.contextualized_query is None:
+        return {
+            "version": None,
+            "status": "pending",
+            "source": None,
+            "first_pass_schema_valid": None,
+            "repair_attempted": False,
+            "fallback_used": False,
+        }
+    try:
+        value = hydrate_contextualized_query(run.contextualized_query)
+    except (TypeError, ValueError):
+        return {
+            "version": "invalid",
+            "status": "invalid",
+            "source": None,
+            "first_pass_schema_valid": None,
+            "repair_attempted": False,
+            "fallback_used": False,
+        }
+    source = value.rewrite_source.value if value.rewrite_source else None
+    repair_attempted = len(value.model_calls) >= 2
+    return {
+        "version": value.version,
+        "status": value.status.value,
+        "source": source,
+        "first_pass_schema_valid": (
+            True
+            if source == "model"
+            else (False if source in {"repair", "fallback"} else None)
+        ),
+        "repair_attempted": repair_attempted,
+        "fallback_used": source == "fallback",
+    }
 
 
 def _stored_attempt_calls(

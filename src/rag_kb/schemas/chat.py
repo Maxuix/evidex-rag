@@ -145,6 +145,7 @@ class ChatRunQueryContextResponse(PublicSchema):
     history_token_count: Annotated[int, Field(ge=0, le=4000)]
     history_truncated: bool
     standalone_query: str | None
+    rewrite_source: Literal["original", "model", "repair", "fallback"] | None
 
 
 class ChatCitationResponse(PublicSchema):

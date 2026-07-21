@@ -278,10 +278,10 @@ class SessionContextSettings(StrictSettingsModel):
     max_turns: FixedContextTurns = 6
     max_context_tokens: FixedContextTokens = 4000
     tokenizer: Literal["cl100k_base"] = "cl100k_base"
-    query_schema: Literal["contextual_query_v1"] = "contextual_query_v1"
+    query_schema: Literal["contextual_query_v2"] = "contextual_query_v2"
     configuration_fingerprint: Literal[
-        "sha256:ebb79a4ae178ce735fc09c1a30e9374fb5ad91525e7441c1c70f291f573d8aef"
-    ] = "sha256:ebb79a4ae178ce735fc09c1a30e9374fb5ad91525e7441c1c70f291f573d8aef"
+        "sha256:7de39f7456bdf97eb6c41deab2b916d4f77c072d175faf546f297137763a1d20"
+    ] = "sha256:7de39f7456bdf97eb6c41deab2b916d4f77c072d175faf546f297137763a1d20"
 
 
 class FileStoreSettings(StrictSettingsModel):

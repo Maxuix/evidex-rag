@@ -652,6 +652,7 @@ export function ChatView({
                   ["History turns", run.query_context.history_turn_count],
                   ["History tokens", run.query_context.history_token_count],
                   ["Truncated", run.query_context.history_truncated ? "yes" : "no"],
+                  ["Rewrite source", run.query_context.rewrite_source || "pending/legacy"],
                 ]} />
                 {run.query_context.standalone_query ? (
                   <p>{run.query_context.standalone_query}</p>

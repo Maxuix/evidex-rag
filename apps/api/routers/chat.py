@@ -324,6 +324,11 @@ def _query_context_response(value: ChatRun) -> ChatRunQueryContextResponse:
         standalone_query=(
             artifact.standalone_query if artifact is not None else None
         ),
+        rewrite_source=(
+            artifact.rewrite_source.value
+            if artifact is not None and artifact.rewrite_source is not None
+            else None
+        ),
     )
 
 

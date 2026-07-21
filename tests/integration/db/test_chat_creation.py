@@ -230,6 +230,66 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 after=None,
             )
 
+    async def test_legacy_clarification_turn_is_excluded_from_new_context(self) -> None:
+        kb = await self._create_kb("legacy-clarification-history")
+        session = await self.chat.create_session(
+            self.context, kb_id=kb.id, title=None
+        )
+        run = await self._create_run(session.id, kb.id, uuid4())
+        observed_at = datetime.now(UTC)
+        lease = await ChatRunCoordinator(self.factory).claim(
+            worker_id="legacy-history", observed_at=observed_at, max_attempts=3
+        )
+        self.assertIsNotNone(lease)
+        context = await ChatExecutionContextLoader(self.factory).load(
+            ChatExecutionCommand(lease)
+        )
+        await ChatResultPersistenceStep(
+            self.factory, clock=lambda: observed_at + timedelta(seconds=1)
+        ).run(_refusal_state(context))
+
+        legacy = {
+            "version": "contextual_query_v1",
+            "status": "needs_clarification",
+            "original_query": "How should RUN-ORD-14 be handled?",
+            "standalone_query": None,
+            "context_hash": run.conversation_context["content_hash"],
+            "model_calls": [
+                {
+                    "operation": "contextualize_query",
+                    "model": _model_configuration()["resolved_model"],
+                    "provider_request_id": "legacy-call",
+                    "usage": {},
+                }
+            ],
+            "created_at": observed_at.isoformat(),
+            "origin_attempt": 1,
+        }
+        connection = await asyncpg.connect(MIGRATION_DSN)
+        try:
+            await connection.execute(
+                "UPDATE chat_run SET contextualized_query = $2::jsonb WHERE id = $1",
+                run.id,
+                json.dumps(legacy),
+            )
+        finally:
+            await connection.close()
+
+        follow_up = await self.chat.create_run(
+            self.context,
+            uuid4(),
+            session_id=session.id,
+            kb_id=kb.id,
+            message="我想知道更多",
+            answer_style=None,
+            insufficiency_policy=None,
+            retrieval_mode="vector",
+            top_k=10,
+        )
+
+        self.assertEqual(follow_up.conversation_context["turns"], [])
+        self.assertEqual(follow_up.contextualized_query["status"], "original")
+
     async def test_kb_defaults_request_precedence_and_frozen_replay(self) -> None:
         kb = await self.knowledge_bases.create(
             self.context,
@@ -301,10 +361,13 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(concurrent_replay.id, from_defaults.id)
         self.assertEqual(replay.effective_policy, from_defaults.effective_policy)
 
+        override_session = await self.chat.create_session(
+            self.context, kb_id=kb.id, title="Policy request override"
+        )
         request_override = await self.chat.create_run(
             self.context,
             uuid4(),
-            session_id=session.id,
+            session_id=override_session.id,
             kb_id=kb.id,
             message="Override only the answer style",
             answer_style=AnswerStyle.SUMMARY,

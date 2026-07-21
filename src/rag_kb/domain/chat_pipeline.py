@@ -23,7 +23,6 @@ from rag_kb.domain.memory import (
 class ChatPipelinePhase(StrEnum):
     LOAD_CONTEXT = "load_context"
     CONTEXTUALIZE_QUERY = "contextualize_query"
-    BUILD_CLARIFICATION = "build_clarification"
     RETRIEVE_EVIDENCE = "retrieve_evidence"
     ASSESS_EVIDENCE = "assess_evidence"
     GENERATE_OR_REFUSE = "generate_or_refuse"
@@ -34,6 +33,7 @@ class ChatPipelinePhase(StrEnum):
 class ChatOutputSchema(StrEnum):
     ANSWER_V1 = "answer_v1"
     CONTEXTUAL_QUERY_V1 = "contextual_query_v1"
+    CONTEXTUAL_QUERY_V2 = "contextual_query_v2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,10 +130,19 @@ class ChatModelMessage:
 class ChatModelRequest:
     messages: tuple[ChatModelMessage, ...]
     output_schema: ChatOutputSchema | None = None
+    max_output_tokens: int | None = None
 
     def __post_init__(self) -> None:
         if not self.messages:
             raise ValueError("chat model request must contain messages")
+        if (
+            self.max_output_tokens is not None
+            and (
+                isinstance(self.max_output_tokens, bool)
+                or not 1 <= self.max_output_tokens <= 2048
+            )
+        ):
+            raise ValueError("chat model output token limit is invalid")
 
 
 @dataclass(frozen=True, slots=True)

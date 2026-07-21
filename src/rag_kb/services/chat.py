@@ -14,6 +14,7 @@ from rag_kb.domain import (
     ChatSessionBusyError,
     ContextualizedQuery,
     QueryContextStatus,
+    QueryRewriteSource,
     CONTEXTUAL_QUERY_VERSION,
     IdempotencyKeyReusedError,
     IdempotencyScope,
@@ -256,6 +257,7 @@ class ChatService:
                     original_query=normalized_message,
                     standalone_query=normalized_message,
                     context_hash=conversation_context.content_hash,
+                    rewrite_source=QueryRewriteSource.ORIGINAL,
                 )
                 if not conversation_context.turns
                 else None

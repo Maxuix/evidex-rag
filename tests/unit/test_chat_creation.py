@@ -247,6 +247,9 @@ class ChatHistoryRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(turns, ())
         self.assertIn(".chat_run_id = chat_run.id", session.sql)
         self.assertNotIn("chat_run.assistant_message_id", session.sql)
+        self.assertIn("chat_run.contextualized_query IS NULL", session.sql)
+        self.assertIn("contextualized_query", session.sql)
+        self.assertIn("status", session.sql)
 
 
 class _ChatRepository:

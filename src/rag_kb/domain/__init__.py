@@ -132,12 +132,14 @@ from rag_kb.domain.indexing import (
 )
 from rag_kb.domain.memory import (
     CONTEXTUAL_QUERY_VERSION,
+    LEGACY_CONTEXTUAL_QUERY_VERSION,
     SESSION_CONTEXT_STRATEGY,
     SESSION_CONTEXT_VERSION,
     ContextualizedQuery,
     ConversationContextSnapshot,
     ConversationTurn,
     QueryContextStatus,
+    QueryRewriteSource,
     empty_context_snapshot,
 )
 from rag_kb.domain.parsing import (
@@ -203,7 +205,9 @@ __all__ = [
     "ConversationContextSnapshot",
     "ConversationTurn",
     "QueryContextStatus",
+    "QueryRewriteSource",
     "CONTEXTUAL_QUERY_VERSION",
+    "LEGACY_CONTEXTUAL_QUERY_VERSION",
     "SESSION_CONTEXT_STRATEGY",
     "SESSION_CONTEXT_VERSION",
     "empty_context_snapshot",

@@ -32,9 +32,6 @@ from rag_kb.domain import (
     EvidencePack,
     EvidenceScoreKind,
     InsufficiencyPolicy,
-    ContextualizedQuery,
-    QueryContextStatus,
-    RetrievalStrategy,
 )
 
 
@@ -167,40 +164,6 @@ class AnswerGenerationStep:
             artifacts=state.artifacts,
         )
 
-
-def build_clarification_state(
-    context: ChatExecutionContext,
-    query_context: ContextualizedQuery,
-) -> ChatPipelineState:
-    if query_context.status is not QueryContextStatus.NEEDS_CLARIFICATION:
-        raise _context_error(
-            ChatPipelinePhase.BUILD_CLARIFICATION, "query_context_status"
-        )
-    pack = EvidencePack(
-        knowledge_base_id=context.knowledge_base_id,
-        index_revision_id=context.index_revision_id,
-        strategy=RetrievalStrategy(context.retrieval_strategy["strategy"]),
-    )
-    evidence = build_evidence_envelope(pack)
-    assessment = EvidenceAssessment(
-        coverage=EvidenceCoverage.AMBIGUOUS,
-        usable_citation_ids=(),
-        supported_aspects=(),
-        missing_aspects=("reference",),
-    )
-    return ChatPipelineState(
-        context=context,
-        query_context=query_context,
-        evidence_pack=pack,
-        answering=ChatAnsweringState(
-            evidence=evidence,
-            assessment=assessment,
-            draft=_deterministic_refusal(
-                AnswerControlReason.AMBIGUOUS_QUESTION
-            ),
-            model_calls=query_context.model_calls_for_attempt(context.attempt),
-        ),
-    )
 
 def _route(
     coverage: EvidenceCoverage, insufficiency: InsufficiencyPolicy

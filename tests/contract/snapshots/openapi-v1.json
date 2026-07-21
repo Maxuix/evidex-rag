@@ -314,6 +314,23 @@
             "title": "History Turn Count",
             "type": "integer"
           },
+          "rewrite_source": {
+            "anyOf": [
+              {
+                "enum": [
+                  "original",
+                  "model",
+                  "repair",
+                  "fallback"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rewrite Source"
+          },
           "standalone_query": {
             "anyOf": [
               {
@@ -347,7 +364,8 @@
           "history_turn_count",
           "history_token_count",
           "history_truncated",
-          "standalone_query"
+          "standalone_query",
+          "rewrite_source"
         ],
         "title": "ChatRunQueryContextResponse",
         "type": "object"

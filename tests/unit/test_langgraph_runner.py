@@ -24,6 +24,7 @@ from rag_kb.domain import (
     ChatModelOperation,
     ContextualizedQuery,
     QueryContextStatus,
+    QueryRewriteSource,
 )
 from rag_kb.workflows import LangGraphRunner
 from rag_kb.workflows.chat_graph import CHAT_GRAPH_NODES
@@ -138,13 +139,13 @@ def _build(
 
 
 class LangGraphRunnerTests(unittest.IsolatedAsyncioTestCase):
-    async def test_clarification_branch_skips_retrieval_and_generation(self) -> None:
+    async def test_fallback_query_continues_through_retrieval(self) -> None:
         context = _context()
         query_context = ContextualizedQuery(
             version=CONTEXTUAL_QUERY_VERSION,
-            status=QueryContextStatus.NEEDS_CLARIFICATION,
+            status=QueryContextStatus.CONTEXTUALIZED,
             original_query=context.query,
-            standalone_query=None,
+            standalone_query="The prior topic; explain it more clearly",
             context_hash=context.conversation_context.content_hash,
             model_calls=(
                 ChatModelCallRecord(
@@ -153,9 +154,16 @@ class LangGraphRunnerTests(unittest.IsolatedAsyncioTestCase):
                     provider_request_id="context-call",
                     usage={"prompt_tokens": 4},
                 ),
+                ChatModelCallRecord(
+                    operation=ChatModelOperation.CONTEXTUALIZE_QUERY,
+                    model="fixed-model",
+                    provider_request_id="repair-call",
+                    usage={"prompt_tokens": 4},
+                ),
             ),
             created_at=datetime.now(UTC),
             origin_attempt=1,
+            rewrite_source=QueryRewriteSource.FALLBACK,
         )
 
         class Contextualizer:
@@ -163,7 +171,7 @@ class LangGraphRunnerTests(unittest.IsolatedAsyncioTestCase):
                 del value
                 return query_context
 
-        retriever = _Retriever(_pack(context, "must not be read"))
+        retriever = _Retriever(_pack(context))
         runner, model, persister = _build(
             context=context,
             pack=retriever.pack,
@@ -173,13 +181,13 @@ class LangGraphRunnerTests(unittest.IsolatedAsyncioTestCase):
 
         result = await runner.execute(ChatExecutionCommand(context.lease))
 
-        self.assertEqual(retriever.calls, 0)
+        self.assertEqual(retriever.calls, 1)
         self.assertEqual(model.requests, [])
         self.assertEqual(persister.calls, 1)
         assert result.answering is not None
         assert result.answering.draft is not None
         self.assertEqual(
-            result.answering.draft.control_reason.value, "ambiguous_question"
+            result.answering.draft.control_reason.value, "no_usable_evidence"
         )
 
     async def test_answer_routes_cover_generation_refusal_and_repair(self) -> None:

@@ -18,7 +18,6 @@ from rag_kb.domain import (
     EvidencePack,
     RetrievalRequest,
     RetrievalStrategy,
-    QueryContextStatus,
     ReconciliationResult,
 )
 from rag_kb.retrieval import RetrievalService
@@ -153,10 +152,7 @@ class ChatEvidenceRetriever:
         try:
             if query_context is None:
                 query = context.query
-            elif (
-                query_context.status is QueryContextStatus.NEEDS_CLARIFICATION
-                or query_context.standalone_query is None
-            ):
+            elif query_context.standalone_query is None:
                 raise ValueError
             else:
                 query = query_context.standalone_query

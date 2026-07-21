@@ -11,6 +11,7 @@ from rag_kb.memory.query import (
     SessionQueryContextualizer,
     WireContextualQuery,
     build_contextualization_request,
+    build_contextualization_repair_request,
     hydrate_contextualized_query,
     serialize_contextualized_query,
 )
@@ -24,6 +25,7 @@ __all__ = [
     "SessionQueryContextualizer",
     "WireContextualQuery",
     "build_contextualization_request",
+    "build_contextualization_repair_request",
     "hydrate_contextualized_query",
     "serialize_contextualized_query",
 ]

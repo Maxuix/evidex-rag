@@ -53,6 +53,7 @@ from rag_kb.domain import (
     KnowledgeBase,
     Page,
     QueryContextStatus,
+    QueryRewriteSource,
     ResourceNotFoundError,
     ResourceStateConflictError,
     RetrievalDebug,
@@ -1011,6 +1012,7 @@ class _FakeChatService:
             original_query=values["message"],
             standalone_query=values["message"],
             context_hash=snapshot.content_hash,
+            rewrite_source=QueryRewriteSource.ORIGINAL,
         )
         self.run = dataclass_replace(
             self.run,
@@ -1438,6 +1440,7 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
                 "history_token_count": 0,
                 "history_truncated": False,
                 "standalone_query": "查询 RUN-ORD-14",
+                "rewrite_source": "original",
             },
         )
         self.assertIsNone(body["answer"])

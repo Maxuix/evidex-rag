@@ -185,6 +185,7 @@ export interface ChatRun {
     history_token_count: number;
     history_truncated: boolean;
     standalone_query: string | null;
+    rewrite_source: "original" | "model" | "repair" | "fallback" | null;
   };
   attempt: number;
   error: ChatRunError | null;

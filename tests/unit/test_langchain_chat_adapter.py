@@ -105,6 +105,7 @@ class LangChainChatAdapterTests(unittest.IsolatedAsyncioTestCase):
         def respond(request: httpx.Request) -> httpx.Response:
             payload = json.loads(request.content)
             self.assertEqual(payload["response_format"], {"type": "json_object"})
+            self.assertEqual(payload["max_tokens"], 256)
             return httpx.Response(
                 200,
                 headers={"x-request-id": "structured-request"},
@@ -143,6 +144,7 @@ class LangChainChatAdapterTests(unittest.IsolatedAsyncioTestCase):
                 ChatModelRequest(
                     (ChatModelMessage("user", "answer"),),
                     output_schema=ChatOutputSchema.ANSWER_V1,
+                    max_output_tokens=256,
                 )
             )
         finally:
@@ -202,6 +204,52 @@ class LangChainChatAdapterTests(unittest.IsolatedAsyncioTestCase):
             model.bindings,
             [(WireAnswer, "json_mode", True)],
         )
+
+    async def test_structured_request_passes_per_call_output_limit(self) -> None:
+        raw = _message(content='{"standalone_query":"expanded topic"}')
+
+        class _Runnable:
+            def __init__(self) -> None:
+                self.arguments: list[dict[str, object]] = []
+
+            async def ainvoke(
+                self, messages: list[object], **kwargs: object
+            ) -> dict[str, object]:
+                del messages
+                self.arguments.append(kwargs)
+                return {
+                    "raw": raw,
+                    "parsed": None,
+                    "parsing_error": ValueError(),
+                }
+
+        class _StructuredModel:
+            def __init__(self) -> None:
+                self.runnable = _Runnable()
+                self.bindings: list[dict[str, object]] = []
+
+            def bind(self, **kwargs: object) -> _StructuredModel:
+                self.bindings.append(kwargs)
+                return self
+
+            def with_structured_output(self, *args, **kwargs) -> _Runnable:
+                del args, kwargs
+                return self.runnable
+
+        model = _StructuredModel()
+        adapter = _adapter(model)
+
+        response = await adapter.complete(
+            ChatModelRequest(
+                (ChatModelMessage("user", "expand"),),
+                output_schema=ChatOutputSchema.CONTEXTUAL_QUERY_V2,
+                max_output_tokens=256,
+            )
+        )
+
+        self.assertEqual(model.bindings, [{"max_tokens": 256}])
+        self.assertEqual(model.runnable.arguments, [{}])
+        self.assertEqual(response.content, '{"standalone_query":"expanded topic"}')
 
     async def test_structured_parse_failure_preserves_raw_for_business_repair(self) -> None:
         raw = _message(content="not-json")
