@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 from pydantic import ValidationError
+from sqlalchemy.dialects import postgresql
 
 from rag_kb.auth import AuthContext, SingleWorkspaceAccessPolicy
 from rag_kb.domain import (
@@ -16,6 +17,7 @@ from rag_kb.domain import (
     resolve_p1_policy,
 )
 from rag_kb.memory import hydrate_conversation_context
+from rag_kb.repositories.sqlalchemy_chat import SqlAlchemyChatRepository
 from rag_kb.schemas import ChatRunCreate
 from rag_kb.services import ChatService, chat_model_configuration
 
@@ -226,6 +228,27 @@ class ChatCreationServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("create", chat.events)
 
 
+class ChatHistoryRepositoryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_completed_turn_query_compiles_against_persisted_relationships(
+        self,
+    ) -> None:
+        session = _CompileOnlySession()
+        repository = SqlAlchemyChatRepository(
+            session, uuid4(), lambda: None  # type: ignore[arg-type]
+        )
+
+        turns = await repository.list_completed_turns(
+            session_id=uuid4(),
+            principal_id="principal",
+            kb_id=uuid4(),
+            limit=7,
+        )
+
+        self.assertEqual(turns, ())
+        self.assertIn(".chat_run_id = chat_run.id", session.sql)
+        self.assertNotIn("chat_run.assistant_message_id", session.sql)
+
+
 class _ChatRepository:
     def __init__(self, *, kb_id, turns=(), busy=False) -> None:
         self.kb_id = kb_id
@@ -259,6 +282,15 @@ class _ChatRepository:
     async def create_run(self, **values):
         self.events.append("create")
         return values
+
+
+class _CompileOnlySession:
+    def __init__(self) -> None:
+        self.sql = ""
+
+    async def execute(self, statement):
+        self.sql = str(statement.compile(dialect=postgresql.dialect()))
+        return SimpleNamespace(all=lambda: [])
 
 
 class _KnowledgeBases:

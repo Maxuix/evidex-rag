@@ -565,8 +565,7 @@ class SqlAlchemyChatRepository:
                 .join(ChatRunRow, ChatRunRow.user_message_id == user.id)
                 .join(
                     assistant,
-                    (assistant.id == ChatRunRow.assistant_message_id)
-                    & (assistant.chat_run_id == ChatRunRow.id)
+                    (assistant.chat_run_id == ChatRunRow.id)
                     & (assistant.role == ChatMessageRole.ASSISTANT),
                 )
                 .where(
