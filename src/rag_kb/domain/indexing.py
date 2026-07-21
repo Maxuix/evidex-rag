@@ -20,6 +20,7 @@ VECTOR_ID_NAMESPACE = UUID("263db84c-f438-5bd1-b9ca-666752fc2e92")
 class IndexingPhase(StrEnum):
     SOURCE_READ = "source_read"
     PARSING = "parsing"
+    SEMANTIC_ANALYSIS = "semantic_analysis"
     EMBEDDING = "embedding"
     PERSISTING = "persisting"
     VALIDATING = "validating"
@@ -113,6 +114,7 @@ class IndexCleanupResult:
     retired_targets_cleaned: int = 0
     vectors_deleted: int = 0
     chunks_deleted: int = 0
+    plans_deleted: int = 0
     jobs_deleted: int = 0
     file_cleanup_records_deleted: int = 0
 

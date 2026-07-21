@@ -58,6 +58,7 @@ class MaintenanceCleanupService:
                 retired_targets_cleaned=index.retired_targets_cleaned,
                 vectors_deleted=index.vectors_deleted,
                 chunks_deleted=index.chunks_deleted,
+                plans_deleted=index.plans_deleted,
                 jobs_deleted=index.jobs_deleted,
                 file_cleanup_records_deleted=records,
             )

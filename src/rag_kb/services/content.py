@@ -7,9 +7,10 @@ from typing import Any
 from uuid import UUID
 
 from rag_kb.auth import AccessPolicy, AuthContext
-from rag_kb.document_processing import index_profile
+from rag_kb.document_processing import index_profile, profile_for_preset
 from rag_kb.domain import (
     AnswerPolicyDefaults,
+    ChunkingPreset,
     Document,
     DocumentMutationResult,
     DocumentSource,
@@ -91,7 +92,9 @@ class KnowledgeBaseService:
         self._unit_of_work = unit_of_work
         self._access_policy = access_policy
         self._embedding_space = embedding_space
-        self._index_profile = index_profile
+        expected = profile_for_preset(ChunkingPreset.STRUCTURAL_BALANCED_V2)
+        if index_profile != expected:
+            raise ValueError("default index profile must match the preset registry")
 
     async def create(
         self,
@@ -99,6 +102,7 @@ class KnowledgeBaseService:
         idempotency_key: UUID,
         *,
         name: str,
+        chunking_preset: ChunkingPreset | str = ChunkingPreset.STRUCTURAL_BALANCED_V2,
         retrieval_defaults: dict[str, Any],
         answer_policy_defaults: dict[str, Any] | None = None,
     ) -> KnowledgeBase:
@@ -108,6 +112,8 @@ class KnowledgeBaseService:
             if answer_policy_defaults is None
             else validate_p1_answer_policy_defaults(answer_policy_defaults).as_dict()
         )
+        resolved_preset = ChunkingPreset(chunking_preset)
+        resolved_profile = profile_for_preset(resolved_preset)
         scope = IdempotencyScope(
             context.principal_id,
             context.client_id,
@@ -117,9 +123,21 @@ class KnowledgeBaseService:
         request_hash = canonical_request_hash(
             {
                 "name": name,
+                "chunking": {"preset": resolved_preset.value},
                 "retrieval_defaults": retrieval_defaults,
                 "answer_policy_defaults": resolved_answer_defaults,
             }
+        )
+        legacy_request_hash = (
+            canonical_request_hash(
+                {
+                    "name": name,
+                    "retrieval_defaults": retrieval_defaults,
+                    "answer_policy_defaults": resolved_answer_defaults,
+                }
+            )
+            if resolved_preset is ChunkingPreset.STRUCTURAL_BALANCED_V2
+            else None
         )
 
         async def persist(uow: UnitOfWork) -> KnowledgeBase:
@@ -127,7 +145,13 @@ class KnowledgeBaseService:
             await uow.content_mutations.lock(scope)
             prior = await uow.content_mutations.get(scope)
             if prior is not None:
-                _require_same_hash(prior.request_hash, request_hash)
+                if prior.request_hash not in {
+                    request_hash,
+                    legacy_request_hash,
+                }:
+                    raise IdempotencyKeyReusedError(
+                        "idempotency key was already used with a different request"
+                    )
                 assert prior.kb_id is not None
                 existing = await uow.knowledge_bases.get(prior.kb_id)
                 if existing is None:
@@ -138,7 +162,7 @@ class KnowledgeBaseService:
                 retrieval_defaults=retrieval_defaults,
                 answer_policy_defaults=resolved_answer_defaults,
                 embedding_space=self._embedding_space,
-                index_profile=self._index_profile,
+                index_profile=resolved_profile,
             )
             await uow.content_mutations.add(
                 scope=scope,

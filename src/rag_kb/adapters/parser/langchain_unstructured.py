@@ -19,6 +19,8 @@ from rag_kb.document_processing import (
 from rag_kb.domain import (
     ErrorCode,
     IndexChunkDraft,
+    ParsedDocument,
+    ParsedElement,
     ParserExecutionError,
     ParserLimits,
     ParserSource,
@@ -152,6 +154,102 @@ def process_with_unstructured(
     )
 
 
+def partition_with_unstructured(
+    source: ParserSource,
+    limits: ParserLimits,
+) -> ParsedDocument:
+    """Partition one source into bounded raw elements without Unstructured chunking."""
+
+    extension = PurePath(source.original_filename).suffix.lower()
+    expected_media_type = _MEDIA_TYPES.get(extension)
+    if expected_media_type is None:
+        raise ParserExecutionError(ErrorCode.PARSER_NOT_CONFIGURED)
+    if source.media_type != expected_media_type:
+        raise ParserExecutionError(ErrorCode.FILE_MEDIA_TYPE_MISMATCH)
+    try:
+        from langchain_unstructured import UnstructuredLoader
+    except ImportError as error:
+        raise ParserExecutionError(
+            ErrorCode.PARSER_NOT_CONFIGURED,
+            diagnostic={"check": "unstructured_dependency"},
+        ) from error
+
+    loader = UnstructuredLoader(
+        file=BytesIO(source.content),
+        metadata_filename=source.original_filename,
+        content_type=source.media_type,
+        partition_via_api=False,
+        strategy="fast",
+        include_page_breaks=True,
+    )
+    elements: list[ParsedElement] = []
+    extracted_characters = 0
+    try:
+        for document in loader.lazy_load():
+            text = _canonical_text(document.page_content)
+            if not text:
+                continue
+            if len(elements) >= limits.max_chunks:
+                raise ParserExecutionError(
+                    ErrorCode.PARSER_CHUNK_LIMIT_EXCEEDED,
+                    diagnostic={
+                        "limit_name": "max_chunks",
+                        "limit": limits.max_chunks,
+                    },
+                )
+            extracted_characters += len(text)
+            if extracted_characters > limits.max_extracted_characters:
+                raise ParserExecutionError(
+                    ErrorCode.PARSER_RESOURCE_LIMIT,
+                    diagnostic={
+                        "limit_name": "max_extracted_characters",
+                        "limit": limits.max_extracted_characters,
+                    },
+                )
+            metadata = (
+                document.metadata if isinstance(document.metadata, Mapping) else {}
+            )
+            category = _safe_metadata_value(metadata.get("category")) or "UncategorizedText"
+            source_location = _raw_source_location(metadata)
+            hierarchy = _raw_hierarchy(category, text, metadata)
+            _require_bounded_metadata(
+                source_location,
+                hierarchy,
+                {"category": category},
+                limit=limits.max_metadata_bytes,
+            )
+            elements.append(
+                ParsedElement(
+                    ordinal=len(elements),
+                    text=text,
+                    token_count=count_chunk_tokens(text),
+                    category=category,
+                    source_location=source_location,
+                    hierarchy=hierarchy,
+                    is_title=category == "Title",
+                    is_table=category in {"Table", "TableChunk"},
+                )
+            )
+    except ParserExecutionError:
+        raise
+    except MemoryError:
+        raise
+    except BaseException as error:
+        raise ParserExecutionError(
+            ErrorCode.PARSER_CRASHED,
+            diagnostic={"check": "unstructured_partition"},
+        ) from error
+    if not elements:
+        raise ParserExecutionError(
+            ErrorCode.PARSER_OUTPUT_INVALID,
+            diagnostic={"check": "non_empty_elements"},
+        )
+    return ParsedDocument(
+        elements=tuple(elements),
+        extracted_character_count=extracted_characters,
+    )
+
+
 def _canonical_text(value: object) -> str:
     if not isinstance(value, str):
         return ""
@@ -215,6 +313,35 @@ def _source_location(elements: Iterable[Any]) -> dict[str, Any]:
         if coordinates is not None:
             result["coordinates"] = coordinates
     return result
+
+
+def _raw_source_location(metadata: Mapping[str, Any]) -> dict[str, Any]:
+    page = metadata.get("page_number")
+    result: dict[str, Any] = {}
+    if isinstance(page, int) and not isinstance(page, bool) and page > 0:
+        result = {"page_start": page, "page_end": page}
+        coordinates = _combined_coordinates((metadata.get("coordinates"),))
+        if coordinates is not None:
+            result["coordinates"] = coordinates
+    return result
+
+
+def _raw_hierarchy(
+    category: str,
+    text: str,
+    metadata: Mapping[str, Any],
+) -> dict[str, Any]:
+    if category != "Title":
+        return {}
+    depth = metadata.get("category_depth")
+    resolved_depth = (
+        depth
+        if isinstance(depth, int)
+        and not isinstance(depth, bool)
+        and 0 <= depth <= 32
+        else 0
+    )
+    return {"titles": [{"depth": resolved_depth, "text": text[:256]}]}
 
 
 def _combined_coordinates(values: Iterable[object]) -> dict[str, Any] | None:

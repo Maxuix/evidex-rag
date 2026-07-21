@@ -47,6 +47,18 @@ class LangChainCapabilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(documents[0].metadata["category"], "CompositeElement")
         self.assertIn("orig_elements", documents[0].metadata)
 
+        partition_only = UnstructuredLoader(
+            file=BytesIO(b"# Overview\n\nLocal parsing evidence."),
+            metadata_filename="guide.md",
+            content_type="text/markdown",
+            partition_via_api=False,
+            strategy="fast",
+            include_page_breaks=True,
+        )
+        elements = list(partition_only.lazy_load())
+        self.assertGreaterEqual(len(elements), 2)
+        self.assertIn("Title", {item.metadata["category"] for item in elements})
+
     async def test_chat_openai_public_async_and_metadata_capabilities(self) -> None:
         def respond(request: httpx.Request) -> httpx.Response:
             self.assertEqual(request.url.path, "/v1/chat/completions")

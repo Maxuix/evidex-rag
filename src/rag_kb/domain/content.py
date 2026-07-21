@@ -50,6 +50,7 @@ class KnowledgeBase:
     source_change_seq: int
     active_index_revision_id: UUID
     embedding_space_id: UUID
+    chunking_config: dict[str, Any]
     retrieval_defaults: dict[str, Any]
     answer_policy_defaults: dict[str, Any]
     provisioned_at: datetime

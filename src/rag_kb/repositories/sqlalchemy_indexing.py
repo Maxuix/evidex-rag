@@ -18,6 +18,7 @@ from rag_kb.db.models import (
     EmbeddingSpace as EmbeddingSpaceRow,
     IndexBuildStatus,
     IndexChunk as IndexChunkRow,
+    IndexChunkPlan as IndexChunkPlanRow,
     IndexedDocumentVersion as IndexedDocumentVersionRow,
     IndexingJob as IndexingJobRow,
     IndexRevision as IndexRevisionRow,
@@ -32,6 +33,9 @@ from rag_kb.domain import (
     EmbeddingSpaceDefinition,
     ErrorCode,
     IndexChunkWrite,
+    IndexChunkPlan,
+    ChunkBoundary,
+    ChunkBoundaryReason,
     IndexCleanupResult,
     IndexingCancelled,
     IndexingCommand,
@@ -216,12 +220,21 @@ class SqlAlchemyIndexingRepository:
                         IndexedDocumentVersionRow.serving_status
                         == IndexServingStatus.RETIRED,
                         IndexedDocumentVersionRow.updated_at <= data_before,
-                        exists(
-                            select(IndexChunkRow.id).where(
-                                IndexChunkRow.workspace_id == self._workspace_id,
-                                IndexChunkRow.indexed_document_version_id
-                                == IndexedDocumentVersionRow.id,
-                            )
+                        or_(
+                            exists(
+                                select(IndexChunkRow.id).where(
+                                    IndexChunkRow.workspace_id == self._workspace_id,
+                                    IndexChunkRow.indexed_document_version_id
+                                    == IndexedDocumentVersionRow.id,
+                                )
+                            ),
+                            exists(
+                                select(IndexChunkPlanRow.indexed_document_version_id)
+                                .where(
+                                    IndexChunkPlanRow.indexed_document_version_id
+                                    == IndexedDocumentVersionRow.id
+                                )
+                            ),
                         ),
                     )
                     .order_by(
@@ -247,6 +260,7 @@ class SqlAlchemyIndexingRepository:
             )
         vectors_deleted = 0
         chunks_deleted = 0
+        plans_deleted = 0
         if chunk_ids:
             vectors_deleted = int(
                 (
@@ -265,6 +279,17 @@ class SqlAlchemyIndexingRepository:
                         delete(IndexChunkRow).where(
                             IndexChunkRow.workspace_id == self._workspace_id,
                             IndexChunkRow.id.in_(chunk_ids),
+                        )
+                    )
+                ).rowcount
+                or 0
+            )
+        if targets:
+            plans_deleted = int(
+                (
+                    await self._session.execute(
+                        delete(IndexChunkPlanRow).where(
+                            IndexChunkPlanRow.indexed_document_version_id.in_(targets)
                         )
                     )
                 ).rowcount
@@ -311,6 +336,7 @@ class SqlAlchemyIndexingRepository:
             retired_targets_cleaned=len(targets),
             vectors_deleted=vectors_deleted,
             chunks_deleted=chunks_deleted,
+            plans_deleted=plans_deleted,
             jobs_deleted=jobs_deleted,
         )
 
@@ -835,6 +861,89 @@ class SqlAlchemyIndexingRepository:
         await self._session.flush()
         return _target(row)
 
+    async def get_chunk_plan(
+        self,
+        command: IndexingCommand,
+    ) -> IndexChunkPlan | None:
+        self._ensure_active()
+        row = (
+            await self._session.execute(
+                select(IndexChunkPlanRow)
+                .join(
+                    IndexedDocumentVersionRow,
+                    IndexedDocumentVersionRow.id
+                    == IndexChunkPlanRow.indexed_document_version_id,
+                )
+                .join(
+                    IndexingJobRow,
+                    IndexingJobRow.indexed_document_version_id
+                    == IndexedDocumentVersionRow.id,
+                )
+                .where(
+                    IndexedDocumentVersionRow.workspace_id == self._workspace_id,
+                    IndexingJobRow.workspace_id == self._workspace_id,
+                    IndexingJobRow.id == command.job_id,
+                    IndexedDocumentVersionRow.id
+                    == command.indexed_document_version_id,
+                )
+            )
+        ).scalar_one_or_none()
+        return _chunk_plan(row) if row is not None else None
+
+    async def create_or_get_chunk_plan(
+        self,
+        command: IndexingCommand,
+        proposed: IndexChunkPlan,
+    ) -> IndexChunkPlan:
+        self._ensure_active()
+        row = await self._load(command, lock=True)
+        if row is None:
+            raise IndexingCancelled
+        job, target, *_ = row
+        if not _is_writable(job, target):
+            raise IndexingCancelled
+        if proposed.indexed_document_version_id != target.id:
+            raise _execution_error(
+                ErrorCode.INDEX_CHUNK_PLAN_MISMATCH,
+                IndexingPhase.SEMANTIC_ANALYSIS,
+                "chunk_plan_target",
+            )
+        await self._session.execute(
+            pg_insert(IndexChunkPlanRow)
+            .values(
+                indexed_document_version_id=proposed.indexed_document_version_id,
+                source_checksum_sha256=proposed.source_checksum_sha256,
+                profile_fingerprint=proposed.profile_fingerprint,
+                unit_sequence_hash=proposed.unit_sequence_hash,
+                unit_count=proposed.unit_count,
+                chunk_count=proposed.chunk_count,
+                boundaries=[
+                    {
+                        "after_unit_ordinal": item.after_unit_ordinal,
+                        "reason": item.reason.value,
+                        "score_micros": item.score_micros,
+                    }
+                    for item in proposed.boundaries
+                ],
+                plan_hash=proposed.plan_hash,
+            )
+            .on_conflict_do_nothing(
+                index_elements=["indexed_document_version_id"]
+            )
+        )
+        winner_row = await self._session.get(
+            IndexChunkPlanRow, proposed.indexed_document_version_id
+        )
+        assert winner_row is not None
+        winner = _chunk_plan(winner_row)
+        if winner != proposed:
+            raise _execution_error(
+                ErrorCode.INDEX_CHUNK_PLAN_MISMATCH,
+                IndexingPhase.SEMANTIC_ANALYSIS,
+                "chunk_plan_cas",
+            )
+        return winner
+
     async def set_phase(self, command: IndexingCommand, phase: IndexingPhase) -> bool:
         self._ensure_active()
         row = await self._load(command, lock=True)
@@ -1150,6 +1259,34 @@ def _target(row, *, already_complete: bool = False) -> IndexingTarget:
         embedding_space=_embedding(embedding),
         already_complete=already_complete,
     )
+
+
+def _chunk_plan(row: IndexChunkPlanRow) -> IndexChunkPlan:
+    try:
+        boundaries = tuple(
+            ChunkBoundary(
+                after_unit_ordinal=item["after_unit_ordinal"],
+                reason=ChunkBoundaryReason(item["reason"]),
+                score_micros=item.get("score_micros"),
+            )
+            for item in row.boundaries
+        )
+        return IndexChunkPlan(
+            indexed_document_version_id=row.indexed_document_version_id,
+            source_checksum_sha256=row.source_checksum_sha256,
+            profile_fingerprint=row.profile_fingerprint,
+            unit_sequence_hash=row.unit_sequence_hash,
+            unit_count=row.unit_count,
+            chunk_count=row.chunk_count,
+            boundaries=boundaries,
+            plan_hash=row.plan_hash,
+        )
+    except (KeyError, TypeError, ValueError) as error:
+        raise _execution_error(
+            ErrorCode.INDEX_CHUNK_PLAN_MISMATCH,
+            IndexingPhase.SEMANTIC_ANALYSIS,
+            "chunk_plan_shape",
+        ) from error
 
 
 def _embedding(row: EmbeddingSpaceRow) -> EmbeddingSpaceDefinition:

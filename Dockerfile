@@ -19,6 +19,13 @@ RUN apt-get update \
 COPY requirements.lock /app/requirements.lock
 RUN python -m pip install --no-cache-dir --require-hashes -r /app/requirements.lock
 
+ENV HOME=/tmp/rag-kb-home \
+    MPLCONFIGDIR=/tmp/rag-kb-home/.config/matplotlib \
+    NUMBA_CACHE_DIR=/tmp/rag-kb-home/.cache/numba
+
+RUN mkdir -p "${MPLCONFIGDIR}" "${NUMBA_CACHE_DIR}" \
+    && chown -R rag-kb:rag-kb "${HOME}"
+
 COPY alembic.ini /app/alembic.ini
 COPY apps /app/apps
 COPY src /app/src

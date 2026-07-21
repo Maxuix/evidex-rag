@@ -13,6 +13,7 @@ from rag_kb.adapters import (
     SourceFileStore,
 )
 from rag_kb.domain import (
+    ChunkingStrategyKind,
     ErrorCode,
     FileStoreError,
     IndexChunkWrite,
@@ -25,6 +26,7 @@ from rag_kb.domain import (
     InvalidStorageIdentityError,
     ParserExecutionError,
     ParserSource,
+    ProcessedDocument,
     PromotionCommand,
     SourceFileMissingError,
     VectorRecordWrite,
@@ -33,9 +35,17 @@ from rag_kb.domain import (
     validate_embedding_vector,
 )
 from rag_kb.document_processing import (
-    UNSTRUCTURED_CHUNKING_CONFIG,
-    UNSTRUCTURED_PARSER_CONFIG,
+    SEMANTIC_CHUNKING_CONFIG,
+    count_chunk_tokens,
+    profile_fingerprint,
+    resolve,
 )
+from rag_kb.document_processing.semantic_assembly import assemble_semantic_document
+from rag_kb.document_processing.semantic_boundaries import (
+    build_chunk_plan,
+    validate_plan,
+)
+from rag_kb.document_processing.semantic_units import semantic_units
 from rag_kb.indexing.promotion import CandidatePromotionService
 from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, UnitOfWorkPurpose, execute_in_transaction
 
@@ -81,35 +91,26 @@ class IndexingPipeline:
                     replayed=True,
                     serving_status=promotion.status.value,
                 )
-            self._require_revision_profile(target)
+            strategy = self._require_revision_profile(target)
             self._vector_space.require_compatible(
                 target.embedding_space,
                 self._embedding_provider.embedding_space,
             )
             content = await self._read_source(target)
 
-            phase = IndexingPhase.PARSING
-            await self._set_phase(command, phase)
-            try:
-                processed = await self._document_processor.process(
-                    ParserSource(
-                        original_filename=target.original_filename,
-                        media_type=target.media_type,
-                        content=content,
-                    )
+            source = ParserSource(
+                original_filename=target.original_filename,
+                media_type=target.media_type,
+                content=content,
+            )
+            if strategy is ChunkingStrategyKind.STRUCTURAL:
+                processed = await self._process_structural(command, source)
+            else:
+                processed = await self._process_semantic(
+                    command,
+                    target,
+                    source,
                 )
-            except ParserExecutionError as error:
-                raise IndexingExecutionError(
-                    error.code,
-                    phase=phase,
-                    diagnostic=error.diagnostic,
-                ) from error
-            except Exception as error:
-                raise IndexingExecutionError(
-                    ErrorCode.PARSER_CRASHED,
-                    phase=phase,
-                    diagnostic={"check": "processor_contract"},
-                ) from error
 
             phase = IndexingPhase.EMBEDDING
             await self._set_phase(command, phase)
@@ -279,16 +280,165 @@ class IndexingPipeline:
         return content
 
     @staticmethod
-    def _require_revision_profile(target: IndexingTarget) -> None:
-        if (
-            target.parser_config != UNSTRUCTURED_PARSER_CONFIG
-            or target.chunking_config != UNSTRUCTURED_CHUNKING_CONFIG
-        ):
+    def _require_revision_profile(
+        target: IndexingTarget,
+    ) -> ChunkingStrategyKind:
+        try:
+            return resolve(target.parser_config, target.chunking_config)
+        except ValueError as error:
             raise IndexingExecutionError(
                 ErrorCode.INDEX_REVISION_INCOMPATIBLE,
                 phase=IndexingPhase.SOURCE_READ,
                 diagnostic={"check": "parser_chunking_profile"},
+            ) from error
+
+    async def _process_structural(
+        self,
+        command: IndexingCommand,
+        source: ParserSource,
+    ) -> ProcessedDocument:
+        phase = IndexingPhase.PARSING
+        await self._set_phase(command, phase)
+        try:
+            return await self._document_processor.process(source)
+        except ParserExecutionError as error:
+            raise IndexingExecutionError(
+                error.code,
+                phase=phase,
+                diagnostic=error.diagnostic,
+            ) from error
+        except Exception as error:
+            raise IndexingExecutionError(
+                ErrorCode.PARSER_CRASHED,
+                phase=phase,
+                diagnostic={"check": "processor_contract"},
+            ) from error
+
+    async def _process_semantic(
+        self,
+        command: IndexingCommand,
+        target: IndexingTarget,
+        source: ParserSource,
+    ) -> ProcessedDocument:
+        await self._set_phase(command, IndexingPhase.PARSING)
+        try:
+            parsed = await self._document_processor.partition(source)
+        except ParserExecutionError as error:
+            raise IndexingExecutionError(
+                error.code,
+                phase=IndexingPhase.PARSING,
+                diagnostic=error.diagnostic,
+            ) from error
+        except Exception as error:
+            raise IndexingExecutionError(
+                ErrorCode.PARSER_CRASHED,
+                phase=IndexingPhase.PARSING,
+                diagnostic={"check": "partition_contract"},
+            ) from error
+
+        await self._set_phase(command, IndexingPhase.SEMANTIC_ANALYSIS)
+        try:
+            units = semantic_units(parsed)
+        except ParserExecutionError as error:
+            raise IndexingExecutionError(
+                error.code,
+                phase=IndexingPhase.SEMANTIC_ANALYSIS,
+                diagnostic=error.diagnostic,
+            ) from error
+        fingerprint = profile_fingerprint(
+            target.parser_config,
+            target.chunking_config,
+        )
+        existing = await self._transaction(
+            lambda uow: uow.indexing.get_chunk_plan(command)
+        )
+        if existing is not None:
+            validate_plan(
+                existing,
+                indexed_document_version_id=target.indexed_document_version_id,
+                source_checksum_sha256=target.checksum_sha256,
+                profile_fingerprint=fingerprint,
+                units=units,
             )
+            return assemble_semantic_document(units, existing)
+
+        requires_analysis = (
+            count_chunk_tokens("\n\n".join(unit.text for unit in units))
+            > int(SEMANTIC_CHUNKING_CONFIG["max_chunk_tokens"])
+            or any(unit.hard_boundary_before for unit in units[1:])
+        )
+        vectors = (
+            await self._embed_analysis_units(target, units)
+            if requires_analysis
+            else None
+        )
+        proposed = build_chunk_plan(
+            indexed_document_version_id=target.indexed_document_version_id,
+            source_checksum_sha256=target.checksum_sha256,
+            profile_fingerprint=fingerprint,
+            units=units,
+            vectors=vectors,
+        )
+        winner = await self._transaction(
+            lambda uow: uow.indexing.create_or_get_chunk_plan(
+                command, proposed
+            )
+        )
+        validate_plan(
+            winner,
+            indexed_document_version_id=target.indexed_document_version_id,
+            source_checksum_sha256=target.checksum_sha256,
+            profile_fingerprint=fingerprint,
+            units=units,
+        )
+        return assemble_semantic_document(units, winner)
+
+    async def _embed_analysis_units(
+        self,
+        target: IndexingTarget,
+        units,
+    ) -> tuple[tuple[float, ...], ...]:
+        vectors: list[tuple[float, ...]] = []
+        batch_size = self._embedding_provider.max_batch_size
+        for offset in range(0, len(units), batch_size):
+            batch = units[offset : offset + batch_size]
+            try:
+                embedded = await self._embedding_provider.embed_documents(
+                    tuple(unit.text for unit in batch)
+                )
+            except IndexingExecutionError as error:
+                raise IndexingExecutionError(
+                    error.code,
+                    phase=IndexingPhase.SEMANTIC_ANALYSIS,
+                    diagnostic=error.diagnostic,
+                ) from error
+            except Exception as error:
+                raise IndexingExecutionError(
+                    ErrorCode.EMBEDDING_PROVIDER_UNAVAILABLE,
+                    phase=IndexingPhase.SEMANTIC_ANALYSIS,
+                    diagnostic={"check": "analysis_provider_contract"},
+                ) from error
+            if len(embedded.vectors) != len(batch):
+                raise IndexingExecutionError(
+                    ErrorCode.EMBEDDING_RESPONSE_INVALID,
+                    phase=IndexingPhase.SEMANTIC_ANALYSIS,
+                    diagnostic={
+                        "check": "analysis_batch_count",
+                        "expected": len(batch),
+                        "observed": len(embedded.vectors),
+                    },
+                )
+            for vector in embedded.vectors:
+                try:
+                    validate_embedding_vector(vector, target.embedding_space)
+                except IndexingExecutionError as error:
+                    raise IndexingExecutionError(
+                        error.code,
+                        phase=IndexingPhase.SEMANTIC_ANALYSIS,
+                        diagnostic=error.diagnostic,
+                    ) from error
+                vectors.append(vector)
+        return tuple(vectors)
 
     @staticmethod
     def _writes(target, drafts, embeddings):
@@ -342,6 +492,9 @@ def _safe_diagnostic(value: dict) -> dict:
         "limit_name",
         "limit",
         "exit_kind",
+        "unit_count",
+        "chunk_count",
+        "analysis_batch_count",
     }
     return {key: item for key, item in value.items() if key in allowed}
 

@@ -19,11 +19,12 @@ from rag_kb.adapters import (
 )
 from rag_kb.auth import AuthContext, SingleWorkspaceAccessPolicy
 from rag_kb.db import DatabaseProcess, create_database_resources
-from rag_kb.document_processing import index_profile
+from rag_kb.document_processing import count_chunk_tokens, index_profile
 from rag_kb.domain import (
     AnswerStyle,
     ChatPipelineExecutionError,
     ChatPipelinePhase,
+    ChunkingPreset,
     EmbeddingBatch,
     EmbeddingSpaceDefinition,
     ErrorCode,
@@ -145,6 +146,53 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
             )
         finally:
             await connection.close()
+
+    async def test_semantic_plan_is_persisted_and_reused_after_final_failure(
+        self,
+    ) -> None:
+        kb = await self._create_kb(ChunkingPreset.SEMANTIC_BALANCED_V1)
+        uploaded = await self._upload(
+            kb.id,
+            "semantic.txt",
+            "text/plain",
+            ("A bounded semantic sentence with evidence. " * 240).encode(),
+        )
+        provider = _FailFirstFinalProvider()
+        pipeline = self._pipeline(provider)
+
+        with self.assertRaises(IndexingExecutionError) as failure:
+            await pipeline.execute(_command(uploaded))
+        self.assertEqual(
+            failure.exception.code,
+            ErrorCode.EMBEDDING_PROVIDER_UNAVAILABLE,
+        )
+        analysis_calls = provider.analysis_calls
+        self.assertGreater(analysis_calls, 0)
+
+        result = await pipeline.execute(_command(uploaded))
+        self.assertEqual(result.status, "ready")
+        self.assertEqual(provider.analysis_calls, analysis_calls)
+        connection = await asyncpg.connect(MIGRATION_DSN)
+        try:
+            facts = await connection.fetchrow(
+                """
+                SELECT
+                    (SELECT count(*) FROM index_chunk_plan
+                      WHERE indexed_document_version_id = $1) AS plans,
+                    (SELECT count(*) FROM index_chunk
+                      WHERE indexed_document_version_id = $1) AS chunks,
+                    (SELECT count(*) FROM vector_record_1024 vector
+                      JOIN index_chunk chunk ON chunk.id = vector.index_chunk_id
+                     WHERE chunk.indexed_document_version_id = $1) AS vectors
+                """,
+                uploaded.indexed_document_version_id,
+            )
+        finally:
+            await connection.close()
+        self.assertEqual(
+            tuple(facts),
+            (1, result.chunk_count, result.chunk_count),
+        )
         self.assertEqual(state["ready_candidates"], 0)
         self.assertEqual(state["serving"], 2)
         self.assertEqual(state["completed_jobs"], 2)
@@ -793,11 +841,15 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
             clock=clock,
         )
 
-    async def _create_kb(self):
+    async def _create_kb(
+        self,
+        preset: ChunkingPreset = ChunkingPreset.STRUCTURAL_BALANCED_V2,
+    ):
         return await self.knowledge_bases.create(
             self.context,
             uuid4(),
             name=f"kb-{uuid4()}",
+            chunking_preset=preset,
             retrieval_defaults={"strategy": "exact_vector", "top_k": 10},
         )
 
@@ -925,6 +977,30 @@ class _Provider:
                 phase=IndexingPhase.EMBEDDING,
                 diagnostic={"retry_exhausted": True},
             )
+        return EmbeddingBatch(tuple(_vector() for _ in texts))
+
+
+class _FailFirstFinalProvider:
+    def __init__(self) -> None:
+        self.embedding_space = _embedding()
+        self.max_batch_size = 10
+        self.analysis_calls = 0
+        self.final_calls = 0
+        self.failed = False
+
+    async def embed_documents(self, texts):
+        is_final = any(count_chunk_tokens(text) > 160 for text in texts)
+        if is_final:
+            self.final_calls += 1
+            if not self.failed:
+                self.failed = True
+                raise IndexingExecutionError(
+                    ErrorCode.EMBEDDING_PROVIDER_UNAVAILABLE,
+                    phase=IndexingPhase.EMBEDDING,
+                    diagnostic={"retry_exhausted": True},
+                )
+        else:
+            self.analysis_calls += 1
         return EmbeddingBatch(tuple(_vector() for _ in texts))
 
 

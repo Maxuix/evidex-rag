@@ -19,6 +19,7 @@ from rag_kb.schemas import (
     CursorPayload,
     ErrorCode,
     KnowledgeBaseCreate,
+    KnowledgeBaseChunkingResponse,
     KnowledgeBaseAnswerPolicyDefaults,
     KnowledgeBasePage,
     KnowledgeBaseResponse,
@@ -47,6 +48,7 @@ async def create_knowledge_base(
         context,
         idempotency_key,
         name=payload.name,
+        chunking_preset=payload.chunking.preset,
         retrieval_defaults=payload.retrieval_defaults.model_dump(mode="json"),
         answer_policy_defaults=payload.answer_policy_defaults.model_dump(mode="json"),
     )
@@ -153,12 +155,17 @@ def _invalid_cursor(detail: str) -> None:
 
 
 def _response(value: KnowledgeBase) -> KnowledgeBaseResponse:
+    from rag_kb.document_processing import public_descriptor
+
     return KnowledgeBaseResponse(
         id=value.id,
         name=value.name,
         source_change_seq=value.source_change_seq,
         active_index_revision_id=value.active_index_revision_id,
         embedding_space_id=value.embedding_space_id,
+        chunking=KnowledgeBaseChunkingResponse.model_validate(
+            public_descriptor(value.chunking_config)
+        ),
         retrieval_defaults=RetrievalDefaults.model_validate(value.retrieval_defaults),
         answer_policy_defaults=KnowledgeBaseAnswerPolicyDefaults.model_validate(
             value.answer_policy_defaults

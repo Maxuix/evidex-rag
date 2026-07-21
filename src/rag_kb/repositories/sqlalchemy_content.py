@@ -146,13 +146,17 @@ class SqlAlchemyKnowledgeBaseRepository:
         kb.provisioned_at = now
         kb.updated_at = now
         await self._session.flush()
-        return _knowledge_base(kb, embedding.id)
+        return _knowledge_base(kb, embedding.id, revision.chunking_config)
 
     async def get(self, kb_id: UUID) -> KnowledgeBase | None:
         self._ensure_active()
         row = (
             await self._session.execute(
-                select(KnowledgeBaseRow, IndexRevisionRow.embedding_space_id)
+                select(
+                    KnowledgeBaseRow,
+                    IndexRevisionRow.embedding_space_id,
+                    IndexRevisionRow.chunking_config,
+                )
                 .join(
                     IndexRevisionRow,
                     IndexRevisionRow.id == KnowledgeBaseRow.active_index_revision_id,
@@ -163,7 +167,7 @@ class SqlAlchemyKnowledgeBaseRepository:
                 )
             )
         ).one_or_none()
-        return _knowledge_base(row[0], row[1]) if row is not None else None
+        return _knowledge_base(row[0], row[1], row[2]) if row is not None else None
 
     async def list(
         self,
@@ -180,7 +184,11 @@ class SqlAlchemyKnowledgeBaseRepository:
             "name": KnowledgeBaseRow.name,
         }[field]
         statement = (
-            select(KnowledgeBaseRow, IndexRevisionRow.embedding_space_id)
+            select(
+                KnowledgeBaseRow,
+                IndexRevisionRow.embedding_space_id,
+                IndexRevisionRow.chunking_config,
+            )
             .join(
                 IndexRevisionRow,
                 IndexRevisionRow.id == KnowledgeBaseRow.active_index_revision_id,
@@ -193,7 +201,7 @@ class SqlAlchemyKnowledgeBaseRepository:
         rows = (await self._session.execute(statement.order_by(ordering, id_ordering).limit(limit + 1))).all()
         has_more = len(rows) > limit
         rows = rows[:limit]
-        items = tuple(_knowledge_base(row[0], row[1]) for row in rows)
+        items = tuple(_knowledge_base(row[0], row[1], row[2]) for row in rows)
         next_values = _cursor_values(items[-1], field) if has_more and items else None
         return Page(items=items, next_values=next_values)
 
@@ -232,14 +240,19 @@ class SqlAlchemyKnowledgeBaseRepository:
         kb.updated_at = datetime.now(UTC)
         await self._session.flush()
         assert kb.active_index_revision_id is not None
-        embedding_id = await self._session.scalar(
-            select(IndexRevisionRow.embedding_space_id).where(
+        revision_facts = (
+            await self._session.execute(
+                select(
+                    IndexRevisionRow.embedding_space_id,
+                    IndexRevisionRow.chunking_config,
+                ).where(
                 IndexRevisionRow.id == kb.active_index_revision_id,
                 IndexRevisionRow.kb_id == kb.id,
             )
-        )
-        assert embedding_id is not None
-        return _knowledge_base(kb, embedding_id)
+            )
+        ).one_or_none()
+        assert revision_facts is not None
+        return _knowledge_base(kb, revision_facts[0], revision_facts[1])
 
 
 class SqlAlchemyDocumentRepository:
@@ -964,7 +977,11 @@ def _embedding_matches(row: EmbeddingSpaceRow, workspace_id: UUID, value: Embedd
     )
 
 
-def _knowledge_base(row: KnowledgeBaseRow, embedding_space_id: UUID) -> KnowledgeBase:
+def _knowledge_base(
+    row: KnowledgeBaseRow,
+    embedding_space_id: UUID,
+    chunking_config: dict[str, Any],
+) -> KnowledgeBase:
     assert row.active_index_revision_id is not None
     assert row.provisioned_at is not None
     return KnowledgeBase(
@@ -974,6 +991,7 @@ def _knowledge_base(row: KnowledgeBaseRow, embedding_space_id: UUID) -> Knowledg
         source_change_seq=row.source_change_seq,
         active_index_revision_id=row.active_index_revision_id,
         embedding_space_id=embedding_space_id,
+        chunking_config=dict(chunking_config),
         retrieval_defaults=dict(row.retrieval_defaults),
         answer_policy_defaults=dict(row.answer_policy_defaults),
         provisioned_at=row.provisioned_at,

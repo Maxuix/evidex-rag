@@ -11,6 +11,7 @@ from rag_kb.auth import AuthContext, SingleWorkspaceAccessPolicy
 from rag_kb.db import DatabaseProcess, create_database_resources
 from rag_kb.document_processing import index_profile
 from rag_kb.domain import (
+    ChunkingPreset,
     DocumentSource,
     EmbeddingSpaceDefinition,
     IdempotencyKeyReusedError,
@@ -83,6 +84,14 @@ class ContentLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 self.context,
                 key,
                 name="different",
+                retrieval_defaults={"strategy": "exact_vector", "top_k": 10},
+            )
+        with self.assertRaises(IdempotencyKeyReusedError):
+            await self.knowledge_bases.create(
+                self.context,
+                key,
+                name="engineering",
+                chunking_preset=ChunkingPreset.SEMANTIC_BALANCED_V1,
                 retrieval_defaults={"strategy": "exact_vector", "top_k": 10},
             )
 

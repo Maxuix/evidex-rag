@@ -31,6 +31,9 @@ export interface Page<T> {
 
 export type AnswerStyle = "concise" | "summary";
 export type InsufficiencyPolicy = "refuse" | "partial_answer";
+export type ChunkingPreset =
+  | "structural_balanced_v2"
+  | "semantic_balanced_v1";
 
 export interface KnowledgeBase {
   id: UUID;
@@ -38,6 +41,13 @@ export interface KnowledgeBase {
   source_change_seq: number;
   active_index_revision_id: UUID;
   embedding_space_id: UUID;
+  chunking: {
+    preset: ChunkingPreset | "legacy_incompatible";
+    profile:
+      | "unstructured_by_title_token_v2"
+      | "semantic_breakpoint_v1"
+      | "unstructured_title_semantic_qwen_v1";
+  };
   retrieval_defaults: {
     strategy: "exact_vector";
     top_k: number;

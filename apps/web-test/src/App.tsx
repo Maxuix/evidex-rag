@@ -4,7 +4,7 @@ import { ChatView } from "./ChatView";
 import { DocumentsView } from "./DocumentsView";
 import { RetrievalView } from "./RetrievalView";
 import { ApiClient, loadRuntimeConfig } from "./api/client";
-import type { KnowledgeBase } from "./api/types";
+import type { ChunkingPreset, KnowledgeBase } from "./api/types";
 import {
   EmptyState,
   KnowledgeBaseSelector,
@@ -58,10 +58,14 @@ export function ObservationApp({ client }: { client: ApiClient }) {
   const [loading, setLoading] = useState(true);
   const [listError, setListError] = useState<unknown | null>(null);
   const [newKnowledgeBaseName, setNewKnowledgeBaseName] = useState("");
+  const [newChunkingPreset, setNewChunkingPreset] = useState<ChunkingPreset>(
+    "structural_balanced_v2",
+  );
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<unknown | null>(null);
   const [pendingCreate, setPendingCreate] = useState<{
     name: string;
+    preset: ChunkingPreset;
     idempotencyKey: string;
   } | null>(null);
   const [view, setView] = useState<ViewName>("documents");
@@ -120,16 +124,28 @@ export function ObservationApp({ client }: { client: ApiClient }) {
     if (interactionLocked) return;
     const name = newKnowledgeBaseName.trim();
     if (!name) return;
-    const pending = { name, idempotencyKey: crypto.randomUUID() };
+    const pending = {
+      name,
+      preset: newChunkingPreset,
+      idempotencyKey: crypto.randomUUID(),
+    };
     setPendingCreate(pending);
     await performCreate(pending);
   };
 
-  const performCreate = async (pending: { name: string; idempotencyKey: string }) => {
+  const performCreate = async (pending: {
+    name: string;
+    preset: ChunkingPreset;
+    idempotencyKey: string;
+  }) => {
     setCreating(true);
     setCreateError(null);
     try {
-      const value = await client.createKnowledgeBase(pending.name, pending.idempotencyKey);
+      const value = await client.createKnowledgeBase(
+        pending.name,
+        pending.preset,
+        pending.idempotencyKey,
+      );
       setKnowledgeBases((current) => mergeKnowledgeBases(current, [value]));
       setSelectedId(value.id);
       setNewKnowledgeBaseName("");
@@ -192,6 +208,17 @@ export function ObservationApp({ client }: { client: ApiClient }) {
               required
               disabled={interactionLocked}
             />
+            <select
+              aria-label="Chunking preset"
+              value={newChunkingPreset}
+              onChange={(event) =>
+                setNewChunkingPreset(event.target.value as ChunkingPreset)
+              }
+              disabled={interactionLocked}
+            >
+              <option value="structural_balanced_v2">Structural balanced</option>
+              <option value="semantic_balanced_v1">Semantic balanced</option>
+            </select>
             <button
               className="button secondary"
               type="submit"
@@ -200,6 +227,11 @@ export function ObservationApp({ client }: { client: ApiClient }) {
               {creating ? "Creating…" : "Create"}
             </button>
           </div>
+          <small className="field-help">
+            {newChunkingPreset === "structural_balanced_v2"
+              ? "Uses titles and token windows."
+              : "Uses additional embeddings to find semantic breakpoints."}
+          </small>
         </form>
       </section>
 
@@ -267,6 +299,16 @@ export function ObservationApp({ client }: { client: ApiClient }) {
               <div>
                 <span>Source sequence</span>
                 <strong>{selectedKnowledgeBase.source_change_seq}</strong>
+              </div>
+              <div>
+                <span>Chunking preset</span>
+                <strong>
+                  {selectedKnowledgeBase.chunking.preset === "semantic_balanced_v1"
+                    ? "Semantic balanced"
+                    : selectedKnowledgeBase.chunking.preset === "structural_balanced_v2"
+                      ? "Structural balanced"
+                      : "Legacy (read-only)"}
+                </strong>
               </div>
             </section>
             {view === "documents" ? (

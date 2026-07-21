@@ -9,6 +9,7 @@ from uuid import UUID
 from rag_kb.domain import (
     IndexChunkWrite,
     IndexCleanupResult,
+    IndexChunkPlan,
     IndexingCommand,
     IndexingLease,
     IndexingJobSnapshot,
@@ -83,6 +84,16 @@ class IndexingRepository(Protocol):
     async def promote(self, command: PromotionCommand) -> PromotionResult | None: ...
 
     async def prepare(self, command: IndexingCommand) -> IndexingTarget | None: ...
+
+    async def get_chunk_plan(
+        self, command: IndexingCommand
+    ) -> IndexChunkPlan | None: ...
+
+    async def create_or_get_chunk_plan(
+        self,
+        command: IndexingCommand,
+        proposed: IndexChunkPlan,
+    ) -> IndexChunkPlan: ...
 
     async def set_phase(self, command: IndexingCommand, phase: IndexingPhase) -> bool: ...
 

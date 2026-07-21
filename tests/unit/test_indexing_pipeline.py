@@ -6,8 +6,13 @@ from dataclasses import replace
 from uuid import UUID, uuid4
 
 from rag_kb.adapters import FixedPgVectorSpace
-from rag_kb.document_processing import UNSTRUCTURED_CHUNKING_CONFIG, index_profile
+from rag_kb.document_processing import (
+    UNSTRUCTURED_CHUNKING_CONFIG,
+    index_profile,
+    profile_for_preset,
+)
 from rag_kb.domain import (
+    ChunkingPreset,
     EmbeddingBatch,
     EmbeddingSpaceDefinition,
     ErrorCode,
@@ -20,6 +25,8 @@ from rag_kb.domain import (
     PromotionResult,
     PromotionStatus,
     ProcessedDocument,
+    ParsedDocument,
+    ParsedElement,
     SourceFileIdentity,
     stable_chunk_id,
     stable_vector_id,
@@ -168,6 +175,33 @@ class IndexingPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(repository.failure[0:2], ("parsing", "PARSER_CRASHED"))
         self.assertEqual(repository.serving, "candidate")
 
+    async def test_semantic_retry_reuses_plan_without_analysis_embedding(self) -> None:
+        repository = _Repository(_target(ChunkingPreset.SEMANTIC_BALANCED_V1))
+        factory = _Factory(repository)
+        provider = _Provider(factory, fail_call=8)
+        pipeline = _pipeline(factory, provider)
+        command = IndexingCommand(
+            repository.target.job_id,
+            repository.target.indexed_document_version_id,
+        )
+
+        with self.assertRaises(IndexingExecutionError) as failed:
+            await pipeline.execute(command)
+        self.assertEqual(failed.exception.code, ErrorCode.EMBEDDING_PROVIDER_UNAVAILABLE)
+        self.assertIsNotNone(repository.plan)
+        self.assertEqual(provider.calls, 8)
+
+        provider.fail_call = None
+        provider.calls = 0
+        result = await pipeline.execute(command)
+
+        self.assertEqual(result.status, "ready")
+        self.assertEqual(provider.calls, result.chunk_count)
+        self.assertEqual(
+            [repository.chunks[index].ordinal for index in repository.chunks],
+            list(range(result.chunk_count)),
+        )
+
 
 class _Factory:
     def __init__(self, repository) -> None:
@@ -206,6 +240,7 @@ class _Repository:
         self.chunks = {}
         self.vectors = {}
         self.failure = None
+        self.plan = None
 
     async def prepare(self, command):
         self._active()
@@ -255,6 +290,20 @@ class _Repository:
         del command, phase
         self._active()
         return self.status == "running"
+
+    async def get_chunk_plan(self, command):
+        del command
+        self._active()
+        return self.plan
+
+    async def create_or_get_chunk_plan(self, command, proposed):
+        del command
+        self._active()
+        if self.plan is None:
+            self.plan = proposed
+        if self.plan != proposed:
+            raise AssertionError("chunk plan mismatch")
+        return self.plan
 
     async def upsert_batch(self, command, chunks, vectors):
         del command
@@ -336,6 +385,28 @@ class _Processor:
             extracted_character_count=sum(len(draft.text) for draft in drafts),
         )
 
+    async def partition(self, source):
+        if self.factory.active:
+            raise AssertionError("parser ran inside transaction")
+        del source
+        elements = tuple(
+            ParsedElement(
+                ordinal=ordinal,
+                text=("word " * 120 + f"topic{ordinal}").strip(),
+                token_count=0,
+                category="NarrativeText",
+                source_location={},
+                hierarchy={},
+                is_title=False,
+                is_table=False,
+            )
+            for ordinal in range(7)
+        )
+        return ParsedDocument(
+            elements=elements,
+            extracted_character_count=sum(len(item.text) for item in elements),
+        )
+
 
 class _Provider:
     def __init__(self, factory, *, fail_call=None) -> None:
@@ -386,10 +457,12 @@ def _pipeline(factory, provider):
     )
 
 
-def _target():
+def _target(
+    preset: ChunkingPreset = ChunkingPreset.STRUCTURAL_BALANCED_V2,
+):
     version = uuid4()
     target = uuid4()
-    profile = index_profile()
+    profile = profile_for_preset(preset)
     return IndexingTarget(
         job_id=uuid4(),
         indexed_document_version_id=target,

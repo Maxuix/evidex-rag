@@ -11,7 +11,10 @@ from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
 from rag_kb.adapters import DocumentProcessor, UnstructuredProcessor
-from rag_kb.adapters.parser.langchain_unstructured import process_with_unstructured
+from rag_kb.adapters.parser.langchain_unstructured import (
+    partition_with_unstructured,
+    process_with_unstructured,
+)
 from rag_kb.document_processing import (
     UNSTRUCTURED_CHUNKING_CONFIG,
     count_chunk_tokens,
@@ -204,6 +207,31 @@ class FileAdmissionTests(unittest.TestCase):
 
 
 class UnstructuredParserTests(unittest.TestCase):
+    def test_supported_formats_produce_partition_only_elements(self) -> None:
+        cases = (
+            ParserSource("guide.txt", "text/plain", b"Overview\n\nText body evidence."),
+            ParserSource("guide.md", "text/markdown", b"# Overview\n\nMarkdown body."),
+            ParserSource("guide.pdf", "application/pdf", _minimal_pdf()),
+            ParserSource(
+                "guide.docx",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                _minimal_docx(),
+            ),
+        )
+        for source in cases:
+            with self.subTest(filename=source.original_filename):
+                first = partition_with_unstructured(source, ParserLimits())
+                second = partition_with_unstructured(source, ParserLimits())
+                self.assertEqual(first, second)
+                self.assertEqual(
+                    [element.ordinal for element in first.elements],
+                    list(range(len(first.elements))),
+                )
+                self.assertTrue(all(element.text for element in first.elements))
+                self.assertTrue(
+                    all("filename" not in element.source_location for element in first.elements)
+                )
+
     def test_supported_formats_produce_stable_bounded_chunk_contracts(self) -> None:
         cases = (
             ParserSource("guide.txt", "text/plain", b"Overview\n\nText body evidence."),

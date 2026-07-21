@@ -597,6 +597,14 @@
         "title": "ChatSessionResponse",
         "type": "object"
       },
+      "ChunkingPreset": {
+        "enum": [
+          "structural_balanced_v2",
+          "semantic_balanced_v1"
+        ],
+        "title": "ChunkingPreset",
+        "type": "string"
+      },
       "DocumentDeleteResponse": {
         "additionalProperties": false,
         "properties": {
@@ -940,6 +948,8 @@
           "PARSER_OUTPUT_INVALID",
           "INDEX_TARGET_INVALID",
           "INDEX_REVISION_INCOMPATIBLE",
+          "INDEX_CHUNK_PLAN_MISMATCH",
+          "SEMANTIC_CHUNKING_FAILED",
           "SOURCE_NOT_AVAILABLE",
           "SOURCE_FILE_MISSING",
           "SOURCE_FILE_INTEGRITY",
@@ -1346,6 +1356,49 @@
         "title": "KnowledgeBaseAnswerPolicyDefaults",
         "type": "object"
       },
+      "KnowledgeBaseChunking": {
+        "additionalProperties": false,
+        "properties": {
+          "preset": {
+            "$ref": "#/components/schemas/ChunkingPreset",
+            "default": "structural_balanced_v2"
+          }
+        },
+        "title": "KnowledgeBaseChunking",
+        "type": "object"
+      },
+      "KnowledgeBaseChunkingResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "preset": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChunkingPreset"
+              },
+              {
+                "const": "legacy_incompatible",
+                "type": "string"
+              }
+            ],
+            "title": "Preset"
+          },
+          "profile": {
+            "enum": [
+              "unstructured_by_title_token_v2",
+              "semantic_breakpoint_v1",
+              "unstructured_title_semantic_qwen_v1"
+            ],
+            "title": "Profile",
+            "type": "string"
+          }
+        },
+        "required": [
+          "preset",
+          "profile"
+        ],
+        "title": "KnowledgeBaseChunkingResponse",
+        "type": "object"
+      },
       "KnowledgeBaseCreate": {
         "additionalProperties": false,
         "properties": {
@@ -1354,6 +1407,12 @@
             "default": {
               "answer_style": "concise",
               "insufficiency_policy": "refuse"
+            }
+          },
+          "chunking": {
+            "$ref": "#/components/schemas/KnowledgeBaseChunking",
+            "default": {
+              "preset": "structural_balanced_v2"
             }
           },
           "name": {
@@ -1422,6 +1481,9 @@
               "insufficiency_policy": "refuse"
             }
           },
+          "chunking": {
+            "$ref": "#/components/schemas/KnowledgeBaseChunkingResponse"
+          },
           "created_at": {
             "format": "date-time",
             "title": "Created At",
@@ -1465,6 +1527,7 @@
           "source_change_seq",
           "active_index_revision_id",
           "embedding_space_id",
+          "chunking",
           "retrieval_defaults",
           "provisioned_at",
           "created_at",

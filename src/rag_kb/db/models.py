@@ -542,6 +542,35 @@ class IndexedDocumentVersion(Base):
     updated_at: Mapped[datetime] = updated_timestamp()
 
 
+class IndexChunkPlan(Base):
+    __tablename__ = "index_chunk_plan"
+    __table_args__ = (
+        CheckConstraint("unit_count > 0", name="index_chunk_plan_unit_count_positive"),
+        CheckConstraint("chunk_count > 0", name="index_chunk_plan_chunk_count_positive"),
+        CheckConstraint(
+            "jsonb_typeof(boundaries) = 'array'",
+            name="index_chunk_plan_boundaries_array",
+        ),
+        CheckConstraint(
+            "jsonb_array_length(boundaries) = chunk_count - 1",
+            name="index_chunk_plan_boundary_count",
+        ),
+    )
+
+    indexed_document_version_id: Mapped[UUID] = mapped_column(
+        ForeignKey("indexed_document_version.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    source_checksum_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    profile_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    unit_sequence_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    unit_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    chunk_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    boundaries: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False)
+    plan_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = created_timestamp()
+
+
 class IndexingJob(Base):
     __tablename__ = "indexing_job"
     __table_args__ = (

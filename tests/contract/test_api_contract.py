@@ -778,12 +778,22 @@ class _FakeKnowledgeBaseService:
         self.value = _knowledge_base_value()
 
     async def create(
-        self, context, key, *, name, retrieval_defaults, answer_policy_defaults
+        self,
+        context,
+        key,
+        *,
+        name,
+        chunking_preset,
+        retrieval_defaults,
+        answer_policy_defaults,
     ):
         del context, key
+        from rag_kb.document_processing import profile_for_preset
+
         self.value = dataclass_replace(
             self.value,
             name=name,
+            chunking_config=profile_for_preset(chunking_preset).chunking_config,
             retrieval_defaults=retrieval_defaults,
             answer_policy_defaults=answer_policy_defaults,
         )
@@ -1052,6 +1062,13 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(created.json()["retrieval_defaults"]["strategy"], "exact_vector")
         self.assertEqual(created.json()["retrieval_defaults"]["top_k"], 8)
         self.assertEqual(
+            created.json()["chunking"],
+            {
+                "preset": "structural_balanced_v2",
+                "profile": "unstructured_by_title_token_v2",
+            },
+        )
+        self.assertEqual(
             created.json()["answer_policy_defaults"],
             {"answer_style": "concise", "insufficiency_policy": "refuse"},
         )
@@ -1073,6 +1090,53 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
             updated.json()["answer_policy_defaults"],
             {"answer_style": "summary", "insufficiency_policy": "partial_answer"},
         )
+
+        semantic = await request(
+            self.app,
+            "POST",
+            f"{API_PREFIX}/knowledge-bases",
+            headers={"idempotency-key": str(uuid4())},
+            json_body={
+                "name": "Semantic",
+                "chunking": {"preset": "semantic_balanced_v1"},
+            },
+        )
+        self.assertEqual(semantic.status, 201)
+        self.assertEqual(
+            semantic.json()["chunking"],
+            {
+                "preset": "semantic_balanced_v1",
+                "profile": "semantic_breakpoint_v1",
+            },
+        )
+
+        for body in (
+            {"name": "Unknown", "chunking": {"preset": "unknown"}},
+            {
+                "name": "Tuned",
+                "chunking": {
+                    "preset": "semantic_balanced_v1",
+                    "min_tokens": 10,
+                },
+            },
+        ):
+            rejected = await request(
+                self.app,
+                "POST",
+                f"{API_PREFIX}/knowledge-bases",
+                headers={"idempotency-key": str(uuid4())},
+                json_body=body,
+            )
+            self.assertEqual(rejected.status, 422)
+
+        immutable = await request(
+            self.app,
+            "PATCH",
+            f"{API_PREFIX}/knowledge-bases/{_knowledge_base_value().id}",
+            headers={"idempotency-key": str(uuid4())},
+            json_body={"chunking": {"preset": "semantic_balanced_v1"}},
+        )
+        self.assertEqual(immutable.status, 422)
 
         listed = await request(self.app, "GET", f"{API_PREFIX}/knowledge-bases")
         self.assertEqual(listed.status, 200)
@@ -1570,6 +1634,23 @@ def _knowledge_base_value() -> KnowledgeBase:
         source_change_seq=0,
         active_index_revision_id=UUID("01900000-0000-7000-8000-000000000012"),
         embedding_space_id=UUID("01900000-0000-7000-8000-000000000013"),
+        chunking_config={
+            "profile": "unstructured_by_title_token_v2",
+            "strategy": "by_title",
+            "max_tokens": 800,
+            "new_after_n_tokens": 600,
+            "tokenizer": "cl100k_base",
+            "tokenizer_library": "tiktoken",
+            "tokenizer_version": "0.13.0",
+            "overlap": 100,
+            "overlap_unit": "tokens",
+            "overlap_all": False,
+            "combine_text_under_n_chars": 300,
+            "combine_text_under_n_chars_unit": "characters",
+            "multipage_sections": False,
+            "include_orig_elements": True,
+            "metadata_policy": "bounded_v2",
+        },
         retrieval_defaults={"strategy": "exact_vector", "top_k": 10},
         answer_policy_defaults={
             "answer_style": "concise",

@@ -340,7 +340,17 @@ def _is_retryable(error: IndexingExecutionError) -> bool:
 
 
 def _safe_detail(detail: dict, *, attempt: int) -> dict:
-    allowed = {"check", "operation", "http_status", "retryable", "limit"}
+    allowed = {
+        "check",
+        "operation",
+        "http_status",
+        "retryable",
+        "limit_name",
+        "limit",
+        "unit_count",
+        "chunk_count",
+        "analysis_batch_count",
+    }
     return {
         **{key: value for key, value in detail.items() if key in allowed},
         "attempt": attempt,
