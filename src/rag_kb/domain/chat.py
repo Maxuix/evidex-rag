@@ -50,6 +50,10 @@ class AnswerPolicyNotSupportedError(ValueError):
     """A requested or persisted answer policy is outside the frozen P1 surface."""
 
 
+class ChatSessionBusyError(RuntimeError):
+    """A Session already owns a queued or running ChatRun."""
+
+
 @dataclass(frozen=True, slots=True)
 class AnswerPolicyDefaults:
     answer_style: AnswerStyle = AnswerStyle.CONCISE
@@ -223,3 +227,5 @@ class ChatRun:
     created_at: datetime
     updated_at: datetime
     completed_at: datetime | None
+    conversation_context: dict[str, Any] | None = None
+    contextualized_query: dict[str, Any] | None = None

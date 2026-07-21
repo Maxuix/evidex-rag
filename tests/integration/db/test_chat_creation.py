@@ -29,6 +29,7 @@ from rag_kb.domain import (
     ChatPipelineState,
     ChatTerminalSuccessCommand,
     ChatTerminalWriteStatus,
+    ChatSessionBusyError,
     EmbeddingSpaceDefinition,
     ErrorCode,
     EvidenceAssessment,
@@ -121,6 +122,13 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first.index_revision_id, kb.active_index_revision_id)
         self.assertNotIn("api_key", first.model_configuration)
         self.assertNotIn("base_url", first.model_configuration)
+        self.assertEqual(
+            first.conversation_context["version"], "session_context_v1"
+        )
+        self.assertEqual(first.conversation_context["turns"], [])
+        self.assertEqual(
+            first.contextualized_query["status"], "original"
+        )
 
         with self.assertRaises(IdempotencyKeyReusedError):
             await self.chat.create_run(
@@ -150,6 +158,26 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await connection.close()
         self.assertEqual(tuple(counts), (1, 1, 1, 1, 0))
+
+    async def test_concurrent_distinct_runs_make_the_session_busy(self) -> None:
+        kb = await self._create_kb("session-busy")
+        session = await self.chat.create_session(
+            self.context, kb_id=kb.id, title=None
+        )
+
+        outcomes = await asyncio.gather(
+            self._create_run(session.id, kb.id, uuid4()),
+            self._create_run(session.id, kb.id, uuid4()),
+            return_exceptions=True,
+        )
+
+        self.assertEqual(
+            sum(not isinstance(value, Exception) for value in outcomes), 1
+        )
+        self.assertEqual(
+            sum(isinstance(value, ChatSessionBusyError) for value in outcomes),
+            1,
+        )
 
     async def test_history_status_and_authorization_are_principal_bound(self) -> None:
         kb = await self._create_kb("authorized")

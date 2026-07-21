@@ -51,7 +51,10 @@ class _Retriever:
     def __init__(self, pack: EvidencePack) -> None:
         self.pack = pack
 
-    async def retrieve(self, context: ChatExecutionContext) -> EvidencePack:
+    async def retrieve(
+        self, context: ChatExecutionContext, query_context=None
+    ) -> EvidencePack:
+        del query_context
         return self.pack
 
 

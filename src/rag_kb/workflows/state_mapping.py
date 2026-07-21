@@ -12,6 +12,7 @@ from rag_kb.domain import (
     ChatPipelinePhase,
     ChatPipelineState,
     EvidencePack,
+    ContextualizedQuery,
 )
 
 
@@ -25,6 +26,7 @@ class ChatGraphState(TypedDict):
     command: ChatExecutionCommand
     progress: ChatGraphProgress
     context: NotRequired[ChatExecutionContext]
+    query_context: NotRequired[ContextualizedQuery]
     evidence_pack: NotRequired[EvidencePack]
     pipeline_state: NotRequired[ChatPipelineState]
 

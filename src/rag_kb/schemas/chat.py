@@ -136,6 +136,17 @@ class ChatRunRetrievalResponse(PublicSchema):
     rerank: bool
 
 
+class ChatRunQueryContextResponse(PublicSchema):
+    strategy: Literal["recent_completed_turns_v1"]
+    status: Literal[
+        "pending", "original", "contextualized", "needs_clarification"
+    ]
+    history_turn_count: Annotated[int, Field(ge=0, le=6)]
+    history_token_count: Annotated[int, Field(ge=0, le=4000)]
+    history_truncated: bool
+    standalone_query: str | None
+
+
 class ChatCitationResponse(PublicSchema):
     ordinal: Annotated[int, Field(ge=0)]
     index_chunk_id: UUID | None
@@ -161,6 +172,7 @@ class ChatRunResponse(PublicSchema):
     events_url: str
     effective_answer_policy: EffectiveAnswerPolicyResponse
     retrieval: ChatRunRetrievalResponse
+    query_context: ChatRunQueryContextResponse
     attempt: int
     error: ChatRunErrorResponse | None
     usage: dict[str, Any] | None

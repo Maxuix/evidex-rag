@@ -13,10 +13,17 @@ from uuid import UUID
 from rag_kb.domain.answering import ChatAnsweringState, ChatModelCallRecord
 from rag_kb.domain.errors import ErrorCode
 from rag_kb.domain.retrieval import EvidencePack
+from rag_kb.domain.memory import (
+    ContextualizedQuery,
+    ConversationContextSnapshot,
+    empty_context_snapshot,
+)
 
 
 class ChatPipelinePhase(StrEnum):
     LOAD_CONTEXT = "load_context"
+    CONTEXTUALIZE_QUERY = "contextualize_query"
+    BUILD_CLARIFICATION = "build_clarification"
     RETRIEVE_EVIDENCE = "retrieve_evidence"
     ASSESS_EVIDENCE = "assess_evidence"
     GENERATE_OR_REFUSE = "generate_or_refuse"
@@ -26,6 +33,7 @@ class ChatPipelinePhase(StrEnum):
 
 class ChatOutputSchema(StrEnum):
     ANSWER_V1 = "answer_v1"
+    CONTEXTUAL_QUERY_V1 = "contextual_query_v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +75,10 @@ class ChatExecutionContext:
     retrieval_strategy: Mapping[str, Any]
     model_configuration: Mapping[str, Any]
     attempt: int
+    conversation_context: ConversationContextSnapshot = field(
+        default_factory=empty_context_snapshot
+    )
+    contextualized_query: ContextualizedQuery | None = None
 
     def __post_init__(self) -> None:
         if not self.query.strip():
@@ -95,6 +107,7 @@ class ChatPipelineState:
     context: ChatExecutionContext | None = None
     evidence_pack: EvidencePack | None = None
     answering: ChatAnsweringState | None = None
+    query_context: ContextualizedQuery | None = None
     artifacts: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:

@@ -69,6 +69,10 @@ FixedMaxExtractedCharacters = Annotated[
 FixedMaxMetadataBytes = Annotated[
     Literal[65_536], BeforeValidator(parse_environment_integer)
 ]
+FixedContextTurns = Annotated[Literal[6], BeforeValidator(parse_environment_integer)]
+FixedContextTokens = Annotated[
+    Literal[4000], BeforeValidator(parse_environment_integer)
+]
 
 
 class StrictSettingsModel(BaseModel):
@@ -269,6 +273,17 @@ class ChatDeliverySettings(StrictSettingsModel):
     max_connections_per_principal_run: PositiveInt = 2
 
 
+class SessionContextSettings(StrictSettingsModel):
+    strategy: Literal["recent_completed_turns_v1"] = "recent_completed_turns_v1"
+    max_turns: FixedContextTurns = 6
+    max_context_tokens: FixedContextTokens = 4000
+    tokenizer: Literal["cl100k_base"] = "cl100k_base"
+    query_schema: Literal["contextual_query_v1"] = "contextual_query_v1"
+    configuration_fingerprint: Literal[
+        "sha256:ebb79a4ae178ce735fc09c1a30e9374fb5ad91525e7441c1c70f291f573d8aef"
+    ] = "sha256:ebb79a4ae178ce735fc09c1a30e9374fb5ad91525e7441c1c70f291f573d8aef"
+
+
 class FileStoreSettings(StrictSettingsModel):
     backend: Literal["local"] = "local"
     root_path: Path = Path("/var/lib/rag-kb/sources")
@@ -452,6 +467,9 @@ class Settings(BaseSettings):
     database: DatabaseSettings
     job_poller: JobPollerSettings = Field(default_factory=JobPollerSettings)
     chat_delivery: ChatDeliverySettings = Field(default_factory=ChatDeliverySettings)
+    session_context: SessionContextSettings = Field(
+        default_factory=SessionContextSettings
+    )
     file_store: FileStoreSettings = Field(default_factory=FileStoreSettings)
     maintenance: MaintenanceSettings = Field(default_factory=MaintenanceSettings)
     file_admission: FileAdmissionSettings = Field(default_factory=FileAdmissionSettings)

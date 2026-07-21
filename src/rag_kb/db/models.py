@@ -752,6 +752,12 @@ class ChatRun(Base):
         ),
         CheckConstraint("attempt >= 0", name="chat_run_attempt_nonnegative"),
         Index("ix_chat_run_claim", "status", "next_attempt_at", "created_at"),
+        Index(
+            "uq_chat_run_session_nonterminal",
+            "session_id",
+            unique=True,
+            postgresql_where=text("status IN ('queued', 'running')"),
+        ),
     )
 
     id: Mapped[UUID] = uuid_primary_key()
@@ -778,6 +784,8 @@ class ChatRun(Base):
     effective_policy: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     retrieval_strategy: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     model_configuration: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    conversation_context: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    contextualized_query: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     attempt: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     claimed_by: Mapped[str | None] = mapped_column(String(255))
     claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

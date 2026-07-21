@@ -11,6 +11,10 @@ from rag_kb.domain import (
     ChatMessage,
     ChatRun,
     ChatSession,
+    ChatSessionBusyError,
+    ContextualizedQuery,
+    QueryContextStatus,
+    CONTEXTUAL_QUERY_VERSION,
     IdempotencyKeyReusedError,
     IdempotencyScope,
     InsufficiencyPolicy,
@@ -19,6 +23,11 @@ from rag_kb.domain import (
     ResourceStateConflictError,
     canonical_request_hash,
     resolve_p1_policy,
+)
+from rag_kb.memory import (
+    ConversationContextSelector,
+    serialize_contextualized_query,
+    serialize_conversation_context,
 )
 from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, UnitOfWorkPurpose, execute_in_transaction
 
@@ -36,11 +45,28 @@ class ChatService:
         *,
         model_configuration: dict[str, Any],
         default_rerank: bool = False,
+        context_strategy: str = "recent_completed_turns_v1",
+        context_max_turns: int = 6,
+        context_max_tokens: int = 4000,
+        context_tokenizer: str = "cl100k_base",
     ) -> None:
         self._unit_of_work = unit_of_work
         self._access_policy = access_policy
         self._model_configuration = dict(model_configuration)
         self._default_rerank = default_rerank
+        if (
+            context_strategy != "recent_completed_turns_v1"
+            or context_max_turns != 6
+            or context_max_tokens != 4000
+            or context_tokenizer != "cl100k_base"
+        ):
+            raise ValueError("unsupported Session context policy")
+        self._context_selector = ConversationContextSelector(
+            max_turns=context_max_turns,
+            token_budget=context_max_tokens,
+            tokenizer=context_tokenizer,
+        )
+        self._context_max_turns = context_max_turns
 
     async def create_session(
         self,
@@ -196,7 +222,7 @@ class ChatService:
                     )
                 return prior
 
-            session = await uow.chat.get_session(
+            session = await uow.chat.lock_session(
                 session_id, principal_id=context.principal_id
             )
             if session is None:
@@ -205,6 +231,10 @@ class ChatService:
                 raise ResourceStateConflictError(
                     "chat session belongs to a different knowledge base"
                 )
+            if await uow.chat.has_nonterminal_run(session_id):
+                raise ChatSessionBusyError(
+                    "chat session already has a queued or running run"
+                )
             knowledge_base = await uow.knowledge_bases.get(kb_id)
             if knowledge_base is None:
                 raise ResourceNotFoundError("knowledge base was not found")
@@ -212,6 +242,24 @@ class ChatService:
                 requested_policy=requested_policy,
                 knowledge_base_defaults=knowledge_base.answer_policy_defaults,
             ).as_dict()
+            recent_turns = await uow.chat.list_completed_turns(
+                session_id=session_id,
+                principal_id=context.principal_id,
+                kb_id=kb_id,
+                limit=self._context_max_turns + 1,
+            )
+            conversation_context = self._context_selector.select(recent_turns)
+            original_query = (
+                ContextualizedQuery(
+                    version=CONTEXTUAL_QUERY_VERSION,
+                    status=QueryContextStatus.ORIGINAL,
+                    original_query=normalized_message,
+                    standalone_query=normalized_message,
+                    context_hash=conversation_context.content_hash,
+                )
+                if not conversation_context.turns
+                else None
+            )
             return await uow.chat.create_run(
                 scope=scope,
                 request_hash=request_hash,
@@ -223,6 +271,14 @@ class ChatService:
                 effective_policy=effective_policy,
                 retrieval_strategy=retrieval_strategy,
                 model_configuration=self._model_configuration,
+                conversation_context=serialize_conversation_context(
+                    conversation_context
+                ),
+                contextualized_query=(
+                    serialize_contextualized_query(original_query)
+                    if original_query is not None
+                    else None
+                ),
             )
 
         return await execute_in_transaction(self._unit_of_work, persist)

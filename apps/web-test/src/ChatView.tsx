@@ -80,6 +80,10 @@ export function ChatView({
   selectedSessionIdRef.current = selectedSessionId;
   const runIsTerminal = run !== null && isTerminal(run);
   const mutationPending = pendingSessionTitle !== null || pendingSubmission !== null;
+  const sessionBusy = (
+    (run !== null && !runIsTerminal && run.session_id === selectedSessionId)
+    || messages.some((item) => item.assistant_status === "generating")
+  );
 
   useEffect(() => {
     onMutationPendingChange(mutationPending);
@@ -329,7 +333,7 @@ export function ChatView({
 
   const submitRun = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (mutationPending || !selectedSessionId || !message.trim()) return;
+    if (mutationPending || sessionBusy || !selectedSessionId || !message.trim()) return;
     const pending: PendingRunSubmission = {
       idempotencyKey: crypto.randomUUID(),
       payload: {
@@ -506,7 +510,7 @@ export function ChatView({
                 rows={4}
                 placeholder="What evidence supports the current policy?"
                 required
-                disabled={mutationPending}
+                disabled={mutationPending || sessionBusy}
               />
             </label>
             <label>
@@ -514,7 +518,7 @@ export function ChatView({
               <select
                 value={answerStyle}
                 onChange={(event) => setAnswerStyle(event.target.value as AnswerStyle)}
-                disabled={mutationPending}
+                disabled={mutationPending || sessionBusy}
               >
                 <option value="concise">Concise</option>
                 <option value="summary">Summary</option>
@@ -527,7 +531,7 @@ export function ChatView({
                 onChange={(event) => setInsufficiencyPolicy(
                   event.target.value as InsufficiencyPolicy,
                 )}
-                disabled={mutationPending}
+                disabled={mutationPending || sessionBusy}
               >
                 <option value="refuse">Refuse</option>
                 <option value="partial_answer">Give a partial answer</option>
@@ -541,19 +545,22 @@ export function ChatView({
                 max={100}
                 value={topK}
                 onChange={(event) => setTopK(Number(event.target.value))}
-                disabled={mutationPending}
+                disabled={mutationPending || sessionBusy}
               />
             </label>
             <div className="form-actions">
               <button
                 className="button primary"
                 type="submit"
-                disabled={mutationPending || !selectedSessionId || !message.trim()}
+                disabled={mutationPending || sessionBusy || !selectedSessionId || !message.trim()}
               >
                 {submitting ? "Creating run…" : "Ask with evidence"}
               </button>
             </div>
           </form>
+          {sessionBusy ? (
+            <p className="delivery-label">This session is processing a ChatRun; wait for its terminal state.</p>
+          ) : null}
           {submissionError ? (
             <ProblemNotice
               error={submissionError}
@@ -634,6 +641,21 @@ export function ChatView({
                   ["Insufficiency", run.effective_answer_policy.insufficiency_policy],
                   ["Citations", run.effective_answer_policy.citation_granularity],
                 ]} />
+              </div>
+              <div className="policy-card">
+                <div>
+                  <p className="eyebrow">Query context</p>
+                  <strong>{run.query_context.status}</strong>
+                </div>
+                <KeyValueGrid values={[
+                  ["Strategy", run.query_context.strategy],
+                  ["History turns", run.query_context.history_turn_count],
+                  ["History tokens", run.query_context.history_token_count],
+                  ["Truncated", run.query_context.history_truncated ? "yes" : "no"],
+                ]} />
+                {run.query_context.standalone_query ? (
+                  <p>{run.query_context.standalone_query}</p>
+                ) : null}
               </div>
               {run.error ? (
                 <div className="run-failure">

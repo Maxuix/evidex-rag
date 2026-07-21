@@ -12,6 +12,7 @@ from rag_kb.domain import (
     ChatMessage,
     ChatRun,
     ChatSession,
+    ChatSessionBusyError,
     Document,
     DocumentMutationResult,
     ErrorCode,
@@ -34,6 +35,7 @@ from rag_kb.services.content import (
 )
 from rag_kb.services.chat import ChatService, chat_model_configuration
 from rag_kb.services.chat_execution import (
+    ChatContextualizedQueryStore,
     ChatEvidenceRetriever,
     ChatExecutionContextLoader,
     ChatPipelineStep,
@@ -62,6 +64,7 @@ __all__ = [
     "AnswerStructureValidationStep",
     "ContentServices",
     "ChatService",
+    "ChatContextualizedQueryStore",
     "ChatEvidenceRetriever",
     "ChatExecutionContextLoader",
     "ChatPipelineStep",
@@ -74,6 +77,7 @@ __all__ = [
     "ChatMessage",
     "ChatRun",
     "ChatSession",
+    "ChatSessionBusyError",
     "Document",
     "DocumentMutationResult",
     "DocumentService",

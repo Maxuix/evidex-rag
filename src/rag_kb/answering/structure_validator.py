@@ -79,6 +79,7 @@ class AnswerStructureValidationStep:
                     expected_outcome=answering.draft.expected_outcome,
                     raw_draft=answering.draft.raw_json,
                     issues=initial_issues,
+                    query_context=state.query_context,
                 ),
                 phase=ChatPipelinePhase.VALIDATE_STRUCTURE,
             )
@@ -129,6 +130,7 @@ class AnswerStructureValidationStep:
                 rendered=rendered,
                 validation=record,
             ),
+            query_context=state.query_context,
             artifacts=state.artifacts,
         )
 

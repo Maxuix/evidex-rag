@@ -44,6 +44,7 @@ from rag_kb.services import (
     AnswerGenerationStep,
     AnswerStructureValidationStep,
     ChatEvidenceRetriever,
+    ChatContextualizedQueryStore,
     ChatExecutionContextLoader,
     ChatFailureSettlementService,
     ChatResultPersistenceStep,
@@ -57,6 +58,7 @@ from rag_kb.services import (
 )
 from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWorkFactory
 from rag_kb.workflows import GraphRunner, LangGraphRunner
+from rag_kb.memory import ConversationContextSelector, SessionQueryContextualizer
 
 
 @dataclass(frozen=True)
@@ -76,6 +78,8 @@ class WorkerDependencies:
     vector_store: PgVectorStore
     retrieval_service: RetrievalService
     chat_model_adapter: ChatModelAdapter
+    query_contextualizer: SessionQueryContextualizer
+    session_context_selector: ConversationContextSelector
     evidence_assessor: CosineEvidenceAssessmentStep
     answer_generator: AnswerGenerationStep
     structure_validator: AnswerStructureValidationStep
@@ -212,6 +216,15 @@ def build_worker_dependencies(
     )
     chat_coordinator = ChatRunCoordinator(unit_of_work)
     context_loader = ChatExecutionContextLoader(unit_of_work)
+    query_contextualizer = SessionQueryContextualizer(
+        chat_model_adapter,
+        ChatContextualizedQueryStore(unit_of_work),
+    )
+    session_context_selector = ConversationContextSelector(
+        max_turns=resolved_settings.session_context.max_turns,
+        token_budget=resolved_settings.session_context.max_context_tokens,
+        tokenizer=resolved_settings.session_context.tokenizer,
+    )
     evidence_retriever = ChatEvidenceRetriever(retrieval_service)
     chat_runner = LangGraphRunner(
         context_loader,
@@ -220,6 +233,7 @@ def build_worker_dependencies(
         answer_generator,
         structure_validator,
         result_persister,
+        query_contextualizer=query_contextualizer,
         deadline_seconds=poller.chat_deadline_seconds,
     )
     chat_scheduler = ChatRunScheduler(
@@ -286,6 +300,8 @@ def build_worker_dependencies(
         vector_store=vector_store,
         retrieval_service=retrieval_service,
         chat_model_adapter=chat_model_adapter,
+        query_contextualizer=query_contextualizer,
+        session_context_selector=session_context_selector,
         evidence_assessor=evidence_assessor,
         answer_generator=answer_generator,
         structure_validator=structure_validator,

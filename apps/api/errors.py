@@ -12,6 +12,7 @@ from starlette.exceptions import HTTPException
 from rag_kb.auth import AccessDeniedError
 from rag_kb.services import (
     AnswerPolicyNotSupportedError,
+    ChatSessionBusyError,
     FileAdmissionError,
     IdempotencyKeyReusedError,
     ResourceNameConflictError,
@@ -68,6 +69,24 @@ def install_problem_handlers(app: FastAPI) -> None:
     app.add_exception_handler(
         AnswerPolicyNotSupportedError,
         _answer_policy_not_supported_handler,  # type: ignore[arg-type]
+    )
+    app.add_exception_handler(
+        ChatSessionBusyError,
+        _chat_session_busy_handler,  # type: ignore[arg-type]
+    )
+
+
+async def _chat_session_busy_handler(
+    request: Request, error: ChatSessionBusyError
+) -> JSONResponse:
+    del error
+    return problem_response(
+        request,
+        code=ErrorCode.CHAT_SESSION_BUSY,
+        status=409,
+        title="Chat session busy",
+        detail="This chat session already has a queued or running ChatRun.",
+        retryable=True,
     )
 
 

@@ -295,6 +295,63 @@
         "title": "ChatRunErrorResponse",
         "type": "object"
       },
+      "ChatRunQueryContextResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "history_token_count": {
+            "maximum": 4000.0,
+            "minimum": 0.0,
+            "title": "History Token Count",
+            "type": "integer"
+          },
+          "history_truncated": {
+            "title": "History Truncated",
+            "type": "boolean"
+          },
+          "history_turn_count": {
+            "maximum": 6.0,
+            "minimum": 0.0,
+            "title": "History Turn Count",
+            "type": "integer"
+          },
+          "standalone_query": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Standalone Query"
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "original",
+              "contextualized",
+              "needs_clarification"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "strategy": {
+            "const": "recent_completed_turns_v1",
+            "title": "Strategy",
+            "type": "string"
+          }
+        },
+        "required": [
+          "strategy",
+          "status",
+          "history_turn_count",
+          "history_token_count",
+          "history_truncated",
+          "standalone_query"
+        ],
+        "title": "ChatRunQueryContextResponse",
+        "type": "object"
+      },
       "ChatRunResponse": {
         "additionalProperties": false,
         "properties": {
@@ -378,6 +435,9 @@
             "title": "Knowledge Base Id",
             "type": "string"
           },
+          "query_context": {
+            "$ref": "#/components/schemas/ChatRunQueryContextResponse"
+          },
           "retrieval": {
             "$ref": "#/components/schemas/ChatRunRetrievalResponse"
           },
@@ -456,6 +516,7 @@
           "events_url",
           "effective_answer_policy",
           "retrieval",
+          "query_context",
           "attempt",
           "error",
           "usage",
@@ -913,6 +974,7 @@
           "IDEMPOTENCY_KEY_REUSED",
           "CAPABILITY_NOT_ENABLED",
           "ANSWER_POLICY_NOT_SUPPORTED",
+          "CHAT_SESSION_BUSY",
           "CHAT_CONTEXT_INVALID",
           "CHAT_REVISION_MISMATCH",
           "CHAT_PROVIDER_UNAVAILABLE",

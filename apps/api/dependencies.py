@@ -130,6 +130,12 @@ def build_api_dependencies(
             resolved_settings.model_provider.chat
         ),
         default_rerank=resolved_settings.retrieval.rerank_enabled,
+        context_strategy=resolved_settings.session_context.strategy,
+        context_max_turns=resolved_settings.session_context.max_turns,
+        context_max_tokens=(
+            resolved_settings.session_context.max_context_tokens
+        ),
+        context_tokenizer=resolved_settings.session_context.tokenizer,
     )
     chat_delivery = resolved_settings.chat_delivery
     return ApiDependencies(

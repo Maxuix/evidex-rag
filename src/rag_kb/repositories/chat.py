@@ -10,6 +10,8 @@ from rag_kb.domain import (
     ChatExecutionContext,
     ChatFailureSettlementCommand,
     ChatMessage,
+    ContextualizedQuery,
+    ConversationTurn,
     ChatRun,
     ChatRunLease,
     ChatSession,
@@ -65,6 +67,27 @@ class ChatRepository(Protocol):
         self, session_id: UUID, *, principal_id: str
     ) -> ChatSession | None: ...
 
+    async def lock_session(
+        self, session_id: UUID, *, principal_id: str
+    ) -> ChatSession | None: ...
+
+    async def has_nonterminal_run(self, session_id: UUID) -> bool: ...
+
+    async def list_completed_turns(
+        self,
+        *,
+        session_id: UUID,
+        principal_id: str,
+        kb_id: UUID,
+        limit: int,
+    ) -> tuple[ConversationTurn, ...]: ...
+
+    async def save_contextualized_query(
+        self,
+        lease: ChatRunLease,
+        value: ContextualizedQuery,
+    ) -> ContextualizedQuery | None: ...
+
     async def list_sessions(
         self,
         *,
@@ -105,4 +128,6 @@ class ChatRepository(Protocol):
         effective_policy: dict[str, Any],
         retrieval_strategy: dict[str, Any],
         model_configuration: dict[str, Any],
+        conversation_context: dict[str, Any],
+        contextualized_query: dict[str, Any] | None,
     ) -> ChatRun: ...

@@ -178,6 +178,14 @@ export interface ChatRun {
     top_k: number;
     rerank: boolean;
   };
+  query_context: {
+    strategy: "recent_completed_turns_v1";
+    status: "pending" | "original" | "contextualized" | "needs_clarification";
+    history_turn_count: number;
+    history_token_count: number;
+    history_truncated: boolean;
+    standalone_query: string | null;
+  };
   attempt: number;
   error: ChatRunError | null;
   usage: JsonMap | null;

@@ -31,12 +31,18 @@ from rag_kb.schemas import (
     ChatRunErrorResponse,
     ChatRunFailedEvent,
     ChatRunResponse,
+    ChatRunQueryContextResponse,
     ChatSessionCreate,
     ChatSessionPage,
     ChatSessionResponse,
     CursorPayload,
     EffectiveAnswerPolicyResponse,
     ErrorCode,
+)
+from rag_kb.memory import (
+    empty_conversation_context,
+    hydrate_contextualized_query,
+    hydrate_conversation_context,
 )
 
 
@@ -275,6 +281,7 @@ def _run_response(value: ChatRun) -> ChatRunResponse:
         events_url=f"{_status_url(value.id)}/events",
         effective_answer_policy=_policy_response(value),
         retrieval=dict(value.retrieval_strategy),
+        query_context=_query_context_response(value),
         attempt=value.attempt,
         error=_run_error(value),
         usage=dict(value.usage) if value.usage is not None else None,
@@ -282,6 +289,41 @@ def _run_response(value: ChatRun) -> ChatRunResponse:
         created_at=value.created_at,
         updated_at=value.updated_at,
         completed_at=value.completed_at,
+    )
+
+
+def _query_context_response(value: ChatRun) -> ChatRunQueryContextResponse:
+    try:
+        snapshot = (
+            hydrate_conversation_context(value.conversation_context)
+            if value.conversation_context is not None
+            else empty_conversation_context()
+        )
+        artifact = (
+            hydrate_contextualized_query(value.contextualized_query)
+            if value.contextualized_query is not None
+            else None
+        )
+    except (TypeError, ValueError) as error:
+        raise ApiProblem(
+            code=ErrorCode.CHAT_CONTEXT_INVALID,
+            status=500,
+            title="Chat context invalid",
+            detail="The persisted ChatRun context is invalid.",
+        ) from error
+    return ChatRunQueryContextResponse(
+        strategy=snapshot.strategy,
+        status=(
+            artifact.status.value
+            if artifact is not None
+            else ("original" if not snapshot.turns else "pending")
+        ),
+        history_turn_count=len(snapshot.turns),
+        history_token_count=snapshot.token_count,
+        history_truncated=snapshot.truncated,
+        standalone_query=(
+            artifact.standalone_query if artifact is not None else None
+        ),
     )
 
 

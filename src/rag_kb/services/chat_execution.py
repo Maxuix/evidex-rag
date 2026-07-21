@@ -13,10 +13,12 @@ from rag_kb.domain import (
     ChatPipelinePhase,
     ChatPipelineState,
     ChatRunLease,
+    ContextualizedQuery,
     ErrorCode,
     EvidencePack,
     RetrievalRequest,
     RetrievalStrategy,
+    QueryContextStatus,
     ReconciliationResult,
 )
 from rag_kb.retrieval import RetrievalService
@@ -120,12 +122,44 @@ class ChatExecutionContextLoader:
         return context
 
 
+class ChatContextualizedQueryStore:
+    """Persist a query artifact using the active ChatRun lease."""
+
+    def __init__(self, unit_of_work: UnitOfWorkFactory) -> None:
+        self._unit_of_work = unit_of_work
+
+    async def persist(
+        self,
+        context: ChatExecutionContext,
+        value: ContextualizedQuery,
+    ) -> ContextualizedQuery | None:
+        async def persist(uow: UnitOfWork) -> ContextualizedQuery | None:
+            return await uow.chat.save_contextualized_query(
+                context.lease, value
+            )
+
+        return await execute_in_transaction(self._unit_of_work, persist)
+
+
 class ChatEvidenceRetriever:
     def __init__(self, retrieval: RetrievalService) -> None:
         self._retrieval = retrieval
 
-    async def retrieve(self, context: ChatExecutionContext) -> EvidencePack:
+    async def retrieve(
+        self,
+        context: ChatExecutionContext,
+        query_context: ContextualizedQuery | None = None,
+    ) -> EvidencePack:
         try:
+            if query_context is None:
+                query = context.query
+            elif (
+                query_context.status is QueryContextStatus.NEEDS_CLARIFICATION
+                or query_context.standalone_query is None
+            ):
+                raise ValueError
+            else:
+                query = query_context.standalone_query
             strategy = RetrievalStrategy(context.retrieval_strategy["strategy"])
             top_k = int(context.retrieval_strategy["top_k"])
             rerank = context.retrieval_strategy["rerank"]
@@ -133,7 +167,7 @@ class ChatEvidenceRetriever:
                 raise ValueError
             request = RetrievalRequest(
                 knowledge_base_id=context.knowledge_base_id,
-                query=context.query,
+                query=query,
                 top_k=top_k,
                 strategy=strategy,
                 rerank=rerank,
@@ -162,4 +196,3 @@ class ChatEvidenceRetriever:
                 diagnostic={"check": "frozen_revision"},
             )
         return pack
-

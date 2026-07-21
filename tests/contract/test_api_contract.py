@@ -32,12 +32,15 @@ from rag_kb.auth import (
     SingleWorkspaceAccessPolicy,
 )
 from rag_kb.domain import (
+    CONTEXTUAL_QUERY_VERSION,
     AdmissionLimits,
     AnswerStyle,
     ChatCitation,
     ChatMessage,
     ChatRun,
     ChatSession,
+    ChatSessionBusyError,
+    ContextualizedQuery,
     Document,
     DocumentMutationResult,
     DocumentVersion,
@@ -49,12 +52,18 @@ from rag_kb.domain import (
     IndexingJobSnapshot,
     KnowledgeBase,
     Page,
+    QueryContextStatus,
     ResourceNotFoundError,
     ResourceStateConflictError,
     RetrievalDebug,
     RetrievalQueryPlan,
     RetrievalStrategy,
     canonical_request_hash,
+)
+from rag_kb.memory import (
+    empty_conversation_context,
+    serialize_contextualized_query,
+    serialize_conversation_context,
 )
 from rag_kb.services import (
     ChatSseConnectionLimiter,
@@ -978,6 +987,8 @@ class _FakeChatService:
         self.create_run_calls.append({"key": key, **values})
         if key == UUID("00000000-0000-0000-0000-000000000099"):
             raise IdempotencyKeyReusedError("internal chat hash detail")
+        if key == UUID("00000000-0000-0000-0000-000000000098"):
+            raise ChatSessionBusyError("internal active run detail")
         if values["session_id"] != self.session.id:
             raise ResourceNotFoundError("internal chat session detail")
         policy = {
@@ -993,6 +1004,14 @@ class _FakeChatService:
             "answer_task": "answer",
             "policy_version": "p1",
         }
+        snapshot = empty_conversation_context()
+        original = ContextualizedQuery(
+            version=CONTEXTUAL_QUERY_VERSION,
+            status=QueryContextStatus.ORIGINAL,
+            original_query=values["message"],
+            standalone_query=values["message"],
+            context_hash=snapshot.content_hash,
+        )
         self.run = dataclass_replace(
             self.run,
             effective_policy=policy,
@@ -1001,6 +1020,8 @@ class _FakeChatService:
                 "top_k": values["top_k"],
                 "rerank": False,
             },
+            conversation_context=serialize_conversation_context(snapshot),
+            contextualized_query=serialize_contextualized_query(original),
         )
         return self.run
 
@@ -1408,6 +1429,17 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(created.headers["location"], body["status_url"])
         self.assertEqual(body["status"], "queued")
         self.assertEqual(body["assistant_status"], "generating")
+        self.assertEqual(
+            body["query_context"],
+            {
+                "strategy": "recent_completed_turns_v1",
+                "status": "original",
+                "history_turn_count": 0,
+                "history_token_count": 0,
+                "history_truncated": False,
+                "standalone_query": "查询 RUN-ORD-14",
+            },
+        )
         self.assertIsNone(body["answer"])
         self.assertEqual(
             body["events_url"], f"{body['status_url']}/events"
@@ -1489,6 +1521,20 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(conflict.status, 409)
         self.assertEqual(conflict.json()["code"], "IDEMPOTENCY_KEY_REUSED")
         self.assertNotIn("internal chat hash", conflict.body.decode())
+
+        busy = await request(
+            self.app,
+            "POST",
+            f"{API_PREFIX}/chat/runs",
+            headers={
+                "idempotency-key": "00000000-0000-0000-0000-000000000098"
+            },
+            json_body=_chat_run_request(chat.session.id),
+        )
+        self.assertEqual(busy.status, 409)
+        self.assertEqual(busy.json()["code"], "CHAT_SESSION_BUSY")
+        self.assertTrue(busy.json()["retryable"])
+        self.assertNotIn("internal active run", busy.body.decode())
 
     async def test_terminal_sse_uses_committed_answer_and_native_headers(self) -> None:
         chat = self.dependencies.chat_service

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import unittest
+from datetime import UTC, datetime
 
 from rag_kb.answering import (
     AnswerGenerationStep,
@@ -18,6 +19,11 @@ from rag_kb.domain import (
     ErrorCode,
     EvidenceCoverage,
     EvidencePack,
+    CONTEXTUAL_QUERY_VERSION,
+    ChatModelCallRecord,
+    ChatModelOperation,
+    ContextualizedQuery,
+    QueryContextStatus,
 )
 from rag_kb.workflows import LangGraphRunner
 from rag_kb.workflows.chat_graph import CHAT_GRAPH_NODES
@@ -45,9 +51,11 @@ class _Retriever:
     def __init__(self, pack: EvidencePack, *, error: Exception | None = None) -> None:
         self.pack = pack
         self.error = error
+        self.calls = 0
 
-    async def retrieve(self, context):
-        del context
+    async def retrieve(self, context, query_context=None):
+        del context, query_context
+        self.calls += 1
         if self.error is not None:
             raise self.error
         return self.pack
@@ -63,6 +71,7 @@ class _Persister:
             context=state.context,
             evidence_pack=state.evidence_pack,
             answering=state.answering,
+            query_context=state.query_context,
             artifacts={**state.artifacts, "persisted": True},
         )
 
@@ -100,6 +109,7 @@ def _build(
     loader=None,
     retriever=None,
     assessor=None,
+    contextualizer=None,
 ):
     model = _Model(*responses)
     context_loader = loader or _Loader(context)
@@ -117,13 +127,61 @@ def _build(
         persister,
     )
     return (
-        LangGraphRunner(*values, deadline_seconds=deadline),  # type: ignore[arg-type]
+        LangGraphRunner(
+            *values,
+            query_contextualizer=contextualizer,
+            deadline_seconds=deadline,
+        ),  # type: ignore[arg-type]
         model,
         persister,
     )
 
 
 class LangGraphRunnerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_clarification_branch_skips_retrieval_and_generation(self) -> None:
+        context = _context()
+        query_context = ContextualizedQuery(
+            version=CONTEXTUAL_QUERY_VERSION,
+            status=QueryContextStatus.NEEDS_CLARIFICATION,
+            original_query=context.query,
+            standalone_query=None,
+            context_hash=context.conversation_context.content_hash,
+            model_calls=(
+                ChatModelCallRecord(
+                    operation=ChatModelOperation.CONTEXTUALIZE_QUERY,
+                    model="fixed-model",
+                    provider_request_id="context-call",
+                    usage={"prompt_tokens": 4},
+                ),
+            ),
+            created_at=datetime.now(UTC),
+            origin_attempt=1,
+        )
+
+        class Contextualizer:
+            async def contextualize(self, value):
+                del value
+                return query_context
+
+        retriever = _Retriever(_pack(context, "must not be read"))
+        runner, model, persister = _build(
+            context=context,
+            pack=retriever.pack,
+            retriever=retriever,
+            contextualizer=Contextualizer(),
+        )
+
+        result = await runner.execute(ChatExecutionCommand(context.lease))
+
+        self.assertEqual(retriever.calls, 0)
+        self.assertEqual(model.requests, [])
+        self.assertEqual(persister.calls, 1)
+        assert result.answering is not None
+        assert result.answering.draft is not None
+        self.assertEqual(
+            result.answering.draft.control_reason.value, "ambiguous_question"
+        )
+
     async def test_answer_routes_cover_generation_refusal_and_repair(self) -> None:
         cases = (
             (

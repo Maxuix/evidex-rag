@@ -2,18 +2,22 @@ from __future__ import annotations
 
 import unittest
 from types import SimpleNamespace
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from pydantic import ValidationError
 
+from rag_kb.auth import AuthContext, SingleWorkspaceAccessPolicy
 from rag_kb.domain import (
     AnswerPolicyNotSupportedError,
     AnswerStyle,
+    ChatSessionBusyError,
+    ConversationTurn,
     InsufficiencyPolicy,
     resolve_p1_policy,
 )
+from rag_kb.memory import hydrate_conversation_context
 from rag_kb.schemas import ChatRunCreate
-from rag_kb.services import chat_model_configuration
+from rag_kb.services import ChatService, chat_model_configuration
 
 
 class ChatCreationContractTests(unittest.TestCase):
@@ -160,6 +164,142 @@ class ChatCreationContractTests(unittest.TestCase):
         self.assertNotIn("api_key", snapshot)
         self.assertNotIn("timeout_seconds", snapshot)
         self.assertNotIn("max_retries", snapshot)
+
+
+class ChatCreationServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_creation_locks_session_and_freezes_completed_turns(self) -> None:
+        workspace_id = uuid4()
+        kb_id = uuid4()
+        session_id = uuid4()
+        turns = tuple(
+            ConversationTurn(uuid4(), f"user {index}", uuid4(), f"assistant {index}")
+            for index in range(2)
+        )
+        chat = _ChatRepository(kb_id=kb_id, turns=tuple(reversed(turns)))
+        service = ChatService(
+            _Factory(workspace_id, chat, kb_id),
+            SingleWorkspaceAccessPolicy(workspace_id),
+            model_configuration={"resolved_model": "fixed-model"},
+        )
+
+        created = await service.create_run(
+            AuthContext("principal", "client", workspace_id),
+            uuid4(),
+            session_id=session_id,
+            kb_id=kb_id,
+            message="What about it?",
+            answer_style=None,
+            insufficiency_policy=None,
+            retrieval_mode="vector",
+            top_k=3,
+        )
+
+        snapshot = hydrate_conversation_context(created["conversation_context"])
+        self.assertEqual(snapshot.turns, turns)
+        self.assertIsNone(created["contextualized_query"])
+        self.assertEqual(chat.events[:3], ["idempotency", "lock_session", "busy"])
+
+    async def test_busy_session_is_rejected_before_history_or_insert(self) -> None:
+        workspace_id = uuid4()
+        kb_id = uuid4()
+        chat = _ChatRepository(kb_id=kb_id, busy=True)
+        service = ChatService(
+            _Factory(workspace_id, chat, kb_id),
+            SingleWorkspaceAccessPolicy(workspace_id),
+            model_configuration={"resolved_model": "fixed-model"},
+        )
+
+        with self.assertRaises(ChatSessionBusyError):
+            await service.create_run(
+                AuthContext("principal", "client", workspace_id),
+                uuid4(),
+                session_id=uuid4(),
+                kb_id=kb_id,
+                message="question",
+                answer_style=None,
+                insufficiency_policy=None,
+                retrieval_mode="vector",
+                top_k=3,
+            )
+
+        self.assertNotIn("history", chat.events)
+        self.assertNotIn("create", chat.events)
+
+
+class _ChatRepository:
+    def __init__(self, *, kb_id, turns=(), busy=False) -> None:
+        self.kb_id = kb_id
+        self.turns = turns
+        self.busy = busy
+        self.events = []
+
+    async def lock_idempotency(self, scope):
+        del scope
+        self.events.append("idempotency")
+
+    async def get_run_by_scope(self, scope):
+        del scope
+        return None
+
+    async def lock_session(self, session_id, *, principal_id):
+        del principal_id
+        self.events.append("lock_session")
+        return SimpleNamespace(id=session_id, kb_id=self.kb_id)
+
+    async def has_nonterminal_run(self, session_id):
+        del session_id
+        self.events.append("busy")
+        return self.busy
+
+    async def list_completed_turns(self, **values):
+        del values
+        self.events.append("history")
+        return self.turns
+
+    async def create_run(self, **values):
+        self.events.append("create")
+        return values
+
+
+class _KnowledgeBases:
+    def __init__(self, kb_id) -> None:
+        self.kb_id = kb_id
+
+    async def get(self, kb_id):
+        if kb_id != self.kb_id:
+            return None
+        return SimpleNamespace(
+            active_index_revision_id=uuid4(),
+            answer_policy_defaults={
+                "answer_style": "concise",
+                "insufficiency_policy": "refuse",
+            },
+        )
+
+
+class _UnitOfWork:
+    def __init__(self, workspace_id, chat, kb_id) -> None:
+        self.workspace_id = workspace_id
+        self.chat = chat
+        self.knowledge_bases = _KnowledgeBases(kb_id)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return None
+
+    async def commit(self):
+        return None
+
+
+class _Factory:
+    def __init__(self, workspace_id, chat, kb_id) -> None:
+        self.values = (workspace_id, chat, kb_id)
+
+    def __call__(self, **kwargs):
+        del kwargs
+        return _UnitOfWork(*self.values)
 
 
 if __name__ == "__main__":

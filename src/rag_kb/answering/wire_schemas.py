@@ -7,6 +7,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from rag_kb.domain import ChatOutputSchema
+from rag_kb.memory.query import WireContextualQuery
 
 
 class WireAnswerClaim(BaseModel):
@@ -26,4 +27,5 @@ class WireAnswer(BaseModel):
 
 OUTPUT_SCHEMAS: dict[ChatOutputSchema, type[BaseModel]] = {
     ChatOutputSchema.ANSWER_V1: WireAnswer,
+    ChatOutputSchema.CONTEXTUAL_QUERY_V1: WireContextualQuery,
 }

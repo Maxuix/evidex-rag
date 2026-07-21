@@ -113,6 +113,24 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.maintenance.task_retention_seconds, 604_800)
         self.assertEqual(settings.model_provider.chat.temperature, 0.1)
         self.assertEqual(settings.model_provider.chat.max_tokens, 2048)
+        self.assertEqual(settings.session_context.max_turns, 6)
+        self.assertEqual(settings.session_context.max_context_tokens, 4000)
+        self.assertEqual(settings.session_context.tokenizer, "cl100k_base")
+
+    def test_session_context_policy_is_fixed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for override in (
+                {"max_turns": 7},
+                {"max_context_tokens": 5000},
+                {"tokenizer": "provider_tokenizer"},
+                {"strategy": "summarized"},
+                {"query_schema": "contextual_query_v2"},
+            ):
+                with self.subTest(override=override), self.assertRaises(
+                    ValidationError
+                ):
+                    build_settings(root, session_context=override)
 
     def test_maintenance_retention_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

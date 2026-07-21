@@ -30,10 +30,17 @@ from rag_kb.domain import (
     ChatTerminalSuccessCommand,
     ChatTerminalWriteStatus,
     ChatSession,
+    ContextualizedQuery,
+    ConversationTurn,
     ErrorCode,
     IdempotencyScope,
     Page,
     ReconciliationResult,
+)
+from rag_kb.memory import (
+    hydrate_contextualized_query,
+    hydrate_conversation_context,
+    serialize_contextualized_query,
 )
 
 
@@ -163,6 +170,9 @@ class SqlAlchemyChatRepository:
                 "finished_at": observed_at.isoformat(),
                 "duration_ms": _duration_ms(claimed_at, observed_at),
             }
+            context_calls = _contextualization_calls(run)
+            if context_calls:
+                run.usage = _merge_usage(run.usage, context_calls)
             run.timing = _merge_timing(run.timing, run.attempt, record)
             run.status = (
                 ChatRunStatus.FAILED if exhausted else ChatRunStatus.QUEUED
@@ -196,7 +206,10 @@ class SqlAlchemyChatRepository:
         if locked is None:
             return ChatTerminalWriteStatus.STALE
         run, assistant = locked
-        calls = _serialized_calls(command.lease.attempt, command.model_calls)
+        calls = _combine_calls(
+            _contextualization_calls(run),
+            _serialized_calls(command.lease.attempt, command.model_calls),
+        )
         validation = _serialized_validation(command)
         stable_success = {
             **validation,
@@ -280,7 +293,10 @@ class SqlAlchemyChatRepository:
         if locked is None:
             return ChatTerminalWriteStatus.STALE
         run, assistant = locked
-        calls = _serialized_calls(command.lease.attempt, command.model_calls)
+        calls = _combine_calls(
+            _contextualization_calls(run),
+            _serialized_calls(command.lease.attempt, command.model_calls),
+        )
         facts = _serialized_failure(command)
         stable_failure = {
             **facts,
@@ -441,6 +457,17 @@ class SqlAlchemyChatRepository:
         run, user_message, assistant_message = result
         if run.effective_policy is None:
             return None
+        try:
+            conversation_context = hydrate_conversation_context(
+                run.conversation_context
+            )
+            contextualized_query = (
+                hydrate_contextualized_query(run.contextualized_query)
+                if run.contextualized_query is not None
+                else None
+            )
+        except (TypeError, ValueError):
+            return None
         return ChatExecutionContext(
             lease=lease,
             run_id=run.id,
@@ -457,6 +484,8 @@ class SqlAlchemyChatRepository:
             retrieval_strategy=run.retrieval_strategy,
             model_configuration=run.model_configuration,
             attempt=run.attempt,
+            conversation_context=conversation_context,
+            contextualized_query=contextualized_query,
         )
 
     async def create_session(
@@ -485,6 +514,123 @@ class SqlAlchemyChatRepository:
             )
         )
         return _session(row) if row is not None else None
+
+    async def lock_session(
+        self, session_id: UUID, *, principal_id: str
+    ) -> ChatSession | None:
+        self._ensure_active()
+        row = await self._session.scalar(
+            select(ChatSessionRow)
+            .where(
+                ChatSessionRow.workspace_id == self._workspace_id,
+                ChatSessionRow.id == session_id,
+                ChatSessionRow.principal_id == principal_id,
+            )
+            .with_for_update()
+        )
+        return _session(row) if row is not None else None
+
+    async def has_nonterminal_run(self, session_id: UUID) -> bool:
+        self._ensure_active()
+        return bool(
+            await self._session.scalar(
+                select(ChatRunRow.id)
+                .where(
+                    ChatRunRow.workspace_id == self._workspace_id,
+                    ChatRunRow.session_id == session_id,
+                    ChatRunRow.status.in_(
+                        (ChatRunStatus.QUEUED, ChatRunStatus.RUNNING)
+                    ),
+                )
+                .limit(1)
+            )
+        )
+
+    async def list_completed_turns(
+        self,
+        *,
+        session_id: UUID,
+        principal_id: str,
+        kb_id: UUID,
+        limit: int,
+    ) -> tuple[ConversationTurn, ...]:
+        self._ensure_active()
+        if limit < 1:
+            raise ValueError("completed turn limit must be positive")
+        user = aliased(ChatMessageRow)
+        assistant = aliased(ChatMessageRow)
+        rows = (
+            await self._session.execute(
+                select(user, assistant)
+                .join(ChatRunRow, ChatRunRow.user_message_id == user.id)
+                .join(
+                    assistant,
+                    (assistant.id == ChatRunRow.assistant_message_id)
+                    & (assistant.chat_run_id == ChatRunRow.id)
+                    & (assistant.role == ChatMessageRole.ASSISTANT),
+                )
+                .where(
+                    ChatRunRow.workspace_id == self._workspace_id,
+                    ChatRunRow.session_id == session_id,
+                    ChatRunRow.kb_id == kb_id,
+                    ChatRunRow.principal_id == principal_id,
+                    ChatRunRow.status == ChatRunStatus.COMPLETED,
+                    user.workspace_id == self._workspace_id,
+                    user.session_id == session_id,
+                    user.role == ChatMessageRole.USER,
+                    assistant.workspace_id == self._workspace_id,
+                    assistant.session_id == session_id,
+                    assistant.assistant_status == AssistantMessageStatus.COMPLETED,
+                )
+                .order_by(ChatRunRow.created_at.desc(), ChatRunRow.id.desc())
+                .limit(limit)
+            )
+        ).all()
+        return tuple(
+            ConversationTurn(
+                user_message_id=user_row.id,
+                user_content=user_row.content,
+                assistant_message_id=assistant_row.id,
+                assistant_content=assistant_row.content,
+            )
+            for user_row, assistant_row in rows
+        )
+
+    async def save_contextualized_query(
+        self,
+        lease: ChatRunLease,
+        value: ContextualizedQuery,
+    ) -> ContextualizedQuery | None:
+        self._ensure_active()
+        if lease.workspace_id != self._workspace_id:
+            return None
+        row = await self._session.scalar(
+            select(ChatRunRow)
+            .where(
+                ChatRunRow.workspace_id == self._workspace_id,
+                ChatRunRow.id == lease.run_id,
+                ChatRunRow.status == ChatRunStatus.RUNNING,
+                ChatRunRow.claimed_by == lease.claimed_by,
+                ChatRunRow.attempt == lease.attempt,
+            )
+            .with_for_update()
+        )
+        if row is None:
+            return None
+        try:
+            snapshot = hydrate_conversation_context(row.conversation_context)
+        except (TypeError, ValueError):
+            return None
+        if snapshot.content_hash != value.context_hash:
+            return None
+        if row.contextualized_query is None:
+            row.contextualized_query = serialize_contextualized_query(value)
+            await self._session.flush()
+            return value
+        try:
+            return hydrate_contextualized_query(row.contextualized_query)
+        except (TypeError, ValueError):
+            return None
 
     async def list_sessions(
         self,
@@ -632,6 +778,8 @@ class SqlAlchemyChatRepository:
         effective_policy: dict[str, Any],
         retrieval_strategy: dict[str, Any],
         model_configuration: dict[str, Any],
+        conversation_context: dict[str, Any],
+        contextualized_query: dict[str, Any] | None,
     ) -> ChatRun:
         self._ensure_active()
         user_message = ChatMessageRow(
@@ -661,6 +809,12 @@ class SqlAlchemyChatRepository:
             effective_policy=dict(effective_policy),
             retrieval_strategy=dict(retrieval_strategy),
             model_configuration=dict(model_configuration),
+            conversation_context=dict(conversation_context),
+            contextualized_query=(
+                dict(contextualized_query)
+                if contextualized_query is not None
+                else None
+            ),
         )
         self._session.add(run)
         await self._session.flush()
@@ -752,6 +906,27 @@ def _serialized_calls(attempt: int, calls) -> dict[str, dict[str, Any]]:
         }
         for sequence, call in enumerate(calls, start=1)
     }
+
+
+def _contextualization_calls(run: ChatRunRow) -> dict[str, dict[str, Any]]:
+    if run.contextualized_query is None:
+        return {}
+    value = hydrate_contextualized_query(run.contextualized_query)
+    if value.origin_attempt is None:
+        return {}
+    return _serialized_calls(value.origin_attempt, value.model_calls)
+
+
+def _combine_calls(
+    *ledgers: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    combined: dict[str, dict[str, Any]] = {}
+    for ledger in ledgers:
+        for key, value in ledger.items():
+            if key in combined and combined[key] != value:
+                raise RuntimeError("chat model call ledger conflict")
+            combined[key] = value
+    return combined
 
 
 def _merge_usage(
@@ -948,4 +1123,10 @@ def _run(
         created_at=run.created_at,
         updated_at=run.updated_at,
         completed_at=run.completed_at,
+        conversation_context=dict(run.conversation_context),
+        contextualized_query=(
+            dict(run.contextualized_query)
+            if run.contextualized_query is not None
+            else None
+        ),
     )

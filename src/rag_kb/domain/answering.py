@@ -36,6 +36,7 @@ class AnswerControlReason(StrEnum):
 
 
 class ChatModelOperation(StrEnum):
+    CONTEXTUALIZE_QUERY = "contextualize_query"
     ASSESS_EVIDENCE = "assess_evidence"
     GENERATE_ANSWER = "generate_answer"
     REPAIR_ANSWER = "repair_answer"

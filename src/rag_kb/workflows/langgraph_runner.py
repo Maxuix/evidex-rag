@@ -3,13 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Protocol
 
+from rag_kb.answering.pipeline_steps import build_clarification_state
 from rag_kb.domain import (
+    CONTEXTUAL_QUERY_VERSION,
     ChatExecutionCommand,
+    ChatExecutionContext,
     ChatPipelineExecutionError,
     ChatPipelinePhase,
     ChatPipelineState,
     ErrorCode,
+    ContextualizedQuery,
+    QueryContextStatus,
 )
 from rag_kb.services.chat_execution import (
     ChatEvidenceRetriever,
@@ -36,11 +42,15 @@ class LangGraphRunner:
         structure_validator: ChatPipelineStep,
         result_persister: ChatPipelineStep,
         *,
+        query_contextualizer: QueryContextualizer | None = None,
         deadline_seconds: float,
     ) -> None:
         if deadline_seconds <= 0:
             raise ValueError("chat graph deadline must be positive")
         self._context_loader = context_loader
+        self._query_contextualizer = (
+            query_contextualizer or _OriginalOnlyContextualizer()
+        )
         self._evidence_retriever = evidence_retriever
         self._steps = {
             "assess_evidence": (
@@ -64,12 +74,15 @@ class LangGraphRunner:
         self._graph = compile_chat_graph(
             {
                 "load_context": self._load_context,
+                "contextualize_query": self._contextualize_query,
                 "retrieve_evidence": self._retrieve_evidence,
                 "assess_evidence": self._assess_evidence,
                 "generate_or_refuse": self._generate_or_refuse,
+                "build_clarification": self._build_clarification,
                 "validate_structure": self._validate_structure,
                 "persist_result": self._persist_result,
-            }
+            },
+            self._route_after_contextualization,
         )
 
     async def execute(self, command: ChatExecutionCommand) -> ChatPipelineState:
@@ -119,13 +132,48 @@ class LangGraphRunner:
         progress = graph["progress"]
         progress.phase = ChatPipelinePhase.RETRIEVE_EVIDENCE
         context = graph["context"]
-        pack = await self._evidence_retriever.retrieve(context)
+        query_context = graph["query_context"]
+        pack = await self._evidence_retriever.retrieve(context, query_context)
         return {
             "evidence_pack": pack,
             "pipeline_state": ChatPipelineState(
                 context=context,
+                query_context=query_context,
                 evidence_pack=pack,
             ),
+        }
+
+    async def _contextualize_query(
+        self, graph: ChatGraphState
+    ) -> dict[str, object]:
+        progress = graph["progress"]
+        progress.phase = ChatPipelinePhase.CONTEXTUALIZE_QUERY
+        value = await self._query_contextualizer.contextualize(graph["context"])
+        progress.model_calls = value.model_calls_for_attempt(
+            graph["context"].attempt
+        )
+        return {"query_context": value}
+
+    def _route_after_contextualization(self, graph: ChatGraphState) -> str:
+        value = graph["query_context"]
+        if value.status is QueryContextStatus.NEEDS_CLARIFICATION:
+            return "needs_clarification"
+        if value.standalone_query is None:
+            raise TypeError("ready query context is missing standalone query")
+        return "ready"
+
+    async def _build_clarification(
+        self, graph: ChatGraphState
+    ) -> dict[str, object]:
+        progress = graph["progress"]
+        progress.phase = ChatPipelinePhase.BUILD_CLARIFICATION
+        state = build_clarification_state(
+            graph["context"], graph["query_context"]
+        )
+        retain_progress(progress, state)
+        return {
+            "evidence_pack": state.evidence_pack,
+            "pipeline_state": state,
         }
 
     async def _assess_evidence(self, graph: ChatGraphState) -> dict[str, object]:
@@ -153,7 +201,35 @@ class LangGraphRunner:
             not isinstance(state, ChatPipelineState)
             or state.context is not graph["context"]
             or state.evidence_pack is not graph["evidence_pack"]
+            or state.query_context is not graph["query_context"]
         ):
             raise TypeError("chat graph step changed frozen inputs")
         retain_progress(progress, state)
         return {"pipeline_state": state}
+
+
+class QueryContextualizer(Protocol):
+    async def contextualize(
+        self, context: ChatExecutionContext
+    ) -> ContextualizedQuery: ...
+
+
+class _OriginalOnlyContextualizer:
+    async def contextualize(
+        self, context: ChatExecutionContext
+    ) -> ContextualizedQuery:
+        if context.contextualized_query is not None:
+            return context.contextualized_query
+        if context.conversation_context.turns:
+            raise ChatPipelineExecutionError(
+                ErrorCode.CHAT_CONTEXT_INVALID,
+                phase=ChatPipelinePhase.CONTEXTUALIZE_QUERY,
+                diagnostic={"check": "contextualizer_dependency"},
+            )
+        return ContextualizedQuery(
+            version=CONTEXTUAL_QUERY_VERSION,
+            status=QueryContextStatus.ORIGINAL,
+            original_query=context.query,
+            standalone_query=context.query,
+            context_hash=context.conversation_context.content_hash,
+        )
