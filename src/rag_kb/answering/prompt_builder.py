@@ -14,6 +14,7 @@ from rag_kb.domain import (
     EvidenceAssessment,
     EvidenceEnvelope,
     EvidencePack,
+    InsufficiencyPolicy,
     PromptEvidence,
     ContextualizedQuery,
 )
@@ -37,11 +38,20 @@ citation IDs for every factual claim. Return exactly one JSON object with keys
 outcome, claims, and missing_aspects. Each claim is an object with text and
 citation_ids. Do not add prose outside the JSON object."""
 
+_COMPLETENESS_RULE = """Admitted evidence is relevant but may or may not cover the
+whole current request. Use only an outcome listed in allowed_outcomes. Return
+"answered" only when the cited claims fully answer the current request. When
+"partial" is allowed and the evidence supports only part of the request, return the
+supported cited claims plus concise missing_aspects that describe what the supplied
+evidence does not establish. When "refused" is allowed and the evidence cannot fully
+answer the request, return it with empty claims and missing_aspects. Never weaken the
+citation rules or use conversation history as evidence."""
+
 _ACKNOWLEDGEMENT_RULE = """If and only if the current message merely acknowledges or
 accepts the prior answer and asks for no new information, return outcome
 "acknowledged" with empty claims and missing_aspects. In that case do not repeat,
 summarize, extend, or cite the prior answer. For every substantive request, ignore
-this exception and follow required_outcome."""
+this exception and follow allowed_outcomes."""
 
 
 def build_evidence_envelope(pack: EvidencePack) -> EvidenceEnvelope:
@@ -73,10 +83,16 @@ def build_generation_request(
     expected_outcome: AnswerOutcome,
 ) -> ChatModelRequest:
     usable = set(assessment.usable_citation_ids)
+    insufficiency = InsufficiencyPolicy(
+        context.effective_policy["insufficiency_policy"]
+    )
+    allowed_outcomes = allowed_answer_outcomes(expected_outcome, insufficiency)
     payload = {
         **_query_payload(context, query_context),
         "evidence_scope": _scope(evidence),
         "required_outcome": expected_outcome.value,
+        "allowed_outcomes": [outcome.value for outcome in allowed_outcomes],
+        "insufficiency_policy": insufficiency.value,
         "answer_style": context.effective_policy["answer_style"],
         "grounding_policy": "evidence_only",
         "citation_policy": {"required": True, "granularity": "claim_level"},
@@ -91,7 +107,9 @@ def build_generation_request(
     return ChatModelRequest(
         (
             ChatModelMessage(
-                "system", f"{_GENERATION_SYSTEM}\n\n{_ACKNOWLEDGEMENT_RULE}"
+                "system",
+                f"{_GENERATION_SYSTEM}\n\n{_COMPLETENESS_RULE}\n\n"
+                f"{_ACKNOWLEDGEMENT_RULE}",
             ),
             ChatModelMessage("user", _json(payload)),
         ),
@@ -122,10 +140,16 @@ def build_repair_request(
     issues: tuple[AnswerValidationIssue, ...],
 ) -> ChatModelRequest:
     usable = set(assessment.usable_citation_ids)
+    insufficiency = InsufficiencyPolicy(
+        context.effective_policy["insufficiency_policy"]
+    )
+    allowed_outcomes = allowed_answer_outcomes(expected_outcome, insufficiency)
     payload = {
         **_query_payload(context, query_context),
         "evidence_scope": _scope(evidence),
         "required_outcome": expected_outcome.value,
+        "allowed_outcomes": [outcome.value for outcome in allowed_outcomes],
+        "insufficiency_policy": insufficiency.value,
         "answer_style": context.effective_policy["answer_style"],
         "grounding_policy": "evidence_only",
         "citation_policy": {"required": True, "granularity": "claim_level"},
@@ -141,12 +165,34 @@ def build_repair_request(
     return ChatModelRequest(
         (
             ChatModelMessage(
-                "system", f"{_REPAIR_SYSTEM}\n\n{_ACKNOWLEDGEMENT_RULE}"
+                "system",
+                f"{_REPAIR_SYSTEM}\n\n{_COMPLETENESS_RULE}\n\n"
+                f"{_ACKNOWLEDGEMENT_RULE}",
             ),
             ChatModelMessage("user", _json(payload)),
         ),
         output_schema=ChatOutputSchema.ANSWER_V1,
     )
+
+
+def allowed_answer_outcomes(
+    expected_outcome: AnswerOutcome,
+    insufficiency: InsufficiencyPolicy,
+) -> tuple[AnswerOutcome, ...]:
+    if expected_outcome is AnswerOutcome.ANSWERED:
+        insufficient = (
+            AnswerOutcome.PARTIAL
+            if insufficiency is InsufficiencyPolicy.PARTIAL_ANSWER
+            else AnswerOutcome.REFUSED
+        )
+        return (
+            AnswerOutcome.ANSWERED,
+            insufficient,
+            AnswerOutcome.ACKNOWLEDGED,
+        )
+    if expected_outcome is AnswerOutcome.PARTIAL:
+        return (AnswerOutcome.PARTIAL, AnswerOutcome.ACKNOWLEDGED)
+    return (expected_outcome,)
 
 
 def _prompt_item(item: PromptEvidence) -> dict[str, object]:

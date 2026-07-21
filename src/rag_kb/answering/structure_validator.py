@@ -13,7 +13,10 @@ from rag_kb.answering.model_execution import (
     model_call_record,
     require_frozen_model,
 )
-from rag_kb.answering.prompt_builder import build_repair_request
+from rag_kb.answering.prompt_builder import (
+    allowed_answer_outcomes,
+    build_repair_request,
+)
 from rag_kb.answering.wire_schemas import WireAnswer
 from rag_kb.domain import (
     AnswerClaim,
@@ -30,7 +33,9 @@ from rag_kb.domain import (
     ChatPipelineState,
     ErrorCode,
     EvidenceAssessment,
+    EvidenceCoverage,
     EvidenceEnvelope,
+    InsufficiencyPolicy,
     RenderedAnswer,
     RenderedCitation,
     ValidatedAnswer,
@@ -60,6 +65,9 @@ class AnswerStructureValidationStep:
             answering.evidence,
             answering.assessment,
             current_query=context.query,
+            insufficiency=InsufficiencyPolicy(
+                context.effective_policy["insufficiency_policy"]
+            ),
         )
         calls = answering.model_calls
         if validated is not None and rendered is not None:
@@ -104,6 +112,9 @@ class AnswerStructureValidationStep:
                 answering.evidence,
                 answering.assessment,
                 current_query=context.query,
+                insufficiency=InsufficiencyPolicy(
+                    context.effective_policy["insufficiency_policy"]
+                ),
             )
             if validated is not None and rendered is not None:
                 record = AnswerValidationRecord(
@@ -143,6 +154,7 @@ def _validate_and_render(
     assessment: EvidenceAssessment,
     *,
     current_query: str,
+    insufficiency: InsufficiencyPolicy,
 ) -> tuple[
     ValidatedAnswer | None,
     RenderedAnswer | None,
@@ -159,10 +171,7 @@ def _validate_and_render(
             issues.append(issue)
 
     outcome = AnswerOutcome(parsed.outcome)
-    if (
-        outcome is not draft.expected_outcome
-        and outcome is not AnswerOutcome.ACKNOWLEDGED
-    ):
+    if outcome not in allowed_answer_outcomes(draft.expected_outcome, insufficiency):
         add(AnswerValidationIssue.OUTCOME_MISMATCH)
 
     normalized_missing = tuple(value.strip() for value in parsed.missing_aspects)
@@ -184,7 +193,10 @@ def _validate_and_render(
             add(AnswerValidationIssue.CLAIMS_REQUIRED)
         if not parsed.missing_aspects:
             add(AnswerValidationIssue.MISSING_ASPECTS_REQUIRED)
-        elif set(normalized_missing) != set(assessment.missing_aspects):
+        elif (
+            assessment.coverage is EvidenceCoverage.PARTIAL
+            and set(normalized_missing) != set(assessment.missing_aspects)
+        ):
             add(AnswerValidationIssue.MISSING_ASPECTS_MISMATCH)
     else:
         if parsed.claims:
@@ -217,9 +229,9 @@ def _validate_and_render(
 
     source = draft.source
     control_reason = draft.control_reason
-    missing_aspects = (
-        assessment.missing_aspects if outcome is AnswerOutcome.PARTIAL else ()
-    )
+    if outcome is AnswerOutcome.REFUSED and source is AnswerDraftSource.PROVIDER:
+        control_reason = AnswerControlReason.INSUFFICIENT_EVIDENCE
+    missing_aspects = normalized_missing if outcome is AnswerOutcome.PARTIAL else ()
     try:
         validated = ValidatedAnswer(
             outcome=outcome,

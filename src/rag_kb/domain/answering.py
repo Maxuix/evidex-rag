@@ -224,11 +224,11 @@ class ValidatedAnswer:
                 or self.control_reason is None
             ):
                 raise ValueError("deterministic validated results must be refusals")
-        elif (
-            self.control_reason is not None
-            or self.outcome is AnswerOutcome.REFUSED
-        ):
-            raise ValueError("provider validated results cannot be refusals")
+        elif self.outcome is AnswerOutcome.REFUSED:
+            if self.control_reason is not AnswerControlReason.INSUFFICIENT_EVIDENCE:
+                raise ValueError("provider refusals require a safe control reason")
+        elif self.control_reason is not None:
+            raise ValueError("provider answers cannot have a control reason")
 
 
 @dataclass(frozen=True, slots=True)

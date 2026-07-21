@@ -76,7 +76,9 @@ class _PassStep:
 
 
 def _context(
-    *, query: str = "What policy applies and when is the deadline?"
+    *,
+    query: str = "What policy applies and when is the deadline?",
+    insufficiency: str = "partial_answer",
 ) -> ChatExecutionContext:
     run_id = uuid4()
     workspace_id = uuid4()
@@ -101,7 +103,7 @@ def _context(
         effective_policy={
             "grounding_policy": "evidence_only",
             "answer_style": "concise",
-            "insufficiency_policy": "partial_answer",
+            "insufficiency_policy": insufficiency,
             "citation_required": True,
             "citation_granularity": "claim_level",
             "answer_task": "answer",
@@ -162,8 +164,9 @@ def _state(
     source: AnswerDraftSource = AnswerDraftSource.PROVIDER,
     reason: AnswerControlReason | None = None,
     query: str = "What policy applies and when is the deadline?",
+    insufficiency: str = "partial_answer",
 ) -> ChatPipelineState:
-    context = _context(query=query)
+    context = _context(query=query, insufficiency=insufficiency)
     pack = _pack(context)
     return ChatPipelineState(
         context=context,
@@ -204,6 +207,87 @@ def _answered() -> str:
 
 
 class StructureValidationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_partial_policy_accepts_model_assessed_partial_coverage(
+        self,
+    ) -> None:
+        raw = json.dumps(
+            {
+                "outcome": "partial",
+                "claims": [
+                    {"text": "Policy A applies.", "citation_ids": ["cite_1"]}
+                ],
+                "missing_aspects": ["the exception deadline"],
+            }
+        )
+
+        result = await AnswerStructureValidationStep(_Model()).run(_state(raw))
+
+        assert result.answering is not None
+        assert result.answering.validated is not None
+        assert result.answering.rendered is not None
+        assert result.answering.validation is not None
+        self.assertEqual(result.answering.validated.outcome, AnswerOutcome.PARTIAL)
+        self.assertEqual(
+            result.answering.validated.missing_aspects,
+            ("the exception deadline",),
+        )
+        self.assertIn("Policy A applies. [1]", result.answering.rendered.content)
+        self.assertIn(
+            "Missing information: the exception deadline",
+            result.answering.rendered.content,
+        )
+        self.assertFalse(result.answering.validation.repair_attempted)
+
+    async def test_refuse_policy_accepts_model_assessed_insufficiency(
+        self,
+    ) -> None:
+        raw = json.dumps(
+            {"outcome": "refused", "claims": [], "missing_aspects": []}
+        )
+
+        result = await AnswerStructureValidationStep(_Model()).run(
+            _state(raw, insufficiency="refuse")
+        )
+
+        assert result.answering is not None
+        assert result.answering.validated is not None
+        assert result.answering.rendered is not None
+        self.assertEqual(result.answering.validated.outcome, AnswerOutcome.REFUSED)
+        self.assertEqual(
+            result.answering.validated.control_reason,
+            AnswerControlReason.INSUFFICIENT_EVIDENCE,
+        )
+        self.assertEqual(result.answering.rendered.citations, ())
+        self.assertIn("insufficient", result.answering.rendered.content)
+
+    async def test_partial_outcome_is_rejected_under_refuse_policy(self) -> None:
+        partial = json.dumps(
+            {
+                "outcome": "partial",
+                "claims": [
+                    {"text": "Policy A applies.", "citation_ids": ["cite_1"]}
+                ],
+                "missing_aspects": ["the deadline"],
+            }
+        )
+        refused = json.dumps(
+            {"outcome": "refused", "claims": [], "missing_aspects": []}
+        )
+
+        result = await AnswerStructureValidationStep(_Model(_response(refused))).run(
+            _state(partial, insufficiency="refuse")
+        )
+
+        assert result.answering is not None
+        assert result.answering.validation is not None
+        assert result.answering.validated is not None
+        self.assertIn(
+            AnswerValidationIssue.OUTCOME_MISMATCH,
+            result.answering.validation.initial_issues,
+        )
+        self.assertTrue(result.answering.validation.repair_succeeded)
+        self.assertEqual(result.answering.validated.outcome, AnswerOutcome.REFUSED)
+
     async def test_acknowledgement_is_non_substantive_and_needs_no_citation(
         self,
     ) -> None:
@@ -384,11 +468,9 @@ class StructureValidationTests(unittest.IsolatedAsyncioTestCase):
             (
                 json.dumps(
                     {
-                        "outcome": "partial",
-                        "claims": [
-                            {"text": "Policy A.", "citation_ids": ["cite_1"]}
-                        ],
-                        "missing_aspects": ["deadline"],
+                        "outcome": "refused",
+                        "claims": [],
+                        "missing_aspects": [],
                     }
                 ),
                 AnswerValidationIssue.OUTCOME_MISMATCH,

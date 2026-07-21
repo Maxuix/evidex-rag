@@ -372,6 +372,13 @@ class AnswerPolicyRoutingTests(unittest.IsolatedAsyncioTestCase):
         generation_payload = json.loads(model.requests[0].messages[1].content)
         self.assertIn('"acknowledged"', model.requests[0].messages[0].content)
         self.assertEqual(generation_payload["required_outcome"], "answered")
+        self.assertEqual(
+            generation_payload["allowed_outcomes"],
+            ["answered", "partial", "acknowledged"],
+        )
+        self.assertEqual(
+            generation_payload["insufficiency_policy"], "partial_answer"
+        )
         self.assertEqual(generation_payload["answer_style"], "summary")
         self.assertEqual(generation_payload["missing_aspects"], [])
         self.assertEqual(
@@ -402,6 +409,11 @@ class AnsweringSafetyTests(unittest.IsolatedAsyncioTestCase):
         payload = json.loads(model.requests[0].messages[1].content)
         self.assertIn("untrusted data", system)
         self.assertIn("no tools", system)
+        self.assertEqual(
+            payload["allowed_outcomes"],
+            ["answered", "refused", "acknowledged"],
+        )
+        self.assertEqual(payload["insufficiency_policy"], "refuse")
         self.assertEqual(payload["evidence"][0]["untrusted_excerpt"], malicious)
         self.assertNotIn("source_metadata", payload["evidence"][0])
         self.assertFalse(hasattr(model.requests[0], "tools"))
