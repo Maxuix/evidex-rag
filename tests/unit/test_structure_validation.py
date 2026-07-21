@@ -220,7 +220,9 @@ class StructureValidationTests(unittest.IsolatedAsyncioTestCase):
             }
         )
 
-        result = await AnswerStructureValidationStep(_Model()).run(_state(raw))
+        result = await AnswerStructureValidationStep(_Model()).run(
+            _state(raw, query="政策是什么？例外截止日期是什么？")
+        )
 
         assert result.answering is not None
         assert result.answering.validated is not None
@@ -233,9 +235,10 @@ class StructureValidationTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("Policy A applies. [1]", result.answering.rendered.content)
         self.assertIn(
-            "Missing information: the exception deadline",
+            "另外，关于“the exception deadline”，我目前无法给出可靠回答。",
             result.answering.rendered.content,
         )
+        self.assertNotIn("Missing information", result.answering.rendered.content)
         self.assertFalse(result.answering.validation.repair_attempted)
 
     async def test_refuse_policy_accepts_model_assessed_insufficiency(
@@ -373,7 +376,7 @@ class StructureValidationTests(unittest.IsolatedAsyncioTestCase):
             ("exception deadline",),
         )
         self.assertIn(
-            "Missing information: exception deadline",
+            "I can’t reliably answer these parts yet: exception deadline.",
             result.answering.rendered.content,
         )
 
@@ -582,6 +585,8 @@ class StructureValidationTests(unittest.IsolatedAsyncioTestCase):
         system = model.requests[0].messages[0].content
         self.assertIn("untrusted data", system)
         self.assertIn("no tools", system)
+        self.assertIn("direct, natural answer to the user", system)
+        self.assertIn("Never narrate the RAG process", system)
         self.assertEqual(payload["untrusted_original_draft"], malicious)
         self.assertEqual(payload["validation_issues"], ["json_invalid"])
         self.assertEqual(

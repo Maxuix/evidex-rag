@@ -47,6 +47,13 @@ evidence does not establish. When "refused" is allowed and the evidence cannot f
 answer the request, return it with empty claims and missing_aspects. Never weaken the
 citation rules or use conversation history as evidence."""
 
+_USER_FACING_RULE = """Write every claim as a direct, natural answer to the user.
+Never narrate the RAG process or say that evidence, documents, sources, context,
+retrieval results, a knowledge base, or citation IDs provide, show, contain, or lack
+information. Put support only in citation_ids. For a partial outcome,
+missing_aspects must be short user-topic labels, not diagnostic sentences, evidence
+status reports, or instructions to the renderer. Match the user's language."""
+
 _ACKNOWLEDGEMENT_RULE = """If and only if the current message merely acknowledges or
 accepts the prior answer and asks for no new information, return outcome
 "acknowledged" with empty claims and missing_aspects. In that case do not repeat,
@@ -108,7 +115,8 @@ def build_generation_request(
         (
             ChatModelMessage(
                 "system",
-                f"{_GENERATION_SYSTEM}\n\n{_COMPLETENESS_RULE}\n\n"
+                f"{_GENERATION_SYSTEM}\n\n{_USER_FACING_RULE}\n\n"
+                f"{_COMPLETENESS_RULE}\n\n"
                 f"{_ACKNOWLEDGEMENT_RULE}",
             ),
             ChatModelMessage("user", _json(payload)),
@@ -166,7 +174,8 @@ def build_repair_request(
         (
             ChatModelMessage(
                 "system",
-                f"{_REPAIR_SYSTEM}\n\n{_COMPLETENESS_RULE}\n\n"
+                f"{_REPAIR_SYSTEM}\n\n{_USER_FACING_RULE}\n\n"
+                f"{_COMPLETENESS_RULE}\n\n"
                 f"{_ACKNOWLEDGEMENT_RULE}",
             ),
             ChatModelMessage("user", _json(payload)),

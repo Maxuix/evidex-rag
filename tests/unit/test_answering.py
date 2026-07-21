@@ -370,7 +370,10 @@ class AnswerPolicyRoutingTests(unittest.IsolatedAsyncioTestCase):
         )
 
         generation_payload = json.loads(model.requests[0].messages[1].content)
-        self.assertIn('"acknowledged"', model.requests[0].messages[0].content)
+        generation_system = model.requests[0].messages[0].content
+        self.assertIn('"acknowledged"', generation_system)
+        self.assertIn("direct, natural answer to the user", generation_system)
+        self.assertIn("Never narrate the RAG process", generation_system)
         self.assertEqual(generation_payload["required_outcome"], "answered")
         self.assertEqual(
             generation_payload["allowed_outcomes"],

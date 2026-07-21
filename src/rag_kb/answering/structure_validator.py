@@ -177,6 +177,7 @@ def _validate_and_render(
     normalized_missing = tuple(value.strip() for value in parsed.missing_aspects)
     if any(
         not value
+        or not _display_aspect(value)
         or len(value) > 1000
         or value != original
         for value, original in zip(normalized_missing, parsed.missing_aspects, strict=True)
@@ -301,7 +302,7 @@ def render_validated_answer(
             raise ValueError("acknowledgement rendering requires the current query")
         content = (
             "好的，明白了。"
-            if any("\u4e00" <= character <= "\u9fff" for character in current_query)
+            if _contains_cjk(current_query)
             else "Understood."
         )
         return RenderedAnswer(
@@ -338,14 +339,28 @@ def render_validated_answer(
             markers.append(f"[{ordinals[citation_id] + 1}]")
         paragraphs.append(f"{claim.text} {''.join(markers)}")
     if answer.outcome is AnswerOutcome.PARTIAL:
-        paragraphs.append(
-            "Missing information: " + "; ".join(answer.missing_aspects)
-        )
+        if current_query is None:
+            raise ValueError("partial rendering requires the current query")
+        missing = tuple(_display_aspect(value) for value in answer.missing_aspects)
+        if _contains_cjk(current_query):
+            topics = "、".join(f"“{value}”" for value in missing)
+            paragraphs.append(f"另外，关于{topics}，我目前无法给出可靠回答。")
+        else:
+            topics = "; ".join(missing)
+            paragraphs.append(f"I can’t reliably answer these parts yet: {topics}.")
     return RenderedAnswer(
         outcome=answer.outcome,
         content="\n\n".join(paragraphs),
         citations=tuple(citations),
     )
+
+
+def _contains_cjk(value: str) -> bool:
+    return any("\u4e00" <= character <= "\u9fff" for character in value)
+
+
+def _display_aspect(value: str) -> str:
+    return value.rstrip("。.!！?？;；")
 
 
 def _safe_validation_refusal(
