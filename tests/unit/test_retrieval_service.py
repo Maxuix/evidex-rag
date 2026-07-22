@@ -62,6 +62,13 @@ class RetrievalContractTests(unittest.TestCase):
         self.assertIn("LIMIT %(top_k)s", sql)
         self.assertNotIn("hnsw", sql.lower())
 
+        cross_modal = str(
+            PgVectorStore._statement(768).compile(dialect=postgresql.dialect())
+        )
+        self.assertIn("vector_record_768.embedding <=>", cross_modal)
+        self.assertIn("vector_record_768.embedding_space_id", cross_modal)
+        self.assertNotIn("vector_record_1024.embedding <=>", cross_modal)
+
     def test_pgvector_adapter_rejects_non_exact_or_wrong_dimension(self) -> None:
         definition = replace(_embedding_space(), dimension=1024)
         store = PgVectorStore(None, FixedPgVectorSpace(definition))  # type: ignore[arg-type]

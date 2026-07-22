@@ -8,7 +8,10 @@ from uuid import UUID
 import asyncpg
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from rag_kb.db.compatibility import validate_database_compatibility
+from rag_kb.db.compatibility import (
+    EXPECTED_APPLICATION_TABLES,
+    validate_database_compatibility,
+)
 from rag_kb.db.readiness import validate_runtime_readiness
 
 
@@ -141,8 +144,11 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await engine.dispose()
 
-        self.assertEqual(report.application_table_count, 22)
+        self.assertEqual(
+            report.application_table_count, len(EXPECTED_APPLICATION_TABLES)
+        )
         self.assertEqual(report.vector_type, "vector(1024)")
+        self.assertEqual(report.cross_modal_vector_type, "vector(768)")
         self.assertEqual(readiness.database, "ready")
         self.assertEqual(readiness.queue, "ready")
         self.assertEqual(readiness.queue_backend, "postgresql")
@@ -162,7 +168,7 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
                     "UPDATE alembic_version SET version_num = 'runtime-mutation'"
                 )
             revision = await runtime.fetchval("SELECT version_num FROM alembic_version")
-            self.assertEqual(revision, "0007_chat_session_context")
+            self.assertEqual(revision, "0009_cross_modal_vector_768")
         finally:
             await runtime.close()
 

@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import and_, delete, exists, func, or_, select, update
+from sqlalchemy import and_, delete, exists, func, literal, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -31,6 +31,7 @@ from rag_kb.db.models import (
     KnowledgeBase as KnowledgeBaseRow,
     SourceChange as SourceChangeRow,
     VectorRecord as VectorRecordRow,
+    VectorRecord768 as VectorRecord768Row,
 )
 from rag_kb.domain import (
     EmbeddingSpaceDefinition,
@@ -342,17 +343,18 @@ class SqlAlchemyIndexingRepository:
         manifests_deleted = 0
         assets_deleted = 0
         if chunk_ids:
-            vectors_deleted = int(
-                (
-                    await self._session.execute(
-                        delete(VectorRecordRow).where(
-                            VectorRecordRow.workspace_id == self._workspace_id,
-                            VectorRecordRow.index_chunk_id.in_(chunk_ids),
+            for vector_model in (VectorRecordRow, VectorRecord768Row):
+                vectors_deleted += int(
+                    (
+                        await self._session.execute(
+                            delete(vector_model).where(
+                                vector_model.workspace_id == self._workspace_id,
+                                vector_model.index_chunk_id.in_(chunk_ids),
+                            )
                         )
-                    )
-                ).rowcount
-                or 0
-            )
+                    ).rowcount
+                    or 0
+                )
             chunks_deleted = int(
                 (
                     await self._session.execute(
@@ -1304,31 +1306,39 @@ class SqlAlchemyIndexingRepository:
             }
             for vector in vectors
         ]
-        vector_insert = pg_insert(VectorRecordRow).values(vector_values)
-        stored_vectors = (
-            await self._session.execute(
-                vector_insert.on_conflict_do_update(
-                    index_elements=[
-                        "index_chunk_id",
-                        "embedding_space_id",
-                        "representation_kind",
-                    ],
-                    set_={"embedding": VectorRecordRow.embedding},
-                    where=and_(
-                        VectorRecordRow.id == vector_insert.excluded.id,
-                        VectorRecordRow.embedding
-                        == vector_insert.excluded.embedding,
-                    ),
-                ).returning(VectorRecordRow.id, VectorRecordRow.index_chunk_id)
-            )
-        ).all()
-        expected_vector_ids = {vector.id for vector in vectors}
-        if {item.id for item in stored_vectors} != expected_vector_ids:
-            raise _execution_error(
-                ErrorCode.INDEX_PERSISTENCE_FAILED,
-                IndexingPhase.PERSISTING,
-                "stable_vector_key",
-            )
+        if vector_values:
+            dimensions = {len(vector.embedding) for vector in vectors}
+            if len(dimensions) != 1:
+                raise _execution_error(
+                    ErrorCode.INDEX_PERSISTENCE_FAILED,
+                    IndexingPhase.PERSISTING,
+                    "homogeneous_vector_dimension",
+                )
+            vector_model = _vector_model(dimensions.pop())
+            vector_insert = pg_insert(vector_model).values(vector_values)
+            stored_vectors = (
+                await self._session.execute(
+                    vector_insert.on_conflict_do_update(
+                        index_elements=[
+                            "index_chunk_id",
+                            "embedding_space_id",
+                            "representation_kind",
+                        ],
+                        set_={"embedding": vector_model.embedding},
+                        where=and_(
+                            vector_model.id == vector_insert.excluded.id,
+                            vector_model.embedding == vector_insert.excluded.embedding,
+                        ),
+                    ).returning(vector_model.id, vector_model.index_chunk_id)
+                )
+            ).all()
+            expected_vector_ids = {vector.id for vector in vectors}
+            if {item.id for item in stored_vectors} != expected_vector_ids:
+                raise _execution_error(
+                    ErrorCode.INDEX_PERSISTENCE_FAILED,
+                    IndexingPhase.PERSISTING,
+                    "stable_vector_key",
+                )
         job.phase = IndexingPhase.PERSISTING.value
         await self._session.flush()
         return True
@@ -1359,53 +1369,70 @@ class SqlAlchemyIndexingRepository:
                 IndexingPhase.VALIDATING,
                 "active_revision",
             )
-        records = (
+        chunk_records = (
             await self._session.execute(
                 select(
                     IndexChunkRow.ordinal,
                     IndexChunkRow.id.label("chunk_id"),
                     IndexChunkRow.unit_key,
                     IndexChunkRow.index_asset_id,
-                    VectorRecordRow.id.label("vector_id"),
-                    VectorRecordRow.embedding_space_id,
-                    VectorRecordRow.representation_kind,
-                )
-                .outerjoin(
-                    VectorRecordRow,
-                    VectorRecordRow.index_chunk_id == IndexChunkRow.id,
                 )
                 .where(IndexChunkRow.indexed_document_version_id == target.id)
                 .order_by(IndexChunkRow.ordinal)
             )
         ).all()
+        vector_records: list[Any] = []
+        for vector_model, physical_dimension in (
+            (VectorRecordRow, 1024),
+            (VectorRecord768Row, 768),
+        ):
+            vector_records.extend(
+                (
+                    await self._session.execute(
+                        select(
+                            vector_model.index_chunk_id.label("chunk_id"),
+                            vector_model.id.label("vector_id"),
+                            vector_model.embedding_space_id,
+                            vector_model.representation_kind,
+                            literal(physical_dimension).label("physical_dimension"),
+                        )
+                        .join(
+                            IndexChunkRow,
+                            IndexChunkRow.id == vector_model.index_chunk_id,
+                        )
+                        .where(
+                            IndexChunkRow.indexed_document_version_id == target.id
+                        )
+                    )
+                ).all()
+            )
+        vectors_by_chunk: dict[str, list[tuple[UUID, str, int]]] = {
+            str(record.chunk_id): [] for record in chunk_records
+        }
+        for record in vector_records:
+            vectors_by_chunk.setdefault(str(record.chunk_id), []).append(
+                (
+                    record.embedding_space_id,
+                    record.representation_kind,
+                    record.physical_dimension,
+                )
+            )
         manifest_row = await self._session.get(IndexArtifactManifestRow, target.id)
         if manifest_row is None:
-            grouped: dict[int, list[Any]] = {}
-            for record in records:
-                grouped.setdefault(record.ordinal, []).append(record)
+            by_ordinal = {record.ordinal: record for record in chunk_records}
             valid = (
-                len(grouped) == expected_chunks
-                and tuple(sorted(grouped)) == tuple(range(expected_chunks))
+                len(by_ordinal) == expected_chunks
+                and tuple(sorted(by_ordinal)) == tuple(range(expected_chunks))
                 and all(
-                    items[0].chunk_id == stable_chunk_id(target.id, ordinal)
-                    and any(
-                        item.vector_id is not None
-                        and item.embedding_space_id == embedding.id
-                        and item.representation_kind == "text"
-                        for item in items
-                    )
-                    for ordinal, items in grouped.items()
+                    record.chunk_id == stable_chunk_id(target.id, ordinal)
+                    and (embedding.id, "text", 1024)
+                    in vectors_by_chunk.get(str(record.chunk_id), [])
+                    for ordinal, record in by_ordinal.items()
                 )
             )
         else:
             manifest = _artifact_manifest(manifest_row)
-            by_chunk = {str(record.chunk_id): [] for record in records}
-            for record in records:
-                if record.vector_id is not None:
-                    by_chunk[str(record.chunk_id)].append(
-                        (record.embedding_space_id, record.representation_kind)
-                    )
-            role_spaces = (await self._space_roles(revision.id))[0]
+            role_spaces, role_definitions = await self._space_roles(revision.id)
             asset_rows = (
                 await self._session.execute(
                     select(IndexAssetRow.id, IndexAssetRow.asset_key).where(
@@ -1432,12 +1459,25 @@ class SqlAlchemyIndexingRepository:
                 and manifest.unit_count == len(manifest.unit_plan)
                 and manifest.representation_count
                 == len(manifest.representation_matrix)
-                and len({record.chunk_id for record in records}) == expected_chunks
-                and tuple(sorted({record.ordinal for record in records}))
+                and len({record.chunk_id for record in chunk_records})
+                == expected_chunks
+                and tuple(sorted({record.ordinal for record in chunk_records}))
                 == tuple(range(expected_chunks))
                 and len(planned_units) == expected_chunks
             )
-            for record in records:
+            dimension_by_space = {
+                role_spaces[role]: definition.dimension
+                for role, definition in role_definitions.items()
+                if role in role_spaces
+            }
+            if not all(
+                space_id in dimension_by_space
+                and physical_dimension == dimension_by_space[space_id]
+                for values in vectors_by_chunk.values()
+                for space_id, _kind, physical_dimension in values
+            ):
+                valid = False
+            for record in chunk_records:
                 planned = planned_units.get(str(record.chunk_id))
                 if (
                     planned is None
@@ -1459,8 +1499,13 @@ class SqlAlchemyIndexingRepository:
                 if not requirement.get("required", True):
                     continue
                 required_space = role_spaces.get(requirement.get("space_role"))
-                pair = (required_space, requirement.get("representation_kind"))
-                if required_space is None or pair not in by_chunk.get(
+                definition = role_definitions.get(requirement.get("space_role"))
+                identity = (
+                    required_space,
+                    requirement.get("representation_kind"),
+                    definition.dimension if definition is not None else None,
+                )
+                if required_space is None or identity not in vectors_by_chunk.get(
                     requirement.get("unit_id", ""), []
                 ):
                     valid = False
@@ -1471,10 +1516,8 @@ class SqlAlchemyIndexingRepository:
                 phase=IndexingPhase.VALIDATING,
                 diagnostic={
                     "expected_chunks": expected_chunks,
-                    "observed_chunks": len(records),
-                    "observed_vectors": sum(
-                        record.vector_id is not None for record in records
-                    ),
+                    "observed_chunks": len(chunk_records),
+                    "observed_vectors": len(vector_records),
                 },
             )
         target.build_status = IndexBuildStatus.READY
@@ -1764,6 +1807,18 @@ def _claimable_job(
         ),
         IndexedDocumentVersionRow.serving_status
         == IndexServingStatus.CANDIDATE,
+    )
+
+
+def _vector_model(dimension: int):
+    if dimension == 768:
+        return VectorRecord768Row
+    if dimension == 1024:
+        return VectorRecordRow
+    raise _execution_error(
+        ErrorCode.INDEX_PERSISTENCE_FAILED,
+        IndexingPhase.PERSISTING,
+        "supported_vector_dimension",
     )
 
 

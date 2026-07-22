@@ -24,6 +24,7 @@ from rag_kb.db.models import (
     IndexServingStatus,
     KnowledgeBase,
     VectorRecord,
+    VectorRecord768,
 )
 from rag_kb.domain import (
     ErrorCode,
@@ -100,7 +101,7 @@ class PgVectorStore:
             "semantic_analysis",
         } or not representation_kinds:
             raise ValueError("space role and representation allowlist are required")
-        statement = self._statement()
+        statement = self._statement(expected_space.dimension)
         parameters = {
             "workspace_id": plan.workspace_id,
             "knowledge_base_id": plan.knowledge_base_id,
@@ -159,12 +160,13 @@ class PgVectorStore:
             )
 
     @staticmethod
-    def _statement():
+    def _statement(dimension: int = 1024):
+        vector_record = _vector_model(dimension)
         query_vector = bindparam(
             "query_embedding",
-            type_=Vector(FixedPgVectorSpace.dimension),
+            type_=Vector(dimension),
         )
-        distance = VectorRecord.embedding.cosine_distance(query_vector).label(
+        distance = vector_record.embedding.cosine_distance(query_vector).label(
             "cosine_distance"
         )
         hits = (
@@ -185,7 +187,7 @@ class PgVectorStore:
                 IndexChunk.source_metadata.label("source_metadata"),
                 IndexChunk.modality.label("modality"),
                 IndexChunk.evidence_group_key.label("evidence_group_key"),
-                VectorRecord.representation_kind.label("representation_kind"),
+                vector_record.representation_kind.label("representation_kind"),
                 IndexAsset.id.label("index_asset_id"),
                 IndexAsset.media_type.label("asset_media_type"),
                 IndexAsset.checksum_sha256.label("asset_checksum_sha256"),
@@ -226,11 +228,11 @@ class PgVectorStore:
                 ),
             )
             .join(
-                VectorRecord,
+                vector_record,
                 and_(
-                    VectorRecord.index_chunk_id == IndexChunk.id,
-                    VectorRecord.kb_id == IndexChunk.kb_id,
-                    VectorRecord.workspace_id == IndexChunk.workspace_id,
+                    vector_record.index_chunk_id == IndexChunk.id,
+                    vector_record.kb_id == IndexChunk.kb_id,
+                    vector_record.workspace_id == IndexChunk.workspace_id,
                 ),
             )
             .outerjoin(
@@ -249,9 +251,9 @@ class PgVectorStore:
                 IndexedDocumentVersion.serving_status == IndexServingStatus.SERVING,
                 Document.deleted_at.is_(None),
                 DocumentVersion.source_status == DocumentSourceStatus.AVAILABLE,
-                VectorRecord.embedding_space_id
+                vector_record.embedding_space_id
                 == IndexRevisionEmbeddingSpace.embedding_space_id,
-                VectorRecord.representation_kind.in_(
+                vector_record.representation_kind.in_(
                     bindparam("representation_kinds", expanding=True)
                 ),
             )
@@ -356,3 +358,11 @@ class PgVectorStore:
             asset_width=row["asset_width"],
             asset_height=row["asset_height"],
         )
+
+
+def _vector_model(dimension: int):
+    if dimension == 768:
+        return VectorRecord768
+    if dimension == 1024:
+        return VectorRecord
+    raise ValueError("unsupported fixed vector dimension")

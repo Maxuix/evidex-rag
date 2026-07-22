@@ -22,8 +22,8 @@ from rag_kb.domain import (
 _RETRYABLE_STATUSES = frozenset({408, 409, 429, 500, 502, 503, 504})
 
 
-class QwenMultimodalEmbeddingAdapter:
-    """Embed text and local raster images in one qwen3-vl shared space."""
+class TongyiVisionEmbeddingAdapter:
+    """Embed text and local raster images in one Tongyi Vision shared space."""
 
     def __init__(
         self,
@@ -40,8 +40,14 @@ class QwenMultimodalEmbeddingAdapter:
     ) -> None:
         if not endpoint or not api_key or not embedding_space.requested_model:
             raise ValueError("multimodal endpoint, key, and model are required")
-        if embedding_space.dimension != 1024:
-            raise ValueError("multimodal physical vector space must be 1024-dimensional")
+        if (
+            embedding_space.requested_model
+            != "tongyi-embedding-vision-flash-2026-03-06"
+            or embedding_space.dimension != 768
+        ):
+            raise ValueError(
+                "multimodal provider must be the fixed Tongyi Vision Flash 768 space"
+            )
         if max_batch_size < 1 or timeout_seconds <= 0 or max_concurrency < 1:
             raise ValueError("multimodal provider limits must be positive")
         if max_retries < 0:
@@ -78,8 +84,13 @@ class QwenMultimodalEmbeddingAdapter:
         if not images or len(images) > self._max_batch_size:
             raise ValueError("multimodal image batch is outside the configured bound")
         supported = {"image/png", "image/jpeg", "image/webp", "image/bmp", "image/tiff"}
-        if any(image.media_type not in supported or not image.content for image in images):
-            raise ValueError("multimodal image input is unsupported")
+        if any(
+            image.media_type not in supported
+            or not image.content
+            or len(image.content) > 10_000_000
+            for image in images
+        ):
+            raise _invalid("image_input")
         contents = [
             {
                 "image": (
@@ -95,7 +106,11 @@ class QwenMultimodalEmbeddingAdapter:
         payload = {
             "model": self._embedding_space.requested_model,
             "input": {"contents": contents},
-            "parameters": {"dimension": self._embedding_space.dimension, "enable_fusion": False},
+            "parameters": {
+                "dimension": self._embedding_space.dimension,
+                "output_type": "dense",
+                "res_level": 1,
+            },
         }
         async with self._semaphore:
             for attempt in range(self._max_retries + 1):

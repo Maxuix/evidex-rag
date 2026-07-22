@@ -824,6 +824,45 @@ class VectorRecord(Base):
     created_at: Mapped[datetime] = created_timestamp()
 
 
+class VectorRecord768(Base):
+    __tablename__ = "vector_record_768"
+    __table_args__ = (
+        UniqueConstraint(
+            "index_chunk_id",
+            "embedding_space_id",
+            "representation_kind",
+            name="uq_vector_record_768_chunk_space_representation",
+        ),
+        ForeignKeyConstraint(
+            ["kb_id", "index_chunk_id"],
+            ["index_chunk.kb_id", "index_chunk.id"],
+            name="fk_vector_record_768_same_kb_chunk",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "embedding_space_id"],
+            ["embedding_space.workspace_id", "embedding_space.id"],
+            name="fk_vector_record_768_same_workspace_embedding",
+        ),
+    )
+
+    id: Mapped[UUID] = uuid_primary_key()
+    workspace_id: Mapped[UUID] = mapped_column(
+        ForeignKey("workspace.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    kb_id: Mapped[UUID] = mapped_column(
+        ForeignKey("knowledge_base.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    index_chunk_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), nullable=False
+    )
+    embedding_space_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), nullable=False, index=True
+    )
+    representation_kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    embedding: Mapped[list[float]] = mapped_column(Vector(768), nullable=False)
+    created_at: Mapped[datetime] = created_timestamp()
+
+
 class ChatSession(Base):
     __tablename__ = "chat_session"
     __table_args__ = (

@@ -51,6 +51,9 @@ def parse_environment_integer(value: object) -> object:
 EnabledFlag = Annotated[Literal[True], BeforeValidator(parse_environment_boolean)]
 DisabledFlag = Annotated[Literal[False], BeforeValidator(parse_environment_boolean)]
 FixedDimension = Annotated[Literal[1024], BeforeValidator(parse_environment_integer)]
+FixedCrossModalDimension = Annotated[
+    Literal[768], BeforeValidator(parse_environment_integer)
+]
 FixedBatchSize = Annotated[Literal[10], BeforeValidator(parse_environment_integer)]
 FixedMaxUploadBytes = Annotated[
     Literal[10_485_760], BeforeValidator(parse_environment_integer)
@@ -455,25 +458,31 @@ class MultimodalEmbeddingProviderSettings(ProviderSettings):
     logical_endpoint_identity: Literal[
         "alibaba-model-studio-beijing-multimodal-embedding"
     ] = "alibaba-model-studio-beijing-multimodal-embedding"
-    model: Literal["qwen3-vl-embedding"] = "qwen3-vl-embedding"
-    resolved_model: Literal["qwen3-vl-embedding"] = "qwen3-vl-embedding"
-    model_version: str = "qwen3-vl-embedding"
-    dimension: FixedDimension = 1024
+    model: Literal["tongyi-embedding-vision-flash-2026-03-06"] = (
+        "tongyi-embedding-vision-flash-2026-03-06"
+    )
+    resolved_model: Literal["tongyi-embedding-vision-flash-2026-03-06"] = (
+        "tongyi-embedding-vision-flash-2026-03-06"
+    )
+    model_version: Literal["tongyi-embedding-vision-flash-2026-03-06"] = (
+        "tongyi-embedding-vision-flash-2026-03-06"
+    )
+    dimension: FixedCrossModalDimension = 768
     metric: Literal["cosine"] = "cosine"
     vector_data_type: Literal["float32"] = "float32"
     normalization: Literal["l2"] = "l2"
-    max_batch_size: Annotated[int, Field(ge=1, le=5)] = 5
+    max_batch_size: Annotated[int, Field(ge=1, le=20)] = 20
     text_query_template: Literal["query: {text}"] = "query: {text}"
-    image_resize_policy: Literal["provider_bounded_no_crop_v1"] = (
-        "provider_bounded_no_crop_v1"
+    image_resize_policy: Literal["provider_res_level_1_no_crop_v1"] = (
+        "provider_res_level_1_no_crop_v1"
     )
     color_space: Literal["RGB"] = "RGB"
-    configuration_fingerprint: str = (
-        "sha256:56d9dcad7d77fb00dfa9666758e432054296ade6db6482d5ee9b7933d1890cc0"
-    )
-    compatibility_fingerprint: str = (
-        "sha256:82045d1f5a15369697a8b8c21a6a95ba058d356c62116b34ac924bf1cf4779e8"
-    )
+    configuration_fingerprint: Literal[
+        "sha256:a3c9bcf7f049967db37f8bb59bb16504a0f371a14d0adfc793338d0eeecd856b"
+    ] = "sha256:a3c9bcf7f049967db37f8bb59bb16504a0f371a14d0adfc793338d0eeecd856b"
+    compatibility_fingerprint: Literal[
+        "sha256:953af16a5423f52cfdb65efb499a7181212be4760636f9a4ef428a959d9d9da2"
+    ] = "sha256:953af16a5423f52cfdb65efb499a7181212be4760636f9a4ef428a959d9d9da2"
 
 
 class ModelProviderSettings(StrictSettingsModel):

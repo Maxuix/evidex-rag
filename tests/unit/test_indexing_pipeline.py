@@ -73,6 +73,9 @@ class IndexingDomainTests(unittest.TestCase):
     def test_fixed_space_and_output_validation_fail_closed(self) -> None:
         expected = _embedding()
         adapter = FixedPgVectorSpace(expected)
+        cross_modal = FixedPgVectorSpace(_multimodal_embedding())
+        self.assertEqual(adapter.physical_table, "vector_record_1024")
+        self.assertEqual(cross_modal.physical_table, "vector_record_768")
         adapter.require_compatible(expected, expected)
         with self.assertRaises(IndexingExecutionError) as mismatch:
             adapter.require_compatible(
@@ -536,14 +539,14 @@ class _MultimodalProvider:
     def __init__(self, factory) -> None:
         self.factory = factory
         self.embedding_space = _multimodal_embedding()
-        self.max_batch_size = 5
+        self.max_batch_size = 20
         self.image_calls = 0
 
     async def embed_images(self, images):
         if self.factory.active:
             raise AssertionError("provider ran inside transaction")
         self.image_calls += 1
-        return EmbeddingBatch(tuple(_vector() for _ in images))
+        return EmbeddingBatch(tuple(_multimodal_vector() for _ in images))
 
 
 class _AssetStore:
@@ -653,12 +656,17 @@ def _multimodal_embedding():
     return replace(
         _embedding(),
         endpoint_identity="alibaba-model-studio-beijing-multimodal-embedding",
-        requested_model="qwen3-vl-embedding",
-        resolved_model="qwen3-vl-embedding",
-        model_version="qwen3-vl-embedding",
+        requested_model="tongyi-embedding-vision-flash-2026-03-06",
+        resolved_model="tongyi-embedding-vision-flash-2026-03-06",
+        model_version="tongyi-embedding-vision-flash-2026-03-06",
+        dimension=768,
         configuration_fingerprint="sha256:mm-config",
         compatibility_fingerprint="sha256:mm-compat",
     )
+
+
+def _multimodal_vector():
+    return (1.0,) + (0.0,) * 767
 
 
 _CURRENT_FACTORY = None

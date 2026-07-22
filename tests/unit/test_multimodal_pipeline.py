@@ -14,7 +14,7 @@ import httpx
 from docx import Document
 from PIL import Image
 
-from rag_kb.adapters import LocalIndexAssetStore, QwenMultimodalEmbeddingAdapter
+from rag_kb.adapters import LocalIndexAssetStore, TongyiVisionEmbeddingAdapter
 from apps.api.routers.assets import read_index_asset
 from rag_kb.auth import AuthContext, SingleWorkspaceAccessPolicy
 from rag_kb.adapters.parser.docx_pictures import partition_docx_multimodal
@@ -72,10 +72,10 @@ def _docx() -> bytes:
 def _space() -> EmbeddingSpaceDefinition:
     return EmbeddingSpaceDefinition(
         provider_identity="alibaba-cloud-model-studio-qwen",
-        requested_model="qwen3-vl-embedding",
-        resolved_model="qwen3-vl-embedding",
-        model_version="qwen3-vl-embedding",
-        dimension=1024,
+        requested_model="tongyi-embedding-vision-flash-2026-03-06",
+        resolved_model="tongyi-embedding-vision-flash-2026-03-06",
+        model_version="tongyi-embedding-vision-flash-2026-03-06",
+        dimension=768,
         distance_metric="cosine",
         vector_data_type="float32",
         normalization="l2",
@@ -218,7 +218,7 @@ class IndexAssetStoreTests(unittest.IsolatedAsyncioTestCase):
 class MultimodalEmbeddingAdapterTests(unittest.IsolatedAsyncioTestCase):
     async def test_text_and_image_inputs_are_separate_and_response_is_validated(self) -> None:
         requests: list[dict] = []
-        vector = [0.0] * 1024
+        vector = [0.0] * 768
         vector[0] = 1.0
 
         async def handler(request: httpx.Request) -> httpx.Response:
@@ -238,11 +238,11 @@ class MultimodalEmbeddingAdapterTests(unittest.IsolatedAsyncioTestCase):
             )
 
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-            adapter = QwenMultimodalEmbeddingAdapter(
+            adapter = TongyiVisionEmbeddingAdapter(
                 endpoint="https://provider.invalid/embeddings",
                 api_key="test-only",
                 embedding_space=_space(),
-                max_batch_size=5,
+                max_batch_size=20,
                 timeout_seconds=2,
                 max_retries=0,
                 max_concurrency=1,
@@ -256,21 +256,25 @@ class MultimodalEmbeddingAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(text.vectors[0][0], 1.0)
         self.assertEqual(image.vectors[0][0], 1.0)
         self.assertEqual(requests[0]["input"]["contents"], [{"text": "query: diagram"}])
+        self.assertEqual(
+            requests[0]["parameters"],
+            {"dimension": 768, "output_type": "dense", "res_level": 1},
+        )
         self.assertTrue(requests[1]["input"]["contents"][0]["image"].startswith("data:image/png;base64,"))
 
     async def test_non_normalized_provider_vector_is_rejected(self) -> None:
         async def handler(_: httpx.Request) -> httpx.Response:
             return httpx.Response(
                 200,
-                json={"output": {"embeddings": [{"index": 0, "embedding": [1.0] * 1024}]}},
+                json={"output": {"embeddings": [{"index": 0, "embedding": [1.0] * 768}]}},
             )
 
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-            adapter = QwenMultimodalEmbeddingAdapter(
+            adapter = TongyiVisionEmbeddingAdapter(
                 endpoint="https://provider.invalid/embeddings",
                 api_key="test-only",
                 embedding_space=_space(),
-                max_batch_size=5,
+                max_batch_size=20,
                 timeout_seconds=2,
                 max_retries=0,
                 max_concurrency=1,

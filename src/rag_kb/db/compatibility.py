@@ -8,12 +8,14 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 
-EXPECTED_REVISION = "0008_multimodal_index_units"
+EXPECTED_REVISION = "0009_cross_modal_vector_768"
 EXPECTED_POSTGRES_MAJOR = 18
 EXPECTED_PGVECTOR_VERSION = "0.8.2"
-EXPECTED_VECTOR_TABLE = "vector_record_1024"
 EXPECTED_VECTOR_COLUMN = "embedding"
-EXPECTED_VECTOR_TYPE = "vector(1024)"
+EXPECTED_VECTOR_TYPES = {
+    "vector_record_768": "vector(768)",
+    "vector_record_1024": "vector(1024)",
+}
 EXPECTED_APPLICATION_TABLES = frozenset(
     {
         "chat_message",
@@ -40,6 +42,7 @@ EXPECTED_APPLICATION_TABLES = frozenset(
         "source_change",
         "source_file_cleanup",
         "vector_record_1024",
+        "vector_record_768",
         "workspace",
     }
 )
@@ -55,6 +58,7 @@ class DatabaseCompatibility:
     pgvector_version: str
     migration_revision: str
     vector_type: str
+    cross_modal_vector_type: str
     application_table_count: int
 
 
@@ -102,26 +106,27 @@ async def validate_database_compatibility(
             f"application tables differ; missing={missing}, unexpected={unexpected}"
         )
 
-    vector_type = await connection.scalar(
-        text(
-            "SELECT format_type(attribute.atttypid, attribute.atttypmod) "
-            "FROM pg_attribute attribute "
-            "JOIN pg_class relation ON relation.oid = attribute.attrelid "
-            "JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace "
-            "WHERE namespace.nspname = 'public' "
-            "AND relation.relname = :table_name "
-            "AND attribute.attname = :column_name "
-            "AND NOT attribute.attisdropped"
-        ),
-        {
-            "table_name": EXPECTED_VECTOR_TABLE,
-            "column_name": EXPECTED_VECTOR_COLUMN,
-        },
-    )
-    if vector_type != EXPECTED_VECTOR_TYPE:
-        raise DatabaseCompatibilityError(
-            f"expected {EXPECTED_VECTOR_TYPE}, found {vector_type}"
+    vector_types: dict[str, str] = {}
+    for table_name, expected_type in EXPECTED_VECTOR_TYPES.items():
+        vector_type = await connection.scalar(
+            text(
+                "SELECT format_type(attribute.atttypid, attribute.atttypmod) "
+                "FROM pg_attribute attribute "
+                "JOIN pg_class relation ON relation.oid = attribute.attrelid "
+                "JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace "
+                "WHERE namespace.nspname = 'public' "
+                "AND relation.relname = :table_name "
+                "AND attribute.attname = :column_name "
+                "AND NOT attribute.attisdropped"
+            ),
+            {"table_name": table_name, "column_name": EXPECTED_VECTOR_COLUMN},
         )
+        if vector_type != expected_type:
+            raise DatabaseCompatibilityError(
+                f"expected {table_name}.{EXPECTED_VECTOR_COLUMN} "
+                f"to be {expected_type}, found {vector_type}"
+            )
+        vector_types[table_name] = vector_type
 
     has_cosine_operator = await connection.scalar(
         text(
@@ -142,10 +147,9 @@ async def validate_database_compatibility(
             "SELECT EXISTS ("
             "SELECT 1 FROM pg_indexes "
             "WHERE schemaname = 'public' "
-            "AND tablename = :table_name "
+            "AND tablename IN ('vector_record_768', 'vector_record_1024') "
             "AND indexdef ILIKE '% USING hnsw %')"
-        ),
-        {"table_name": EXPECTED_VECTOR_TABLE},
+        )
     )
     if has_hnsw_index:
         raise DatabaseCompatibilityError("HNSW must remain disabled in P1A")
@@ -154,6 +158,7 @@ async def validate_database_compatibility(
         postgres_major=postgres_major,
         pgvector_version=pgvector_version,
         migration_revision=migration_revision,
-        vector_type=vector_type,
+        vector_type=vector_types["vector_record_1024"],
+        cross_modal_vector_type=vector_types["vector_record_768"],
         application_table_count=len(actual_tables),
     )

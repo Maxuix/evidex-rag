@@ -256,6 +256,12 @@ class SettingsTests(unittest.TestCase):
 
         self.assertEqual(settings.database.runtime_role, "rag_kb_runtime")
         self.assertEqual(settings.model_provider.chat.model, "deepseek-v4-flash")
+        assert settings.model_provider.multimodal_embedding is not None
+        self.assertEqual(
+            settings.model_provider.multimodal_embedding.model,
+            "tongyi-embedding-vision-flash-2026-03-06",
+        )
+        self.assertEqual(settings.model_provider.multimodal_embedding.dimension, 768)
 
     def test_non_development_and_non_loopback_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

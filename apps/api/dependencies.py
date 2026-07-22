@@ -13,7 +13,7 @@ from rag_kb.adapters import (
     LocalFileStore,
     LocalIndexAssetStore,
     PgVectorStore,
-    QwenMultimodalEmbeddingAdapter,
+    TongyiVisionEmbeddingAdapter,
 )
 from rag_kb.config import (
     Settings,
@@ -66,7 +66,7 @@ class ApiDependencies:
     file_admission_service: FileAdmissionService
     indexing_job_service: IndexingJobService
     embedding_provider: EmbeddingModelAdapter
-    multimodal_embedding_provider: QwenMultimodalEmbeddingAdapter | None
+    multimodal_embedding_provider: TongyiVisionEmbeddingAdapter | None
     vector_store: PgVectorStore
     retrieval_service: RetrievalService
     chat_service: ChatService
@@ -126,7 +126,7 @@ def build_api_dependencies(
     if multimodal_settings is not None:
         assert resolved_settings.file_store.asset_staging_path is not None
         assert resolved_settings.file_store.asset_final_path is not None
-        multimodal_embedding_provider = QwenMultimodalEmbeddingAdapter(
+        multimodal_embedding_provider = TongyiVisionEmbeddingAdapter(
             endpoint=str(multimodal_settings.base_url),
             api_key=multimodal_settings.api_key.get_secret_value(),
             embedding_space=embedding_space_definition(multimodal_settings),

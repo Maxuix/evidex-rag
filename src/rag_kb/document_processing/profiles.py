@@ -48,6 +48,7 @@ MULTIMODAL_ENRICHMENT_CONFIG = {
 
 MULTIMODAL_REPRESENTATION_CONFIG = {
     "profile": "multimodal_representations_v1",
+    "embedding": "tongyi_vision_flash_20260306_independent_768_v1",
     "text": {"required": ["text"]},
     "image": {"required": ["native_image"], "optional": ["caption_text", "ocr_text"]},
     "table": {"required": ["table_text"], "optional": ["table_image"]},

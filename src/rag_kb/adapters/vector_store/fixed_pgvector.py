@@ -1,4 +1,4 @@
-"""Resolve the one migration-created P1A vector space without runtime DDL."""
+"""Resolve migration-created vector spaces through a compile-time allowlist."""
 
 from __future__ import annotations
 
@@ -13,19 +13,29 @@ from rag_kb.domain import (
 
 
 class FixedPgVectorSpace:
-    physical_table = "vector_record_1024"
-    dimension = 1024
     metric = "cosine"
     vector_data_type = "float32"
+    _TABLE_BY_DIMENSION = {
+        768: "vector_record_768",
+        1024: "vector_record_1024",
+    }
 
     def __init__(self, configured: EmbeddingSpaceDefinition) -> None:
         if (
-            configured.dimension != self.dimension
+            configured.dimension not in self._TABLE_BY_DIMENSION
             or configured.distance_metric != self.metric
             or configured.vector_data_type != self.vector_data_type
         ):
-            raise ValueError("configured embedding space is not the fixed P1A space")
+            raise ValueError("configured embedding space is not an allowed fixed space")
         self._configured = configured
+
+    @property
+    def dimension(self) -> int:
+        return self._configured.dimension
+
+    @property
+    def physical_table(self) -> str:
+        return self._TABLE_BY_DIMENSION[self.dimension]
 
     @property
     def configured_space(self) -> EmbeddingSpaceDefinition:

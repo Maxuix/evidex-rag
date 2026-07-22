@@ -10,9 +10,7 @@ from rag_kb.adapters.model_api.langchain_chat import LangChainChatModelAdapter
 from rag_kb.adapters.model_api.langchain_embeddings import (
     LangChainEmbeddingModelAdapter,
 )
-from rag_kb.adapters.model_api.multimodal_embeddings import (
-    QwenMultimodalEmbeddingAdapter,
-)
+from rag_kb.adapters.model_api.multimodal_embeddings import TongyiVisionEmbeddingAdapter
 
 __all__ = [
     "ChatModelAdapter",
@@ -21,5 +19,5 @@ __all__ = [
     "LangChainChatModelAdapter",
     "LangChainEmbeddingModelAdapter",
     "MultimodalEmbeddingAdapter",
-    "QwenMultimodalEmbeddingAdapter",
+    "TongyiVisionEmbeddingAdapter",
 ]

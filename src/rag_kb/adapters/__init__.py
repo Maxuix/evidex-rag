@@ -16,7 +16,7 @@ from rag_kb.adapters.model_api import (
     LangChainChatModelAdapter,
     LangChainEmbeddingModelAdapter,
     MultimodalEmbeddingAdapter,
-    QwenMultimodalEmbeddingAdapter,
+    TongyiVisionEmbeddingAdapter,
 )
 from rag_kb.adapters.vector_store import FixedPgVectorSpace, PgVectorStore, VectorStore
 
@@ -30,7 +30,7 @@ __all__ = [
     "LangChainEmbeddingModelAdapter",
     "IndexAssetStore",
     "MultimodalEmbeddingAdapter",
-    "QwenMultimodalEmbeddingAdapter",
+    "TongyiVisionEmbeddingAdapter",
     "LocalFileStore",
     "LocalIndexAssetStore",
     "PgVectorStore",
