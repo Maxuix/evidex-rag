@@ -146,6 +146,11 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
             )
         finally:
             await connection.close()
+        self.assertEqual(state["ready_candidates"], 0)
+        self.assertEqual(state["serving"], 2)
+        self.assertEqual(state["completed_jobs"], 2)
+        self.assertEqual(state["chunks"], state["vectors"])
+        self.assertTrue(state["dimensions_valid"])
 
     async def test_semantic_plan_is_persisted_and_reused_after_final_failure(
         self,
@@ -193,16 +198,11 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
             tuple(facts),
             (1, result.chunk_count, result.chunk_count),
         )
-        self.assertEqual(state["ready_candidates"], 0)
-        self.assertEqual(state["serving"], 2)
-        self.assertEqual(state["completed_jobs"], 2)
-        self.assertEqual(state["chunks"], state["vectors"])
-        self.assertTrue(state["dimensions_valid"])
 
     async def test_partial_provider_failure_is_durable_and_replay_converges(self) -> None:
         kb = await self._create_kb()
         uploaded = await self._upload(
-            kb.id, "large.txt", "text/plain", b"a" * 2501
+            kb.id, "large.txt", "text/plain", b"word " * 1000
         )
         provider = _Provider(max_batch_size=1, fail_call=2)
         pipeline = self._pipeline(provider)
@@ -773,8 +773,11 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 INSERT INTO index_chunk(
                     id, workspace_id, kb_id, indexed_document_version_id, ordinal,
                     content, content_hash, token_count, source_location, hierarchy,
-                    source_metadata
-                ) VALUES ($1, $2, $3, $4, 0, 'conflict', $5, 8, '{}', '{}', '{}')
+                    source_metadata, unit_key, modality
+                ) VALUES (
+                    $1, $2, $3, $4, 0, 'conflict', $5, 8, '{}', '{}', '{}',
+                    'conflicting-unit', 'text'
+                )
                 """,
                 uuid4(),
                 WORKSPACE,

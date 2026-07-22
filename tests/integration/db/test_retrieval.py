@@ -461,6 +461,17 @@ class ExactRetrievalDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 )
                 await connection.execute(
                     """
+                    INSERT INTO index_revision_embedding_space (
+                        workspace_id, index_revision_id, role,
+                        embedding_space_id, required, retrieval_weight_micros
+                    ) VALUES ($1, $2, 'text_retrieval', $3, true, 1000000)
+                    """,
+                    workspace_id,
+                    revision_id,
+                    embedding_space_id,
+                )
+                await connection.execute(
+                    """
                     UPDATE knowledge_base
                        SET active_index_revision_id = $1, provisioned_at = now()
                      WHERE id = $2
@@ -485,18 +496,31 @@ class ExactRetrievalDatabaseTests(unittest.IsolatedAsyncioTestCase):
     ) -> UUID:
         connection = await asyncpg.connect(MIGRATION_DSN)
         try:
-            return await connection.fetchval(
-                """
-                INSERT INTO index_revision (
-                    workspace_id, kb_id, embedding_space_id, status,
-                    source_snapshot_seq, parser_config, chunking_config
-                ) VALUES ($1, $2, $3, $4, 0, '{}', '{}') RETURNING id
-                """,
-                foundation.workspace_id,
-                foundation.kb_id,
-                foundation.embedding_space_id,
-                status,
-            )
+            async with connection.transaction():
+                revision_id = await connection.fetchval(
+                    """
+                    INSERT INTO index_revision (
+                        workspace_id, kb_id, embedding_space_id, status,
+                        source_snapshot_seq, parser_config, chunking_config
+                    ) VALUES ($1, $2, $3, $4, 0, '{}', '{}') RETURNING id
+                    """,
+                    foundation.workspace_id,
+                    foundation.kb_id,
+                    foundation.embedding_space_id,
+                    status,
+                )
+                await connection.execute(
+                    """
+                    INSERT INTO index_revision_embedding_space (
+                        workspace_id, index_revision_id, role,
+                        embedding_space_id, required, retrieval_weight_micros
+                    ) VALUES ($1, $2, 'text_retrieval', $3, true, 1000000)
+                    """,
+                    foundation.workspace_id,
+                    revision_id,
+                    foundation.embedding_space_id,
+                )
+            return revision_id
         finally:
             await connection.close()
 
@@ -652,11 +676,11 @@ class ExactRetrievalDatabaseTests(unittest.IsolatedAsyncioTestCase):
             INSERT INTO index_chunk (
                 id, workspace_id, kb_id, indexed_document_version_id,
                 ordinal, content, content_hash, token_count,
-                source_location, hierarchy, source_metadata
+                source_location, hierarchy, source_metadata, unit_key, modality
             ) VALUES (
                 $1, $2, $3, $4, 0, $5, $6, 2,
                 '{"line_start": 1, "line_end": 1}', '{}',
-                '{"filename": "fixture.txt"}'
+                '{"filename": "fixture.txt"}', $7, 'text'
             )
             """,
             chunk_id,
@@ -665,6 +689,7 @@ class ExactRetrievalDatabaseTests(unittest.IsolatedAsyncioTestCase):
             indexed_id,
             f"evidence-{chunk_id}",
             chunk_id.hex.ljust(64, "0")[:64],
+            f"retrieval:{chunk_id}",
         )
         await connection.execute(
             """

@@ -330,8 +330,12 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
                 """
                 INSERT INTO index_chunk (
                     workspace_id, kb_id, indexed_document_version_id, ordinal,
-                    content, content_hash, token_count, source_location
-                ) VALUES ($1, $2, $3, 0, 'test', $4, 1, '{}'::jsonb)
+                    content, content_hash, token_count, source_location,
+                    unit_key, modality
+                ) VALUES (
+                    $1, $2, $3, 0, 'test', $4, 1, '{}'::jsonb,
+                    'schema-test', 'text'
+                )
                 RETURNING id
                 """,
                 workspace_id,

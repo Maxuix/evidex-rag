@@ -981,9 +981,10 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
                             (id, workspace_id, kb_id,
                              indexed_document_version_id, ordinal, content,
                              content_hash, token_count, source_location,
-                             hierarchy, source_metadata)
+                             hierarchy, source_metadata, unit_key, modality)
                         VALUES ($1, $2, $3, $4, $5, $6, $7, 4,
-                                CAST($8 AS jsonb), '{}'::jsonb, '{}'::jsonb)
+                                CAST($8 AS jsonb), '{}'::jsonb, '{}'::jsonb,
+                                $9, 'text')
                         """,
                         chunk_id,
                         WORKSPACE,
@@ -993,6 +994,7 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
                         content,
                         str(ordinal) * 64,
                         json.dumps({"paragraph": ordinal + 1}),
+                        f"citation:{ordinal}",
                     )
         finally:
             await connection.close()
