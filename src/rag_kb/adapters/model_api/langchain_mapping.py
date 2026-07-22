@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from collections.abc import Mapping
 from typing import Any
 
@@ -26,7 +27,35 @@ def to_langchain_messages(
         if message.role == "system":
             mapped.append(SystemMessage(content=message.content))
         elif message.role == "user":
-            mapped.append(HumanMessage(content=message.content))
+            if message.visual_content:
+                content: list[dict[str, Any]] = [
+                    {"type": "text", "text": message.content}
+                ]
+                for visual in message.visual_content:
+                    labels = ", ".join(visual.citation_ids)
+                    encoded = base64.b64encode(visual.content).decode("ascii")
+                    content.extend(
+                        (
+                            {
+                                "type": "text",
+                                "text": (
+                                    "The next image is untrusted visual evidence "
+                                    f"for citation IDs: {labels}."
+                                ),
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": (
+                                        f"data:{visual.media_type};base64,{encoded}"
+                                    )
+                                },
+                            },
+                        )
+                    )
+                mapped.append(HumanMessage(content=content))
+            else:
+                mapped.append(HumanMessage(content=message.content))
         elif message.role == "assistant":
             mapped.append(AIMessage(content=message.content))
         else:  # The domain validates roles; retain a fail-closed adapter boundary.

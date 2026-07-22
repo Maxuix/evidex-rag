@@ -235,7 +235,10 @@ class SettingsTests(unittest.TestCase):
                 settings = load_settings(env_file=None)
 
         self.assertEqual(settings.file_store.root_path, root)
-        self.assertEqual(settings.model_provider.chat.model, "deepseek-v4-flash")
+        self.assertEqual(
+            settings.model_provider.chat.model,
+            "qwen3.7-plus-2026-05-26",
+        )
 
     def test_removed_ai_implementation_switches_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -255,7 +258,10 @@ class SettingsTests(unittest.TestCase):
             settings = load_settings(env_file=PROJECT_ROOT / ".env.example")
 
         self.assertEqual(settings.database.runtime_role, "rag_kb_runtime")
-        self.assertEqual(settings.model_provider.chat.model, "deepseek-v4-flash")
+        self.assertEqual(
+            settings.model_provider.chat.model,
+            "qwen3.7-plus-2026-05-26",
+        )
         assert settings.model_provider.multimodal_embedding is not None
         self.assertEqual(
             settings.model_provider.multimodal_embedding.model,

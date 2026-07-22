@@ -301,6 +301,13 @@ def chat_model_configuration(settings: Any) -> dict[str, Any]:
         "temperature": settings.temperature,
         "max_tokens": settings.max_tokens,
         "structured_output_mode": settings.structured_output_mode,
+        "thinking_enabled": settings.thinking_enabled,
+        "vision_enabled": settings.vision_enabled,
+        "max_visual_images": settings.max_visual_images,
+        "max_visual_image_bytes": settings.max_visual_image_bytes,
+        "max_visual_total_bytes": settings.max_visual_total_bytes,
+        "max_visual_pixels": settings.max_visual_pixels,
+        "visual_media_profile": settings.visual_media_profile,
         "configuration_fingerprint": settings.configuration_fingerprint,
         "capability_fingerprint": settings.capability_fingerprint,
     }

@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
+import hashlib
+import re
 from types import MappingProxyType
 from typing import Any
 from uuid import UUID
@@ -163,6 +165,38 @@ class ChatModelCallRecord:
         ):
             raise ValueError("model call usage values must be non-negative integers")
         object.__setattr__(self, "usage", MappingProxyType(dict(self.usage)))
+
+
+@dataclass(frozen=True, slots=True)
+class ChatModelVisualContent:
+    citation_ids: tuple[str, ...]
+    asset_id: UUID
+    media_type: str
+    checksum_sha256: str
+    content: bytes
+    width: int
+    height: int
+
+    def __post_init__(self) -> None:
+        if (
+            not self.citation_ids
+            or len(self.citation_ids) != len(set(self.citation_ids))
+            or any(
+                re.fullmatch(r"cite_[1-9][0-9]*", value) is None
+                for value in self.citation_ids
+            )
+        ):
+            raise ValueError("visual content citation identifiers are invalid")
+        if self.media_type not in {"image/jpeg", "image/png", "image/webp"}:
+            raise ValueError("visual content media type is unsupported")
+        if (
+            re.fullmatch(r"[0-9a-f]{64}", self.checksum_sha256) is None
+            or not self.content
+            or hashlib.sha256(self.content).hexdigest() != self.checksum_sha256
+        ):
+            raise ValueError("visual content checksum is invalid")
+        if self.width < 1 or self.height < 1:
+            raise ValueError("visual content dimensions must be positive")
 
 
 @dataclass(frozen=True, slots=True)
@@ -337,11 +371,24 @@ class ChatAnsweringState:
     assessment: EvidenceAssessment
     draft: AnswerDraftCandidate | None = None
     model_calls: tuple[ChatModelCallRecord, ...] = ()
+    visual_content: tuple[ChatModelVisualContent, ...] = ()
     validated: ValidatedAnswer | None = None
     rendered: RenderedAnswer | None = None
     validation: AnswerValidationRecord | None = None
 
     def __post_init__(self) -> None:
+        visual_citations = [
+            citation_id
+            for item in self.visual_content
+            for citation_id in item.citation_ids
+        ]
+        if len(visual_citations) != len(set(visual_citations)):
+            raise ValueError("visual evidence citations must be unique")
+        if any(
+            citation_id not in self.assessment.usable_citation_ids
+            for citation_id in visual_citations
+        ):
+            raise ValueError("visual evidence must be admitted before model input")
         completed = (self.validated, self.rendered, self.validation)
         if any(value is not None for value in completed) and any(
             value is None for value in completed

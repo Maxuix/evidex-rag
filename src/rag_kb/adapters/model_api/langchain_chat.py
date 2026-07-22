@@ -45,6 +45,10 @@ class LangChainChatModelAdapter:
         temperature: float = 0.1,
         max_tokens: int = 2048,
         structured_output_mode: str = "json_object",
+        thinking_enabled: bool = False,
+        max_visual_images: int = 4,
+        max_visual_image_bytes: int = 5 * 1024 * 1024,
+        max_visual_total_bytes: int = 12 * 1024 * 1024,
         chat_model: BaseChatModel | None = None,
     ) -> None:
         if not api_key or not model:
@@ -55,12 +59,21 @@ class LangChainChatModelAdapter:
             raise ValueError("chat generation limits are invalid")
         if structured_output_mode not in {"json_object", "json_schema"}:
             raise ValueError("unsupported structured output mode")
+        if (
+            max_visual_images < 1
+            or max_visual_image_bytes < 1
+            or max_visual_total_bytes < max_visual_image_bytes
+        ):
+            raise ValueError("chat visual input limits are invalid")
         self._timeout_seconds = timeout_seconds
         self._semaphore = asyncio.Semaphore(max_concurrency)
         self._structured_output_method = (
             "json_schema" if structured_output_mode == "json_schema" else "json_mode"
         )
         self._structured_models: dict[tuple[object, int | None], Any] = {}
+        self._max_visual_images = max_visual_images
+        self._max_visual_image_bytes = max_visual_image_bytes
+        self._max_visual_total_bytes = max_visual_total_bytes
         self._model = chat_model or ChatOpenAI(
             model=model,
             api_key=api_key,
@@ -70,7 +83,10 @@ class LangChainChatModelAdapter:
             temperature=temperature,
             include_response_headers=True,
             use_responses_api=False,
-            extra_body={"max_tokens": max_tokens},
+            extra_body={
+                "max_tokens": max_tokens,
+                "enable_thinking": thinking_enabled,
+            },
             model_kwargs={"response_format": {"type": "json_object"}},
         )
 
@@ -79,6 +95,24 @@ class LangChainChatModelAdapter:
             raise ChatModelExecutionError(
                 ErrorCode.CHAT_RESPONSE_INVALID,
                 diagnostic={"check": "request_content_size"},
+            )
+        visual_content = tuple(
+            item
+            for message in request.messages
+            for item in message.visual_content
+        )
+        if (
+            len(visual_content) > self._max_visual_images
+            or any(
+                len(item.content) > self._max_visual_image_bytes
+                for item in visual_content
+            )
+            or sum(len(item.content) for item in visual_content)
+            > self._max_visual_total_bytes
+        ):
+            raise ChatModelExecutionError(
+                ErrorCode.CHAT_RESPONSE_INVALID,
+                diagnostic={"check": "request_visual_size"},
             )
         async with self._semaphore:
             try:

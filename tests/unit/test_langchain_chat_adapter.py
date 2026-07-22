@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import unittest
 from unittest.mock import patch
+from uuid import uuid4
 
 import httpx
 import openai
@@ -16,6 +18,7 @@ from rag_kb.domain import (
     ChatModelExecutionError,
     ChatModelMessage,
     ChatModelRequest,
+    ChatModelVisualContent,
     ChatOutputSchema,
     ErrorCode,
 )
@@ -99,7 +102,10 @@ class LangChainChatAdapterTests(unittest.IsolatedAsyncioTestCase):
 
         arguments = constructor.call_args.kwargs
         self.assertEqual(arguments["temperature"], 0.1)
-        self.assertEqual(arguments["extra_body"], {"max_tokens": 2048})
+        self.assertEqual(
+            arguments["extra_body"],
+            {"max_tokens": 2048, "enable_thinking": False},
+        )
 
     async def test_real_chatopenai_json_mode_round_trip_uses_public_api(self) -> None:
         def respond(request: httpx.Request) -> httpx.Response:
@@ -156,6 +162,109 @@ class LangChainChatAdapterTests(unittest.IsolatedAsyncioTestCase):
             response.content,
             '{"claims":[],"missing_aspects":[],"outcome":"answered"}',
         )
+
+    async def test_visual_content_maps_to_labeled_data_url_blocks(self) -> None:
+        content = b"validated-image"
+        visual = ChatModelVisualContent(
+            citation_ids=("cite_1",),
+            asset_id=uuid4(),
+            media_type="image/png",
+            checksum_sha256=hashlib.sha256(content).hexdigest(),
+            content=content,
+            width=20,
+            height=10,
+        )
+        model = _FakeChatModel(_message())
+
+        await _adapter(model).complete(
+            ChatModelRequest(
+                (ChatModelMessage("user", "payload", visual_content=(visual,)),)
+            )
+        )
+
+        mapped = model.calls[0][0]
+        self.assertIsInstance(mapped, HumanMessage)
+        blocks = mapped.content
+        self.assertEqual(blocks[0], {"type": "text", "text": "payload"})
+        self.assertIn("cite_1", blocks[1]["text"])
+        self.assertTrue(
+            blocks[2]["image_url"]["url"].startswith(
+                "data:image/png;base64,"
+            )
+        )
+
+    async def test_real_chatopenai_serializes_visual_structured_request(self) -> None:
+        content = b"validated-image"
+        visual = ChatModelVisualContent(
+            citation_ids=("cite_1",),
+            asset_id=uuid4(),
+            media_type="image/png",
+            checksum_sha256=hashlib.sha256(content).hexdigest(),
+            content=content,
+            width=20,
+            height=10,
+        )
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            payload = json.loads(request.content)
+            blocks = payload["messages"][0]["content"]
+            self.assertEqual(blocks[0], {"type": "text", "text": "answer"})
+            self.assertIn("cite_1", blocks[1]["text"])
+            self.assertTrue(
+                blocks[2]["image_url"]["url"].startswith(
+                    "data:image/png;base64,"
+                )
+            )
+            return httpx.Response(
+                200,
+                json={
+                    "id": "completion-visual",
+                    "object": "chat.completion",
+                    "created": 1,
+                    "model": "resolved-model",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {
+                                "role": "assistant",
+                                "content": (
+                                    '{"outcome":"answered","claims":[],'
+                                    '"missing_aspects":[]}'
+                                ),
+                            },
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {},
+                },
+            )
+
+        async_client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+        try:
+            model = ChatOpenAI(
+                model="configured-model",
+                api_key="probe-key",
+                base_url="https://provider.invalid/v1",
+                max_retries=0,
+                include_response_headers=True,
+                use_responses_api=False,
+                http_async_client=async_client,
+                model_kwargs={"response_format": {"type": "json_object"}},
+            )
+            response = await _adapter(model).complete(
+                ChatModelRequest(
+                    (
+                        ChatModelMessage(
+                            "user", "answer", visual_content=(visual,)
+                        ),
+                    ),
+                    output_schema=ChatOutputSchema.ANSWER_V1,
+                )
+            )
+        finally:
+            await async_client.aclose()
+
+        self.assertEqual(response.model, "resolved-model")
 
     async def test_length_finish_is_returned_as_invalid_wire_not_provider_outage(
         self,

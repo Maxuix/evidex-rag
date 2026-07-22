@@ -10,7 +10,11 @@ from types import MappingProxyType
 from typing import Any
 from uuid import UUID
 
-from rag_kb.domain.answering import ChatAnsweringState, ChatModelCallRecord
+from rag_kb.domain.answering import (
+    ChatAnsweringState,
+    ChatModelCallRecord,
+    ChatModelVisualContent,
+)
 from rag_kb.domain.errors import ErrorCode
 from rag_kb.domain.retrieval import EvidencePack
 from rag_kb.domain.memory import (
@@ -25,6 +29,7 @@ class ChatPipelinePhase(StrEnum):
     CONTEXTUALIZE_QUERY = "contextualize_query"
     RETRIEVE_EVIDENCE = "retrieve_evidence"
     ASSESS_EVIDENCE = "assess_evidence"
+    PREPARE_VISUAL_EVIDENCE = "prepare_visual_evidence"
     GENERATE_OR_REFUSE = "generate_or_refuse"
     VALIDATE_STRUCTURE = "validate_structure"
     PERSIST_RESULT = "persist_result"
@@ -118,12 +123,18 @@ class ChatPipelineState:
 class ChatModelMessage:
     role: str
     content: str
+    visual_content: tuple[ChatModelVisualContent, ...] = ()
 
     def __post_init__(self) -> None:
         if self.role not in {"system", "user", "assistant"}:
             raise ValueError("unsupported chat model message role")
         if not self.content:
             raise ValueError("chat model message content must not be empty")
+        if self.visual_content and self.role != "user":
+            raise ValueError("visual content is allowed only on user messages")
+        asset_ids = [item.asset_id for item in self.visual_content]
+        if len(asset_ids) != len(set(asset_ids)):
+            raise ValueError("chat model message visual assets must be unique")
 
 
 @dataclass(frozen=True, slots=True)

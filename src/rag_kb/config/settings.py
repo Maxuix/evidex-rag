@@ -76,6 +76,18 @@ FixedContextTurns = Annotated[Literal[6], BeforeValidator(parse_environment_inte
 FixedContextTokens = Annotated[
     Literal[4000], BeforeValidator(parse_environment_integer)
 ]
+FixedVisualImageCount = Annotated[
+    Literal[4], BeforeValidator(parse_environment_integer)
+]
+FixedVisualImageBytes = Annotated[
+    Literal[5_242_880], BeforeValidator(parse_environment_integer)
+]
+FixedVisualTotalBytes = Annotated[
+    Literal[12_582_912], BeforeValidator(parse_environment_integer)
+]
+FixedVisualPixels = Annotated[
+    Literal[16_000_000], BeforeValidator(parse_environment_integer)
+]
 
 
 class StrictSettingsModel(BaseModel):
@@ -408,22 +420,37 @@ class ProviderSettings(StrictSettingsModel):
 
 
 class ChatProviderSettings(ProviderSettings):
-    logical_endpoint_identity: Literal["deepseek-official-chat"] = (
-        "deepseek-official-chat"
+    logical_endpoint_identity: Literal[
+        "alibaba-model-studio-beijing-chat"
+    ] = (
+        "alibaba-model-studio-beijing-chat"
     )
-    provider_identity: Literal["deepseek"] = "deepseek"
-    model: Literal["deepseek-v4-flash"] = "deepseek-v4-flash"
-    resolved_model: Literal["deepseek-v4-flash"] = "deepseek-v4-flash"
-    model_version: Literal["DeepSeek-V4-Flash"] = "DeepSeek-V4-Flash"
+    provider_identity: Literal["alibaba-cloud-model-studio-qwen"] = (
+        "alibaba-cloud-model-studio-qwen"
+    )
+    model: Literal["qwen3.7-plus-2026-05-26"] = "qwen3.7-plus-2026-05-26"
+    resolved_model: Literal["qwen3.7-plus-2026-05-26"] = (
+        "qwen3.7-plus-2026-05-26"
+    )
+    model_version: Literal["Qwen3.7-Plus 2026-05-26"] = (
+        "Qwen3.7-Plus 2026-05-26"
+    )
     temperature: Annotated[float, Field(ge=0.0, le=2.0)] = 0.1
     max_tokens: PositiveInt = 2048
     structured_output_mode: Literal["json_object"] = "json_object"
+    thinking_enabled: DisabledFlag = False
+    vision_enabled: EnabledFlag = True
+    max_visual_images: FixedVisualImageCount = 4
+    max_visual_image_bytes: FixedVisualImageBytes = 5_242_880
+    max_visual_total_bytes: FixedVisualTotalBytes = 12_582_912
+    max_visual_pixels: FixedVisualPixels = 16_000_000
+    visual_media_profile: Literal["jpeg_png_webp_v1"] = "jpeg_png_webp_v1"
     configuration_fingerprint: Literal[
-        "sha256:f65fee43dc8b5886c78ceb1116514e407d539d7f4b9378a8b8073e2de8620b04"
-    ] = "sha256:f65fee43dc8b5886c78ceb1116514e407d539d7f4b9378a8b8073e2de8620b04"
+        "sha256:a894828ecb4af8a4ceee7053dd9164e5f42245e2ae70dd5033ea203e8ea97e22"
+    ] = "sha256:a894828ecb4af8a4ceee7053dd9164e5f42245e2ae70dd5033ea203e8ea97e22"
     capability_fingerprint: Literal[
-        "sha256:b09e82393dc80d4326ce8bf5040025bf046e31e7828d0ecdec76c02aefe11d76"
-    ] = "sha256:b09e82393dc80d4326ce8bf5040025bf046e31e7828d0ecdec76c02aefe11d76"
+        "sha256:c24fb9b08baf600afc8f4610f88412ca5c7a2979890647e1512e7cedb8066279"
+    ] = "sha256:c24fb9b08baf600afc8f4610f88412ca5c7a2979890647e1512e7cedb8066279"
 
 
 class EmbeddingProviderSettings(ProviderSettings):

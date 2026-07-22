@@ -151,6 +151,13 @@ class ChatCreationContractTests(unittest.TestCase):
             temperature=0.1,
             max_tokens=2048,
             structured_output_mode="json_object",
+            thinking_enabled=False,
+            vision_enabled=True,
+            max_visual_images=4,
+            max_visual_image_bytes=5_242_880,
+            max_visual_total_bytes=12_582_912,
+            max_visual_pixels=16_000_000,
+            visual_media_profile="jpeg_png_webp_v1",
             configuration_fingerprint="sha256:configuration",
             capability_fingerprint="sha256:capability",
             base_url="https://secret-host.example/v1",
@@ -162,6 +169,8 @@ class ChatCreationContractTests(unittest.TestCase):
         self.assertEqual(snapshot["resolved_model"], "resolved")
         self.assertEqual(snapshot["temperature"], 0.1)
         self.assertEqual(snapshot["max_tokens"], 2048)
+        self.assertTrue(snapshot["vision_enabled"])
+        self.assertEqual(snapshot["max_visual_images"], 4)
         self.assertNotIn("base_url", snapshot)
         self.assertNotIn("api_key", snapshot)
         self.assertNotIn("timeout_seconds", snapshot)

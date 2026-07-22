@@ -42,6 +42,7 @@ class LangGraphRunner:
         structure_validator: ChatPipelineStep,
         result_persister: ChatPipelineStep,
         *,
+        visual_evidence_preparer: ChatPipelineStep | None = None,
         query_contextualizer: QueryContextualizer | None = None,
         deadline_seconds: float,
     ) -> None:
@@ -61,6 +62,10 @@ class LangGraphRunner:
                 ChatPipelinePhase.GENERATE_OR_REFUSE,
                 answer_generator,
             ),
+            "prepare_visual_evidence": (
+                ChatPipelinePhase.PREPARE_VISUAL_EVIDENCE,
+                visual_evidence_preparer or _PassThroughStep(),
+            ),
             "validate_structure": (
                 ChatPipelinePhase.VALIDATE_STRUCTURE,
                 structure_validator,
@@ -77,6 +82,7 @@ class LangGraphRunner:
                 "contextualize_query": self._contextualize_query,
                 "retrieve_evidence": self._retrieve_evidence,
                 "assess_evidence": self._assess_evidence,
+                "prepare_visual_evidence": self._prepare_visual_evidence,
                 "generate_or_refuse": self._generate_or_refuse,
                 "validate_structure": self._validate_structure,
                 "persist_result": self._persist_result,
@@ -158,6 +164,11 @@ class LangGraphRunner:
     async def _generate_or_refuse(self, graph: ChatGraphState) -> dict[str, object]:
         return await self._run_step(graph, "generate_or_refuse")
 
+    async def _prepare_visual_evidence(
+        self, graph: ChatGraphState
+    ) -> dict[str, object]:
+        return await self._run_step(graph, "prepare_visual_evidence")
+
     async def _validate_structure(self, graph: ChatGraphState) -> dict[str, object]:
         return await self._run_step(graph, "validate_structure")
 
@@ -210,3 +221,8 @@ class _OriginalOnlyContextualizer:
             context_hash=context.conversation_context.content_hash,
             rewrite_source=QueryRewriteSource.ORIGINAL,
         )
+
+
+class _PassThroughStep:
+    async def run(self, state: ChatPipelineState) -> ChatPipelineState:
+        return state

@@ -12,6 +12,7 @@ from rag_kb.domain import (
     ChatPipelineExecutionError,
     ChatRunLease,
     ErrorCode,
+    Evidence,
     EvidencePack,
     RetrievalStrategy,
     ContextualizedQuery,
@@ -111,6 +112,42 @@ class ChatExecutionServiceTests(unittest.IsolatedAsyncioTestCase):
             await retriever.retrieve(context)
 
         self.assertEqual(raised.exception.code, ErrorCode.CHAT_REVISION_MISMATCH)
+
+    async def test_native_image_only_evidence_is_retained_for_visual_preparation(
+        self,
+    ) -> None:
+        context = _context()
+        visual = Evidence(
+            rank=1,
+            index_chunk_id=uuid4(),
+            indexed_document_version_id=uuid4(),
+            document_id=uuid4(),
+            document_version_id=uuid4(),
+            index_revision_id=context.index_revision_id,
+            ordinal=0,
+            text="",
+            source_location={"page_number": 1},
+            hierarchy={},
+            source_metadata={},
+            score=0.5,
+            modality="image",
+            matched_representations=("native_image",),
+        )
+
+        class Retrieval:
+            async def retrieve(self, auth, request):
+                del auth
+                return EvidencePack(
+                    knowledge_base_id=request.knowledge_base_id,
+                    index_revision_id=context.index_revision_id,
+                    strategy=RetrievalStrategy.EXACT_VECTOR,
+                    evidence=(visual,),
+                )
+
+        retriever = ChatEvidenceRetriever(Retrieval())  # type: ignore[arg-type]
+        result = await retriever.retrieve(context)
+
+        self.assertEqual(result.evidence, (visual,))
 
 
 if __name__ == "__main__":

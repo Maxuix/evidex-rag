@@ -50,6 +50,7 @@ from rag_kb.services.chat_terminal import (
     ChatFailureSettlementService,
     ChatResultPersistenceStep,
 )
+from rag_kb.services.chat_visuals import VisualEvidencePreparationStep
 from rag_kb.services.evaluation import EvaluationPersistenceService
 from rag_kb.services.files import FileReconciliationService, SourceFileService
 from rag_kb.services.indexing import IndexingJobService
@@ -76,6 +77,7 @@ __all__ = [
     "ChatSseConnectionLimiter",
     "ChatSseSubscription",
     "ChatTerminalWatcher",
+    "VisualEvidencePreparationStep",
     "ChatMessage",
     "ChatRun",
     "ChatSession",

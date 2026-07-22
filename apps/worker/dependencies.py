@@ -53,8 +53,10 @@ from rag_kb.services import (
     ChatRunCoordinator,
     CosineEvidenceAssessmentStep,
     FileReconciliationService,
+    IndexAssetService,
     ParserLimits,
     RetrievalService,
+    VisualEvidencePreparationStep,
     build_content_services,
     embedding_space_definition,
 )
@@ -75,6 +77,7 @@ class WorkerDependencies:
     access_policy: SingleWorkspaceAccessPolicy
     file_store: LocalFileStore
     asset_store: LocalIndexAssetStore | None
+    index_asset_service: IndexAssetService | None
     reconciliation_service: FileReconciliationService
     document_processor: UnstructuredProcessor
     embedding_provider: EmbeddingModelAdapter
@@ -85,6 +88,7 @@ class WorkerDependencies:
     query_contextualizer: SessionQueryContextualizer
     session_context_selector: ConversationContextSelector
     evidence_assessor: CosineEvidenceAssessmentStep
+    visual_evidence_preparer: VisualEvidencePreparationStep
     answer_generator: AnswerGenerationStep
     structure_validator: AnswerStructureValidationStep
     result_persister: ChatResultPersistenceStep
@@ -207,6 +211,10 @@ def build_worker_dependencies(
         "max_concurrency": chat_settings.max_concurrency,
         "temperature": chat_settings.temperature,
         "max_tokens": chat_settings.max_tokens,
+        "thinking_enabled": chat_settings.thinking_enabled,
+        "max_visual_images": chat_settings.max_visual_images,
+        "max_visual_image_bytes": chat_settings.max_visual_image_bytes,
+        "max_visual_total_bytes": chat_settings.max_visual_total_bytes,
     }
     chat_model_adapter = LangChainChatModelAdapter(
         **chat_adapter_arguments,
@@ -260,6 +268,19 @@ def build_worker_dependencies(
     evidence_assessor = CosineEvidenceAssessmentStep(
         resolved_settings.retrieval.min_cosine_similarity,
         resolved_settings.retrieval.min_rerank_score,
+        resolved_settings.retrieval.cross_modal_min_cosine_similarity,
+    )
+    index_asset_service = (
+        IndexAssetService(unit_of_work, access_policy, asset_store)
+        if asset_store is not None
+        else None
+    )
+    visual_evidence_preparer = VisualEvidencePreparationStep(
+        index_asset_service,
+        max_images=chat_settings.max_visual_images,
+        max_image_bytes=chat_settings.max_visual_image_bytes,
+        max_total_bytes=chat_settings.max_visual_total_bytes,
+        max_pixels=chat_settings.max_visual_pixels,
     )
     answer_generator = AnswerGenerationStep(chat_model_adapter)
     structure_validator = AnswerStructureValidationStep(chat_model_adapter)
@@ -289,6 +310,7 @@ def build_worker_dependencies(
         answer_generator,
         structure_validator,
         result_persister,
+        visual_evidence_preparer=visual_evidence_preparer,
         query_contextualizer=query_contextualizer,
         deadline_seconds=poller.chat_deadline_seconds,
     )
@@ -341,6 +363,7 @@ def build_worker_dependencies(
         access_policy=access_policy,
         file_store=file_store,
         asset_store=asset_store,
+        index_asset_service=index_asset_service,
         reconciliation_service=FileReconciliationService(
             unit_of_work,
             content_services.documents,
@@ -361,6 +384,7 @@ def build_worker_dependencies(
         query_contextualizer=query_contextualizer,
         session_context_selector=session_context_selector,
         evidence_assessor=evidence_assessor,
+        visual_evidence_preparer=visual_evidence_preparer,
         answer_generator=answer_generator,
         structure_validator=structure_validator,
         result_persister=result_persister,

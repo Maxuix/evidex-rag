@@ -42,13 +42,21 @@ class CosineEvidenceAssessmentStep:
         self,
         min_cosine_similarity: float,
         min_rerank_score: float = 0.45,
+        cross_modal_min_cosine_similarity: float = 0.25,
     ) -> None:
         if not -1.0 <= min_cosine_similarity <= 1.0:
             raise ValueError("min_cosine_similarity must be between -1 and 1")
         if not 0.0 <= min_rerank_score <= 1.0:
             raise ValueError("min_rerank_score must be between 0 and 1")
+        if not -1.0 <= cross_modal_min_cosine_similarity <= 1.0:
+            raise ValueError(
+                "cross_modal_min_cosine_similarity must be between -1 and 1"
+            )
         self._min_cosine_similarity = float(min_cosine_similarity)
         self._min_rerank_score = float(min_rerank_score)
+        self._cross_modal_min_cosine_similarity = float(
+            cross_modal_min_cosine_similarity
+        )
 
     async def run(self, state: ChatPipelineState) -> ChatPipelineState:
         context, pack = _require_inputs(state, ChatPipelinePhase.ASSESS_EVIDENCE)
@@ -92,6 +100,16 @@ class CosineEvidenceAssessmentStep:
     def _usable(self, item) -> bool:
         if item.score is None:
             return False
+        if item.score_kind is EvidenceScoreKind.RECIPROCAL_RANK_FUSION:
+            if item.vector_similarity is None:
+                return False
+            if item.text_space_rank is not None:
+                return item.vector_similarity >= self._min_cosine_similarity
+            return (
+                item.cross_modal_rank is not None
+                and item.vector_similarity
+                >= self._cross_modal_min_cosine_similarity
+            )
         if item.score_kind is not EvidenceScoreKind.HYBRID_RERANK:
             return item.score >= self._min_cosine_similarity
         vector_similarity = item.vector_similarity
@@ -133,6 +151,7 @@ class AnswerGenerationStep:
                     answering.assessment,
                     query_context=state.query_context,
                     expected_outcome=route,
+                    visual_content=answering.visual_content,
                 ),
                 phase=ChatPipelinePhase.GENERATE_OR_REFUSE,
             )
@@ -159,6 +178,7 @@ class AnswerGenerationStep:
                 assessment=answering.assessment,
                 draft=draft,
                 model_calls=calls,
+                visual_content=answering.visual_content,
             ),
             query_context=state.query_context,
             artifacts=state.artifacts,

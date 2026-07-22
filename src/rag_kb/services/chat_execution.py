@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 from datetime import datetime
 from typing import Protocol
 
@@ -192,26 +191,10 @@ class ChatEvidenceRetriever:
                 phase=ChatPipelinePhase.RETRIEVE_EVIDENCE,
                 diagnostic={"check": "frozen_revision"},
             )
-        answerable = tuple(
-            replace(item, rank=rank)
-            for rank, item in enumerate(
-                (
-                    item
-                    for item in pack.evidence
-                    if item.text.strip()
-                    and any(
-                        representation
-                        not in {"native_image", "table_image"}
-                        for representation in item.matched_representations
-                    )
-                ),
-                start=1,
-            )
-        )
         return EvidencePack(
             knowledge_base_id=pack.knowledge_base_id,
             index_revision_id=pack.index_revision_id,
             strategy=pack.strategy,
-            evidence=answerable,
+            evidence=pack.evidence,
             debug=None,
         )

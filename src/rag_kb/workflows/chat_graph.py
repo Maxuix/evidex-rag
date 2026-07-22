@@ -15,6 +15,7 @@ CHAT_GRAPH_NODES = (
     "contextualize_query",
     "retrieve_evidence",
     "assess_evidence",
+    "prepare_visual_evidence",
     "generate_or_refuse",
     "validate_structure",
     "persist_result",
@@ -37,7 +38,8 @@ def compile_chat_graph(
     builder.add_edge("load_context", "contextualize_query")
     builder.add_edge("contextualize_query", "retrieve_evidence")
     builder.add_edge("retrieve_evidence", "assess_evidence")
-    builder.add_edge("assess_evidence", "generate_or_refuse")
+    builder.add_edge("assess_evidence", "prepare_visual_evidence")
+    builder.add_edge("prepare_visual_evidence", "generate_or_refuse")
     builder.add_edge("generate_or_refuse", "validate_structure")
     builder.add_edge("validate_structure", "persist_result")
     builder.add_edge("persist_result", END)
