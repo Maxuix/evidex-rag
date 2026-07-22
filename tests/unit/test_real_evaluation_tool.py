@@ -1,0 +1,90 @@
+from __future__ import annotations
+
+import tempfile
+import unittest
+from pathlib import Path
+
+from pypdf import PdfReader
+
+from tools.evaluate_multimodal_real import (
+    _generate_corpus,
+    _mrr,
+    _recall,
+    _validated_api_base,
+)
+
+
+class RealEvaluationToolTests(unittest.TestCase):
+    def test_generated_corpus_covers_six_bounded_supported_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            corpus = _generate_corpus(Path(directory))
+
+            self.assertEqual(
+                set(corpus),
+                {
+                    "architecture_pdf",
+                    "scanned_pdf",
+                    "rich_docx",
+                    "long_text",
+                    "repeated_watermark",
+                    "resource_stress",
+                },
+            )
+            self.assertTrue(
+                all(
+                    path.stat().st_size < 10 * 1024 * 1024
+                    for path in corpus.values()
+                )
+            )
+            self.assertTrue(
+                all(
+                    path.suffix in {".pdf", ".docx", ".txt"}
+                    for path in corpus.values()
+                )
+            )
+            self.assertTrue(
+                all(
+                    len(PdfReader(path).pages) == 1
+                    for path in corpus.values()
+                    if path.suffix == ".pdf"
+                )
+            )
+            architecture_text = "\n".join(
+                page.extract_text() or ""
+                for page in PdfReader(corpus["architecture_pdf"]).pages
+            )
+            scanned_text = "\n".join(
+                page.extract_text() or ""
+                for page in PdfReader(corpus["scanned_pdf"]).pages
+            )
+            self.assertIn("ASTER CONTROL PLANE", architecture_text)
+            self.assertEqual(scanned_text, "")
+
+    def test_metrics_count_missing_ranks_as_zero(self) -> None:
+        cases = [
+            {"rank": 1, "recalled": True},
+            {"rank": 2, "recalled": True},
+            {"rank": None, "recalled": False},
+        ]
+
+        self.assertEqual(_recall(cases), 0.666667)
+        self.assertEqual(_mrr(cases), 0.5)
+
+    def test_api_base_accepts_only_exact_loopback_scope(self) -> None:
+        self.assertEqual(
+            _validated_api_base("http://127.0.0.1:58001/api/v1/"),
+            "http://127.0.0.1:58001/api/v1",
+        )
+        for value in (
+            "https://127.0.0.1:58001/api/v1",
+            "http://127.0.0.1:58001@provider.invalid/api/v1",
+            "http://localhost.evil:58001/api/v1",
+            "http://localhost:58001/api/v1?secret=value",
+            "http://localhost:58001/other",
+        ):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                _validated_api_base(value)
+
+
+if __name__ == "__main__":
+    unittest.main()
