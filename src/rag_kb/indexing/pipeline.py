@@ -501,7 +501,8 @@ class IndexingPipeline:
             unit
             for unit in assembled
             if unit.modality is not ContentModality.TEXT
-            or unit.processing_metadata.get("representation_kind") == "caption_text"
+            or unit.processing_metadata.get("representation_kind")
+            in {"caption_text", "ocr_text"}
         )
         if not body.elements:
             return tuple(

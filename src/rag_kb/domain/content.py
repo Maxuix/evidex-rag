@@ -88,6 +88,23 @@ class Document:
 
 
 @dataclass(frozen=True, slots=True)
+class DocumentIndexSummary:
+    indexed_document_version_id: UUID
+    index_revision_id: UUID
+    build_status: str
+    serving_status: str
+    unit_count: int | None
+    asset_count: int | None
+    representation_count: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentDetail:
+    document: Document
+    index: DocumentIndexSummary | None
+
+
+@dataclass(frozen=True, slots=True)
 class DocumentSource:
     checksum_sha256: str
     storage_uri: str

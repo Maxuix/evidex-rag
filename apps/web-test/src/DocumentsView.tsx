@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiClient, ApiClientError } from "./api/client";
 import type {
   DocumentRecord,
+  DocumentDetail,
   DocumentUpload,
   IndexingJob,
   KnowledgeBase,
@@ -67,7 +68,7 @@ export function DocumentsView({
     key: string;
   } | null>(null);
   const [retryError, setRetryError] = useState<unknown | null>(null);
-  const [focusedDocument, setFocusedDocument] = useState<DocumentRecord | null>(null);
+  const [focusedDocument, setFocusedDocument] = useState<DocumentDetail | null>(null);
   const [focusError, setFocusError] = useState<unknown | null>(null);
   const pollGeneration = useRef(0);
   const mutationPending = pendingUpload !== null || pendingRetry !== null;
@@ -284,6 +285,11 @@ export function DocumentsView({
                     : null,
                 ],
                 ["Source status", focusedDocument.current_version?.source_status],
+                ["Index build status", focusedDocument.index?.build_status],
+                ["Serving status", focusedDocument.index?.serving_status],
+                ["Evidence units", focusedDocument.index?.unit_count],
+                ["Assets", focusedDocument.index?.asset_count],
+                ["Representations", focusedDocument.index?.representation_count],
               ]} />
             </>
           ) : <p>Loading document metadata…</p>}

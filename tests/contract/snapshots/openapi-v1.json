@@ -762,6 +762,157 @@
         "title": "DocumentDeleteResponse",
         "type": "object"
       },
+      "DocumentDetailResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "current_version": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DocumentVersionResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "deleted_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deleted At"
+          },
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "index": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DocumentIndexSummaryResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "kb_id": {
+            "format": "uuid",
+            "title": "Kb Id",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kb_id",
+          "display_name",
+          "current_version",
+          "deleted_at",
+          "created_at",
+          "updated_at",
+          "index"
+        ],
+        "title": "DocumentDetailResponse",
+        "type": "object"
+      },
+      "DocumentIndexSummaryResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "asset_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Asset Count"
+          },
+          "build_status": {
+            "enum": [
+              "queued",
+              "processing",
+              "ready",
+              "failed"
+            ],
+            "title": "Build Status",
+            "type": "string"
+          },
+          "index_revision_id": {
+            "format": "uuid",
+            "title": "Index Revision Id",
+            "type": "string"
+          },
+          "indexed_document_version_id": {
+            "format": "uuid",
+            "title": "Indexed Document Version Id",
+            "type": "string"
+          },
+          "representation_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Representation Count"
+          },
+          "serving_status": {
+            "enum": [
+              "candidate",
+              "serving",
+              "retired"
+            ],
+            "title": "Serving Status",
+            "type": "string"
+          },
+          "unit_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit Count"
+          }
+        },
+        "required": [
+          "indexed_document_version_id",
+          "index_revision_id",
+          "build_status",
+          "serving_status",
+          "unit_count",
+          "asset_count",
+          "representation_count"
+        ],
+        "title": "DocumentIndexSummaryResponse",
+        "type": "object"
+      },
       "DocumentPage": {
         "additionalProperties": false,
         "properties": {
@@ -2747,7 +2898,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/DocumentResponse"
+                  "$ref": "#/components/schemas/DocumentDetailResponse"
                 }
               }
             },

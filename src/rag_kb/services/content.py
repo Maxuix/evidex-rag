@@ -12,6 +12,7 @@ from rag_kb.domain import (
     AnswerPolicyDefaults,
     ChunkingPreset,
     Document,
+    DocumentDetail,
     DocumentMutationResult,
     DocumentSource,
     EmbeddingSpaceDefinition,
@@ -323,6 +324,22 @@ class DocumentService:
             return document
 
         return await execute_in_transaction(self._unit_of_work, load, purpose=UnitOfWorkPurpose.REQUEST)
+
+    async def get_detail(
+        self, context: AuthContext, document_id: UUID
+    ) -> DocumentDetail:
+        self._authorize(context)
+
+        async def load(uow: UnitOfWork) -> DocumentDetail:
+            _require_scope(uow, context)
+            detail = await uow.documents.get_detail(document_id)
+            if detail is None:
+                raise ResourceNotFoundError("document was not found")
+            return detail
+
+        return await execute_in_transaction(
+            self._unit_of_work, load, purpose=UnitOfWorkPurpose.REQUEST
+        )
 
     async def list(
         self,

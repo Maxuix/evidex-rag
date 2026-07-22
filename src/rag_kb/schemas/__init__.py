@@ -27,6 +27,8 @@ from rag_kb.schemas.chat import (
 )
 from rag_kb.schemas.documents import (
     DocumentDeleteResponse,
+    DocumentDetailResponse,
+    DocumentIndexSummaryResponse,
     DocumentPage,
     DocumentResponse,
     DocumentUploadResponse,
@@ -72,6 +74,8 @@ __all__ = [
     "CursorPage",
     "CursorPayload",
     "DocumentDeleteResponse",
+    "DocumentDetailResponse",
+    "DocumentIndexSummaryResponse",
     "DocumentPage",
     "DocumentResponse",
     "DocumentUploadResponse",

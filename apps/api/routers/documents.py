@@ -21,6 +21,8 @@ from rag_kb.services import Document, DocumentMutationResult, FileAdmissionError
 from rag_kb.schemas import (
     CursorPayload,
     DocumentDeleteResponse,
+    DocumentDetailResponse,
+    DocumentIndexSummaryResponse,
     DocumentPage,
     DocumentResponse,
     DocumentUploadResponse,
@@ -165,16 +167,34 @@ async def list_documents(
 
 @router.get(
     "/documents/{document_id}",
-    response_model=DocumentResponse,
+    response_model=DocumentDetailResponse,
     responses=problem_responses(404, 422),
 )
 async def get_document(
     request: Request,
     document_id: UUID,
     context: Annotated[AuthContext, Depends(get_auth_context)],
-) -> DocumentResponse:
-    return _response(
-        await request.app.state.dependencies.document_service.get(context, document_id)
+) -> DocumentDetailResponse:
+    detail = await request.app.state.dependencies.document_service.get_detail(
+        context, document_id
+    )
+    document = _response(detail.document)
+    summary = detail.index
+    return DocumentDetailResponse(
+        **document.model_dump(),
+        index=(
+            DocumentIndexSummaryResponse(
+                indexed_document_version_id=summary.indexed_document_version_id,
+                index_revision_id=summary.index_revision_id,
+                build_status=summary.build_status,
+                serving_status=summary.serving_status,
+                unit_count=summary.unit_count,
+                asset_count=summary.asset_count,
+                representation_count=summary.representation_count,
+            )
+            if summary is not None
+            else None
+        ),
     )
 
 

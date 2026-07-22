@@ -8,16 +8,22 @@ from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 from uuid import UUID, uuid4
 
 import httpx
 from docx import Document
 from PIL import Image
+from pypdf import PdfWriter
 
 from rag_kb.adapters import LocalIndexAssetStore, TongyiVisionEmbeddingAdapter
 from apps.api.routers.assets import read_index_asset
 from rag_kb.auth import AuthContext, SingleWorkspaceAccessPolicy
 from rag_kb.adapters.parser.docx_pictures import partition_docx_multimodal
+from rag_kb.adapters.parser.multimodal import (
+    _scanned_page_numbers,
+    partition_multimodal_with_unstructured,
+)
 from rag_kb.adapters.parser.multimodal_elements import bounded_image_asset
 from rag_kb.document_processing import (
     assemble_multimodal_units,
@@ -67,6 +73,24 @@ def _docx() -> bytes:
     output = BytesIO()
     document.save(output)
     return output.getvalue()
+
+
+class _RawElement:
+    def __init__(self, category: str, text: str, metadata: dict[str, object]) -> None:
+        self.category = category
+        self._text = text
+        self.metadata = _RawMetadata(metadata)
+
+    def __str__(self) -> str:
+        return self._text
+
+
+class _RawMetadata:
+    def __init__(self, value: dict[str, object]) -> None:
+        self._value = value
+
+    def to_dict(self) -> dict[str, object]:
+        return dict(self._value)
 
 
 def _space() -> EmbeddingSpaceDefinition:
@@ -139,6 +163,63 @@ class MultimodalParserTests(unittest.TestCase):
                 limits=replace(ParserLimits(), max_image_pixels=100),
             )
         self.assertEqual(oversized.exception.code, ErrorCode.PARSER_RESOURCE_LIMIT)
+
+    def test_scanned_page_becomes_page_image_and_grouped_ocr_unit(self) -> None:
+        source = ParserSource("scan.pdf", "application/pdf", b"fixture-pdf")
+        raw = _RawElement(
+            "NarrativeText",
+            "Invoice number OCR-2048",
+            {"page_number": 1},
+        )
+
+        with (
+            patch(
+                "unstructured.partition.pdf.partition_pdf",
+                return_value=(raw,),
+            ),
+            patch(
+                "rag_kb.adapters.parser.multimodal._scanned_page_numbers",
+                return_value=(1,),
+            ),
+            patch(
+                "rag_kb.adapters.parser.multimodal._render_pdf_page",
+                return_value=_png(600, 800),
+            ),
+        ):
+            parsed = partition_multimodal_with_unstructured(
+                source, ParserLimits()
+            )
+
+        self.assertEqual(
+            [item.category for item in parsed.elements],
+            ["PageImage", "OCRText"],
+        )
+        self.assertEqual([item.kind for item in parsed.assets], ["page_image"])
+        units = assemble_multimodal_units(parsed)
+        self.assertEqual(
+            [item.modality for item in units],
+            [ContentModality.IMAGE, ContentModality.TEXT],
+        )
+        page_image, ocr = units
+        self.assertEqual(page_image.required_representations, ("native_image",))
+        self.assertEqual(ocr.required_representations, ("ocr_text",))
+        self.assertEqual(ocr.content, "Invoice number OCR-2048")
+        self.assertEqual(ocr.asset_key, page_image.asset_key)
+        self.assertEqual(ocr.evidence_group_key, page_image.evidence_group_key)
+        self.assertEqual(ocr.related_unit_keys, (page_image.unit_key,))
+
+    def test_raster_only_pdf_page_is_detected_without_provider_or_ocr(self) -> None:
+        scanned = BytesIO()
+        Image.new("RGB", (120, 80), "white").save(scanned, format="PDF")
+
+        self.assertEqual(_scanned_page_numbers(scanned.getvalue()), (1,))
+
+        blank = BytesIO()
+        writer = PdfWriter()
+        writer.add_blank_page(width=612, height=792)
+        writer.write(blank)
+
+        self.assertEqual(_scanned_page_numbers(blank.getvalue()), ())
 
 
 class IndexAssetStoreTests(unittest.IsolatedAsyncioTestCase):

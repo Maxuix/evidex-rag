@@ -6,6 +6,7 @@ import type {
   ChatRunFailedEvent,
   ChatSession,
   DocumentRecord,
+  DocumentDetail,
   DocumentUpload,
   EvidencePack,
   IndexingJob,
@@ -117,7 +118,7 @@ export class ApiClient {
     }));
   }
 
-  getDocument(documentId: UUID): Promise<DocumentRecord> {
+  getDocument(documentId: UUID): Promise<DocumentDetail> {
     return this.request(`/documents/${documentId}`);
   }
 

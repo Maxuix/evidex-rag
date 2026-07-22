@@ -30,6 +30,20 @@ class DocumentResponse(PublicSchema):
     updated_at: datetime
 
 
+class DocumentIndexSummaryResponse(PublicSchema):
+    indexed_document_version_id: UUID
+    index_revision_id: UUID
+    build_status: Literal["queued", "processing", "ready", "failed"]
+    serving_status: Literal["candidate", "serving", "retired"]
+    unit_count: int | None
+    asset_count: int | None
+    representation_count: int | None
+
+
+class DocumentDetailResponse(DocumentResponse):
+    index: DocumentIndexSummaryResponse | None
+
+
 class DocumentPage(PublicSchema):
     items: tuple[DocumentResponse, ...]
     next_cursor: OpaqueCursor | None = None

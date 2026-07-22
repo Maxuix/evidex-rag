@@ -232,6 +232,70 @@ class ContentLifecycleTests(unittest.IsolatedAsyncioTestCase):
             await connection.close()
         self.assertEqual([row["source_change_seq"] for row in sequences], [1, 2])
 
+    async def test_document_detail_reports_active_revision_manifest_counts(self) -> None:
+        kb = await self._create_kb()
+        key = uuid4()
+        reserved = await self.documents.reserve_version(
+            self.context,
+            key,
+            kb_id=kb.id,
+            document_id=None,
+            display_name="scan.pdf",
+            source=_source("7"),
+        )
+        activated = await self.documents.activate_reserved_version(
+            self.context,
+            key,
+            document_id=reserved.document.id,
+        )
+        assert activated.indexed_document_version_id is not None
+        assert activated.document.current_version is not None
+
+        connection = await asyncpg.connect(MIGRATION_DSN)
+        try:
+            await connection.execute(
+                """
+                INSERT INTO index_artifact_manifest (
+                    indexed_document_version_id,
+                    source_checksum_sha256,
+                    profile_fingerprint,
+                    element_sequence_hash,
+                    asset_manifest_hash,
+                    unit_plan,
+                    representation_matrix,
+                    unit_count,
+                    asset_count,
+                    representation_count,
+                    manifest_hash
+                ) VALUES ($1, $2, $3, $4, $5, '[]'::jsonb, '[]'::jsonb, 2, 1, 3, $6)
+                """,
+                activated.indexed_document_version_id,
+                activated.document.current_version.checksum_sha256,
+                "1" * 64,
+                "2" * 64,
+                "3" * 64,
+                "4" * 64,
+            )
+        finally:
+            await connection.close()
+
+        detail = await self.documents.get_detail(
+            self.context, activated.document.id
+        )
+
+        self.assertEqual(detail.document.id, activated.document.id)
+        assert detail.index is not None
+        self.assertEqual(
+            (
+                detail.index.build_status,
+                detail.index.serving_status,
+                detail.index.unit_count,
+                detail.index.asset_count,
+                detail.index.representation_count,
+            ),
+            ("queued", "candidate", 2, 1, 3),
+        )
+
     async def test_workspace_bound_repository_hides_foreign_identifiers(self) -> None:
         kb = await self._create_kb()
         other_factory = SqlAlchemyUnitOfWorkFactory(

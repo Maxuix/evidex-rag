@@ -42,6 +42,8 @@ from rag_kb.domain import (
     ChatSessionBusyError,
     ContextualizedQuery,
     Document,
+    DocumentDetail,
+    DocumentIndexSummary,
     DocumentMutationResult,
     DocumentVersion,
     Evidence,
@@ -862,6 +864,25 @@ class _FakeDocumentService:
             raise ResourceNotFoundError("internal detail")
         return self.value
 
+    async def get_detail(self, context, document_id):
+        document = await self.get(context, document_id)
+        return DocumentDetail(
+            document=document,
+            index=DocumentIndexSummary(
+                indexed_document_version_id=UUID(
+                    "01900000-0000-7000-8000-000000000026"
+                ),
+                index_revision_id=UUID(
+                    "01900000-0000-7000-8000-000000000012"
+                ),
+                build_status="ready",
+                serving_status="serving",
+                unit_count=7,
+                asset_count=3,
+                representation_count=11,
+            ),
+        )
+
     async def list(self, context, *, kb_id, limit, sort, after):
         del context, limit, sort, after
         return Page(items=(self.value,)) if kb_id == self.value.kb_id else Page(items=())
@@ -1214,6 +1235,20 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(loaded.status, 200)
         self.assertNotIn("storage_uri", loaded.json()["current_version"])
+        self.assertEqual(
+            loaded.json()["index"],
+            {
+                "indexed_document_version_id": (
+                    "01900000-0000-7000-8000-000000000026"
+                ),
+                "index_revision_id": "01900000-0000-7000-8000-000000000012",
+                "build_status": "ready",
+                "serving_status": "serving",
+                "unit_count": 7,
+                "asset_count": 3,
+                "representation_count": 11,
+            },
+        )
 
         deleted = await request(
             self.app,

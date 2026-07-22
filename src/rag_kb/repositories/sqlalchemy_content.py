@@ -18,6 +18,7 @@ from rag_kb.db.models import (
     DocumentVersion as DocumentVersionRow,
     EmbeddingSpace as EmbeddingSpaceRow,
     IndexedDocumentVersion as IndexedDocumentVersionRow,
+    IndexArtifactManifest as IndexArtifactManifestRow,
     IndexBuildStatus,
     IndexingJob as IndexingJobRow,
     IndexRevision as IndexRevisionRow,
@@ -34,6 +35,8 @@ from rag_kb.db.models import (
 from rag_kb.domain import (
     ContentMutation,
     Document,
+    DocumentDetail,
+    DocumentIndexSummary,
     DocumentMutationResult,
     DocumentSource,
     DocumentVersion,
@@ -330,6 +333,71 @@ class SqlAlchemyDocumentRepository:
             )
         ).one_or_none()
         return _document(row[0], row[1]) if row is not None else None
+
+    async def get_detail(self, document_id: UUID) -> DocumentDetail | None:
+        self._ensure_active()
+        row = (
+            await self._session.execute(
+                select(
+                    DocumentRow,
+                    DocumentVersionRow,
+                    IndexedDocumentVersionRow,
+                    IndexArtifactManifestRow,
+                )
+                .outerjoin(
+                    DocumentVersionRow,
+                    DocumentVersionRow.id == DocumentRow.current_version_id,
+                )
+                .join(
+                    KnowledgeBaseRow,
+                    KnowledgeBaseRow.id == DocumentRow.kb_id,
+                )
+                .outerjoin(
+                    IndexedDocumentVersionRow,
+                    and_(
+                        IndexedDocumentVersionRow.workspace_id
+                        == self._workspace_id,
+                        IndexedDocumentVersionRow.document_id == DocumentRow.id,
+                        IndexedDocumentVersionRow.document_version_id
+                        == DocumentRow.current_version_id,
+                        IndexedDocumentVersionRow.index_revision_id
+                        == KnowledgeBaseRow.active_index_revision_id,
+                    ),
+                )
+                .outerjoin(
+                    IndexArtifactManifestRow,
+                    IndexArtifactManifestRow.indexed_document_version_id
+                    == IndexedDocumentVersionRow.id,
+                )
+                .where(
+                    DocumentRow.workspace_id == self._workspace_id,
+                    KnowledgeBaseRow.workspace_id == self._workspace_id,
+                    DocumentRow.id == document_id,
+                )
+            )
+        ).one_or_none()
+        if row is None:
+            return None
+        document_row, version_row, indexed_row, manifest_row = row
+        summary = (
+            DocumentIndexSummary(
+                indexed_document_version_id=indexed_row.id,
+                index_revision_id=indexed_row.index_revision_id,
+                build_status=indexed_row.build_status.value,
+                serving_status=indexed_row.serving_status.value,
+                unit_count=(manifest_row.unit_count if manifest_row else None),
+                asset_count=(manifest_row.asset_count if manifest_row else None),
+                representation_count=(
+                    manifest_row.representation_count if manifest_row else None
+                ),
+            )
+            if indexed_row is not None
+            else None
+        )
+        return DocumentDetail(
+            document=_document(document_row, version_row),
+            index=summary,
+        )
 
     async def list(
         self,

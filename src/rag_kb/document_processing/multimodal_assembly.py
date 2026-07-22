@@ -36,20 +36,40 @@ def assemble_multimodal_units(
     units: list[EvidenceUnitDraft] = []
     text_region: list[ParsedElement] = []
     anchor_key: str | None = None
+    anchor_group_key: str | None = None
+    anchor_asset_key: str | None = None
+    anchor_text_kind = "text"
     text_insert_at: int | None = None
 
+    def reset_text_context() -> None:
+        nonlocal text_region, anchor_key, anchor_group_key, anchor_asset_key
+        nonlocal anchor_text_kind, text_insert_at
+        text_region = []
+        anchor_key = None
+        anchor_group_key = None
+        anchor_asset_key = None
+        anchor_text_kind = "text"
+        text_insert_at = None
+
     def flush_text() -> None:
-        nonlocal text_region, anchor_key, text_insert_at
+        nonlocal text_region, anchor_key, anchor_group_key, anchor_asset_key
+        nonlocal anchor_text_kind, text_insert_at
         if not text_region:
+            reset_text_context()
             return
         parts = _structural_region_parts(text_region)
         if not parts:
-            text_region = []
+            reset_text_context()
             return
         created: list[EvidenceUnitDraft] = []
         for part_index, part in enumerate(parts):
             keys = ":".join(item.element_key or str(item.ordinal) for item in text_region)
-            key = _key("text", keys, str(part_index), hashlib.sha256(part.encode()).hexdigest())
+            key = _key(
+                anchor_text_kind,
+                keys,
+                str(part_index),
+                hashlib.sha256(part.encode()).hexdigest(),
+            )
             created.append(
                 EvidenceUnitDraft(
                     unit_key=key,
@@ -57,28 +77,35 @@ def assemble_multimodal_units(
                     modality=ContentModality.TEXT,
                     content=part,
                     token_count=count_chunk_tokens(part),
-                    asset_key=None,
-                    evidence_group_key=None,
+                    asset_key=(
+                        anchor_asset_key if anchor_text_kind == "ocr_text" else None
+                    ),
+                    evidence_group_key=(
+                        anchor_group_key if anchor_text_kind == "ocr_text" else None
+                    ),
                     related_unit_keys=((anchor_key,) if anchor_key else ()),
                     source_location=_span_location(text_region),
                     hierarchy=dict(text_region[0].hierarchy),
-                    processing_metadata={"assembly": "by_title_token_region_v1"},
-                    required_representations=("text",),
+                    processing_metadata={
+                        "assembly": "by_title_token_region_v1",
+                        "representation_kind": anchor_text_kind,
+                    },
+                    required_representations=(anchor_text_kind,),
                 )
             )
         if text_insert_at is None:
             units.extend(created)
         else:
             units[text_insert_at:text_insert_at] = created
-        text_region = []
-        anchor_key = None
-        text_insert_at = None
+        reset_text_context()
 
     for element in parsed.elements:
         if element.category == "PageBreak":
             flush_text()
             continue
-        if element.category in {"Image", "Table", "TableChunk"} or element.asset_key:
+        if element.category in {"Image", "PageImage", "Table", "TableChunk"} or (
+            element.asset_key and element.category != "OCRText"
+        ):
             asset = assets.get(element.asset_key or "")
             if element.category in {"Table", "TableChunk"}:
                 flush_text()
@@ -95,6 +122,8 @@ def assemble_multimodal_units(
             if disposition is VisualDisposition.DECORATIVE:
                 continue
             if disposition is VisualDisposition.HARD_BOUNDARY:
+                flush_text()
+            elif anchor_text_kind == "ocr_text":
                 flush_text()
             elif text_region and text_insert_at is None:
                 # An anchored figure does not split its surrounding prose, but
@@ -131,6 +160,10 @@ def assemble_multimodal_units(
                 )
             )
             anchor_key = image_key
+            if asset.kind == "page_image":
+                anchor_group_key = image_group
+                anchor_asset_key = asset.asset_key
+                anchor_text_kind = "ocr_text"
             continue
         if element.category == "FigureCaption" and anchor_key:
             # Author captions are their own text representation; never consume the
@@ -195,7 +228,15 @@ def semantic_text_elements(parsed: ParsedDocument) -> ParsedDocument:
         item
         for item in parsed.elements
         if item.text
-        and item.category not in {"Image", "Table", "TableChunk", "FigureCaption"}
+        and item.category
+        not in {
+            "Image",
+            "PageImage",
+            "OCRText",
+            "Table",
+            "TableChunk",
+            "FigureCaption",
+        }
         and item.asset_key is None
     )
     return ParsedDocument(elements, sum(len(item.text) for item in elements))

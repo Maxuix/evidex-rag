@@ -88,6 +88,20 @@ export interface DocumentRecord {
   updated_at: IsoDate;
 }
 
+export interface DocumentIndexSummary {
+  indexed_document_version_id: UUID;
+  index_revision_id: UUID;
+  build_status: "queued" | "processing" | "ready" | "failed";
+  serving_status: "candidate" | "serving" | "retired";
+  unit_count: number | null;
+  asset_count: number | null;
+  representation_count: number | null;
+}
+
+export interface DocumentDetail extends DocumentRecord {
+  index: DocumentIndexSummary | null;
+}
+
 export interface DocumentUpload {
   document: DocumentRecord;
   document_version_id: UUID;

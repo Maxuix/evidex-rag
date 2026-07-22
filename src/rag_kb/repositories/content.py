@@ -9,6 +9,7 @@ from uuid import UUID
 from rag_kb.domain import (
     ContentMutation,
     Document,
+    DocumentDetail,
     DocumentMutationResult,
     DocumentSource,
     EmbeddingSpaceDefinition,
@@ -58,6 +59,8 @@ class KnowledgeBaseRepository(Protocol):
 @runtime_checkable
 class DocumentRepository(Protocol):
     async def get(self, document_id: UUID) -> Document | None: ...
+
+    async def get_detail(self, document_id: UUID) -> DocumentDetail | None: ...
 
     async def list(
         self,
