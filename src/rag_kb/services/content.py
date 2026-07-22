@@ -20,7 +20,9 @@ from rag_kb.domain import (
     IndexProfileDefinition,
     KnowledgeBase,
     Page,
+    ParsingPreset,
     ResourceNotFoundError,
+    ResourceStateConflictError,
     canonical_request_hash,
     validate_p1_answer_policy_defaults,
 )
@@ -44,16 +46,23 @@ def build_content_services(
     unit_of_work: UnitOfWorkFactory,
     access_policy: AccessPolicy,
     embedding: Any,
+    multimodal_embedding: Any | None = None,
 ) -> ContentServices:
     """Construct content services without exposing domain configuration to the API."""
 
     definition = embedding_space_definition(embedding)
+    multimodal_definition = (
+        embedding_space_definition(multimodal_embedding)
+        if multimodal_embedding is not None
+        else None
+    )
     profile = index_profile()
     return ContentServices(
         knowledge_bases=KnowledgeBaseService(
             unit_of_work,
             access_policy,
             embedding_space=definition,
+            cross_modal_embedding_space=multimodal_definition,
             index_profile=profile,
         ),
         documents=DocumentService(unit_of_work, access_policy),
@@ -87,11 +96,13 @@ class KnowledgeBaseService:
         access_policy: AccessPolicy,
         *,
         embedding_space: EmbeddingSpaceDefinition,
+        cross_modal_embedding_space: EmbeddingSpaceDefinition | None = None,
         index_profile: IndexProfileDefinition,
     ) -> None:
         self._unit_of_work = unit_of_work
         self._access_policy = access_policy
         self._embedding_space = embedding_space
+        self._cross_modal_embedding_space = cross_modal_embedding_space
         expected = profile_for_preset(ChunkingPreset.STRUCTURAL_BALANCED_V2)
         if index_profile != expected:
             raise ValueError("default index profile must match the preset registry")
@@ -102,6 +113,7 @@ class KnowledgeBaseService:
         idempotency_key: UUID,
         *,
         name: str,
+        parsing_preset: ParsingPreset | str = ParsingPreset.TEXT_LOCAL_V1,
         chunking_preset: ChunkingPreset | str = ChunkingPreset.STRUCTURAL_BALANCED_V2,
         retrieval_defaults: dict[str, Any],
         answer_policy_defaults: dict[str, Any] | None = None,
@@ -113,7 +125,15 @@ class KnowledgeBaseService:
             else validate_p1_answer_policy_defaults(answer_policy_defaults).as_dict()
         )
         resolved_preset = ChunkingPreset(chunking_preset)
-        resolved_profile = profile_for_preset(resolved_preset)
+        resolved_parsing = ParsingPreset(parsing_preset)
+        resolved_profile = profile_for_preset(resolved_preset, resolved_parsing)
+        if (
+            resolved_parsing is ParsingPreset.MULTIMODAL_LOCAL_V1
+            and self._cross_modal_embedding_space is None
+        ):
+            raise ResourceStateConflictError(
+                "multimodal parsing requires a configured cross-modal embedding space"
+            )
         scope = IdempotencyScope(
             context.principal_id,
             context.client_id,
@@ -121,6 +141,15 @@ class KnowledgeBaseService:
             idempotency_key,
         )
         request_hash = canonical_request_hash(
+            {
+                "name": name,
+                "parsing": {"preset": resolved_parsing.value},
+                "chunking": {"preset": resolved_preset.value},
+                "retrieval_defaults": retrieval_defaults,
+                "answer_policy_defaults": resolved_answer_defaults,
+            }
+        )
+        previous_request_hash = canonical_request_hash(
             {
                 "name": name,
                 "chunking": {"preset": resolved_preset.value},
@@ -136,7 +165,10 @@ class KnowledgeBaseService:
                     "answer_policy_defaults": resolved_answer_defaults,
                 }
             )
-            if resolved_preset is ChunkingPreset.STRUCTURAL_BALANCED_V2
+            if (
+                resolved_parsing is ParsingPreset.TEXT_LOCAL_V1
+                and resolved_preset is ChunkingPreset.STRUCTURAL_BALANCED_V2
+            )
             else None
         )
 
@@ -147,6 +179,7 @@ class KnowledgeBaseService:
             if prior is not None:
                 if prior.request_hash not in {
                     request_hash,
+                    previous_request_hash,
                     legacy_request_hash,
                 }:
                     raise IdempotencyKeyReusedError(
@@ -162,6 +195,11 @@ class KnowledgeBaseService:
                 retrieval_defaults=retrieval_defaults,
                 answer_policy_defaults=resolved_answer_defaults,
                 embedding_space=self._embedding_space,
+                cross_modal_embedding_space=(
+                    self._cross_modal_embedding_space
+                    if resolved_parsing is ParsingPreset.MULTIMODAL_LOCAL_V1
+                    else None
+                ),
                 index_profile=resolved_profile,
             )
             await uow.content_mutations.add(

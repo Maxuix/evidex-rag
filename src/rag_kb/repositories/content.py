@@ -31,6 +31,7 @@ class KnowledgeBaseRepository(Protocol):
         retrieval_defaults: dict[str, Any],
         answer_policy_defaults: dict[str, Any],
         embedding_space: EmbeddingSpaceDefinition,
+        cross_modal_embedding_space: EmbeddingSpaceDefinition | None,
         index_profile: IndexProfileDefinition,
     ) -> KnowledgeBase: ...
 

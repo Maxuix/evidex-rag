@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from typing import Any
@@ -11,17 +11,22 @@ from uuid import UUID, uuid5
 
 from rag_kb.domain.content import EmbeddingSpaceDefinition
 from rag_kb.domain.errors import ErrorCode
+from rag_kb.domain.parsing import ContentModality
 
 
 CHUNK_ID_NAMESPACE = UUID("bfa48c2a-6d99-5b0c-94df-0f7bb462c704")
 VECTOR_ID_NAMESPACE = UUID("263db84c-f438-5bd1-b9ca-666752fc2e92")
+ASSET_ID_NAMESPACE = UUID("fef9ec6a-9ec5-58ac-9ceb-487db6cbeb79")
 
 
 class IndexingPhase(StrEnum):
     SOURCE_READ = "source_read"
     PARSING = "parsing"
+    ASSET_EXTRACTION = "asset_extraction"
+    ENRICHMENT = "enrichment"
     SEMANTIC_ANALYSIS = "semantic_analysis"
     EMBEDDING = "embedding"
+    MULTIMODAL_EMBEDDING = "multimodal_embedding"
     PERSISTING = "persisting"
     VALIDATING = "validating"
     COMPLETED = "completed"
@@ -115,6 +120,8 @@ class IndexCleanupResult:
     vectors_deleted: int = 0
     chunks_deleted: int = 0
     plans_deleted: int = 0
+    manifests_deleted: int = 0
+    assets_deleted: int = 0
     jobs_deleted: int = 0
     file_cleanup_records_deleted: int = 0
 
@@ -139,6 +146,10 @@ class IndexingTarget:
     chunking_config: dict[str, Any]
     embedding_space: EmbeddingSpaceDefinition
     already_complete: bool = False
+    enrichment_config: dict[str, Any] = field(default_factory=dict)
+    representation_config: dict[str, Any] = field(default_factory=dict)
+    embedding_space_ids: dict[str, UUID] = field(default_factory=dict)
+    embedding_spaces: dict[str, EmbeddingSpaceDefinition] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,6 +162,11 @@ class IndexChunkWrite:
     source_location: dict[str, Any]
     hierarchy: dict[str, Any]
     source_metadata: dict[str, Any]
+    unit_key: str = ""
+    modality: ContentModality = ContentModality.TEXT
+    index_asset_id: UUID | None = None
+    evidence_group_key: str | None = None
+    relations: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,11 +175,114 @@ class VectorRecordWrite:
     index_chunk_id: UUID
     embedding_space_id: UUID
     embedding: tuple[float, ...]
+    representation_kind: str = "text"
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceUnitDraft:
+    unit_key: str
+    ordinal: int
+    modality: ContentModality
+    content: str
+    token_count: int
+    asset_key: str | None
+    evidence_group_key: str | None
+    related_unit_keys: tuple[str, ...]
+    source_location: dict[str, Any]
+    hierarchy: dict[str, Any]
+    processing_metadata: dict[str, Any]
+    required_representations: tuple[str, ...]
+
+
+class EmbeddingSpaceRole(StrEnum):
+    TEXT_RETRIEVAL = "text_retrieval"
+    SEMANTIC_ANALYSIS = "semantic_analysis"
+    CROSS_MODAL_RETRIEVAL = "cross_modal_retrieval"
+
+
+class RepresentationKind(StrEnum):
+    TEXT = "text"
+    NATIVE_IMAGE = "native_image"
+    CAPTION_TEXT = "caption_text"
+    OCR_TEXT = "ocr_text"
+    TABLE_TEXT = "table_text"
+    TABLE_IMAGE = "table_image"
+
+
+@dataclass(frozen=True, slots=True)
+class IndexAssetWrite:
+    id: UUID
+    asset_key: str
+    kind: str
+    storage_uri: str
+    media_type: str
+    checksum_sha256: str
+    width: int | None
+    height: int | None
+    source_location: dict[str, Any]
+    processing_metadata: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class IndexAssetSnapshot:
+    id: UUID
+    workspace_id: UUID
+    kb_id: UUID
+    document_id: UUID
+    document_version_id: UUID
+    indexed_document_version_id: UUID
+    storage_uri: str
+    media_type: str
+    checksum_sha256: str
+    size_bytes: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class IndexAssetContent:
+    snapshot: IndexAssetSnapshot
+    content: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class IndexArtifactManifest:
+    indexed_document_version_id: UUID
+    source_checksum_sha256: str
+    profile_fingerprint: str
+    element_sequence_hash: str
+    asset_manifest_hash: str
+    unit_plan: tuple[dict[str, Any], ...]
+    representation_matrix: tuple[dict[str, Any], ...]
+    unit_count: int
+    asset_count: int
+    representation_count: int
+    manifest_hash: str
 
 
 @dataclass(frozen=True, slots=True)
 class EmbeddingBatch:
     vectors: tuple[tuple[float, ...], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ImageEmbeddingInput:
+    content: bytes
+    media_type: str
+    content_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class ImageDescriptionInput:
+    content: bytes
+    media_type: str
+    content_sha256: str
+    context: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ImageDescriptionResult:
+    caption: str
+    ocr_text: str = ""
+    model: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,14 +315,39 @@ class IndexingCancelled(RuntimeError):
     """The durable target became cancelled or retired during execution."""
 
 
-def stable_chunk_id(indexed_document_version_id: UUID, ordinal: int) -> UUID:
+def stable_chunk_id(
+    indexed_document_version_id: UUID,
+    ordinal: int,
+    *,
+    profile_fingerprint: str | None = None,
+    unit_key: str | None = None,
+) -> UUID:
     if ordinal < 0:
         raise ValueError("chunk ordinal must be non-negative")
-    return uuid5(CHUNK_ID_NAMESPACE, f"{indexed_document_version_id}:{ordinal}")
+    if profile_fingerprint is None and unit_key is None:
+        return uuid5(CHUNK_ID_NAMESPACE, f"{indexed_document_version_id}:{ordinal}")
+    if not profile_fingerprint or not unit_key:
+        raise ValueError("profile_fingerprint and unit_key must be supplied together")
+    return uuid5(indexed_document_version_id, f"{profile_fingerprint}:{unit_key}")
 
 
-def stable_vector_id(embedding_space_id: UUID, index_chunk_id: UUID) -> UUID:
-    return uuid5(VECTOR_ID_NAMESPACE, f"{embedding_space_id}:{index_chunk_id}")
+def stable_vector_id(
+    embedding_space_id: UUID,
+    index_chunk_id: UUID,
+    representation_kind: str = "text",
+) -> UUID:
+    if not representation_kind:
+        raise ValueError("representation kind must not be empty")
+    identity = f"{embedding_space_id}:{index_chunk_id}"
+    if representation_kind != "text":
+        identity = f"{identity}:{representation_kind}"
+    return uuid5(VECTOR_ID_NAMESPACE, identity)
+
+
+def stable_asset_id(indexed_document_version_id: UUID, asset_key: str) -> UUID:
+    if not asset_key:
+        raise ValueError("asset key must not be empty")
+    return uuid5(ASSET_ID_NAMESPACE, f"{indexed_document_version_id}:{asset_key}")
 
 
 def validate_embedding_vector(

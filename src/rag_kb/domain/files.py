@@ -26,6 +26,20 @@ class SourceFileIdentity:
 
 
 @dataclass(frozen=True, slots=True)
+class IndexAssetIdentity:
+    workspace_id: UUID
+    indexed_document_version_id: UUID
+    asset_key: str
+
+    @property
+    def storage_uri(self) -> str:
+        return (
+            f"local-index-asset://{self.workspace_id}/"
+            f"{self.indexed_document_version_id}/{self.asset_key}"
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class StoredSourceFile:
     identity: SourceFileIdentity | None
     location: FileLocation

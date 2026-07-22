@@ -10,6 +10,7 @@ from rag_kb.domain import (
     ChunkingPreset,
     ChunkingStrategyKind,
     IndexProfileDefinition,
+    ParsingPreset,
 )
 
 
@@ -23,6 +24,33 @@ UNSTRUCTURED_PARSER_CONFIG = {
     "strategy": "fast",
     "include_page_breaks": True,
     "supported_extensions": [".txt", ".md", ".pdf", ".docx"],
+}
+
+MULTIMODAL_PARSER_CONFIG = {
+    "profile": "unstructured_multimodal_local_v1",
+    "integration": "unstructured",
+    "engine_version": "0.24.1",
+    "partition_via_api": False,
+    "pdf_strategy": "hi_res",
+    "infer_table_structure": True,
+    "extract_image_block_types": ["Image", "Table"],
+    "include_page_breaks": True,
+    "docx_picture_partitioner": "bounded_ooxml_relationship_v1",
+    "supported_extensions": [".txt", ".md", ".pdf", ".docx"],
+}
+
+MULTIMODAL_ENRICHMENT_CONFIG = {
+    "profile": "bounded_visual_enrichment_v1",
+    "ocr": "local_unstructured_ocr_v1",
+    "caption": "optional_provider_caption_v1",
+    "table_normalization": "bounded_table_text_html_v1",
+}
+
+MULTIMODAL_REPRESENTATION_CONFIG = {
+    "profile": "multimodal_representations_v1",
+    "text": {"required": ["text"]},
+    "image": {"required": ["native_image"], "optional": ["caption_text", "ocr_text"]},
+    "table": {"required": ["table_text"], "optional": ["table_image"]},
 }
 
 UNSTRUCTURED_CHUNKING_CONFIG = {
@@ -80,6 +108,7 @@ LEGACY_SEMANTIC_PROFILE = "unstructured_title_semantic_qwen_v1"
 
 def profile_for_preset(
     preset: ChunkingPreset | str,
+    parsing_preset: ParsingPreset | str = ParsingPreset.TEXT_LOCAL_V1,
 ) -> IndexProfileDefinition:
     """Return fresh JSON-compatible documents for persistence."""
 
@@ -89,9 +118,17 @@ def profile_for_preset(
         if resolved is ChunkingPreset.STRUCTURAL_BALANCED_V2
         else SEMANTIC_CHUNKING_CONFIG
     )
+    parsing = ParsingPreset(parsing_preset)
+    multimodal = parsing is ParsingPreset.MULTIMODAL_LOCAL_V1
     return IndexProfileDefinition(
-        parser_config=deepcopy(UNSTRUCTURED_PARSER_CONFIG),
+        parser_config=deepcopy(
+            MULTIMODAL_PARSER_CONFIG if multimodal else UNSTRUCTURED_PARSER_CONFIG
+        ),
         chunking_config=deepcopy(chunking),
+        enrichment_config=deepcopy(MULTIMODAL_ENRICHMENT_CONFIG) if multimodal else {},
+        representation_config=(
+            deepcopy(MULTIMODAL_REPRESENTATION_CONFIG) if multimodal else {}
+        ),
     )
 
 
@@ -107,13 +144,26 @@ def resolve(
 ) -> ChunkingStrategyKind:
     """Fail closed unless the complete persisted profile exactly matches a preset."""
 
-    if parser_config != UNSTRUCTURED_PARSER_CONFIG:
+    if parser_config not in (UNSTRUCTURED_PARSER_CONFIG, MULTIMODAL_PARSER_CONFIG):
         raise ValueError("unknown parser profile")
     if chunking_config == UNSTRUCTURED_CHUNKING_CONFIG:
         return ChunkingStrategyKind.STRUCTURAL
     if chunking_config == SEMANTIC_CHUNKING_CONFIG:
         return ChunkingStrategyKind.SEMANTIC
     raise ValueError("unknown chunking profile")
+
+
+def parsing_preset(parser_config: dict) -> ParsingPreset:
+    if parser_config == UNSTRUCTURED_PARSER_CONFIG:
+        return ParsingPreset.TEXT_LOCAL_V1
+    if parser_config == MULTIMODAL_PARSER_CONFIG:
+        return ParsingPreset.MULTIMODAL_LOCAL_V1
+    raise ValueError("unknown parser profile")
+
+
+def public_parsing_descriptor(parser_config: dict) -> dict[str, str]:
+    preset = parsing_preset(parser_config)
+    return {"preset": preset.value, "profile": parser_config["profile"]}
 
 
 def public_descriptor(chunking_config: dict) -> dict[str, str]:
@@ -138,9 +188,19 @@ def public_descriptor(chunking_config: dict) -> dict[str, str]:
 def profile_fingerprint(
     parser_config: dict,
     chunking_config: dict,
+    enrichment_config: dict | None = None,
+    representation_config: dict | None = None,
 ) -> str:
+    payload = {
+        "parser_config": parser_config,
+        "chunking_config": chunking_config,
+    }
+    if enrichment_config:
+        payload["enrichment_config"] = enrichment_config
+    if representation_config:
+        payload["representation_config"] = representation_config
     canonical = json.dumps(
-        {"parser_config": parser_config, "chunking_config": chunking_config},
+        payload,
         ensure_ascii=False,
         allow_nan=False,
         sort_keys=True,

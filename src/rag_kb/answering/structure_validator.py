@@ -334,6 +334,9 @@ def render_validated_answer(
                         quoted_text=item.excerpt,
                         source_location=item.source_location,
                         score=item.score,
+                        modality=item.modality,
+                        asset_snapshot=item.asset_snapshot,
+                        matched_representations=item.matched_representations,
                     )
                 )
             markers.append(f"[{ordinals[citation_id] + 1}]")

@@ -39,6 +39,18 @@
       "ChatCitationResponse": {
         "additionalProperties": false,
         "properties": {
+          "asset": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Asset"
+          },
           "document_id": {
             "format": "uuid",
             "title": "Document Id",
@@ -60,6 +72,21 @@
               }
             ],
             "title": "Index Chunk Id"
+          },
+          "matched_representations": {
+            "default": [
+              "text"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "title": "Matched Representations",
+            "type": "array"
+          },
+          "modality": {
+            "default": "text",
+            "title": "Modality",
+            "type": "string"
           },
           "ordinal": {
             "minimum": 0.0,
@@ -1045,6 +1072,58 @@
         "title": "ErrorCode",
         "type": "string"
       },
+      "EvidenceAssetResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "checksum_sha256": {
+            "title": "Checksum Sha256",
+            "type": "string"
+          },
+          "content_url": {
+            "title": "Content Url",
+            "type": "string"
+          },
+          "height": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Height"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "media_type": {
+            "title": "Media Type",
+            "type": "string"
+          },
+          "width": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Width"
+          }
+        },
+        "required": [
+          "id",
+          "media_type",
+          "checksum_sha256",
+          "content_url"
+        ],
+        "title": "EvidenceAssetResponse",
+        "type": "object"
+      },
       "EvidencePackResponse": {
         "additionalProperties": false,
         "properties": {
@@ -1091,6 +1170,27 @@
       "EvidenceResponse": {
         "additionalProperties": false,
         "properties": {
+          "asset": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EvidenceAssetResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cross_modal_rank": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cross Modal Rank"
+          },
           "document_id": {
             "format": "uuid",
             "title": "Document Id",
@@ -1100,6 +1200,28 @@
             "format": "uuid",
             "title": "Document Version Id",
             "type": "string"
+          },
+          "evidence_group_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Group Key"
+          },
+          "fusion_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fusion Score"
           },
           "hierarchy": {
             "additionalProperties": true,
@@ -1131,6 +1253,21 @@
             "title": "Lexical Score",
             "type": "number"
           },
+          "matched_representations": {
+            "default": [
+              "text"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "title": "Matched Representations",
+            "type": "array"
+          },
+          "modality": {
+            "default": "text",
+            "title": "Modality",
+            "type": "string"
+          },
           "ordinal": {
             "title": "Ordinal",
             "type": "integer"
@@ -1159,6 +1296,17 @@
           "text": {
             "title": "Text",
             "type": "string"
+          },
+          "text_space_rank": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text Space Rank"
           },
           "vector_similarity": {
             "anyOf": [
@@ -1193,7 +1341,8 @@
       "EvidenceScoreKind": {
         "enum": [
           "cosine_similarity",
-          "hybrid_rerank"
+          "hybrid_rerank",
+          "reciprocal_rank_fusion"
         ],
         "title": "EvidenceScoreKind",
         "type": "string"
@@ -1230,6 +1379,19 @@
           "error_type"
         ],
         "title": "FieldViolation",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
         "type": "object"
       },
       "IndexingErrorResponse": {
@@ -1501,6 +1663,12 @@
             "title": "Name",
             "type": "string"
           },
+          "parsing": {
+            "$ref": "#/components/schemas/KnowledgeBaseParsing",
+            "default": {
+              "preset": "text_local_v1"
+            }
+          },
           "retrieval_defaults": {
             "$ref": "#/components/schemas/RetrievalDefaults",
             "default": {
@@ -1546,6 +1714,39 @@
         "title": "KnowledgeBasePage",
         "type": "object"
       },
+      "KnowledgeBaseParsing": {
+        "additionalProperties": false,
+        "properties": {
+          "preset": {
+            "$ref": "#/components/schemas/ParsingPreset",
+            "default": "text_local_v1"
+          }
+        },
+        "title": "KnowledgeBaseParsing",
+        "type": "object"
+      },
+      "KnowledgeBaseParsingResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "preset": {
+            "$ref": "#/components/schemas/ParsingPreset"
+          },
+          "profile": {
+            "enum": [
+              "unstructured_local_v1",
+              "unstructured_multimodal_local_v1"
+            ],
+            "title": "Profile",
+            "type": "string"
+          }
+        },
+        "required": [
+          "preset",
+          "profile"
+        ],
+        "title": "KnowledgeBaseParsingResponse",
+        "type": "object"
+      },
       "KnowledgeBaseResponse": {
         "additionalProperties": false,
         "properties": {
@@ -1583,6 +1784,9 @@
             "title": "Name",
             "type": "string"
           },
+          "parsing": {
+            "$ref": "#/components/schemas/KnowledgeBaseParsingResponse"
+          },
           "provisioned_at": {
             "format": "date-time",
             "title": "Provisioned At",
@@ -1607,6 +1811,7 @@
           "source_change_seq",
           "active_index_revision_id",
           "embedding_space_id",
+          "parsing",
           "chunking",
           "retrieval_defaults",
           "provisioned_at",
@@ -1655,6 +1860,14 @@
         },
         "title": "KnowledgeBaseUpdate",
         "type": "object"
+      },
+      "ParsingPreset": {
+        "enum": [
+          "text_local_v1",
+          "multimodal_local_v1"
+        ],
+        "title": "ParsingPreset",
+        "type": "string"
       },
       "ProblemDetails": {
         "additionalProperties": false,
@@ -1914,6 +2127,46 @@
         ],
         "title": "RevisionSelector",
         "type": "string"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
       }
     }
   },
@@ -2702,6 +2955,77 @@
         "summary": "Upload Document Version",
         "tags": [
           "documents"
+        ]
+      }
+    },
+    "/api/v1/index-assets/{asset_id}/content": {
+      "get": {
+        "operationId": "read_index_asset_api_v1_index_assets__asset_id__content_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "asset_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Asset Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Idempotency or resource conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Internal server error"
+          }
+        },
+        "summary": "Read Index Asset",
+        "tags": [
+          "index-assets"
         ]
       }
     },

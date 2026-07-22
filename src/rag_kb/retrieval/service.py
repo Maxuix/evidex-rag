@@ -5,11 +5,13 @@ from __future__ import annotations
 import math
 
 from rag_kb.adapters.model_api import EmbeddingModelAdapter
+from rag_kb.adapters.model_api import MultimodalEmbeddingAdapter
 from rag_kb.adapters.vector_store import VectorStore
 from rag_kb.auth import AccessPolicy, AuthContext
 from rag_kb.domain import (
     ErrorCode,
     Evidence,
+    EvidenceAsset,
     EvidencePack,
     EvidenceScoreKind,
     IndexingExecutionError,
@@ -22,6 +24,7 @@ from rag_kb.domain import (
     VectorSearchResult,
 )
 from rag_kb.retrieval.reranker import RerankedHit, rerank_hits
+from rag_kb.retrieval.fusion import reciprocal_rank_fusion
 
 
 class RetrievalService:
@@ -38,6 +41,12 @@ class RetrievalService:
         vector_weight: float = 0.65,
         lexical_weight: float = 0.35,
         mmr_lambda: float = 0.75,
+        multimodal_embedding_provider: MultimodalEmbeddingAdapter | None = None,
+        cross_modal_candidate_count: int = 20,
+        cross_modal_min_cosine_similarity: float = 0.25,
+        text_min_cosine_similarity: float = 0.35,
+        rrf_k: int = 60,
+        cross_modal_weight_micros: int = 1_000_000,
     ) -> None:
         if candidate_multiplier < 2:
             raise ValueError("candidate_multiplier must be at least two")
@@ -55,6 +64,12 @@ class RetrievalService:
         self._vector_weight = vector_weight
         self._lexical_weight = lexical_weight
         self._mmr_lambda = mmr_lambda
+        self._multimodal_embedding_provider = multimodal_embedding_provider
+        self._cross_modal_candidate_count = cross_modal_candidate_count
+        self._cross_modal_min_cosine_similarity = cross_modal_min_cosine_similarity
+        self._text_min_cosine_similarity = text_min_cosine_similarity
+        self._rrf_k = rrf_k
+        self._cross_modal_weight_micros = cross_modal_weight_micros
 
     async def retrieve(
         self,
@@ -88,7 +103,20 @@ class RetrievalService:
         result = await self._vector_store.search(plan, query_embedding)
         if result is None:
             raise ResourceNotFoundError("knowledge base or active revision was not found")
-        evidence = self._normalize(plan, result, query=request.query)
+        self._validate_scope(plan, result)
+        multimodal = (
+            self._multimodal_embedding_provider is not None
+            and hasattr(self._vector_store, "has_space_role")
+            and await self._vector_store.has_space_role(
+                plan, "cross_modal_retrieval"
+            )
+        )
+        if multimodal:
+            evidence = await self._multimodal_evidence(
+                plan, result, request.query
+            )
+        else:
+            evidence = self._normalize(plan, result, query=request.query)
         debug = (
             RetrievalDebug(
                 query_plan=plan,
@@ -105,6 +133,119 @@ class RetrievalService:
             evidence=evidence,
             debug=debug,
         )
+
+    async def _multimodal_evidence(
+        self,
+        plan: RetrievalQueryPlan,
+        text_result: VectorSearchResult,
+        query: str,
+    ) -> tuple[Evidence, ...]:
+        provider = self._multimodal_embedding_provider
+        assert provider is not None
+        try:
+            embedded = await provider.embed_texts((query,))
+            query_vector = embedded.vectors[0]
+        except IndexingExecutionError as error:
+            raise RetrievalExecutionError(error.code, diagnostic=error.diagnostic) from error
+        cross_plan = RetrievalQueryPlan(
+            workspace_id=plan.workspace_id,
+            knowledge_base_id=plan.knowledge_base_id,
+            strategy=plan.strategy,
+            top_k=plan.top_k,
+            candidate_count=max(plan.top_k, self._cross_modal_candidate_count),
+            rerank=True,
+        )
+        cross_result = await self._vector_store.search_space(
+            cross_plan,
+            query_vector,
+            space_role="cross_modal_retrieval",
+            representation_kinds=("native_image", "table_image"),
+            expected_space=provider.embedding_space,
+        )
+        if cross_result is None:
+            return self._normalize(plan, text_result, query=query)
+        self._validate_scope(cross_plan, cross_result)
+        if cross_result.resolved_active_revision_id != text_result.resolved_active_revision_id:
+            raise RetrievalExecutionError(
+                ErrorCode.INTERNAL_SERVER_ERROR,
+                diagnostic={"check": "multimodal_revision_snapshot"},
+            )
+        text_hits = tuple(
+            hit
+            for hit in text_result.hits
+            if 1.0 - hit.cosine_distance >= self._text_min_cosine_similarity
+        )
+        cross_hits = tuple(
+            hit
+            for hit in cross_result.hits
+            if 1.0 - hit.cosine_distance
+            >= self._cross_modal_min_cosine_similarity
+        )
+        reranked = rerank_hits(
+            query,
+            text_hits,
+            top_k=len(text_hits) or 1,
+            vector_weight=self._vector_weight,
+            lexical_weight=self._lexical_weight,
+            mmr_lambda=self._mmr_lambda,
+        )
+        text_order = tuple(item.hit for item in reranked)
+        metrics = {item.hit.index_chunk_id: item for item in reranked}
+        fused = reciprocal_rank_fusion(
+            text_order,
+            tuple(sorted(cross_hits, key=lambda hit: (hit.cosine_distance, hit.index_chunk_id.int))),
+            rrf_k=self._rrf_k,
+            cross_modal_weight_micros=self._cross_modal_weight_micros,
+            top_k=plan.top_k,
+        )
+        values: list[Evidence] = []
+        for rank, item in enumerate(fused, start=1):
+            hit = item.hit
+            rerank = metrics.get(hit.index_chunk_id)
+            asset = (
+                EvidenceAsset(
+                    id=hit.index_asset_id,
+                    media_type=hit.asset_media_type or "application/octet-stream",
+                    checksum_sha256=hit.asset_checksum_sha256 or "",
+                    content_url=f"/api/v1/index-assets/{hit.index_asset_id}/content",
+                    width=hit.asset_width,
+                    height=hit.asset_height,
+                )
+                if hit.index_asset_id is not None
+                else None
+            )
+            values.append(
+                Evidence(
+                    rank=rank,
+                    index_chunk_id=hit.index_chunk_id,
+                    indexed_document_version_id=hit.indexed_document_version_id,
+                    document_id=hit.document_id,
+                    document_version_id=hit.document_version_id,
+                    index_revision_id=hit.index_revision_id,
+                    ordinal=hit.ordinal,
+                    text=hit.text,
+                    source_location=hit.source_location,
+                    hierarchy=hit.hierarchy,
+                    source_metadata=hit.source_metadata,
+                    score=item.score,
+                    score_kind=EvidenceScoreKind.RECIPROCAL_RANK_FUSION,
+                    vector_similarity=(
+                        rerank.vector_similarity
+                        if rerank is not None
+                        else 1.0 - hit.cosine_distance
+                    ),
+                    lexical_score=rerank.lexical_score if rerank is not None else 0.0,
+                    lexical_coverage=rerank.lexical_coverage if rerank is not None else 0.0,
+                    modality=hit.modality,
+                    asset=asset,
+                    evidence_group_key=hit.evidence_group_key,
+                    matched_representations=item.matched_representations,
+                    text_space_rank=item.text_rank,
+                    cross_modal_rank=item.cross_modal_rank,
+                    fusion_score=item.score,
+                )
+            )
+        return tuple(values)
 
     @staticmethod
     def _require_enabled(request: RetrievalRequest) -> None:
@@ -176,19 +317,7 @@ class RetrievalService:
                 ErrorCode.INTERNAL_SERVER_ERROR,
                 diagnostic={"check": "duplicate_chunk"},
             )
-        for hit in result.hits:
-            if (
-                hit.workspace_id != plan.workspace_id
-                or hit.knowledge_base_id != plan.knowledge_base_id
-                or hit.index_revision_id != result.resolved_active_revision_id
-                or hit.build_status != plan.build_status
-                or hit.serving_status != plan.serving_status
-                or not hit.is_current_serving_version
-            ):
-                raise RetrievalExecutionError(
-                    ErrorCode.INTERNAL_SERVER_ERROR,
-                    diagnostic={"check": "mandatory_scope"},
-                )
+        self._validate_scope(plan, result)
         if plan.rerank:
             ordered_reranked = rerank_hits(
                 query,
@@ -220,9 +349,31 @@ class RetrievalService:
                 hierarchy=hit.hierarchy,
                 source_metadata=hit.source_metadata,
                 score=1.0 - hit.cosine_distance,
+                modality=hit.modality,
+                asset=RetrievalService._asset(hit),
+                evidence_group_key=hit.evidence_group_key,
+                matched_representations=(hit.representation_kind,),
             )
             for rank, hit in enumerate(ordered, start=1)
         )
+
+    @staticmethod
+    def _validate_scope(
+        plan: RetrievalQueryPlan, result: VectorSearchResult
+    ) -> None:
+        for hit in result.hits:
+            if (
+                hit.workspace_id != plan.workspace_id
+                or hit.knowledge_base_id != plan.knowledge_base_id
+                or hit.index_revision_id != result.resolved_active_revision_id
+                or hit.build_status != plan.build_status
+                or hit.serving_status != plan.serving_status
+                or not hit.is_current_serving_version
+            ):
+                raise RetrievalExecutionError(
+                    ErrorCode.INTERNAL_SERVER_ERROR,
+                    diagnostic={"check": "mandatory_scope"},
+                )
 
     @staticmethod
     def _evidence_from_reranked(rank: int, item: RerankedHit) -> Evidence:
@@ -244,4 +395,21 @@ class RetrievalService:
             vector_similarity=item.vector_similarity,
             lexical_score=item.lexical_score,
             lexical_coverage=item.lexical_coverage,
+            modality=hit.modality,
+            asset=RetrievalService._asset(hit),
+            evidence_group_key=hit.evidence_group_key,
+            matched_representations=(hit.representation_kind,),
+        )
+
+    @staticmethod
+    def _asset(hit) -> EvidenceAsset | None:
+        if hit.index_asset_id is None:
+            return None
+        return EvidenceAsset(
+            id=hit.index_asset_id,
+            media_type=hit.asset_media_type or "application/octet-stream",
+            checksum_sha256=hit.asset_checksum_sha256 or "",
+            content_url=f"/api/v1/index-assets/{hit.index_asset_id}/content",
+            width=hit.asset_width,
+            height=hit.asset_height,
         )

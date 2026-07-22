@@ -71,6 +71,22 @@ class EvidenceResponse(RetrievalPublicSchema):
     vector_similarity: float | None = None
     lexical_score: float = 0.0
     lexical_coverage: float = 0.0
+    modality: str = "text"
+    asset: "EvidenceAssetResponse | None" = None
+    evidence_group_key: str | None = None
+    matched_representations: tuple[str, ...] = ("text",)
+    text_space_rank: int | None = None
+    cross_modal_rank: int | None = None
+    fusion_score: float | None = None
+
+
+class EvidenceAssetResponse(RetrievalPublicSchema):
+    id: UUID
+    media_type: str
+    checksum_sha256: str
+    content_url: str
+    width: int | None = None
+    height: int | None = None
 
 
 class RetrievalDebugResponse(RetrievalPublicSchema):

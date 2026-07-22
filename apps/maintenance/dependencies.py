@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from rag_kb.adapters import LocalFileStore
+from rag_kb.adapters import LocalFileStore, LocalIndexAssetStore
 from rag_kb.auth import DevelopmentAuthProvider, SingleWorkspaceAccessPolicy
 from rag_kb.config import Settings, load_settings, validate_startup_environment
 from rag_kb.db import DatabaseProcess, DatabaseResources, create_database_resources
@@ -51,6 +51,7 @@ def build_maintenance_dependencies(
         unit_of_work,
         access_policy,
         resolved.model_provider.embedding,
+        resolved.model_provider.multimodal_embedding,
     )
     file_store = LocalFileStore(
         resolved.file_store.staging_path,
@@ -66,6 +67,14 @@ def build_maintenance_dependencies(
         cleanup_base_delay_seconds=resolved.file_store.cleanup_base_delay_seconds,
     )
     maintenance = resolved.maintenance
+    asset_store = None
+    if resolved.model_provider.multimodal_embedding is not None:
+        assert resolved.file_store.asset_staging_path is not None
+        assert resolved.file_store.asset_final_path is not None
+        asset_store = LocalIndexAssetStore(
+            resolved.file_store.asset_staging_path,
+            resolved.file_store.asset_final_path,
+        )
     return MaintenanceDependencies(
         settings=resolved,
         database=database,
@@ -81,5 +90,6 @@ def build_maintenance_dependencies(
             batch_size=maintenance.batch_size,
             retired_data_grace_seconds=maintenance.retired_data_grace_seconds,
             task_retention_seconds=maintenance.task_retention_seconds,
+            asset_store=asset_store,
         ),
     )

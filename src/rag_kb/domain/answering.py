@@ -68,6 +68,9 @@ class PromptEvidence:
     excerpt: str
     source_location: Mapping[str, Any]
     score: float | None = None
+    modality: str = "text"
+    asset_snapshot: Mapping[str, Any] | None = None
+    matched_representations: tuple[str, ...] = ("text",)
 
     def __post_init__(self) -> None:
         if self.citation_id != f"cite_{self.rank}" or self.rank < 1:
@@ -77,6 +80,12 @@ class PromptEvidence:
         object.__setattr__(
             self, "source_location", MappingProxyType(dict(self.source_location))
         )
+        if self.asset_snapshot is not None:
+            object.__setattr__(
+                self,
+                "asset_snapshot",
+                MappingProxyType(dict(self.asset_snapshot)),
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -241,6 +250,9 @@ class RenderedCitation:
     quoted_text: str
     source_location: Mapping[str, Any]
     score: float | None
+    modality: str = "text"
+    asset_snapshot: Mapping[str, Any] | None = None
+    matched_representations: tuple[str, ...] = ("text",)
 
     def __post_init__(self) -> None:
         if self.ordinal < 0 or not self.citation_id or not self.quoted_text:
@@ -248,6 +260,12 @@ class RenderedCitation:
         object.__setattr__(
             self, "source_location", MappingProxyType(dict(self.source_location))
         )
+        if self.asset_snapshot is not None:
+            object.__setattr__(
+                self,
+                "asset_snapshot",
+                MappingProxyType(dict(self.asset_snapshot)),
+            )
 
 
 @dataclass(frozen=True, slots=True)

@@ -29,6 +29,17 @@ class IterativeScanMode(StrEnum):
 class EvidenceScoreKind(StrEnum):
     COSINE_SIMILARITY = "cosine_similarity"
     HYBRID_RERANK = "hybrid_rerank"
+    RECIPROCAL_RANK_FUSION = "reciprocal_rank_fusion"
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceAsset:
+    id: UUID
+    media_type: str
+    checksum_sha256: str
+    content_url: str
+    width: int | None = None
+    height: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,12 +123,22 @@ class VectorSearchHit:
     build_status: str
     serving_status: str
     is_current_serving_version: bool
+    modality: str = "text"
+    evidence_group_key: str | None = None
+    representation_kind: str = "text"
+    index_asset_id: UUID | None = None
+    asset_media_type: str | None = None
+    asset_checksum_sha256: str | None = None
+    asset_width: int | None = None
+    asset_height: int | None = None
 
     def __post_init__(self) -> None:
         if self.ordinal < 0:
             raise ValueError("chunk ordinal must be non-negative")
-        if not self.text:
-            raise ValueError("evidence text must not be empty")
+        if not self.text and self.modality == "text":
+            raise ValueError("text evidence must not be empty")
+        if self.modality not in {"text", "image", "table"}:
+            raise ValueError("unsupported evidence modality")
         if (
             isinstance(self.cosine_distance, bool)
             or not isinstance(self.cosine_distance, (int, float))
@@ -135,6 +156,9 @@ class VectorSearchHit:
 class VectorSearchResult:
     resolved_active_revision_id: UUID
     hits: tuple[VectorSearchHit, ...] = ()
+    embedding_space_id: UUID | None = None
+    compatibility_fingerprint: str | None = None
+    space_role: str = "text_retrieval"
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,6 +179,13 @@ class Evidence:
     vector_similarity: float | None = None
     lexical_score: float = 0.0
     lexical_coverage: float = 0.0
+    modality: str = "text"
+    asset: EvidenceAsset | None = None
+    evidence_group_key: str | None = None
+    matched_representations: tuple[str, ...] = ("text",)
+    text_space_rank: int | None = None
+    cross_modal_rank: int | None = None
+    fusion_score: float | None = None
 
     def __post_init__(self) -> None:
         if self.rank < 1:
@@ -184,6 +215,10 @@ class Evidence:
             raise ValueError("vector similarity must be between -1 and 1")
         if self.lexical_score > 1.0 or self.lexical_coverage > 1.0:
             raise ValueError("lexical scores must be at most one")
+        if self.modality not in {"text", "image", "table"}:
+            raise ValueError("unsupported evidence modality")
+        if not self.text and self.modality == "text":
+            raise ValueError("text evidence must not be empty")
         object.__setattr__(self, "source_location", dict(self.source_location))
         object.__setattr__(self, "hierarchy", dict(self.hierarchy))
         object.__setattr__(self, "source_metadata", dict(self.source_metadata))

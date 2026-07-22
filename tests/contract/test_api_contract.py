@@ -639,6 +639,7 @@ class CommonContractTests(unittest.TestCase):
                 "/api/v1/knowledge-bases/{kb_id}/documents",
                 "/api/v1/indexing-jobs/{job_id}",
                 "/api/v1/indexing-jobs/{job_id}/retry",
+                "/api/v1/index-assets/{asset_id}/content",
                 "/api/v1/retrieval/query",
                 "/api/v1/chat/sessions",
                 "/api/v1/chat/sessions/{session_id}/messages",
@@ -793,6 +794,7 @@ class _FakeKnowledgeBaseService:
         key,
         *,
         name,
+        parsing_preset,
         chunking_preset,
         retrieval_defaults,
         answer_policy_defaults,
@@ -803,7 +805,12 @@ class _FakeKnowledgeBaseService:
         self.value = dataclass_replace(
             self.value,
             name=name,
-            chunking_config=profile_for_preset(chunking_preset).chunking_config,
+            parser_config=profile_for_preset(
+                chunking_preset, parsing_preset
+            ).parser_config,
+            chunking_config=profile_for_preset(
+                chunking_preset, parsing_preset
+            ).chunking_config,
             retrieval_defaults=retrieval_defaults,
             answer_policy_defaults=answer_policy_defaults,
         )

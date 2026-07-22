@@ -156,6 +156,9 @@ class ChatCitationResponse(PublicSchema):
     quoted_text: str
     source_location: dict[str, Any]
     score: float | None
+    modality: str = "text"
+    asset: dict[str, Any] | None = None
+    matched_representations: tuple[str, ...] = ("text",)
 
 
 class ChatRunResponse(PublicSchema):

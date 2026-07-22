@@ -16,12 +16,15 @@ from rag_kb.db.models import (
     DocumentSourceStatus,
     DocumentVersion as DocumentVersionRow,
     EmbeddingSpace as EmbeddingSpaceRow,
+    IndexArtifactManifest as IndexArtifactManifestRow,
+    IndexAsset as IndexAssetRow,
     IndexBuildStatus,
     IndexChunk as IndexChunkRow,
     IndexChunkPlan as IndexChunkPlanRow,
     IndexedDocumentVersion as IndexedDocumentVersionRow,
     IndexingJob as IndexingJobRow,
     IndexRevision as IndexRevisionRow,
+    IndexRevisionEmbeddingSpace as IndexRevisionEmbeddingSpaceRow,
     IndexRevisionStatus,
     IndexServingStatus,
     JobStatus,
@@ -34,6 +37,9 @@ from rag_kb.domain import (
     ErrorCode,
     IndexChunkWrite,
     IndexChunkPlan,
+    IndexArtifactManifest,
+    IndexAssetWrite,
+    IndexAssetSnapshot,
     ChunkBoundary,
     ChunkBoundaryReason,
     IndexCleanupResult,
@@ -53,6 +59,7 @@ from rag_kb.domain import (
     VectorRecordWrite,
     stable_chunk_id,
 )
+from rag_kb.document_processing import profile_fingerprint
 
 
 class SqlAlchemyIndexingRepository:
@@ -65,6 +72,65 @@ class SqlAlchemyIndexingRepository:
         self._session = session
         self._workspace_id = workspace_id
         self._ensure_active = ensure_active
+
+    async def get_asset(self, asset_id: UUID) -> IndexAssetSnapshot | None:
+        self._ensure_active()
+        row = await self._session.scalar(
+            select(IndexAssetRow).where(
+                IndexAssetRow.workspace_id == self._workspace_id,
+                IndexAssetRow.id == asset_id,
+            )
+        )
+        if row is None:
+            return None
+        return IndexAssetSnapshot(
+            id=row.id,
+            workspace_id=row.workspace_id,
+            kb_id=row.kb_id,
+            document_id=row.document_id,
+            document_version_id=row.document_version_id,
+            indexed_document_version_id=row.indexed_document_version_id,
+            storage_uri=row.storage_uri,
+            media_type=row.media_type,
+            checksum_sha256=row.checksum_sha256,
+        )
+
+    async def list_retired_assets(
+        self, *, data_before: datetime, limit: int
+    ) -> tuple[IndexAssetSnapshot, ...]:
+        self._ensure_active()
+        rows = (
+            await self._session.scalars(
+                select(IndexAssetRow)
+                .join(
+                    IndexedDocumentVersionRow,
+                    IndexedDocumentVersionRow.id
+                    == IndexAssetRow.indexed_document_version_id,
+                )
+                .where(
+                    IndexAssetRow.workspace_id == self._workspace_id,
+                    IndexedDocumentVersionRow.serving_status
+                    == IndexServingStatus.RETIRED,
+                    IndexedDocumentVersionRow.updated_at <= data_before,
+                )
+                .order_by(IndexAssetRow.created_at, IndexAssetRow.id)
+                .limit(limit)
+            )
+        ).all()
+        return tuple(
+            IndexAssetSnapshot(
+                id=row.id,
+                workspace_id=row.workspace_id,
+                kb_id=row.kb_id,
+                document_id=row.document_id,
+                document_version_id=row.document_version_id,
+                indexed_document_version_id=row.indexed_document_version_id,
+                storage_uri=row.storage_uri,
+                media_type=row.media_type,
+                checksum_sha256=row.checksum_sha256,
+            )
+            for row in rows
+        )
 
     async def oldest_claimable_at(
         self, *, observed_at: datetime, max_attempts: int
@@ -229,6 +295,18 @@ class SqlAlchemyIndexingRepository:
                                 )
                             ),
                             exists(
+                                select(IndexAssetRow.id).where(
+                                    IndexAssetRow.indexed_document_version_id
+                                    == IndexedDocumentVersionRow.id
+                                )
+                            ),
+                            exists(
+                                select(IndexArtifactManifestRow.indexed_document_version_id).where(
+                                    IndexArtifactManifestRow.indexed_document_version_id
+                                    == IndexedDocumentVersionRow.id
+                                )
+                            ),
+                            exists(
                                 select(IndexChunkPlanRow.indexed_document_version_id)
                                 .where(
                                     IndexChunkPlanRow.indexed_document_version_id
@@ -261,6 +339,8 @@ class SqlAlchemyIndexingRepository:
         vectors_deleted = 0
         chunks_deleted = 0
         plans_deleted = 0
+        manifests_deleted = 0
+        assets_deleted = 0
         if chunk_ids:
             vectors_deleted = int(
                 (
@@ -290,6 +370,26 @@ class SqlAlchemyIndexingRepository:
                     await self._session.execute(
                         delete(IndexChunkPlanRow).where(
                             IndexChunkPlanRow.indexed_document_version_id.in_(targets)
+                        )
+                    )
+                ).rowcount
+                or 0
+            )
+            assets_deleted = int(
+                (
+                    await self._session.execute(
+                        delete(IndexAssetRow).where(
+                            IndexAssetRow.indexed_document_version_id.in_(targets)
+                        )
+                    )
+                ).rowcount
+                or 0
+            )
+            manifests_deleted = int(
+                (
+                    await self._session.execute(
+                        delete(IndexArtifactManifestRow).where(
+                            IndexArtifactManifestRow.indexed_document_version_id.in_(targets)
                         )
                     )
                 ).rowcount
@@ -337,6 +437,8 @@ class SqlAlchemyIndexingRepository:
             vectors_deleted=vectors_deleted,
             chunks_deleted=chunks_deleted,
             plans_deleted=plans_deleted,
+            manifests_deleted=manifests_deleted,
+            assets_deleted=assets_deleted,
             jobs_deleted=jobs_deleted,
         )
 
@@ -827,7 +929,11 @@ class SqlAlchemyIndexingRepository:
             job.status is JobStatus.COMPLETED
             and target.build_status is IndexBuildStatus.READY
         ):
-            return _target(row, already_complete=True)
+            return _target(
+                row,
+                already_complete=True,
+                space_roles=await self._space_roles(revision.id),
+            )
         if job.status is JobStatus.CANCELLED or target.serving_status is IndexServingStatus.RETIRED:
             raise IndexingCancelled
         if target.build_status is IndexBuildStatus.READY or job.status is JobStatus.COMPLETED:
@@ -859,7 +965,34 @@ class SqlAlchemyIndexingRepository:
         job.error_code = None
         job.error_detail = None
         await self._session.flush()
-        return _target(row)
+        return _target(row, space_roles=await self._space_roles(revision.id))
+
+    async def _space_roles(
+        self, revision_id: UUID
+    ) -> tuple[dict[str, UUID], dict[str, EmbeddingSpaceDefinition]]:
+        rows = (
+            await self._session.execute(
+                select(IndexRevisionEmbeddingSpaceRow, EmbeddingSpaceRow)
+                .join(
+                    EmbeddingSpaceRow,
+                    and_(
+                        EmbeddingSpaceRow.id
+                        == IndexRevisionEmbeddingSpaceRow.embedding_space_id,
+                        EmbeddingSpaceRow.workspace_id
+                        == IndexRevisionEmbeddingSpaceRow.workspace_id,
+                    ),
+                )
+                .where(
+                    IndexRevisionEmbeddingSpaceRow.workspace_id == self._workspace_id,
+                    IndexRevisionEmbeddingSpaceRow.index_revision_id == revision_id,
+                )
+            )
+        ).all()
+        ids = {binding.role: embedding.id for binding, embedding in rows}
+        definitions = {
+            binding.role: _embedding(embedding) for binding, embedding in rows
+        }
+        return ids, definitions
 
     async def get_chunk_plan(
         self,
@@ -944,6 +1077,138 @@ class SqlAlchemyIndexingRepository:
             )
         return winner
 
+    async def get_artifact_manifest(
+        self, command: IndexingCommand
+    ) -> IndexArtifactManifest | None:
+        self._ensure_active()
+        row = (
+            await self._session.execute(
+                select(IndexArtifactManifestRow)
+                .join(
+                    IndexedDocumentVersionRow,
+                    IndexedDocumentVersionRow.id
+                    == IndexArtifactManifestRow.indexed_document_version_id,
+                )
+                .join(
+                    IndexingJobRow,
+                    IndexingJobRow.indexed_document_version_id
+                    == IndexedDocumentVersionRow.id,
+                )
+                .where(
+                    IndexedDocumentVersionRow.workspace_id == self._workspace_id,
+                    IndexingJobRow.workspace_id == self._workspace_id,
+                    IndexingJobRow.id == command.job_id,
+                    IndexedDocumentVersionRow.id
+                    == command.indexed_document_version_id,
+                )
+            )
+        ).scalar_one_or_none()
+        return _artifact_manifest(row) if row is not None else None
+
+    async def create_or_get_artifact_manifest(
+        self, command: IndexingCommand, proposed: IndexArtifactManifest
+    ) -> IndexArtifactManifest:
+        self._ensure_active()
+        row = await self._load(command, lock=True)
+        if row is None or not _is_writable(row[0], row[1]):
+            raise IndexingCancelled
+        if proposed.indexed_document_version_id != row[1].id:
+            raise _execution_error(
+                ErrorCode.INDEX_CHUNK_PLAN_MISMATCH,
+                IndexingPhase.PERSISTING,
+                "artifact_manifest_target",
+            )
+        await self._session.execute(
+            pg_insert(IndexArtifactManifestRow)
+            .values(
+                indexed_document_version_id=proposed.indexed_document_version_id,
+                source_checksum_sha256=proposed.source_checksum_sha256,
+                profile_fingerprint=proposed.profile_fingerprint,
+                element_sequence_hash=proposed.element_sequence_hash,
+                asset_manifest_hash=proposed.asset_manifest_hash,
+                unit_plan=list(proposed.unit_plan),
+                representation_matrix=list(proposed.representation_matrix),
+                unit_count=proposed.unit_count,
+                asset_count=proposed.asset_count,
+                representation_count=proposed.representation_count,
+                manifest_hash=proposed.manifest_hash,
+            )
+            .on_conflict_do_nothing(index_elements=["indexed_document_version_id"])
+        )
+        winner_row = await self._session.get(
+            IndexArtifactManifestRow, proposed.indexed_document_version_id
+        )
+        assert winner_row is not None
+        winner = _artifact_manifest(winner_row)
+        if winner != proposed:
+            raise _execution_error(
+                ErrorCode.INDEX_CHUNK_PLAN_MISMATCH,
+                IndexingPhase.PERSISTING,
+                "artifact_manifest_cas",
+            )
+        return winner
+
+    async def upsert_assets(
+        self, command: IndexingCommand, assets: tuple[IndexAssetWrite, ...]
+    ) -> bool:
+        self._ensure_active()
+        row = await self._load(command, lock=True)
+        if row is None:
+            return False
+        job, target, version, *_ = row
+        if not _is_writable(job, target):
+            return False
+        if not assets:
+            return True
+        values = [
+            {
+                "id": asset.id,
+                "workspace_id": self._workspace_id,
+                "kb_id": target.kb_id,
+                "document_id": target.document_id,
+                "document_version_id": version.id,
+                "indexed_document_version_id": target.id,
+                "asset_key": asset.asset_key,
+                "kind": asset.kind,
+                "storage_uri": asset.storage_uri,
+                "media_type": asset.media_type,
+                "checksum_sha256": asset.checksum_sha256,
+                "width": asset.width,
+                "height": asset.height,
+                "source_location": asset.source_location,
+                "processing_metadata": asset.processing_metadata,
+            }
+            for asset in assets
+        ]
+        inserted = pg_insert(IndexAssetRow).values(values)
+        stored = (
+            await self._session.execute(
+                inserted.on_conflict_do_update(
+                    index_elements=["indexed_document_version_id", "asset_key"],
+                    set_={"processing_metadata": IndexAssetRow.processing_metadata},
+                    where=and_(
+                        IndexAssetRow.id == inserted.excluded.id,
+                        IndexAssetRow.checksum_sha256 == inserted.excluded.checksum_sha256,
+                        IndexAssetRow.storage_uri == inserted.excluded.storage_uri,
+                        IndexAssetRow.media_type == inserted.excluded.media_type,
+                        IndexAssetRow.kind == inserted.excluded.kind,
+                        IndexAssetRow.source_location == inserted.excluded.source_location,
+                        IndexAssetRow.processing_metadata
+                        == inserted.excluded.processing_metadata,
+                    ),
+                ).returning(IndexAssetRow.id, IndexAssetRow.asset_key)
+            )
+        ).all()
+        if {item.asset_key: item.id for item in stored} != {
+            item.asset_key: item.id for item in assets
+        }:
+            raise _execution_error(
+                ErrorCode.INDEX_PERSISTENCE_FAILED,
+                IndexingPhase.PERSISTING,
+                "stable_asset_key",
+            )
+        return True
+
     async def set_phase(self, command: IndexingCommand, phase: IndexingPhase) -> bool:
         self._ensure_active()
         row = await self._load(command, lock=True)
@@ -963,8 +1228,6 @@ class SqlAlchemyIndexingRepository:
         vectors: tuple[VectorRecordWrite, ...],
     ) -> bool:
         self._ensure_active()
-        if len(chunks) != len(vectors):
-            raise ValueError("every persisted chunk requires one vector")
         row = await self._load(command, lock=True)
         if row is None:
             return False
@@ -981,6 +1244,11 @@ class SqlAlchemyIndexingRepository:
                 "kb_id": target.kb_id,
                 "indexed_document_version_id": target.id,
                 "ordinal": chunk.ordinal,
+                "unit_key": chunk.unit_key or f"legacy-text:{chunk.ordinal}",
+                "modality": chunk.modality.value,
+                "index_asset_id": chunk.index_asset_id,
+                "evidence_group_key": chunk.evidence_group_key,
+                "relations": dict(chunk.relations or {}),
                 "content": chunk.content,
                 "content_hash": chunk.content_hash,
                 "token_count": chunk.token_count,
@@ -994,9 +1262,14 @@ class SqlAlchemyIndexingRepository:
         stored_chunks = (
             await self._session.execute(
                 chunk_insert.on_conflict_do_update(
-                    index_elements=["indexed_document_version_id", "ordinal"],
+                    index_elements=["indexed_document_version_id", "unit_key"],
                     set_={
                         "content": chunk_insert.excluded.content,
+                        "ordinal": chunk_insert.excluded.ordinal,
+                        "modality": chunk_insert.excluded.modality,
+                        "index_asset_id": chunk_insert.excluded.index_asset_id,
+                        "evidence_group_key": chunk_insert.excluded.evidence_group_key,
+                        "relations": chunk_insert.excluded.relations,
                         "content_hash": chunk_insert.excluded.content_hash,
                         "token_count": chunk_insert.excluded.token_count,
                         "source_location": chunk_insert.excluded.source_location,
@@ -1026,6 +1299,7 @@ class SqlAlchemyIndexingRepository:
                 "kb_id": target.kb_id,
                 "index_chunk_id": vector.index_chunk_id,
                 "embedding_space_id": vector.embedding_space_id,
+                "representation_kind": vector.representation_kind,
                 "embedding": list(vector.embedding),
             }
             for vector in vectors
@@ -1034,19 +1308,22 @@ class SqlAlchemyIndexingRepository:
         stored_vectors = (
             await self._session.execute(
                 vector_insert.on_conflict_do_update(
-                    index_elements=["index_chunk_id"],
-                    set_={"embedding": vector_insert.excluded.embedding},
-                    where=(
-                        VectorRecordRow.embedding_space_id
-                        == vector_insert.excluded.embedding_space_id
+                    index_elements=[
+                        "index_chunk_id",
+                        "embedding_space_id",
+                        "representation_kind",
+                    ],
+                    set_={"embedding": VectorRecordRow.embedding},
+                    where=and_(
+                        VectorRecordRow.id == vector_insert.excluded.id,
+                        VectorRecordRow.embedding
+                        == vector_insert.excluded.embedding,
                     ),
                 ).returning(VectorRecordRow.id, VectorRecordRow.index_chunk_id)
             )
         ).all()
-        expected_vector_ids = {
-            vector.index_chunk_id: vector.id for vector in vectors
-        }
-        if {item.index_chunk_id: item.id for item in stored_vectors} != expected_vector_ids:
+        expected_vector_ids = {vector.id for vector in vectors}
+        if {item.id for item in stored_vectors} != expected_vector_ids:
             raise _execution_error(
                 ErrorCode.INDEX_PERSISTENCE_FAILED,
                 IndexingPhase.PERSISTING,
@@ -1087,8 +1364,11 @@ class SqlAlchemyIndexingRepository:
                 select(
                     IndexChunkRow.ordinal,
                     IndexChunkRow.id.label("chunk_id"),
+                    IndexChunkRow.unit_key,
+                    IndexChunkRow.index_asset_id,
                     VectorRecordRow.id.label("vector_id"),
                     VectorRecordRow.embedding_space_id,
+                    VectorRecordRow.representation_kind,
                 )
                 .outerjoin(
                     VectorRecordRow,
@@ -1098,16 +1378,93 @@ class SqlAlchemyIndexingRepository:
                 .order_by(IndexChunkRow.ordinal)
             )
         ).all()
-        valid = (
-            len(records) == expected_chunks
-            and tuple(record.ordinal for record in records) == tuple(range(expected_chunks))
-            and all(
-                record.chunk_id == stable_chunk_id(target.id, record.ordinal)
-                and record.vector_id is not None
-                and record.embedding_space_id == embedding.id
-                for record in records
+        manifest_row = await self._session.get(IndexArtifactManifestRow, target.id)
+        if manifest_row is None:
+            grouped: dict[int, list[Any]] = {}
+            for record in records:
+                grouped.setdefault(record.ordinal, []).append(record)
+            valid = (
+                len(grouped) == expected_chunks
+                and tuple(sorted(grouped)) == tuple(range(expected_chunks))
+                and all(
+                    items[0].chunk_id == stable_chunk_id(target.id, ordinal)
+                    and any(
+                        item.vector_id is not None
+                        and item.embedding_space_id == embedding.id
+                        and item.representation_kind == "text"
+                        for item in items
+                    )
+                    for ordinal, items in grouped.items()
+                )
             )
-        )
+        else:
+            manifest = _artifact_manifest(manifest_row)
+            by_chunk = {str(record.chunk_id): [] for record in records}
+            for record in records:
+                if record.vector_id is not None:
+                    by_chunk[str(record.chunk_id)].append(
+                        (record.embedding_space_id, record.representation_kind)
+                    )
+            role_spaces = (await self._space_roles(revision.id))[0]
+            asset_rows = (
+                await self._session.execute(
+                    select(IndexAssetRow.id, IndexAssetRow.asset_key).where(
+                        IndexAssetRow.indexed_document_version_id == target.id
+                    )
+                )
+            ).all()
+            asset_ids = {item.id for item in asset_rows}
+            asset_ids_by_key = {item.asset_key: item.id for item in asset_rows}
+            planned_units = {
+                item.get("unit_id"): item for item in manifest.unit_plan
+            }
+            valid = (
+                manifest.unit_count == expected_chunks
+                and manifest.asset_count == len(asset_ids)
+                and manifest.source_checksum_sha256 == version.checksum_sha256
+                and manifest.profile_fingerprint
+                == profile_fingerprint(
+                    revision.parser_config,
+                    revision.chunking_config,
+                    revision.enrichment_config,
+                    revision.representation_config,
+                )
+                and manifest.unit_count == len(manifest.unit_plan)
+                and manifest.representation_count
+                == len(manifest.representation_matrix)
+                and len({record.chunk_id for record in records}) == expected_chunks
+                and tuple(sorted({record.ordinal for record in records}))
+                == tuple(range(expected_chunks))
+                and len(planned_units) == expected_chunks
+            )
+            for record in records:
+                planned = planned_units.get(str(record.chunk_id))
+                if (
+                    planned is None
+                    or planned.get("unit_key") != record.unit_key
+                    or planned.get("ordinal") != record.ordinal
+                    or (
+                        planned.get("asset_key") is not None
+                        and record.index_asset_id
+                        != asset_ids_by_key.get(planned.get("asset_key"))
+                    )
+                    or (
+                        planned.get("asset_key") is None
+                        and record.index_asset_id is not None
+                    )
+                ):
+                    valid = False
+                    break
+            for requirement in manifest.representation_matrix:
+                if not requirement.get("required", True):
+                    continue
+                required_space = role_spaces.get(requirement.get("space_role"))
+                pair = (required_space, requirement.get("representation_kind"))
+                if required_space is None or pair not in by_chunk.get(
+                    requirement.get("unit_id", ""), []
+                ):
+                    valid = False
+                    break
         if not valid:
             raise IndexingExecutionError(
                 ErrorCode.INDEX_INCOMPLETE,
@@ -1237,8 +1594,19 @@ def _is_writable(job: IndexingJobRow, target: IndexedDocumentVersionRow) -> bool
     )
 
 
-def _target(row, *, already_complete: bool = False) -> IndexingTarget:
+def _target(
+    row,
+    *,
+    already_complete: bool = False,
+    space_roles: tuple[
+        dict[str, UUID], dict[str, EmbeddingSpaceDefinition]
+    ] | None = None,
+) -> IndexingTarget:
     job, target, version, revision, embedding, _knowledge_base = row
+    space_ids, spaces = space_roles or (
+        {"text_retrieval": embedding.id},
+        {"text_retrieval": _embedding(embedding)},
+    )
     return IndexingTarget(
         job_id=job.id,
         indexed_document_version_id=target.id,
@@ -1258,6 +1626,10 @@ def _target(row, *, already_complete: bool = False) -> IndexingTarget:
         chunking_config=dict(revision.chunking_config),
         embedding_space=_embedding(embedding),
         already_complete=already_complete,
+        enrichment_config=dict(revision.enrichment_config),
+        representation_config=dict(revision.representation_config),
+        embedding_space_ids=space_ids,
+        embedding_spaces=spaces,
     )
 
 
@@ -1286,6 +1658,31 @@ def _chunk_plan(row: IndexChunkPlanRow) -> IndexChunkPlan:
             ErrorCode.INDEX_CHUNK_PLAN_MISMATCH,
             IndexingPhase.SEMANTIC_ANALYSIS,
             "chunk_plan_shape",
+        ) from error
+
+
+def _artifact_manifest(row: IndexArtifactManifestRow) -> IndexArtifactManifest:
+    try:
+        return IndexArtifactManifest(
+            indexed_document_version_id=row.indexed_document_version_id,
+            source_checksum_sha256=row.source_checksum_sha256,
+            profile_fingerprint=row.profile_fingerprint,
+            element_sequence_hash=row.element_sequence_hash,
+            asset_manifest_hash=row.asset_manifest_hash,
+            unit_plan=tuple(dict(item) for item in row.unit_plan),
+            representation_matrix=tuple(
+                dict(item) for item in row.representation_matrix
+            ),
+            unit_count=row.unit_count,
+            asset_count=row.asset_count,
+            representation_count=row.representation_count,
+            manifest_hash=row.manifest_hash,
+        )
+    except (TypeError, ValueError) as error:
+        raise _execution_error(
+            ErrorCode.INDEX_CHUNK_PLAN_MISMATCH,
+            IndexingPhase.PERSISTING,
+            "artifact_manifest_shape",
         ) from error
 
 

@@ -272,6 +272,13 @@ class SqlAlchemyChatRepository:
                     document_version_id_snapshot=item.document_version_id,
                     quoted_text=item.quoted_text,
                     source_location=dict(item.source_location),
+                    modality=item.modality,
+                    asset_snapshot=(
+                        dict(item.asset_snapshot)
+                        if item.asset_snapshot is not None
+                        else None
+                    ),
+                    matched_representations=list(item.matched_representations),
                     score=item.score,
                 )
                 for item in command.rendered.citations
@@ -900,6 +907,13 @@ def _run_rows(rows) -> ChatRun:
             quoted_text=citation.quoted_text,
             source_location=dict(citation.source_location),
             score=citation.score,
+            modality=citation.modality,
+            asset_snapshot=(
+                dict(citation.asset_snapshot)
+                if citation.asset_snapshot is not None
+                else None
+            ),
+            matched_representations=tuple(citation.matched_representations),
         )
         for _, _, citation in rows
         if citation is not None
@@ -1089,6 +1103,10 @@ def _citations_equal(rows, command: ChatTerminalSuccessCommand) -> bool:
         and row.quoted_text == item.quoted_text
         and row.source_location == dict(item.source_location)
         and row.score == item.score
+        and row.modality == item.modality
+        and row.asset_snapshot
+        == (dict(item.asset_snapshot) if item.asset_snapshot is not None else None)
+        and tuple(row.matched_representations) == item.matched_representations
         for row, item in zip(rows, expected, strict=True)
     )
 

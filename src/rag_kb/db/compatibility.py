@@ -8,7 +8,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 
-EXPECTED_REVISION = "0007_chat_session_context"
+EXPECTED_REVISION = "0008_multimodal_index_units"
 EXPECTED_POSTGRES_MAJOR = 18
 EXPECTED_PGVECTOR_VERSION = "0.8.2"
 EXPECTED_VECTOR_TABLE = "vector_record_1024"
@@ -30,7 +30,10 @@ EXPECTED_APPLICATION_TABLES = frozenset(
         "eval_run",
         "index_chunk",
         "index_chunk_plan",
+        "index_asset",
+        "index_artifact_manifest",
         "index_revision",
+        "index_revision_embedding_space",
         "indexed_document_version",
         "indexing_job",
         "knowledge_base",

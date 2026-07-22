@@ -8,7 +8,12 @@ from uuid import UUID
 
 from pydantic import Field, field_validator, model_validator
 
-from rag_kb.domain import AnswerStyle, ChunkingPreset, InsufficiencyPolicy
+from rag_kb.domain import (
+    AnswerStyle,
+    ChunkingPreset,
+    InsufficiencyPolicy,
+    ParsingPreset,
+)
 from rag_kb.schemas.common import OpaqueCursor, PublicSchema
 
 
@@ -30,6 +35,15 @@ class KnowledgeBaseChunking(PublicSchema):
     preset: ChunkingPreset = ChunkingPreset.STRUCTURAL_BALANCED_V2
 
 
+class KnowledgeBaseParsing(PublicSchema):
+    preset: ParsingPreset = ParsingPreset.TEXT_LOCAL_V1
+
+
+class KnowledgeBaseParsingResponse(PublicSchema):
+    preset: ParsingPreset
+    profile: Literal["unstructured_local_v1", "unstructured_multimodal_local_v1"]
+
+
 class KnowledgeBaseChunkingResponse(PublicSchema):
     preset: ChunkingPreset | Literal["legacy_incompatible"]
     profile: Literal[
@@ -41,6 +55,7 @@ class KnowledgeBaseChunkingResponse(PublicSchema):
 
 class KnowledgeBaseCreate(PublicSchema):
     name: KnowledgeBaseName
+    parsing: KnowledgeBaseParsing = KnowledgeBaseParsing()
     chunking: KnowledgeBaseChunking = KnowledgeBaseChunking()
     retrieval_defaults: RetrievalDefaults = RetrievalDefaults()
     answer_policy_defaults: KnowledgeBaseAnswerPolicyDefaults = (
@@ -88,6 +103,7 @@ class KnowledgeBaseResponse(PublicSchema):
     source_change_seq: int
     active_index_revision_id: UUID
     embedding_space_id: UUID
+    parsing: KnowledgeBaseParsingResponse
     chunking: KnowledgeBaseChunkingResponse
     retrieval_defaults: RetrievalDefaults
     answer_policy_defaults: KnowledgeBaseAnswerPolicyDefaults = (

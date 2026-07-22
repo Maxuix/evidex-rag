@@ -16,7 +16,9 @@ from rag_kb.adapters import (
     LangChainChatModelAdapter,
     LangChainEmbeddingModelAdapter,
     LocalFileStore,
+    LocalIndexAssetStore,
     PgVectorStore,
+    QwenMultimodalEmbeddingAdapter,
     UnstructuredProcessor,
 )
 from rag_kb.config import (
@@ -72,9 +74,11 @@ class WorkerDependencies:
     auth_provider: DevelopmentAuthProvider
     access_policy: SingleWorkspaceAccessPolicy
     file_store: LocalFileStore
+    asset_store: LocalIndexAssetStore | None
     reconciliation_service: FileReconciliationService
     document_processor: UnstructuredProcessor
     embedding_provider: EmbeddingModelAdapter
+    multimodal_embedding_provider: QwenMultimodalEmbeddingAdapter | None
     vector_store: PgVectorStore
     retrieval_service: RetrievalService
     chat_model_adapter: ChatModelAdapter
@@ -133,19 +137,33 @@ def build_worker_dependencies(
         unit_of_work,
         access_policy,
         resolved_settings.model_provider.embedding,
+        resolved_settings.model_provider.multimodal_embedding,
     )
     file_store = LocalFileStore(
         resolved_settings.file_store.staging_path,
         resolved_settings.file_store.final_path,
     )
+    parser_limits = ParserLimits(
+        max_chunks=resolved_settings.parser.max_chunks,
+        max_extracted_characters=(
+            resolved_settings.parser.max_extracted_characters
+        ),
+        max_metadata_bytes=resolved_settings.parser.max_metadata_bytes,
+        max_assets=resolved_settings.parser.max_assets,
+        max_total_asset_bytes=resolved_settings.parser.max_total_asset_bytes,
+        max_image_pixels=resolved_settings.parser.max_image_pixels,
+        max_image_width=resolved_settings.parser.max_image_width,
+        max_image_height=resolved_settings.parser.max_image_height,
+        max_ocr_characters=resolved_settings.parser.max_ocr_characters,
+        max_ocr_tokens=resolved_settings.parser.max_ocr_tokens,
+        max_caption_tokens=resolved_settings.parser.max_caption_tokens,
+        max_table_html_bytes=resolved_settings.parser.max_table_html_bytes,
+        max_units=resolved_settings.parser.max_units,
+        max_representations=resolved_settings.parser.max_representations,
+    )
     document_processor = UnstructuredProcessor(
-        ParserLimits(
-            max_chunks=resolved_settings.parser.max_chunks,
-            max_extracted_characters=(
-                resolved_settings.parser.max_extracted_characters
-            ),
-            max_metadata_bytes=resolved_settings.parser.max_metadata_bytes,
-        )
+        parser_limits,
+        resolved_settings.file_store.parser_temp_path,
     )
     embedding_settings = resolved_settings.model_provider.embedding
     embedding_space = embedding_space_definition(embedding_settings)
@@ -158,6 +176,27 @@ def build_worker_dependencies(
         max_retries=embedding_settings.max_retries,
         max_concurrency=embedding_settings.max_concurrency,
     )
+    multimodal_settings = resolved_settings.model_provider.multimodal_embedding
+    multimodal_embedding_provider = None
+    asset_store = None
+    if multimodal_settings is not None:
+        assert resolved_settings.file_store.asset_staging_path is not None
+        assert resolved_settings.file_store.asset_final_path is not None
+        multimodal_space = embedding_space_definition(multimodal_settings)
+        multimodal_embedding_provider = QwenMultimodalEmbeddingAdapter(
+            endpoint=str(multimodal_settings.base_url),
+            api_key=multimodal_settings.api_key.get_secret_value(),
+            embedding_space=multimodal_space,
+            max_batch_size=multimodal_settings.max_batch_size,
+            timeout_seconds=multimodal_settings.timeout_seconds,
+            max_retries=multimodal_settings.max_retries,
+            max_concurrency=multimodal_settings.max_concurrency,
+            text_query_template=multimodal_settings.text_query_template,
+        )
+        asset_store = LocalIndexAssetStore(
+            resolved_settings.file_store.asset_staging_path,
+            resolved_settings.file_store.asset_final_path,
+        )
     chat_settings = resolved_settings.model_provider.chat
     chat_adapter_arguments = {
         "base_url": str(chat_settings.base_url),
@@ -179,6 +218,9 @@ def build_worker_dependencies(
         document_processor,
         embedding_provider,
         FixedPgVectorSpace(embedding_space),
+        asset_store=asset_store,
+        multimodal_embedding_provider=multimodal_embedding_provider,
+        parser_limits=parser_limits,
     )
     poller = resolved_settings.job_poller
     resolved_worker_id = worker_id or _worker_id()
@@ -200,6 +242,20 @@ def build_worker_dependencies(
         vector_weight=resolved_settings.retrieval.vector_weight,
         lexical_weight=resolved_settings.retrieval.lexical_weight,
         mmr_lambda=resolved_settings.retrieval.mmr_lambda,
+        multimodal_embedding_provider=multimodal_embedding_provider,
+        cross_modal_candidate_count=(
+            resolved_settings.retrieval.cross_modal_candidate_count
+        ),
+        cross_modal_min_cosine_similarity=(
+            resolved_settings.retrieval.cross_modal_min_cosine_similarity
+        ),
+        text_min_cosine_similarity=(
+            resolved_settings.retrieval.min_cosine_similarity
+        ),
+        rrf_k=resolved_settings.retrieval.rrf_k,
+        cross_modal_weight_micros=(
+            resolved_settings.retrieval.cross_modal_weight_micros
+        ),
     )
     evidence_assessor = CosineEvidenceAssessmentStep(
         resolved_settings.retrieval.min_cosine_similarity,
@@ -284,6 +340,7 @@ def build_worker_dependencies(
         ),
         access_policy=access_policy,
         file_store=file_store,
+        asset_store=asset_store,
         reconciliation_service=FileReconciliationService(
             unit_of_work,
             content_services.documents,
@@ -297,6 +354,7 @@ def build_worker_dependencies(
         ),
         document_processor=document_processor,
         embedding_provider=embedding_provider,
+        multimodal_embedding_provider=multimodal_embedding_provider,
         vector_store=vector_store,
         retrieval_service=retrieval_service,
         chat_model_adapter=chat_model_adapter,

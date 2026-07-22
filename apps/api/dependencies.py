@@ -11,7 +11,9 @@ from rag_kb.adapters import (
     FixedPgVectorSpace,
     LangChainEmbeddingModelAdapter,
     LocalFileStore,
+    LocalIndexAssetStore,
     PgVectorStore,
+    QwenMultimodalEmbeddingAdapter,
 )
 from rag_kb.config import (
     Settings,
@@ -34,6 +36,7 @@ from rag_kb.services import (
     DocumentService,
     FileAdmissionService,
     IndexingJobService,
+    IndexAssetService,
     KnowledgeBaseService,
     SourceFileService,
     build_content_services,
@@ -57,10 +60,13 @@ class ApiDependencies:
     knowledge_base_service: KnowledgeBaseService
     document_service: DocumentService
     file_store: LocalFileStore
+    asset_store: LocalIndexAssetStore | None
+    index_asset_service: IndexAssetService | None
     source_file_service: SourceFileService
     file_admission_service: FileAdmissionService
     indexing_job_service: IndexingJobService
     embedding_provider: EmbeddingModelAdapter
+    multimodal_embedding_provider: QwenMultimodalEmbeddingAdapter | None
     vector_store: PgVectorStore
     retrieval_service: RetrievalService
     chat_service: ChatService
@@ -114,11 +120,36 @@ def build_api_dependencies(
         max_retries=embedding.max_retries,
         max_concurrency=embedding.max_concurrency,
     )
+    multimodal_settings = resolved_settings.model_provider.multimodal_embedding
+    multimodal_embedding_provider = None
+    asset_store = None
+    if multimodal_settings is not None:
+        assert resolved_settings.file_store.asset_staging_path is not None
+        assert resolved_settings.file_store.asset_final_path is not None
+        multimodal_embedding_provider = QwenMultimodalEmbeddingAdapter(
+            endpoint=str(multimodal_settings.base_url),
+            api_key=multimodal_settings.api_key.get_secret_value(),
+            embedding_space=embedding_space_definition(multimodal_settings),
+            max_batch_size=multimodal_settings.max_batch_size,
+            timeout_seconds=multimodal_settings.timeout_seconds,
+            max_retries=multimodal_settings.max_retries,
+            max_concurrency=multimodal_settings.max_concurrency,
+            text_query_template=multimodal_settings.text_query_template,
+        )
+        asset_store = LocalIndexAssetStore(
+            resolved_settings.file_store.asset_staging_path,
+            resolved_settings.file_store.asset_final_path,
+        )
     vector_store = PgVectorStore(
         database.sessions,
         FixedPgVectorSpace(embedding_space),
     )
-    content_services = build_content_services(unit_of_work, access_policy, embedding)
+    content_services = build_content_services(
+        unit_of_work,
+        access_policy,
+        embedding,
+        resolved_settings.model_provider.multimodal_embedding,
+    )
     file_store = LocalFileStore(
         resolved_settings.file_store.staging_path,
         resolved_settings.file_store.final_path,
@@ -153,6 +184,12 @@ def build_api_dependencies(
         knowledge_base_service=content_services.knowledge_bases,
         document_service=content_services.documents,
         file_store=file_store,
+        asset_store=asset_store,
+        index_asset_service=(
+            IndexAssetService(unit_of_work, access_policy, asset_store)
+            if asset_store is not None
+            else None
+        ),
         source_file_service=SourceFileService(
             content_services.documents,
             file_store,
@@ -171,6 +208,7 @@ def build_api_dependencies(
         ),
         indexing_job_service=IndexingJobService(unit_of_work, access_policy),
         embedding_provider=embedding_provider,
+        multimodal_embedding_provider=multimodal_embedding_provider,
         vector_store=vector_store,
         retrieval_service=RetrievalService(
             access_policy,
@@ -181,6 +219,20 @@ def build_api_dependencies(
             vector_weight=resolved_settings.retrieval.vector_weight,
             lexical_weight=resolved_settings.retrieval.lexical_weight,
             mmr_lambda=resolved_settings.retrieval.mmr_lambda,
+            multimodal_embedding_provider=multimodal_embedding_provider,
+            cross_modal_candidate_count=(
+                resolved_settings.retrieval.cross_modal_candidate_count
+            ),
+            cross_modal_min_cosine_similarity=(
+                resolved_settings.retrieval.cross_modal_min_cosine_similarity
+            ),
+            text_min_cosine_similarity=(
+                resolved_settings.retrieval.min_cosine_similarity
+            ),
+            rrf_k=resolved_settings.retrieval.rrf_k,
+            cross_modal_weight_micros=(
+                resolved_settings.retrieval.cross_modal_weight_micros
+            ),
         ),
         chat_service=chat_service,
         chat_terminal_watcher=ChatTerminalWatcher(

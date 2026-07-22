@@ -25,6 +25,8 @@ async def cleanup() -> dict[str, int]:
             "vectors_deleted": result.index.vectors_deleted,
             "chunks_deleted": result.index.chunks_deleted,
             "plans_deleted": result.index.plans_deleted,
+            "manifests_deleted": result.index.manifests_deleted,
+            "assets_deleted": result.index.assets_deleted,
             "jobs_deleted": result.index.jobs_deleted,
             "file_cleanup_records_deleted": (
                 result.index.file_cleanup_records_deleted

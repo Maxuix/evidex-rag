@@ -7,6 +7,7 @@ from uuid import UUID
 
 from rag_kb.domain import (
     FileLocation,
+    IndexAssetIdentity,
     SourceFileDigest,
     SourceFileIdentity,
     StagedSourceFile,
@@ -46,3 +47,14 @@ class SourceFileStore(Protocol):
     async def delete_stored(self, stored: StoredSourceFile) -> None: ...
 
     def parse_uri(self, storage_uri: str) -> SourceFileIdentity: ...
+
+
+@runtime_checkable
+class IndexAssetStore(Protocol):
+    async def put(self, identity: IndexAssetIdentity, content: bytes, checksum_sha256: str) -> None: ...
+
+    async def read(self, identity: IndexAssetIdentity) -> bytes: ...
+
+    async def delete(self, identity: IndexAssetIdentity) -> None: ...
+
+    def parse_uri(self, storage_uri: str) -> IndexAssetIdentity: ...

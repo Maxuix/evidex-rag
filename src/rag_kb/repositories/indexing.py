@@ -10,6 +10,9 @@ from rag_kb.domain import (
     IndexChunkWrite,
     IndexCleanupResult,
     IndexChunkPlan,
+    IndexArtifactManifest,
+    IndexAssetWrite,
+    IndexAssetSnapshot,
     IndexingCommand,
     IndexingLease,
     IndexingJobSnapshot,
@@ -24,6 +27,12 @@ from rag_kb.domain import (
 
 @runtime_checkable
 class IndexingRepository(Protocol):
+    async def get_asset(self, asset_id: UUID) -> IndexAssetSnapshot | None: ...
+
+    async def list_retired_assets(
+        self, *, data_before: datetime, limit: int
+    ) -> tuple[IndexAssetSnapshot, ...]: ...
+
     async def oldest_claimable_at(
         self, *, observed_at: datetime, max_attempts: int
     ) -> datetime | None: ...
@@ -94,6 +103,18 @@ class IndexingRepository(Protocol):
         command: IndexingCommand,
         proposed: IndexChunkPlan,
     ) -> IndexChunkPlan: ...
+
+    async def get_artifact_manifest(
+        self, command: IndexingCommand
+    ) -> IndexArtifactManifest | None: ...
+
+    async def create_or_get_artifact_manifest(
+        self, command: IndexingCommand, proposed: IndexArtifactManifest
+    ) -> IndexArtifactManifest: ...
+
+    async def upsert_assets(
+        self, command: IndexingCommand, assets: tuple[IndexAssetWrite, ...]
+    ) -> bool: ...
 
     async def set_phase(self, command: IndexingCommand, phase: IndexingPhase) -> bool: ...
 

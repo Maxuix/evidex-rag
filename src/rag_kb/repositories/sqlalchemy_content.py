@@ -21,6 +21,7 @@ from rag_kb.db.models import (
     IndexBuildStatus,
     IndexingJob as IndexingJobRow,
     IndexRevision as IndexRevisionRow,
+    IndexRevisionEmbeddingSpace as IndexRevisionEmbeddingSpaceRow,
     IndexRevisionStatus,
     IndexServingStatus,
     JobStatus,
@@ -67,6 +68,7 @@ class SqlAlchemyKnowledgeBaseRepository:
         retrieval_defaults: dict[str, Any],
         answer_policy_defaults: dict[str, Any],
         embedding_space: EmbeddingSpaceDefinition,
+        cross_modal_embedding_space: EmbeddingSpaceDefinition | None,
         index_profile: IndexProfileDefinition,
     ) -> KnowledgeBase:
         self._ensure_active()
@@ -83,35 +85,12 @@ class SqlAlchemyKnowledgeBaseRepository:
             self._session.add(workspace)
             await self._session.flush()
 
-        embedding = await self._session.scalar(
-            select(EmbeddingSpaceRow).where(
-                EmbeddingSpaceRow.compatibility_fingerprint
-                == embedding_space.compatibility_fingerprint
-            )
+        embedding = await self._find_or_create_embedding(embedding_space)
+        cross_modal_embedding = (
+            await self._find_or_create_embedding(cross_modal_embedding_space)
+            if cross_modal_embedding_space is not None
+            else None
         )
-        if embedding is None:
-            embedding = EmbeddingSpaceRow(
-                workspace_id=self._workspace_id,
-                provider_identity=embedding_space.provider_identity,
-                endpoint_identity=embedding_space.endpoint_identity,
-                requested_model=embedding_space.requested_model,
-                resolved_model=embedding_space.resolved_model,
-                model_version=embedding_space.model_version,
-                deployment_revision=embedding_space.deployment_revision,
-                dimension=embedding_space.dimension,
-                distance_metric=embedding_space.distance_metric,
-                vector_data_type=embedding_space.vector_data_type,
-                normalization=embedding_space.normalization,
-                configuration_fingerprint=embedding_space.configuration_fingerprint,
-                tokenizer_fingerprint=embedding_space.tokenizer_fingerprint,
-                compatibility_fingerprint=embedding_space.compatibility_fingerprint,
-            )
-            self._session.add(embedding)
-            await self._session.flush()
-        elif not _embedding_matches(embedding, self._workspace_id, embedding_space):
-            raise ResourceStateConflictError(
-                "the configured embedding space conflicts with persisted state"
-            )
 
         duplicate = await self._session.scalar(
             select(KnowledgeBaseRow.id).where(
@@ -138,15 +117,84 @@ class SqlAlchemyKnowledgeBaseRepository:
             source_snapshot_seq=0,
             parser_config=dict(index_profile.parser_config),
             chunking_config=dict(index_profile.chunking_config),
+            enrichment_config=dict(index_profile.enrichment_config),
+            representation_config=dict(index_profile.representation_config),
         )
         self._session.add(revision)
         await self._session.flush()
+        self._session.add(
+            IndexRevisionEmbeddingSpaceRow(
+                workspace_id=self._workspace_id,
+                index_revision_id=revision.id,
+                role="text_retrieval",
+                embedding_space_id=embedding.id,
+                required=True,
+                retrieval_weight_micros=1_000_000,
+            )
+        )
+        if index_profile.chunking_config.get("profile") == "semantic_breakpoint_v1":
+            self._session.add(
+                IndexRevisionEmbeddingSpaceRow(
+                    workspace_id=self._workspace_id,
+                    index_revision_id=revision.id,
+                    role="semantic_analysis",
+                    embedding_space_id=embedding.id,
+                    required=True,
+                )
+            )
+        if cross_modal_embedding is not None:
+            self._session.add(
+                IndexRevisionEmbeddingSpaceRow(
+                    workspace_id=self._workspace_id,
+                    index_revision_id=revision.id,
+                    role="cross_modal_retrieval",
+                    embedding_space_id=cross_modal_embedding.id,
+                    required=True,
+                    retrieval_weight_micros=1_000_000,
+                )
+            )
         now = datetime.now(UTC)
         kb.active_index_revision_id = revision.id
         kb.provisioned_at = now
         kb.updated_at = now
         await self._session.flush()
-        return _knowledge_base(kb, embedding.id, revision.chunking_config)
+        return _knowledge_base(
+            kb, embedding.id, revision.parser_config, revision.chunking_config
+        )
+
+    async def _find_or_create_embedding(
+        self, definition: EmbeddingSpaceDefinition
+    ) -> EmbeddingSpaceRow:
+        embedding = await self._session.scalar(
+            select(EmbeddingSpaceRow).where(
+                EmbeddingSpaceRow.compatibility_fingerprint
+                == definition.compatibility_fingerprint
+            )
+        )
+        if embedding is None:
+            embedding = EmbeddingSpaceRow(
+                workspace_id=self._workspace_id,
+                provider_identity=definition.provider_identity,
+                endpoint_identity=definition.endpoint_identity,
+                requested_model=definition.requested_model,
+                resolved_model=definition.resolved_model,
+                model_version=definition.model_version,
+                deployment_revision=definition.deployment_revision,
+                dimension=definition.dimension,
+                distance_metric=definition.distance_metric,
+                vector_data_type=definition.vector_data_type,
+                normalization=definition.normalization,
+                configuration_fingerprint=definition.configuration_fingerprint,
+                tokenizer_fingerprint=definition.tokenizer_fingerprint,
+                compatibility_fingerprint=definition.compatibility_fingerprint,
+            )
+            self._session.add(embedding)
+            await self._session.flush()
+        elif not _embedding_matches(embedding, self._workspace_id, definition):
+            raise ResourceStateConflictError(
+                "the configured embedding space conflicts with persisted state"
+            )
+        return embedding
 
     async def get(self, kb_id: UUID) -> KnowledgeBase | None:
         self._ensure_active()
@@ -155,6 +203,7 @@ class SqlAlchemyKnowledgeBaseRepository:
                 select(
                     KnowledgeBaseRow,
                     IndexRevisionRow.embedding_space_id,
+                    IndexRevisionRow.parser_config,
                     IndexRevisionRow.chunking_config,
                 )
                 .join(
@@ -167,7 +216,7 @@ class SqlAlchemyKnowledgeBaseRepository:
                 )
             )
         ).one_or_none()
-        return _knowledge_base(row[0], row[1], row[2]) if row is not None else None
+        return _knowledge_base(row[0], row[1], row[2], row[3]) if row is not None else None
 
     async def list(
         self,
@@ -187,6 +236,7 @@ class SqlAlchemyKnowledgeBaseRepository:
             select(
                 KnowledgeBaseRow,
                 IndexRevisionRow.embedding_space_id,
+                IndexRevisionRow.parser_config,
                 IndexRevisionRow.chunking_config,
             )
             .join(
@@ -201,7 +251,7 @@ class SqlAlchemyKnowledgeBaseRepository:
         rows = (await self._session.execute(statement.order_by(ordering, id_ordering).limit(limit + 1))).all()
         has_more = len(rows) > limit
         rows = rows[:limit]
-        items = tuple(_knowledge_base(row[0], row[1], row[2]) for row in rows)
+        items = tuple(_knowledge_base(row[0], row[1], row[2], row[3]) for row in rows)
         next_values = _cursor_values(items[-1], field) if has_more and items else None
         return Page(items=items, next_values=next_values)
 
@@ -244,6 +294,7 @@ class SqlAlchemyKnowledgeBaseRepository:
             await self._session.execute(
                 select(
                     IndexRevisionRow.embedding_space_id,
+                    IndexRevisionRow.parser_config,
                     IndexRevisionRow.chunking_config,
                 ).where(
                 IndexRevisionRow.id == kb.active_index_revision_id,
@@ -252,7 +303,9 @@ class SqlAlchemyKnowledgeBaseRepository:
             )
         ).one_or_none()
         assert revision_facts is not None
-        return _knowledge_base(kb, revision_facts[0], revision_facts[1])
+        return _knowledge_base(
+            kb, revision_facts[0], revision_facts[1], revision_facts[2]
+        )
 
 
 class SqlAlchemyDocumentRepository:
@@ -980,6 +1033,7 @@ def _embedding_matches(row: EmbeddingSpaceRow, workspace_id: UUID, value: Embedd
 def _knowledge_base(
     row: KnowledgeBaseRow,
     embedding_space_id: UUID,
+    parser_config: dict[str, Any],
     chunking_config: dict[str, Any],
 ) -> KnowledgeBase:
     assert row.active_index_revision_id is not None
@@ -991,6 +1045,7 @@ def _knowledge_base(
         source_change_seq=row.source_change_seq,
         active_index_revision_id=row.active_index_revision_id,
         embedding_space_id=embedding_space_id,
+        parser_config=dict(parser_config),
         chunking_config=dict(chunking_config),
         retrieval_defaults=dict(row.retrieval_defaults),
         answer_policy_defaults=dict(row.answer_policy_defaults),

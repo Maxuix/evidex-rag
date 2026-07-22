@@ -289,6 +289,9 @@ class FileStoreSettings(StrictSettingsModel):
     root_path: Path = Path("/var/lib/rag-kb/sources")
     staging_path: Path = Path("/var/lib/rag-kb/sources/staging")
     final_path: Path = Path("/var/lib/rag-kb/sources/final")
+    asset_staging_path: Path | None = None
+    asset_final_path: Path | None = None
+    parser_temp_path: Path | None = None
     reconciliation_interval_seconds: PositiveFloat = 30.0
     orphan_grace_seconds: PositiveFloat = 300.0
     reconciliation_batch_size: PositiveInt = 100
@@ -297,16 +300,42 @@ class FileStoreSettings(StrictSettingsModel):
 
     @model_validator(mode="after")
     def require_one_absolute_storage_tree(self) -> Self:
+        if self.asset_staging_path is None:
+            object.__setattr__(self, "asset_staging_path", self.root_path / "asset-staging")
+        if self.asset_final_path is None:
+            object.__setattr__(self, "asset_final_path", self.root_path / "assets")
+        if self.parser_temp_path is None:
+            object.__setattr__(self, "parser_temp_path", self.root_path / "parser-temp")
+        assert self.asset_staging_path is not None
+        assert self.asset_final_path is not None
+        assert self.parser_temp_path is not None
         if not all(
             path.is_absolute()
-            for path in (self.root_path, self.staging_path, self.final_path)
+            for path in (
+                self.root_path,
+                self.staging_path,
+                self.final_path,
+                self.asset_staging_path,
+                self.asset_final_path,
+                self.parser_temp_path,
+            )
         ):
             raise ValueError("file-store paths must be absolute")
-        if self.staging_path == self.final_path:
-            raise ValueError("staging_path and final_path must be different")
+        managed = {
+            self.staging_path,
+            self.final_path,
+            self.asset_staging_path,
+            self.asset_final_path,
+            self.parser_temp_path,
+        }
+        if len(managed) != 5:
+            raise ValueError("file-store managed paths must be different")
         for name, path in (
             ("staging_path", self.staging_path),
             ("final_path", self.final_path),
+            ("asset_staging_path", self.asset_staging_path),
+            ("asset_final_path", self.asset_final_path),
+            ("parser_temp_path", self.parser_temp_path),
         ):
             if not path.is_relative_to(self.root_path):
                 raise ValueError(f"{name} must be located beneath root_path")
@@ -339,6 +368,17 @@ class ParserSettings(StrictSettingsModel):
     max_chunks: FixedMaxChunks = 20_000
     max_extracted_characters: FixedMaxExtractedCharacters = 5_000_000
     max_metadata_bytes: FixedMaxMetadataBytes = 65_536
+    max_assets: Annotated[int, Field(ge=1, le=10_000)] = 1_000
+    max_total_asset_bytes: Annotated[int, Field(ge=1, le=1_073_741_824)] = 104_857_600
+    max_image_pixels: Annotated[int, Field(ge=1, le=100_000_000)] = 40_000_000
+    max_image_width: Annotated[int, Field(ge=1, le=32_768)] = 16_384
+    max_image_height: Annotated[int, Field(ge=1, le=32_768)] = 16_384
+    max_ocr_characters: Annotated[int, Field(ge=1, le=10_000_000)] = 2_000_000
+    max_ocr_tokens: Annotated[int, Field(ge=1, le=1_000_000)] = 500_000
+    max_caption_tokens: Annotated[int, Field(ge=1, le=4_096)] = 512
+    max_table_html_bytes: Annotated[int, Field(ge=1, le=10_485_760)] = 1_048_576
+    max_units: Annotated[int, Field(ge=1, le=100_000)] = 20_000
+    max_representations: Annotated[int, Field(ge=1, le=300_000)] = 60_000
 
 
 class VectorStoreSettings(StrictSettingsModel):
@@ -408,9 +448,38 @@ class EmbeddingProviderSettings(ProviderSettings):
     ] = "sha256:7bd706a3642d7ee17a5a0112a3e0d7e50abaa26bf19c5511d240f222ae4d1153"
 
 
+class MultimodalEmbeddingProviderSettings(ProviderSettings):
+    provider_identity: Literal["alibaba-cloud-model-studio-qwen"] = (
+        "alibaba-cloud-model-studio-qwen"
+    )
+    logical_endpoint_identity: Literal[
+        "alibaba-model-studio-beijing-multimodal-embedding"
+    ] = "alibaba-model-studio-beijing-multimodal-embedding"
+    model: Literal["qwen3-vl-embedding"] = "qwen3-vl-embedding"
+    resolved_model: Literal["qwen3-vl-embedding"] = "qwen3-vl-embedding"
+    model_version: str = "qwen3-vl-embedding"
+    dimension: FixedDimension = 1024
+    metric: Literal["cosine"] = "cosine"
+    vector_data_type: Literal["float32"] = "float32"
+    normalization: Literal["l2"] = "l2"
+    max_batch_size: Annotated[int, Field(ge=1, le=5)] = 5
+    text_query_template: Literal["query: {text}"] = "query: {text}"
+    image_resize_policy: Literal["provider_bounded_no_crop_v1"] = (
+        "provider_bounded_no_crop_v1"
+    )
+    color_space: Literal["RGB"] = "RGB"
+    configuration_fingerprint: str = (
+        "sha256:56d9dcad7d77fb00dfa9666758e432054296ade6db6482d5ee9b7933d1890cc0"
+    )
+    compatibility_fingerprint: str = (
+        "sha256:82045d1f5a15369697a8b8c21a6a95ba058d356c62116b34ac924bf1cf4779e8"
+    )
+
+
 class ModelProviderSettings(StrictSettingsModel):
     chat: ChatProviderSettings
     embedding: EmbeddingProviderSettings
+    multimodal_embedding: MultimodalEmbeddingProviderSettings | None = None
     rerank_enabled: DisabledFlag = False
 
 
@@ -426,6 +495,12 @@ class RetrievalSettings(StrictSettingsModel):
     mmr_lambda: Annotated[float, Field(gt=0.0, le=1.0)] = 0.75
     hybrid_enabled: DisabledFlag = False
     rerank_enabled: bool = True
+    cross_modal_candidate_count: Annotated[int, Field(ge=1, le=100)] = 20
+    cross_modal_min_cosine_similarity: Annotated[
+        float, Field(ge=-1.0, le=1.0)
+    ] = 0.25
+    rrf_k: Annotated[int, Field(ge=1, le=1000)] = 60
+    cross_modal_weight_micros: Annotated[int, Field(ge=1, le=10_000_000)] = 1_000_000
 
     @model_validator(mode="after")
     def require_rerank_weights_sum_to_one(self) -> Self:
@@ -499,10 +574,15 @@ class Settings(BaseSettings):
                 "Worker database pool cannot cover lanes, heartbeats, polling, "
                 "reconciliation, and safety margin"
             )
-        longest_operation = max(
+        operation_timeouts = [
             self.model_provider.chat.timeout_seconds,
             self.model_provider.embedding.timeout_seconds,
-        )
+        ]
+        if self.model_provider.multimodal_embedding is not None:
+            operation_timeouts.append(
+                self.model_provider.multimodal_embedding.timeout_seconds
+            )
+        longest_operation = max(operation_timeouts)
         if self.job_poller.stale_after_seconds <= longest_operation:
             raise ValueError(
                 "stale_after_seconds must exceed every bounded indexing operation"

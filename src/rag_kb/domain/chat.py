@@ -190,10 +190,17 @@ class ChatCitation:
     quoted_text: str
     source_location: dict[str, Any]
     score: float | None
+    modality: str = "text"
+    asset_snapshot: dict[str, Any] | None = None
+    matched_representations: tuple[str, ...] = ("text",)
 
     def __post_init__(self) -> None:
         if self.ordinal < 0 or not self.quoted_text:
             raise ValueError("chat citation snapshot is invalid")
+
+    @property
+    def asset(self) -> dict[str, Any] | None:
+        return self.asset_snapshot
 
 
 @dataclass(frozen=True, slots=True)

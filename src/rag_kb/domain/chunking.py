@@ -5,8 +5,9 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any
 from uuid import UUID
+
+from rag_kb.domain.parsing import ParsedDocument, ParsedElement
 
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -28,24 +29,6 @@ class ChunkBoundaryReason(StrEnum):
     TABLE = "table"
     SECTION = "section"
     MAX_TOKENS = "max_tokens"
-
-
-@dataclass(frozen=True, slots=True)
-class ParsedElement:
-    ordinal: int
-    text: str
-    token_count: int
-    category: str
-    source_location: dict[str, Any]
-    hierarchy: dict[str, Any]
-    is_title: bool
-    is_table: bool
-
-
-@dataclass(frozen=True, slots=True)
-class ParsedDocument:
-    elements: tuple[ParsedElement, ...]
-    extracted_character_count: int
 
 
 @dataclass(frozen=True, slots=True)

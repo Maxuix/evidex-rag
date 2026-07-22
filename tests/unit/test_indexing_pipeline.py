@@ -27,6 +27,8 @@ from rag_kb.domain import (
     ProcessedDocument,
     ParsedDocument,
     ParsedElement,
+    ParsedAssetDraft,
+    ContentModality,
     SourceFileIdentity,
     stable_chunk_id,
     stable_vector_id,
@@ -85,6 +87,44 @@ class IndexingDomainTests(unittest.TestCase):
             self.assertEqual(response.exception.code, ErrorCode.EMBEDDING_RESPONSE_INVALID)
 
 class IndexingPipelineTests(unittest.IsolatedAsyncioTestCase):
+    async def test_multimodal_execution_persists_manifest_assets_and_both_spaces(self) -> None:
+        repository = _Repository(_target(multimodal=True))
+        factory = _Factory(repository)
+        text_provider = _Provider(factory)
+        text_provider.max_batch_size = 10
+        visual_provider = _MultimodalProvider(factory)
+        asset_store = _AssetStore(factory)
+        global _CURRENT_FACTORY
+        _CURRENT_FACTORY = factory
+        pipeline = IndexingPipeline(
+            factory,
+            _FileStore(factory),
+            _MultimodalProcessor(factory),
+            text_provider,
+            FixedPgVectorSpace(_embedding()),
+            asset_store=asset_store,
+            multimodal_embedding_provider=visual_provider,
+        )
+        command = IndexingCommand(
+            repository.target.job_id,
+            repository.target.indexed_document_version_id,
+        )
+
+        result = await pipeline.execute(command)
+
+        self.assertEqual((result.status, result.chunk_count), ("ready", 2))
+        self.assertEqual(len(repository.assets), 1)
+        self.assertIsNotNone(repository.manifest)
+        self.assertEqual(repository.manifest.unit_count, 2)
+        self.assertEqual(repository.manifest.representation_count, 3)
+        self.assertEqual(len(asset_store.writes), 1)
+        self.assertEqual(text_provider.calls, 1)
+        self.assertEqual(visual_provider.image_calls, 1)
+        self.assertEqual(
+            {chunk.modality for chunk in repository.chunks.values()},
+            {ContentModality.TEXT, ContentModality.IMAGE},
+        )
+
     async def test_external_operations_hold_no_transaction_and_replay_is_idempotent(self) -> None:
         repository = _Repository(_target())
         factory = _Factory(repository)
@@ -241,6 +281,8 @@ class _Repository:
         self.vectors = {}
         self.failure = None
         self.plan = None
+        self.manifest = None
+        self.assets = ()
 
     async def prepare(self, command):
         self._active()
@@ -304,6 +346,19 @@ class _Repository:
         if self.plan != proposed:
             raise AssertionError("chunk plan mismatch")
         return self.plan
+
+    async def upsert_assets(self, command, assets):
+        del command
+        self._active()
+        self.assets = assets
+        return True
+
+    async def create_or_get_artifact_manifest(self, command, proposed):
+        del command
+        self._active()
+        if self.manifest is None:
+            self.manifest = proposed
+        return self.manifest
 
     async def upsert_batch(self, command, chunks, vectors):
         del command
@@ -408,6 +463,54 @@ class _Processor:
         )
 
 
+class _MultimodalProcessor:
+    def __init__(self, factory) -> None:
+        self.factory = factory
+
+    async def partition_multimodal(self, source):
+        if self.factory.active:
+            raise AssertionError("parser ran inside transaction")
+        del source
+        content = b"fixture-image"
+        checksum = hashlib.sha256(content).hexdigest()
+        asset = ParsedAssetDraft(
+            asset_key="b" * 64,
+            kind="docx_picture",
+            media_type="image/png",
+            content=content,
+            content_sha256=checksum,
+            width=120,
+            height=80,
+            source_location={"block_ordinal": 1},
+            processing_metadata={},
+        )
+        return ParsedDocument(
+            elements=(
+                ParsedElement(
+                    ordinal=0,
+                    text="body evidence",
+                    token_count=2,
+                    category="NarrativeText",
+                    source_location={"block_ordinal": 0},
+                    hierarchy={},
+                    element_key="text-element",
+                ),
+                ParsedElement(
+                    ordinal=1,
+                    text="author diagram caption",
+                    token_count=3,
+                    category="Image",
+                    source_location={"block_ordinal": 1},
+                    hierarchy={},
+                    element_key="image-element",
+                    asset_key=asset.asset_key,
+                ),
+            ),
+            extracted_character_count=36,
+            assets=(asset,),
+        )
+
+
 class _Provider:
     def __init__(self, factory, *, fail_call=None) -> None:
         self.factory = factory
@@ -427,6 +530,31 @@ class _Provider:
                 diagnostic={"retry_exhausted": True},
             )
         return EmbeddingBatch(tuple(_vector() for _ in texts))
+
+
+class _MultimodalProvider:
+    def __init__(self, factory) -> None:
+        self.factory = factory
+        self.embedding_space = _multimodal_embedding()
+        self.max_batch_size = 5
+        self.image_calls = 0
+
+    async def embed_images(self, images):
+        if self.factory.active:
+            raise AssertionError("provider ran inside transaction")
+        self.image_calls += 1
+        return EmbeddingBatch(tuple(_vector() for _ in images))
+
+
+class _AssetStore:
+    def __init__(self, factory) -> None:
+        self.factory = factory
+        self.writes = []
+
+    async def put(self, identity, content, checksum):
+        if self.factory.active:
+            raise AssertionError("asset I/O ran inside transaction")
+        self.writes.append((identity, content, checksum))
 
 
 class _FailingProcessor:
@@ -459,10 +587,15 @@ def _pipeline(factory, provider):
 
 def _target(
     preset: ChunkingPreset = ChunkingPreset.STRUCTURAL_BALANCED_V2,
+    *,
+    multimodal: bool = False,
 ):
     version = uuid4()
     target = uuid4()
-    profile = profile_for_preset(preset)
+    profile = profile_for_preset(
+        preset, "multimodal_local_v1" if multimodal else "text_local_v1"
+    )
+    cross_space_id = uuid4()
     return IndexingTarget(
         job_id=uuid4(),
         indexed_document_version_id=target,
@@ -481,6 +614,16 @@ def _target(
         parser_config=profile.parser_config,
         chunking_config=profile.chunking_config,
         embedding_space=_embedding(),
+        enrichment_config=profile.enrichment_config,
+        representation_config=profile.representation_config,
+        embedding_space_ids=(
+            {"cross_modal_retrieval": cross_space_id} if multimodal else {}
+        ),
+        embedding_spaces=(
+            {"cross_modal_retrieval": _multimodal_embedding()}
+            if multimodal
+            else {}
+        ),
     )
 
 
@@ -504,6 +647,18 @@ def _embedding():
 
 def _vector():
     return (1.0,) + (0.0,) * 1023
+
+
+def _multimodal_embedding():
+    return replace(
+        _embedding(),
+        endpoint_identity="alibaba-model-studio-beijing-multimodal-embedding",
+        requested_model="qwen3-vl-embedding",
+        resolved_model="qwen3-vl-embedding",
+        model_version="qwen3-vl-embedding",
+        configuration_fingerprint="sha256:mm-config",
+        compatibility_fingerprint="sha256:mm-compat",
+    )
 
 
 _CURRENT_FACTORY = None

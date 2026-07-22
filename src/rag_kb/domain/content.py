@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Generic, TypeVar
 from uuid import UUID
@@ -40,6 +40,8 @@ class EmbeddingSpaceDefinition:
 class IndexProfileDefinition:
     parser_config: dict[str, Any]
     chunking_config: dict[str, Any]
+    enrichment_config: dict[str, Any] = field(default_factory=dict)
+    representation_config: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +58,7 @@ class KnowledgeBase:
     provisioned_at: datetime
     created_at: datetime
     updated_at: datetime
+    parser_config: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)

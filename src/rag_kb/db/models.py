@@ -439,6 +439,7 @@ class IndexRevision(Base):
     __tablename__ = "index_revision"
     __table_args__ = (
         UniqueConstraint("kb_id", "id", name="uq_index_revision_kb_id_id"),
+        UniqueConstraint("workspace_id", "id", name="uq_index_revision_workspace_id"),
         ForeignKeyConstraint(
             ["workspace_id", "embedding_space_id"],
             ["embedding_space.workspace_id", "embedding_space.id"],
@@ -469,10 +470,55 @@ class IndexRevision(Base):
     source_snapshot_seq: Mapped[int] = mapped_column(BigInteger, nullable=False)
     parser_config: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     chunking_config: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    enrichment_config: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    representation_config: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
     error_code: Mapped[str | None] = mapped_column(String(128))
     error_detail: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     created_at: Mapped[datetime] = created_timestamp()
     updated_at: Mapped[datetime] = updated_timestamp()
+
+
+class IndexRevisionEmbeddingSpace(Base):
+    __tablename__ = "index_revision_embedding_space"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["workspace_id", "index_revision_id"],
+            ["index_revision.workspace_id", "index_revision.id"],
+            name="fk_revision_space_same_workspace_revision",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "embedding_space_id"],
+            ["embedding_space.workspace_id", "embedding_space.id"],
+            name="fk_revision_space_same_workspace_embedding",
+        ),
+        CheckConstraint(
+            "role IN ('text_retrieval', 'semantic_analysis', 'cross_modal_retrieval')",
+            name="revision_space_role_supported",
+        ),
+        CheckConstraint(
+            "retrieval_weight_micros IS NULL OR retrieval_weight_micros > 0",
+            name="revision_space_weight_positive",
+        ),
+    )
+
+    index_revision_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), primary_key=True
+    )
+    role: Mapped[str] = mapped_column(String(64), primary_key=True)
+    workspace_id: Mapped[UUID] = mapped_column(
+        ForeignKey("workspace.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    embedding_space_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), nullable=False, index=True
+    )
+    required: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    retrieval_weight_micros: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime] = created_timestamp()
 
 
 class IndexedDocumentVersion(Base):
@@ -571,6 +617,89 @@ class IndexChunkPlan(Base):
     created_at: Mapped[datetime] = created_timestamp()
 
 
+class IndexAsset(Base):
+    __tablename__ = "index_asset"
+    __table_args__ = (
+        UniqueConstraint("indexed_document_version_id", "asset_key"),
+        UniqueConstraint(
+            "indexed_document_version_id", "id", name="uq_index_asset_target_id"
+        ),
+        ForeignKeyConstraint(
+            ["kb_id", "document_id"],
+            ["document.kb_id", "document.id"],
+            name="fk_index_asset_same_kb_document",
+        ),
+        ForeignKeyConstraint(
+            ["document_id", "document_version_id"],
+            ["document_version.document_id", "document_version.id"],
+            name="fk_index_asset_same_document_version",
+        ),
+        CheckConstraint("width IS NULL OR width > 0", name="index_asset_width_positive"),
+        CheckConstraint("height IS NULL OR height > 0", name="index_asset_height_positive"),
+    )
+
+    id: Mapped[UUID] = uuid_primary_key()
+    workspace_id: Mapped[UUID] = mapped_column(
+        ForeignKey("workspace.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    kb_id: Mapped[UUID] = mapped_column(
+        ForeignKey("knowledge_base.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    document_id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), nullable=False)
+    document_version_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), nullable=False
+    )
+    indexed_document_version_id: Mapped[UUID] = mapped_column(
+        ForeignKey("indexed_document_version.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    asset_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    storage_uri: Mapped[str] = mapped_column(Text, nullable=False)
+    media_type: Mapped[str] = mapped_column(String(255), nullable=False)
+    checksum_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    width: Mapped[int | None] = mapped_column(Integer)
+    height: Mapped[int | None] = mapped_column(Integer)
+    source_location: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    processing_metadata: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    created_at: Mapped[datetime] = created_timestamp()
+
+
+class IndexArtifactManifest(Base):
+    __tablename__ = "index_artifact_manifest"
+    __table_args__ = (
+        CheckConstraint("unit_count >= 0", name="artifact_manifest_units_nonnegative"),
+        CheckConstraint("asset_count >= 0", name="artifact_manifest_assets_nonnegative"),
+        CheckConstraint(
+            "representation_count >= 0",
+            name="artifact_manifest_representations_nonnegative",
+        ),
+        CheckConstraint("jsonb_typeof(unit_plan) = 'array'", name="artifact_manifest_unit_plan_array"),
+        CheckConstraint(
+            "jsonb_typeof(representation_matrix) = 'array'",
+            name="artifact_manifest_representation_matrix_array",
+        ),
+    )
+
+    indexed_document_version_id: Mapped[UUID] = mapped_column(
+        ForeignKey("indexed_document_version.id", ondelete="CASCADE"), primary_key=True
+    )
+    source_checksum_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    profile_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    element_sequence_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    asset_manifest_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    unit_plan: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False)
+    representation_matrix: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False)
+    unit_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    asset_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    representation_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    manifest_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = created_timestamp()
+
+
 class IndexingJob(Base):
     __tablename__ = "indexing_job"
     __table_args__ = (
@@ -608,9 +737,22 @@ class IndexChunk(Base):
     __tablename__ = "index_chunk"
     __table_args__ = (
         UniqueConstraint("indexed_document_version_id", "ordinal"),
+        UniqueConstraint("indexed_document_version_id", "unit_key"),
+        UniqueConstraint(
+            "indexed_document_version_id", "id", name="uq_index_chunk_target_id"
+        ),
         UniqueConstraint("kb_id", "id", name="uq_index_chunk_kb_id"),
         CheckConstraint("ordinal >= 0", name="index_chunk_ordinal_nonnegative"),
         CheckConstraint("token_count >= 0", name="index_chunk_tokens_nonnegative"),
+        CheckConstraint(
+            "modality IN ('text', 'image', 'table')",
+            name="index_chunk_modality_supported",
+        ),
+        ForeignKeyConstraint(
+            ["indexed_document_version_id", "index_asset_id"],
+            ["index_asset.indexed_document_version_id", "index_asset.id"],
+            name="fk_index_chunk_same_target_asset",
+        ),
     )
 
     id: Mapped[UUID] = uuid_primary_key()
@@ -626,6 +768,13 @@ class IndexChunk(Base):
         index=True,
     )
     ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    unit_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    modality: Mapped[str] = mapped_column(String(32), nullable=False)
+    index_asset_id: Mapped[UUID | None] = mapped_column(PostgreSQLUUID(as_uuid=True))
+    evidence_group_key: Mapped[str | None] = mapped_column(String(255))
+    relations: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
     content: Mapped[str] = mapped_column(Text, nullable=False)
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     token_count: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -642,7 +791,9 @@ class IndexChunk(Base):
 class VectorRecord(Base):
     __tablename__ = "vector_record_1024"
     __table_args__ = (
-        UniqueConstraint("index_chunk_id"),
+        UniqueConstraint(
+            "index_chunk_id", "embedding_space_id", "representation_kind"
+        ),
         ForeignKeyConstraint(
             ["kb_id", "index_chunk_id"],
             ["index_chunk.kb_id", "index_chunk.id"],
@@ -668,6 +819,7 @@ class VectorRecord(Base):
     embedding_space_id: Mapped[UUID] = mapped_column(
         PostgreSQLUUID(as_uuid=True), nullable=False, index=True
     )
+    representation_kind: Mapped[str] = mapped_column(String(64), nullable=False)
     embedding: Mapped[list[float]] = mapped_column(Vector(1024), nullable=False)
     created_at: Mapped[datetime] = created_timestamp()
 
@@ -825,6 +977,13 @@ class Citation(Base):
     )
     quoted_text: Mapped[str] = mapped_column(Text, nullable=False)
     source_location: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    modality: Mapped[str] = mapped_column(
+        String(32), nullable=False, server_default=text("'text'")
+    )
+    asset_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    matched_representations: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb")
+    )
     score: Mapped[float | None] = mapped_column(Float)
     created_at: Mapped[datetime] = created_timestamp()
 

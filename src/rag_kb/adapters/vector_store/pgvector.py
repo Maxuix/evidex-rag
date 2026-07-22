@@ -14,10 +14,12 @@ from rag_kb.db.models import (
     DocumentSourceStatus,
     DocumentVersion,
     EmbeddingSpace,
+    IndexAsset,
     IndexBuildStatus,
     IndexChunk,
     IndexedDocumentVersion,
     IndexRevision,
+    IndexRevisionEmbeddingSpace,
     IndexRevisionStatus,
     IndexServingStatus,
     KnowledgeBase,
@@ -30,6 +32,7 @@ from rag_kb.domain import (
     RetrievalStrategy,
     VectorSearchHit,
     VectorSearchResult,
+    EmbeddingSpaceDefinition,
 )
 
 
@@ -44,18 +47,67 @@ class PgVectorStore:
         self._sessions = sessions
         self._vector_space = vector_space
 
+    async def has_space_role(
+        self, plan: RetrievalQueryPlan, space_role: str
+    ) -> bool:
+        statement = (
+            select(IndexRevisionEmbeddingSpace.index_revision_id)
+            .join(
+                KnowledgeBase,
+                and_(
+                    KnowledgeBase.active_index_revision_id
+                    == IndexRevisionEmbeddingSpace.index_revision_id,
+                    KnowledgeBase.workspace_id
+                    == IndexRevisionEmbeddingSpace.workspace_id,
+                ),
+            )
+            .where(
+                KnowledgeBase.workspace_id == plan.workspace_id,
+                KnowledgeBase.id == plan.knowledge_base_id,
+                IndexRevisionEmbeddingSpace.role == space_role,
+            )
+            .limit(1)
+        )
+        async with self._sessions() as session:
+            return (await session.scalar(statement)) is not None
+
     async def search(
         self,
         plan: RetrievalQueryPlan,
         query_embedding: tuple[float, ...],
     ) -> VectorSearchResult | None:
-        self._require_exact_plan(plan, query_embedding)
+        return await self.search_space(
+            plan,
+            query_embedding,
+            space_role="text_retrieval",
+            representation_kinds=("text", "caption_text", "ocr_text", "table_text"),
+            expected_space=self._vector_space.configured_space,
+        )
+
+    async def search_space(
+        self,
+        plan: RetrievalQueryPlan,
+        query_embedding: tuple[float, ...],
+        *,
+        space_role: str,
+        representation_kinds: tuple[str, ...],
+        expected_space: EmbeddingSpaceDefinition,
+    ) -> VectorSearchResult | None:
+        self._require_exact_plan(plan, query_embedding, expected_space)
+        if space_role not in {
+            "text_retrieval",
+            "cross_modal_retrieval",
+            "semantic_analysis",
+        } or not representation_kinds:
+            raise ValueError("space role and representation allowlist are required")
         statement = self._statement()
         parameters = {
             "workspace_id": plan.workspace_id,
             "knowledge_base_id": plan.knowledge_base_id,
             "query_embedding": list(query_embedding),
             "top_k": plan.candidate_count or plan.top_k,
+            "space_role": space_role,
+            "representation_kinds": list(representation_kinds),
         }
         async with self._sessions() as session:
             result = await session.execute(statement, parameters)
@@ -64,9 +116,7 @@ class PgVectorStore:
             return None
 
         first = rows[0]
-        expected_fingerprint = (
-            self._vector_space.configured_space.compatibility_fingerprint
-        )
+        expected_fingerprint = expected_space.compatibility_fingerprint
         if first["compatibility_fingerprint"] != expected_fingerprint:
             raise RetrievalExecutionError(
                 ErrorCode.EMBEDDING_SPACE_MISMATCH,
@@ -80,14 +130,18 @@ class PgVectorStore:
         return VectorSearchResult(
             resolved_active_revision_id=first["active_revision_id"],
             hits=hits,
+            embedding_space_id=first["embedding_space_id"],
+            compatibility_fingerprint=first["compatibility_fingerprint"],
+            space_role=space_role,
         )
 
     def _require_exact_plan(
         self,
         plan: RetrievalQueryPlan,
         query_embedding: tuple[float, ...],
+        expected_space: EmbeddingSpaceDefinition | None = None,
     ) -> None:
-        configured = self._vector_space.configured_space
+        configured = expected_space or self._vector_space.configured_space
         if (
             plan.strategy is not RetrievalStrategy.EXACT_VECTOR
             or plan.distance_metric != "cosine"
@@ -129,6 +183,14 @@ class PgVectorStore:
                 IndexChunk.source_location.label("source_location"),
                 IndexChunk.hierarchy.label("hierarchy"),
                 IndexChunk.source_metadata.label("source_metadata"),
+                IndexChunk.modality.label("modality"),
+                IndexChunk.evidence_group_key.label("evidence_group_key"),
+                VectorRecord.representation_kind.label("representation_kind"),
+                IndexAsset.id.label("index_asset_id"),
+                IndexAsset.media_type.label("asset_media_type"),
+                IndexAsset.checksum_sha256.label("asset_checksum_sha256"),
+                IndexAsset.width.label("asset_width"),
+                IndexAsset.height.label("asset_height"),
                 distance,
                 IndexedDocumentVersion.build_status.label("build_status"),
                 IndexedDocumentVersion.serving_status.label("serving_status"),
@@ -171,6 +233,14 @@ class PgVectorStore:
                     VectorRecord.workspace_id == IndexChunk.workspace_id,
                 ),
             )
+            .outerjoin(
+                IndexAsset,
+                and_(
+                    IndexAsset.id == IndexChunk.index_asset_id,
+                    IndexAsset.indexed_document_version_id
+                    == IndexChunk.indexed_document_version_id,
+                ),
+            )
             .where(
                 IndexedDocumentVersion.workspace_id == KnowledgeBase.workspace_id,
                 IndexedDocumentVersion.kb_id == KnowledgeBase.id,
@@ -179,7 +249,11 @@ class PgVectorStore:
                 IndexedDocumentVersion.serving_status == IndexServingStatus.SERVING,
                 Document.deleted_at.is_(None),
                 DocumentVersion.source_status == DocumentSourceStatus.AVAILABLE,
-                VectorRecord.embedding_space_id == IndexRevision.embedding_space_id,
+                VectorRecord.embedding_space_id
+                == IndexRevisionEmbeddingSpace.embedding_space_id,
+                VectorRecord.representation_kind.in_(
+                    bindparam("representation_kinds", expanding=True)
+                ),
             )
             .order_by(distance.asc(), IndexChunk.id.asc())
             .limit(bindparam("top_k", type_=Integer))
@@ -191,6 +265,7 @@ class PgVectorStore:
                 EmbeddingSpace.compatibility_fingerprint.label(
                     "compatibility_fingerprint"
                 ),
+                EmbeddingSpace.id.label("embedding_space_id"),
                 hits.c.hit_workspace_id,
                 hits.c.hit_knowledge_base_id,
                 hits.c.hit_index_revision_id,
@@ -203,6 +278,14 @@ class PgVectorStore:
                 hits.c.source_location,
                 hits.c.hierarchy,
                 hits.c.source_metadata,
+                hits.c.modality,
+                hits.c.evidence_group_key,
+                hits.c.representation_kind,
+                hits.c.index_asset_id,
+                hits.c.asset_media_type,
+                hits.c.asset_checksum_sha256,
+                hits.c.asset_width,
+                hits.c.asset_height,
                 hits.c.cosine_distance,
                 hits.c.build_status,
                 hits.c.serving_status,
@@ -218,10 +301,20 @@ class PgVectorStore:
                 ),
             )
             .join(
+                IndexRevisionEmbeddingSpace,
+                and_(
+                    IndexRevisionEmbeddingSpace.index_revision_id == IndexRevision.id,
+                    IndexRevisionEmbeddingSpace.workspace_id == IndexRevision.workspace_id,
+                    IndexRevisionEmbeddingSpace.role == bindparam("space_role"),
+                ),
+            )
+            .join(
                 EmbeddingSpace,
                 and_(
-                    EmbeddingSpace.id == IndexRevision.embedding_space_id,
-                    EmbeddingSpace.workspace_id == IndexRevision.workspace_id,
+                    EmbeddingSpace.id
+                    == IndexRevisionEmbeddingSpace.embedding_space_id,
+                    EmbeddingSpace.workspace_id
+                    == IndexRevisionEmbeddingSpace.workspace_id,
                 ),
             )
             .outerjoin(hits, true())
@@ -254,4 +347,12 @@ class PgVectorStore:
             build_status=row["build_status"].value,
             serving_status=row["serving_status"].value,
             is_current_serving_version=True,
+            modality=row["modality"],
+            evidence_group_key=row["evidence_group_key"],
+            representation_kind=row["representation_kind"],
+            index_asset_id=row["index_asset_id"],
+            asset_media_type=row["asset_media_type"],
+            asset_checksum_sha256=row["asset_checksum_sha256"],
+            asset_width=row["asset_width"],
+            asset_height=row["asset_height"],
         )
