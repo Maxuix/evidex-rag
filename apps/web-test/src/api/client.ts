@@ -10,6 +10,7 @@ import type {
   EvidencePack,
   IndexingJob,
   KnowledgeBase,
+  ParsingPreset,
   ChunkingPreset,
   Page,
   ProblemDetails,
@@ -94,12 +95,17 @@ export class ApiClient {
   createKnowledgeBase(
     name: string,
     preset: ChunkingPreset,
+    parsingPreset: ParsingPreset,
     idempotencyKey: UUID,
   ): Promise<KnowledgeBase> {
     return this.request("/knowledge-bases", {
       method: "POST",
       headers: this.jsonHeaders(idempotencyKey),
-      body: JSON.stringify({ name, chunking: { preset } }),
+      body: JSON.stringify({
+        name,
+        parsing: { preset: parsingPreset },
+        chunking: { preset },
+      }),
     });
   }
 

@@ -1,5 +1,7 @@
-import type { JsonMap, KnowledgeBase } from "./api/types";
-import { ApiClientError } from "./api/client";
+import { useState } from "react";
+
+import type { EvidenceAsset, JsonMap, KnowledgeBase } from "./api/types";
+import { ApiClient, ApiClientError } from "./api/client";
 
 export function KnowledgeBaseSelector({
   knowledgeBases,
@@ -104,6 +106,41 @@ export function ProblemNotice({
 export function StatusBadge({ value }: { value: string }) {
   const normalized = value.toLowerCase().replaceAll("_", "-");
   return <span className={`status-badge status-${normalized}`}>{value}</span>;
+}
+
+export function AssetPreview({
+  client,
+  asset,
+  alt,
+}: {
+  client: ApiClient;
+  asset: EvidenceAsset;
+  alt: string;
+}) {
+  const [failed, setFailed] = useState(false);
+  let source: string | null = null;
+  try {
+    source = client.resolvePublicApiUrl(asset.content_url);
+  } catch {
+    source = null;
+  }
+  if (failed || !source || !asset.media_type.startsWith("image/")) {
+    return (
+      <p className="asset-preview-fallback" role="status">
+        Asset preview unavailable. The citation metadata remains available.
+      </p>
+    );
+  }
+  return (
+    <a className="asset-preview" href={source} target="_blank" rel="noreferrer">
+      <img
+        src={source}
+        alt={alt}
+        loading="lazy"
+        onError={() => setFailed(true)}
+      />
+    </a>
+  );
 }
 
 export function EmptyState({

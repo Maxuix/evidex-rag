@@ -11,6 +11,7 @@ import type {
   KnowledgeBase,
 } from "./api/types";
 import {
+  AssetPreview,
   EmptyState,
   JsonDetails,
   KeyValueGrid,
@@ -696,8 +697,17 @@ export function ChatView({
                     <article className="citation-card" key={citation.ordinal}>
                       <div className="citation-number">[{citation.ordinal + 1}]</div>
                       <div>
-                        <blockquote>{citation.quoted_text}</blockquote>
+                        {citation.asset ? (
+                          <AssetPreview
+                            client={client}
+                            asset={citation.asset}
+                            alt={`${citation.modality} citation ${citation.ordinal + 1}`}
+                          />
+                        ) : null}
+                        <blockquote>{citation.quoted_text || "Visual asset citation"}</blockquote>
                         <KeyValueGrid values={[
+                          ["Modality", citation.modality],
+                          ["Representations", citation.matched_representations.join(", ")],
                           ["Document", shortId(citation.document_id)],
                           ["Version", shortId(citation.document_version_id)],
                           ["Chunk", shortId(citation.index_chunk_id)],

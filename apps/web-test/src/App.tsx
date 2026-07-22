@@ -4,7 +4,7 @@ import { ChatView } from "./ChatView";
 import { DocumentsView } from "./DocumentsView";
 import { RetrievalView } from "./RetrievalView";
 import { ApiClient, loadRuntimeConfig } from "./api/client";
-import type { ChunkingPreset, KnowledgeBase } from "./api/types";
+import type { ChunkingPreset, KnowledgeBase, ParsingPreset } from "./api/types";
 import {
   EmptyState,
   KnowledgeBaseSelector,
@@ -61,11 +61,15 @@ export function ObservationApp({ client }: { client: ApiClient }) {
   const [newChunkingPreset, setNewChunkingPreset] = useState<ChunkingPreset>(
     "structural_balanced_v2",
   );
+  const [newParsingPreset, setNewParsingPreset] = useState<ParsingPreset>(
+    "text_local_v1",
+  );
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<unknown | null>(null);
   const [pendingCreate, setPendingCreate] = useState<{
     name: string;
     preset: ChunkingPreset;
+    parsingPreset: ParsingPreset;
     idempotencyKey: string;
   } | null>(null);
   const [view, setView] = useState<ViewName>("documents");
@@ -127,6 +131,7 @@ export function ObservationApp({ client }: { client: ApiClient }) {
     const pending = {
       name,
       preset: newChunkingPreset,
+      parsingPreset: newParsingPreset,
       idempotencyKey: crypto.randomUUID(),
     };
     setPendingCreate(pending);
@@ -136,6 +141,7 @@ export function ObservationApp({ client }: { client: ApiClient }) {
   const performCreate = async (pending: {
     name: string;
     preset: ChunkingPreset;
+    parsingPreset: ParsingPreset;
     idempotencyKey: string;
   }) => {
     setCreating(true);
@@ -144,6 +150,7 @@ export function ObservationApp({ client }: { client: ApiClient }) {
       const value = await client.createKnowledgeBase(
         pending.name,
         pending.preset,
+        pending.parsingPreset,
         pending.idempotencyKey,
       );
       setKnowledgeBases((current) => mergeKnowledgeBases(current, [value]));
@@ -209,6 +216,17 @@ export function ObservationApp({ client }: { client: ApiClient }) {
               disabled={interactionLocked}
             />
             <select
+              aria-label="Parsing preset"
+              value={newParsingPreset}
+              onChange={(event) =>
+                setNewParsingPreset(event.target.value as ParsingPreset)
+              }
+              disabled={interactionLocked}
+            >
+              <option value="text_local_v1">Text-only local</option>
+              <option value="multimodal_local_v1">Multimodal local</option>
+            </select>
+            <select
               aria-label="Chunking preset"
               value={newChunkingPreset}
               onChange={(event) =>
@@ -228,6 +246,9 @@ export function ObservationApp({ client }: { client: ApiClient }) {
             </button>
           </div>
           <small className="field-help">
+            {newParsingPreset === "multimodal_local_v1"
+              ? "Extracts and indexes document images and tables; requires the configured multimodal provider. "
+              : "Uses the existing text-only parser. "}
             {newChunkingPreset === "structural_balanced_v2"
               ? "Uses titles and token windows."
               : "Uses additional embeddings to find semantic breakpoints."}
@@ -299,6 +320,12 @@ export function ObservationApp({ client }: { client: ApiClient }) {
               <div>
                 <span>Source sequence</span>
                 <strong>{selectedKnowledgeBase.source_change_seq}</strong>
+              </div>
+              <div>
+                <span>Parsing</span>
+                <strong>{selectedKnowledgeBase.parsing.preset === "multimodal_local_v1"
+                  ? "Multimodal local"
+                  : "Text-only local"}</strong>
               </div>
               <div>
                 <span>Chunking preset</span>

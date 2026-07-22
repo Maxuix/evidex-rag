@@ -34,6 +34,7 @@ export type InsufficiencyPolicy = "refuse" | "partial_answer";
 export type ChunkingPreset =
   | "structural_balanced_v2"
   | "semantic_balanced_v1";
+export type ParsingPreset = "text_local_v1" | "multimodal_local_v1";
 
 export interface KnowledgeBase {
   id: UUID;
@@ -41,6 +42,10 @@ export interface KnowledgeBase {
   source_change_seq: number;
   active_index_revision_id: UUID;
   embedding_space_id: UUID;
+  parsing: {
+    preset: ParsingPreset;
+    profile: "unstructured_local_v1" | "unstructured_multimodal_local_v1";
+  };
   chunking: {
     preset: ChunkingPreset | "legacy_incompatible";
     profile:
@@ -157,6 +162,9 @@ export interface ChatCitation {
   quoted_text: string;
   source_location: JsonMap;
   score: number | null;
+  modality: "text" | "image" | "table";
+  asset: EvidenceAsset | null;
+  matched_representations: string[];
 }
 
 export interface ChatRun {
@@ -257,10 +265,26 @@ export interface Evidence {
   hierarchy: JsonMap;
   source_metadata: JsonMap;
   score: number;
-  score_kind: "cosine_similarity" | "hybrid_rerank";
+  score_kind: "cosine_similarity" | "hybrid_rerank" | "reciprocal_rank_fusion";
   vector_similarity: number | null;
   lexical_score: number;
   lexical_coverage: number;
+  modality: "text" | "image" | "table";
+  asset: EvidenceAsset | null;
+  evidence_group_key: string | null;
+  matched_representations: string[];
+  text_space_rank: number | null;
+  cross_modal_rank: number | null;
+  fusion_score: number | null;
+}
+
+export interface EvidenceAsset {
+  id: UUID;
+  media_type: string;
+  checksum_sha256: string;
+  content_url: string;
+  width: number | null;
+  height: number | null;
 }
 
 export interface EvidencePack {

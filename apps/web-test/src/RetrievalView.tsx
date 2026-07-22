@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { ApiClient, ApiClientError } from "./api/client";
 import type { EvidencePack, KnowledgeBase } from "./api/types";
 import {
+  AssetPreview,
   EmptyState,
   JsonDetails,
   KeyValueGrid,
@@ -158,11 +159,25 @@ export function RetrievalView({
                     </div>
                     <div className="evidence-body">
                       <div className="evidence-score-row">
-                        <span>{evidence.score_kind}</span>
+                        <span>{evidence.modality} · {evidence.score_kind}</span>
                         <strong>{evidence.score.toFixed(6)}</strong>
                       </div>
-                      <p className="evidence-text">{evidence.text}</p>
+                      {evidence.asset ? (
+                        <AssetPreview
+                          client={client}
+                          asset={evidence.asset}
+                          alt={`${evidence.modality} evidence at rank ${evidence.rank}`}
+                        />
+                      ) : null}
+                      <p className="evidence-text">
+                        {evidence.text || "No text representation is available for this visual asset."}
+                      </p>
                       <KeyValueGrid values={[
+                        ["Modality", evidence.modality],
+                        ["Representations", evidence.matched_representations.join(", ")],
+                        ["Text lane rank", evidence.text_space_rank],
+                        ["Cross-modal rank", evidence.cross_modal_rank],
+                        ["Fusion score", evidence.fusion_score?.toFixed(8)],
                         ["Chunk", shortId(evidence.index_chunk_id)],
                         ["Ordinal", evidence.ordinal],
                         ["Document", shortId(evidence.document_id)],
