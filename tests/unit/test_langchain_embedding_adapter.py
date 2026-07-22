@@ -52,9 +52,9 @@ def _space(*, dimension: int = 2) -> EmbeddingSpaceDefinition:
     return EmbeddingSpaceDefinition(
         provider_identity="alibaba-cloud-model-studio-qwen",
         endpoint_identity="alibaba-model-studio-beijing-embedding",
-        requested_model="text-embedding-v4",
-        resolved_model="text-embedding-v4",
-        model_version="text-embedding-v4 (Qwen3-Embedding series)",
+        requested_model="qwen3.7-text-embedding",
+        resolved_model="qwen3.7-text-embedding",
+        model_version="qwen3.7-text-embedding",
         deployment_revision=None,
         dimension=dimension,
         distance_metric="cosine",
@@ -103,7 +103,7 @@ class LangChainEmbeddingAdapterTests(unittest.IsolatedAsyncioTestCase):
             )
 
         arguments = constructor.call_args.kwargs
-        self.assertEqual(arguments["model"], "text-embedding-v4")
+        self.assertEqual(arguments["model"], "qwen3.7-text-embedding")
         self.assertEqual(arguments["dimensions"], 1024)
         self.assertEqual(arguments["chunk_size"], 10)
         self.assertEqual(arguments["timeout"], 30)
@@ -143,7 +143,7 @@ class LangChainEmbeddingAdapterTests(unittest.IsolatedAsyncioTestCase):
                 200,
                 json={
                     "object": "list",
-                    "model": "text-embedding-v4",
+                    "model": "qwen3.7-text-embedding",
                     "data": [
                         {
                             "object": "embedding",
@@ -162,7 +162,7 @@ class LangChainEmbeddingAdapterTests(unittest.IsolatedAsyncioTestCase):
         async_client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
         try:
             model = OpenAIEmbeddings(
-                model="text-embedding-v4",
+                model="qwen3.7-text-embedding",
                 dimensions=2,
                 api_key="probe-key",
                 base_url="https://provider.invalid/v1",
@@ -186,13 +186,13 @@ class LangChainEmbeddingAdapterTests(unittest.IsolatedAsyncioTestCase):
             [
                 {
                     "input": ["first", "second"],
-                    "model": "text-embedding-v4",
+                    "model": "qwen3.7-text-embedding",
                     "dimensions": 2,
                     "encoding_format": "float",
                 },
                 {
                     "input": ["question"],
-                    "model": "text-embedding-v4",
+                    "model": "qwen3.7-text-embedding",
                     "dimensions": 2,
                     "encoding_format": "float",
                 },
@@ -217,6 +217,26 @@ class LangChainEmbeddingAdapterTests(unittest.IsolatedAsyncioTestCase):
             await adapter.embed_query("query")
         self.assertEqual(vector.exception.code, ErrorCode.EMBEDDING_RESPONSE_INVALID)
         self.assertEqual(vector.exception.diagnostic["check"], "query_vector")
+
+    async def test_dimension_finite_and_normalization_fail_closed(self) -> None:
+        cases = (
+            ([1.0], "query_vector_dimension"),
+            ([float("nan"), 0.0], "query_vector_finite"),
+            ([1.0, 1.0], "query_vector_normalization"),
+        )
+        for query, expected_check in cases:
+            with self.subTest(expected_check=expected_check), self.assertRaises(
+                IndexingExecutionError
+            ) as raised:
+                await _adapter(_FakeEmbeddings(query=query)).embed_query("query")
+            self.assertEqual(
+                raised.exception.code,
+                ErrorCode.EMBEDDING_RESPONSE_INVALID,
+            )
+            self.assertEqual(
+                raised.exception.diagnostic["check"],
+                expected_check,
+            )
 
     async def test_timeout_and_status_errors_are_stable_and_content_safe(self) -> None:
         with self.assertRaises(IndexingExecutionError) as timeout:

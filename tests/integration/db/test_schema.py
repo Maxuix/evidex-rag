@@ -49,8 +49,8 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
             ) VALUES (
                 $1, 'alibaba-cloud-model-studio-qwen',
                 'alibaba-model-studio-beijing-embedding',
-                'text-embedding-v4', 'text-embedding-v4',
-                'text-embedding-v4 (Qwen3-Embedding series)', 1024,
+                'qwen3.7-text-embedding', 'qwen3.7-text-embedding',
+                'qwen3.7-text-embedding', 1024,
                 'cosine', 'float32', 'l2', $2, $3
             ) RETURNING id
             """,

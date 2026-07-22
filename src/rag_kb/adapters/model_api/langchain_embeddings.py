@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from collections.abc import Awaitable, Callable
 
 from langchain_core.embeddings import Embeddings
@@ -80,7 +81,12 @@ class LangChainEmbeddingModelAdapter:
             )
         return EmbeddingBatch(
             vectors=tuple(
-                _numeric_vector(vector, check="document_vector")
+                _numeric_vector(
+                    vector,
+                    check="document_vector",
+                    dimension=self._embedding_space.dimension,
+                    normalization=self._embedding_space.normalization,
+                )
                 for vector in vectors
             )
         )
@@ -89,7 +95,12 @@ class LangChainEmbeddingModelAdapter:
         if not text:
             raise ValueError("embedding query must not be empty")
         vector = await self._invoke(lambda: self._model.aembed_query(text))
-        return _numeric_vector(vector, check="query_vector")
+        return _numeric_vector(
+            vector,
+            check="query_vector",
+            dimension=self._embedding_space.dimension,
+            normalization=self._embedding_space.normalization,
+        )
 
     async def _invoke(
         self,
@@ -123,13 +134,32 @@ class LangChainEmbeddingModelAdapter:
                 raise _invalid_response("provider_result") from error
 
 
-def _numeric_vector(value: object, *, check: str) -> tuple[float, ...]:
+def _numeric_vector(
+    value: object,
+    *,
+    check: str,
+    dimension: int,
+    normalization: str,
+) -> tuple[float, ...]:
     if not isinstance(value, (list, tuple)) or not all(
         not isinstance(item, bool) and isinstance(item, (int, float))
         for item in value
     ):
         raise _invalid_response(check)
-    return tuple(float(item) for item in value)
+    vector = tuple(float(item) for item in value)
+    if len(vector) != dimension:
+        raise _invalid_response(
+            f"{check}_dimension",
+            expected=dimension,
+            observed=len(vector),
+        )
+    if not all(math.isfinite(item) for item in vector):
+        raise _invalid_response(f"{check}_finite")
+    if normalization == "l2":
+        norm = math.sqrt(sum(item * item for item in vector))
+        if abs(norm - 1.0) > 0.001:
+            raise _invalid_response(f"{check}_normalization")
+    return vector
 
 
 def _provider_unavailable(diagnostic: dict[str, object]) -> IndexingExecutionError:

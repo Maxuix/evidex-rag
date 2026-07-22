@@ -456,22 +456,22 @@ class EmbeddingProviderSettings(ProviderSettings):
     provider_identity: Literal["alibaba-cloud-model-studio-qwen"] = (
         "alibaba-cloud-model-studio-qwen"
     )
-    model: Literal["text-embedding-v4"] = "text-embedding-v4"
-    resolved_model: Literal["text-embedding-v4"] = "text-embedding-v4"
-    model_version: Literal["text-embedding-v4 (Qwen3-Embedding series)"] = (
-        "text-embedding-v4 (Qwen3-Embedding series)"
+    model: Literal["qwen3.7-text-embedding"] = "qwen3.7-text-embedding"
+    resolved_model: Literal["qwen3.7-text-embedding"] = (
+        "qwen3.7-text-embedding"
     )
+    model_version: Literal["qwen3.7-text-embedding"] = "qwen3.7-text-embedding"
     dimension: FixedDimension = 1024
     metric: Literal["cosine"] = "cosine"
     vector_data_type: Literal["float32"] = "float32"
     normalization: Literal["l2"] = "l2"
     max_batch_size: FixedBatchSize = 10
     configuration_fingerprint: Literal[
-        "sha256:c135eb852aefd97be80fd82dd168f7cf1ccff0c99eb4fcfdbbf3e337cedeee66"
-    ] = "sha256:c135eb852aefd97be80fd82dd168f7cf1ccff0c99eb4fcfdbbf3e337cedeee66"
+        "sha256:5f774411565f9aaef04c7a9762bf6e245589cff064c396a8c5b38eb9098ac18f"
+    ] = "sha256:5f774411565f9aaef04c7a9762bf6e245589cff064c396a8c5b38eb9098ac18f"
     compatibility_fingerprint: Literal[
-        "sha256:7bd706a3642d7ee17a5a0112a3e0d7e50abaa26bf19c5511d240f222ae4d1153"
-    ] = "sha256:7bd706a3642d7ee17a5a0112a3e0d7e50abaa26bf19c5511d240f222ae4d1153"
+        "sha256:398af80b01c3e440c0edf5871de60f80fdab255f453bfa6c685c65e2f9be61c7"
+    ] = "sha256:398af80b01c3e440c0edf5871de60f80fdab255f453bfa6c685c65e2f9be61c7"
 
 
 class MultimodalEmbeddingProviderSettings(ProviderSettings):

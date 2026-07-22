@@ -1036,17 +1036,17 @@ def _embedding():
     return EmbeddingSpaceDefinition(
         provider_identity="alibaba-cloud-model-studio-qwen",
         endpoint_identity="alibaba-model-studio-beijing-embedding",
-        requested_model="text-embedding-v4",
-        resolved_model="text-embedding-v4",
-        model_version="text-embedding-v4 (Qwen3-Embedding series)",
+        requested_model="qwen3.7-text-embedding",
+        resolved_model="qwen3.7-text-embedding",
+        model_version="qwen3.7-text-embedding",
         deployment_revision=None,
         dimension=1024,
         distance_metric="cosine",
         vector_data_type="float32",
         normalization="l2",
-        configuration_fingerprint="sha256:c135eb852aefd97be80fd82dd168f7cf1ccff0c99eb4fcfdbbf3e337cedeee66",
+        configuration_fingerprint="sha256:5f774411565f9aaef04c7a9762bf6e245589cff064c396a8c5b38eb9098ac18f",
         tokenizer_fingerprint=None,
-        compatibility_fingerprint="sha256:7bd706a3642d7ee17a5a0112a3e0d7e50abaa26bf19c5511d240f222ae4d1153",
+        compatibility_fingerprint="sha256:398af80b01c3e440c0edf5871de60f80fdab255f453bfa6c685c65e2f9be61c7",
     )
 
 

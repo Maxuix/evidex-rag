@@ -70,6 +70,10 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.database.configured_pool_capacity, 22)
         self.assertEqual(settings.database.application_connection_budget, 40)
         self.assertEqual(settings.model_provider.embedding.dimension, 1024)
+        self.assertEqual(
+            settings.model_provider.embedding.model,
+            "qwen3.7-text-embedding",
+        )
         self.assertEqual(settings.model_provider.embedding.metric, "cosine")
         self.assertTrue(settings.vector_store.exact_search)
         self.assertFalse(settings.vector_store.hnsw_enabled)
@@ -239,6 +243,10 @@ class SettingsTests(unittest.TestCase):
             settings.model_provider.chat.model,
             "qwen3.7-plus",
         )
+        self.assertEqual(
+            settings.model_provider.embedding.model,
+            "qwen3.7-text-embedding",
+        )
 
     def test_removed_ai_implementation_switches_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -261,6 +269,10 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(
             settings.model_provider.chat.model,
             "qwen3.7-plus",
+        )
+        self.assertEqual(
+            settings.model_provider.embedding.model,
+            "qwen3.7-text-embedding",
         )
         assert settings.model_provider.multimodal_embedding is not None
         self.assertEqual(

@@ -634,9 +634,9 @@ def _embedding():
     return EmbeddingSpaceDefinition(
         provider_identity="alibaba-cloud-model-studio-qwen",
         endpoint_identity="alibaba-model-studio-beijing-embedding",
-        requested_model="text-embedding-v4",
-        resolved_model="text-embedding-v4",
-        model_version="text-embedding-v4 (Qwen3-Embedding series)",
+        requested_model="qwen3.7-text-embedding",
+        resolved_model="qwen3.7-text-embedding",
+        model_version="qwen3.7-text-embedding",
         deployment_revision=None,
         dimension=1024,
         distance_metric="cosine",
