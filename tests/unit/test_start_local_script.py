@@ -8,12 +8,25 @@ import tempfile
 import textwrap
 import unittest
 
+import yaml
+
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "start-local.sh"
+COMPOSE = ROOT / "compose.yaml"
 
 
 class StartLocalScriptTests(unittest.TestCase):
+    def test_compose_allows_bounded_cold_application_startup(self) -> None:
+        configuration = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
+
+        self.assertEqual(
+            configuration["services"]["api"]["healthcheck"]["retries"], 40
+        )
+        self.assertEqual(
+            configuration["services"]["worker"]["healthcheck"]["retries"], 24
+        )
+
     def _run(
         self,
         directory: Path,

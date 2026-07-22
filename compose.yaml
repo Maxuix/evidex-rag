@@ -96,7 +96,7 @@ services:
         - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=2).read()"
       interval: 3s
       timeout: 3s
-      retries: 20
+      retries: 40
       start_period: 5s
     restart: unless-stopped
 
@@ -109,7 +109,7 @@ services:
       test: ["CMD", "python", "-m", "apps.worker.main", "--check"]
       interval: 5s
       timeout: 4s
-      retries: 12
+      retries: 24
       start_period: 5s
     restart: unless-stopped
 
