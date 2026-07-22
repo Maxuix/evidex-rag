@@ -237,7 +237,7 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.file_store.root_path, root)
         self.assertEqual(
             settings.model_provider.chat.model,
-            "qwen3.7-plus-2026-05-26",
+            "qwen3.7-plus",
         )
 
     def test_removed_ai_implementation_switches_fail_closed(self) -> None:
@@ -260,7 +260,7 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.database.runtime_role, "rag_kb_runtime")
         self.assertEqual(
             settings.model_provider.chat.model,
-            "qwen3.7-plus-2026-05-26",
+            "qwen3.7-plus",
         )
         assert settings.model_provider.multimodal_embedding is not None
         self.assertEqual(
@@ -345,6 +345,27 @@ class SettingsTests(unittest.TestCase):
                         _env_file=None,
                         **{**payload, "model_provider": providers},
                     )
+
+    def test_chat_provider_rejects_snapshot_model_override(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            payload = valid_payload(Path(directory))
+            providers = copy.deepcopy(payload["model_provider"])
+            assert isinstance(providers, dict)
+            chat = providers["chat"]
+            assert isinstance(chat, dict)
+            chat.update(
+                {
+                    "model": "qwen3.7-plus-2026-05-26",
+                    "resolved_model": "qwen3.7-plus-2026-05-26",
+                    "model_version": "Qwen3.7-Plus 2026-05-26",
+                }
+            )
+
+            with self.assertRaises(ValidationError):
+                Settings(
+                    _env_file=None,
+                    **{**payload, "model_provider": providers},
+                )
 
     def test_p1b_capabilities_cannot_be_enabled(self) -> None:
         flags = (

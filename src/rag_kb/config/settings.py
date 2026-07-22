@@ -428,13 +428,9 @@ class ChatProviderSettings(ProviderSettings):
     provider_identity: Literal["alibaba-cloud-model-studio-qwen"] = (
         "alibaba-cloud-model-studio-qwen"
     )
-    model: Literal["qwen3.7-plus-2026-05-26"] = "qwen3.7-plus-2026-05-26"
-    resolved_model: Literal["qwen3.7-plus-2026-05-26"] = (
-        "qwen3.7-plus-2026-05-26"
-    )
-    model_version: Literal["Qwen3.7-Plus 2026-05-26"] = (
-        "Qwen3.7-Plus 2026-05-26"
-    )
+    model: Literal["qwen3.7-plus"] = "qwen3.7-plus"
+    resolved_model: Literal["qwen3.7-plus"] = "qwen3.7-plus"
+    model_version: Literal["qwen3.7-plus"] = "qwen3.7-plus"
     temperature: Annotated[float, Field(ge=0.0, le=2.0)] = 0.1
     max_tokens: PositiveInt = 2048
     structured_output_mode: Literal["json_object"] = "json_object"
@@ -446,8 +442,8 @@ class ChatProviderSettings(ProviderSettings):
     max_visual_pixels: FixedVisualPixels = 16_000_000
     visual_media_profile: Literal["jpeg_png_webp_v1"] = "jpeg_png_webp_v1"
     configuration_fingerprint: Literal[
-        "sha256:a894828ecb4af8a4ceee7053dd9164e5f42245e2ae70dd5033ea203e8ea97e22"
-    ] = "sha256:a894828ecb4af8a4ceee7053dd9164e5f42245e2ae70dd5033ea203e8ea97e22"
+        "sha256:da3d6c7afee8b9e49855fb6ba76f886442e51baf51c3e064f4741c1f86a67c16"
+    ] = "sha256:da3d6c7afee8b9e49855fb6ba76f886442e51baf51c3e064f4741c1f86a67c16"
     capability_fingerprint: Literal[
         "sha256:c24fb9b08baf600afc8f4610f88412ca5c7a2979890647e1512e7cedb8066279"
     ] = "sha256:c24fb9b08baf600afc8f4610f88412ca5c7a2979890647e1512e7cedb8066279"
