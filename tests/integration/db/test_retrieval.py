@@ -63,7 +63,7 @@ class ExactRetrievalDatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self) -> None:
         await self.database.close()
 
-    async def test_exact_search_is_one_statement_with_stable_top_k(self) -> None:
+    async def test_role_probe_and_exact_search_keep_stable_top_k(self) -> None:
         foundation = await self._foundation()
         first = UUID("01900000-0000-7000-8000-000000001111")
         second = UUID("01900000-0000-7000-8000-000000001112")
@@ -98,9 +98,16 @@ class ExactRetrievalDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 capture_statement,
             )
 
-        self.assertEqual(len(statements), 1)
-        self.assertIn("LEFT OUTER JOIN LATERAL", statements[0])
-        self.assertIn("<=>", statements[0])
+        self.assertEqual(len(statements), 2)
+        role_probe = next(
+            item for item in statements if "index_revision_embedding_space" in item
+            and "<=>" not in item
+        )
+        exact_search = next(item for item in statements if "<=>" in item)
+        self.assertIn("knowledge_base", role_probe)
+        self.assertIn("LEFT OUTER JOIN LATERAL", exact_search)
+        self.assertIn("workspace_id", exact_search)
+        self.assertIn("knowledge_base_id", exact_search)
         self.assertEqual(pack.index_revision_id, foundation.revision_id)
         self.assertEqual(
             tuple(item.index_chunk_id for item in pack.evidence),

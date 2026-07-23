@@ -7,7 +7,9 @@ from pathlib import Path
 from pypdf import PdfReader
 
 from tools.evaluate_multimodal_real import (
+    _attachment_metrics,
     _generate_corpus,
+    _group_recall,
     _mrr,
     _recall,
     _validated_api_base,
@@ -58,6 +60,8 @@ class RealEvaluationToolTests(unittest.TestCase):
                 for page in PdfReader(corpus["scanned_pdf"]).pages
             )
             self.assertIn("ASTER CONTROL PLANE", architecture_text)
+            self.assertIn("As shown in Fig. 7", architecture_text)
+            self.assertIn("Figure 7", architecture_text)
             self.assertEqual(scanned_text, "")
 
     def test_metrics_count_missing_ranks_as_zero(self) -> None:
@@ -69,6 +73,31 @@ class RealEvaluationToolTests(unittest.TestCase):
 
         self.assertEqual(_recall(cases), 0.666667)
         self.assertEqual(_mrr(cases), 0.5)
+
+    def test_composite_group_and_attachment_metrics_are_explicit(self) -> None:
+        cases = [
+            {
+                "group_recalled": True,
+                "expects_visual": True,
+                "predicted_visual": True,
+            },
+            {
+                "group_recalled": False,
+                "expects_visual": False,
+                "predicted_visual": True,
+            },
+            {
+                "group_recalled": True,
+                "expects_visual": False,
+                "predicted_visual": False,
+            },
+        ]
+
+        self.assertEqual(_group_recall(cases), 0.666667)
+        self.assertEqual(
+            _attachment_metrics(cases),
+            {"precision": 0.5, "accuracy": 0.666667},
+        )
 
     def test_api_base_accepts_only_exact_loopback_scope(self) -> None:
         self.assertEqual(

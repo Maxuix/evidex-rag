@@ -144,6 +144,13 @@ class VisualEvidenceAdmissionPolicy:
                 relation_type = ChunkAssetRelationType(related.relation_type)
                 if not parent_admitted or not relation_type.is_strong:
                     continue
+                if (
+                    relation_type
+                    is not ChunkAssetRelationType.EXPLICIT_FIGURE_REFERENCE
+                    and related.cross_modal_rank is None
+                    and evidence.rank != 1
+                ):
+                    continue
                 if relation_type is ChunkAssetRelationType.EXPLICIT_FIGURE_REFERENCE:
                     reason = VisualEvidenceReason.SELECTED_EXPLICIT_REFERENCE
                     relation_weight = 4_000_000

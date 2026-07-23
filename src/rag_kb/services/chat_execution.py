@@ -197,5 +197,5 @@ class ChatEvidenceRetriever:
             index_revision_id=pack.index_revision_id,
             strategy=pack.strategy,
             evidence=pack.evidence,
-            debug=None,
+            debug=pack.debug,
         )

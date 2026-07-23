@@ -338,7 +338,16 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
             _ParallelTextProvider(gates),
             store,
             multimodal_embedding_provider=_ParallelMultimodalProvider(gates),
-            relation_hydrator=_Hydrator((_relation("caption_of"),)),
+            relation_hydrator=_Hydrator(
+                (
+                    _relation("inline_figure"),
+                    replace(
+                        _relation("explicit_figure_reference"),
+                        id=UUID("01900000-0000-7000-8000-000000000818"),
+                        ordinal=1,
+                    ),
+                )
+            ),
         )
 
         pack = await asyncio.wait_for(
@@ -352,9 +361,14 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(pack.evidence), 1)
         self.assertEqual(pack.evidence[0].index_chunk_id, CHUNK_1)
         self.assertEqual(pack.evidence[0].related_visuals[0].asset.id, ASSET_1)
+        self.assertEqual(
+            pack.evidence[0].related_visuals[0].relation_type,
+            "explicit_figure_reference",
+        )
+        self.assertEqual(len(pack.evidence[0].related_visuals), 1)
         self.assertIsNone(pack.evidence[0].related_visuals[0].cross_modal_rank)
         assert pack.debug is not None
-        self.assertEqual(pack.debug.hydrated_relation_count, 1)
+        self.assertEqual(pack.debug.hydrated_relation_count, 2)
 
     async def test_native_image_hit_reverse_expands_to_parent_text(self) -> None:
         gates = _ParallelGates()

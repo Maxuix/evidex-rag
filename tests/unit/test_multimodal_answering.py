@@ -347,6 +347,45 @@ class MultimodalAnsweringTests(unittest.IsolatedAsyncioTestCase):
             )
         )
 
+    def test_lower_rank_strong_visual_requires_explicit_or_cross_modal_signal(
+        self,
+    ) -> None:
+        context = _context()
+        pack, _ = _related_visual_pack(context, count=1)
+        parent = pack.evidence[0]
+        related = parent.related_visuals[0]
+        top_text = replace(parent, related_visuals=())
+        lower_parent = replace(
+            parent,
+            rank=2,
+            index_chunk_id=uuid4(),
+            related_visuals=(
+                replace(
+                    related,
+                    relation_type="inline_figure",
+                    text_space_rank=2,
+                ),
+            ),
+        )
+        ranked_pack = replace(pack, evidence=(top_text, lower_parent))
+        policy = VisualEvidenceAdmissionPolicy()
+
+        self.assertEqual(
+            policy.rank_candidates(ranked_pack, ("cite_1", "cite_2")), ()
+        )
+        dual_lane = replace(
+            lower_parent,
+            related_visuals=(
+                replace(lower_parent.related_visuals[0], cross_modal_rank=1),
+            ),
+        )
+        selected = policy.rank_candidates(
+            replace(ranked_pack, evidence=(top_text, dual_lane)),
+            ("cite_1", "cite_2"),
+        )
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(selected[0].reason_code, VisualEvidenceReason.SELECTED_DUAL_LANE)
+
     async def test_strong_related_visuals_are_ranked_deduplicated_and_read_lazily(
         self,
     ) -> None:

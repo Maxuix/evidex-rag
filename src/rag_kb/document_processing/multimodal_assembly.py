@@ -483,6 +483,7 @@ def _assemble_relations(
     for chunk in units:
         if chunk.modality is ContentModality.IMAGE:
             continue
+        explicit_labels = _explicit_figure_reference_labels(chunk.content)
         for visual_key in chunk.related_unit_keys:
             visual = by_key.get(visual_key)
             if visual is None or visual.asset_key is None:
@@ -521,6 +522,17 @@ def _assemble_relations(
                     labels[0] if labels else None,
                 )
             )
+            if explicit_labels and len(chunk.related_unit_keys) == 1:
+                candidates.append(
+                    _RelationCandidate(
+                        chunk,
+                        visual,
+                        ChunkAssetRelationType.EXPLICIT_FIGURE_REFERENCE,
+                        1_000_000,
+                        ChunkAssetRelationProvenance.AUTHOR_REFERENCE_V2,
+                        explicit_labels[0],
+                    )
+                )
 
         for label in normalize_figure_labels(chunk.content):
             for visual in labels_to_visuals.get(label, ()):
@@ -639,6 +651,21 @@ def _assemble_relations(
             },
         )
     return tuple(relations)
+
+
+def _explicit_figure_reference_labels(value: str) -> tuple[str, ...]:
+    labels: list[str] = []
+    patterns = (
+        r"(?i)(?:as\s+shown\s+in|shown\s+in|see|refer\s+to)\s+"
+        r"(?:fig(?:ure)?\.?)\s*([0-9]+[A-Za-z]?)",
+        r"(?:如图|见图|参见图)\s*([0-9]+[A-Za-z]?)",
+    )
+    for pattern in patterns:
+        for match in re.finditer(pattern, value):
+            label = f"figure:{match.group(1).lower()}"
+            if label not in labels:
+                labels.append(label)
+    return tuple(sorted(labels))
 
 
 def _unit_pages(unit: EvidenceUnitDraft) -> set[int]:

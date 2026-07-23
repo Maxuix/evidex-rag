@@ -14,6 +14,8 @@ from rag_kb.domain import (
     ErrorCode,
     Evidence,
     EvidencePack,
+    RetrievalDebug,
+    RetrievalQueryPlan,
     RetrievalStrategy,
     ContextualizedQuery,
     QueryContextStatus,
@@ -148,6 +150,39 @@ class ChatExecutionServiceTests(unittest.IsolatedAsyncioTestCase):
         result = await retriever.retrieve(context)
 
         self.assertEqual(result.evidence, (visual,))
+
+    async def test_retrieval_preserves_internal_debug_for_terminal_diagnostics(
+        self,
+    ) -> None:
+        context = _context()
+        debug = RetrievalDebug(
+            query_plan=RetrievalQueryPlan(
+                workspace_id=context.workspace_id,
+                knowledge_base_id=context.knowledge_base_id,
+                strategy=RetrievalStrategy.EXACT_VECTOR,
+                top_k=3,
+            ),
+            resolved_active_revision_id=context.index_revision_id,
+            result_count=0,
+            text_candidate_count=4,
+            cross_modal_candidate_count=2,
+            hydrated_relation_count=1,
+            evidence_group_count=1,
+        )
+
+        class Retrieval:
+            async def retrieve(self, auth, request):
+                del auth
+                return EvidencePack(
+                    knowledge_base_id=request.knowledge_base_id,
+                    index_revision_id=context.index_revision_id,
+                    strategy=RetrievalStrategy.EXACT_VECTOR,
+                    debug=debug,
+                )
+
+        result = await ChatEvidenceRetriever(Retrieval()).retrieve(context)  # type: ignore[arg-type]
+
+        self.assertIs(result.debug, debug)
 
 
 if __name__ == "__main__":

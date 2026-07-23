@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterable
 from dataclasses import replace
 import math
 from typing import Protocol
@@ -297,16 +298,22 @@ class RetrievalService:
                 for relation in strong_relations
                 if relation.evidence_group_key == item.group_key
             )
-            parent = next(
+            parent = min(
                 (
                     relation
                     for relation in group_relations
                     if hit.index_chunk_id == relation.visual_unit_id
                     or hit.index_asset_id == relation.asset_id
                 ),
-                None,
+                key=_relation_priority,
+                default=None,
             )
             base_chunk_id = parent.chunk_id if parent is not None else hit.index_chunk_id
+            group_relations = _preferred_asset_relations(
+                relation
+                for relation in group_relations
+                if relation.chunk_id == base_chunk_id
+            )
             rerank = metrics.get(base_chunk_id) or metrics.get(hit.index_chunk_id)
             related_visuals = tuple(
                 RelatedVisualEvidence(
@@ -639,3 +646,31 @@ def _minimum_rank(left: int | None, right: int | None) -> int | None:
     if right is None:
         return left
     return min(left, right)
+
+
+def _preferred_asset_relations(
+    relations: Iterable[IndexChunkAssetRelationSnapshot],
+) -> tuple[IndexChunkAssetRelationSnapshot, ...]:
+    preferred: dict[UUID, IndexChunkAssetRelationSnapshot] = {}
+    for relation in sorted(relations, key=_relation_priority):
+        preferred.setdefault(relation.asset_id, relation)
+    return tuple(preferred.values())
+
+
+def _relation_priority(
+    relation: IndexChunkAssetRelationSnapshot,
+) -> tuple[int, int, int]:
+    priority = {
+        ChunkAssetRelationType.EXPLICIT_FIGURE_REFERENCE: 0,
+        ChunkAssetRelationType.CAPTION_OF: 1,
+        ChunkAssetRelationType.INLINE_FIGURE: 2,
+        ChunkAssetRelationType.OCR_OF: 3,
+        ChunkAssetRelationType.TABLE_OF: 4,
+        ChunkAssetRelationType.SPATIAL_NEIGHBOR: 5,
+        ChunkAssetRelationType.SAME_PAGE: 6,
+    }
+    return (
+        priority[ChunkAssetRelationType(relation.relation_type)],
+        relation.ordinal,
+        relation.id.int,
+    )

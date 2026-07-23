@@ -73,6 +73,30 @@ class CompositeMultimodalAssemblyTests(unittest.TestCase):
             raised.exception.diagnostic["limit_name"], "max_relations_per_chunk"
         )
 
+    def test_inline_visual_is_promoted_when_parent_explicitly_references_figure(
+        self,
+    ) -> None:
+        parsed = _figure_document()
+        parsed = replace(
+            parsed,
+            elements=parsed.elements[:2],
+            extracted_character_count=sum(
+                len(item.text) for item in parsed.elements[:2]
+            ),
+        )
+
+        assembled = assemble_composite_evidence(parsed)
+
+        explicit = [
+            item
+            for item in assembled.relations
+            if item.relation_type
+            is ChunkAssetRelationType.EXPLICIT_FIGURE_REFERENCE
+        ]
+        self.assertEqual(len(explicit), 1)
+        self.assertEqual(explicit[0].figure_label, "figure:7")
+        self.assertEqual(explicit[0].provenance.value, "author_reference_v2")
+
 
 def _figure_document() -> ParsedDocument:
     checksum = hashlib.sha256(b"image").hexdigest()
