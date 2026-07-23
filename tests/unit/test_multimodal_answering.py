@@ -501,6 +501,16 @@ class MultimodalAnsweringTests(unittest.IsolatedAsyncioTestCase):
             model.requests[0].messages[1].visual_content[0],
             model.requests[1].messages[1].visual_content[0],
         )
+        snapshot = repaired.artifacts["final_llm_context"]
+        self.assertEqual(snapshot["operation"], "repair_answer")
+        self.assertEqual(list(snapshot["messages"]), [
+            {"role": item.role, "content": item.content}
+            for item in model.requests[1].messages
+        ])
+        self.assertEqual(
+            snapshot["media"][0]["asset"]["id"],
+            str(model.requests[1].messages[1].visual_content[0].asset_id),
+        )
         assert repaired.answering is not None
         assert repaired.answering.validation is not None
         self.assertTrue(repaired.answering.validation.repair_succeeded)

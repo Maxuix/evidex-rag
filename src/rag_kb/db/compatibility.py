@@ -8,7 +8,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 
-EXPECTED_REVISION = "0010_composite_evidence_v2"
+EXPECTED_REVISION = "0011_chat_final_llm_context"
 EXPECTED_POSTGRES_MAJOR = 18
 EXPECTED_PGVECTOR_VERSION = "0.8.2"
 EXPECTED_VECTOR_COLUMN = "embedding"

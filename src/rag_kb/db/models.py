@@ -1096,6 +1096,7 @@ class ChatRun(Base):
     error_retryable: Mapped[bool | None] = mapped_column(Boolean)
     usage: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     timing: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    final_llm_context: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     created_at: Mapped[datetime] = created_timestamp()
     updated_at: Mapped[datetime] = updated_timestamp()
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

@@ -58,6 +58,7 @@ class ChatResultPersistenceStep:
             visual_decisions=answering.visual_decisions,
             visual_image_count=len(answering.visual_content),
             visual_total_bytes=answering.visual_total_bytes,
+            final_llm_context=_final_llm_context(state),
         )
 
         async def persist(uow: UnitOfWork) -> ChatTerminalWriteStatus:
@@ -190,3 +191,34 @@ def _retrieval_diagnostics(state: ChatPipelineState) -> dict[str, int]:
         "evidence_group_count": debug.evidence_group_count,
     }
     return {key: value for key, value in values.items() if value is not None}
+
+
+def _final_llm_context(state: ChatPipelineState) -> dict[str, Any] | None:
+    value = state.artifacts.get("final_llm_context")
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ChatPipelineExecutionError(
+            ErrorCode.CHAT_CONTEXT_INVALID,
+            phase=ChatPipelinePhase.PERSIST_RESULT,
+            diagnostic={"check": "final_llm_context"},
+        )
+    return _plain_json_object(value)
+
+
+def _plain_json_object(value: Mapping[str, Any]) -> dict[str, Any]:
+    return {key: _plain_json_value(item) for key, item in value.items()}
+
+
+def _plain_json_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return _plain_json_object(value)
+    if isinstance(value, (tuple, list)):
+        return [_plain_json_value(item) for item in value]
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    raise ChatPipelineExecutionError(
+        ErrorCode.CHAT_CONTEXT_INVALID,
+        phase=ChatPipelinePhase.PERSIST_RESULT,
+        diagnostic={"check": "final_llm_context"},
+    )

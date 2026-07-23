@@ -38,6 +38,7 @@ class ChatTerminalSuccessCommand:
     visual_decisions: tuple[VisualEvidenceDecision, ...] = ()
     visual_image_count: int = 0
     visual_total_bytes: int = 0
+    final_llm_context: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         _require_finish_time(self.lease, self.finished_at)
@@ -55,6 +56,12 @@ class ChatTerminalSuccessCommand:
             "retrieval_diagnostics",
             MappingProxyType(dict(self.retrieval_diagnostics)),
         )
+        if self.final_llm_context is not None:
+            object.__setattr__(
+                self,
+                "final_llm_context",
+                MappingProxyType(dict(self.final_llm_context)),
+            )
 
 
 @dataclass(frozen=True, slots=True)

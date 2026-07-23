@@ -13,6 +13,7 @@ from rag_kb.answering.model_execution import (
 from rag_kb.answering.prompt_builder import (
     build_evidence_envelope,
     build_generation_request,
+    serialize_final_llm_context,
 )
 from rag_kb.domain import (
     AnswerControlReason,
@@ -143,16 +144,17 @@ class AnswerGenerationStep:
             draft = _deterministic_refusal(route)
             calls = answering.model_calls
         else:
+            request = build_generation_request(
+                context,
+                answering.evidence,
+                answering.assessment,
+                query_context=state.query_context,
+                expected_outcome=route,
+                visual_content=answering.visual_content,
+            )
             response = await complete_model(
                 self._model,
-                build_generation_request(
-                    context,
-                    answering.evidence,
-                    answering.assessment,
-                    query_context=state.query_context,
-                    expected_outcome=route,
-                    visual_content=answering.visual_content,
-                ),
+                request,
                 phase=ChatPipelinePhase.GENERATE_OR_REFUSE,
             )
             call = model_call_record(ChatModelOperation.GENERATE_ANSWER, response)
@@ -170,6 +172,16 @@ class AnswerGenerationStep:
             calls = answering.model_calls + (
                 call,
             )
+            artifacts = {
+                **state.artifacts,
+                "final_llm_context": serialize_final_llm_context(
+                    request,
+                    operation=ChatModelOperation.GENERATE_ANSWER,
+                    evidence=answering.evidence,
+                ),
+            }
+        if isinstance(route, AnswerControlReason):
+            artifacts = state.artifacts
         return ChatPipelineState(
             context=context,
             evidence_pack=pack,
@@ -183,7 +195,7 @@ class AnswerGenerationStep:
                 visual_total_bytes=answering.visual_total_bytes,
             ),
             query_context=state.query_context,
-            artifacts=state.artifacts,
+            artifacts=artifacts,
         )
 
 

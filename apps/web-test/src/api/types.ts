@@ -243,6 +243,7 @@ export interface ChatRun {
   citations: ChatCitation[];
   status_url: string;
   events_url: string;
+  final_context_url: string;
   effective_answer_policy: EffectiveAnswerPolicy;
   retrieval: {
     strategy: "exact_vector";
@@ -265,6 +266,31 @@ export interface ChatRun {
   created_at: IsoDate;
   updated_at: IsoDate;
   completed_at: IsoDate | null;
+}
+
+export interface ChatFinalContextAsset extends EvidenceAsset {}
+
+export interface ChatFinalContextMedia {
+  message_index: number;
+  citation_ids: string[];
+  asset: ChatFinalContextAsset;
+}
+
+export interface ChatFinalContextMessage {
+  role: "system" | "user" | "assistant";
+  content: string;
+}
+
+export interface ChatRunFinalContext {
+  run_id: UUID;
+  status: "queued" | "running" | "completed" | "failed" | "cancelled";
+  available: boolean;
+  version: "final_llm_context_v1" | null;
+  operation: "generate_answer" | "repair_answer" | null;
+  output_schema: "answer_v1" | null;
+  max_output_tokens: number | null;
+  messages: ChatFinalContextMessage[];
+  media: ChatFinalContextMedia[];
 }
 
 export interface ChatRunCreate {

@@ -236,3 +236,4 @@ class ChatRun:
     completed_at: datetime | None
     conversation_context: dict[str, Any] | None = None
     contextualized_query: dict[str, Any] | None = None
+    final_llm_context: dict[str, Any] | None = None

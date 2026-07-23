@@ -9,6 +9,7 @@ from rag_kb.domain import (
     AnswerValidationIssue,
     ChatExecutionContext,
     ChatModelMessage,
+    ChatModelOperation,
     ChatModelRequest,
     ChatModelVisualContent,
     ChatOutputSchema,
@@ -62,6 +63,9 @@ accepts the prior answer and asks for no new information, return outcome
 "acknowledged" with empty claims and missing_aspects. In that case do not repeat,
 summarize, extend, or cite the prior answer. For every substantive request, ignore
 this exception and follow allowed_outcomes."""
+
+
+FINAL_LLM_CONTEXT_VERSION = "final_llm_context_v1"
 
 
 def build_evidence_envelope(pack: EvidencePack) -> EvidenceEnvelope:
@@ -211,6 +215,59 @@ def build_repair_request(
         ),
         output_schema=ChatOutputSchema.ANSWER_V1,
     )
+
+
+def serialize_final_llm_context(
+    request: ChatModelRequest,
+    *,
+    operation: ChatModelOperation,
+    evidence: EvidenceEnvelope,
+) -> dict[str, object]:
+    """Create the exact display-safe record of the final model input.
+
+    Image bytes remain only in ``ChatModelVisualContent`` for the provider call.
+    The persisted context uses the pre-authorized asset descriptor that identifies
+    the same media for the diagnostic UI.
+    """
+
+    assets = {
+        str(item.asset_snapshot["id"]): item.asset_snapshot
+        for item in evidence.items
+        if item.asset_snapshot is not None
+    }
+    media: list[dict[str, object]] = []
+    for message_index, message in enumerate(request.messages):
+        for visual in message.visual_content:
+            asset = assets.get(str(visual.asset_id))
+            if asset is None:
+                raise ValueError("visual model input is missing its asset descriptor")
+            media.append(
+                {
+                    "message_index": message_index,
+                    "citation_ids": list(visual.citation_ids),
+                    "asset": {
+                        "id": str(visual.asset_id),
+                        "media_type": visual.media_type,
+                        "checksum_sha256": visual.checksum_sha256,
+                        "content_url": asset["content_url"],
+                        "width": visual.width,
+                        "height": visual.height,
+                    },
+                }
+            )
+    return {
+        "version": FINAL_LLM_CONTEXT_VERSION,
+        "operation": operation.value,
+        "output_schema": (
+            request.output_schema.value if request.output_schema is not None else None
+        ),
+        "max_output_tokens": request.max_output_tokens,
+        "messages": [
+            {"role": message.role, "content": message.content}
+            for message in request.messages
+        ],
+        "media": media,
+    }
 
 
 def allowed_answer_outcomes(

@@ -233,6 +233,12 @@ class SqlAlchemyChatRepository:
                 and _stored_attempt_calls(run.usage, command.lease.attempt) == calls
                 and _stored_success_facts(run.timing, command.lease.attempt)
                 == stable_success
+                and run.final_llm_context
+                == (
+                    dict(command.final_llm_context)
+                    if command.final_llm_context is not None
+                    else None
+                )
             ):
                 return ChatTerminalWriteStatus.IDEMPOTENT
             return ChatTerminalWriteStatus.STALE
@@ -287,6 +293,11 @@ class SqlAlchemyChatRepository:
         run.status = ChatRunStatus.COMPLETED
         run.usage = usage
         run.timing = timing
+        run.final_llm_context = (
+            dict(command.final_llm_context)
+            if command.final_llm_context is not None
+            else None
+        )
         run.error_code = None
         run.error_detail = None
         run.error_retryable = None
@@ -1242,6 +1253,11 @@ def _run(
         contextualized_query=(
             dict(run.contextualized_query)
             if run.contextualized_query is not None
+            else None
+        ),
+        final_llm_context=(
+            dict(run.final_llm_context)
+            if run.final_llm_context is not None
             else None
         ),
     )

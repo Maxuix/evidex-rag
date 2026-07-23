@@ -98,6 +98,38 @@ class ChatTerminalServiceTests(unittest.IsolatedAsyncioTestCase):
             repository.success.finished_at, observed + timedelta(seconds=2)
         )
 
+    async def test_success_persists_final_llm_context_snapshot(self) -> None:
+        observed = datetime(2026, 7, 15, 8, 0, tzinfo=UTC)
+        state = replace(
+            _completed_state(observed),
+            artifacts={
+                "final_llm_context": {
+                    "version": "final_llm_context_v1",
+                    "operation": "generate_answer",
+                    "output_schema": "answer_v1",
+                    "max_output_tokens": None,
+                    "messages": [
+                        {"role": "system", "content": "instructions"},
+                        {"role": "user", "content": "question"},
+                    ],
+                    "media": [],
+                }
+            },
+        )
+        repository = _Repository(ChatTerminalWriteStatus.APPLIED)
+
+        await ChatResultPersistenceStep(_Factory(repository)).run(state)
+
+        snapshot = dict(repository.success.final_llm_context or {})
+        self.assertEqual(snapshot["operation"], "generate_answer")
+        self.assertEqual(
+            snapshot["messages"],
+            [
+                {"role": "system", "content": "instructions"},
+                {"role": "user", "content": "question"},
+            ],
+        )
+
     async def test_stale_and_database_failures_are_content_safe(self) -> None:
         observed = datetime(2026, 7, 15, 8, 0, tzinfo=UTC)
         state = _completed_state(observed)

@@ -16,6 +16,7 @@ from rag_kb.answering.model_execution import (
 from rag_kb.answering.prompt_builder import (
     allowed_answer_outcomes,
     build_repair_request,
+    serialize_final_llm_context,
 )
 from rag_kb.answering.wire_schemas import WireAnswer
 from rag_kb.domain import (
@@ -70,6 +71,7 @@ class AnswerStructureValidationStep:
             ),
         )
         calls = answering.model_calls
+        artifacts = state.artifacts
         if validated is not None and rendered is not None:
             record = AnswerValidationRecord(initial_issues=())
         elif answering.draft.source is AnswerDraftSource.DETERMINISTIC:
@@ -79,18 +81,19 @@ class AnswerStructureValidationStep:
                 safe_fallback=True,
             )
         else:
+            request = build_repair_request(
+                context,
+                answering.evidence,
+                answering.assessment,
+                expected_outcome=answering.draft.expected_outcome,
+                raw_draft=answering.draft.raw_json,
+                issues=initial_issues,
+                query_context=state.query_context,
+                visual_content=answering.visual_content,
+            )
             response = await complete_model(
                 self._model,
-                build_repair_request(
-                    context,
-                    answering.evidence,
-                    answering.assessment,
-                    expected_outcome=answering.draft.expected_outcome,
-                    raw_draft=answering.draft.raw_json,
-                    issues=initial_issues,
-                    query_context=state.query_context,
-                    visual_content=answering.visual_content,
-                ),
+                request,
                 phase=ChatPipelinePhase.VALIDATE_STRUCTURE,
             )
             call = model_call_record(ChatModelOperation.REPAIR_ANSWER, response)
@@ -132,6 +135,15 @@ class AnswerStructureValidationStep:
                     safe_fallback=True,
                 )
 
+            artifacts = {
+                **state.artifacts,
+                "final_llm_context": serialize_final_llm_context(
+                    request,
+                    operation=ChatModelOperation.REPAIR_ANSWER,
+                    evidence=answering.evidence,
+                ),
+            }
+
         return ChatPipelineState(
             context=context,
             evidence_pack=state.evidence_pack,
@@ -148,7 +160,7 @@ class AnswerStructureValidationStep:
                 validation=record,
             ),
             query_context=state.query_context,
-            artifacts=state.artifacts,
+            artifacts=artifacts,
         )
 
 

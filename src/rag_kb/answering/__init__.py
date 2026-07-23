@@ -8,6 +8,7 @@ from rag_kb.answering.prompt_builder import (
     build_evidence_envelope,
     build_generation_request,
     build_repair_request,
+    serialize_final_llm_context,
 )
 from rag_kb.answering.structure_validator import (
     AnswerStructureValidationStep,
@@ -23,5 +24,6 @@ __all__ = [
     "build_evidence_envelope",
     "build_generation_request",
     "build_repair_request",
+    "serialize_final_llm_context",
     "render_validated_answer",
 ]

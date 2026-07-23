@@ -1056,6 +1056,56 @@ textarea:hover {
   white-space: pre-wrap;
 }
 
+.final-context-panel {
+  margin-top: 18px;
+  border-top: 1px solid var(--line);
+  padding-top: 18px;
+}
+
+.context-disclosure {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+.final-context-content {
+  display: grid;
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.context-message-list,
+.context-media-list {
+  display: grid;
+  gap: 10px;
+}
+
+.context-message,
+.context-media {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 13px;
+  background: var(--paper-soft);
+}
+
+.context-message pre {
+  max-height: 520px;
+  overflow: auto;
+  margin: 10px 0 0;
+  color: #26372f;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 0.76rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.context-media .asset-preview {
+  margin-top: 0;
+}
+
 .pending-answer {
   display: flex;
   align-items: center;

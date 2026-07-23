@@ -6,6 +6,7 @@ import type {
   ChatMessage,
   ChatRun,
   ChatRunCreate,
+  ChatRunFinalContext,
   ChatSession,
   InsufficiencyPolicy,
   KnowledgeBase,
@@ -70,6 +71,9 @@ export function ChatView({
   const [pendingSubmission, setPendingSubmission] = useState<PendingRunSubmission | null>(null);
   const [submissionError, setSubmissionError] = useState<unknown | null>(null);
   const [run, setRun] = useState<ChatRun | null>(null);
+  const [finalContext, setFinalContext] = useState<ChatRunFinalContext | null>(null);
+  const [finalContextLoading, setFinalContextLoading] = useState(false);
+  const [finalContextError, setFinalContextError] = useState<unknown | null>(null);
   const [runLoadError, setRunLoadError] = useState<unknown | null>(null);
   const [runLoadRequest, setRunLoadRequest] = useState<RunLoadRequest | null>(null);
   const [deliveryMode, setDeliveryMode] = useState<DeliveryMode>("idle");
@@ -205,6 +209,12 @@ export function ChatView({
       void loadRun({ runId: active.runId, clearStoredOnNotFound: true });
     }
   }, [knowledgeBase, loadRun, loadSessions]);
+
+  useEffect(() => {
+    setFinalContext(null);
+    setFinalContextLoading(false);
+    setFinalContextError(null);
+  }, [run?.run_id]);
 
   useEffect(() => {
     if (!selectedSessionId && visibleSessions.length > 0) {
@@ -382,6 +392,25 @@ export function ChatView({
 
   const openRunFromHistory = async (runId: string) => {
     await loadRun({ runId, clearStoredOnNotFound: false });
+  };
+
+  const loadFinalContext = async () => {
+    if (!run || finalContextLoading) return;
+    setFinalContextLoading(true);
+    setFinalContextError(null);
+    try {
+      const value = await client.getChatRunFinalContext(run.final_context_url);
+      if (value.run_id !== run.run_id) {
+        throw new ApiClientError("The final context belongs to a different ChatRun.", {
+          code: "FRONTEND_FINAL_CONTEXT_SCOPE_MISMATCH",
+        });
+      }
+      setFinalContext(value);
+    } catch (error) {
+      setFinalContextError(error);
+    } finally {
+      setFinalContextLoading(false);
+    }
   };
 
   return (
@@ -686,6 +715,81 @@ export function ChatView({
                   <span className="pulse-dot" aria-hidden="true" />
                   Waiting for a committed terminal result…
                 </div>
+              ) : null}
+              {runIsTerminal ? (
+                <section className="final-context-panel">
+                  <div className="subheading-row">
+                    <div>
+                      <p className="eyebrow">Diagnostic model input</p>
+                      <h3>Final LLM context</h3>
+                    </div>
+                    {!finalContext ? (
+                      <button
+                        className="button secondary"
+                        type="button"
+                        onClick={() => void loadFinalContext()}
+                        disabled={finalContextLoading}
+                      >
+                        {finalContextLoading ? "Loading…" : "View final context"}
+                      </button>
+                    ) : null}
+                  </div>
+                  <p className="context-disclosure">
+                    Shows the exact text messages and authorized media descriptors sent in the final model call. Media bytes and Data URLs are never stored here.
+                  </p>
+                  {finalContextError ? (
+                    <ProblemNotice error={finalContextError} onRetry={() => void loadFinalContext()} />
+                  ) : null}
+                  {finalContext && !finalContext.available ? (
+                    <EmptyState
+                      title="No final model request"
+                      description="This run used a deterministic result or completed before final-context snapshots were introduced."
+                    />
+                  ) : null}
+                  {finalContext?.available ? (
+                    <div className="final-context-content">
+                      <KeyValueGrid values={[
+                        ["Final operation", finalContext.operation],
+                        ["Output schema", finalContext.output_schema],
+                        ["Max output tokens", finalContext.max_output_tokens],
+                        ["Media attachments", finalContext.media.length],
+                      ]} />
+                      <div className="context-message-list">
+                        {finalContext.messages.map((item, index) => (
+                          <article className="context-message" key={`${item.role}-${index}`}>
+                            <div className="message-meta">
+                              <strong>{item.role}</strong>
+                              <span>message {index + 1}</span>
+                            </div>
+                            <pre>{item.content}</pre>
+                          </article>
+                        ))}
+                      </div>
+                      {finalContext.media.length ? (
+                        <div className="context-media-list">
+                          <h4>Authorized media</h4>
+                          {finalContext.media.map((media, index) => (
+                            <article className="context-media" key={`${media.asset.id}-${index}`}>
+                              <AssetPreview
+                                client={client}
+                                asset={media.asset}
+                                alt={`Final model context media ${index + 1}`}
+                              />
+                              <KeyValueGrid values={[
+                                ["Attached to message", media.message_index + 1],
+                                ["Citation IDs", media.citation_ids.join(", ")],
+                                ["Media type", media.asset.media_type],
+                                ["Dimensions", media.asset.width && media.asset.height
+                                  ? `${media.asset.width} × ${media.asset.height}`
+                                  : null],
+                              ]} />
+                            </article>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </section>
               ) : null}
               {run.citations.length ? (
                 <div className="citation-list">

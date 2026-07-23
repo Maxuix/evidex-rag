@@ -3,6 +3,7 @@ import type {
   ChatMessage,
   ChatRun,
   ChatRunCreate,
+  ChatRunFinalContext,
   ChatRunFailedEvent,
   ChatSession,
   DocumentRecord,
@@ -211,6 +212,13 @@ export class ApiClient {
     const path = runIdOrUrl.startsWith("/")
       ? runIdOrUrl
       : `/chat/runs/${runIdOrUrl}`;
+    return this.request(path);
+  }
+
+  getChatRunFinalContext(runIdOrUrl: UUID | string): Promise<ChatRunFinalContext> {
+    const path = runIdOrUrl.startsWith("/")
+      ? runIdOrUrl
+      : `/chat/runs/${runIdOrUrl}/final-context`;
     return this.request(path);
   }
 

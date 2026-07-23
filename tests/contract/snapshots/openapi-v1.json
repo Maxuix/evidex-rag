@@ -221,6 +221,111 @@
         "title": "ChatCitationResponse",
         "type": "object"
       },
+      "ChatFinalContextAssetResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "checksum_sha256": {
+            "title": "Checksum Sha256",
+            "type": "string"
+          },
+          "content_url": {
+            "title": "Content Url",
+            "type": "string"
+          },
+          "height": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Height"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "media_type": {
+            "title": "Media Type",
+            "type": "string"
+          },
+          "width": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Width"
+          }
+        },
+        "required": [
+          "id",
+          "media_type",
+          "checksum_sha256",
+          "content_url"
+        ],
+        "title": "ChatFinalContextAssetResponse",
+        "type": "object"
+      },
+      "ChatFinalContextMediaResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "asset": {
+            "$ref": "#/components/schemas/ChatFinalContextAssetResponse"
+          },
+          "citation_ids": {
+            "items": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            "title": "Citation Ids",
+            "type": "array"
+          },
+          "message_index": {
+            "minimum": 0.0,
+            "title": "Message Index",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "message_index",
+          "citation_ids",
+          "asset"
+        ],
+        "title": "ChatFinalContextMediaResponse",
+        "type": "object"
+      },
+      "ChatFinalContextMessageResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "role": {
+            "enum": [
+              "system",
+              "user",
+              "assistant"
+            ],
+            "title": "Role",
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "content"
+        ],
+        "title": "ChatFinalContextMessageResponse",
+        "type": "object"
+      },
       "ChatMessagePage": {
         "additionalProperties": false,
         "properties": {
@@ -417,6 +522,106 @@
         "title": "ChatRunErrorResponse",
         "type": "object"
       },
+      "ChatRunFinalContextResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "available": {
+            "title": "Available",
+            "type": "boolean"
+          },
+          "max_output_tokens": {
+            "anyOf": [
+              {
+                "maximum": 2048.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Output Tokens"
+          },
+          "media": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ChatFinalContextMediaResponse"
+            },
+            "title": "Media",
+            "type": "array"
+          },
+          "messages": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ChatFinalContextMessageResponse"
+            },
+            "title": "Messages",
+            "type": "array"
+          },
+          "operation": {
+            "anyOf": [
+              {
+                "enum": [
+                  "generate_answer",
+                  "repair_answer"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operation"
+          },
+          "output_schema": {
+            "anyOf": [
+              {
+                "const": "answer_v1",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Schema"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "queued",
+              "running",
+              "completed",
+              "failed",
+              "cancelled"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "const": "final_llm_context_v1",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          }
+        },
+        "required": [
+          "run_id",
+          "status",
+          "available"
+        ],
+        "title": "ChatRunFinalContextResponse",
+        "type": "object"
+      },
       "ChatRunQueryContextResponse": {
         "additionalProperties": false,
         "properties": {
@@ -565,6 +770,10 @@
             "title": "Events Url",
             "type": "string"
           },
+          "final_context_url": {
+            "title": "Final Context Url",
+            "type": "string"
+          },
           "index_revision_id": {
             "format": "uuid",
             "title": "Index Revision Id",
@@ -654,6 +863,7 @@
           "citations",
           "status_url",
           "events_url",
+          "final_context_url",
           "effective_answer_policy",
           "retrieval",
           "query_context",
@@ -3121,6 +3331,59 @@
           }
         },
         "summary": "Stream Chat Run Events",
+        "tags": [
+          "chat"
+        ]
+      }
+    },
+    "/api/v1/chat/runs/{run_id}/final-context": {
+      "get": {
+        "operationId": "get_chat_run_final_context_api_v1_chat_runs__run_id__final_context_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatRunFinalContextResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Request validation failed"
+          }
+        },
+        "summary": "Get Chat Run Final Context",
         "tags": [
           "chat"
         ]
