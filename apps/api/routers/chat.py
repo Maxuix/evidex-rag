@@ -85,10 +85,15 @@ async def list_chat_sessions(
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
     cursor: Annotated[str | None, Query(min_length=1, max_length=2048)] = None,
     sort: SessionSort = "-updated_at",
+    knowledge_base_id: UUID | None = None,
 ) -> ChatSessionPage:
     after = _after(cursor, sort)
     page = await request.app.state.dependencies.chat_service.list_sessions(
-        context, limit=limit, sort=sort, after=after
+        context,
+        limit=limit,
+        sort=sort,
+        after=after,
+        kb_id=knowledge_base_id,
     )
     return ChatSessionPage(
         items=tuple(_session_response(item) for item in page.items),
@@ -381,6 +386,8 @@ def _citation_responses(value: ChatRun) -> tuple[ChatCitationResponse, ...]:
             index_chunk_id=item.index_chunk_id,
             document_id=item.document_id,
             document_version_id=item.document_version_id,
+            document_display_name=item.document_display_name,
+            document_original_filename=item.document_original_filename,
             quoted_text=item.quoted_text,
             source_location=dict(item.source_location),
             score=item.score,

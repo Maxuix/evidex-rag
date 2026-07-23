@@ -97,16 +97,20 @@ class ChatService:
         limit: int,
         sort: str,
         after: tuple[str, ...] | None,
+        kb_id: UUID | None = None,
     ) -> Page[ChatSession]:
         self._authorize(context)
 
         async def load(uow: UnitOfWork) -> Page[ChatSession]:
             _require_scope(uow, context)
+            if kb_id is not None and await uow.knowledge_bases.get(kb_id) is None:
+                raise ResourceNotFoundError("knowledge base was not found")
             return await uow.chat.list_sessions(
                 principal_id=context.principal_id,
                 limit=limit,
                 sort=sort,
                 after=after,
+                kb_id=kb_id,
             )
 
         return await execute_in_transaction(

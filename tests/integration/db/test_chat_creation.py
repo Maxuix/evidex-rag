@@ -164,6 +164,9 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
         session = await self.chat.create_session(
             self.context, kb_id=kb.id, title=None
         )
+        await self.chat.create_session(
+            self.context, kb_id=other_kb.id, title="other knowledge base"
+        )
 
         outcomes = await asyncio.gather(
             self._create_run(session.id, kb.id, uuid4()),
@@ -201,9 +204,17 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
             sort="-updated_at",
             after=None,
         )
+        filtered_sessions = await self.chat.list_sessions(
+            self.context,
+            limit=10,
+            sort="-updated_at",
+            after=None,
+            kb_id=kb.id,
+        )
         self.assertEqual(status.id, run.id)
         self.assertEqual([item.role for item in messages.items], ["user", "assistant"])
         self.assertEqual(sessions.items[0].id, session.id)
+        self.assertEqual([item.id for item in filtered_sessions.items], [session.id])
 
         with self.assertRaises(ResourceStateConflictError):
             await self.chat.create_run(
@@ -588,6 +599,8 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
                     index_chunk_id=chunk_ids[1],
                     document_id=document_id,
                     document_version_id=version_id,
+                    document_display_name="citation source",
+                    document_original_filename="source.txt",
                     quoted_text="第二段证据",
                     source_location={"paragraph": 2},
                     score=0.8,
@@ -598,6 +611,8 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
                     index_chunk_id=chunk_ids[0],
                     document_id=document_id,
                     document_version_id=version_id,
+                    document_display_name="citation source",
+                    document_original_filename="source.txt",
                     quoted_text="第一段证据",
                     source_location={"paragraph": 1},
                     score=0.9,
@@ -629,7 +644,9 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
             rows = await connection.fetch(
                 """
                 SELECT ordinal, index_chunk_id, document_id_snapshot,
-                       document_version_id_snapshot, quoted_text,
+                       document_version_id_snapshot,
+                       document_display_name_snapshot,
+                       document_original_filename_snapshot, quoted_text,
                        source_location, score
                 FROM citation
                 WHERE assistant_message_id = $1
@@ -651,6 +668,14 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             {row["document_version_id_snapshot"] for row in rows}, {version_id}
         )
+        self.assertEqual(
+            {row["document_display_name_snapshot"] for row in rows},
+            {"citation source"},
+        )
+        self.assertEqual(
+            {row["document_original_filename_snapshot"] for row in rows},
+            {"source.txt"},
+        )
         authoritative = await self.chat.get_run(self.context, run.id)
         self.assertEqual(
             [item.index_chunk_id for item in authoritative.citations],
@@ -659,6 +684,10 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [item.quoted_text for item in authoritative.citations],
             ["第二段证据", "第一段证据"],
+        )
+        self.assertEqual(
+            {item.document_display_name for item in authoritative.citations},
+            {"citation source"},
         )
 
     async def test_terminal_watcher_releases_database_connection_while_waiting(

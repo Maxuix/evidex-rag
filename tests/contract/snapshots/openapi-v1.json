@@ -146,10 +146,32 @@
               }
             ]
           },
+          "document_display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Display Name"
+          },
           "document_id": {
             "format": "uuid",
             "title": "Document Id",
             "type": "string"
+          },
+          "document_original_filename": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Original Filename"
           },
           "document_version_id": {
             "format": "uuid",
@@ -3437,6 +3459,23 @@
               ],
               "title": "Sort",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "knowledge_base_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Knowledge Base Id"
             }
           }
         ],

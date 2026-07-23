@@ -180,6 +180,10 @@ class PgVectorStore:
                 IndexedDocumentVersion.id.label("indexed_document_version_id"),
                 Document.id.label("document_id"),
                 DocumentVersion.id.label("document_version_id"),
+                Document.display_name.label("document_display_name"),
+                DocumentVersion.original_filename.label(
+                    "document_original_filename"
+                ),
                 IndexChunk.ordinal.label("ordinal"),
                 IndexChunk.content.label("content"),
                 IndexChunk.source_location.label("source_location"),
@@ -275,6 +279,8 @@ class PgVectorStore:
                 hits.c.indexed_document_version_id,
                 hits.c.document_id,
                 hits.c.document_version_id,
+                hits.c.document_display_name,
+                hits.c.document_original_filename,
                 hits.c.ordinal,
                 hits.c.content,
                 hits.c.source_location,
@@ -340,6 +346,8 @@ class PgVectorStore:
             indexed_document_version_id=row["indexed_document_version_id"],
             document_id=row["document_id"],
             document_version_id=row["document_version_id"],
+            document_display_name=row["document_display_name"],
+            document_original_filename=row["document_original_filename"],
             ordinal=row["ordinal"],
             text=row["content"],
             source_location=dict(row["source_location"]),

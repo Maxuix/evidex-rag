@@ -1124,6 +1124,10 @@ class Citation(Base):
     document_version_id_snapshot: Mapped[UUID] = mapped_column(
         PostgreSQLUUID(as_uuid=True), nullable=False
     )
+    document_display_name_snapshot: Mapped[str | None] = mapped_column(String(512))
+    document_original_filename_snapshot: Mapped[str | None] = mapped_column(
+        String(1024)
+    )
     quoted_text: Mapped[str] = mapped_column(Text, nullable=False)
     source_location: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     modality: Mapped[str] = mapped_column(

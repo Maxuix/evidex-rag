@@ -14,6 +14,7 @@ from rag_kb.domain import (
     ChatSessionBusyError,
     ConversationTurn,
     InsufficiencyPolicy,
+    Page,
     resolve_p1_policy,
 )
 from rag_kb.memory import hydrate_conversation_context
@@ -178,6 +179,27 @@ class ChatCreationContractTests(unittest.TestCase):
 
 
 class ChatCreationServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_session_listing_filters_by_authorized_knowledge_base(self) -> None:
+        workspace_id = uuid4()
+        kb_id = uuid4()
+        chat = _ChatRepository(kb_id=kb_id)
+        service = ChatService(
+            _Factory(workspace_id, chat, kb_id),
+            SingleWorkspaceAccessPolicy(workspace_id),
+            model_configuration={"resolved_model": "fixed-model"},
+        )
+
+        result = await service.list_sessions(
+            AuthContext("principal", "client", workspace_id),
+            limit=20,
+            sort="-updated_at",
+            after=None,
+            kb_id=kb_id,
+        )
+
+        self.assertEqual(result.items, ())
+        self.assertEqual(chat.list_kb_id, kb_id)
+
     async def test_creation_locks_session_and_freezes_completed_turns(self) -> None:
         workspace_id = uuid4()
         kb_id = uuid4()
@@ -267,6 +289,11 @@ class _ChatRepository:
         self.turns = turns
         self.busy = busy
         self.events = []
+        self.list_kb_id = None
+
+    async def list_sessions(self, **values):
+        self.list_kb_id = values["kb_id"]
+        return Page(items=())
 
     async def lock_idempotency(self, scope):
         del scope

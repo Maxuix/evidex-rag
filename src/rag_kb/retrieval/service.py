@@ -367,6 +367,8 @@ class RetrievalService:
                 cross_modal_rank=item.cross_modal_rank,
                 fusion_score=item.score,
                 related_visuals=related_visuals,
+                document_display_name=hit.document_display_name,
+                document_original_filename=hit.document_original_filename,
             )
             existing = by_chunk.get(base_chunk_id)
             if existing is None:
@@ -528,6 +530,8 @@ class RetrievalService:
                 asset=RetrievalService._asset(hit),
                 evidence_group_key=hit.evidence_group_key,
                 matched_representations=(hit.representation_kind,),
+                document_display_name=hit.document_display_name,
+                document_original_filename=hit.document_original_filename,
             )
             for rank, hit in enumerate(ordered, start=1)
         )
@@ -611,6 +615,8 @@ class RetrievalService:
             asset=RetrievalService._asset(hit),
             evidence_group_key=hit.evidence_group_key,
             matched_representations=(hit.representation_kind,),
+            document_display_name=hit.document_display_name,
+            document_original_filename=hit.document_original_filename,
         )
 
     @staticmethod

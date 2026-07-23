@@ -166,6 +166,8 @@ class ChatCitationResponse(PublicSchema):
     index_chunk_id: UUID | None
     document_id: UUID
     document_version_id: UUID
+    document_display_name: str | None = None
+    document_original_filename: str | None = None
     quoted_text: str
     source_location: dict[str, Any]
     score: float | None

@@ -353,6 +353,8 @@ def render_validated_answer(
                         modality=item.modality,
                         asset_snapshot=item.asset_snapshot,
                         matched_representations=item.matched_representations,
+                        document_display_name=item.document_display_name,
+                        document_original_filename=item.document_original_filename,
                     )
                 )
             markers.append(f"[{ordinals[citation_id] + 1}]")

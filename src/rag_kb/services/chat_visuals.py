@@ -229,6 +229,10 @@ class VisualEvidencePreparationStep:
                             if candidate.modality == "table"
                             else "native_image",
                         ),
+                        document_display_name=evidence.document_display_name,
+                        document_original_filename=(
+                            evidence.document_original_filename
+                        ),
                     )
                 visual = ChatModelVisualContent(
                     citation_ids=(visual_citation_id,),

@@ -100,6 +100,8 @@ def build_evidence_envelope(pack: EvidencePack) -> EvidenceEnvelope:
                     else None
                 ),
                 matched_representations=item.matched_representations,
+                document_display_name=item.document_display_name,
+                document_original_filename=item.document_original_filename,
             )
             for item in pack.evidence
         ),

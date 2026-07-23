@@ -226,6 +226,8 @@ class StubRetrievalService:
             hierarchy={},
             source_metadata={"filename": "safe.txt"},
             score=1.0,
+            document_display_name="Safe evidence",
+            document_original_filename="safe.txt",
         )
         return EvidencePack(
             knowledge_base_id=retrieval_request.knowledge_base_id,
@@ -1035,8 +1037,10 @@ class _FakeChatService:
         self.run = _chat_run_value(self.session)
         return self.session
 
-    async def list_sessions(self, context, *, limit, sort, after):
+    async def list_sessions(self, context, *, limit, sort, after, kb_id=None):
         del context, limit, sort, after
+        if kb_id is not None and kb_id != self.session.kb_id:
+            raise ResourceNotFoundError("internal chat knowledge-base detail")
         return Page(items=(self.session,))
 
     async def list_messages(
@@ -1566,6 +1570,12 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
             f"{API_PREFIX}/chat/sessions/{chat.session.id}/messages",
         )
         listed = await request(self.app, "GET", f"{API_PREFIX}/chat/sessions")
+        filtered = await request(
+            self.app,
+            "GET",
+            f"{API_PREFIX}/chat/sessions",
+            query=f"knowledge_base_id={_knowledge_base_value().id}",
+        )
         self.assertEqual(status_response.status, 200)
         self.assertEqual(status_response.json()["run_id"], str(chat.run.id))
         self.assertEqual(
@@ -1573,6 +1583,7 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
             ["user", "assistant"],
         )
         self.assertEqual(listed.json()["items"][0]["id"], str(chat.session.id))
+        self.assertEqual(filtered.json()["items"][0]["id"], str(chat.session.id))
 
     async def test_chat_final_context_returns_messages_and_authorized_media(self) -> None:
         chat = self.dependencies.chat_service
@@ -1688,6 +1699,8 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
             index_chunk_id=UUID("01900000-0000-7000-8000-000000000041"),
             document_id=UUID("01900000-0000-7000-8000-000000000042"),
             document_version_id=UUID("01900000-0000-7000-8000-000000000043"),
+            document_display_name="Committed source",
+            document_original_filename="committed.png",
             quoted_text="Committed evidence",
             source_location={"line": 4},
             score=0.9,

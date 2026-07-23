@@ -193,6 +193,8 @@ class ChatCitation:
     modality: str = "text"
     asset_snapshot: dict[str, Any] | None = None
     matched_representations: tuple[str, ...] = ("text",)
+    document_display_name: str | None = None
+    document_original_filename: str | None = None
 
     def __post_init__(self) -> None:
         if self.ordinal < 0 or not self.quoted_text:

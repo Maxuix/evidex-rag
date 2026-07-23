@@ -75,6 +75,8 @@ class PromptEvidence:
     modality: str = "text"
     asset_snapshot: Mapping[str, Any] | None = None
     matched_representations: tuple[str, ...] = ("text",)
+    document_display_name: str | None = None
+    document_original_filename: str | None = None
 
     def __post_init__(self) -> None:
         if self.citation_id != f"cite_{self.rank}" or self.rank < 1:
@@ -289,6 +291,8 @@ class RenderedCitation:
     modality: str = "text"
     asset_snapshot: Mapping[str, Any] | None = None
     matched_representations: tuple[str, ...] = ("text",)
+    document_display_name: str | None = None
+    document_original_filename: str | None = None
 
     def __post_init__(self) -> None:
         if self.ordinal < 0 or not self.citation_id or not self.quoted_text:

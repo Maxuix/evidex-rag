@@ -157,6 +157,8 @@ class VectorSearchHit:
     asset_checksum_sha256: str | None = None
     asset_width: int | None = None
     asset_height: int | None = None
+    document_display_name: str | None = None
+    document_original_filename: str | None = None
 
     def __post_init__(self) -> None:
         if self.ordinal < 0:
@@ -213,6 +215,8 @@ class Evidence:
     cross_modal_rank: int | None = None
     fusion_score: float | None = None
     related_visuals: tuple[RelatedVisualEvidence, ...] = ()
+    document_display_name: str | None = None
+    document_original_filename: str | None = None
 
     def __post_init__(self) -> None:
         if self.rank < 1:

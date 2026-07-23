@@ -95,6 +95,7 @@ class ChatRepository(Protocol):
         limit: int,
         sort: str,
         after: tuple[str, ...] | None,
+        kb_id: UUID | None = None,
     ) -> Page[ChatSession]: ...
 
     async def list_messages(

@@ -276,6 +276,10 @@ class SqlAlchemyChatRepository:
                     index_chunk_id=item.index_chunk_id,
                     document_id_snapshot=item.document_id,
                     document_version_id_snapshot=item.document_version_id,
+                    document_display_name_snapshot=item.document_display_name,
+                    document_original_filename_snapshot=(
+                        item.document_original_filename
+                    ),
                     quoted_text=item.quoted_text,
                     source_location=dict(item.source_location),
                     modality=item.modality,
@@ -680,6 +684,7 @@ class SqlAlchemyChatRepository:
         limit: int,
         sort: str,
         after: tuple[str, ...] | None,
+        kb_id: UUID | None = None,
     ) -> Page[ChatSession]:
         self._ensure_active()
         descending = sort.startswith("-")
@@ -692,6 +697,8 @@ class SqlAlchemyChatRepository:
             ChatSessionRow.workspace_id == self._workspace_id,
             ChatSessionRow.principal_id == principal_id,
         )
+        if kb_id is not None:
+            statement = statement.where(ChatSessionRow.kb_id == kb_id)
         statement = _with_after(
             statement, column, ChatSessionRow.id, after, descending
         )
@@ -915,6 +922,10 @@ def _run_rows(rows) -> ChatRun:
             index_chunk_id=citation.index_chunk_id,
             document_id=citation.document_id_snapshot,
             document_version_id=citation.document_version_id_snapshot,
+            document_display_name=citation.document_display_name_snapshot,
+            document_original_filename=(
+                citation.document_original_filename_snapshot
+            ),
             quoted_text=citation.quoted_text,
             source_location=dict(citation.source_location),
             score=citation.score,
@@ -1148,6 +1159,9 @@ def _citations_equal(rows, command: ChatTerminalSuccessCommand) -> bool:
         and row.index_chunk_id == item.index_chunk_id
         and row.document_id_snapshot == item.document_id
         and row.document_version_id_snapshot == item.document_version_id
+        and row.document_display_name_snapshot == item.document_display_name
+        and row.document_original_filename_snapshot
+        == item.document_original_filename
         and row.quoted_text == item.quoted_text
         and row.source_location == dict(item.source_location)
         and row.score == item.score
