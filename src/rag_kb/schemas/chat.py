@@ -148,6 +148,19 @@ class ChatRunQueryContextResponse(PublicSchema):
     rewrite_source: Literal["original", "model", "repair", "fallback"] | None
 
 
+class ChatCitationAssetResponse(PublicSchema):
+    id: UUID
+    media_type: str
+    checksum_sha256: str
+    content_url: str
+    width: int | None = None
+    height: int | None = None
+    visual_unit_id: UUID | None = None
+    parent_citation_id: str | None = None
+    relation_type: str | None = None
+    selection_reason: str | None = None
+
+
 class ChatCitationResponse(PublicSchema):
     ordinal: Annotated[int, Field(ge=0)]
     index_chunk_id: UUID | None
@@ -157,7 +170,7 @@ class ChatCitationResponse(PublicSchema):
     source_location: dict[str, Any]
     score: float | None
     modality: str = "text"
-    asset: dict[str, Any] | None = None
+    asset: ChatCitationAssetResponse | None = None
     matched_representations: tuple[str, ...] = ("text",)
 
 

@@ -96,6 +96,12 @@ class DocumentIndexSummary:
     unit_count: int | None
     asset_count: int | None
     representation_count: int | None
+    composite_chunk_count: int | None = None
+    visual_unit_count: int | None = None
+    relation_count: int | None = None
+    text_representation_count: int | None = None
+    native_image_representation_count: int | None = None
+    table_representation_count: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

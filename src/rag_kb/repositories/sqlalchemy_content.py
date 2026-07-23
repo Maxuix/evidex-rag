@@ -379,6 +379,7 @@ class SqlAlchemyDocumentRepository:
         if row is None:
             return None
         document_row, version_row, indexed_row, manifest_row = row
+        v2_counts = _v2_manifest_counts(manifest_row)
         summary = (
             DocumentIndexSummary(
                 indexed_document_version_id=indexed_row.id,
@@ -390,6 +391,7 @@ class SqlAlchemyDocumentRepository:
                 representation_count=(
                     manifest_row.representation_count if manifest_row else None
                 ),
+                **v2_counts,
             )
             if indexed_row is not None
             else None
@@ -398,7 +400,6 @@ class SqlAlchemyDocumentRepository:
             document=_document(document_row, version_row),
             index=summary,
         )
-
     async def list(
         self,
         *,
@@ -1136,6 +1137,42 @@ def _version(row: DocumentVersionRow) -> DocumentVersion:
         size_bytes=row.size_bytes,
         created_at=row.created_at,
     )
+
+
+def _v2_manifest_counts(manifest) -> dict[str, int | None]:
+    empty = {
+        "composite_chunk_count": None,
+        "visual_unit_count": None,
+        "relation_count": None,
+        "text_representation_count": None,
+        "native_image_representation_count": None,
+        "table_representation_count": None,
+    }
+    if manifest is None or manifest.relation_count is None:
+        return empty
+    units = tuple(manifest.unit_plan or ())
+    representations = tuple(manifest.representation_matrix or ())
+    return {
+        "composite_chunk_count": sum(
+            item.get("modality") == "text" for item in units
+        ),
+        "visual_unit_count": sum(
+            item.get("modality") in {"image", "table"} for item in units
+        ),
+        "relation_count": manifest.relation_count,
+        "text_representation_count": sum(
+            item.get("representation_kind") in {"text", "ocr_text"}
+            for item in representations
+        ),
+        "native_image_representation_count": sum(
+            item.get("representation_kind") == "native_image"
+            for item in representations
+        ),
+        "table_representation_count": sum(
+            item.get("representation_kind") in {"table_text", "table_image"}
+            for item in representations
+        ),
+    }
 
 
 def _document(row: DocumentRow, version: DocumentVersionRow | None) -> Document:

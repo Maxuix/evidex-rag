@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { ApiClient, ApiClientError } from "./api/client";
-import type { EvidencePack, KnowledgeBase } from "./api/types";
+import type { EvidencePack, KnowledgeBase, RelatedVisualEvidence } from "./api/types";
 import {
   AssetPreview,
   EmptyState,
@@ -130,6 +130,10 @@ export function RetrievalView({
               ["Iterative scan", result.debug!.query_plan.iterative_scan],
               ["Rerank", result.debug!.query_plan.rerank],
               ["Result count", result.debug!.result_count],
+              ["Text candidates", result.debug!.text_candidate_count],
+              ["Cross-modal candidates", result.debug!.cross_modal_candidate_count],
+              ["Hydrated relations", result.debug!.hydrated_relation_count],
+              ["Evidence groups", result.debug!.evidence_group_count],
               ["Active revision", shortId(result.debug!.resolved_active_revision_id)],
               ["Workspace", shortId(result.debug!.query_plan.workspace_id)],
             ]} />
@@ -172,6 +176,18 @@ export function RetrievalView({
                       <p className="evidence-text">
                         {evidence.text || "No text representation is available for this visual asset."}
                       </p>
+                      {evidence.related_visuals.length ? (
+                        <div className="evidence-details">
+                          <strong>Related visual descriptors</strong>
+                          {evidence.related_visuals.map((visual) => (
+                            <RelatedVisualDescriptor
+                              key={`${visual.visual_unit_id}:${visual.asset.id}`}
+                              client={client}
+                              visual={visual}
+                            />
+                          ))}
+                        </div>
+                      ) : null}
                       <KeyValueGrid values={[
                         ["Modality", evidence.modality],
                         ["Representations", evidence.matched_representations.join(", ")],
@@ -207,6 +223,40 @@ export function RetrievalView({
           </section>
         </>
       )}
+    </div>
+  );
+}
+
+function RelatedVisualDescriptor({
+  client,
+  visual,
+}: {
+  client: ApiClient;
+  visual: RelatedVisualEvidence;
+}) {
+  let previewUrl: string | null = null;
+  try {
+    previewUrl = client.resolvePublicApiUrl(visual.asset.content_url);
+  } catch {
+    previewUrl = null;
+  }
+  return (
+    <div className="citation-card">
+      <KeyValueGrid values={[
+        ["Figure", visual.figure_label],
+        ["Relation", visual.relation_type],
+        ["Provenance", visual.relation_provenance],
+        ["Confidence micros", visual.relation_confidence_micros],
+        ["Visual unit", shortId(visual.visual_unit_id)],
+        ["Group", visual.evidence_group_key],
+        ["Text lane rank", visual.text_space_rank],
+        ["Cross-modal rank", visual.cross_modal_rank],
+      ]} />
+      {previewUrl ? (
+        <a className="button secondary" href={previewUrl} target="_blank" rel="noreferrer">
+          Open authorized preview
+        </a>
+      ) : null}
     </div>
   );
 }

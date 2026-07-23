@@ -191,6 +191,14 @@ async def get_document(
                 unit_count=summary.unit_count,
                 asset_count=summary.asset_count,
                 representation_count=summary.representation_count,
+                composite_chunk_count=summary.composite_chunk_count,
+                visual_unit_count=summary.visual_unit_count,
+                relation_count=summary.relation_count,
+                text_representation_count=summary.text_representation_count,
+                native_image_representation_count=(
+                    summary.native_image_representation_count
+                ),
+                table_representation_count=summary.table_representation_count,
             )
             if summary is not None
             else None

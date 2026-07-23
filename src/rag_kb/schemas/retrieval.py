@@ -78,6 +78,7 @@ class EvidenceResponse(RetrievalPublicSchema):
     text_space_rank: int | None = None
     cross_modal_rank: int | None = None
     fusion_score: float | None = None
+    related_visuals: tuple["RelatedVisualEvidenceResponse", ...] = ()
 
 
 class EvidenceAssetResponse(RetrievalPublicSchema):
@@ -89,10 +90,29 @@ class EvidenceAssetResponse(RetrievalPublicSchema):
     height: int | None = None
 
 
+class RelatedVisualEvidenceResponse(RetrievalPublicSchema):
+    visual_unit_id: UUID
+    asset: EvidenceAssetResponse
+    relation_type: str
+    relation_confidence_micros: int
+    relation_provenance: str
+    evidence_group_key: str
+    figure_label: str | None = None
+    parent_chunk_id: UUID | None = None
+    modality: str
+    source_location: dict[str, Any]
+    text_space_rank: int | None = None
+    cross_modal_rank: int | None = None
+
+
 class RetrievalDebugResponse(RetrievalPublicSchema):
     query_plan: RetrievalQueryPlanResponse
     resolved_active_revision_id: UUID
     result_count: int
+    text_candidate_count: int | None = None
+    cross_modal_candidate_count: int | None = None
+    hydrated_relation_count: int | None = None
+    evidence_group_count: int | None = None
 
 
 class EvidencePackResponse(RetrievalPublicSchema):

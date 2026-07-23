@@ -880,6 +880,12 @@ class _FakeDocumentService:
                 unit_count=7,
                 asset_count=3,
                 representation_count=11,
+                composite_chunk_count=4,
+                visual_unit_count=3,
+                relation_count=5,
+                text_representation_count=4,
+                native_image_representation_count=2,
+                table_representation_count=2,
             ),
         )
 
@@ -1247,6 +1253,12 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
                 "unit_count": 7,
                 "asset_count": 3,
                 "representation_count": 11,
+                "composite_chunk_count": 4,
+                "visual_unit_count": 3,
+                "relation_count": 5,
+                "text_representation_count": 4,
+                "native_image_representation_count": 2,
+                "table_representation_count": 2,
             },
         )
 
@@ -1591,6 +1603,23 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
             quoted_text="Committed evidence",
             source_location={"line": 4},
             score=0.9,
+            modality="image",
+            asset_snapshot={
+                "id": "01900000-0000-7000-8000-000000000044",
+                "media_type": "image/png",
+                "checksum_sha256": "a" * 64,
+                "content_url": (
+                    "/api/v1/index-assets/"
+                    "01900000-0000-7000-8000-000000000044/content"
+                ),
+                "width": 320,
+                "height": 200,
+                "visual_unit_id": "01900000-0000-7000-8000-000000000041",
+                "parent_citation_id": "cite_1",
+                "relation_type": "explicit_figure_reference",
+                "selection_reason": "selected_explicit_reference",
+            },
+            matched_representations=("native_image",),
         )
         chat.run = dataclass_replace(
             chat.run,
@@ -1622,6 +1651,14 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
         event = _sse_data(streamed.body)
         self.assertEqual(event["answer"], "Committed answer [1]")
         self.assertEqual(event["citations"][0]["quoted_text"], "Committed evidence")
+        self.assertEqual(event["citations"][0]["modality"], "image")
+        self.assertEqual(
+            event["citations"][0]["asset"]["parent_citation_id"], "cite_1"
+        )
+        self.assertEqual(
+            event["citations"][0]["asset"]["relation_type"],
+            "explicit_figure_reference",
+        )
         self.assertEqual(event["effective_answer_policy"], chat.run.effective_policy)
         self.assertEqual(status_response.json()["citations"], event["citations"])
         self.assertEqual(

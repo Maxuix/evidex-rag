@@ -24,6 +24,7 @@ from rag_kb.services import (
 )
 from rag_kb.schemas import (
     ChatAnswerCompletedEvent,
+    ChatCitationAssetResponse,
     ChatCitationResponse,
     ChatMessagePage,
     ChatMessageResponse,
@@ -342,6 +343,13 @@ def _citation_responses(value: ChatRun) -> tuple[ChatCitationResponse, ...]:
             quoted_text=item.quoted_text,
             source_location=dict(item.source_location),
             score=item.score,
+            modality=item.modality,
+            asset=(
+                ChatCitationAssetResponse.model_validate(item.asset_snapshot)
+                if item.asset_snapshot is not None
+                else None
+            ),
+            matched_representations=item.matched_representations,
         )
         for item in value.citations
     )

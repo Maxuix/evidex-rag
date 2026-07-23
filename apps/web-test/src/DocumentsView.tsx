@@ -288,8 +288,14 @@ export function DocumentsView({
                 ["Index build status", focusedDocument.index?.build_status],
                 ["Serving status", focusedDocument.index?.serving_status],
                 ["Evidence units", focusedDocument.index?.unit_count],
+                ["Composite text chunks", focusedDocument.index?.composite_chunk_count],
+                ["Visual units", focusedDocument.index?.visual_unit_count],
                 ["Assets", focusedDocument.index?.asset_count],
+                ["Asset relations", focusedDocument.index?.relation_count],
                 ["Representations", focusedDocument.index?.representation_count],
+                ["Text representations", focusedDocument.index?.text_representation_count],
+                ["Native-image representations", focusedDocument.index?.native_image_representation_count],
+                ["Table representations", focusedDocument.index?.table_representation_count],
               ]} />
             </>
           ) : <p>Loading document metadata…</p>}

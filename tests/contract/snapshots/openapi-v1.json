@@ -36,20 +36,115 @@
         "title": "AnswerStyle",
         "type": "string"
       },
+      "ChatCitationAssetResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "checksum_sha256": {
+            "title": "Checksum Sha256",
+            "type": "string"
+          },
+          "content_url": {
+            "title": "Content Url",
+            "type": "string"
+          },
+          "height": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Height"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "media_type": {
+            "title": "Media Type",
+            "type": "string"
+          },
+          "parent_citation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Citation Id"
+          },
+          "relation_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Relation Type"
+          },
+          "selection_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selection Reason"
+          },
+          "visual_unit_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Visual Unit Id"
+          },
+          "width": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Width"
+          }
+        },
+        "required": [
+          "id",
+          "media_type",
+          "checksum_sha256",
+          "content_url"
+        ],
+        "title": "ChatCitationAssetResponse",
+        "type": "object"
+      },
       "ChatCitationResponse": {
         "additionalProperties": false,
         "properties": {
           "asset": {
             "anyOf": [
               {
-                "additionalProperties": true,
-                "type": "object"
+                "$ref": "#/components/schemas/ChatCitationAssetResponse"
               },
               {
                 "type": "null"
               }
-            ],
-            "title": "Asset"
+            ]
           },
           "document_id": {
             "format": "uuid",
@@ -859,6 +954,17 @@
             "title": "Build Status",
             "type": "string"
           },
+          "composite_chunk_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Composite Chunk Count"
+          },
           "index_revision_id": {
             "format": "uuid",
             "title": "Index Revision Id",
@@ -868,6 +974,28 @@
             "format": "uuid",
             "title": "Indexed Document Version Id",
             "type": "string"
+          },
+          "native_image_representation_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Native Image Representation Count"
+          },
+          "relation_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Relation Count"
           },
           "representation_count": {
             "anyOf": [
@@ -889,6 +1017,28 @@
             "title": "Serving Status",
             "type": "string"
           },
+          "table_representation_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Table Representation Count"
+          },
+          "text_representation_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text Representation Count"
+          },
           "unit_count": {
             "anyOf": [
               {
@@ -899,6 +1049,17 @@
               }
             ],
             "title": "Unit Count"
+          },
+          "visual_unit_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Visual Unit Count"
           }
         },
         "required": [
@@ -908,7 +1069,13 @@
           "serving_status",
           "unit_count",
           "asset_count",
-          "representation_count"
+          "representation_count",
+          "composite_chunk_count",
+          "visual_unit_count",
+          "relation_count",
+          "text_representation_count",
+          "native_image_representation_count",
+          "table_representation_count"
         ],
         "title": "DocumentIndexSummaryResponse",
         "type": "object"
@@ -1427,6 +1594,14 @@
             "title": "Rank",
             "type": "integer"
           },
+          "related_visuals": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/RelatedVisualEvidenceResponse"
+            },
+            "title": "Related Visuals",
+            "type": "array"
+          },
           "score": {
             "title": "Score",
             "type": "number"
@@ -1885,7 +2060,8 @@
           "profile": {
             "enum": [
               "unstructured_local_v1",
-              "unstructured_multimodal_local_v1"
+              "unstructured_multimodal_local_v1",
+              "unstructured_multimodal_local_v2"
             ],
             "title": "Profile",
             "type": "string"
@@ -2084,9 +2260,137 @@
         "title": "ProblemDetails",
         "type": "object"
       },
+      "RelatedVisualEvidenceResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "asset": {
+            "$ref": "#/components/schemas/EvidenceAssetResponse"
+          },
+          "cross_modal_rank": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cross Modal Rank"
+          },
+          "evidence_group_key": {
+            "title": "Evidence Group Key",
+            "type": "string"
+          },
+          "figure_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Figure Label"
+          },
+          "modality": {
+            "title": "Modality",
+            "type": "string"
+          },
+          "parent_chunk_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Chunk Id"
+          },
+          "relation_confidence_micros": {
+            "title": "Relation Confidence Micros",
+            "type": "integer"
+          },
+          "relation_provenance": {
+            "title": "Relation Provenance",
+            "type": "string"
+          },
+          "relation_type": {
+            "title": "Relation Type",
+            "type": "string"
+          },
+          "source_location": {
+            "additionalProperties": true,
+            "title": "Source Location",
+            "type": "object"
+          },
+          "text_space_rank": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text Space Rank"
+          },
+          "visual_unit_id": {
+            "format": "uuid",
+            "title": "Visual Unit Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "visual_unit_id",
+          "asset",
+          "relation_type",
+          "relation_confidence_micros",
+          "relation_provenance",
+          "evidence_group_key",
+          "modality",
+          "source_location"
+        ],
+        "title": "RelatedVisualEvidenceResponse",
+        "type": "object"
+      },
       "RetrievalDebugResponse": {
         "additionalProperties": false,
         "properties": {
+          "cross_modal_candidate_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cross Modal Candidate Count"
+          },
+          "evidence_group_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Group Count"
+          },
+          "hydrated_relation_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hydrated Relation Count"
+          },
           "query_plan": {
             "$ref": "#/components/schemas/RetrievalQueryPlanResponse"
           },
@@ -2098,6 +2402,17 @@
           "result_count": {
             "title": "Result Count",
             "type": "integer"
+          },
+          "text_candidate_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text Candidate Count"
           }
         },
         "required": [

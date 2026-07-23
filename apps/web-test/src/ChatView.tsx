@@ -712,6 +712,10 @@ export function ChatView({
                           ["Version", shortId(citation.document_version_id)],
                           ["Chunk", shortId(citation.index_chunk_id)],
                           ["Score", citation.score?.toFixed(4)],
+                          ["Visual unit", shortId(citation.asset?.visual_unit_id)],
+                          ["Parent citation", citation.asset?.parent_citation_id],
+                          ["Relation", citation.asset?.relation_type],
+                          ["Selection reason", citation.asset?.selection_reason],
                         ]} />
                         <JsonDetails label="Source location" value={citation.source_location} />
                         <button

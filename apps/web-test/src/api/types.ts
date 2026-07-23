@@ -96,6 +96,12 @@ export interface DocumentIndexSummary {
   unit_count: number | null;
   asset_count: number | null;
   representation_count: number | null;
+  composite_chunk_count: number | null;
+  visual_unit_count: number | null;
+  relation_count: number | null;
+  text_representation_count: number | null;
+  native_image_representation_count: number | null;
+  table_representation_count: number | null;
 }
 
 export interface DocumentDetail extends DocumentRecord {
@@ -177,8 +183,15 @@ export interface ChatCitation {
   source_location: JsonMap;
   score: number | null;
   modality: "text" | "image" | "table";
-  asset: EvidenceAsset | null;
+  asset: ChatCitationAsset | null;
   matched_representations: string[];
+}
+
+export interface ChatCitationAsset extends EvidenceAsset {
+  visual_unit_id: UUID | null;
+  parent_citation_id: string | null;
+  relation_type: string | null;
+  selection_reason: string | null;
 }
 
 export interface ChatRun {
@@ -290,6 +303,7 @@ export interface Evidence {
   text_space_rank: number | null;
   cross_modal_rank: number | null;
   fusion_score: number | null;
+  related_visuals: RelatedVisualEvidence[];
 }
 
 export interface EvidenceAsset {
@@ -301,6 +315,21 @@ export interface EvidenceAsset {
   height: number | null;
 }
 
+export interface RelatedVisualEvidence {
+  visual_unit_id: UUID;
+  asset: EvidenceAsset;
+  relation_type: string;
+  relation_confidence_micros: number;
+  relation_provenance: string;
+  evidence_group_key: string;
+  figure_label: string | null;
+  parent_chunk_id: UUID | null;
+  modality: "image" | "table";
+  source_location: JsonMap;
+  text_space_rank: number | null;
+  cross_modal_rank: number | null;
+}
+
 export interface EvidencePack {
   knowledge_base_id: UUID;
   index_revision_id: UUID;
@@ -310,5 +339,9 @@ export interface EvidencePack {
     query_plan: RetrievalQueryPlan;
     resolved_active_revision_id: UUID;
     result_count: number;
+    text_candidate_count: number | null;
+    cross_modal_candidate_count: number | null;
+    hydrated_relation_count: number | null;
+    evidence_group_count: number | null;
   } | null;
 }
