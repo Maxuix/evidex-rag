@@ -525,6 +525,12 @@ class IndexedDocumentVersion(Base):
     __tablename__ = "indexed_document_version"
     __table_args__ = (
         UniqueConstraint("document_version_id", "index_revision_id"),
+        UniqueConstraint(
+            "workspace_id",
+            "kb_id",
+            "id",
+            name="uq_indexed_version_workspace_kb_id",
+        ),
         ForeignKeyConstraint(
             ["kb_id", "document_id"],
             ["document.kb_id", "document.id"],
@@ -682,6 +688,13 @@ class IndexArtifactManifest(Base):
             "jsonb_typeof(representation_matrix) = 'array'",
             name="artifact_manifest_representation_matrix_array",
         ),
+        CheckConstraint(
+            "(relation_plan IS NULL AND relation_count IS NULL AND relation_manifest_hash IS NULL) "
+            "OR (jsonb_typeof(relation_plan) = 'array' AND relation_count >= 0 "
+            "AND jsonb_array_length(relation_plan) = relation_count "
+            "AND relation_manifest_hash IS NOT NULL)",
+            name="artifact_manifest_relation_plan_consistent",
+        ),
     )
 
     indexed_document_version_id: Mapped[UUID] = mapped_column(
@@ -696,6 +709,9 @@ class IndexArtifactManifest(Base):
     unit_count: Mapped[int] = mapped_column(Integer, nullable=False)
     asset_count: Mapped[int] = mapped_column(Integer, nullable=False)
     representation_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    relation_plan: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB)
+    relation_count: Mapped[int | None] = mapped_column(Integer)
+    relation_manifest_hash: Mapped[str | None] = mapped_column(String(64))
     manifest_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = created_timestamp()
 
@@ -748,6 +764,10 @@ class IndexChunk(Base):
             "modality IN ('text', 'image', 'table')",
             name="index_chunk_modality_supported",
         ),
+        CheckConstraint(
+            "(embedding_text IS NULL) = (embedding_text_hash IS NULL)",
+            name="index_chunk_embedding_text_pair",
+        ),
         ForeignKeyConstraint(
             ["indexed_document_version_id", "index_asset_id"],
             ["index_asset.indexed_document_version_id", "index_asset.id"],
@@ -777,6 +797,8 @@ class IndexChunk(Base):
     )
     content: Mapped[str] = mapped_column(Text, nullable=False)
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    embedding_text: Mapped[str | None] = mapped_column(Text)
+    embedding_text_hash: Mapped[str | None] = mapped_column(String(64))
     token_count: Mapped[int] = mapped_column(Integer, nullable=False)
     source_location: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     hierarchy: Mapped[dict[str, Any]] = mapped_column(
@@ -785,6 +807,93 @@ class IndexChunk(Base):
     source_metadata: Mapped[dict[str, Any]] = mapped_column(
         JSONB, nullable=False, server_default=text("'{}'::jsonb")
     )
+    created_at: Mapped[datetime] = created_timestamp()
+
+
+class IndexChunkAssetRelation(Base):
+    __tablename__ = "index_chunk_asset_relation"
+    __table_args__ = (
+        UniqueConstraint(
+            "indexed_document_version_id",
+            "chunk_id",
+            "asset_id",
+            "relation_type",
+            name="uq_chunk_asset_relation_stable_edge",
+        ),
+        CheckConstraint(
+            "relation_type IN ("
+            "'explicit_figure_reference', 'caption_of', 'inline_figure', "
+            "'ocr_of', 'table_of', 'spatial_neighbor', 'same_page')",
+            name="chunk_asset_relation_type_supported",
+        ),
+        CheckConstraint(
+            "confidence_micros BETWEEN 0 AND 1000000",
+            name="chunk_asset_relation_confidence_micros",
+        ),
+        CheckConstraint(
+            "ordinal >= 0", name="chunk_asset_relation_ordinal_nonnegative"
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "kb_id", "indexed_document_version_id"],
+            [
+                "indexed_document_version.workspace_id",
+                "indexed_document_version.kb_id",
+                "indexed_document_version.id",
+            ],
+            name="fk_chunk_asset_relation_same_scope_target",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["indexed_document_version_id", "chunk_id"],
+            ["index_chunk.indexed_document_version_id", "index_chunk.id"],
+            name="fk_chunk_asset_relation_same_target_chunk",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["indexed_document_version_id", "visual_unit_id"],
+            ["index_chunk.indexed_document_version_id", "index_chunk.id"],
+            name="fk_chunk_asset_relation_same_target_visual",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["indexed_document_version_id", "asset_id"],
+            ["index_asset.indexed_document_version_id", "index_asset.id"],
+            name="fk_chunk_asset_relation_same_target_asset",
+            ondelete="CASCADE",
+        ),
+        Index(
+            "ix_chunk_asset_relation_chunk",
+            "workspace_id",
+            "kb_id",
+            "indexed_document_version_id",
+            "chunk_id",
+        ),
+        Index(
+            "ix_chunk_asset_relation_asset",
+            "workspace_id",
+            "kb_id",
+            "indexed_document_version_id",
+            "asset_id",
+        ),
+    )
+
+    id: Mapped[UUID] = uuid_primary_key()
+    workspace_id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), nullable=False)
+    kb_id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), nullable=False)
+    indexed_document_version_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), nullable=False
+    )
+    chunk_id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), nullable=False)
+    visual_unit_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), nullable=False
+    )
+    asset_id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), nullable=False)
+    relation_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    confidence_micros: Mapped[int] = mapped_column(Integer, nullable=False)
+    figure_label: Mapped[str | None] = mapped_column(String(128))
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    provenance: Mapped[str] = mapped_column(String(128), nullable=False)
+    evidence_group_key: Mapped[str] = mapped_column(String(255), nullable=False)
     created_at: Mapped[datetime] = created_timestamp()
 
 

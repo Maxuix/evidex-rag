@@ -17,6 +17,7 @@ from rag_kb.domain.parsing import ContentModality
 CHUNK_ID_NAMESPACE = UUID("bfa48c2a-6d99-5b0c-94df-0f7bb462c704")
 VECTOR_ID_NAMESPACE = UUID("263db84c-f438-5bd1-b9ca-666752fc2e92")
 ASSET_ID_NAMESPACE = UUID("fef9ec6a-9ec5-58ac-9ceb-487db6cbeb79")
+RELATION_ID_NAMESPACE = UUID("a758db33-f59e-5ed5-a68b-8cd4e0fbbe55")
 
 
 class IndexingPhase(StrEnum):
@@ -122,6 +123,7 @@ class IndexCleanupResult:
     plans_deleted: int = 0
     manifests_deleted: int = 0
     assets_deleted: int = 0
+    relations_deleted: int = 0
     jobs_deleted: int = 0
     file_cleanup_records_deleted: int = 0
 
@@ -167,6 +169,8 @@ class IndexChunkWrite:
     index_asset_id: UUID | None = None
     evidence_group_key: str | None = None
     relations: dict[str, Any] | None = None
+    embedding_text: str | None = None
+    embedding_text_hash: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -256,6 +260,41 @@ class IndexArtifactManifest:
     asset_count: int
     representation_count: int
     manifest_hash: str
+    relation_plan: tuple[dict[str, Any], ...] | None = None
+    relation_count: int | None = None
+    relation_manifest_hash: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class IndexChunkAssetRelationWrite:
+    id: UUID
+    chunk_id: UUID
+    visual_unit_id: UUID
+    asset_id: UUID
+    relation_type: str
+    confidence_micros: int
+    figure_label: str | None
+    ordinal: int
+    provenance: str
+    evidence_group_key: str
+
+
+@dataclass(frozen=True, slots=True)
+class IndexChunkAssetRelationSnapshot:
+    id: UUID
+    workspace_id: UUID
+    kb_id: UUID
+    indexed_document_version_id: UUID
+    index_revision_id: UUID
+    chunk_id: UUID
+    visual_unit_id: UUID
+    asset_id: UUID
+    relation_type: str
+    confidence_micros: int
+    figure_label: str | None
+    ordinal: int
+    provenance: str
+    evidence_group_key: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -348,6 +387,20 @@ def stable_asset_id(indexed_document_version_id: UUID, asset_key: str) -> UUID:
     if not asset_key:
         raise ValueError("asset key must not be empty")
     return uuid5(ASSET_ID_NAMESPACE, f"{indexed_document_version_id}:{asset_key}")
+
+
+def stable_relation_id(
+    indexed_document_version_id: UUID,
+    chunk_id: UUID,
+    asset_id: UUID,
+    relation_type: str,
+) -> UUID:
+    if not relation_type:
+        raise ValueError("relation type must not be empty")
+    return uuid5(
+        RELATION_ID_NAMESPACE,
+        f"{indexed_document_version_id}:{chunk_id}:{asset_id}:{relation_type}",
+    )
 
 
 def validate_embedding_vector(

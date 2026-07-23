@@ -8,7 +8,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 
-EXPECTED_REVISION = "0009_cross_modal_vector_768"
+EXPECTED_REVISION = "0010_composite_evidence_v2"
 EXPECTED_POSTGRES_MAJOR = 18
 EXPECTED_PGVECTOR_VERSION = "0.8.2"
 EXPECTED_VECTOR_COLUMN = "embedding"
@@ -31,6 +31,7 @@ EXPECTED_APPLICATION_TABLES = frozenset(
         "eval_result",
         "eval_run",
         "index_chunk",
+        "index_chunk_asset_relation",
         "index_chunk_plan",
         "index_asset",
         "index_artifact_manifest",

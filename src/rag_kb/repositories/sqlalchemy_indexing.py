@@ -20,6 +20,7 @@ from rag_kb.db.models import (
     IndexAsset as IndexAssetRow,
     IndexBuildStatus,
     IndexChunk as IndexChunkRow,
+    IndexChunkAssetRelation as IndexChunkAssetRelationRow,
     IndexChunkPlan as IndexChunkPlanRow,
     IndexedDocumentVersion as IndexedDocumentVersionRow,
     IndexingJob as IndexingJobRow,
@@ -37,6 +38,8 @@ from rag_kb.domain import (
     EmbeddingSpaceDefinition,
     ErrorCode,
     IndexChunkWrite,
+    IndexChunkAssetRelationSnapshot,
+    IndexChunkAssetRelationWrite,
     IndexChunkPlan,
     IndexArtifactManifest,
     IndexAssetWrite,
@@ -131,6 +134,94 @@ class SqlAlchemyIndexingRepository:
                 checksum_sha256=row.checksum_sha256,
             )
             for row in rows
+        )
+
+    async def list_relations(
+        self,
+        *,
+        kb_id: UUID,
+        index_revision_id: UUID,
+        chunk_ids: tuple[UUID, ...] = (),
+        asset_ids: tuple[UUID, ...] = (),
+        limit: int = 500,
+    ) -> tuple[IndexChunkAssetRelationSnapshot, ...]:
+        self._ensure_active()
+        if not chunk_ids and not asset_ids:
+            return ()
+        if not 1 <= limit <= 2_000:
+            raise ValueError("relation hydration limit must be between 1 and 2000")
+        selectors = []
+        if chunk_ids:
+            selectors.extend(
+                (
+                    IndexChunkAssetRelationRow.chunk_id.in_(chunk_ids),
+                    IndexChunkAssetRelationRow.visual_unit_id.in_(chunk_ids),
+                )
+            )
+        if asset_ids:
+            selectors.append(IndexChunkAssetRelationRow.asset_id.in_(asset_ids))
+        rows = (
+            await self._session.execute(
+                select(
+                    IndexChunkAssetRelationRow,
+                    IndexedDocumentVersionRow.index_revision_id,
+                )
+                .join(
+                    IndexedDocumentVersionRow,
+                    IndexedDocumentVersionRow.id
+                    == IndexChunkAssetRelationRow.indexed_document_version_id,
+                )
+                .join(
+                    DocumentRow,
+                    DocumentRow.id == IndexedDocumentVersionRow.document_id,
+                )
+                .join(
+                    KnowledgeBaseRow,
+                    KnowledgeBaseRow.id == IndexedDocumentVersionRow.kb_id,
+                )
+                .where(
+                    IndexChunkAssetRelationRow.workspace_id == self._workspace_id,
+                    IndexChunkAssetRelationRow.kb_id == kb_id,
+                    IndexedDocumentVersionRow.workspace_id == self._workspace_id,
+                    IndexedDocumentVersionRow.kb_id == kb_id,
+                    IndexedDocumentVersionRow.index_revision_id == index_revision_id,
+                    KnowledgeBaseRow.workspace_id == self._workspace_id,
+                    KnowledgeBaseRow.id == kb_id,
+                    KnowledgeBaseRow.active_index_revision_id == index_revision_id,
+                    IndexedDocumentVersionRow.build_status == IndexBuildStatus.READY,
+                    IndexedDocumentVersionRow.serving_status == IndexServingStatus.SERVING,
+                    DocumentRow.workspace_id == self._workspace_id,
+                    DocumentRow.kb_id == kb_id,
+                    DocumentRow.current_version_id
+                    == IndexedDocumentVersionRow.document_version_id,
+                    DocumentRow.deleted_at.is_(None),
+                    or_(*selectors),
+                )
+                .order_by(
+                    IndexChunkAssetRelationRow.ordinal,
+                    IndexChunkAssetRelationRow.id,
+                )
+                .limit(limit)
+            )
+        ).all()
+        return tuple(
+            IndexChunkAssetRelationSnapshot(
+                id=row.id,
+                workspace_id=row.workspace_id,
+                kb_id=row.kb_id,
+                indexed_document_version_id=row.indexed_document_version_id,
+                index_revision_id=revision_id,
+                chunk_id=row.chunk_id,
+                visual_unit_id=row.visual_unit_id,
+                asset_id=row.asset_id,
+                relation_type=row.relation_type,
+                confidence_micros=row.confidence_micros,
+                figure_label=row.figure_label,
+                ordinal=row.ordinal,
+                provenance=row.provenance,
+                evidence_group_key=row.evidence_group_key,
+            )
+            for row, revision_id in rows
         )
 
     async def oldest_claimable_at(
@@ -302,6 +393,14 @@ class SqlAlchemyIndexingRepository:
                                 )
                             ),
                             exists(
+                                select(IndexChunkAssetRelationRow.id).where(
+                                    IndexChunkAssetRelationRow.workspace_id
+                                    == self._workspace_id,
+                                    IndexChunkAssetRelationRow.indexed_document_version_id
+                                    == IndexedDocumentVersionRow.id,
+                                )
+                            ),
+                            exists(
                                 select(IndexArtifactManifestRow.indexed_document_version_id).where(
                                     IndexArtifactManifestRow.indexed_document_version_id
                                     == IndexedDocumentVersionRow.id
@@ -342,6 +441,22 @@ class SqlAlchemyIndexingRepository:
         plans_deleted = 0
         manifests_deleted = 0
         assets_deleted = 0
+        relations_deleted = 0
+        if targets:
+            relations_deleted = int(
+                (
+                    await self._session.execute(
+                        delete(IndexChunkAssetRelationRow).where(
+                            IndexChunkAssetRelationRow.workspace_id
+                            == self._workspace_id,
+                            IndexChunkAssetRelationRow.indexed_document_version_id.in_(
+                                targets
+                            ),
+                        )
+                    )
+                ).rowcount
+                or 0
+            )
         if chunk_ids:
             for vector_model in (VectorRecordRow, VectorRecord768Row):
                 vectors_deleted += int(
@@ -441,6 +556,7 @@ class SqlAlchemyIndexingRepository:
             plans_deleted=plans_deleted,
             manifests_deleted=manifests_deleted,
             assets_deleted=assets_deleted,
+            relations_deleted=relations_deleted,
             jobs_deleted=jobs_deleted,
         )
 
@@ -1133,6 +1249,13 @@ class SqlAlchemyIndexingRepository:
                 unit_count=proposed.unit_count,
                 asset_count=proposed.asset_count,
                 representation_count=proposed.representation_count,
+                relation_plan=(
+                    list(proposed.relation_plan)
+                    if proposed.relation_plan is not None
+                    else None
+                ),
+                relation_count=proposed.relation_count,
+                relation_manifest_hash=proposed.relation_manifest_hash,
                 manifest_hash=proposed.manifest_hash,
             )
             .on_conflict_do_nothing(index_elements=["indexed_document_version_id"])
@@ -1211,6 +1334,96 @@ class SqlAlchemyIndexingRepository:
             )
         return True
 
+    async def upsert_relations(
+        self,
+        command: IndexingCommand,
+        relations: tuple[IndexChunkAssetRelationWrite, ...],
+    ) -> bool:
+        self._ensure_active()
+        row = await self._load(command, lock=True)
+        if row is None:
+            return False
+        job, target, *_ = row
+        if not _is_writable(job, target):
+            return False
+        if not relations:
+            return True
+        values = [
+            {
+                "id": relation.id,
+                "workspace_id": self._workspace_id,
+                "kb_id": target.kb_id,
+                "indexed_document_version_id": target.id,
+                "chunk_id": relation.chunk_id,
+                "visual_unit_id": relation.visual_unit_id,
+                "asset_id": relation.asset_id,
+                "relation_type": relation.relation_type,
+                "confidence_micros": relation.confidence_micros,
+                "figure_label": relation.figure_label,
+                "ordinal": relation.ordinal,
+                "provenance": relation.provenance,
+                "evidence_group_key": relation.evidence_group_key,
+            }
+            for relation in relations
+        ]
+        await self._session.execute(
+            pg_insert(IndexChunkAssetRelationRow)
+            .values(values)
+            .on_conflict_do_nothing(
+                index_elements=[
+                    "indexed_document_version_id",
+                    "chunk_id",
+                    "asset_id",
+                    "relation_type",
+                ]
+            )
+        )
+        stored = (
+            await self._session.execute(
+                select(IndexChunkAssetRelationRow).where(
+                    IndexChunkAssetRelationRow.indexed_document_version_id == target.id,
+                    IndexChunkAssetRelationRow.id.in_(
+                        tuple(relation.id for relation in relations)
+                    ),
+                )
+            )
+        ).scalars()
+        observed = {
+            item.id: (
+                item.chunk_id,
+                item.visual_unit_id,
+                item.asset_id,
+                item.relation_type,
+                item.confidence_micros,
+                item.figure_label,
+                item.ordinal,
+                item.provenance,
+                item.evidence_group_key,
+            )
+            for item in stored
+        }
+        expected = {
+            item.id: (
+                item.chunk_id,
+                item.visual_unit_id,
+                item.asset_id,
+                item.relation_type,
+                item.confidence_micros,
+                item.figure_label,
+                item.ordinal,
+                item.provenance,
+                item.evidence_group_key,
+            )
+            for item in relations
+        }
+        if observed != expected:
+            raise _execution_error(
+                ErrorCode.INDEX_PERSISTENCE_FAILED,
+                IndexingPhase.PERSISTING,
+                "stable_chunk_asset_relation",
+            )
+        return True
+
     async def set_phase(self, command: IndexingCommand, phase: IndexingPhase) -> bool:
         self._ensure_active()
         row = await self._load(command, lock=True)
@@ -1253,6 +1466,8 @@ class SqlAlchemyIndexingRepository:
                 "relations": dict(chunk.relations or {}),
                 "content": chunk.content,
                 "content_hash": chunk.content_hash,
+                "embedding_text": chunk.embedding_text,
+                "embedding_text_hash": chunk.embedding_text_hash,
                 "token_count": chunk.token_count,
                 "source_location": chunk.source_location,
                 "hierarchy": chunk.hierarchy,
@@ -1273,6 +1488,8 @@ class SqlAlchemyIndexingRepository:
                         "evidence_group_key": chunk_insert.excluded.evidence_group_key,
                         "relations": chunk_insert.excluded.relations,
                         "content_hash": chunk_insert.excluded.content_hash,
+                        "embedding_text": chunk_insert.excluded.embedding_text,
+                        "embedding_text_hash": chunk_insert.excluded.embedding_text_hash,
                         "token_count": chunk_insert.excluded.token_count,
                         "source_location": chunk_insert.excluded.source_location,
                         "hierarchy": chunk_insert.excluded.hierarchy,
@@ -1719,6 +1936,13 @@ def _artifact_manifest(row: IndexArtifactManifestRow) -> IndexArtifactManifest:
             unit_count=row.unit_count,
             asset_count=row.asset_count,
             representation_count=row.representation_count,
+            relation_plan=(
+                tuple(dict(item) for item in row.relation_plan)
+                if row.relation_plan is not None
+                else None
+            ),
+            relation_count=row.relation_count,
+            relation_manifest_hash=row.relation_manifest_hash,
             manifest_hash=row.manifest_hash,
         )
     except (TypeError, ValueError) as error:

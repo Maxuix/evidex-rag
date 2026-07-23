@@ -8,6 +8,8 @@ from uuid import UUID
 
 from rag_kb.domain import (
     IndexChunkWrite,
+    IndexChunkAssetRelationSnapshot,
+    IndexChunkAssetRelationWrite,
     IndexCleanupResult,
     IndexChunkPlan,
     IndexArtifactManifest,
@@ -32,6 +34,16 @@ class IndexingRepository(Protocol):
     async def list_retired_assets(
         self, *, data_before: datetime, limit: int
     ) -> tuple[IndexAssetSnapshot, ...]: ...
+
+    async def list_relations(
+        self,
+        *,
+        kb_id: UUID,
+        index_revision_id: UUID,
+        chunk_ids: tuple[UUID, ...] = (),
+        asset_ids: tuple[UUID, ...] = (),
+        limit: int = 500,
+    ) -> tuple[IndexChunkAssetRelationSnapshot, ...]: ...
 
     async def oldest_claimable_at(
         self, *, observed_at: datetime, max_attempts: int
@@ -114,6 +126,12 @@ class IndexingRepository(Protocol):
 
     async def upsert_assets(
         self, command: IndexingCommand, assets: tuple[IndexAssetWrite, ...]
+    ) -> bool: ...
+
+    async def upsert_relations(
+        self,
+        command: IndexingCommand,
+        relations: tuple[IndexChunkAssetRelationWrite, ...],
     ) -> bool: ...
 
     async def set_phase(self, command: IndexingCommand, phase: IndexingPhase) -> bool: ...

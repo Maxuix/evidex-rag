@@ -80,6 +80,7 @@ class MaintenanceCleanupService:
                 plans_deleted=index.plans_deleted,
                 manifests_deleted=index.manifests_deleted,
                 assets_deleted=index.assets_deleted,
+                relations_deleted=index.relations_deleted,
                 jobs_deleted=index.jobs_deleted,
                 file_cleanup_records_deleted=records,
             )

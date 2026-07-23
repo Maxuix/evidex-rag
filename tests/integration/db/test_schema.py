@@ -168,7 +168,7 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
                     "UPDATE alembic_version SET version_num = 'runtime-mutation'"
                 )
             revision = await runtime.fetchval("SELECT version_num FROM alembic_version")
-            self.assertEqual(revision, "0009_cross_modal_vector_768")
+            self.assertEqual(revision, "0010_composite_evidence_v2")
         finally:
             await runtime.close()
 
@@ -426,3 +426,125 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await check.close()
         self.assertEqual([row["source_change_seq"] for row in ledger], [1, 2])
+
+    async def test_composite_relation_rejects_cross_target_edges_and_duplicates(self) -> None:
+        connection = await asyncpg.connect(MIGRATION_DSN)
+        try:
+            workspace_id, embedding_space_id, kb_id = await self.create_foundation(
+                connection, suffix="composite-relation"
+            )
+            revision_id = await self.create_revision(
+                connection, workspace_id, embedding_space_id, kb_id, status="active"
+            )
+            document_id, versions = await self.create_document_versions(
+                connection, workspace_id, kb_id, count=2
+            )
+
+            async def create_target(version_id: UUID, sequence: int) -> UUID:
+                return await connection.fetchval(
+                    """
+                    INSERT INTO indexed_document_version (
+                        workspace_id, kb_id, document_id, document_version_id,
+                        index_revision_id, source_change_seq,
+                        build_status, serving_status
+                    ) VALUES ($1, $2, $3, $4, $5, $6, 'processing', 'candidate')
+                    RETURNING id
+                    """,
+                    workspace_id,
+                    kb_id,
+                    document_id,
+                    version_id,
+                    revision_id,
+                    sequence,
+                )
+
+            first_target = await create_target(versions[0], 1)
+            second_target = await create_target(versions[1], 2)
+            asset_id = await connection.fetchval(
+                """
+                INSERT INTO index_asset (
+                    workspace_id, kb_id, document_id, document_version_id,
+                    indexed_document_version_id, asset_key, kind, storage_uri,
+                    media_type, checksum_sha256, source_location
+                ) VALUES (
+                    $1, $2, $3, $4, $5, 'asset-1', 'image', 'local://asset-1',
+                    'image/png', $6, '{}'::jsonb
+                ) RETURNING id
+                """,
+                workspace_id,
+                kb_id,
+                document_id,
+                versions[0],
+                first_target,
+                "a" * 64,
+            )
+
+            async def create_chunk(target_id: UUID, ordinal: int, unit_key: str) -> UUID:
+                return await connection.fetchval(
+                    """
+                    INSERT INTO index_chunk (
+                        workspace_id, kb_id, indexed_document_version_id,
+                        ordinal, unit_key, modality, content, content_hash,
+                        token_count, source_location
+                    ) VALUES ($1, $2, $3, $4, $5, 'text', 'body', $6, 1, '{}'::jsonb)
+                    RETURNING id
+                    """,
+                    workspace_id,
+                    kb_id,
+                    target_id,
+                    ordinal,
+                    unit_key,
+                    f"{ordinal:064d}",
+                )
+
+            text_chunk = await create_chunk(first_target, 0, "text-1")
+            visual_unit = await create_chunk(first_target, 1, "visual-1")
+            other_chunk = await create_chunk(second_target, 0, "text-2")
+            statement = """
+                INSERT INTO index_chunk_asset_relation (
+                    workspace_id, kb_id, indexed_document_version_id,
+                    chunk_id, visual_unit_id, asset_id, relation_type,
+                    confidence_micros, ordinal, provenance, evidence_group_key
+                ) VALUES ($1, $2, $3, $4, $5, $6, 'caption_of',
+                    1000000, 0, 'author_caption_v2', 'figure-1')
+            """
+            await connection.execute(
+                statement,
+                workspace_id,
+                kb_id,
+                first_target,
+                text_chunk,
+                visual_unit,
+                asset_id,
+            )
+            with self.assertRaises(asyncpg.UniqueViolationError):
+                await connection.execute(
+                    statement,
+                    workspace_id,
+                    kb_id,
+                    first_target,
+                    text_chunk,
+                    visual_unit,
+                    asset_id,
+                )
+            with self.assertRaises(asyncpg.ForeignKeyViolationError):
+                await connection.execute(
+                    statement,
+                    workspace_id,
+                    kb_id,
+                    first_target,
+                    other_chunk,
+                    visual_unit,
+                    asset_id,
+                )
+            with self.assertRaises(asyncpg.CheckViolationError):
+                await connection.execute(
+                    """
+                    UPDATE index_chunk
+                    SET embedding_text = 'body', embedding_text_hash = NULL
+                    WHERE id = $1
+                    """,
+                    text_chunk,
+                )
+        finally:
+            await connection.close()
