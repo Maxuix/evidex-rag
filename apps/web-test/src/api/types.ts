@@ -108,6 +108,42 @@ export interface DocumentDetail extends DocumentRecord {
   index: DocumentIndexSummary | null;
 }
 
+export interface DocumentChunkAsset extends EvidenceAsset {}
+
+export interface DocumentChunkRelation {
+  visual_unit_id: UUID;
+  asset: DocumentChunkAsset;
+  relation_type: string;
+  confidence_micros: number;
+  provenance: string;
+  figure_label: string | null;
+}
+
+export interface DocumentChunk {
+  id: UUID;
+  ordinal: number;
+  modality: "text" | "image" | "table";
+  content: string;
+  token_count: number;
+  source_location: JsonMap;
+  hierarchy: JsonMap;
+  source_metadata: JsonMap;
+  evidence_group_key: string | null;
+  representations: string[];
+  asset: DocumentChunkAsset | null;
+  related_visuals: DocumentChunkRelation[];
+}
+
+export interface DocumentChunkInspection {
+  document_id: UUID;
+  document_version_id: UUID;
+  indexed_document_version_id: UUID;
+  index_revision_id: UUID;
+  total_chunks: number;
+  items: DocumentChunk[];
+  next_cursor: string | null;
+}
+
 export interface DocumentUpload {
   document: DocumentRecord;
   document_version_id: UUID;

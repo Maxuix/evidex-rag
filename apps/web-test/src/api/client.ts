@@ -7,6 +7,7 @@ import type {
   ChatSession,
   DocumentRecord,
   DocumentDetail,
+  DocumentChunkInspection,
   DocumentUpload,
   EvidencePack,
   IndexingJob,
@@ -120,6 +121,16 @@ export class ApiClient {
 
   getDocument(documentId: UUID): Promise<DocumentDetail> {
     return this.request(`/documents/${documentId}`);
+  }
+
+  getDocumentChunks(
+    documentId: UUID,
+    cursor?: string,
+  ): Promise<DocumentChunkInspection> {
+    return this.request(this.withQuery(`/documents/${documentId}/chunks`, {
+      limit: "100",
+      cursor,
+    }));
   }
 
   uploadDocument(

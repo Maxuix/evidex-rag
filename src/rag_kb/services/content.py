@@ -12,6 +12,7 @@ from rag_kb.domain import (
     AnswerPolicyDefaults,
     ChunkingPreset,
     Document,
+    DocumentChunkInspection,
     DocumentDetail,
     DocumentMutationResult,
     DocumentSource,
@@ -339,6 +340,29 @@ class DocumentService:
 
         return await execute_in_transaction(
             self._unit_of_work, load, purpose=UnitOfWorkPurpose.REQUEST
+        )
+
+    async def inspect_chunks(
+        self,
+        context: AuthContext,
+        document_id: UUID,
+        *,
+        limit: int,
+        after: tuple[str, ...] | None,
+    ) -> DocumentChunkInspection:
+        self._authorize(context)
+
+        async def load(uow: UnitOfWork) -> DocumentChunkInspection:
+            _require_scope(uow, context)
+            inspection = await uow.documents.inspect_chunks(
+                document_id, limit=limit, after=after
+            )
+            if inspection is None:
+                raise ResourceNotFoundError("document was not found")
+            return inspection
+
+        return await execute_in_transaction(
+            self._unit_of_work, load, purpose=UnitOfWorkPurpose.READ_SNAPSHOT
         )
 
     async def list(

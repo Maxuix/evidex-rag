@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from rag_kb.schemas.common import OpaqueCursor, PublicSchema
@@ -48,6 +48,49 @@ class DocumentIndexSummaryResponse(PublicSchema):
 
 class DocumentDetailResponse(DocumentResponse):
     index: DocumentIndexSummaryResponse | None
+
+
+class DocumentChunkAssetResponse(PublicSchema):
+    id: UUID
+    media_type: str
+    checksum_sha256: str
+    content_url: str
+    width: int | None = None
+    height: int | None = None
+
+
+class DocumentChunkRelationResponse(PublicSchema):
+    visual_unit_id: UUID
+    asset: DocumentChunkAssetResponse
+    relation_type: str
+    confidence_micros: int
+    provenance: str
+    figure_label: str | None = None
+
+
+class DocumentChunkResponse(PublicSchema):
+    id: UUID
+    ordinal: int
+    modality: Literal["text", "image", "table"]
+    content: str
+    token_count: int
+    source_location: dict[str, Any]
+    hierarchy: dict[str, Any]
+    source_metadata: dict[str, Any]
+    evidence_group_key: str | None = None
+    representations: tuple[str, ...]
+    asset: DocumentChunkAssetResponse | None = None
+    related_visuals: tuple[DocumentChunkRelationResponse, ...] = ()
+
+
+class DocumentChunkInspectionResponse(PublicSchema):
+    document_id: UUID
+    document_version_id: UUID
+    indexed_document_version_id: UUID
+    index_revision_id: UUID
+    total_chunks: int
+    items: tuple[DocumentChunkResponse, ...]
+    next_cursor: OpaqueCursor | None = None
 
 
 class DocumentPage(PublicSchema):

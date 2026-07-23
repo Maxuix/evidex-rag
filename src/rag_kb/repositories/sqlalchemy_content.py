@@ -19,7 +19,10 @@ from rag_kb.db.models import (
     EmbeddingSpace as EmbeddingSpaceRow,
     IndexedDocumentVersion as IndexedDocumentVersionRow,
     IndexArtifactManifest as IndexArtifactManifestRow,
+    IndexAsset as IndexAssetRow,
     IndexBuildStatus,
+    IndexChunk as IndexChunkRow,
+    IndexChunkAssetRelation as IndexChunkAssetRelationRow,
     IndexingJob as IndexingJobRow,
     IndexRevision as IndexRevisionRow,
     IndexRevisionEmbeddingSpace as IndexRevisionEmbeddingSpaceRow,
@@ -30,11 +33,17 @@ from rag_kb.db.models import (
     SourceChange as SourceChangeRow,
     SourceChangeKind,
     SourceFileCleanup as SourceFileCleanupRow,
+    VectorRecord as VectorRecordRow,
+    VectorRecord768 as VectorRecord768Row,
     Workspace as WorkspaceRow,
 )
 from rag_kb.domain import (
     ContentMutation,
     Document,
+    DocumentChunk,
+    DocumentChunkAsset,
+    DocumentChunkInspection,
+    DocumentChunkRelation,
     DocumentDetail,
     DocumentIndexSummary,
     DocumentMutationResult,
@@ -400,6 +409,183 @@ class SqlAlchemyDocumentRepository:
             document=_document(document_row, version_row),
             index=summary,
         )
+
+    async def inspect_chunks(
+        self,
+        document_id: UUID,
+        *,
+        limit: int,
+        after: tuple[str, ...] | None,
+    ) -> DocumentChunkInspection | None:
+        self._ensure_active()
+        row = (
+            await self._session.execute(
+                select(DocumentRow, DocumentVersionRow, IndexedDocumentVersionRow)
+                .join(KnowledgeBaseRow, KnowledgeBaseRow.id == DocumentRow.kb_id)
+                .outerjoin(
+                    DocumentVersionRow,
+                    DocumentVersionRow.id == DocumentRow.current_version_id,
+                )
+                .outerjoin(
+                    IndexedDocumentVersionRow,
+                    and_(
+                        IndexedDocumentVersionRow.workspace_id == self._workspace_id,
+                        IndexedDocumentVersionRow.document_id == DocumentRow.id,
+                        IndexedDocumentVersionRow.document_version_id
+                        == DocumentRow.current_version_id,
+                        IndexedDocumentVersionRow.index_revision_id
+                        == KnowledgeBaseRow.active_index_revision_id,
+                    ),
+                )
+                .where(
+                    DocumentRow.workspace_id == self._workspace_id,
+                    KnowledgeBaseRow.workspace_id == self._workspace_id,
+                    DocumentRow.id == document_id,
+                )
+            )
+        ).one_or_none()
+        if row is None:
+            return None
+        document, version, target = row
+        if (
+            document.deleted_at is not None
+            or version is None
+            or target is None
+            or target.build_status is not IndexBuildStatus.READY
+        ):
+            raise ResourceStateConflictError(
+                "a complete chunk snapshot is not ready for the current document version"
+            )
+
+        statement = select(IndexChunkRow).where(
+            IndexChunkRow.workspace_id == self._workspace_id,
+            IndexChunkRow.indexed_document_version_id == target.id,
+        )
+        if after is not None:
+            if len(after) != 2:
+                raise ValueError("chunk cursor must contain ordinal and id")
+            ordinal, chunk_id = int(after[0]), UUID(after[1])
+            statement = statement.where(
+                or_(
+                    IndexChunkRow.ordinal > ordinal,
+                    and_(IndexChunkRow.ordinal == ordinal, IndexChunkRow.id > chunk_id),
+                )
+            )
+        rows = tuple(
+            (
+                await self._session.execute(
+                    statement.order_by(IndexChunkRow.ordinal, IndexChunkRow.id).limit(
+                        limit + 1
+                    )
+                )
+            ).scalars()
+        )
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+        total_chunks = await self._session.scalar(
+            select(func.count()).select_from(IndexChunkRow).where(
+                IndexChunkRow.workspace_id == self._workspace_id,
+                IndexChunkRow.indexed_document_version_id == target.id,
+            )
+        )
+        chunk_ids = tuple(item.id for item in rows)
+        representations: dict[UUID, set[str]] = {item.id: set() for item in rows}
+        if chunk_ids:
+            for vector_model in (VectorRecordRow, VectorRecord768Row):
+                vector_rows = (
+                    await self._session.execute(
+                        select(vector_model.index_chunk_id, vector_model.representation_kind).where(
+                            vector_model.workspace_id == self._workspace_id,
+                            vector_model.index_chunk_id.in_(chunk_ids),
+                        )
+                    )
+                ).all()
+                for chunk_id, representation_kind in vector_rows:
+                    representations[chunk_id].add(representation_kind)
+
+        relation_rows = ()
+        if chunk_ids:
+            relation_rows = (
+                await self._session.execute(
+                    select(IndexChunkAssetRelationRow).where(
+                        IndexChunkAssetRelationRow.workspace_id == self._workspace_id,
+                        IndexChunkAssetRelationRow.indexed_document_version_id == target.id,
+                        IndexChunkAssetRelationRow.chunk_id.in_(chunk_ids),
+                    ).order_by(
+                        IndexChunkAssetRelationRow.chunk_id,
+                        IndexChunkAssetRelationRow.ordinal,
+                        IndexChunkAssetRelationRow.id,
+                    )
+                )
+            ).scalars().all()
+        asset_ids = {
+            relation.asset_id for relation in relation_rows
+        } | {item.index_asset_id for item in rows if item.index_asset_id is not None}
+        assets: dict[UUID, DocumentChunkAsset] = {}
+        if asset_ids:
+            asset_rows = (
+                await self._session.execute(
+                    select(IndexAssetRow).where(
+                        IndexAssetRow.workspace_id == self._workspace_id,
+                        IndexAssetRow.indexed_document_version_id == target.id,
+                        IndexAssetRow.id.in_(asset_ids),
+                    )
+                )
+            ).scalars()
+            assets = {
+                item.id: DocumentChunkAsset(
+                    id=item.id,
+                    media_type=item.media_type,
+                    checksum_sha256=item.checksum_sha256,
+                    width=item.width,
+                    height=item.height,
+                )
+                for item in asset_rows
+            }
+        related: dict[UUID, list[DocumentChunkRelation]] = {
+            item.id: [] for item in rows
+        }
+        for relation in relation_rows:
+            asset = assets.get(relation.asset_id)
+            if asset is not None:
+                related[relation.chunk_id].append(
+                    DocumentChunkRelation(
+                        visual_unit_id=relation.visual_unit_id,
+                        asset=asset,
+                        relation_type=relation.relation_type,
+                        confidence_micros=relation.confidence_micros,
+                        provenance=relation.provenance,
+                        figure_label=relation.figure_label,
+                    )
+                )
+        return DocumentChunkInspection(
+            document_id=document.id,
+            document_version_id=version.id,
+            indexed_document_version_id=target.id,
+            index_revision_id=target.index_revision_id,
+            total_chunks=total_chunks or 0,
+            items=tuple(
+                DocumentChunk(
+                    id=item.id,
+                    ordinal=item.ordinal,
+                    modality=item.modality,
+                    content=item.content,
+                    token_count=item.token_count,
+                    source_location=dict(item.source_location),
+                    hierarchy=dict(item.hierarchy),
+                    source_metadata=dict(item.source_metadata),
+                    evidence_group_key=item.evidence_group_key,
+                    representations=tuple(sorted(representations[item.id])),
+                    asset=assets.get(item.index_asset_id),
+                    related_visuals=tuple(related[item.id]),
+                )
+                for item in rows
+            ),
+            next_values=(str(rows[-1].ordinal), str(rows[-1].id))
+            if has_more and rows
+            else None,
+        )
+
     async def list(
         self,
         *,

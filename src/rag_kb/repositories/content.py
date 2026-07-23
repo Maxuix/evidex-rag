@@ -9,6 +9,7 @@ from uuid import UUID
 from rag_kb.domain import (
     ContentMutation,
     Document,
+    DocumentChunkInspection,
     DocumentDetail,
     DocumentMutationResult,
     DocumentSource,
@@ -61,6 +62,14 @@ class DocumentRepository(Protocol):
     async def get(self, document_id: UUID) -> Document | None: ...
 
     async def get_detail(self, document_id: UUID) -> DocumentDetail | None: ...
+
+    async def inspect_chunks(
+        self,
+        document_id: UUID,
+        *,
+        limit: int,
+        after: tuple[str, ...] | None,
+    ) -> DocumentChunkInspection | None: ...
 
     async def list(
         self,

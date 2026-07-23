@@ -111,6 +111,52 @@ class DocumentDetail:
 
 
 @dataclass(frozen=True, slots=True)
+class DocumentChunkAsset:
+    id: UUID
+    media_type: str
+    checksum_sha256: str
+    width: int | None
+    height: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentChunkRelation:
+    visual_unit_id: UUID
+    asset: DocumentChunkAsset
+    relation_type: str
+    confidence_micros: int
+    provenance: str
+    figure_label: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentChunk:
+    id: UUID
+    ordinal: int
+    modality: str
+    content: str
+    token_count: int
+    source_location: dict[str, Any]
+    hierarchy: dict[str, Any]
+    source_metadata: dict[str, Any]
+    evidence_group_key: str | None
+    representations: tuple[str, ...]
+    asset: DocumentChunkAsset | None = None
+    related_visuals: tuple[DocumentChunkRelation, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentChunkInspection:
+    document_id: UUID
+    document_version_id: UUID
+    indexed_document_version_id: UUID
+    index_revision_id: UUID
+    total_chunks: int
+    items: tuple[DocumentChunk, ...]
+    next_values: tuple[str, ...] | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class DocumentSource:
     checksum_sha256: str
     storage_uri: str

@@ -27,6 +27,10 @@ from rag_kb.schemas.chat import (
     EffectiveAnswerPolicyResponse,
 )
 from rag_kb.schemas.documents import (
+    DocumentChunkAssetResponse,
+    DocumentChunkInspectionResponse,
+    DocumentChunkRelationResponse,
+    DocumentChunkResponse,
     DocumentDeleteResponse,
     DocumentDetailResponse,
     DocumentIndexSummaryResponse,
@@ -77,6 +81,10 @@ __all__ = [
     "CursorPage",
     "CursorPayload",
     "DocumentDeleteResponse",
+    "DocumentChunkAssetResponse",
+    "DocumentChunkInspectionResponse",
+    "DocumentChunkRelationResponse",
+    "DocumentChunkResponse",
     "DocumentDetailResponse",
     "DocumentIndexSummaryResponse",
     "DocumentPage",

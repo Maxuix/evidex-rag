@@ -17,9 +17,14 @@ from apps.api.pagination import decode_cursor, encode_cursor
 from apps.api.security import get_auth_context
 from apps.api.upload_metadata import resolve_upload_metadata
 from rag_kb.auth import AuthContext
+from rag_kb.domain import DocumentChunk, DocumentChunkAsset
 from rag_kb.services import Document, DocumentMutationResult, FileAdmissionError
 from rag_kb.schemas import (
     CursorPayload,
+    DocumentChunkAssetResponse,
+    DocumentChunkInspectionResponse,
+    DocumentChunkRelationResponse,
+    DocumentChunkResponse,
     DocumentDeleteResponse,
     DocumentDetailResponse,
     DocumentIndexSummaryResponse,
@@ -166,6 +171,39 @@ async def list_documents(
 
 
 @router.get(
+    "/documents/{document_id}/chunks",
+    response_model=DocumentChunkInspectionResponse,
+    responses=problem_responses(404, 409, 422),
+)
+async def inspect_document_chunks(
+    request: Request,
+    document_id: UUID,
+    context: Annotated[AuthContext, Depends(get_auth_context)],
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    cursor: Annotated[str | None, Query(min_length=1, max_length=2048)] = None,
+) -> DocumentChunkInspectionResponse:
+    inspection = await request.app.state.dependencies.document_service.inspect_chunks(
+        context,
+        document_id,
+        limit=limit,
+        after=_chunk_after(cursor),
+    )
+    return DocumentChunkInspectionResponse(
+        document_id=inspection.document_id,
+        document_version_id=inspection.document_version_id,
+        indexed_document_version_id=inspection.indexed_document_version_id,
+        index_revision_id=inspection.index_revision_id,
+        total_chunks=inspection.total_chunks,
+        items=tuple(_chunk_response(item) for item in inspection.items),
+        next_cursor=(
+            encode_cursor(CursorPayload(sort="ordinal", values=inspection.next_values))
+            if inspection.next_values is not None
+            else None
+        ),
+    )
+
+
+@router.get(
     "/documents/{document_id}",
     response_model=DocumentDetailResponse,
     responses=problem_responses(404, 422),
@@ -240,6 +278,22 @@ def _after(cursor: str | None, sort: str) -> tuple[str, ...] | None:
     return decoded.values
 
 
+def _chunk_after(cursor: str | None) -> tuple[str, ...] | None:
+    if cursor is None:
+        return None
+    decoded = decode_cursor(cursor)
+    if decoded.sort != "ordinal" or len(decoded.values) != 2:
+        _invalid_cursor("The pagination cursor does not match chunk ordering.")
+    try:
+        ordinal = int(decoded.values[0])
+        if ordinal < 0:
+            raise ValueError
+        UUID(decoded.values[1])
+    except ValueError:
+        _invalid_cursor("The chunk pagination cursor has an invalid position.")
+    return decoded.values
+
+
 def _invalid_cursor(detail: str) -> None:
     raise ApiProblem(
         code=ErrorCode.INVALID_CURSOR,
@@ -272,6 +326,46 @@ def _response(value: Document) -> DocumentResponse:
         deleted_at=value.deleted_at,
         created_at=value.created_at,
         updated_at=value.updated_at,
+    )
+
+
+def _chunk_asset_response(value: DocumentChunkAsset) -> DocumentChunkAssetResponse:
+    return DocumentChunkAssetResponse(
+        id=value.id,
+        media_type=value.media_type,
+        checksum_sha256=value.checksum_sha256,
+        content_url=f"/api/v1/index-assets/{value.id}/content",
+        width=value.width,
+        height=value.height,
+    )
+
+
+def _chunk_response(value: DocumentChunk) -> DocumentChunkResponse:
+    return DocumentChunkResponse(
+        id=value.id,
+        ordinal=value.ordinal,
+        modality=value.modality,
+        content=value.content,
+        token_count=value.token_count,
+        source_location=value.source_location,
+        hierarchy=value.hierarchy,
+        source_metadata=value.source_metadata,
+        evidence_group_key=value.evidence_group_key,
+        representations=value.representations,
+        asset=(
+            _chunk_asset_response(value.asset) if value.asset is not None else None
+        ),
+        related_visuals=tuple(
+            DocumentChunkRelationResponse(
+                visual_unit_id=relation.visual_unit_id,
+                asset=_chunk_asset_response(relation.asset),
+                relation_type=relation.relation_type,
+                confidence_micros=relation.confidence_micros,
+                provenance=relation.provenance,
+                figure_label=relation.figure_label,
+            )
+            for relation in value.related_visuals
+        ),
     )
 
 

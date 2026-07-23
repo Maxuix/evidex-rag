@@ -663,6 +663,99 @@ textarea:hover {
   gap: 12px;
 }
 
+.chunk-inspector,
+.chunk-list {
+  display: grid;
+  gap: 16px;
+}
+
+.chunk-timeline-wrap,
+.chunk-card {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--paper-soft);
+  padding: 16px;
+}
+
+.chunk-timeline {
+  display: flex;
+  gap: 5px;
+  overflow-x: auto;
+  padding: 5px 0 10px;
+}
+
+.chunk-timeline-item {
+  display: grid;
+  flex-grow: 0;
+  flex-shrink: 0;
+  min-height: 54px;
+  align-content: space-between;
+  border-radius: 8px;
+  padding: 7px;
+  color: #18332d;
+  text-decoration: none;
+  font-size: .72rem;
+}
+
+.chunk-timeline-item strong {
+  font-size: .9rem;
+}
+
+.modality-text { background: #dff1e7; }
+.modality-image { background: #e3eafa; }
+.modality-table { background: #f7ead4; }
+
+.chunk-filter-row,
+.chunk-card-heading,
+.chunk-card-heading > div,
+.chunk-relations,
+.chunk-relation {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.chunk-filter-row { flex-wrap: wrap; }
+
+.chunk-card-heading {
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.chunk-card-heading h3 { margin: 0; }
+
+.modality-badge { border: none; }
+
+.chunk-content {
+  max-height: 18rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: #fbfcfa;
+  padding: 12px;
+  color: var(--ink);
+  font: .83rem/1.55 var(--font-mono);
+}
+
+.chunk-relations {
+  align-items: flex-start;
+  flex-direction: column;
+  margin-top: 14px;
+}
+
+.chunk-relation {
+  align-items: flex-start;
+  flex-wrap: wrap;
+  color: var(--muted);
+  font-size: .82rem;
+}
+
+.chunk-relation .asset-preview { max-width: 150px; }
+
+.document-inspector-button { margin-top: 14px; }
+
 .job-card,
 .document-card,
 .evidence-card,

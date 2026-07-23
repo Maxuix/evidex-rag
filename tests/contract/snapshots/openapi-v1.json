@@ -806,6 +806,257 @@
         "title": "ChunkingPreset",
         "type": "string"
       },
+      "DocumentChunkAssetResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "checksum_sha256": {
+            "title": "Checksum Sha256",
+            "type": "string"
+          },
+          "content_url": {
+            "title": "Content Url",
+            "type": "string"
+          },
+          "height": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Height"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "media_type": {
+            "title": "Media Type",
+            "type": "string"
+          },
+          "width": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Width"
+          }
+        },
+        "required": [
+          "id",
+          "media_type",
+          "checksum_sha256",
+          "content_url"
+        ],
+        "title": "DocumentChunkAssetResponse",
+        "type": "object"
+      },
+      "DocumentChunkInspectionResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "document_id": {
+            "format": "uuid",
+            "title": "Document Id",
+            "type": "string"
+          },
+          "document_version_id": {
+            "format": "uuid",
+            "title": "Document Version Id",
+            "type": "string"
+          },
+          "index_revision_id": {
+            "format": "uuid",
+            "title": "Index Revision Id",
+            "type": "string"
+          },
+          "indexed_document_version_id": {
+            "format": "uuid",
+            "title": "Indexed Document Version Id",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/DocumentChunkResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "maxLength": 2048,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "total_chunks": {
+            "title": "Total Chunks",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "document_id",
+          "document_version_id",
+          "indexed_document_version_id",
+          "index_revision_id",
+          "total_chunks",
+          "items"
+        ],
+        "title": "DocumentChunkInspectionResponse",
+        "type": "object"
+      },
+      "DocumentChunkRelationResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "asset": {
+            "$ref": "#/components/schemas/DocumentChunkAssetResponse"
+          },
+          "confidence_micros": {
+            "title": "Confidence Micros",
+            "type": "integer"
+          },
+          "figure_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Figure Label"
+          },
+          "provenance": {
+            "title": "Provenance",
+            "type": "string"
+          },
+          "relation_type": {
+            "title": "Relation Type",
+            "type": "string"
+          },
+          "visual_unit_id": {
+            "format": "uuid",
+            "title": "Visual Unit Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "visual_unit_id",
+          "asset",
+          "relation_type",
+          "confidence_micros",
+          "provenance"
+        ],
+        "title": "DocumentChunkRelationResponse",
+        "type": "object"
+      },
+      "DocumentChunkResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "asset": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DocumentChunkAssetResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "evidence_group_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Group Key"
+          },
+          "hierarchy": {
+            "additionalProperties": true,
+            "title": "Hierarchy",
+            "type": "object"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "modality": {
+            "enum": [
+              "text",
+              "image",
+              "table"
+            ],
+            "title": "Modality",
+            "type": "string"
+          },
+          "ordinal": {
+            "title": "Ordinal",
+            "type": "integer"
+          },
+          "related_visuals": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/DocumentChunkRelationResponse"
+            },
+            "title": "Related Visuals",
+            "type": "array"
+          },
+          "representations": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Representations",
+            "type": "array"
+          },
+          "source_location": {
+            "additionalProperties": true,
+            "title": "Source Location",
+            "type": "object"
+          },
+          "source_metadata": {
+            "additionalProperties": true,
+            "title": "Source Metadata",
+            "type": "object"
+          },
+          "token_count": {
+            "title": "Token Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "ordinal",
+          "modality",
+          "content",
+          "token_count",
+          "source_location",
+          "hierarchy",
+          "source_metadata",
+          "representations"
+        ],
+        "title": "DocumentChunkResponse",
+        "type": "object"
+      },
       "DocumentDeleteResponse": {
         "additionalProperties": false,
         "properties": {
@@ -3241,6 +3492,99 @@
           }
         },
         "summary": "Get Document",
+        "tags": [
+          "documents"
+        ]
+      }
+    },
+    "/api/v1/documents/{document_id}/chunks": {
+      "get": {
+        "operationId": "inspect_document_chunks_api_v1_documents__document_id__chunks_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Document Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 2048,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentChunkInspectionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Idempotency or resource conflict"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Request validation failed"
+          }
+        },
+        "summary": "Inspect Document Chunks",
         "tags": [
           "documents"
         ]

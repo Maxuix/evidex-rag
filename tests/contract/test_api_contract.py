@@ -42,6 +42,8 @@ from rag_kb.domain import (
     ChatSessionBusyError,
     ContextualizedQuery,
     Document,
+    DocumentChunk,
+    DocumentChunkInspection,
     DocumentDetail,
     DocumentIndexSummary,
     DocumentMutationResult,
@@ -635,6 +637,7 @@ class CommonContractTests(unittest.TestCase):
             set(production["paths"]),
             {
                 "/api/v1/documents/{document_id}",
+                "/api/v1/documents/{document_id}/chunks",
                 "/api/v1/documents/{document_id}/versions",
                 "/api/v1/knowledge-bases",
                 "/api/v1/knowledge-bases/{kb_id}",
@@ -892,6 +895,32 @@ class _FakeDocumentService:
     async def list(self, context, *, kb_id, limit, sort, after):
         del context, limit, sort, after
         return Page(items=(self.value,)) if kb_id == self.value.kb_id else Page(items=())
+
+    async def inspect_chunks(self, context, document_id, *, limit, after):
+        del context, limit
+        if document_id != self.value.id:
+            raise ResourceNotFoundError("internal detail")
+        return DocumentChunkInspection(
+            document_id=self.value.id,
+            document_version_id=self.value.current_version.id,
+            indexed_document_version_id=UUID("01900000-0000-7000-8000-000000000026"),
+            index_revision_id=UUID("01900000-0000-7000-8000-000000000012"),
+            total_chunks=1,
+            items=(
+                DocumentChunk(
+                    id=UUID("01900000-0000-7000-8000-000000000031"),
+                    ordinal=0,
+                    modality="text",
+                    content="Stable chunk text",
+                    token_count=3,
+                    source_location={"page_number": 1},
+                    hierarchy={"section": "Overview"},
+                    source_metadata={},
+                    evidence_group_key="group-1",
+                    representations=("text",),
+                ),
+            ) if after is None else (),
+        )
 
     async def delete(self, context, key, document_id):
         del context, key
@@ -1261,6 +1290,14 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
                 "table_representation_count": 2,
             },
         )
+
+        chunks = await request(
+            self.app, "GET", f"{API_PREFIX}/documents/{value.id}/chunks"
+        )
+        self.assertEqual(chunks.status, 200)
+        self.assertEqual(chunks.json()["total_chunks"], 1)
+        self.assertEqual(chunks.json()["items"][0]["ordinal"], 0)
+        self.assertNotIn("storage_uri", chunks.body.decode())
 
         deleted = await request(
             self.app,

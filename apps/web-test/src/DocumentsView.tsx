@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ApiClient, ApiClientError } from "./api/client";
+import { DocumentChunksView } from "./DocumentChunksView";
 import type {
   DocumentRecord,
   DocumentDetail,
@@ -70,6 +71,7 @@ export function DocumentsView({
   const [retryError, setRetryError] = useState<unknown | null>(null);
   const [focusedDocument, setFocusedDocument] = useState<DocumentDetail | null>(null);
   const [focusError, setFocusError] = useState<unknown | null>(null);
+  const [inspectedDocumentId, setInspectedDocumentId] = useState<string | null>(null);
   const pollGeneration = useRef(0);
   const mutationPending = pendingUpload !== null || pendingRetry !== null;
 
@@ -102,6 +104,7 @@ export function DocumentsView({
     setUploadError(null);
     setPendingUpload(null);
     setVersionDocumentId("");
+    setInspectedDocumentId(null);
     setTrackedJobs(readTrackedJobs(knowledgeBase.id));
     void refreshDocuments();
   }, [knowledgeBase.id, refreshDocuments]);
@@ -300,6 +303,15 @@ export function DocumentsView({
             </>
           ) : <p>Loading document metadata…</p>}
         </section>
+      ) : null}
+
+      {inspectedDocumentId ? (
+        <DocumentChunksView
+          client={client}
+          documentId={inspectedDocumentId}
+          documentName={documents.find((item) => item.id === inspectedDocumentId)?.display_name ?? shortId(inspectedDocumentId)}
+          onClose={() => setInspectedDocumentId(null)}
+        />
       ) : null}
 
       <section className="panel upload-panel">
@@ -555,6 +567,14 @@ export function DocumentsView({
                   ["Document ID", shortId(item.id)],
                   ["Version ID", shortId(item.current_version?.id)],
                 ]} />
+                <button
+                  className="button secondary document-inspector-button"
+                  type="button"
+                  disabled={loading || mutationPending || !item.current_version || Boolean(item.deleted_at)}
+                  onClick={() => setInspectedDocumentId(item.id)}
+                >
+                  Inspect chunks
+                </button>
               </article>
             ))}
           </div>
