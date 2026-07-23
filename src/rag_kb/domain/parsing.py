@@ -33,6 +33,8 @@ class ParserLimits:
     max_table_html_bytes: int = 1_048_576
     max_units: int = 20_000
     max_representations: int = 60_000
+    max_relations: int = 50_000
+    max_relations_per_chunk: int = 32
 
 
 class ParsingPreset(StrEnum):

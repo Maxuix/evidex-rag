@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+import unicodedata
 from collections import Counter
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 from rag_kb.document_processing.multimodal_boundaries import (
     VisualDisposition,
@@ -15,6 +17,10 @@ from rag_kb.document_processing.profiles import UNSTRUCTURED_CHUNKING_CONFIG
 from rag_kb.document_processing.tokenization import count_chunk_tokens, split_by_tokens
 from rag_kb.domain import (
     ContentModality,
+    ChunkAssetRelationDraft,
+    ChunkAssetRelationProvenance,
+    ChunkAssetRelationType,
+    CompositeEvidenceDraft,
     EvidenceUnitDraft,
     ParsedAssetDraft,
     ParsedDocument,
@@ -25,12 +31,38 @@ from rag_kb.domain import (
 )
 
 
+_FIGURE_REFERENCE = re.compile(
+    r"(?:(?:fig(?:ure)?)[.\s]*|图\s*)([0-9]+(?:[A-Za-z]|[.\-][0-9A-Za-z]+)?)",
+    re.IGNORECASE,
+)
+
+
 def assemble_multimodal_units(
     parsed: ParsedDocument, limits: ParserLimits | None = None
 ) -> tuple[EvidenceUnitDraft, ...]:
-    """Build bounded text regions plus independent image/table evidence units."""
+    """Preserve the v1 Evidence Unit assembly for persisted v1 revisions."""
+
+    return _assemble_multimodal_units(parsed, limits or ParserLimits())
+
+
+def assemble_composite_evidence(
+    parsed: ParsedDocument, limits: ParserLimits | None = None
+) -> CompositeEvidenceDraft:
+    """Build deterministic units plus bounded normalized Chunk/Asset relations."""
 
     resolved_limits = limits or ParserLimits()
+    units = _assemble_multimodal_units(parsed, resolved_limits)
+    units = _with_stable_evidence_groups(units)
+    relations = _assemble_relations(units, resolved_limits)
+    return CompositeEvidenceDraft(units=units, relations=relations)
+
+
+def _assemble_multimodal_units(
+    parsed: ParsedDocument, limits: ParserLimits
+) -> tuple[EvidenceUnitDraft, ...]:
+    """Build bounded text regions plus independent image/table evidence units."""
+
+    resolved_limits = limits
     assets = {asset.asset_key: asset for asset in parsed.assets}
     repeats = Counter(asset.content_sha256 for asset in parsed.assets)
     units: list[EvidenceUnitDraft] = []
@@ -376,6 +408,236 @@ def _span_location(elements: list[ParsedElement]) -> dict:
 
 def _key(*parts: str) -> str:
     return hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
+
+
+def normalize_figure_labels(text: str) -> tuple[str, ...]:
+    """Return stable Figure identities without treating arbitrary numbers as labels."""
+
+    normalized = unicodedata.normalize("NFC", text)
+    labels = {
+        f"figure:{match.group(1).casefold().replace(' ', '')}"
+        for match in _FIGURE_REFERENCE.finditer(normalized)
+    }
+    return tuple(sorted(labels))
+
+
+def _with_stable_evidence_groups(
+    units: tuple[EvidenceUnitDraft, ...],
+) -> tuple[EvidenceUnitDraft, ...]:
+    enriched: list[EvidenceUnitDraft] = []
+    for unit in units:
+        labels = normalize_figure_labels(unit.content)
+        metadata = dict(unit.processing_metadata)
+        if labels:
+            metadata["figure_labels"] = list(labels)
+        group = unit.evidence_group_key
+        if group is None:
+            group = _key("composite-chunk-group-v2", unit.unit_key)
+        elif unit.modality is ContentModality.IMAGE and labels and unit.asset_key:
+            group = _key("figure-group-v2", labels[0], unit.asset_key)
+        enriched.append(
+            replace(
+                unit,
+                evidence_group_key=group,
+                processing_metadata=metadata,
+            )
+        )
+    return tuple(enriched)
+
+
+@dataclass(frozen=True, slots=True)
+class _RelationCandidate:
+    chunk: EvidenceUnitDraft
+    visual: EvidenceUnitDraft
+    relation_type: ChunkAssetRelationType
+    confidence_micros: int
+    provenance: ChunkAssetRelationProvenance
+    figure_label: str | None = None
+
+
+def _assemble_relations(
+    units: tuple[EvidenceUnitDraft, ...], limits: ParserLimits
+) -> tuple[ChunkAssetRelationDraft, ...]:
+    by_key = {unit.unit_key: unit for unit in units}
+    visuals = tuple(
+        unit
+        for unit in units
+        if unit.asset_key is not None
+        and unit.modality in {ContentModality.IMAGE, ContentModality.TABLE}
+    )
+    labels_to_visuals: dict[str, list[EvidenceUnitDraft]] = {}
+    for visual in visuals:
+        for label in normalize_figure_labels(visual.content):
+            labels_to_visuals.setdefault(label, []).append(visual)
+
+    candidates: list[_RelationCandidate] = []
+    for chunk in units:
+        if chunk.modality is ContentModality.IMAGE:
+            continue
+        for visual_key in chunk.related_unit_keys:
+            visual = by_key.get(visual_key)
+            if visual is None or visual.asset_key is None:
+                raise ParserExecutionError(
+                    ErrorCode.PARSER_OUTPUT_INVALID,
+                    diagnostic={"check": "normalized_relation_target"},
+                )
+            is_ocr = (
+                chunk.processing_metadata.get("representation_kind") == "ocr_text"
+            )
+            author_caption = bool(
+                visual.processing_metadata.get("author_caption")
+            )
+            relation_type = (
+                ChunkAssetRelationType.OCR_OF
+                if is_ocr
+                else ChunkAssetRelationType.CAPTION_OF
+                if author_caption
+                else ChunkAssetRelationType.INLINE_FIGURE
+            )
+            provenance = (
+                ChunkAssetRelationProvenance.OCR_ASSET_IDENTITY_V2
+                if is_ocr
+                else ChunkAssetRelationProvenance.AUTHOR_CAPTION_V2
+                if author_caption
+                else ChunkAssetRelationProvenance.OOXML_RELATIONSHIP_V2
+            )
+            labels = normalize_figure_labels(visual.content)
+            candidates.append(
+                _RelationCandidate(
+                    chunk,
+                    visual,
+                    relation_type,
+                    1_000_000,
+                    provenance,
+                    labels[0] if labels else None,
+                )
+            )
+
+        for label in normalize_figure_labels(chunk.content):
+            for visual in labels_to_visuals.get(label, ()):
+                if visual.unit_key == chunk.unit_key:
+                    continue
+                candidates.append(
+                    _RelationCandidate(
+                        chunk,
+                        visual,
+                        ChunkAssetRelationType.EXPLICIT_FIGURE_REFERENCE,
+                        1_000_000,
+                        ChunkAssetRelationProvenance.AUTHOR_REFERENCE_V2,
+                        label,
+                    )
+                )
+
+        if chunk.modality is ContentModality.TABLE and chunk.asset_key:
+            candidates.append(
+                _RelationCandidate(
+                    chunk,
+                    chunk,
+                    ChunkAssetRelationType.TABLE_OF,
+                    1_000_000,
+                    ChunkAssetRelationProvenance.TABLE_IDENTITY_V2,
+                )
+            )
+
+    strong_pairs = {
+        (item.chunk.unit_key, item.visual.unit_key) for item in candidates
+    }
+    for chunk in units:
+        if chunk.modality is not ContentModality.TEXT:
+            continue
+        chunk_pages = _unit_pages(chunk)
+        if not chunk_pages:
+            continue
+        for visual in visuals:
+            if (
+                (chunk.unit_key, visual.unit_key) not in strong_pairs
+                and chunk_pages.intersection(_unit_pages(visual))
+            ):
+                candidates.append(
+                    _RelationCandidate(
+                        chunk,
+                        visual,
+                        ChunkAssetRelationType.SAME_PAGE,
+                        250_000,
+                        ChunkAssetRelationProvenance.PAGE_IDENTITY_V2,
+                    )
+                )
+
+    relation_priority = {
+        relation: index
+        for index, relation in enumerate(
+            (
+                ChunkAssetRelationType.EXPLICIT_FIGURE_REFERENCE,
+                ChunkAssetRelationType.CAPTION_OF,
+                ChunkAssetRelationType.INLINE_FIGURE,
+                ChunkAssetRelationType.OCR_OF,
+                ChunkAssetRelationType.TABLE_OF,
+                ChunkAssetRelationType.SPATIAL_NEIGHBOR,
+                ChunkAssetRelationType.SAME_PAGE,
+            )
+        )
+    }
+    candidates.sort(
+        key=lambda item: (
+            item.chunk.ordinal,
+            relation_priority[item.relation_type],
+            item.visual.ordinal,
+            item.visual.asset_key or "",
+        )
+    )
+    relations: list[ChunkAssetRelationDraft] = []
+    seen: set[tuple[str, str, ChunkAssetRelationType]] = set()
+    per_chunk: Counter[str] = Counter()
+    for candidate in candidates:
+        assert candidate.visual.asset_key is not None
+        identity = (
+            candidate.chunk.unit_key,
+            candidate.visual.asset_key,
+            candidate.relation_type,
+        )
+        if identity in seen:
+            continue
+        if per_chunk[candidate.chunk.unit_key] >= limits.max_relations_per_chunk:
+            raise ParserExecutionError(
+                ErrorCode.PARSER_RESOURCE_LIMIT,
+                diagnostic={
+                    "limit_name": "max_relations_per_chunk",
+                    "limit": limits.max_relations_per_chunk,
+                },
+            )
+        seen.add(identity)
+        per_chunk[candidate.chunk.unit_key] += 1
+        relations.append(
+            ChunkAssetRelationDraft(
+                chunk_unit_key=candidate.chunk.unit_key,
+                visual_unit_key=candidate.visual.unit_key,
+                asset_key=candidate.visual.asset_key,
+                relation_type=candidate.relation_type,
+                confidence_micros=candidate.confidence_micros,
+                figure_label=candidate.figure_label,
+                ordinal=len(relations),
+                provenance=candidate.provenance,
+                evidence_group_key=candidate.visual.evidence_group_key
+                or _key("asset-group", candidate.visual.asset_key),
+            )
+        )
+    if len(relations) > limits.max_relations:
+        raise ParserExecutionError(
+            ErrorCode.PARSER_RESOURCE_LIMIT,
+            diagnostic={
+                "limit_name": "max_relations",
+                "limit": limits.max_relations,
+            },
+        )
+    return tuple(relations)
+
+
+def _unit_pages(unit: EvidenceUnitDraft) -> set[int]:
+    pages = unit.source_location.get("page_numbers")
+    if isinstance(pages, list):
+        return {item for item in pages if isinstance(item, int) and not isinstance(item, bool)}
+    page = unit.source_location.get("page_number")
+    return {page} if isinstance(page, int) and not isinstance(page, bool) else set()
 
 
 def _canonical_hash(value: object) -> str:

@@ -10,6 +10,7 @@ from typing import Any
 from uuid import UUID, uuid5
 
 from rag_kb.domain.content import EmbeddingSpaceDefinition
+from rag_kb.domain.composite import ChunkAssetRelationDraft
 from rag_kb.domain.errors import ErrorCode
 from rag_kb.domain.parsing import ContentModality
 
@@ -196,6 +197,12 @@ class EvidenceUnitDraft:
     hierarchy: dict[str, Any]
     processing_metadata: dict[str, Any]
     required_representations: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class CompositeEvidenceDraft:
+    units: tuple[EvidenceUnitDraft, ...]
+    relations: tuple[ChunkAssetRelationDraft, ...]
 
 
 class EmbeddingSpaceRole(StrEnum):

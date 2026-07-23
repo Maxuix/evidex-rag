@@ -121,6 +121,7 @@ from rag_kb.domain.idempotency import IdempotencyScope, canonical_request_hash
 from rag_kb.domain.indexing import (
     EmbeddingSpaceRole,
     EmbeddingBatch,
+    CompositeEvidenceDraft,
     EvidenceUnitDraft,
     ImageDescriptionInput,
     ImageDescriptionResult,
@@ -256,6 +257,7 @@ __all__ = [
     "ChunkAssetRelationType",
     "CompositeChunkDraft",
     "ContentModality",
+    "CompositeEvidenceDraft",
     "AdmittedFile",
     "AdmissionLimits",
     "ContentMutation",
