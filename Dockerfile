@@ -23,7 +23,8 @@ RUN python -m pip install --no-cache-dir --require-hashes -r /app/requirements.l
 
 ENV HOME=/tmp/rag-kb-home \
     MPLCONFIGDIR=/tmp/rag-kb-home/.config/matplotlib \
-    NUMBA_CACHE_DIR=/tmp/rag-kb-home/.cache/numba
+    NUMBA_CACHE_DIR=/tmp/rag-kb-home/.cache/numba \
+    HF_HOME=/var/lib/rag-kb/model-cache/huggingface
 
 RUN mkdir -p "${MPLCONFIGDIR}" "${NUMBA_CACHE_DIR}" \
     && chown -R rag-kb:rag-kb "${HOME}"

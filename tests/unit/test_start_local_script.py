@@ -14,6 +14,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "start-local.sh"
 COMPOSE = ROOT / "compose.yaml"
+DOCKERFILE = ROOT / "Dockerfile"
 
 
 class StartLocalScriptTests(unittest.TestCase):
@@ -25,6 +26,23 @@ class StartLocalScriptTests(unittest.TestCase):
         )
         self.assertEqual(
             configuration["services"]["worker"]["healthcheck"]["retries"], 24
+        )
+
+    def test_compose_persists_worker_inference_models_separately(self) -> None:
+        configuration = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
+
+        cache_mount = "inference-model-cache:/var/lib/rag-kb/model-cache"
+        self.assertIn(cache_mount, configuration["services"]["storage-init"]["volumes"])
+        self.assertIn(cache_mount, configuration["services"]["worker"]["volumes"])
+        self.assertNotIn(cache_mount, configuration["services"]["api"]["volumes"])
+        self.assertEqual(configuration["volumes"]["inference-model-cache"], None)
+        self.assertIn(
+            "/var/lib/rag-kb/model-cache/huggingface",
+            " ".join(configuration["services"]["storage-init"]["command"]),
+        )
+        self.assertIn(
+            "HF_HOME=/var/lib/rag-kb/model-cache/huggingface",
+            DOCKERFILE.read_text(encoding="utf-8"),
         )
 
     def _run(

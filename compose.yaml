@@ -56,10 +56,11 @@ services:
     command:
       - /bin/sh
       - -c
-      - install -d -o 10001 -g 10001 /var/lib/rag-kb/sources/staging /var/lib/rag-kb/sources/final /var/lib/rag-kb/sources/asset-staging /var/lib/rag-kb/sources/assets /var/lib/rag-kb/sources/parser-temp /var/lib/rag-kb/sources/.tiktoken-cache
+      - install -d -o 10001 -g 10001 /var/lib/rag-kb/sources/staging /var/lib/rag-kb/sources/final /var/lib/rag-kb/sources/asset-staging /var/lib/rag-kb/sources/assets /var/lib/rag-kb/sources/parser-temp /var/lib/rag-kb/sources/.tiktoken-cache /var/lib/rag-kb/model-cache/huggingface
     depends_on: {}
     volumes:
       - source-data:/var/lib/rag-kb/sources
+      - inference-model-cache:/var/lib/rag-kb/model-cache
     restart: "no"
 
   migrate:
@@ -105,6 +106,7 @@ services:
     command: ["python", "-m", "apps.worker.main"]
     volumes:
       - source-data:/var/lib/rag-kb/sources
+      - inference-model-cache:/var/lib/rag-kb/model-cache
     healthcheck:
       test: ["CMD", "python", "-m", "apps.worker.main", "--check"]
       interval: 5s
@@ -140,3 +142,4 @@ services:
 volumes:
   postgres-data:
   source-data:
+  inference-model-cache:
