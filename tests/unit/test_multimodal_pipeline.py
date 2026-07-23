@@ -112,6 +112,31 @@ def _space() -> EmbeddingSpaceDefinition:
 
 
 class MultimodalParserTests(unittest.TestCase):
+    def test_markdown_image_reference_without_asset_remains_text(self) -> None:
+        source = ParserSource(
+            "architecture.md",
+            "text/markdown",
+            (
+                "# Architecture\n\n"
+                "The service flow is described below.\n\n"
+                "![Architecture diagram](images/architecture.png)\n\n"
+                "The API sends work to the worker."
+            ).encode(),
+        )
+
+        parsed = partition_multimodal_with_unstructured(source, ParserLimits())
+
+        image_reference = next(
+            element for element in parsed.elements if element.category == "Image"
+        )
+        self.assertIsNone(image_reference.asset_key)
+        self.assertEqual(parsed.assets, ())
+
+        units = assemble_multimodal_units(parsed)
+
+        self.assertTrue(all(unit.modality is ContentModality.TEXT for unit in units))
+        self.assertIn("Architecture diagram", "\n".join(unit.content for unit in units))
+
     def test_docx_picture_table_order_and_hashes_are_repeatable(self) -> None:
         source = ParserSource(
             "mixed.docx",

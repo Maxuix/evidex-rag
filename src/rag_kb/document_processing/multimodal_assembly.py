@@ -144,14 +144,14 @@ def _assemble_multimodal_units(
         if element.category == "PageBreak":
             flush_text()
             continue
-        if element.category in {"Image", "PageImage", "Table", "TableChunk"} or (
+        if element.category in {"Table", "TableChunk"}:
+            flush_text()
+            _append_table_units(units, element)
+            continue
+        if element.category == "PageImage" or (
             element.asset_key and element.category != "OCRText"
         ):
             asset = assets.get(element.asset_key or "")
-            if element.category in {"Table", "TableChunk"}:
-                flush_text()
-                _append_table_units(units, element)
-                continue
             if asset is None:
                 raise ParserExecutionError(
                     ErrorCode.PARSER_OUTPUT_INVALID,
