@@ -669,8 +669,27 @@ textarea:hover {
   gap: 16px;
 }
 
+.chunk-inspector {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.chunk-inspector .panel-heading > div {
+  min-width: 0;
+}
+
+.chunk-inspector .panel-heading h2,
+.chunk-inspector .panel-heading p {
+  overflow-wrap: anywhere;
+}
+
+.chunk-inspector > .key-value-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 8rem), 1fr));
+}
+
 .chunk-timeline-wrap,
 .chunk-card {
+  min-width: 0;
   border: 1px solid var(--line);
   border-radius: 14px;
   background: var(--paper-soft);
@@ -678,6 +697,7 @@ textarea:hover {
 }
 
 .chunk-timeline {
+  max-width: 100%;
   display: flex;
   gap: 5px;
   overflow-x: auto;
@@ -717,12 +737,20 @@ textarea:hover {
 
 .chunk-filter-row { flex-wrap: wrap; }
 
+.chunk-filter-row .button {
+  flex: 1 1 6rem;
+}
+
 .chunk-card-heading {
+  align-items: flex-start;
+  flex-wrap: wrap;
   justify-content: space-between;
   margin-bottom: 12px;
 }
 
-.chunk-card-heading h3 { margin: 0; }
+.chunk-card-heading > div { flex-wrap: wrap; min-width: 0; }
+
+.chunk-card-heading h3 { margin: 0; overflow-wrap: anywhere; }
 
 .modality-badge { border: none; }
 
