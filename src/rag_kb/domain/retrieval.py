@@ -52,6 +52,8 @@ class RelatedVisualEvidence:
     evidence_group_key: str
     figure_label: str | None = None
     parent_chunk_id: UUID | None = None
+    modality: str = "image"
+    source_location: dict[str, Any] | None = None
     text_space_rank: int | None = None
     cross_modal_rank: int | None = None
 
@@ -61,6 +63,9 @@ class RelatedVisualEvidence:
         for rank in (self.text_space_rank, self.cross_modal_rank):
             if rank is not None and rank < 1:
                 raise ValueError("lane rank must be positive")
+        if self.modality not in {"image", "table"}:
+            raise ValueError("related visual modality is unsupported")
+        object.__setattr__(self, "source_location", dict(self.source_location or {}))
 
 
 @dataclass(frozen=True, slots=True)

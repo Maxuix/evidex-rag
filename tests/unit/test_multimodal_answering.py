@@ -286,6 +286,41 @@ def _related_visual_pack(
 
 
 class MultimodalAnsweringTests(unittest.IsolatedAsyncioTestCase):
+    async def test_related_visual_gets_member_citation_and_parent_relation_snapshot(
+        self,
+    ) -> None:
+        context = _context()
+        pack, loaded = _related_visual_pack(context, count=1)
+        state = await CosineEvidenceAssessmentStep(0.35, 0.45, 0.25).run(
+            ChatPipelineState(context=context, evidence_pack=pack)
+        )
+        state = await VisualEvidencePreparationStep(_MultiAssetReader(loaded)).run(
+            state
+        )
+        model = _SequenceModel(
+            '{"outcome":"answered","claims":['
+            '{"text":"Figure 1 shows the architecture.",'
+            '"citation_ids":["cite_2"]}],"missing_aspects":[]}'
+        )
+
+        generated = await AnswerGenerationStep(model).run(state)
+        result = await AnswerStructureValidationStep(model).run(generated)
+
+        assert result.answering is not None
+        assert result.answering.rendered is not None
+        citation = result.answering.rendered.citations[0]
+        self.assertEqual(citation.citation_id, "cite_2")
+        self.assertEqual(citation.modality, "image")
+        assert citation.asset_snapshot is not None
+        self.assertEqual(citation.asset_snapshot["parent_citation_id"], "cite_1")
+        self.assertEqual(
+            citation.asset_snapshot["relation_type"],
+            "explicit_figure_reference",
+        )
+        payload = json.loads(model.requests[0].messages[1].content)
+        self.assertFalse(payload["evidence"][0]["visual_input_attached"])
+        self.assertTrue(payload["evidence"][1]["visual_input_attached"])
+
     def test_visual_admission_decisions_are_deterministic_and_bounded(self) -> None:
         context = _context()
         pack, _ = _related_visual_pack(context, count=3)
@@ -328,7 +363,12 @@ class MultimodalAnsweringTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(result.answering.visual_content), 2)
         self.assertEqual(len(reader.calls), 2)
         self.assertEqual(
-            result.answering.assessment.usable_citation_ids, ("cite_1",)
+            result.answering.assessment.usable_citation_ids,
+            ("cite_1", "cite_2", "cite_3"),
+        )
+        self.assertEqual(
+            [item.citation_ids for item in result.answering.visual_content],
+            [("cite_2",), ("cite_3",)],
         )
 
     async def test_failed_selected_asset_promotes_next_candidate_without_losing_text(
@@ -349,7 +389,8 @@ class MultimodalAnsweringTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(reader.calls), 3)
         self.assertEqual(len(result.answering.visual_content), 2)
         self.assertEqual(
-            result.answering.assessment.usable_citation_ids, ("cite_1",)
+            result.answering.assessment.usable_citation_ids,
+            ("cite_1", "cite_2", "cite_3"),
         )
 
     async def test_same_group_visuals_are_descriptor_deduplicated_before_read(self) -> None:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from types import MappingProxyType
@@ -17,6 +17,7 @@ from rag_kb.domain.answering import (
 )
 from rag_kb.domain.chat_pipeline import ChatPipelinePhase, ChatRunLease
 from rag_kb.domain.errors import ErrorCode
+from rag_kb.domain.composite import VisualEvidenceDecision
 
 
 class ChatTerminalWriteStatus(StrEnum):
@@ -33,9 +34,27 @@ class ChatTerminalSuccessCommand:
     validation: AnswerValidationRecord
     model_calls: tuple[ChatModelCallRecord, ...]
     finished_at: datetime
+    retrieval_diagnostics: Mapping[str, int] = field(default_factory=dict)
+    visual_decisions: tuple[VisualEvidenceDecision, ...] = ()
+    visual_image_count: int = 0
+    visual_total_bytes: int = 0
 
     def __post_init__(self) -> None:
         _require_finish_time(self.lease, self.finished_at)
+        if any(
+            not isinstance(value, int) or isinstance(value, bool) or value < 0
+            for value in self.retrieval_diagnostics.values()
+        ):
+            raise ValueError("retrieval diagnostic counts must be non-negative")
+        if not 0 <= self.visual_image_count <= 4 or self.visual_total_bytes < 0:
+            raise ValueError("visual terminal counters are invalid")
+        if sum(item.selected for item in self.visual_decisions) < self.visual_image_count:
+            raise ValueError("attached images require selected visual decisions")
+        object.__setattr__(
+            self,
+            "retrieval_diagnostics",
+            MappingProxyType(dict(self.retrieval_diagnostics)),
+        )
 
 
 @dataclass(frozen=True, slots=True)

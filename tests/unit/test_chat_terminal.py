@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from uuid import uuid4
@@ -26,11 +27,57 @@ from rag_kb.domain import (
     EvidenceEnvelope,
     RenderedAnswer,
     ValidatedAnswer,
+    VisualEvidenceDecision,
+    VisualEvidenceReason,
 )
+from rag_kb.repositories.sqlalchemy_chat import _serialized_validation
 from rag_kb.services import ChatFailureSettlementService, ChatResultPersistenceStep
 
 
 class ChatTerminalServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_success_persists_content_safe_retrieval_and_visual_diagnostics(
+        self,
+    ) -> None:
+        observed = datetime(2026, 7, 15, 8, 0, tzinfo=UTC)
+        repository = _Repository(ChatTerminalWriteStatus.APPLIED)
+        state = _completed_state(observed)
+        decision = VisualEvidenceDecision(
+            visual_unit_id=uuid4(),
+            asset_id=uuid4(),
+            reason_code=VisualEvidenceReason.REJECTED_LOW_SIMILARITY,
+            cross_modal_rank=1,
+            priority_micros=100,
+        )
+        state = replace(
+            state,
+            evidence_pack=SimpleNamespace(
+                debug=SimpleNamespace(
+                    result_count=2,
+                    text_candidate_count=3,
+                    cross_modal_candidate_count=4,
+                    hydrated_relation_count=1,
+                    evidence_group_count=2,
+                )
+            ),
+            answering=replace(state.answering, visual_decisions=(decision,)),
+        )
+
+        await ChatResultPersistenceStep(
+            _Factory(repository), clock=lambda: observed + timedelta(seconds=2)
+        ).run(state)
+
+        command = repository.success
+        self.assertEqual(command.retrieval_diagnostics["text_candidate_count"], 3)
+        facts = _serialized_validation(command)
+        self.assertEqual(facts["visual_evidence"]["rejected_count"], 1)
+        self.assertEqual(
+            facts["visual_evidence"]["rejection_counts"],
+            {"rejected_low_similarity": 1},
+        )
+        serialized = str(facts)
+        self.assertNotIn("content", serialized)
+        self.assertNotIn("storage", serialized)
+
     async def test_success_passes_complete_terminal_command_and_accepts_replay(
         self,
     ) -> None:

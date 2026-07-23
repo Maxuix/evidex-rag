@@ -54,6 +54,10 @@ class ChatResultPersistenceStep:
             validation=answering.validation,
             model_calls=answering.model_calls,
             finished_at=self._clock(),
+            retrieval_diagnostics=_retrieval_diagnostics(state),
+            visual_decisions=answering.visual_decisions,
+            visual_image_count=len(answering.visual_content),
+            visual_total_bytes=answering.visual_total_bytes,
         )
 
         async def persist(uow: UnitOfWork) -> ChatTerminalWriteStatus:
@@ -171,3 +175,18 @@ def _safe_diagnostic(value: Mapping[str, Any]) -> dict[str, Any]:
         if isinstance(item, (str, int, float, bool)) and not isinstance(item, bytes):
             safe[key] = item
     return safe
+
+
+def _retrieval_diagnostics(state: ChatPipelineState) -> dict[str, int]:
+    pack = state.evidence_pack
+    debug = getattr(pack, "debug", None) if pack is not None else None
+    if debug is None:
+        return {}
+    values = {
+        "result_count": debug.result_count,
+        "text_candidate_count": debug.text_candidate_count,
+        "cross_modal_candidate_count": debug.cross_modal_candidate_count,
+        "hydrated_relation_count": debug.hydrated_relation_count,
+        "evidence_group_count": debug.evidence_group_count,
+    }
+    return {key: value for key, value in values.items() if value is not None}

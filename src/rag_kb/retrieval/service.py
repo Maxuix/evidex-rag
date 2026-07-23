@@ -318,6 +318,8 @@ class RetrievalService:
                     evidence_group_key=relation.evidence_group_key,
                     figure_label=relation.figure_label,
                     parent_chunk_id=relation.chunk_id,
+                    modality=relation.visual_modality,
+                    source_location=relation.visual_source_location,
                     text_space_rank=item.text_rank,
                     cross_modal_rank=cross_ranks.get(relation.visual_unit_id),
                 )

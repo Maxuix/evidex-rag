@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 from uuid import UUID
 
 from rag_kb.domain import (
@@ -23,6 +24,9 @@ class VisualEvidenceCandidate:
     parent_citation_id: str
     evidence_group_key: str
     relation_type: ChunkAssetRelationType | None
+    figure_label: str | None
+    modality: str
+    source_location: dict[str, Any]
     reason_code: VisualEvidenceReason
     text_rank: int | None
     cross_modal_rank: int | None
@@ -157,6 +161,9 @@ class VisualEvidenceAdmissionPolicy:
                         parent_citation_id=citation_id,
                         evidence_group_key=related.evidence_group_key,
                         relation_type=relation_type,
+                        figure_label=related.figure_label,
+                        modality=related.modality,
+                        source_location=dict(related.source_location or {}),
                         reason_code=reason,
                         text_rank=related.text_space_rank or evidence.text_space_rank,
                         cross_modal_rank=related.cross_modal_rank,
@@ -191,6 +198,9 @@ class VisualEvidenceAdmissionPolicy:
                             evidence.evidence_group_key or str(evidence.index_chunk_id)
                         ),
                         relation_type=None,
+                        figure_label=None,
+                        modality=evidence.modality,
+                        source_location=dict(evidence.source_location),
                         reason_code=reason,
                         text_rank=evidence.text_space_rank,
                         cross_modal_rank=evidence.cross_modal_rank,

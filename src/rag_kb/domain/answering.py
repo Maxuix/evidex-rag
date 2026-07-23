@@ -11,6 +11,8 @@ from types import MappingProxyType
 from typing import Any
 from uuid import UUID
 
+from rag_kb.domain.composite import VisualEvidenceDecision
+
 
 class EvidenceCoverage(StrEnum):
     SUFFICIENT = "sufficient"
@@ -100,7 +102,7 @@ class EvidenceEnvelope:
         expected = [f"cite_{rank}" for rank in range(1, len(self.items) + 1)]
         if [item.citation_id for item in self.items] != expected:
             raise ValueError("prompt evidence must have contiguous citation identifiers")
-        if len(self.items) > 100:
+        if len(self.items) > 104:
             raise ValueError("prompt evidence exceeds the retrieval limit")
 
     @property
@@ -372,11 +374,19 @@ class ChatAnsweringState:
     draft: AnswerDraftCandidate | None = None
     model_calls: tuple[ChatModelCallRecord, ...] = ()
     visual_content: tuple[ChatModelVisualContent, ...] = ()
+    visual_decisions: tuple[VisualEvidenceDecision, ...] = ()
+    visual_total_bytes: int = 0
     validated: ValidatedAnswer | None = None
     rendered: RenderedAnswer | None = None
     validation: AnswerValidationRecord | None = None
 
     def __post_init__(self) -> None:
+        if self.visual_total_bytes < 0:
+            raise ValueError("visual evidence bytes must be non-negative")
+        if len(self.visual_decisions) > 400:
+            raise ValueError("visual evidence decisions must be bounded")
+        if sum(len(item.content) for item in self.visual_content) != self.visual_total_bytes:
+            raise ValueError("visual evidence bytes must match attached content")
         visual_citations = [
             citation_id
             for item in self.visual_content

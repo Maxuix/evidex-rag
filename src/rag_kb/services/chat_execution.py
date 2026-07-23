@@ -167,6 +167,7 @@ class ChatEvidenceRetriever:
                 top_k=top_k,
                 strategy=strategy,
                 rerank=rerank,
+                include_debug=True,
             )
         except (KeyError, TypeError, ValueError) as error:
             raise ChatPipelineExecutionError(

@@ -1042,6 +1042,11 @@ def _merge_timing(
 
 def _serialized_validation(command: ChatTerminalSuccessCommand) -> dict[str, Any]:
     validation = command.validation
+    rejection_counts: dict[str, int] = {}
+    for decision in command.visual_decisions:
+        if not decision.selected:
+            key = decision.reason_code.value
+            rejection_counts[key] = rejection_counts.get(key, 0) + 1
     return {
         "result": "completed",
         "phase": "persist_result",
@@ -1053,6 +1058,38 @@ def _serialized_validation(command: ChatTerminalSuccessCommand) -> dict[str, Any
             "repair_attempted": validation.repair_attempted,
             "repair_succeeded": validation.repair_succeeded,
             "safe_fallback": validation.safe_fallback,
+        },
+        "retrieval": dict(command.retrieval_diagnostics),
+        "visual_evidence": {
+            "candidate_count": len(command.visual_decisions),
+            "selected_count": sum(
+                decision.selected for decision in command.visual_decisions
+            ),
+            "rejected_count": sum(
+                not decision.selected for decision in command.visual_decisions
+            ),
+            "attached_image_count": command.visual_image_count,
+            "attached_total_bytes": command.visual_total_bytes,
+            "rejection_counts": rejection_counts,
+            "decisions": [
+                {
+                    "visual_unit_id": str(decision.visual_unit_id),
+                    "asset_id": str(decision.asset_id),
+                    "reason_code": decision.reason_code.value,
+                    "parent_text_citation_ids": list(
+                        decision.parent_text_citation_ids
+                    ),
+                    "relation_type": (
+                        decision.relation_type.value
+                        if decision.relation_type is not None
+                        else None
+                    ),
+                    "text_rank": decision.text_rank,
+                    "cross_modal_rank": decision.cross_modal_rank,
+                    "priority_micros": decision.priority_micros,
+                }
+                for decision in command.visual_decisions
+            ],
         },
     }
 

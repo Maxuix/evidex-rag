@@ -141,6 +141,8 @@ class AnswerStructureValidationStep:
                 draft=answering.draft,
                 model_calls=calls,
                 visual_content=answering.visual_content,
+                visual_decisions=answering.visual_decisions,
+                visual_total_bytes=answering.visual_total_bytes,
                 validated=validated,
                 rendered=rendered,
                 validation=record,
