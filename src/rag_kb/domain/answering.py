@@ -382,8 +382,9 @@ class ChatAnsweringState:
             for item in self.visual_content
             for citation_id in item.citation_ids
         ]
-        if len(visual_citations) != len(set(visual_citations)):
-            raise ValueError("visual evidence citations must be unique")
+        visual_assets = [item.asset_id for item in self.visual_content]
+        if len(visual_assets) != len(set(visual_assets)):
+            raise ValueError("visual evidence assets must be unique")
         if any(
             citation_id not in self.assessment.usable_citation_ids
             for citation_id in visual_citations

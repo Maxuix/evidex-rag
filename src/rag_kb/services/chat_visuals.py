@@ -20,6 +20,7 @@ from rag_kb.domain import (
     IndexAssetContent,
     ResourceNotFoundError,
 )
+from rag_kb.services.visual_admission import VisualEvidenceAdmissionPolicy
 
 
 class IndexAssetReader(Protocol):
@@ -35,13 +36,15 @@ class VisualEvidencePreparationStep:
         self,
         asset_reader: IndexAssetReader | None,
         *,
-        max_images: int = 4,
+        max_images: int = 2,
         max_image_bytes: int = 5 * 1024 * 1024,
         max_total_bytes: int = 12 * 1024 * 1024,
         max_pixels: int = 16_000_000,
+        admission_policy: VisualEvidenceAdmissionPolicy | None = None,
     ) -> None:
         if (
             max_images < 1
+            or max_images > VisualEvidenceAdmissionPolicy.HARD_MAX_IMAGES
             or max_image_bytes < 1
             or max_total_bytes < max_image_bytes
             or max_pixels < 1
@@ -52,6 +55,7 @@ class VisualEvidencePreparationStep:
         self._max_image_bytes = max_image_bytes
         self._max_total_bytes = max_total_bytes
         self._max_pixels = max_pixels
+        self._admission_policy = admission_policy or VisualEvidenceAdmissionPolicy()
 
     async def run(self, state: ChatPipelineState) -> ChatPipelineState:
         context = state.context
@@ -69,7 +73,6 @@ class VisualEvidencePreparationStep:
         usable = list(answering.assessment.usable_citation_ids)
         usable_set = set(usable)
         visual_content: list[ChatModelVisualContent] = []
-        visual_by_asset: dict[UUID, int] = {}
         total_bytes = 0
         auth = AuthContext(
             principal_id=context.principal_id,
@@ -77,62 +80,47 @@ class VisualEvidencePreparationStep:
             workspace_id=context.workspace_id,
         )
 
-        for evidence, prompt_item in zip(
-            pack.evidence, answering.evidence.items, strict=True
-        ):
-            citation_id = prompt_item.citation_id
-            if citation_id not in usable_set:
-                continue
-            if evidence.modality not in {"image", "table"}:
-                continue
-
+        candidates = self._admission_policy.rank_candidates(
+            pack, answering.assessment.usable_citation_ids
+        )
+        for candidate in candidates:
+            if len(visual_content) >= self._max_images:
+                break
+            evidence = candidate.parent_evidence
+            citation_id = candidate.parent_citation_id
+            asset = candidate.asset
             text_fallback = _has_textual_representation(evidence)
-            if evidence.asset is None:
-                if not text_fallback:
-                    usable_set.remove(citation_id)
-                continue
-            existing = visual_by_asset.get(evidence.asset.id)
-            if existing is not None:
-                previous = visual_content[existing]
-                visual_content[existing] = replace(
-                    previous,
-                    citation_ids=previous.citation_ids + (citation_id,),
-                )
-                continue
-
             if (
                 self._asset_reader is None
-                or len(visual_content) >= self._max_images
-                or evidence.asset.media_type
-                not in {"image/jpeg", "image/png", "image/webp"}
-                or evidence.asset.width is None
-                or evidence.asset.height is None
-                or evidence.asset.width * evidence.asset.height > self._max_pixels
+                or asset.media_type not in {"image/jpeg", "image/png", "image/webp"}
+                or asset.width is None
+                or asset.height is None
+                or asset.width * asset.height > self._max_pixels
             ):
                 if not text_fallback:
-                    usable_set.remove(citation_id)
+                    usable_set.discard(citation_id)
                 continue
 
             try:
-                loaded = await self._asset_reader.read(auth, evidence.asset.id)
+                loaded = await self._asset_reader.read(auth, asset.id)
             except (FileStoreError, ResourceNotFoundError):
                 if not text_fallback:
-                    usable_set.remove(citation_id)
+                    usable_set.discard(citation_id)
                 continue
             snapshot = loaded.snapshot
             if (
-                snapshot.id != evidence.asset.id
+                snapshot.id != asset.id
                 or snapshot.workspace_id != context.workspace_id
                 or snapshot.kb_id != context.knowledge_base_id
                 or snapshot.document_id != evidence.document_id
                 or snapshot.document_version_id != evidence.document_version_id
                 or snapshot.indexed_document_version_id
                 != evidence.indexed_document_version_id
-                or snapshot.media_type != evidence.asset.media_type
-                or snapshot.checksum_sha256 != evidence.asset.checksum_sha256
+                or snapshot.media_type != asset.media_type
+                or snapshot.checksum_sha256 != asset.checksum_sha256
             ):
                 if not text_fallback:
-                    usable_set.remove(citation_id)
+                    usable_set.discard(citation_id)
                 continue
 
             content_size = len(loaded.content)
@@ -141,23 +129,22 @@ class VisualEvidencePreparationStep:
                 or total_bytes + content_size > self._max_total_bytes
             ):
                 if not text_fallback:
-                    usable_set.remove(citation_id)
+                    usable_set.discard(citation_id)
                 continue
             try:
                 visual = ChatModelVisualContent(
                     citation_ids=(citation_id,),
-                    asset_id=evidence.asset.id,
-                    media_type=evidence.asset.media_type,
-                    checksum_sha256=evidence.asset.checksum_sha256,
+                    asset_id=asset.id,
+                    media_type=asset.media_type,
+                    checksum_sha256=asset.checksum_sha256,
                     content=loaded.content,
-                    width=evidence.asset.width,
-                    height=evidence.asset.height,
+                    width=asset.width,
+                    height=asset.height,
                 )
             except ValueError:
                 if not text_fallback:
-                    usable_set.remove(citation_id)
+                    usable_set.discard(citation_id)
                 continue
-            visual_by_asset[evidence.asset.id] = len(visual_content)
             visual_content.append(visual)
             total_bytes += content_size
 

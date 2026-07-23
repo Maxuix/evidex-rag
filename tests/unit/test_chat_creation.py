@@ -153,7 +153,7 @@ class ChatCreationContractTests(unittest.TestCase):
             structured_output_mode="json_object",
             thinking_enabled=False,
             vision_enabled=True,
-            max_visual_images=4,
+            max_visual_images=2,
             max_visual_image_bytes=5_242_880,
             max_visual_total_bytes=12_582_912,
             max_visual_pixels=16_000_000,
@@ -170,7 +170,7 @@ class ChatCreationContractTests(unittest.TestCase):
         self.assertEqual(snapshot["temperature"], 0.1)
         self.assertEqual(snapshot["max_tokens"], 2048)
         self.assertTrue(snapshot["vision_enabled"])
-        self.assertEqual(snapshot["max_visual_images"], 4)
+        self.assertEqual(snapshot["max_visual_images"], 2)
         self.assertNotIn("base_url", snapshot)
         self.assertNotIn("api_key", snapshot)
         self.assertNotIn("timeout_seconds", snapshot)

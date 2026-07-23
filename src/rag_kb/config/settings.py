@@ -77,7 +77,7 @@ FixedContextTokens = Annotated[
     Literal[4000], BeforeValidator(parse_environment_integer)
 ]
 FixedVisualImageCount = Annotated[
-    Literal[4], BeforeValidator(parse_environment_integer)
+    Literal[2], BeforeValidator(parse_environment_integer)
 ]
 FixedVisualImageBytes = Annotated[
     Literal[5_242_880], BeforeValidator(parse_environment_integer)
@@ -436,14 +436,14 @@ class ChatProviderSettings(ProviderSettings):
     structured_output_mode: Literal["json_object"] = "json_object"
     thinking_enabled: DisabledFlag = False
     vision_enabled: EnabledFlag = True
-    max_visual_images: FixedVisualImageCount = 4
+    max_visual_images: FixedVisualImageCount = 2
     max_visual_image_bytes: FixedVisualImageBytes = 5_242_880
     max_visual_total_bytes: FixedVisualTotalBytes = 12_582_912
     max_visual_pixels: FixedVisualPixels = 16_000_000
     visual_media_profile: Literal["jpeg_png_webp_v1"] = "jpeg_png_webp_v1"
     configuration_fingerprint: Literal[
-        "sha256:da3d6c7afee8b9e49855fb6ba76f886442e51baf51c3e064f4741c1f86a67c16"
-    ] = "sha256:da3d6c7afee8b9e49855fb6ba76f886442e51baf51c3e064f4741c1f86a67c16"
+        "sha256:85b03b3eececbb2fda11cadf77040999028b09e335b8ef5684c34a34601a71d2"
+    ] = "sha256:85b03b3eececbb2fda11cadf77040999028b09e335b8ef5684c34a34601a71d2"
     capability_fingerprint: Literal[
         "sha256:c24fb9b08baf600afc8f4610f88412ca5c7a2979890647e1512e7cedb8066279"
     ] = "sha256:c24fb9b08baf600afc8f4610f88412ca5c7a2979890647e1512e7cedb8066279"
