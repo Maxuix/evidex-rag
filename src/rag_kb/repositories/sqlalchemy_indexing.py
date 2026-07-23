@@ -10,6 +10,7 @@ from uuid import UUID
 from sqlalchemy import and_, delete, exists, func, literal, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from rag_kb.db.models import (
     Document as DocumentRow,
@@ -160,11 +161,18 @@ class SqlAlchemyIndexingRepository:
             )
         if asset_ids:
             selectors.append(IndexChunkAssetRelationRow.asset_id.in_(asset_ids))
+        parent_chunk = aliased(IndexChunkRow)
+        visual_chunk = aliased(IndexChunkRow)
         rows = (
             await self._session.execute(
                 select(
                     IndexChunkAssetRelationRow,
                     IndexedDocumentVersionRow.index_revision_id,
+                    IndexedDocumentVersionRow.document_id,
+                    IndexedDocumentVersionRow.document_version_id,
+                    parent_chunk,
+                    visual_chunk,
+                    IndexAssetRow,
                 )
                 .join(
                     IndexedDocumentVersionRow,
@@ -178,6 +186,31 @@ class SqlAlchemyIndexingRepository:
                 .join(
                     KnowledgeBaseRow,
                     KnowledgeBaseRow.id == IndexedDocumentVersionRow.kb_id,
+                )
+                .join(
+                    parent_chunk,
+                    and_(
+                        parent_chunk.indexed_document_version_id
+                        == IndexChunkAssetRelationRow.indexed_document_version_id,
+                        parent_chunk.id == IndexChunkAssetRelationRow.chunk_id,
+                    ),
+                )
+                .join(
+                    visual_chunk,
+                    and_(
+                        visual_chunk.indexed_document_version_id
+                        == IndexChunkAssetRelationRow.indexed_document_version_id,
+                        visual_chunk.id
+                        == IndexChunkAssetRelationRow.visual_unit_id,
+                    ),
+                )
+                .join(
+                    IndexAssetRow,
+                    and_(
+                        IndexAssetRow.indexed_document_version_id
+                        == IndexChunkAssetRelationRow.indexed_document_version_id,
+                        IndexAssetRow.id == IndexChunkAssetRelationRow.asset_id,
+                    ),
                 )
                 .where(
                     IndexChunkAssetRelationRow.workspace_id == self._workspace_id,
@@ -220,8 +253,34 @@ class SqlAlchemyIndexingRepository:
                 ordinal=row.ordinal,
                 provenance=row.provenance,
                 evidence_group_key=row.evidence_group_key,
+                document_id=document_id,
+                document_version_id=document_version_id,
+                chunk_ordinal=parent.ordinal,
+                chunk_content=parent.content,
+                chunk_modality=parent.modality,
+                chunk_source_location=parent.source_location,
+                chunk_hierarchy=parent.hierarchy,
+                chunk_source_metadata=parent.source_metadata,
+                visual_ordinal=visual.ordinal,
+                visual_content=visual.content,
+                visual_modality=visual.modality,
+                visual_source_location=visual.source_location,
+                visual_hierarchy=visual.hierarchy,
+                visual_source_metadata=visual.source_metadata,
+                asset_media_type=asset.media_type,
+                asset_checksum_sha256=asset.checksum_sha256,
+                asset_width=asset.width,
+                asset_height=asset.height,
             )
-            for row, revision_id in rows
+            for (
+                row,
+                revision_id,
+                document_id,
+                document_version_id,
+                parent,
+                visual,
+                asset,
+            ) in rows
         )
 
     async def oldest_claimable_at(

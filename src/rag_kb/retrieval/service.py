@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+from dataclasses import replace
 import math
+from typing import Protocol
+from uuid import UUID
 
 from rag_kb.adapters.model_api import EmbeddingModelAdapter
 from rag_kb.adapters.model_api import MultimodalEmbeddingAdapter
@@ -10,10 +14,12 @@ from rag_kb.adapters.vector_store import VectorStore
 from rag_kb.auth import AccessPolicy, AuthContext
 from rag_kb.domain import (
     ErrorCode,
+    ChunkAssetRelationType,
     Evidence,
     EvidenceAsset,
     EvidencePack,
     EvidenceScoreKind,
+    IndexChunkAssetRelationSnapshot,
     IndexingExecutionError,
     ResourceNotFoundError,
     RetrievalDebug,
@@ -21,10 +27,24 @@ from rag_kb.domain import (
     RetrievalQueryPlan,
     RetrievalRequest,
     RetrievalStrategy,
+    RelatedVisualEvidence,
     VectorSearchResult,
+    validate_embedding_vector,
 )
 from rag_kb.retrieval.reranker import RerankedHit, rerank_hits
 from rag_kb.retrieval.fusion import reciprocal_rank_fusion
+
+
+class CompositeEvidenceHydrator(Protocol):
+    async def hydrate(
+        self,
+        context: AuthContext,
+        *,
+        kb_id: UUID,
+        index_revision_id: UUID,
+        chunk_ids: tuple[UUID, ...],
+        asset_ids: tuple[UUID, ...],
+    ) -> tuple[IndexChunkAssetRelationSnapshot, ...]: ...
 
 
 class RetrievalService:
@@ -47,6 +67,7 @@ class RetrievalService:
         text_min_cosine_similarity: float = 0.35,
         rrf_k: int = 60,
         cross_modal_weight_micros: int = 1_000_000,
+        relation_hydrator: CompositeEvidenceHydrator | None = None,
     ) -> None:
         if candidate_multiplier < 2:
             raise ValueError("candidate_multiplier must be at least two")
@@ -70,6 +91,7 @@ class RetrievalService:
         self._text_min_cosine_similarity = text_min_cosine_similarity
         self._rrf_k = rrf_k
         self._cross_modal_weight_micros = cross_modal_weight_micros
+        self._relation_hydrator = relation_hydrator
 
     async def retrieve(
         self,
@@ -99,29 +121,101 @@ class RetrievalService:
             ),
             rerank=request.rerank,
         )
-        query_embedding = await self._embed_query(request.query)
-        result = await self._vector_store.search(plan, query_embedding)
-        if result is None:
-            raise ResourceNotFoundError("knowledge base or active revision was not found")
-        self._validate_scope(plan, result)
-        multimodal = (
-            self._multimodal_embedding_provider is not None
-            and hasattr(self._vector_store, "has_space_role")
+        multimodal = bool(
+            hasattr(self._vector_store, "has_space_role")
             and await self._vector_store.has_space_role(
                 plan, "cross_modal_retrieval"
             )
         )
+        relations: tuple[IndexChunkAssetRelationSnapshot, ...] = ()
+        cross_result: VectorSearchResult | None = None
         if multimodal:
-            evidence = await self._multimodal_evidence(
-                plan, result, request.query
+            if self._multimodal_embedding_provider is None:
+                raise RetrievalExecutionError(
+                    ErrorCode.INDEX_REVISION_INCOMPATIBLE,
+                    diagnostic={"check": "cross_modal_provider_required"},
+                )
+            query_embedding, cross_embedding = await asyncio.gather(
+                self._embed_query(request.query),
+                self._embed_multimodal_query(request.query),
+            )
+            cross_plan = RetrievalQueryPlan(
+                workspace_id=plan.workspace_id,
+                knowledge_base_id=plan.knowledge_base_id,
+                strategy=plan.strategy,
+                top_k=plan.top_k,
+                candidate_count=max(plan.top_k, self._cross_modal_candidate_count),
+                rerank=True,
+            )
+            result, cross_result = await asyncio.gather(
+                self._vector_store.search(plan, query_embedding),
+                self._vector_store.search_space(
+                    cross_plan,
+                    cross_embedding,
+                    space_role="cross_modal_retrieval",
+                    representation_kinds=("native_image", "table_image"),
+                    expected_space=self._multimodal_embedding_provider.embedding_space,
+                ),
+            )
+            if result is None:
+                raise ResourceNotFoundError(
+                    "knowledge base or active revision was not found"
+                )
+            if cross_result is None:
+                raise RetrievalExecutionError(
+                    ErrorCode.INDEX_REVISION_INCOMPATIBLE,
+                    diagnostic={"check": "cross_modal_snapshot_missing"},
+                )
+            self._validate_multimodal_results(plan, result, cross_plan, cross_result)
+            if self._relation_hydrator is not None:
+                all_hits = result.hits + cross_result.hits
+                relations = await self._relation_hydrator.hydrate(
+                    context,
+                    kb_id=plan.knowledge_base_id,
+                    index_revision_id=result.resolved_active_revision_id,
+                    chunk_ids=tuple(dict.fromkeys(hit.index_chunk_id for hit in all_hits)),
+                    asset_ids=tuple(
+                        dict.fromkeys(
+                            hit.index_asset_id
+                            for hit in all_hits
+                            if hit.index_asset_id is not None
+                        )
+                    ),
+                )
+                self._validate_relations(plan, result, relations)
+            evidence = self._multimodal_evidence(
+                plan,
+                result,
+                cross_result,
+                request.query,
+                relations,
             )
         else:
+            query_embedding = await self._embed_query(request.query)
+            result = await self._vector_store.search(plan, query_embedding)
+            if result is None:
+                raise ResourceNotFoundError(
+                    "knowledge base or active revision was not found"
+                )
+            self._validate_scope(plan, result)
             evidence = self._normalize(plan, result, query=request.query)
         debug = (
             RetrievalDebug(
                 query_plan=plan,
                 resolved_active_revision_id=result.resolved_active_revision_id,
                 result_count=len(evidence),
+                text_candidate_count=len(result.hits) if multimodal else None,
+                cross_modal_candidate_count=(
+                    len(cross_result.hits)
+                    if multimodal and cross_result is not None
+                    else None
+                ),
+                hydrated_relation_count=len(relations) if multimodal else None,
+                evidence_group_count=(
+                    len({item.evidence_group_key for item in evidence})
+                    if multimodal
+                    else None
+                ),
             )
             if request.include_debug
             else None
@@ -134,42 +228,14 @@ class RetrievalService:
             debug=debug,
         )
 
-    async def _multimodal_evidence(
+    def _multimodal_evidence(
         self,
         plan: RetrievalQueryPlan,
         text_result: VectorSearchResult,
+        cross_result: VectorSearchResult,
         query: str,
+        relations: tuple[IndexChunkAssetRelationSnapshot, ...],
     ) -> tuple[Evidence, ...]:
-        provider = self._multimodal_embedding_provider
-        assert provider is not None
-        try:
-            embedded = await provider.embed_texts((query,))
-            query_vector = embedded.vectors[0]
-        except IndexingExecutionError as error:
-            raise RetrievalExecutionError(error.code, diagnostic=error.diagnostic) from error
-        cross_plan = RetrievalQueryPlan(
-            workspace_id=plan.workspace_id,
-            knowledge_base_id=plan.knowledge_base_id,
-            strategy=plan.strategy,
-            top_k=plan.top_k,
-            candidate_count=max(plan.top_k, self._cross_modal_candidate_count),
-            rerank=True,
-        )
-        cross_result = await self._vector_store.search_space(
-            cross_plan,
-            query_vector,
-            space_role="cross_modal_retrieval",
-            representation_kinds=("native_image", "table_image"),
-            expected_space=provider.embedding_space,
-        )
-        if cross_result is None:
-            return self._normalize(plan, text_result, query=query)
-        self._validate_scope(cross_plan, cross_result)
-        if cross_result.resolved_active_revision_id != text_result.resolved_active_revision_id:
-            raise RetrievalExecutionError(
-                ErrorCode.INTERNAL_SERVER_ERROR,
-                diagnostic={"check": "multimodal_revision_snapshot"},
-            )
         text_hits = tuple(
             hit
             for hit in text_result.hits
@@ -191,61 +257,136 @@ class RetrievalService:
         )
         text_order = tuple(item.hit for item in reranked)
         metrics = {item.hit.index_chunk_id: item for item in reranked}
+        strong_relations = tuple(
+            relation
+            for relation in relations
+            if ChunkAssetRelationType(relation.relation_type).is_strong
+        )
+        group_keys: dict[UUID, list[str]] = {}
+        for relation in strong_relations:
+            for chunk_id in (relation.chunk_id, relation.visual_unit_id):
+                keys = group_keys.setdefault(chunk_id, [])
+                if relation.evidence_group_key not in keys:
+                    keys.append(relation.evidence_group_key)
+        group_keys_by_chunk = {
+            chunk_id: tuple(keys) for chunk_id, keys in group_keys.items()
+        }
         fused = reciprocal_rank_fusion(
             text_order,
             tuple(sorted(cross_hits, key=lambda hit: (hit.cosine_distance, hit.index_chunk_id.int))),
             rrf_k=self._rrf_k,
             cross_modal_weight_micros=self._cross_modal_weight_micros,
-            top_k=plan.top_k,
+            top_k=max(plan.top_k, len(text_order) + len(cross_hits)),
+            group_keys_by_chunk=group_keys_by_chunk,
         )
-        values: list[Evidence] = []
-        for rank, item in enumerate(fused, start=1):
+        cross_ranks = {
+            hit.index_chunk_id: rank
+            for rank, hit in enumerate(
+                sorted(
+                    cross_hits,
+                    key=lambda hit: (hit.cosine_distance, hit.index_chunk_id.int),
+                ),
+                start=1,
+            )
+        }
+        by_chunk: dict[UUID, Evidence] = {}
+        for item in fused:
             hit = item.hit
-            rerank = metrics.get(hit.index_chunk_id)
-            asset = (
-                EvidenceAsset(
-                    id=hit.index_asset_id,
-                    media_type=hit.asset_media_type or "application/octet-stream",
-                    checksum_sha256=hit.asset_checksum_sha256 or "",
-                    content_url=f"/api/v1/index-assets/{hit.index_asset_id}/content",
-                    width=hit.asset_width,
-                    height=hit.asset_height,
-                )
-                if hit.index_asset_id is not None
-                else None
+            group_relations = tuple(
+                relation
+                for relation in strong_relations
+                if relation.evidence_group_key == item.group_key
             )
-            values.append(
-                Evidence(
-                    rank=rank,
-                    index_chunk_id=hit.index_chunk_id,
-                    indexed_document_version_id=hit.indexed_document_version_id,
-                    document_id=hit.document_id,
-                    document_version_id=hit.document_version_id,
-                    index_revision_id=hit.index_revision_id,
-                    ordinal=hit.ordinal,
-                    text=hit.text,
-                    source_location=hit.source_location,
-                    hierarchy=hit.hierarchy,
-                    source_metadata=hit.source_metadata,
-                    score=item.score,
-                    score_kind=EvidenceScoreKind.RECIPROCAL_RANK_FUSION,
-                    vector_similarity=(
-                        rerank.vector_similarity
-                        if rerank is not None
-                        else 1.0 - hit.cosine_distance
-                    ),
-                    lexical_score=rerank.lexical_score if rerank is not None else 0.0,
-                    lexical_coverage=rerank.lexical_coverage if rerank is not None else 0.0,
-                    modality=hit.modality,
-                    asset=asset,
-                    evidence_group_key=hit.evidence_group_key,
-                    matched_representations=item.matched_representations,
+            parent = next(
+                (
+                    relation
+                    for relation in group_relations
+                    if hit.index_chunk_id == relation.visual_unit_id
+                    or hit.index_asset_id == relation.asset_id
+                ),
+                None,
+            )
+            base_chunk_id = parent.chunk_id if parent is not None else hit.index_chunk_id
+            rerank = metrics.get(base_chunk_id) or metrics.get(hit.index_chunk_id)
+            related_visuals = tuple(
+                RelatedVisualEvidence(
+                    visual_unit_id=relation.visual_unit_id,
+                    asset=self._relation_asset(relation),
+                    relation_type=relation.relation_type,
+                    relation_confidence_micros=relation.confidence_micros,
+                    relation_provenance=relation.provenance,
+                    evidence_group_key=relation.evidence_group_key,
+                    figure_label=relation.figure_label,
+                    parent_chunk_id=relation.chunk_id,
                     text_space_rank=item.text_rank,
-                    cross_modal_rank=item.cross_modal_rank,
-                    fusion_score=item.score,
+                    cross_modal_rank=cross_ranks.get(relation.visual_unit_id),
                 )
+                for relation in group_relations
             )
-        return tuple(values)
+            value = Evidence(
+                rank=1,
+                index_chunk_id=base_chunk_id,
+                indexed_document_version_id=hit.indexed_document_version_id,
+                document_id=parent.document_id if parent is not None else hit.document_id,
+                document_version_id=(
+                    parent.document_version_id if parent is not None else hit.document_version_id
+                ),
+                index_revision_id=hit.index_revision_id,
+                ordinal=parent.chunk_ordinal if parent is not None else hit.ordinal,
+                text=parent.chunk_content if parent is not None else hit.text,
+                source_location=(
+                    parent.chunk_source_location if parent is not None else hit.source_location
+                ),
+                hierarchy=parent.chunk_hierarchy if parent is not None else hit.hierarchy,
+                source_metadata=(
+                    parent.chunk_source_metadata if parent is not None else hit.source_metadata
+                ),
+                score=item.score,
+                score_kind=EvidenceScoreKind.RECIPROCAL_RANK_FUSION,
+                vector_similarity=(
+                    rerank.vector_similarity
+                    if rerank is not None
+                    else 1.0 - hit.cosine_distance
+                ),
+                lexical_score=rerank.lexical_score if rerank is not None else 0.0,
+                lexical_coverage=rerank.lexical_coverage if rerank is not None else 0.0,
+                modality=parent.chunk_modality if parent is not None else hit.modality,
+                asset=self._asset(hit),
+                evidence_group_key=item.group_key,
+                matched_representations=item.matched_representations,
+                text_space_rank=item.text_rank,
+                cross_modal_rank=item.cross_modal_rank,
+                fusion_score=item.score,
+                related_visuals=related_visuals,
+            )
+            existing = by_chunk.get(base_chunk_id)
+            if existing is None:
+                by_chunk[base_chunk_id] = value
+            else:
+                visuals = {visual.asset.id: visual for visual in existing.related_visuals}
+                visuals.update({visual.asset.id: visual for visual in related_visuals})
+                by_chunk[base_chunk_id] = replace(
+                    existing,
+                    matched_representations=tuple(
+                        sorted(
+                            set(existing.matched_representations)
+                            | set(value.matched_representations)
+                        )
+                    ),
+                    text_space_rank=_minimum_rank(
+                        existing.text_space_rank, value.text_space_rank
+                    ),
+                    cross_modal_rank=_minimum_rank(
+                        existing.cross_modal_rank, value.cross_modal_rank
+                    ),
+                    related_visuals=tuple(visuals.values()),
+                )
+            if len(by_chunk) >= plan.top_k:
+                break
+        return tuple(
+            replace(value, rank=rank)
+            for rank, value in enumerate(by_chunk.values(), start=1)
+        )
 
     @staticmethod
     def _require_enabled(request: RetrievalRequest) -> None:
@@ -297,6 +438,31 @@ class RetrievalService:
                 diagnostic={"check": "query_vector_normalization"},
             )
         return normalized
+
+    async def _embed_multimodal_query(self, query: str) -> tuple[float, ...]:
+        provider = self._multimodal_embedding_provider
+        assert provider is not None
+        try:
+            embedded = await provider.embed_texts((query,))
+            if len(embedded.vectors) != 1:
+                raise RetrievalExecutionError(
+                    ErrorCode.EMBEDDING_RESPONSE_INVALID,
+                    diagnostic={"check": "cross_modal_query_cardinality"},
+                )
+            vector = embedded.vectors[0]
+            validate_embedding_vector(vector, provider.embedding_space)
+            return vector
+        except RetrievalExecutionError:
+            raise
+        except IndexingExecutionError as error:
+            raise RetrievalExecutionError(
+                error.code, diagnostic=error.diagnostic
+            ) from error
+        except Exception as error:
+            raise RetrievalExecutionError(
+                ErrorCode.EMBEDDING_PROVIDER_UNAVAILABLE,
+                diagnostic={"check": "cross_modal_provider_contract"},
+            ) from error
 
     def _normalize(
         self,
@@ -375,6 +541,43 @@ class RetrievalService:
                     diagnostic={"check": "mandatory_scope"},
                 )
 
+    @classmethod
+    def _validate_multimodal_results(
+        cls,
+        plan: RetrievalQueryPlan,
+        text_result: VectorSearchResult,
+        cross_plan: RetrievalQueryPlan,
+        cross_result: VectorSearchResult,
+    ) -> None:
+        cls._validate_scope(plan, text_result)
+        cls._validate_scope(cross_plan, cross_result)
+        if (
+            cross_result.resolved_active_revision_id
+            != text_result.resolved_active_revision_id
+        ):
+            raise RetrievalExecutionError(
+                ErrorCode.INTERNAL_SERVER_ERROR,
+                diagnostic={"check": "multimodal_revision_snapshot"},
+            )
+
+    @staticmethod
+    def _validate_relations(
+        plan: RetrievalQueryPlan,
+        result: VectorSearchResult,
+        relations: tuple[IndexChunkAssetRelationSnapshot, ...],
+    ) -> None:
+        for relation in relations:
+            if (
+                relation.workspace_id != plan.workspace_id
+                or relation.kb_id != plan.knowledge_base_id
+                or relation.index_revision_id
+                != result.resolved_active_revision_id
+            ):
+                raise RetrievalExecutionError(
+                    ErrorCode.INTERNAL_SERVER_ERROR,
+                    diagnostic={"check": "relation_hydration_scope"},
+                )
+
     @staticmethod
     def _evidence_from_reranked(rank: int, item: RerankedHit) -> Evidence:
         hit = item.hit
@@ -413,3 +616,24 @@ class RetrievalService:
             width=hit.asset_width,
             height=hit.asset_height,
         )
+
+    @staticmethod
+    def _relation_asset(
+        relation: IndexChunkAssetRelationSnapshot,
+    ) -> EvidenceAsset:
+        return EvidenceAsset(
+            id=relation.asset_id,
+            media_type=relation.asset_media_type,
+            checksum_sha256=relation.asset_checksum_sha256,
+            content_url=f"/api/v1/index-assets/{relation.asset_id}/content",
+            width=relation.asset_width,
+            height=relation.asset_height,
+        )
+
+
+def _minimum_rank(left: int | None, right: int | None) -> int | None:
+    if left is None:
+        return right
+    if right is None:
+        return left
+    return min(left, right)

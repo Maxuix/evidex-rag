@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import unittest
 from dataclasses import replace
 from uuid import UUID
@@ -15,8 +16,10 @@ from rag_kb.auth import (
 )
 from rag_kb.domain import (
     EmbeddingSpaceDefinition,
+    EmbeddingBatch,
     ErrorCode,
     EvidenceScoreKind,
+    IndexChunkAssetRelationSnapshot,
     RetrievalExecutionError,
     RetrievalQueryPlan,
     RetrievalRequest,
@@ -34,6 +37,8 @@ KB_ID = UUID("01900000-0000-7000-8000-000000000803")
 REVISION_ID = UUID("01900000-0000-7000-8000-000000000804")
 CHUNK_1 = UUID("01900000-0000-7000-8000-000000000811")
 CHUNK_2 = UUID("01900000-0000-7000-8000-000000000812")
+VISUAL_1 = UUID("01900000-0000-7000-8000-000000000815")
+ASSET_1 = UUID("01900000-0000-7000-8000-000000000816")
 
 
 class RetrievalContractTests(unittest.TestCase):
@@ -311,6 +316,96 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(failure.exception.code, ErrorCode.EMBEDDING_RESPONSE_INVALID)
         self.assertEqual(store.plans, [])
 
+    async def test_composite_retrieval_runs_lanes_in_parallel_and_hydrates_strong_visual(
+        self,
+    ) -> None:
+        gates = _ParallelGates()
+        text_hit = _hit(CHUNK_1, distance=0.20)
+        visual_hit = replace(
+            _hit(VISUAL_1, distance=0.90),
+            text="",
+            modality="image",
+            representation_kind="native_image",
+            index_asset_id=ASSET_1,
+        )
+        store = _MultimodalStore(
+            VectorSearchResult(REVISION_ID, (text_hit,)),
+            VectorSearchResult(REVISION_ID, (visual_hit,), space_role="cross_modal_retrieval"),
+            gates,
+        )
+        service = RetrievalService(
+            SingleWorkspaceAccessPolicy(WORKSPACE),
+            _ParallelTextProvider(gates),
+            store,
+            multimodal_embedding_provider=_ParallelMultimodalProvider(gates),
+            relation_hydrator=_Hydrator((_relation("caption_of"),)),
+        )
+
+        pack = await asyncio.wait_for(
+            service.retrieve(
+                _context(),
+                RetrievalRequest(KB_ID, "Figure 1", top_k=3, include_debug=True),
+            ),
+            timeout=1.0,
+        )
+
+        self.assertEqual(len(pack.evidence), 1)
+        self.assertEqual(pack.evidence[0].index_chunk_id, CHUNK_1)
+        self.assertEqual(pack.evidence[0].related_visuals[0].asset.id, ASSET_1)
+        self.assertIsNone(pack.evidence[0].related_visuals[0].cross_modal_rank)
+        assert pack.debug is not None
+        self.assertEqual(pack.debug.hydrated_relation_count, 1)
+
+    async def test_native_image_hit_reverse_expands_to_parent_text(self) -> None:
+        gates = _ParallelGates()
+        visual_hit = replace(
+            _hit(VISUAL_1, distance=0.10),
+            text="",
+            modality="image",
+            representation_kind="native_image",
+            index_asset_id=ASSET_1,
+        )
+        service = RetrievalService(
+            SingleWorkspaceAccessPolicy(WORKSPACE),
+            _ParallelTextProvider(gates),
+            _MultimodalStore(
+                VectorSearchResult(REVISION_ID),
+                VectorSearchResult(REVISION_ID, (visual_hit,), space_role="cross_modal_retrieval"),
+                gates,
+            ),
+            multimodal_embedding_provider=_ParallelMultimodalProvider(gates),
+            relation_hydrator=_Hydrator((_relation("inline_figure"),)),
+        )
+
+        pack = await service.retrieve(
+            _context(), RetrievalRequest(KB_ID, "diagram", top_k=2)
+        )
+
+        self.assertEqual(pack.evidence[0].index_chunk_id, CHUNK_1)
+        self.assertEqual(pack.evidence[0].text, "parent narrative")
+        self.assertEqual(pack.evidence[0].modality, "text")
+        self.assertEqual(pack.evidence[0].cross_modal_rank, 1)
+
+    async def test_weak_relation_does_not_expand_visual(self) -> None:
+        gates = _ParallelGates()
+        service = RetrievalService(
+            SingleWorkspaceAccessPolicy(WORKSPACE),
+            _ParallelTextProvider(gates),
+            _MultimodalStore(
+                VectorSearchResult(REVISION_ID, (_hit(CHUNK_1, distance=0.2),)),
+                VectorSearchResult(REVISION_ID, space_role="cross_modal_retrieval"),
+                gates,
+            ),
+            multimodal_embedding_provider=_ParallelMultimodalProvider(gates),
+            relation_hydrator=_Hydrator((_relation("same_page"),)),
+        )
+
+        pack = await service.retrieve(
+            _context(), RetrievalRequest(KB_ID, "page", top_k=2)
+        )
+
+        self.assertEqual(pack.evidence[0].related_visuals, ())
+
 
 class _Provider:
     max_batch_size = 10
@@ -335,6 +430,72 @@ class _Store:
         self.plans.append(plan)
         self.embeddings.append(query_embedding)
         return self.result
+
+
+class _ParallelGates:
+    def __init__(self) -> None:
+        self.text_embedding_started = asyncio.Event()
+        self.image_embedding_started = asyncio.Event()
+        self.text_search_started = asyncio.Event()
+        self.image_search_started = asyncio.Event()
+
+
+class _ParallelTextProvider(_Provider):
+    def __init__(self, gates: _ParallelGates) -> None:
+        super().__init__()
+        self._gates = gates
+
+    async def embed_query(self, text: str) -> tuple[float, ...]:
+        self.queries.append(text)
+        self._gates.text_embedding_started.set()
+        await self._gates.image_embedding_started.wait()
+        return self.vector
+
+
+class _ParallelMultimodalProvider:
+    max_batch_size = 10
+
+    def __init__(self, gates: _ParallelGates) -> None:
+        self.embedding_space = _embedding_space()
+        self._gates = gates
+
+    async def embed_texts(self, texts: tuple[str, ...]) -> EmbeddingBatch:
+        del texts
+        self._gates.image_embedding_started.set()
+        await self._gates.text_embedding_started.wait()
+        return EmbeddingBatch(((0.6, 0.8),))
+
+
+class _MultimodalStore:
+    def __init__(self, text_result, cross_result, gates: _ParallelGates) -> None:
+        self.text_result = text_result
+        self.cross_result = cross_result
+        self._gates = gates
+
+    async def has_space_role(self, plan, role):
+        del plan, role
+        return True
+
+    async def search(self, plan, query_embedding):
+        del plan, query_embedding
+        self._gates.text_search_started.set()
+        await self._gates.image_search_started.wait()
+        return self.text_result
+
+    async def search_space(self, plan, query_embedding, **kwargs):
+        del plan, query_embedding, kwargs
+        self._gates.image_search_started.set()
+        await self._gates.text_search_started.wait()
+        return self.cross_result
+
+
+class _Hydrator:
+    def __init__(self, relations) -> None:
+        self.relations = relations
+
+    async def hydrate(self, context, **kwargs):
+        del context, kwargs
+        return self.relations
 
 
 class _DebugDeniedPolicy:
@@ -376,6 +537,45 @@ def _embedding_space() -> EmbeddingSpaceDefinition:
         configuration_fingerprint="sha256:configuration",
         tokenizer_fingerprint=None,
         compatibility_fingerprint="sha256:compatibility",
+    )
+
+
+def _relation(relation_type: str) -> IndexChunkAssetRelationSnapshot:
+    return IndexChunkAssetRelationSnapshot(
+        id=UUID("01900000-0000-7000-8000-000000000817"),
+        workspace_id=WORKSPACE,
+        kb_id=KB_ID,
+        indexed_document_version_id=UUID(
+            "01900000-0000-7000-8000-000000000821"
+        ),
+        index_revision_id=REVISION_ID,
+        chunk_id=CHUNK_1,
+        visual_unit_id=VISUAL_1,
+        asset_id=ASSET_1,
+        relation_type=relation_type,
+        confidence_micros=900_000,
+        figure_label="Figure 1",
+        ordinal=0,
+        provenance="parser_structure",
+        evidence_group_key="figure:1",
+        document_id=UUID("01900000-0000-7000-8000-000000000822"),
+        document_version_id=UUID("01900000-0000-7000-8000-000000000823"),
+        chunk_ordinal=0,
+        chunk_content="parent narrative",
+        chunk_modality="text",
+        chunk_source_location={"page": 1},
+        chunk_hierarchy={"section": "test"},
+        chunk_source_metadata={"filename": "safe.pdf"},
+        visual_ordinal=1,
+        visual_content="",
+        visual_modality="image",
+        visual_source_location={"page": 1},
+        visual_hierarchy={"section": "test"},
+        visual_source_metadata={"filename": "safe.pdf"},
+        asset_media_type="image/png",
+        asset_checksum_sha256="a" * 64,
+        asset_width=640,
+        asset_height=480,
     )
 
 

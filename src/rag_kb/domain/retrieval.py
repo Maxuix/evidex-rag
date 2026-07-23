@@ -43,6 +43,27 @@ class EvidenceAsset:
 
 
 @dataclass(frozen=True, slots=True)
+class RelatedVisualEvidence:
+    visual_unit_id: UUID
+    asset: EvidenceAsset
+    relation_type: str
+    relation_confidence_micros: int
+    relation_provenance: str
+    evidence_group_key: str
+    figure_label: str | None = None
+    parent_chunk_id: UUID | None = None
+    text_space_rank: int | None = None
+    cross_modal_rank: int | None = None
+
+    def __post_init__(self) -> None:
+        if not 0 <= self.relation_confidence_micros <= 1_000_000:
+            raise ValueError("relation confidence must be integer micros")
+        for rank in (self.text_space_rank, self.cross_modal_rank):
+            if rank is not None and rank < 1:
+                raise ValueError("lane rank must be positive")
+
+
+@dataclass(frozen=True, slots=True)
 class RetrievalRequest:
     knowledge_base_id: UUID
     query: str
@@ -186,6 +207,7 @@ class Evidence:
     text_space_rank: int | None = None
     cross_modal_rank: int | None = None
     fusion_score: float | None = None
+    related_visuals: tuple[RelatedVisualEvidence, ...] = ()
 
     def __post_init__(self) -> None:
         if self.rank < 1:
@@ -222,6 +244,9 @@ class Evidence:
         object.__setattr__(self, "source_location", dict(self.source_location))
         object.__setattr__(self, "hierarchy", dict(self.hierarchy))
         object.__setattr__(self, "source_metadata", dict(self.source_metadata))
+        asset_ids = [item.asset.id for item in self.related_visuals]
+        if len(asset_ids) != len(set(asset_ids)):
+            raise ValueError("related visual assets must be unique")
 
 
 @dataclass(frozen=True, slots=True)
@@ -229,10 +254,22 @@ class RetrievalDebug:
     query_plan: RetrievalQueryPlan
     resolved_active_revision_id: UUID
     result_count: int
+    text_candidate_count: int | None = None
+    cross_modal_candidate_count: int | None = None
+    hydrated_relation_count: int | None = None
+    evidence_group_count: int | None = None
 
     def __post_init__(self) -> None:
         if self.result_count < 0 or self.result_count > self.query_plan.top_k:
             raise ValueError("debug result_count must be within the plan limit")
+        for value in (
+            self.text_candidate_count,
+            self.cross_modal_candidate_count,
+            self.hydrated_relation_count,
+            self.evidence_group_count,
+        ):
+            if value is not None and value < 0:
+                raise ValueError("debug counts must be non-negative")
 
 
 @dataclass(frozen=True, slots=True)

@@ -304,6 +304,24 @@ class IndexChunkAssetRelationSnapshot:
     ordinal: int
     provenance: str
     evidence_group_key: str
+    document_id: UUID
+    document_version_id: UUID
+    chunk_ordinal: int
+    chunk_content: str
+    chunk_modality: str
+    chunk_source_location: dict[str, Any]
+    chunk_hierarchy: dict[str, Any]
+    chunk_source_metadata: dict[str, Any]
+    visual_ordinal: int
+    visual_content: str
+    visual_modality: str
+    visual_source_location: dict[str, Any]
+    visual_hierarchy: dict[str, Any]
+    visual_source_metadata: dict[str, Any]
+    asset_media_type: str
+    asset_checksum_sha256: str
+    asset_width: int | None
+    asset_height: int | None
 
 
 @dataclass(frozen=True, slots=True)

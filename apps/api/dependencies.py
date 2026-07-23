@@ -33,6 +33,7 @@ from rag_kb.services import (
     ChatSseConnectionLimiter,
     ChatService,
     ChatTerminalWatcher,
+    CompositeEvidenceHydrationService,
     DocumentService,
     FileAdmissionService,
     IndexingJobService,
@@ -233,6 +234,7 @@ def build_api_dependencies(
             cross_modal_weight_micros=(
                 resolved_settings.retrieval.cross_modal_weight_micros
             ),
+            relation_hydrator=CompositeEvidenceHydrationService(unit_of_work),
         ),
         chat_service=chat_service,
         chat_terminal_watcher=ChatTerminalWatcher(

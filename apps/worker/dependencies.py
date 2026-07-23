@@ -51,6 +51,7 @@ from rag_kb.services import (
     ChatFailureSettlementService,
     ChatResultPersistenceStep,
     ChatRunCoordinator,
+    CompositeEvidenceHydrationService,
     CosineEvidenceAssessmentStep,
     FileReconciliationService,
     IndexAssetService,
@@ -264,6 +265,7 @@ def build_worker_dependencies(
         cross_modal_weight_micros=(
             resolved_settings.retrieval.cross_modal_weight_micros
         ),
+        relation_hydrator=CompositeEvidenceHydrationService(unit_of_work),
     )
     evidence_assessor = CosineEvidenceAssessmentStep(
         resolved_settings.retrieval.min_cosine_similarity,
