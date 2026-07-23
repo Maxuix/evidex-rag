@@ -1,7 +1,7 @@
 x-runtime-environment: &runtime-environment
   RAG_KB__DATABASE__RUNTIME_DSN: postgresql+asyncpg://rag_kb_runtime:${RAG_KB_RUNTIME_PASSWORD:-replace-locally}@postgres:5432/rag_kb
   RAG_KB__DATABASE__MIGRATION_DSN: postgresql+asyncpg://rag_kb_migration:not-available@migration-disabled.invalid/rag_kb
-  RAG_KB__SECURITY__ALLOWED_CORS_ORIGINS: '["http://127.0.0.1:${RAG_KB_FRONTEND_PORT:-3000}"]'
+  RAG_KB__SECURITY__ALLOWED_CORS_ORIGINS: '["http://127.0.0.1:${RAG_KB_FRONTEND_PORT:-3000}","http://127.0.0.1:${RAG_KB_DIAGNOSTIC_FRONTEND_PORT:-3001}"]'
   RAG_KB__SECURITY__CORS_ALLOW_CREDENTIALS: "false"
   TIKTOKEN_CACHE_DIR: /var/lib/rag-kb/sources/.tiktoken-cache
 
@@ -11,8 +11,14 @@ x-app-image: &app-image
     context: .
     dockerfile: Dockerfile
 
-x-frontend-image: &frontend-image
-  image: rag-kb-frontend:s06-w01
+x-user-frontend-image: &user-frontend-image
+  image: rag-kb-user-frontend:chat-v1
+  build:
+    context: ./apps/web-chat
+    dockerfile: Dockerfile
+
+x-diagnostic-frontend-image: &diagnostic-frontend-image
+  image: rag-kb-diagnostic-frontend:s06-w01
   build:
     context: ./apps/web-test
     dockerfile: Dockerfile
@@ -116,7 +122,7 @@ services:
     restart: unless-stopped
 
   frontend:
-    <<: *frontend-image
+    <<: *user-frontend-image
     command:
       - python
       - /app/server.py
@@ -124,6 +130,30 @@ services:
       - http://127.0.0.1:${RAG_KB_API_PORT:-8000}/api/v1
     ports:
       - 127.0.0.1:${RAG_KB_FRONTEND_PORT:-3000}:3000
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:3000/health', timeout=2).read()"
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 3s
+    restart: unless-stopped
+
+  frontend-diagnostic:
+    <<: *diagnostic-frontend-image
+    command:
+      - python
+      - /app/server.py
+      - --api-base-url
+      - http://127.0.0.1:${RAG_KB_API_PORT:-8000}/api/v1
+    ports:
+      - 127.0.0.1:${RAG_KB_DIAGNOSTIC_FRONTEND_PORT:-3001}:3000
     depends_on:
       api:
         condition: service_healthy

@@ -152,15 +152,18 @@ printf 'Using %s from %s (mode 600; values are not printed).\n' "$credential_sou
 run_compose "Starting PostgreSQL..." up -d --wait postgres
 run_compose "Preparing local source storage..." up storage-init
 run_compose "Applying database migrations..." --profile tools run --rm migrate
-run_compose "Starting API, Worker, and frontend..." up -d --wait api worker frontend
+run_compose "Starting API, Worker, and frontends..." up -d --wait api worker frontend frontend-diagnostic
 
 compose ps
 
-api_port=$(state_value RAG_KB_API_PORT)
-frontend_port=$(state_value RAG_KB_FRONTEND_PORT)
+api_port=${RAG_KB_API_PORT:-$(state_value RAG_KB_API_PORT)}
+frontend_port=${RAG_KB_FRONTEND_PORT:-$(state_value RAG_KB_FRONTEND_PORT)}
+diagnostic_frontend_port=${RAG_KB_DIAGNOSTIC_FRONTEND_PORT:-$(state_value RAG_KB_DIAGNOSTIC_FRONTEND_PORT)}
 [ -n "$api_port" ] || api_port=8000
 [ -n "$frontend_port" ] || frontend_port=3000
+[ -n "$diagnostic_frontend_port" ] || diagnostic_frontend_port=3001
 
 printf '\nRAG KB is ready.\n'
-printf 'Frontend: http://127.0.0.1:%s\n' "$frontend_port"
+printf 'User Chat: http://127.0.0.1:%s\n' "$frontend_port"
+printf 'Diagnostic UI: http://127.0.0.1:%s\n' "$diagnostic_frontend_port"
 printf 'API docs: http://127.0.0.1:%s/api/v1/docs\n' "$api_port"

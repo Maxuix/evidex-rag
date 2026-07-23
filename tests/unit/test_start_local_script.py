@@ -45,6 +45,27 @@ class StartLocalScriptTests(unittest.TestCase):
             DOCKERFILE.read_text(encoding="utf-8"),
         )
 
+    def test_compose_runs_user_and_diagnostic_frontends_on_separate_ports(self) -> None:
+        configuration = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
+
+        user_frontend = configuration["services"]["frontend"]
+        diagnostic_frontend = configuration["services"]["frontend-diagnostic"]
+        self.assertEqual(
+            user_frontend["ports"],
+            ["127.0.0.1:${RAG_KB_FRONTEND_PORT:-3000}:3000"],
+        )
+        self.assertEqual(
+            diagnostic_frontend["ports"],
+            [
+                "127.0.0.1:${RAG_KB_DIAGNOSTIC_FRONTEND_PORT:-3001}:3000",
+            ],
+        )
+        origins = configuration["x-runtime-environment"][
+            "RAG_KB__SECURITY__ALLOWED_CORS_ORIGINS"
+        ]
+        self.assertIn("${RAG_KB_FRONTEND_PORT:-3000}", origins)
+        self.assertIn("${RAG_KB_DIAGNOSTIC_FRONTEND_PORT:-3001}", origins)
+
     def _run(
         self,
         directory: Path,
@@ -141,8 +162,14 @@ class StartLocalScriptTests(unittest.TestCase):
                 calls,
             )
             self.assertIn(
-                f"compose --env-file {state_file} up -d --wait api worker frontend",
+                f"compose --env-file {state_file} up -d --wait api worker "
+                "frontend frontend-diagnostic",
                 calls,
+            )
+            self.assertIn("User Chat: http://127.0.0.1:3000", completed.stdout)
+            self.assertIn(
+                "Diagnostic UI: http://127.0.0.1:3001",
+                completed.stdout,
             )
 
     def test_persists_three_shell_credentials_and_reuses_them(self) -> None:

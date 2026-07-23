@@ -13,11 +13,13 @@ Configure the model endpoints in `.env` once, then run:
 
 Open:
 
-- Frontend: <http://127.0.0.1:3000>
+- User Chat: <http://127.0.0.1:3000>
+- Diagnostic UI: <http://127.0.0.1:3001>
 - API docs: <http://127.0.0.1:8000/api/v1/docs>
 
 The starter manages the local database password in ignored `.env.local`, runs
-migrations, starts PostgreSQL, API, Worker, and frontend, and waits for health.
+migrations, starts PostgreSQL, API, Worker, and both frontends, and waits for
+health.
 
 Chat model integration defaults to LangChain and the fixed evidence-only chat
 workflow defaults to a checkpoint-free LangGraph `StateGraph`. PostgreSQL
