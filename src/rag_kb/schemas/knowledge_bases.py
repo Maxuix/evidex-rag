@@ -41,7 +41,11 @@ class KnowledgeBaseParsing(PublicSchema):
 
 class KnowledgeBaseParsingResponse(PublicSchema):
     preset: ParsingPreset
-    profile: Literal["unstructured_local_v1", "unstructured_multimodal_local_v1"]
+    profile: Literal[
+        "unstructured_local_v1",
+        "unstructured_multimodal_local_v1",
+        "unstructured_multimodal_local_v2",
+    ]
 
 
 class KnowledgeBaseChunkingResponse(PublicSchema):

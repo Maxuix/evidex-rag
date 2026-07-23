@@ -26,7 +26,7 @@ UNSTRUCTURED_PARSER_CONFIG = {
     "supported_extensions": [".txt", ".md", ".pdf", ".docx"],
 }
 
-MULTIMODAL_PARSER_CONFIG = {
+LEGACY_MULTIMODAL_PARSER_CONFIG_V1 = {
     "profile": "unstructured_multimodal_local_v1",
     "integration": "unstructured",
     "engine_version": "0.24.1",
@@ -39,19 +39,42 @@ MULTIMODAL_PARSER_CONFIG = {
     "supported_extensions": [".txt", ".md", ".pdf", ".docx"],
 }
 
+MULTIMODAL_PARSER_CONFIG = {
+    **LEGACY_MULTIMODAL_PARSER_CONFIG_V1,
+    "profile": "unstructured_multimodal_local_v2",
+    "docx_picture_partitioner": "bounded_ooxml_relationship_v2",
+    "composite_assembly": "deterministic_chunk_asset_relations_v2",
+}
+
 MULTIMODAL_ENRICHMENT_CONFIG = {
-    "profile": "bounded_visual_enrichment_v1",
+    "profile": "composite_visual_enrichment_v2",
     "ocr": "local_unstructured_ocr_v1",
-    "caption": "optional_provider_caption_v1",
+    "author_caption": "bounded_author_caption_v2",
+    "figure_reference": "deterministic_figure_reference_v2",
+    "relation_builder": "deterministic_chunk_asset_relations_v2",
+    "visual_filter": "bounded_visual_disposition_v2",
     "table_normalization": "bounded_table_text_html_v1",
 }
 
 MULTIMODAL_REPRESENTATION_CONFIG = {
-    "profile": "multimodal_representations_v1",
+    "profile": "composite_multimodal_representations_v2",
     "embedding": "tongyi_vision_flash_20260306_independent_768_v1",
+    "embedding_text": {
+        "profile": "composite_embedding_text_v2",
+        "sections": ["body", "figure_label", "author_caption", "ocr", "table"],
+        "separator": "\\n",
+        "unicode": "NFC",
+        "max_tokens": 1200,
+        "max_attachment_tokens": 256,
+    },
     "text": {"required": ["text"]},
-    "image": {"required": ["native_image"], "optional": ["caption_text", "ocr_text"]},
+    "image": {"required": ["native_image"], "optional": []},
     "table": {"required": ["table_text"], "optional": ["table_image"]},
+    "relations": {
+        "profile": "deterministic_chunk_asset_relations_v2",
+        "max_per_chunk": 32,
+        "max_total": 50000,
+    },
 }
 
 UNSTRUCTURED_CHUNKING_CONFIG = {
@@ -158,6 +181,8 @@ def parsing_preset(parser_config: dict) -> ParsingPreset:
     if parser_config == UNSTRUCTURED_PARSER_CONFIG:
         return ParsingPreset.TEXT_LOCAL_V1
     if parser_config == MULTIMODAL_PARSER_CONFIG:
+        return ParsingPreset.MULTIMODAL_LOCAL_V1
+    if parser_config == LEGACY_MULTIMODAL_PARSER_CONFIG_V1:
         return ParsingPreset.MULTIMODAL_LOCAL_V1
     raise ValueError("unknown parser profile")
 

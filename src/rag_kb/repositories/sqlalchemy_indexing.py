@@ -1593,6 +1593,7 @@ class SqlAlchemyIndexingRepository:
                     IndexChunkRow.id.label("chunk_id"),
                     IndexChunkRow.unit_key,
                     IndexChunkRow.index_asset_id,
+                    IndexChunkRow.embedding_text_hash,
                 )
                 .where(IndexChunkRow.indexed_document_version_id == target.id)
                 .order_by(IndexChunkRow.ordinal)
@@ -1659,6 +1660,14 @@ class SqlAlchemyIndexingRepository:
             ).all()
             asset_ids = {item.id for item in asset_rows}
             asset_ids_by_key = {item.asset_key: item.id for item in asset_rows}
+            relation_rows = (
+                await self._session.execute(
+                    select(IndexChunkAssetRelationRow).where(
+                        IndexChunkAssetRelationRow.indexed_document_version_id
+                        == target.id
+                    )
+                )
+            ).scalars().all()
             planned_units = {
                 item.get("unit_id"): item for item in manifest.unit_plan
             }
@@ -1682,6 +1691,37 @@ class SqlAlchemyIndexingRepository:
                 == tuple(range(expected_chunks))
                 and len(planned_units) == expected_chunks
             )
+            if manifest.relation_plan is not None:
+                planned_relations = {
+                    item.get("relation_id"): item
+                    for item in manifest.relation_plan
+                }
+                valid = valid and (
+                    manifest.relation_count == len(relation_rows)
+                    and manifest.relation_count == len(manifest.relation_plan)
+                    and len(planned_relations) == len(relation_rows)
+                    and all(
+                        (
+                            planned := planned_relations.get(str(record.id))
+                        )
+                        is not None
+                        and planned.get("chunk_id") == str(record.chunk_id)
+                        and planned.get("visual_unit_id")
+                        == str(record.visual_unit_id)
+                        and planned.get("asset_id") == str(record.asset_id)
+                        and planned.get("relation_type") == record.relation_type
+                        and planned.get("confidence_micros")
+                        == record.confidence_micros
+                        and planned.get("figure_label") == record.figure_label
+                        and planned.get("ordinal") == record.ordinal
+                        and planned.get("provenance") == record.provenance
+                        and planned.get("evidence_group_key")
+                        == record.evidence_group_key
+                        for record in relation_rows
+                    )
+                )
+            elif relation_rows:
+                valid = False
             dimension_by_space = {
                 role_spaces[role]: definition.dimension
                 for role, definition in role_definitions.items()
@@ -1700,6 +1740,8 @@ class SqlAlchemyIndexingRepository:
                     planned is None
                     or planned.get("unit_key") != record.unit_key
                     or planned.get("ordinal") != record.ordinal
+                    or planned.get("embedding_text_hash")
+                    != record.embedding_text_hash
                     or (
                         planned.get("asset_key") is not None
                         and record.index_asset_id

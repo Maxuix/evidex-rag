@@ -12,7 +12,6 @@ from rag_kb.adapters.parser import (
 from rag_kb.adapters.model_api import (
     ChatModelAdapter,
     EmbeddingModelAdapter,
-    ImageDescriptionAdapter,
     LangChainChatModelAdapter,
     LangChainEmbeddingModelAdapter,
     MultimodalEmbeddingAdapter,
@@ -24,7 +23,6 @@ __all__ = [
     "DocumentProcessor",
     "ChatModelAdapter",
     "EmbeddingModelAdapter",
-    "ImageDescriptionAdapter",
     "FixedPgVectorSpace",
     "LangChainChatModelAdapter",
     "LangChainEmbeddingModelAdapter",

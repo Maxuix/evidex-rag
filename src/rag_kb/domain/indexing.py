@@ -197,6 +197,8 @@ class EvidenceUnitDraft:
     hierarchy: dict[str, Any]
     processing_metadata: dict[str, Any]
     required_representations: tuple[str, ...]
+    embedding_text: str | None = None
+    embedding_text_hash: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -314,21 +316,6 @@ class ImageEmbeddingInput:
     content: bytes
     media_type: str
     content_sha256: str
-
-
-@dataclass(frozen=True, slots=True)
-class ImageDescriptionInput:
-    content: bytes
-    media_type: str
-    content_sha256: str
-    context: str = ""
-
-
-@dataclass(frozen=True, slots=True)
-class ImageDescriptionResult:
-    caption: str
-    ocr_text: str = ""
-    model: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

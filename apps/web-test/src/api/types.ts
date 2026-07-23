@@ -44,7 +44,7 @@ export interface KnowledgeBase {
   embedding_space_id: UUID;
   parsing: {
     preset: ParsingPreset;
-    profile: "unstructured_local_v1" | "unstructured_multimodal_local_v1";
+    profile: "unstructured_local_v1" | "unstructured_multimodal_local_v1" | "unstructured_multimodal_local_v2";
   };
   chunking: {
     preset: ChunkingPreset | "legacy_incompatible";

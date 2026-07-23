@@ -52,9 +52,18 @@ def assemble_composite_evidence(
 
     resolved_limits = limits or ParserLimits()
     units = _assemble_multimodal_units(parsed, resolved_limits)
-    units = _with_stable_evidence_groups(units)
-    relations = _assemble_relations(units, resolved_limits)
-    return CompositeEvidenceDraft(units=units, relations=relations)
+    return relate_composite_units(units, resolved_limits)
+
+
+def relate_composite_units(
+    units: tuple[EvidenceUnitDraft, ...], limits: ParserLimits | None = None
+) -> CompositeEvidenceDraft:
+    """Normalize groups and derive relations after structural or semantic boundaries."""
+
+    resolved_limits = limits or ParserLimits()
+    enriched = _with_stable_evidence_groups(units)
+    relations = _assemble_relations(enriched, resolved_limits)
+    return CompositeEvidenceDraft(units=enriched, relations=relations)
 
 
 def _assemble_multimodal_units(

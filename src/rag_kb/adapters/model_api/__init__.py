@@ -3,7 +3,6 @@
 from rag_kb.adapters.model_api.contracts import (
     ChatModelAdapter,
     EmbeddingModelAdapter,
-    ImageDescriptionAdapter,
     MultimodalEmbeddingAdapter,
 )
 from rag_kb.adapters.model_api.langchain_chat import LangChainChatModelAdapter
@@ -15,7 +14,6 @@ from rag_kb.adapters.model_api.multimodal_embeddings import TongyiVisionEmbeddin
 __all__ = [
     "ChatModelAdapter",
     "EmbeddingModelAdapter",
-    "ImageDescriptionAdapter",
     "LangChainChatModelAdapter",
     "LangChainEmbeddingModelAdapter",
     "MultimodalEmbeddingAdapter",

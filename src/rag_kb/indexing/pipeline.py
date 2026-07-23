@@ -20,9 +20,11 @@ from rag_kb.domain import (
     ChunkingStrategyKind,
     ErrorCode,
     ContentModality,
+    CompositeEvidenceDraft,
     EvidenceUnitDraft,
     FileStoreError,
     IndexChunkWrite,
+    IndexChunkAssetRelationWrite,
     IndexArtifactManifest,
     IndexAssetIdentity,
     IndexAssetWrite,
@@ -43,6 +45,7 @@ from rag_kb.domain import (
     ImageEmbeddingInput,
     stable_asset_id,
     stable_chunk_id,
+    stable_relation_id,
     stable_vector_id,
     validate_embedding_vector,
 )
@@ -54,10 +57,12 @@ from rag_kb.document_processing import (
     count_chunk_tokens,
     profile_fingerprint,
     resolve,
-    assemble_multimodal_units,
+    assemble_composite_evidence,
     asset_manifest_hash,
     element_sequence_hash,
     semantic_text_elements,
+    relate_composite_units,
+    with_composite_embedding_text,
 )
 from rag_kb.document_processing.semantic_assembly import assemble_semantic_document
 from rag_kb.document_processing.semantic_boundaries import (
@@ -377,7 +382,9 @@ class IndexingPipeline:
                 diagnostic={"check": "multimodal_partition_contract"},
             ) from error
 
-        units = await self._multimodal_units(command, target, parsed, strategy)
+        assembly = await self._multimodal_units(command, target, parsed, strategy)
+        units = assembly.units
+        relations = assembly.relations
         if not units:
             raise IndexingExecutionError(
                 ErrorCode.PARSER_OUTPUT_INVALID,
@@ -395,7 +402,7 @@ class IndexingPipeline:
             )
         referenced_asset_keys = {
             unit.asset_key for unit in units if unit.asset_key is not None
-        }
+        } | {relation.asset_key for relation in relations}
         parsed = replace(
             parsed,
             assets=tuple(
@@ -447,6 +454,27 @@ class IndexingPipeline:
         chunks = tuple(
             self._unit_write(target, unit, fingerprint, asset_ids) for unit in units
         )
+        chunk_ids = {unit.unit_key: chunk.id for unit, chunk in zip(units, chunks, strict=True)}
+        relation_writes = tuple(
+            IndexChunkAssetRelationWrite(
+                id=stable_relation_id(
+                    target.indexed_document_version_id,
+                    chunk_ids[relation.chunk_unit_key],
+                    asset_ids[relation.asset_key],
+                    relation.relation_type.value,
+                ),
+                chunk_id=chunk_ids[relation.chunk_unit_key],
+                visual_unit_id=chunk_ids[relation.visual_unit_key],
+                asset_id=asset_ids[relation.asset_key],
+                relation_type=relation.relation_type.value,
+                confidence_micros=relation.confidence_micros,
+                figure_label=relation.figure_label,
+                ordinal=relation.ordinal,
+                provenance=relation.provenance.value,
+                evidence_group_key=relation.evidence_group_key,
+            )
+            for relation in relations
+        )
         planned = self._representation_plan(
             chunks, units, target.embedding_space_id, cross_space_id, parsed
         )
@@ -459,7 +487,16 @@ class IndexingPipeline:
                     "limit": self._parser_limits.max_representations,
                 },
             )
-        proposed = self._manifest(target, parsed, units, chunks, planned, fingerprint)
+        proposed = self._manifest(
+            target,
+            parsed,
+            units,
+            chunks,
+            planned,
+            relations,
+            relation_writes,
+            fingerprint,
+        )
         winner = await self._transaction(
             lambda uow: uow.indexing.create_or_get_artifact_manifest(
                 command, proposed
@@ -475,6 +512,11 @@ class IndexingPipeline:
         await self._embed_multimodal_representations(
             command, target, parsed, units, chunks, planned, cross_space
         )
+        changed = await self._transaction(
+            lambda uow: uow.indexing.upsert_relations(command, relation_writes)
+        )
+        if not changed:
+            raise IndexingCancelled
         await self._set_phase(command, IndexingPhase.VALIDATING)
         await self._complete(command, expected_chunks=len(chunks))
         return len(chunks)
@@ -485,9 +527,9 @@ class IndexingPipeline:
         target: IndexingTarget,
         parsed,
         strategy: ChunkingStrategyKind,
-    ) -> tuple[EvidenceUnitDraft, ...]:
+    ) -> CompositeEvidenceDraft:
         try:
-            assembled = assemble_multimodal_units(parsed, self._parser_limits)
+            assembled = assemble_composite_evidence(parsed, self._parser_limits)
         except ParserExecutionError as error:
             raise IndexingExecutionError(
                 error.code,
@@ -495,18 +537,33 @@ class IndexingPipeline:
                 diagnostic=error.diagnostic,
             ) from error
         if strategy is ChunkingStrategyKind.STRUCTURAL:
-            return assembled
+            return replace(
+                assembled,
+                units=with_composite_embedding_text(
+                    assembled.units, assembled.relations
+                ),
+            )
         body = semantic_text_elements(parsed)
         media = tuple(
             unit
-            for unit in assembled
+            for unit in assembled.units
             if unit.modality is not ContentModality.TEXT
             or unit.processing_metadata.get("representation_kind")
-            in {"caption_text", "ocr_text"}
+            == "ocr_text"
         )
         if not body.elements:
-            return tuple(
-                self._reordinal(unit, ordinal) for ordinal, unit in enumerate(media)
+            related = relate_composite_units(
+                tuple(
+                    self._reordinal(unit, ordinal)
+                    for ordinal, unit in enumerate(media)
+                ),
+                self._parser_limits,
+            )
+            return replace(
+                related,
+                units=with_composite_embedding_text(
+                    related.units, related.relations
+                ),
             )
         processed = await self._process_semantic_parsed(command, target, body)
         text_units = tuple(
@@ -536,8 +593,19 @@ class IndexingPipeline:
                 item.unit_key,
             ),
         )
-        return tuple(
-            self._reordinal(unit, ordinal) for ordinal, unit in enumerate(combined)
+        related = relate_composite_units(
+            tuple(
+                self._reordinal(unit, ordinal)
+                for ordinal, unit in enumerate(combined)
+            ),
+            self._parser_limits,
+        )
+        related = self._carry_semantic_relations(assembled, related, text_units)
+        return replace(
+            related,
+            units=with_composite_embedding_text(
+                related.units, related.relations
+            ),
         )
 
     async def _process_semantic_parsed(
@@ -598,7 +666,89 @@ class IndexingPipeline:
             hierarchy=unit.hierarchy,
             processing_metadata=unit.processing_metadata,
             required_representations=unit.required_representations,
+            embedding_text=unit.embedding_text,
+            embedding_text_hash=unit.embedding_text_hash,
         )
+
+    def _carry_semantic_relations(
+        self,
+        structural: CompositeEvidenceDraft,
+        semantic: CompositeEvidenceDraft,
+        semantic_text_units: tuple[EvidenceUnitDraft, ...],
+    ) -> CompositeEvidenceDraft:
+        """Map parser-authoritative strong edges after body-only semantic chunking."""
+
+        current_keys = {unit.unit_key for unit in semantic.units}
+        structural_units = {unit.unit_key: unit for unit in structural.units}
+        candidates = list(semantic.relations)
+        for relation in structural.relations:
+            if relation.chunk_unit_key in current_keys:
+                candidates.append(relation)
+                continue
+            original = structural_units.get(relation.chunk_unit_key)
+            if original is None:
+                continue
+            matches = tuple(
+                unit
+                for unit in semantic_text_units
+                if _text_regions_overlap(original.content, unit.content)
+                or _locations_overlap(
+                    original.source_location, unit.source_location
+                )
+            )
+            if not matches and len(semantic_text_units) == 1:
+                matches = semantic_text_units
+            for unit in matches:
+                candidates.append(
+                    replace(relation, chunk_unit_key=unit.unit_key)
+                )
+
+        candidates.sort(
+            key=lambda item: (
+                next(
+                    unit.ordinal
+                    for unit in semantic.units
+                    if unit.unit_key == item.chunk_unit_key
+                ),
+                item.relation_type.value,
+                item.visual_unit_key,
+                item.asset_key,
+            )
+        )
+        relations = []
+        seen = set()
+        per_chunk: dict[str, int] = {}
+        for candidate in candidates:
+            identity = (
+                candidate.chunk_unit_key,
+                candidate.asset_key,
+                candidate.relation_type,
+            )
+            if identity in seen:
+                continue
+            observed = per_chunk.get(candidate.chunk_unit_key, 0) + 1
+            if observed > self._parser_limits.max_relations_per_chunk:
+                raise IndexingExecutionError(
+                    ErrorCode.PARSER_RESOURCE_LIMIT,
+                    phase=IndexingPhase.ENRICHMENT,
+                    diagnostic={
+                        "limit_name": "max_relations_per_chunk",
+                        "limit": self._parser_limits.max_relations_per_chunk,
+                    },
+                )
+            seen.add(identity)
+            per_chunk[candidate.chunk_unit_key] = observed
+            relations.append(replace(candidate, ordinal=len(relations)))
+        if len(relations) > self._parser_limits.max_relations:
+            raise IndexingExecutionError(
+                ErrorCode.PARSER_RESOURCE_LIMIT,
+                phase=IndexingPhase.ENRICHMENT,
+                diagnostic={
+                    "limit_name": "max_relations",
+                    "limit": self._parser_limits.max_relations,
+                },
+            )
+        return replace(semantic, relations=tuple(relations))
 
     @staticmethod
     def _unit_write(target, unit, fingerprint, asset_ids) -> IndexChunkWrite:
@@ -629,6 +779,8 @@ class IndexingPipeline:
                 "checksum_sha256": target.checksum_sha256,
                 "processing": unit.processing_metadata,
             },
+            embedding_text=unit.embedding_text,
+            embedding_text_hash=unit.embedding_text_hash,
         )
 
     @staticmethod
@@ -650,17 +802,6 @@ class IndexingPipeline:
                         "asset_key": unit.asset_key,
                     }
                 )
-                if unit.content:
-                    plan.append(
-                        {
-                            "unit_id": str(chunk.id),
-                            "unit_key": unit.unit_key,
-                            "space_role": "text_retrieval",
-                            "space_id": str(text_space_id),
-                            "representation_kind": "caption_text",
-                            "required": False,
-                        }
-                    )
             else:
                 kind = (
                     "table_text"
@@ -692,7 +833,16 @@ class IndexingPipeline:
         return tuple(plan)
 
     @staticmethod
-    def _manifest(target, parsed, units, chunks, planned, fingerprint):
+    def _manifest(
+        target,
+        parsed,
+        units,
+        chunks,
+        planned,
+        relations,
+        relation_writes,
+        fingerprint,
+    ):
         unit_plan = tuple(
             {
                 "unit_id": str(chunk.id),
@@ -702,9 +852,33 @@ class IndexingPipeline:
                 "asset_key": unit.asset_key,
                 "evidence_group_key": unit.evidence_group_key,
                 "related_unit_keys": list(unit.related_unit_keys),
+                "embedding_text_hash": unit.embedding_text_hash,
             }
             for chunk, unit in zip(chunks, units, strict=True)
         )
+        relation_plan = tuple(
+            {
+                "relation_id": str(write.id),
+                "chunk_id": str(write.chunk_id),
+                "visual_unit_id": str(write.visual_unit_id),
+                "asset_id": str(write.asset_id),
+                "relation_type": relation.relation_type.value,
+                "confidence_micros": relation.confidence_micros,
+                "figure_label": relation.figure_label,
+                "ordinal": relation.ordinal,
+                "provenance": relation.provenance.value,
+                "evidence_group_key": relation.evidence_group_key,
+            }
+            for relation, write in zip(relations, relation_writes, strict=True)
+        )
+        relation_manifest_hash = hashlib.sha256(
+            json.dumps(
+                relation_plan,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode()
+        ).hexdigest()
         payload = {
             "source_checksum_sha256": target.checksum_sha256,
             "profile_fingerprint": fingerprint,
@@ -712,6 +886,8 @@ class IndexingPipeline:
             "asset_manifest_hash": asset_manifest_hash(parsed.assets),
             "unit_plan": unit_plan,
             "representation_matrix": planned,
+            "relation_plan": relation_plan,
+            "relation_manifest_hash": relation_manifest_hash,
         }
         manifest_hash = hashlib.sha256(
             json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
@@ -721,6 +897,7 @@ class IndexingPipeline:
             unit_count=len(units),
             asset_count=len(parsed.assets),
             representation_count=len(planned),
+            relation_count=len(relation_plan),
             manifest_hash=manifest_hash,
             **payload,
         )
@@ -738,10 +915,13 @@ class IndexingPipeline:
         for offset in range(0, len(text_items), text_batch_size):
             batch = text_items[offset : offset + text_batch_size]
             usable = tuple(
-                item for item in batch if units_by_id[item["unit_id"]].content
+                item
+                for item in batch
+                if units_by_id[item["unit_id"]].embedding_text
             )
             if any(
-                item["required"] and not units_by_id[item["unit_id"]].content
+                item["required"]
+                and not units_by_id[item["unit_id"]].embedding_text
                 for item in batch
             ):
                 raise IndexingExecutionError(
@@ -754,7 +934,10 @@ class IndexingPipeline:
             await self._set_phase(command, IndexingPhase.EMBEDDING)
             try:
                 embedded = await self._embedding_provider.embed_documents(
-                    tuple(units_by_id[item["unit_id"]].content for item in usable)
+                    tuple(
+                        units_by_id[item["unit_id"]].embedding_text or ""
+                        for item in usable
+                    )
                 )
             except IndexingExecutionError:
                 if any(item["required"] for item in usable):
@@ -1074,3 +1257,35 @@ def _unit_page(unit: EvidenceUnitDraft) -> int:
     if isinstance(pages, list) and pages and isinstance(pages[0], int):
         return pages[0]
     return 2**31 - 1
+
+
+def _text_regions_overlap(left: str, right: str) -> bool:
+    left_normalized = " ".join(left.split()).casefold()
+    right_normalized = " ".join(right.split()).casefold()
+    if not left_normalized or not right_normalized:
+        return False
+    shorter, longer = sorted((left_normalized, right_normalized), key=len)
+    probe = shorter[: min(len(shorter), 96)]
+    return len(probe) >= 16 and probe in longer
+
+
+def _locations_overlap(left: dict, right: dict) -> bool:
+    def pages(value: dict) -> set[int]:
+        result = {
+            item
+            for key in ("page_number", "page_start", "page_end")
+            if isinstance((item := value.get(key)), int)
+            and not isinstance(item, bool)
+        }
+        listed = value.get("page_numbers")
+        if isinstance(listed, list):
+            result.update(
+                item
+                for item in listed
+                if isinstance(item, int) and not isinstance(item, bool)
+            )
+        return result
+
+    left_pages = pages(left)
+    right_pages = pages(right)
+    return bool(left_pages and right_pages and left_pages.intersection(right_pages))

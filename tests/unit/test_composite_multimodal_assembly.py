@@ -7,6 +7,7 @@ from dataclasses import replace
 from rag_kb.document_processing import (
     assemble_composite_evidence,
     normalize_figure_labels,
+    with_composite_embedding_text,
 )
 from rag_kb.domain import (
     ChunkAssetRelationType,
@@ -53,6 +54,13 @@ class CompositeMultimodalAssemblyTests(unittest.TestCase):
         self.assertTrue(
             all(item.evidence_group_key for item in first.relations)
         )
+        enriched = with_composite_embedding_text(first.units, first.relations)
+        text_chunks = [item for item in enriched if item.embedding_text is not None]
+        self.assertTrue(
+            any("[author_caption]\nFigure 7: Composite workflow" in item.embedding_text for item in text_chunks)
+        )
+        self.assertTrue(all("[author_caption]" not in item.content for item in text_chunks))
+        self.assertTrue(all(len(item.embedding_text_hash or "") == 64 for item in text_chunks))
 
     def test_relation_expansion_fails_closed_instead_of_truncating(self) -> None:
         with self.assertRaises(ParserExecutionError) as raised:

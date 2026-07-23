@@ -7,8 +7,12 @@ from uuid import UUID, uuid4
 
 from rag_kb.adapters import FixedPgVectorSpace
 from rag_kb.document_processing import (
+    LEGACY_MULTIMODAL_PARSER_CONFIG_V1,
+    MULTIMODAL_ENRICHMENT_CONFIG,
+    MULTIMODAL_REPRESENTATION_CONFIG,
     UNSTRUCTURED_CHUNKING_CONFIG,
     index_profile,
+    public_parsing_descriptor,
     profile_for_preset,
 )
 from rag_kb.domain import (
@@ -70,6 +74,30 @@ class IndexingDomainTests(unittest.TestCase):
             stable_vector_id(space, first), stable_vector_id(space, first)
         )
 
+    def test_multimodal_v2_profile_removes_generated_caption_and_keeps_v1_readable(self) -> None:
+        profile = profile_for_preset(
+            ChunkingPreset.STRUCTURAL_BALANCED_V2, "multimodal_local_v1"
+        )
+
+        self.assertEqual(
+            profile.parser_config["profile"],
+            "unstructured_multimodal_local_v2",
+        )
+        self.assertNotIn("caption", MULTIMODAL_ENRICHMENT_CONFIG)
+        self.assertEqual(
+            MULTIMODAL_REPRESENTATION_CONFIG["image"]["optional"], []
+        )
+        self.assertNotIn(
+            "caption_text", str(MULTIMODAL_REPRESENTATION_CONFIG)
+        )
+        self.assertEqual(
+            public_parsing_descriptor(LEGACY_MULTIMODAL_PARSER_CONFIG_V1),
+            {
+                "preset": "multimodal_local_v1",
+                "profile": "unstructured_multimodal_local_v1",
+            },
+        )
+
     def test_fixed_space_and_output_validation_fail_closed(self) -> None:
         expected = _embedding()
         adapter = FixedPgVectorSpace(expected)
@@ -119,10 +147,27 @@ class IndexingPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(repository.assets), 1)
         self.assertIsNotNone(repository.manifest)
         self.assertEqual(repository.manifest.unit_count, 2)
-        self.assertEqual(repository.manifest.representation_count, 3)
+        self.assertEqual(repository.manifest.representation_count, 2)
+        self.assertEqual(repository.manifest.relation_count, 1)
         self.assertEqual(len(asset_store.writes), 1)
         self.assertEqual(text_provider.calls, 1)
+        self.assertEqual(text_provider.inputs, [("[body]\nbody evidence",)])
         self.assertEqual(visual_provider.image_calls, 1)
+        self.assertNotIn(
+            "caption_text",
+            {
+                item["representation_kind"]
+                for item in repository.manifest.representation_matrix
+            },
+        )
+        text_chunk = next(
+            chunk
+            for chunk in repository.chunks.values()
+            if chunk.modality is ContentModality.TEXT
+        )
+        self.assertEqual(text_chunk.content, "body evidence")
+        self.assertEqual(text_chunk.embedding_text, "[body]\nbody evidence")
+        self.assertEqual(len(repository.relations), 1)
         self.assertEqual(
             {chunk.modality for chunk in repository.chunks.values()},
             {ContentModality.TEXT, ContentModality.IMAGE},
@@ -286,6 +331,7 @@ class _Repository:
         self.plan = None
         self.manifest = None
         self.assets = ()
+        self.relations = ()
 
     async def prepare(self, command):
         self._active()
@@ -354,6 +400,12 @@ class _Repository:
         del command
         self._active()
         self.assets = assets
+        return True
+
+    async def upsert_relations(self, command, relations):
+        del command
+        self._active()
+        self.relations = relations
         return True
 
     async def create_or_get_artifact_manifest(self, command, proposed):
@@ -520,12 +572,14 @@ class _Provider:
         self.embedding_space = _embedding()
         self.max_batch_size = 1
         self.calls = 0
+        self.inputs = []
         self.fail_call = fail_call
 
     async def embed_documents(self, texts):
         if self.factory.active:
             raise AssertionError("provider ran inside transaction")
         self.calls += 1
+        self.inputs.append(texts)
         if self.calls == self.fail_call:
             raise IndexingExecutionError(
                 ErrorCode.EMBEDDING_PROVIDER_UNAVAILABLE,

@@ -9,8 +9,6 @@ from rag_kb.domain import (
     ChatModelResponse,
     EmbeddingBatch,
     EmbeddingSpaceDefinition,
-    ImageDescriptionInput,
-    ImageDescriptionResult,
     ImageEmbeddingInput,
 )
 
@@ -46,10 +44,3 @@ class MultimodalEmbeddingAdapter(Protocol):
     async def embed_images(
         self, images: tuple[ImageEmbeddingInput, ...]
     ) -> EmbeddingBatch: ...
-
-
-@runtime_checkable
-class ImageDescriptionAdapter(Protocol):
-    async def describe(
-        self, image: ImageDescriptionInput
-    ) -> ImageDescriptionResult: ...
