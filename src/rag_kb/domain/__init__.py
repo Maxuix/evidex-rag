@@ -38,6 +38,15 @@ from rag_kb.domain.content import (
     ResourceNotFoundError,
     ResourceStateConflictError,
 )
+from rag_kb.domain.composite import (
+    ChunkAssetRelationDraft,
+    ChunkAssetRelationProvenance,
+    ChunkAssetRelationType,
+    CompositeChunkDraft,
+    VisualEvidenceDecision,
+    VisualEvidenceReason,
+    quantize_score_micros,
+)
 from rag_kb.domain.chunking import (
     ChunkBoundary,
     ChunkBoundaryReason,
@@ -239,6 +248,10 @@ __all__ = [
     "ChunkBoundaryReason",
     "ChunkingPreset",
     "ChunkingStrategyKind",
+    "ChunkAssetRelationDraft",
+    "ChunkAssetRelationProvenance",
+    "ChunkAssetRelationType",
+    "CompositeChunkDraft",
     "ContentModality",
     "AdmittedFile",
     "AdmissionLimits",
@@ -337,6 +350,8 @@ __all__ = [
     "ProcessedDocument",
     "Workspace",
     "ValidatedAnswer",
+    "VisualEvidenceDecision",
+    "VisualEvidenceReason",
     "EvaluationCaseDefinition",
     "EvaluationCaseResult",
     "EvaluationConflictError",
@@ -351,4 +366,5 @@ __all__ = [
     "stable_asset_id",
     "stable_vector_id",
     "validate_embedding_vector",
+    "quantize_score_micros",
 ]
