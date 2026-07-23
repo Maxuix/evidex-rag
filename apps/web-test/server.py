@@ -84,7 +84,7 @@ class ContentSafeHandler(SimpleHTTPRequestHandler):
             "font-src 'self'; "
             "form-action 'self'; "
             "frame-ancestors 'none'; "
-            "img-src 'self' data:; "
+            f"img-src 'self' data: {self.api_origin}; "
             "object-src 'none'; "
             "script-src 'self'; "
             "style-src 'self'",

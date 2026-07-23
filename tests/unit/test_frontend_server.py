@@ -153,7 +153,7 @@ class FrontendServerTests(unittest.TestCase):
             "font-src 'self'; "
             "form-action 'self'; "
             "frame-ancestors 'none'; "
-            "img-src 'self' data:; "
+            f"img-src 'self' data: {API_ORIGIN}; "
             "object-src 'none'; "
             "script-src 'self'; "
             "style-src 'self'",
