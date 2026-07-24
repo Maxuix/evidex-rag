@@ -72,6 +72,15 @@ FixedMaxExtractedCharacters = Annotated[
 FixedMaxMetadataBytes = Annotated[
     Literal[65_536], BeforeValidator(parse_environment_integer)
 ]
+FixedMaxDoclingPages = Annotated[
+    Literal[500], BeforeValidator(parse_environment_integer)
+]
+FixedDoclingTimeoutSeconds = Annotated[
+    Literal[600], BeforeValidator(parse_environment_integer)
+]
+FixedMaxDoclingItems = Annotated[
+    Literal[20_000], BeforeValidator(parse_environment_integer)
+]
 FixedContextTurns = Annotated[Literal[6], BeforeValidator(parse_environment_integer)]
 FixedContextTokens = Annotated[
     Literal[4000], BeforeValidator(parse_environment_integer)
@@ -380,6 +389,14 @@ class FileAdmissionSettings(StrictSettingsModel):
 
 class ParserSettings(StrictSettingsModel):
     profile: Literal["unstructured_local_v1"] = "unstructured_local_v1"
+    docling_artifacts_path: Path = Path("/opt/rag-kb/docling-artifacts")
+    docling_artifact_manifest_path: Path = Path(
+        "/app/config/docling-artifacts-v1.json"
+    )
+    max_file_size: FixedMaxUploadBytes = 10_485_760
+    max_num_pages: FixedMaxDoclingPages = 500
+    document_timeout_seconds: FixedDoclingTimeoutSeconds = 600
+    max_docling_items: FixedMaxDoclingItems = 20_000
     max_chunks: FixedMaxChunks = 20_000
     max_extracted_characters: FixedMaxExtractedCharacters = 5_000_000
     max_metadata_bytes: FixedMaxMetadataBytes = 65_536

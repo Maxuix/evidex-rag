@@ -6,6 +6,7 @@ from rag_kb.adapters.file_store import (
     SourceFileStore,
 )
 from rag_kb.adapters.parser import (
+    DocumentParser,
     DocumentProcessor,
     UnstructuredProcessor,
 )
@@ -21,6 +22,7 @@ from rag_kb.adapters.vector_store import FixedPgVectorSpace, PgVectorStore, Vect
 
 __all__ = [
     "DocumentProcessor",
+    "DocumentParser",
     "ChatModelAdapter",
     "EmbeddingModelAdapter",
     "FixedPgVectorSpace",

@@ -2,9 +2,27 @@
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
-from rag_kb.domain import ParsedDocument, ParserSource, ProcessedDocument
+from rag_kb.domain import (
+    ParsedDocument,
+    ParserSource,
+    ParsingPreset,
+    ProcessedDocument,
+)
+
+if TYPE_CHECKING:
+    from docling_core.types.doc import DoclingDocument
+
+
+@runtime_checkable
+class DocumentParser(Protocol):
+    async def parse(
+        self,
+        source: ParserSource,
+        *,
+        preset: ParsingPreset,
+    ) -> DoclingDocument: ...
 
 
 @runtime_checkable

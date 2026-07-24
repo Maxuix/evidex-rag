@@ -149,6 +149,12 @@ def build_worker_dependencies(
         resolved_settings.file_store.final_path,
     )
     parser_limits = ParserLimits(
+        max_file_size=resolved_settings.parser.max_file_size,
+        max_num_pages=resolved_settings.parser.max_num_pages,
+        document_timeout_seconds=(
+            resolved_settings.parser.document_timeout_seconds
+        ),
+        max_docling_items=resolved_settings.parser.max_docling_items,
         max_chunks=resolved_settings.parser.max_chunks,
         max_extracted_characters=(
             resolved_settings.parser.max_extracted_characters

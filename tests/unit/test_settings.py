@@ -95,6 +95,14 @@ class SettingsTests(unittest.TestCase):
             100 * 1024 * 1024,
         )
         self.assertEqual(settings.parser.profile, "unstructured_local_v1")
+        self.assertEqual(
+            settings.parser.docling_artifacts_path,
+            Path("/opt/rag-kb/docling-artifacts"),
+        )
+        self.assertEqual(settings.parser.max_file_size, 10_485_760)
+        self.assertEqual(settings.parser.max_num_pages, 500)
+        self.assertEqual(settings.parser.document_timeout_seconds, 600)
+        self.assertEqual(settings.parser.max_docling_items, 20_000)
         self.assertEqual(settings.parser.max_chunks, 20_000)
         self.assertEqual(settings.parser.max_extracted_characters, 5_000_000)
         self.assertEqual(settings.parser.max_metadata_bytes, 65_536)
@@ -138,6 +146,20 @@ class SettingsTests(unittest.TestCase):
                     ValidationError
                 ):
                     build_settings(root, session_context=override)
+
+    def test_docling_conversion_limits_are_fixed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for override in (
+                {"max_file_size": 1},
+                {"max_num_pages": 501},
+                {"document_timeout_seconds": 601},
+                {"max_docling_items": 20_001},
+            ):
+                with self.subTest(override=override), self.assertRaises(
+                    ValidationError
+                ):
+                    build_settings(root, parser=override)
 
     def test_maintenance_retention_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

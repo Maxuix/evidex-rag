@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "profile": "docling_native_v1",
+  "docling_version": "2.114.0",
+  "docling_core_version": "2.87.1",
+  "docling_document_version": "1.10.0",
+  "model_revisions": {
+    "docling-project/docling-layout-heron": "8f39ad3c0b4c58e9c2d2c84a38465abf757272d8",
+    "docling-project/docling-models": "fc0f2d45e2218ea24bce5045f58a389aed16dc23",
+    "rapidocr_language_model": "chinese_bilingual",
+    "rapidocr_backend": "onnxruntime"
+  },
+  "artifacts": [
+    {
+      "path": "RapidOcr/onnx/PP-OCRv4/cls/ch_ppocr_mobile_v2.0_cls_mobile.onnx",
+      "size": 585532,
+      "sha256": "e47acedf663230f8863ff1ab0e64dd2d82b838fceb5957146dab185a89d6215c"
+    },
+    {
+      "path": "RapidOcr/onnx/PP-OCRv6/det/PP-OCRv6_det_small.onnx",
+      "size": 9929594,
+      "sha256": "090f04abcd9d9a7498bc4ebf677e4cb9bdce1fe4197ddb7e529f1ef44e1ff94f"
+    },
+    {
+      "path": "RapidOcr/onnx/PP-OCRv6/rec/PP-OCRv6_rec_small.onnx",
+      "size": 21234383,
+      "sha256": "6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884"
+    },
+    {
+      "path": "RapidOcr/resources/fonts/FZYTK.TTF",
+      "size": 3241748,
+      "sha256": "4065a23df6823c8e2b69a0e76d02f02a6470b8774a5e91086609701ad95cc33f"
+    },
+    {
+      "path": "docling-project--docling-layout-heron/config.json",
+      "size": 3268,
+      "sha256": "fdea30805ce2f5666b147fca941dcdd27ad468e27d6ed21902207d3da056a97d"
+    },
+    {
+      "path": "docling-project--docling-layout-heron/model.safetensors",
+      "size": 171658996,
+      "sha256": "00333a43451945aaf89db8ca9c0a17e75d1537c17db60fdb91aa95f4c7929e0c"
+    },
+    {
+      "path": "docling-project--docling-layout-heron/preprocessor_config.json",
+      "size": 444,
+      "sha256": "cd38cd59999e7a95d68e487fbe5132df3d4e5c32a0836add57e6126ba0c4eaf1"
+    },
+    {
+      "path": "docling-project--docling-models/model_artifacts/tableformer/accurate/tableformer_accurate.safetensors",
+      "size": 212758388,
+      "sha256": "2a7d6c924b3cd12fb99a09280ca9c33a89c5d60b93253617d2e088c1a40374d9"
+    },
+    {
+      "path": "docling-project--docling-models/model_artifacts/tableformer/accurate/tm_config.json",
+      "size": 7060,
+      "sha256": "984e122ceb8ccf84d84c9d2882f6f2302a44b4f1e577babd6289892c36f3cffd"
+    }
+  ]
+}

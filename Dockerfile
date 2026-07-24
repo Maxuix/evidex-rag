@@ -21,6 +21,15 @@ RUN apt-get update \
 COPY requirements.lock /app/requirements.lock
 RUN python -m pip install --no-cache-dir --require-hashes -r /app/requirements.lock
 
+COPY config/docling-artifacts-v1.json /app/config/docling-artifacts-v1.json
+COPY tools/prepare_docling_artifacts.py /app/tools/prepare_docling_artifacts.py
+COPY src/rag_kb/adapters/parser/docling/artifacts.py /app/tools/docling_artifacts_verifier.py
+RUN python /app/tools/prepare_docling_artifacts.py \
+        --download \
+        --artifacts-path /opt/rag-kb/docling-artifacts \
+        --manifest /app/config/docling-artifacts-v1.json \
+    && chmod -R a-w /opt/rag-kb/docling-artifacts
+
 ENV HOME=/tmp/rag-kb-home \
     MPLCONFIGDIR=/tmp/rag-kb-home/.config/matplotlib \
     NUMBA_CACHE_DIR=/tmp/rag-kb-home/.cache/numba \
