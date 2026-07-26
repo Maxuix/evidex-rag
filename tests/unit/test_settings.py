@@ -94,7 +94,7 @@ class SettingsTests(unittest.TestCase):
             settings.file_admission.max_expanded_bytes,
             100 * 1024 * 1024,
         )
-        self.assertEqual(settings.parser.profile, "unstructured_local_v1")
+        self.assertEqual(settings.parser.profile, "docling_text_local_v1")
         self.assertEqual(
             settings.parser.docling_artifacts_path,
             Path("/opt/rag-kb/docling-artifacts"),

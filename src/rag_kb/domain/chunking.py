@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from enum import StrEnum
 from uuid import UUID
 
-from rag_kb.domain.parsing import ParsedDocument, ParsedElement
 
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -31,17 +30,6 @@ class ChunkBoundaryReason(StrEnum):
     #: A non-prose structural block such as code or a formula.
     BLOCK = "block"
     MAX_TOKENS = "max_tokens"
-
-
-@dataclass(frozen=True, slots=True)
-class SemanticUnit:
-    ordinal: int
-    text: str
-    token_count: int
-    source_location: dict[str, Any]
-    hierarchy: dict[str, Any]
-    element_ordinals: tuple[int, ...]
-    hard_boundary_before: str | None
 
 
 @dataclass(frozen=True, slots=True)

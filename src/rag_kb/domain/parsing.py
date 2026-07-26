@@ -82,28 +82,6 @@ class ParsedAssetDraft:
 
 
 @dataclass(frozen=True, slots=True)
-class ParsedElement:
-    ordinal: int
-    text: str
-    token_count: int
-    category: str
-    source_location: dict[str, Any]
-    hierarchy: dict[str, Any]
-    is_title: bool = False
-    is_table: bool = False
-    element_key: str = ""
-    asset_key: str | None = None
-    table_html: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class ParsedDocument:
-    elements: tuple[ParsedElement, ...]
-    extracted_character_count: int
-    assets: tuple[ParsedAssetDraft, ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
 class ChunkAssemblyDraft:
     """One assembled chunk, positioned by its index in the assembly tuple.
 
@@ -120,7 +98,7 @@ class ChunkAssemblyDraft:
 
 
 @dataclass(frozen=True, slots=True)
-class DoclingSemanticUnit:
+class SemanticUnit:
     """A bounded analysis unit derived directly from Docling items."""
 
     ordinal: int

@@ -11,9 +11,6 @@ RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
         libgl1 \
         libglib2.0-0 \
-        libmagic1 \
-        poppler-utils \
-        tesseract-ocr \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 rag-kb \
     && useradd --uid 10001 --gid rag-kb --no-create-home --shell /usr/sbin/nologin rag-kb

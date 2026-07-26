@@ -37,7 +37,7 @@ from rag_kb.document_processing.profiles import SEMANTIC_CHUNKING_CONFIG
 from rag_kb.document_processing.tokenization import count_chunk_tokens, split_by_tokens
 from rag_kb.domain import (
     ChunkAssemblyDraft,
-    DoclingSemanticUnit,
+    SemanticUnit,
     ErrorCode,
     IndexChunkPlan,
     ParserExecutionError,
@@ -71,7 +71,7 @@ def docling_semantic_units(
     limits: ParserLimits | None = None,
     *,
     surface_labels: Mapping[int, str] | None = None,
-) -> tuple[DoclingSemanticUnit, ...]:
+) -> tuple[SemanticUnit, ...]:
     """Build bounded analysis units without provider or persistence I/O."""
 
     resolved = limits or ParserLimits()
@@ -165,7 +165,7 @@ def docling_semantic_units(
         )
     merged = _merge_short_fragments(fragments)
     units = tuple(
-        DoclingSemanticUnit(
+        SemanticUnit(
             ordinal=ordinal,
             text=fragment.text,
             token_count=fragment.token_count,
@@ -183,7 +183,7 @@ def docling_semantic_units(
 
 def assemble_semantic_chunks(
     document: DoclingDocument,
-    units: tuple[DoclingSemanticUnit, ...],
+    units: tuple[SemanticUnit, ...],
     plan: IndexChunkPlan,
     limits: ParserLimits | None = None,
     *,
@@ -229,7 +229,7 @@ def assemble_semantic_chunks(
     return tuple(drafts)
 
 
-def docling_unit_sequence_hash(units: tuple[DoclingSemanticUnit, ...]) -> str:
+def docling_unit_sequence_hash(units: tuple[SemanticUnit, ...]) -> str:
     """Hash the complete unit projection that a chunk plan is bound to."""
 
     projection = [
@@ -377,7 +377,7 @@ def _merge_short_fragments(fragments: list[_Fragment]) -> list[_Fragment]:
     return merged
 
 
-def _require_limits(units: tuple[DoclingSemanticUnit, ...]) -> None:
+def _require_limits(units: tuple[SemanticUnit, ...]) -> None:
     max_units = _config_int("max_analysis_units")
     max_tokens = _config_int("max_analysis_tokens")
     if len(units) > max_units:

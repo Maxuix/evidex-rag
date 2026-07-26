@@ -41,6 +41,7 @@ from rag_kb.document_processing.docling.assets import (
     ASSET_KIND_PICTURE,
     ASSET_KIND_TABLE_IMAGE,
 )
+from rag_kb.document_processing.docling.figures import normalize_figure_labels
 from rag_kb.document_processing.semantic_boundaries import build_chunk_plan
 from rag_kb.domain import (
     ChunkAssetRelationProvenance,
@@ -615,6 +616,15 @@ class RelationTests(unittest.TestCase):
             ]
 
         self.assertEqual(manifest(), manifest())
+
+
+class FigureLabelTests(unittest.TestCase):
+    def test_figure_labels_normalize_english_chinese_and_panel_suffixes(self) -> None:
+        self.assertEqual(
+            normalize_figure_labels("See Fig. 7, Figure 7A and 图 8."),
+            ("figure:7", "figure:7a", "figure:8"),
+        )
+        self.assertEqual(normalize_figure_labels("Version 7 has 8 workers"), ())
 
 
 class EvidenceProjectionTests(unittest.TestCase):

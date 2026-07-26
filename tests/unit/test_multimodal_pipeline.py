@@ -19,17 +19,7 @@ from pypdf import PdfWriter
 from rag_kb.adapters import LocalIndexAssetStore, TongyiVisionEmbeddingAdapter
 from apps.api.routers.assets import read_index_asset
 from rag_kb.auth import AuthContext, SingleWorkspaceAccessPolicy
-from rag_kb.adapters.parser.docx_pictures import partition_docx_multimodal
-from rag_kb.adapters.parser.multimodal import (
-    _scanned_page_numbers,
-    partition_multimodal_with_unstructured,
-)
-from rag_kb.adapters.parser.multimodal_elements import bounded_image_asset
-from rag_kb.document_processing import (
-    assemble_multimodal_units,
-    asset_manifest_hash,
-    element_sequence_hash,
-)
+from rag_kb.adapters.parser.scanned_pages import scanned_surfaces
 from rag_kb.domain import (
     ContentModality,
     EmbeddingSpaceDefinition,
@@ -38,8 +28,6 @@ from rag_kb.domain import (
     IndexAssetIdentity,
     IndexAssetSnapshot,
     IndexingExecutionError,
-    ParsedDocument,
-    ParsedElement,
     ParserExecutionError,
     ParserLimits,
     ParserSource,
@@ -111,140 +99,46 @@ def _space() -> EmbeddingSpaceDefinition:
     )
 
 
-class MultimodalParserTests(unittest.TestCase):
-    def test_markdown_image_reference_without_asset_remains_text(self) -> None:
-        source = ParserSource(
-            "architecture.md",
-            "text/markdown",
-            (
-                "# Architecture\n\n"
-                "The service flow is described below.\n\n"
-                "![Architecture diagram](images/architecture.png)\n\n"
-                "The API sends work to the worker."
-            ).encode(),
-        )
-
-        parsed = partition_multimodal_with_unstructured(source, ParserLimits())
-
-        image_reference = next(
-            element for element in parsed.elements if element.category == "Image"
-        )
-        self.assertIsNone(image_reference.asset_key)
-        self.assertEqual(parsed.assets, ())
-
-        units = assemble_multimodal_units(parsed)
-
-        self.assertTrue(all(unit.modality is ContentModality.TEXT for unit in units))
-        self.assertIn("Architecture diagram", "\n".join(unit.content for unit in units))
-
-    def test_docx_picture_table_order_and_hashes_are_repeatable(self) -> None:
-        source = ParserSource(
-            "mixed.docx",
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            _docx(),
-        )
-
-        first = partition_docx_multimodal(source, ParserLimits(), "profile-v1")
-        second = partition_docx_multimodal(source, ParserLimits(), "profile-v1")
-
-        self.assertEqual(
-            [item.category for item in first.elements],
-            ["Title", "NarrativeText", "Image", "FigureCaption", "Table"],
-        )
-        self.assertEqual(len(first.assets), 1)
-        self.assertEqual(first.assets[0].media_type, "image/png")
-        self.assertEqual(element_sequence_hash(first), element_sequence_hash(second))
-        self.assertEqual(asset_manifest_hash(first.assets), asset_manifest_hash(second.assets))
-
-        units = assemble_multimodal_units(first)
-        self.assertEqual(
-            [item.modality for item in units],
-            [ContentModality.TEXT, ContentModality.IMAGE, ContentModality.TABLE],
-        )
-        image = units[1]
-        self.assertEqual(image.content, "Figure 1: service topology")
-        self.assertEqual(image.required_representations, ("native_image",))
-        self.assertNotIn("Figure 1", units[0].content)
-        self.assertIn("Service\tOwner", units[2].content)
-
-    def test_image_sniffing_and_limits_fail_closed(self) -> None:
-        asset = bounded_image_asset(
-            _png(), kind="fixture", source_location={"page_number": 1}, limits=ParserLimits()
-        )
-        self.assertEqual((asset.width, asset.height), (120, 80))
-        self.assertEqual(asset.content_sha256, hashlib.sha256(asset.content).hexdigest())
-
-        with self.assertRaises(ParserExecutionError) as malformed:
-            bounded_image_asset(
-                b"not-an-image", kind="fixture", source_location={}, limits=ParserLimits()
-            )
-        self.assertEqual(malformed.exception.code, ErrorCode.PARSER_OUTPUT_INVALID)
-
-        with self.assertRaises(ParserExecutionError) as oversized:
-            bounded_image_asset(
-                _png(20, 20),
-                kind="fixture",
-                source_location={},
-                limits=replace(ParserLimits(), max_image_pixels=100),
-            )
-        self.assertEqual(oversized.exception.code, ErrorCode.PARSER_RESOURCE_LIMIT)
-
-    def test_scanned_page_becomes_page_image_and_grouped_ocr_unit(self) -> None:
-        source = ParserSource("scan.pdf", "application/pdf", b"fixture-pdf")
-        raw = _RawElement(
-            "NarrativeText",
-            "Invoice number OCR-2048",
-            {"page_number": 1},
-        )
-
-        with (
-            patch(
-                "unstructured.partition.pdf.partition_pdf",
-                return_value=(raw,),
-            ),
-            patch(
-                "rag_kb.adapters.parser.multimodal._scanned_page_numbers",
-                return_value=(1,),
-            ),
-            patch(
-                "rag_kb.adapters.parser.multimodal._render_pdf_page",
-                return_value=_png(600, 800),
-            ),
-        ):
-            parsed = partition_multimodal_with_unstructured(
-                source, ParserLimits()
-            )
-
-        self.assertEqual(
-            [item.category for item in parsed.elements],
-            ["PageImage", "OCRText"],
-        )
-        self.assertEqual([item.kind for item in parsed.assets], ["page_image"])
-        units = assemble_multimodal_units(parsed)
-        self.assertEqual(
-            [item.modality for item in units],
-            [ContentModality.IMAGE, ContentModality.TEXT],
-        )
-        page_image, ocr = units
-        self.assertEqual(page_image.required_representations, ("native_image",))
-        self.assertEqual(ocr.required_representations, ("ocr_text",))
-        self.assertEqual(ocr.content, "Invoice number OCR-2048")
-        self.assertEqual(ocr.asset_key, page_image.asset_key)
-        self.assertEqual(ocr.evidence_group_key, page_image.evidence_group_key)
-        self.assertEqual(ocr.related_unit_keys, (page_image.unit_key,))
-
+class ScannedSurfaceTests(unittest.TestCase):
     def test_raster_only_pdf_page_is_detected_without_provider_or_ocr(self) -> None:
         scanned = BytesIO()
         Image.new("RGB", (120, 80), "white").save(scanned, format="PDF")
 
-        self.assertEqual(_scanned_page_numbers(scanned.getvalue()), (1,))
+        self.assertEqual(
+            scanned_surfaces(_pdf_source(scanned.getvalue())), frozenset({1})
+        )
 
         blank = BytesIO()
         writer = PdfWriter()
         writer.add_blank_page(width=612, height=792)
         writer.write(blank)
 
-        self.assertEqual(_scanned_page_numbers(blank.getvalue()), ())
+        self.assertEqual(scanned_surfaces(_pdf_source(blank.getvalue())), frozenset())
+
+    def test_non_pdf_sources_report_no_scanned_surface(self) -> None:
+        self.assertEqual(
+            scanned_surfaces(
+                ParserSource(
+                    original_filename="notes.txt",
+                    media_type="text/plain",
+                    content=b"plain",
+                )
+            ),
+            frozenset(),
+        )
+
+    def test_corrupt_pdf_bytes_fail_closed(self) -> None:
+        with self.assertRaises(ParserExecutionError) as raised:
+            scanned_surfaces(_pdf_source(b"%PDF-1.7 truncated"))
+        self.assertEqual(raised.exception.code, ErrorCode.PARSER_OUTPUT_INVALID)
+
+
+def _pdf_source(content: bytes) -> ParserSource:
+    return ParserSource(
+        original_filename="probe.pdf",
+        media_type="application/pdf",
+        content=content,
+    )
 
 
 class IndexAssetStoreTests(unittest.IsolatedAsyncioTestCase):

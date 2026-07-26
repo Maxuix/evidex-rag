@@ -1,4 +1,4 @@
-"""Server-owned document-processing profiles."""
+"""Server-owned document-processing profiles and pure assembly."""
 
 from rag_kb.document_processing.profiles import (
     DOCLING_ENRICHMENT_CONFIG,
@@ -27,20 +27,7 @@ from rag_kb.document_processing.tokenization import (
     split_by_tokens,
 )
 from rag_kb.document_processing.composite_text import with_composite_embedding_text
-from rag_kb.document_processing.multimodal_assembly import (
-    assemble_composite_evidence,
-    assemble_multimodal_units,
-    asset_manifest_hash,
-    element_sequence_hash,
-    semantic_text_elements,
-    unit_plan_hash,
-    normalize_figure_labels,
-    relate_composite_units,
-)
-from rag_kb.document_processing.multimodal_boundaries import (
-    VisualDisposition,
-    classify_visual,
-)
+from rag_kb.document_processing.docling.figures import normalize_figure_labels
 
 __all__ = [
     "DOCLING_ENRICHMENT_CONFIG",
@@ -58,12 +45,8 @@ __all__ = [
     "UNSTRUCTURED_PARSER_CONFIG",
     "count_chunk_tokens",
     "with_composite_embedding_text",
-    "assemble_multimodal_units",
-    "assemble_composite_evidence",
-    "asset_manifest_hash",
-    "classify_visual",
-    "element_sequence_hash",
     "index_profile",
+    "normalize_figure_labels",
     "profile_fingerprint",
     "profile_for_preset",
     "public_parsing_descriptor",
@@ -71,9 +54,4 @@ __all__ = [
     "public_descriptor",
     "resolve",
     "split_by_tokens",
-    "semantic_text_elements",
-    "unit_plan_hash",
-    "normalize_figure_labels",
-    "relate_composite_units",
-    "VisualDisposition",
 ]

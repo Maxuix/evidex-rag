@@ -35,7 +35,7 @@ from rag_kb.document_processing.docling.traversal import (
     iterate_body_items,
     parent_ref,
 )
-from rag_kb.document_processing.multimodal_assembly import normalize_figure_labels
+from rag_kb.document_processing.docling.figures import normalize_figure_labels
 from rag_kb.document_processing.tokenization import count_chunk_tokens
 from rag_kb.domain import (
     ChunkAssemblyDraft,

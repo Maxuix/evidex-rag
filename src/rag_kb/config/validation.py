@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from shutil import which
 
 from rag_kb.config.settings import Settings
 
@@ -35,14 +34,8 @@ def validate_startup_environment(settings: Settings) -> StartupValidation:
         settings.file_store.final_path,
     )
     if settings.model_provider.multimodal_embedding is not None:
-        missing_tools = tuple(
-            executable for executable in ("pdftoppm", "tesseract") if which(executable) is None
-        )
-        if missing_tools:
-            raise StartupConfigurationError(
-                "multimodal local parsing requires executables: "
-                + ", ".join(missing_tools)
-            )
+        # Native Docling renders and recognizes in-process through pypdfium2 and
+        # RapidOCR, so multimodal parsing no longer shells out to any binary.
         configured_paths += (
             settings.file_store.asset_staging_path,
             settings.file_store.asset_final_path,

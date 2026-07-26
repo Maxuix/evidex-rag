@@ -8,8 +8,14 @@ from io import BytesIO
 import httpx
 from pydantic import BaseModel
 
+from docling.datamodel.base_models import (
+    ConversionStatus,
+    DocumentStream,
+    InputFormat,
+)
+from docling.document_converter import DocumentConverter
+from docling_core.types.doc import DocItemLabel
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-from langchain_unstructured import UnstructuredLoader
 from langgraph.graph import END, START, StateGraph
 
 
@@ -18,46 +24,34 @@ class _StructuredProbe(BaseModel):
 
 
 class LangChainCapabilityTests(unittest.IsolatedAsyncioTestCase):
-    def test_langchain_unstructured_public_local_loader_capability(self) -> None:
-        self.assertEqual(version("langchain-unstructured"), "1.0.1")
+    def test_docling_public_local_conversion_capability(self) -> None:
+        self.assertEqual(version("docling"), "2.114.0")
+        self.assertEqual(version("docling-core"), "2.87.1")
         self.assertEqual(version("tiktoken"), "0.13.0")
-        self.assertEqual(version("unstructured"), "0.24.1")
 
-        loader = UnstructuredLoader(
-            file=BytesIO(b"# Overview\n\nLocal parsing evidence."),
-            metadata_filename="guide.md",
-            content_type="text/markdown",
-            partition_via_api=False,
-            strategy="fast",
-            chunking_strategy="by_title",
-            max_tokens=800,
-            new_after_n_tokens=600,
-            tokenizer="cl100k_base",
-            overlap=100,
-            overlap_all=False,
-            combine_text_under_n_chars=300,
-            multipage_sections=False,
-            include_orig_elements=True,
+        result = DocumentConverter(allowed_formats=[InputFormat.MD]).convert(
+            DocumentStream(
+                name="guide.md",
+                stream=BytesIO(
+                    b"# Overview\n\nLocal parsing evidence.\n\n"
+                    b"| K | V |\n| --- | --- |\n| a | 1 |\n"
+                ),
+            ),
+            raises_on_error=False,
         )
 
-        documents = list(loader.lazy_load())
-
-        self.assertEqual(len(documents), 1)
-        self.assertIn("Overview", documents[0].page_content)
-        self.assertEqual(documents[0].metadata["category"], "CompositeElement")
-        self.assertIn("orig_elements", documents[0].metadata)
-
-        partition_only = UnstructuredLoader(
-            file=BytesIO(b"# Overview\n\nLocal parsing evidence."),
-            metadata_filename="guide.md",
-            content_type="text/markdown",
-            partition_via_api=False,
-            strategy="fast",
-            include_page_breaks=True,
+        self.assertIs(result.status, ConversionStatus.SUCCESS)
+        document = result.document
+        self.assertEqual(document.version, "1.10.0")
+        self.assertEqual(len(document.tables), 1)
+        labels = {item.label for item, _level in document.iterate_items()}
+        self.assertIn(DocItemLabel.TABLE, labels)
+        self.assertTrue(
+            any(
+                "Overview" in getattr(item, "text", "")
+                for item, _level in document.iterate_items()
+            )
         )
-        elements = list(partition_only.lazy_load())
-        self.assertGreaterEqual(len(elements), 2)
-        self.assertIn("Title", {item.metadata["category"] for item in elements})
 
     async def test_chat_openai_public_async_and_metadata_capabilities(self) -> None:
         def respond(request: httpx.Request) -> httpx.Response:

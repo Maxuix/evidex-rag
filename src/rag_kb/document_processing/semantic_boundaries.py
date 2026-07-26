@@ -7,12 +7,10 @@ import json
 from uuid import UUID
 
 from rag_kb.document_processing.profiles import SEMANTIC_CHUNKING_CONFIG
-from rag_kb.document_processing.semantic_units import unit_sequence_hash
 from rag_kb.document_processing.tokenization import count_chunk_tokens
 from rag_kb.domain import (
     ChunkBoundary,
     ChunkBoundaryReason,
-    DoclingSemanticUnit,
     ErrorCode,
     IndexChunkPlan,
     IndexingExecutionError,
@@ -26,15 +24,11 @@ def build_chunk_plan(
     indexed_document_version_id: UUID,
     source_checksum_sha256: str,
     profile_fingerprint: str,
-    units: tuple[SemanticUnit, ...] | tuple[DoclingSemanticUnit, ...],
+    units: tuple[SemanticUnit, ...],
     vectors: tuple[tuple[float, ...], ...] | None,
-    sequence_hash: str | None = None,
+    sequence_hash: str,
 ) -> IndexChunkPlan:
-    """Build a deterministic immutable plan from validated unit vectors.
-
-    ``sequence_hash`` lets a caller supply the projection hash of its own unit
-    shape; omitting it keeps the retired element-based projection.
-    """
+    """Build a deterministic immutable plan from validated unit vectors."""
 
     if not units:
         raise _failed("non_empty_units")
@@ -52,7 +46,7 @@ def build_chunk_plan(
         "indexed_document_version_id": str(indexed_document_version_id),
         "source_checksum_sha256": source_checksum_sha256,
         "profile_fingerprint": profile_fingerprint,
-        "unit_sequence_hash": sequence_hash or unit_sequence_hash(units),
+        "unit_sequence_hash": sequence_hash,
         "unit_count": len(units),
         "chunk_count": len(boundaries) + 1,
         "boundaries": [_boundary_json(item) for item in boundaries],
@@ -110,15 +104,15 @@ def validate_plan(
     indexed_document_version_id: UUID,
     source_checksum_sha256: str,
     profile_fingerprint: str,
-    units: tuple[SemanticUnit, ...] | tuple[DoclingSemanticUnit, ...],
-    sequence_hash: str | None = None,
+    units: tuple[SemanticUnit, ...],
+    sequence_hash: str,
 ) -> None:
     expected = (
         plan.indexed_document_version_id == indexed_document_version_id
         and plan.source_checksum_sha256 == source_checksum_sha256
         and plan.profile_fingerprint == profile_fingerprint
         and plan.unit_count == len(units)
-        and plan.unit_sequence_hash == (sequence_hash or unit_sequence_hash(units))
+        and plan.unit_sequence_hash == sequence_hash
     )
     payload = {
         "indexed_document_version_id": str(plan.indexed_document_version_id),

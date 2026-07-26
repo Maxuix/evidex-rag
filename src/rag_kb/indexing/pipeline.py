@@ -62,10 +62,10 @@ from rag_kb.document_processing import (
     count_chunk_tokens,
     profile_fingerprint,
     resolve,
-    asset_manifest_hash,
     with_composite_embedding_text,
 )
 from rag_kb.document_processing.docling import (
+    asset_manifest_hash,
     assemble_semantic_chunks,
     assemble_structural,
     composite_evidence,

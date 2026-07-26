@@ -388,7 +388,7 @@ class FileAdmissionSettings(StrictSettingsModel):
 
 
 class ParserSettings(StrictSettingsModel):
-    profile: Literal["unstructured_local_v1"] = "unstructured_local_v1"
+    profile: Literal["docling_text_local_v1"] = "docling_text_local_v1"
     docling_artifacts_path: Path = Path("/opt/rag-kb/docling-artifacts")
     docling_artifact_manifest_path: Path = Path(
         "/app/config/docling-artifacts-v1.json"

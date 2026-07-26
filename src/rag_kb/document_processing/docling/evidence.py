@@ -29,7 +29,7 @@ from rag_kb.document_processing.docling.traversal import (
     item_ref,
     iterate_body_items,
 )
-from rag_kb.document_processing.multimodal_assembly import normalize_figure_labels
+from rag_kb.document_processing.docling.figures import normalize_figure_labels
 from rag_kb.domain import (
     ChunkAssemblyDraft,
     ChunkAssetRelationDraft,
@@ -222,6 +222,24 @@ def composite_evidence(
             by_key=by_key,
             limits=resolved,
         ),
+    )
+
+
+def asset_manifest_hash(assets: tuple[ParsedAssetDraft, ...]) -> str:
+    """Hash the asset identities a manifest commits to."""
+
+    return _canonical_hash(
+        [
+            {
+                "asset_key": asset.asset_key,
+                "kind": asset.kind,
+                "media_type": asset.media_type,
+                "checksum": asset.content_sha256,
+                "width": asset.width,
+                "height": asset.height,
+            }
+            for asset in assets
+        ]
     )
 
 
