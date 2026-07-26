@@ -6,7 +6,7 @@ from functools import lru_cache
 
 import tiktoken
 
-from rag_kb.document_processing.profiles import UNSTRUCTURED_CHUNKING_CONFIG
+from rag_kb.document_processing.profiles import CHUNK_TOKENIZER
 
 
 @lru_cache(maxsize=None)
@@ -17,7 +17,7 @@ def _encoding(name: str) -> tiktoken.Encoding:
 def count_chunk_tokens(text: str) -> int:
     """Count tokens using the tokenizer frozen in the chunking profile."""
 
-    tokenizer = UNSTRUCTURED_CHUNKING_CONFIG["tokenizer"]
+    tokenizer = CHUNK_TOKENIZER["tokenizer"]
     if not isinstance(tokenizer, str):
         raise TypeError("chunking tokenizer must be a string")
     return len(_encoding(tokenizer).encode(text))
@@ -33,7 +33,7 @@ def split_by_tokens(
 
     if max_tokens < 1 or overlap_tokens < 0 or overlap_tokens >= max_tokens:
         raise ValueError("invalid token split bounds")
-    tokenizer = UNSTRUCTURED_CHUNKING_CONFIG["tokenizer"]
+    tokenizer = CHUNK_TOKENIZER["tokenizer"]
     if not isinstance(tokenizer, str):
         raise TypeError("chunking tokenizer must be a string")
     encoding = _encoding(tokenizer)

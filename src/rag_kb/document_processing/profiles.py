@@ -14,6 +14,15 @@ from rag_kb.domain import (
 )
 
 
+#: The one tokenizer every executable chunking profile is frozen to. Retired
+#: profiles below repeat these values literally because their persisted JSON is
+#: history and must never change.
+CHUNK_TOKENIZER = {
+    "tokenizer": "cl100k_base",
+    "tokenizer_library": "tiktoken",
+    "tokenizer_version": "0.13.0",
+}
+
 UNSTRUCTURED_PARSER_CONFIG = {
     "profile": "unstructured_local_v1",
     "integration": "langchain-unstructured",
@@ -187,9 +196,7 @@ STRUCTURAL_CHUNKING_CONFIG_V3 = {
     "strategy": "docling_structural",
     "max_tokens": 800,
     "new_after_n_tokens": 600,
-    "tokenizer": "cl100k_base",
-    "tokenizer_library": "tiktoken",
-    "tokenizer_version": "0.13.0",
+    **CHUNK_TOKENIZER,
     "overlap": 100,
     "overlap_unit": "tokens",
     "overlap_all": False,
@@ -214,9 +221,7 @@ SEMANTIC_CHUNKING_CONFIG = {
     "preset": "semantic_balanced_v1",
     "strategy": "semantic_breakpoint",
     "analysis_embedding": "index_embedding_space",
-    "tokenizer": "cl100k_base",
-    "tokenizer_library": "tiktoken",
-    "tokenizer_version": "0.13.0",
+    **CHUNK_TOKENIZER,
     "analysis_unit_target_tokens": 80,
     "analysis_unit_max_tokens": 160,
     "max_analysis_units": 5000,

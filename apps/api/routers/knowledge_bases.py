@@ -158,12 +158,9 @@ def _invalid_cursor(detail: str) -> None:
 
 def _response(value: KnowledgeBase) -> KnowledgeBaseResponse:
     from rag_kb.document_processing import (
-        UNSTRUCTURED_PARSER_CONFIG,
         public_descriptor,
         public_parsing_descriptor,
     )
-
-    parser_config = value.parser_config or UNSTRUCTURED_PARSER_CONFIG
 
     return KnowledgeBaseResponse(
         id=value.id,
@@ -172,7 +169,7 @@ def _response(value: KnowledgeBase) -> KnowledgeBaseResponse:
         active_index_revision_id=value.active_index_revision_id,
         embedding_space_id=value.embedding_space_id,
         parsing=KnowledgeBaseParsingResponse.model_validate(
-            public_parsing_descriptor(parser_config)
+            public_parsing_descriptor(value.parser_config)
         ),
         chunking=KnowledgeBaseChunkingResponse.model_validate(
             public_descriptor(value.chunking_config)
