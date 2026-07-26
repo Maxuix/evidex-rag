@@ -25,13 +25,16 @@ from docx.shared import Inches
 from PIL import Image, ImageDraw, ImageFont
 
 
+_OOXML = "application/vnd.openxmlformats-officedocument"
 MEDIA_TYPES = {
     ".txt": "text/plain",
     ".md": "text/markdown",
+    ".html": "text/html",
+    ".csv": "text/csv",
     ".pdf": "application/pdf",
-    ".docx": (
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-    ),
+    ".docx": f"{_OOXML}.wordprocessingml.document",
+    ".pptx": f"{_OOXML}.presentationml.presentation",
+    ".xlsx": f"{_OOXML}.spreadsheetml.sheet",
 }
 
 
