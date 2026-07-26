@@ -11,11 +11,16 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 import asyncpg
+from docling.datamodel.base_models import (
+    ConversionStatus,
+    DocumentStream,
+    InputFormat,
+)
+from docling.document_converter import DocumentConverter
 
 from rag_kb.adapters import (
     FixedPgVectorSpace,
     LocalFileStore,
-    UnstructuredProcessor,
 )
 from rag_kb.auth import AuthContext, SingleWorkspaceAccessPolicy
 from rag_kb.db import DatabaseProcess, create_database_resources
@@ -32,7 +37,7 @@ from rag_kb.domain import (
     IndexingExecutionError,
     IndexingPhase,
     InsufficiencyPolicy,
-    ParserLimits,
+    ParserExecutionError,
     PromotionCommand,
     PromotionReason,
     ResourceStateConflictError,
@@ -94,7 +99,7 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
         (self.root / "staging").mkdir()
         (self.root / "final").mkdir()
         self.store = LocalFileStore(self.root / "staging", self.root / "final")
-        self.processor = UnstructuredProcessor(ParserLimits())
+        self.parser = _MarkdownParser()
 
     async def asyncTearDown(self) -> None:
         await self.database.close()
@@ -816,7 +821,7 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
         return IndexingPipeline(
             self.factory,
             self.store,
-            self.processor,
+            self.parser,
             provider,
             FixedPgVectorSpace(_embedding()),
         )
@@ -954,6 +959,36 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
                     )
         finally:
             await connection.close()
+
+
+class _MarkdownParser:
+    """Convert plain-text and Markdown sources through real Docling.
+
+    Both formats use Docling's Markdown backend, which needs no model
+    artifacts, so the integration suite exercises a genuine conversion without
+    depending on the image's baked model bundle.
+    """
+
+    def __init__(self) -> None:
+        self._converter = DocumentConverter(allowed_formats=[InputFormat.MD])
+
+    async def parse(self, source, *, preset):
+        del preset
+        return await asyncio.to_thread(self._convert, source)
+
+    def _convert(self, source):
+        result = self._converter.convert(
+            DocumentStream(
+                name=source.original_filename, stream=io.BytesIO(source.content)
+            ),
+            raises_on_error=False,
+        )
+        if result.status is not ConversionStatus.SUCCESS:
+            raise ParserExecutionError(
+                ErrorCode.PARSER_OUTPUT_INVALID,
+                diagnostic={"check": "conversion_status"},
+            )
+        return result.document
 
 
 class _Provider:

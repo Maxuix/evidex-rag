@@ -19,8 +19,8 @@ from rag_kb.adapters import (
     LocalIndexAssetStore,
     PgVectorStore,
     TongyiVisionEmbeddingAdapter,
-    UnstructuredProcessor,
 )
+from rag_kb.adapters.parser.docling import DoclingParser
 from rag_kb.config import (
     Settings,
     StartupValidation,
@@ -80,7 +80,7 @@ class WorkerDependencies:
     asset_store: LocalIndexAssetStore | None
     index_asset_service: IndexAssetService | None
     reconciliation_service: FileReconciliationService
-    document_processor: UnstructuredProcessor
+    document_parser: DoclingParser
     embedding_provider: EmbeddingModelAdapter
     multimodal_embedding_provider: TongyiVisionEmbeddingAdapter | None
     vector_store: PgVectorStore
@@ -102,8 +102,11 @@ class WorkerDependencies:
     worker_scheduler: FairWorkerScheduler
 
     async def close(self) -> None:
-        """Release process-owned database resources during Worker shutdown."""
+        """Release process-owned resources during Worker shutdown."""
 
+        # The parser owns a conversion thread; stop accepting work before the
+        # database goes away so no conversion outlives its job.
+        self.document_parser.close(wait=False)
         await self.database.close()
 
     async def start(self) -> RuntimeReadiness:
@@ -172,9 +175,12 @@ def build_worker_dependencies(
         max_units=resolved_settings.parser.max_units,
         max_representations=resolved_settings.parser.max_representations,
     )
-    document_processor = UnstructuredProcessor(
+    document_parser = DoclingParser(
         parser_limits,
-        resolved_settings.file_store.parser_temp_path,
+        artifacts_path=resolved_settings.parser.docling_artifacts_path,
+        artifact_manifest_path=(
+            resolved_settings.parser.docling_artifact_manifest_path
+        ),
     )
     embedding_settings = resolved_settings.model_provider.embedding
     embedding_space = embedding_space_definition(embedding_settings)
@@ -230,7 +236,7 @@ def build_worker_dependencies(
     indexing_pipeline = IndexingPipeline(
         unit_of_work,
         file_store,
-        document_processor,
+        document_parser,
         embedding_provider,
         FixedPgVectorSpace(embedding_space),
         asset_store=asset_store,
@@ -383,7 +389,7 @@ def build_worker_dependencies(
                 resolved_settings.file_store.cleanup_base_delay_seconds
             ),
         ),
-        document_processor=document_processor,
+        document_parser=document_parser,
         embedding_provider=embedding_provider,
         multimodal_embedding_provider=multimodal_embedding_provider,
         vector_store=vector_store,

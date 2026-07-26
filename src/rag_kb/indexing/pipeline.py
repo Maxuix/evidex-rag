@@ -9,19 +9,22 @@ from collections.abc import Awaitable, Callable
 from typing import TypeVar
 
 from rag_kb.adapters import (
-    DocumentProcessor,
+    DocumentParser,
     EmbeddingModelAdapter,
     FixedPgVectorSpace,
     SourceFileStore,
 )
 from rag_kb.adapters.file_store import IndexAssetStore
 from rag_kb.adapters.model_api import MultimodalEmbeddingAdapter
+from rag_kb.adapters.parser.scanned_pages import scanned_surfaces
+from docling_core.types.doc import DoclingDocument
+
 from rag_kb.domain import (
+    ChunkAssemblyDraft,
     ChunkingStrategyKind,
     ErrorCode,
     ContentModality,
     CompositeEvidenceDraft,
-    EvidenceUnitDraft,
     FileStoreError,
     IndexChunkWrite,
     IndexChunkAssetRelationWrite,
@@ -35,10 +38,11 @@ from rag_kb.domain import (
     IndexingResult,
     IndexingTarget,
     InvalidStorageIdentityError,
+    ParsedAssetDraft,
     ParserExecutionError,
     ParserLimits,
     ParserSource,
-    ProcessedDocument,
+    ParsingPreset,
     PromotionCommand,
     SourceFileMissingError,
     VectorRecordWrite,
@@ -50,27 +54,31 @@ from rag_kb.domain import (
     validate_embedding_vector,
 )
 from rag_kb.document_processing import (
-    MULTIMODAL_ENRICHMENT_CONFIG,
-    MULTIMODAL_PARSER_CONFIG,
-    MULTIMODAL_REPRESENTATION_CONFIG,
+    DOCLING_ENRICHMENT_CONFIG,
+    DOCLING_MULTIMODAL_PARSER_CONFIG,
+    DOCLING_REPRESENTATION_CONFIG,
     SEMANTIC_CHUNKING_CONFIG,
     count_chunk_tokens,
     profile_fingerprint,
     resolve,
-    assemble_composite_evidence,
     asset_manifest_hash,
-    element_sequence_hash,
-    semantic_text_elements,
-    relate_composite_units,
     with_composite_embedding_text,
 )
-from rag_kb.document_processing.docling.provenance import surface_ordinals
-from rag_kb.document_processing.semantic_assembly import assemble_semantic_document
+from rag_kb.document_processing.docling import (
+    assemble_semantic_chunks,
+    assemble_structural,
+    composite_evidence,
+    docling_item_sequence_hash,
+    docling_semantic_units,
+    docling_unit_sequence_hash,
+    extract_docling_assets,
+    relate_assets_to_chunks,
+    text_only_document,
+)
 from rag_kb.document_processing.semantic_boundaries import (
     build_chunk_plan,
     validate_plan,
 )
-from rag_kb.document_processing.semantic_units import semantic_units
 from rag_kb.indexing.promotion import CandidatePromotionService
 from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, UnitOfWorkPurpose, execute_in_transaction
 
@@ -83,7 +91,7 @@ class IndexingPipeline:
         self,
         unit_of_work: UnitOfWorkFactory,
         file_store: SourceFileStore,
-        document_processor: DocumentProcessor,
+        document_parser: DocumentParser,
         embedding_provider: EmbeddingModelAdapter,
         vector_space: FixedPgVectorSpace,
         *,
@@ -93,7 +101,7 @@ class IndexingPipeline:
     ) -> None:
         self._unit_of_work = unit_of_work
         self._file_store = file_store
-        self._document_processor = document_processor
+        self._document_parser = document_parser
         self._embedding_provider = embedding_provider
         self._vector_space = vector_space
         self._asset_store = asset_store
@@ -135,9 +143,23 @@ class IndexingPipeline:
                 media_type=target.media_type,
                 content=content,
             )
-            if target.parser_config == MULTIMODAL_PARSER_CONFIG:
+            multimodal = target.parser_config == DOCLING_MULTIMODAL_PARSER_CONFIG
+            cross_space = (
+                self._require_multimodal_runtime(target) if multimodal else None
+            )
+            document = await self._parse(
+                command,
+                source,
+                preset=(
+                    ParsingPreset.MULTIMODAL_LOCAL_V1
+                    if multimodal
+                    else ParsingPreset.TEXT_LOCAL_V1
+                ),
+            )
+            chunks = await self._chunks(command, target, document, strategy)
+            if multimodal:
                 result = await self._execute_multimodal(
-                    command, target, source, strategy
+                    command, target, source, document, chunks, cross_space
                 )
                 promotion = await self._promotion.promote(_promotion_command(command))
                 return IndexingResult(
@@ -147,14 +169,14 @@ class IndexingPipeline:
                     result,
                     serving_status=promotion.status.value,
                 )
-            if strategy is ChunkingStrategyKind.STRUCTURAL:
-                processed = await self._process_structural(command, source)
-            else:
-                processed = await self._process_semantic(
-                    command,
-                    target,
-                    source,
-                )
+            try:
+                processed = text_only_document(chunks, profile=_profile(target))
+            except ParserExecutionError as error:
+                raise IndexingExecutionError(
+                    error.code,
+                    phase=IndexingPhase.PARSING,
+                    diagnostic=error.diagnostic,
+                ) from error
 
             phase = IndexingPhase.EMBEDDING
             await self._set_phase(command, phase)
@@ -185,9 +207,9 @@ class IndexingPipeline:
                     )
                 for vector in embedded.vectors:
                     validate_embedding_vector(vector, target.embedding_space)
-                chunks, vectors = self._writes(target, drafts, embedded.vectors)
+                writes, vectors = self._writes(target, drafts, embedded.vectors)
                 phase = IndexingPhase.PERSISTING
-                await self._upsert(command, chunks, vectors)
+                await self._upsert(command, writes, vectors)
                 phase = IndexingPhase.EMBEDDING
 
             phase = IndexingPhase.VALIDATING
@@ -329,10 +351,9 @@ class IndexingPipeline:
     ) -> ChunkingStrategyKind:
         try:
             strategy = resolve(target.parser_config, target.chunking_config)
-            if target.parser_config == MULTIMODAL_PARSER_CONFIG and (
-                target.enrichment_config != MULTIMODAL_ENRICHMENT_CONFIG
-                or target.representation_config
-                != MULTIMODAL_REPRESENTATION_CONFIG
+            if target.parser_config == DOCLING_MULTIMODAL_PARSER_CONFIG and (
+                target.enrichment_config != DOCLING_ENRICHMENT_CONFIG
+                or target.representation_config != DOCLING_REPRESENTATION_CONFIG
             ):
                 raise ValueError("unknown multimodal enrichment profile")
             return strategy
@@ -343,13 +364,132 @@ class IndexingPipeline:
                 diagnostic={"check": "parser_chunking_profile"},
             ) from error
 
-    async def _execute_multimodal(
+    async def _parse(
+        self,
+        command: IndexingCommand,
+        source: ParserSource,
+        *,
+        preset: ParsingPreset,
+    ) -> DoclingDocument:
+        """Convert the source exactly once for the whole job."""
+
+        await self._set_phase(command, IndexingPhase.PARSING)
+        try:
+            return await self._document_parser.parse(source, preset=preset)
+        except ParserExecutionError as error:
+            raise IndexingExecutionError(
+                error.code,
+                phase=IndexingPhase.PARSING,
+                diagnostic=error.diagnostic,
+            ) from error
+        except IndexingExecutionError:
+            raise
+        except Exception as error:
+            raise IndexingExecutionError(
+                ErrorCode.PARSER_CRASHED,
+                phase=IndexingPhase.PARSING,
+                diagnostic={"check": "parser_contract"},
+            ) from error
+
+    async def _chunks(
         self,
         command: IndexingCommand,
         target: IndexingTarget,
-        source: ParserSource,
+        document: DoclingDocument,
         strategy: ChunkingStrategyKind,
-    ) -> int:
+    ) -> tuple[ChunkAssemblyDraft, ...]:
+        """Apply the revision's chunking strategy to the converted document."""
+
+        if strategy is ChunkingStrategyKind.STRUCTURAL:
+            try:
+                return assemble_structural(document, self._parser_limits)
+            except ParserExecutionError as error:
+                raise IndexingExecutionError(
+                    error.code,
+                    phase=IndexingPhase.PARSING,
+                    diagnostic=error.diagnostic,
+                ) from error
+        return await self._semantic_chunks(command, target, document)
+
+    async def _semantic_chunks(
+        self,
+        command: IndexingCommand,
+        target: IndexingTarget,
+        document: DoclingDocument,
+    ) -> tuple[ChunkAssemblyDraft, ...]:
+        await self._set_phase(command, IndexingPhase.SEMANTIC_ANALYSIS)
+        try:
+            units = docling_semantic_units(document, self._parser_limits)
+        except ParserExecutionError as error:
+            raise IndexingExecutionError(
+                error.code,
+                phase=IndexingPhase.SEMANTIC_ANALYSIS,
+                diagnostic=error.diagnostic,
+            ) from error
+        sequence_hash = docling_unit_sequence_hash(units)
+        fingerprint = self._fingerprint(target)
+        plan_facts = {
+            "indexed_document_version_id": target.indexed_document_version_id,
+            "source_checksum_sha256": target.checksum_sha256,
+            "profile_fingerprint": fingerprint,
+        }
+        existing = await self._transaction(
+            lambda uow: uow.indexing.get_chunk_plan(command)
+        )
+        if existing is not None:
+            validate_plan(
+                existing, **plan_facts, units=units, sequence_hash=sequence_hash
+            )
+            return self._assemble_semantic(document, units, existing)
+
+        requires_analysis = (
+            count_chunk_tokens("\n\n".join(unit.text for unit in units))
+            > int(SEMANTIC_CHUNKING_CONFIG["max_chunk_tokens"])
+            or any(unit.hard_boundary_before for unit in units[1:])
+        )
+        proposed = build_chunk_plan(
+            **plan_facts,
+            units=units,
+            vectors=(
+                await self._embed_analysis_units(target, units)
+                if requires_analysis
+                else None
+            ),
+            sequence_hash=sequence_hash,
+        )
+        winner = await self._transaction(
+            lambda uow: uow.indexing.create_or_get_chunk_plan(command, proposed)
+        )
+        validate_plan(winner, **plan_facts, units=units, sequence_hash=sequence_hash)
+        return self._assemble_semantic(document, units, winner)
+
+    def _assemble_semantic(
+        self,
+        document: DoclingDocument,
+        units,
+        plan,
+    ) -> tuple[ChunkAssemblyDraft, ...]:
+        try:
+            return assemble_semantic_chunks(document, units, plan, self._parser_limits)
+        except ParserExecutionError as error:
+            raise IndexingExecutionError(
+                error.code,
+                phase=IndexingPhase.SEMANTIC_ANALYSIS,
+                diagnostic=error.diagnostic,
+            ) from error
+
+    @staticmethod
+    def _fingerprint(target: IndexingTarget) -> str:
+        return profile_fingerprint(
+            target.parser_config,
+            target.chunking_config,
+            target.enrichment_config,
+            target.representation_config,
+        )
+
+    def _require_multimodal_runtime(self, target: IndexingTarget):
+        """Reject an unusable multimodal revision before converting its source."""
+
         if self._asset_store is None or self._multimodal_embedding_provider is None:
             raise IndexingExecutionError(
                 ErrorCode.INDEX_REVISION_INCOMPATIBLE,
@@ -357,8 +497,7 @@ class IndexingPipeline:
                 diagnostic={"check": "multimodal_runtime_dependencies"},
             )
         cross_space = target.embedding_spaces.get("cross_modal_retrieval")
-        cross_space_id = target.embedding_space_ids.get("cross_modal_retrieval")
-        if cross_space is None or cross_space_id is None:
+        if cross_space is None or "cross_modal_retrieval" not in target.embedding_space_ids:
             raise IndexingExecutionError(
                 ErrorCode.INDEX_REVISION_INCOMPATIBLE,
                 phase=IndexingPhase.SOURCE_READ,
@@ -367,23 +506,23 @@ class IndexingPipeline:
         FixedPgVectorSpace(cross_space).require_compatible(
             cross_space, self._multimodal_embedding_provider.embedding_space
         )
-        await self._set_phase(command, IndexingPhase.PARSING)
-        try:
-            parsed = await self._document_processor.partition_multimodal(source)
-        except ParserExecutionError as error:
-            raise IndexingExecutionError(
-                error.code,
-                phase=IndexingPhase.PARSING,
-                diagnostic=error.diagnostic,
-            ) from error
-        except Exception as error:
-            raise IndexingExecutionError(
-                ErrorCode.PARSER_CRASHED,
-                phase=IndexingPhase.PARSING,
-                diagnostic={"check": "multimodal_partition_contract"},
-            ) from error
+        return cross_space
 
-        assembly = await self._multimodal_units(command, target, parsed, strategy)
+    async def _execute_multimodal(
+        self,
+        command: IndexingCommand,
+        target: IndexingTarget,
+        source: ParserSource,
+        document: DoclingDocument,
+        assembled: tuple[ChunkAssemblyDraft, ...],
+        cross_space,
+    ) -> int:
+        assert self._asset_store is not None
+        cross_space_id = target.embedding_space_ids["cross_modal_retrieval"]
+        await self._set_phase(command, IndexingPhase.ASSET_EXTRACTION)
+        assembly, extracted = self._composite_evidence(
+            target, source, document, assembled
+        )
         units = assembly.units
         relations = assembly.relations
         if not units:
@@ -392,29 +531,16 @@ class IndexingPipeline:
                 phase=IndexingPhase.PARSING,
                 diagnostic={"check": "non_empty_units"},
             )
-        if len(units) > self._parser_limits.max_units:
-            raise IndexingExecutionError(
-                ErrorCode.PARSER_RESOURCE_LIMIT,
-                phase=IndexingPhase.PARSING,
-                diagnostic={
-                    "limit_name": "max_units",
-                    "limit": self._parser_limits.max_units,
-                },
-            )
         referenced_asset_keys = {
             unit.asset_key for unit in units if unit.asset_key is not None
         } | {relation.asset_key for relation in relations}
-        parsed = replace(
-            parsed,
-            assets=tuple(
-                asset
-                for asset in parsed.assets
-                if asset.asset_key in referenced_asset_keys
-            ),
+        assets = tuple(
+            asset
+            for asset in extracted
+            if asset.asset_key in referenced_asset_keys
         )
-        await self._set_phase(command, IndexingPhase.ASSET_EXTRACTION)
         asset_writes: list[IndexAssetWrite] = []
-        for asset in parsed.assets:
+        for asset in assets:
             identity = IndexAssetIdentity(
                 target.workspace_id,
                 target.indexed_document_version_id,
@@ -445,12 +571,7 @@ class IndexingPipeline:
         if not changed:
             raise IndexingCancelled
 
-        fingerprint = profile_fingerprint(
-            target.parser_config,
-            target.chunking_config,
-            target.enrichment_config,
-            target.representation_config,
-        )
+        fingerprint = self._fingerprint(target)
         asset_ids = {item.asset_key: item.id for item in asset_writes}
         chunks = tuple(
             self._unit_write(target, unit, fingerprint, asset_ids) for unit in units
@@ -477,7 +598,7 @@ class IndexingPipeline:
             for relation in relations
         )
         planned = self._representation_plan(
-            chunks, units, target.embedding_space_id, cross_space_id, parsed
+            chunks, units, target.embedding_space_id, cross_space_id, assets
         )
         if len(planned) > self._parser_limits.max_representations:
             raise IndexingExecutionError(
@@ -490,7 +611,8 @@ class IndexingPipeline:
             )
         proposed = self._manifest(
             target,
-            parsed,
+            document,
+            assets,
             units,
             chunks,
             planned,
@@ -511,7 +633,7 @@ class IndexingPipeline:
             )
 
         await self._embed_multimodal_representations(
-            command, target, parsed, units, chunks, planned, cross_space
+            command, target, assets, units, chunks, planned, cross_space
         )
         changed = await self._transaction(
             lambda uow: uow.indexing.upsert_relations(command, relation_writes)
@@ -522,234 +644,46 @@ class IndexingPipeline:
         await self._complete(command, expected_chunks=len(chunks))
         return len(chunks)
 
-    async def _multimodal_units(
+    def _composite_evidence(
         self,
-        command: IndexingCommand,
         target: IndexingTarget,
-        parsed,
-        strategy: ChunkingStrategyKind,
-    ) -> CompositeEvidenceDraft:
+        source: ParserSource,
+        document: DoclingDocument,
+        assembled: tuple[ChunkAssemblyDraft, ...],
+    ) -> tuple[CompositeEvidenceDraft, tuple[ParsedAssetDraft, ...]]:
+        """Derive assets, relations and evidence units from the one conversion."""
+
         try:
-            assembled = assemble_composite_evidence(parsed, self._parser_limits)
+            assets = extract_docling_assets(
+                document,
+                self._parser_limits,
+                page_image_surfaces=scanned_surfaces(source),
+            )
+            relations = relate_assets_to_chunks(
+                document, assembled, assets, self._parser_limits
+            )
+            draft = composite_evidence(
+                document,
+                assembled,
+                assets,
+                relations,
+                profile=_profile(target),
+                source_checksum_sha256=target.checksum_sha256,
+                limits=self._parser_limits,
+            )
         except ParserExecutionError as error:
             raise IndexingExecutionError(
                 error.code,
                 phase=IndexingPhase.ENRICHMENT,
                 diagnostic=error.diagnostic,
             ) from error
-        if strategy is ChunkingStrategyKind.STRUCTURAL:
-            return replace(
-                assembled,
-                units=with_composite_embedding_text(
-                    assembled.units, assembled.relations
-                ),
-            )
-        body = semantic_text_elements(parsed)
-        media = tuple(
-            unit
-            for unit in assembled.units
-            if unit.modality is not ContentModality.TEXT
-            or unit.processing_metadata.get("representation_kind")
-            == "ocr_text"
-        )
-        if not body.elements:
-            related = relate_composite_units(
-                tuple(
-                    self._reordinal(unit, ordinal)
-                    for ordinal, unit in enumerate(media)
-                ),
-                self._parser_limits,
-            )
-            return replace(
-                related,
-                units=with_composite_embedding_text(
-                    related.units, related.relations
-                ),
-            )
-        processed = await self._process_semantic_parsed(command, target, body)
-        text_units = tuple(
-            EvidenceUnitDraft(
-                unit_key=hashlib.sha256(
-                    f"semantic:{draft.ordinal}:{draft.content_sha256}".encode()
-                ).hexdigest(),
-                ordinal=draft.ordinal,
-                modality=ContentModality.TEXT,
-                content=draft.text,
-                token_count=draft.token_count,
-                asset_key=None,
-                evidence_group_key=None,
-                related_unit_keys=(),
-                source_location=draft.source_location,
-                hierarchy=draft.hierarchy,
-                processing_metadata=draft.processing_metadata,
-                required_representations=("text",),
-            )
-            for draft in processed.chunks
-        )
-        combined = sorted(
-            (*text_units, *media),
-            key=lambda item: (
-                _unit_page(item),
-                0 if item.modality is ContentModality.TEXT else 1,
-                item.unit_key,
+        return (
+            replace(
+                draft,
+                units=with_composite_embedding_text(draft.units, draft.relations),
             ),
+            assets,
         )
-        related = relate_composite_units(
-            tuple(
-                self._reordinal(unit, ordinal)
-                for ordinal, unit in enumerate(combined)
-            ),
-            self._parser_limits,
-        )
-        related = self._carry_semantic_relations(assembled, related, text_units)
-        return replace(
-            related,
-            units=with_composite_embedding_text(
-                related.units, related.relations
-            ),
-        )
-
-    async def _process_semantic_parsed(
-        self, command: IndexingCommand, target: IndexingTarget, parsed
-    ) -> ProcessedDocument:
-        await self._set_phase(command, IndexingPhase.SEMANTIC_ANALYSIS)
-        units = semantic_units(parsed)
-        fingerprint = profile_fingerprint(
-            target.parser_config,
-            target.chunking_config,
-            target.enrichment_config,
-            target.representation_config,
-        )
-        existing = await self._transaction(
-            lambda uow: uow.indexing.get_chunk_plan(command)
-        )
-        if existing is not None:
-            validate_plan(
-                existing,
-                indexed_document_version_id=target.indexed_document_version_id,
-                source_checksum_sha256=target.checksum_sha256,
-                profile_fingerprint=fingerprint,
-                units=units,
-            )
-            return assemble_semantic_document(units, existing)
-        vectors = await self._embed_analysis_units(target, units)
-        proposed = build_chunk_plan(
-            indexed_document_version_id=target.indexed_document_version_id,
-            source_checksum_sha256=target.checksum_sha256,
-            profile_fingerprint=fingerprint,
-            units=units,
-            vectors=vectors,
-        )
-        winner = await self._transaction(
-            lambda uow: uow.indexing.create_or_get_chunk_plan(command, proposed)
-        )
-        validate_plan(
-            winner,
-            indexed_document_version_id=target.indexed_document_version_id,
-            source_checksum_sha256=target.checksum_sha256,
-            profile_fingerprint=fingerprint,
-            units=units,
-        )
-        return assemble_semantic_document(units, winner)
-
-    @staticmethod
-    def _reordinal(unit: EvidenceUnitDraft, ordinal: int) -> EvidenceUnitDraft:
-        return EvidenceUnitDraft(
-            unit_key=unit.unit_key,
-            ordinal=ordinal,
-            modality=unit.modality,
-            content=unit.content,
-            token_count=unit.token_count,
-            asset_key=unit.asset_key,
-            evidence_group_key=unit.evidence_group_key,
-            related_unit_keys=unit.related_unit_keys,
-            source_location=unit.source_location,
-            hierarchy=unit.hierarchy,
-            processing_metadata=unit.processing_metadata,
-            required_representations=unit.required_representations,
-            embedding_text=unit.embedding_text,
-            embedding_text_hash=unit.embedding_text_hash,
-        )
-
-    def _carry_semantic_relations(
-        self,
-        structural: CompositeEvidenceDraft,
-        semantic: CompositeEvidenceDraft,
-        semantic_text_units: tuple[EvidenceUnitDraft, ...],
-    ) -> CompositeEvidenceDraft:
-        """Map parser-authoritative strong edges after body-only semantic chunking."""
-
-        current_keys = {unit.unit_key for unit in semantic.units}
-        structural_units = {unit.unit_key: unit for unit in structural.units}
-        candidates = list(semantic.relations)
-        for relation in structural.relations:
-            if relation.chunk_unit_key in current_keys:
-                candidates.append(relation)
-                continue
-            original = structural_units.get(relation.chunk_unit_key)
-            if original is None:
-                continue
-            matches = tuple(
-                unit
-                for unit in semantic_text_units
-                if _text_regions_overlap(original.content, unit.content)
-                or _locations_overlap(
-                    original.source_location, unit.source_location
-                )
-            )
-            if not matches and len(semantic_text_units) == 1:
-                matches = semantic_text_units
-            for unit in matches:
-                candidates.append(
-                    replace(relation, chunk_unit_key=unit.unit_key)
-                )
-
-        candidates.sort(
-            key=lambda item: (
-                next(
-                    unit.ordinal
-                    for unit in semantic.units
-                    if unit.unit_key == item.chunk_unit_key
-                ),
-                item.relation_type.value,
-                item.visual_unit_key,
-                item.asset_key,
-            )
-        )
-        relations = []
-        seen = set()
-        per_chunk: dict[str, int] = {}
-        for candidate in candidates:
-            identity = (
-                candidate.chunk_unit_key,
-                candidate.asset_key,
-                candidate.relation_type,
-            )
-            if identity in seen:
-                continue
-            observed = per_chunk.get(candidate.chunk_unit_key, 0) + 1
-            if observed > self._parser_limits.max_relations_per_chunk:
-                raise IndexingExecutionError(
-                    ErrorCode.PARSER_RESOURCE_LIMIT,
-                    phase=IndexingPhase.ENRICHMENT,
-                    diagnostic={
-                        "limit_name": "max_relations_per_chunk",
-                        "limit": self._parser_limits.max_relations_per_chunk,
-                    },
-                )
-            seen.add(identity)
-            per_chunk[candidate.chunk_unit_key] = observed
-            relations.append(replace(candidate, ordinal=len(relations)))
-        if len(relations) > self._parser_limits.max_relations:
-            raise IndexingExecutionError(
-                ErrorCode.PARSER_RESOURCE_LIMIT,
-                phase=IndexingPhase.ENRICHMENT,
-                diagnostic={
-                    "limit_name": "max_relations",
-                    "limit": self._parser_limits.max_relations,
-                },
-            )
-        return replace(semantic, relations=tuple(relations))
 
     @staticmethod
     def _unit_write(target, unit, fingerprint, asset_ids) -> IndexChunkWrite:
@@ -786,9 +720,9 @@ class IndexingPipeline:
 
     @staticmethod
     def _representation_plan(
-        chunks, units, text_space_id, cross_space_id, parsed
+        chunks, units, text_space_id, cross_space_id, extracted
     ) -> tuple[dict, ...]:
-        assets = {item.asset_key: item for item in parsed.assets}
+        assets = {item.asset_key: item for item in extracted}
         plan: list[dict] = []
         for chunk, unit in zip(chunks, units, strict=True):
             if unit.modality is ContentModality.IMAGE:
@@ -836,7 +770,8 @@ class IndexingPipeline:
     @staticmethod
     def _manifest(
         target,
-        parsed,
+        document,
+        extracted,
         units,
         chunks,
         planned,
@@ -883,8 +818,8 @@ class IndexingPipeline:
         payload = {
             "source_checksum_sha256": target.checksum_sha256,
             "profile_fingerprint": fingerprint,
-            "element_sequence_hash": element_sequence_hash(parsed),
-            "asset_manifest_hash": asset_manifest_hash(parsed.assets),
+            "element_sequence_hash": docling_item_sequence_hash(document),
+            "asset_manifest_hash": asset_manifest_hash(extracted),
             "unit_plan": unit_plan,
             "representation_matrix": planned,
             "relation_plan": relation_plan,
@@ -896,7 +831,7 @@ class IndexingPipeline:
         return IndexArtifactManifest(
             indexed_document_version_id=target.indexed_document_version_id,
             unit_count=len(units),
-            asset_count=len(parsed.assets),
+            asset_count=len(extracted),
             representation_count=len(planned),
             relation_count=len(relation_plan),
             manifest_hash=manifest_hash,
@@ -904,9 +839,9 @@ class IndexingPipeline:
         )
 
     async def _embed_multimodal_representations(
-        self, command, target, parsed, units, chunks, planned, cross_space
+        self, command, target, extracted, units, chunks, planned, cross_space
     ) -> None:
-        assets = {item.asset_key: item for item in parsed.assets}
+        assets = {item.asset_key: item for item in extracted}
         units_by_id = {str(chunk.id): unit for chunk, unit in zip(chunks, units, strict=True)}
         chunks_by_id = {str(chunk.id): chunk for chunk in chunks}
         text_items = tuple(
@@ -1036,107 +971,6 @@ class IndexingPipeline:
                 )
             await self._upsert(command, tuple(batch_chunks), tuple(writes))
 
-    async def _process_structural(
-        self,
-        command: IndexingCommand,
-        source: ParserSource,
-    ) -> ProcessedDocument:
-        phase = IndexingPhase.PARSING
-        await self._set_phase(command, phase)
-        try:
-            return await self._document_processor.process(source)
-        except ParserExecutionError as error:
-            raise IndexingExecutionError(
-                error.code,
-                phase=phase,
-                diagnostic=error.diagnostic,
-            ) from error
-        except Exception as error:
-            raise IndexingExecutionError(
-                ErrorCode.PARSER_CRASHED,
-                phase=phase,
-                diagnostic={"check": "processor_contract"},
-            ) from error
-
-    async def _process_semantic(
-        self,
-        command: IndexingCommand,
-        target: IndexingTarget,
-        source: ParserSource,
-    ) -> ProcessedDocument:
-        await self._set_phase(command, IndexingPhase.PARSING)
-        try:
-            parsed = await self._document_processor.partition(source)
-        except ParserExecutionError as error:
-            raise IndexingExecutionError(
-                error.code,
-                phase=IndexingPhase.PARSING,
-                diagnostic=error.diagnostic,
-            ) from error
-        except Exception as error:
-            raise IndexingExecutionError(
-                ErrorCode.PARSER_CRASHED,
-                phase=IndexingPhase.PARSING,
-                diagnostic={"check": "partition_contract"},
-            ) from error
-
-        await self._set_phase(command, IndexingPhase.SEMANTIC_ANALYSIS)
-        try:
-            units = semantic_units(parsed)
-        except ParserExecutionError as error:
-            raise IndexingExecutionError(
-                error.code,
-                phase=IndexingPhase.SEMANTIC_ANALYSIS,
-                diagnostic=error.diagnostic,
-            ) from error
-        fingerprint = profile_fingerprint(
-            target.parser_config,
-            target.chunking_config,
-        )
-        existing = await self._transaction(
-            lambda uow: uow.indexing.get_chunk_plan(command)
-        )
-        if existing is not None:
-            validate_plan(
-                existing,
-                indexed_document_version_id=target.indexed_document_version_id,
-                source_checksum_sha256=target.checksum_sha256,
-                profile_fingerprint=fingerprint,
-                units=units,
-            )
-            return assemble_semantic_document(units, existing)
-
-        requires_analysis = (
-            count_chunk_tokens("\n\n".join(unit.text for unit in units))
-            > int(SEMANTIC_CHUNKING_CONFIG["max_chunk_tokens"])
-            or any(unit.hard_boundary_before for unit in units[1:])
-        )
-        vectors = (
-            await self._embed_analysis_units(target, units)
-            if requires_analysis
-            else None
-        )
-        proposed = build_chunk_plan(
-            indexed_document_version_id=target.indexed_document_version_id,
-            source_checksum_sha256=target.checksum_sha256,
-            profile_fingerprint=fingerprint,
-            units=units,
-            vectors=vectors,
-        )
-        winner = await self._transaction(
-            lambda uow: uow.indexing.create_or_get_chunk_plan(
-                command, proposed
-            )
-        )
-        validate_plan(
-            winner,
-            indexed_document_version_id=target.indexed_document_version_id,
-            source_checksum_sha256=target.checksum_sha256,
-            profile_fingerprint=fingerprint,
-            units=units,
-        )
-        return assemble_semantic_document(units, winner)
-
     async def _embed_analysis_units(
         self,
         target: IndexingTarget,
@@ -1243,36 +1077,14 @@ def _safe_diagnostic(value: dict) -> dict:
     return {key: item for key, item in value.items() if key in allowed}
 
 
+def _profile(target: IndexingTarget) -> str:
+    """Identify chunks by the complete profile that produced them."""
+
+    return f"{target.parser_config['profile']}:{target.chunking_config['profile']}"
+
+
 def _promotion_command(command: IndexingCommand) -> PromotionCommand:
     return PromotionCommand(
         job_id=command.job_id,
         indexed_document_version_id=command.indexed_document_version_id,
     )
-
-
-def _unit_page(unit: EvidenceUnitDraft) -> int:
-    page = unit.source_location.get("page_number")
-    if isinstance(page, int):
-        return page
-    pages = unit.source_location.get("page_numbers")
-    if isinstance(pages, list) and pages and isinstance(pages[0], int):
-        return pages[0]
-    return 2**31 - 1
-
-
-def _text_regions_overlap(left: str, right: str) -> bool:
-    left_normalized = " ".join(left.split()).casefold()
-    right_normalized = " ".join(right.split()).casefold()
-    if not left_normalized or not right_normalized:
-        return False
-    shorter, longer = sorted((left_normalized, right_normalized), key=len)
-    probe = shorter[: min(len(shorter), 96)]
-    return len(probe) >= 16 and probe in longer
-
-
-def _locations_overlap(left: dict, right: dict) -> bool:
-    # The shared reader accepts both retired revision keys and the Docling
-    # provenance view, so this stays correct once the pipeline parses natively.
-    left_pages = surface_ordinals(left)
-    right_pages = surface_ordinals(right)
-    return bool(left_pages and right_pages and left_pages.intersection(right_pages))

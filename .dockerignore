@@ -8,4 +8,5 @@ evaluation
 tests
 tools
 !tools/embedding_stub.py
+!tools/prepare_docling_artifacts.py
 verification

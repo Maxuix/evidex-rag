@@ -77,6 +77,84 @@ MULTIMODAL_REPRESENTATION_CONFIG = {
     },
 }
 
+_DOCLING_PARSER_BASE = {
+    "engine": "docling",
+    "engine_version": "2.114.0",
+    "core_version": "2.87.1",
+    "document_schema": "DoclingDocument",
+    "document_version": "1.10.0",
+    "allowed_formats": [".txt", ".md", ".pdf", ".docx"],
+    "supported_extensions": [".txt", ".md", ".pdf", ".docx"],
+    "pdf_pipeline": "standard",
+    "pdf_backend": "default_2_114_0",
+    "ocr_engine": "rapidocr",
+    "ocr_models": ["chinese"],
+    "ocr_force_full_page": False,
+    "do_table_structure": True,
+    "enable_remote_services": False,
+    "allow_external_plugins": False,
+    "picture_classification": False,
+    "picture_description": False,
+    "chart_extraction": False,
+    "code_formula_enrichment": False,
+    "accelerator": "cpu_single_thread",
+    "document_timeout_seconds": 600,
+    "max_num_pages": 500,
+    "max_file_size": 10_485_760,
+    "max_docling_items": 20_000,
+    "provenance_projection": "docling_prov_v1",
+    "unknown_item_policy": "text_or_skip_v1",
+    "model_artifact_manifest": "docling-artifacts-v1",
+}
+
+DOCLING_TEXT_PARSER_CONFIG = {
+    **_DOCLING_PARSER_BASE,
+    "profile": "docling_text_local_v1",
+    "generate_page_images": False,
+    "generate_picture_images": False,
+    "asset_mapping": "none",
+}
+
+DOCLING_MULTIMODAL_PARSER_CONFIG = {
+    **_DOCLING_PARSER_BASE,
+    "profile": "docling_multimodal_local_v1",
+    "generate_page_images": True,
+    "generate_picture_images": True,
+    "asset_mapping": "docling_picture_table_page_v1",
+    "page_image_policy": "scanned_surface_v1",
+}
+
+DOCLING_ENRICHMENT_CONFIG = {
+    "profile": "composite_visual_enrichment_v3",
+    "ocr": "docling_rapidocr_v1",
+    "author_caption": "docling_caption_ref_v1",
+    "figure_reference": "deterministic_figure_reference_v2",
+    "relation_builder": "docling_chunk_asset_relations_v1",
+    "visual_filter": "docling_asset_identity_v1",
+    "table_normalization": "docling_markdown_bounded_html_v1",
+}
+
+DOCLING_REPRESENTATION_CONFIG = {
+    "profile": "composite_multimodal_representations_v3",
+    "embedding": "tongyi_vision_flash_20260306_independent_768_v1",
+    "embedding_text": {
+        "profile": "composite_embedding_text_v2",
+        "sections": ["body", "figure_label", "author_caption", "ocr", "table"],
+        "separator": "\\n",
+        "unicode": "NFC",
+        "max_tokens": 1200,
+        "max_attachment_tokens": 256,
+    },
+    "text": {"required": ["text"]},
+    "image": {"required": ["native_image"], "optional": []},
+    "table": {"required": ["table_text"], "optional": ["table_image"]},
+    "relations": {
+        "profile": "docling_chunk_asset_relations_v1",
+        "max_per_chunk": 32,
+        "max_total": 50000,
+    },
+}
+
 UNSTRUCTURED_CHUNKING_CONFIG = {
     "profile": "unstructured_by_title_token_v2",
     "strategy": "by_title",
@@ -171,7 +249,7 @@ def profile_for_preset(
 
     resolved = ChunkingPreset(preset)
     chunking = (
-        UNSTRUCTURED_CHUNKING_CONFIG
+        STRUCTURAL_CHUNKING_CONFIG_V3
         if resolved is ChunkingPreset.STRUCTURAL_BALANCED_V2
         else SEMANTIC_CHUNKING_CONFIG
     )
@@ -179,12 +257,14 @@ def profile_for_preset(
     multimodal = parsing is ParsingPreset.MULTIMODAL_LOCAL_V1
     return IndexProfileDefinition(
         parser_config=deepcopy(
-            MULTIMODAL_PARSER_CONFIG if multimodal else UNSTRUCTURED_PARSER_CONFIG
+            DOCLING_MULTIMODAL_PARSER_CONFIG
+            if multimodal
+            else DOCLING_TEXT_PARSER_CONFIG
         ),
         chunking_config=deepcopy(chunking),
-        enrichment_config=deepcopy(MULTIMODAL_ENRICHMENT_CONFIG) if multimodal else {},
+        enrichment_config=deepcopy(DOCLING_ENRICHMENT_CONFIG) if multimodal else {},
         representation_config=(
-            deepcopy(MULTIMODAL_REPRESENTATION_CONFIG) if multimodal else {}
+            deepcopy(DOCLING_REPRESENTATION_CONFIG) if multimodal else {}
         ),
     )
 
@@ -199,11 +279,20 @@ def resolve(
     parser_config: dict,
     chunking_config: dict,
 ) -> ChunkingStrategyKind:
-    """Fail closed unless the complete persisted profile exactly matches a preset."""
+    """Fail closed unless the complete persisted profile exactly matches a preset.
 
-    if parser_config not in (UNSTRUCTURED_PARSER_CONFIG, MULTIMODAL_PARSER_CONFIG):
+    Only native Docling profiles are executable. Revisions produced by the
+    retired Unstructured chain stay readable through the descriptor helpers, but
+    re-running or rebuilding one is a stable incompatibility rather than a
+    crash inside a parser that no longer matches the recorded profile.
+    """
+
+    if parser_config not in (
+        DOCLING_TEXT_PARSER_CONFIG,
+        DOCLING_MULTIMODAL_PARSER_CONFIG,
+    ):
         raise ValueError("unknown parser profile")
-    if chunking_config == UNSTRUCTURED_CHUNKING_CONFIG:
+    if chunking_config == STRUCTURAL_CHUNKING_CONFIG_V3:
         return ChunkingStrategyKind.STRUCTURAL
     if chunking_config == SEMANTIC_CHUNKING_CONFIG:
         return ChunkingStrategyKind.SEMANTIC
@@ -211,11 +300,13 @@ def resolve(
 
 
 def parsing_preset(parser_config: dict) -> ParsingPreset:
-    if parser_config == UNSTRUCTURED_PARSER_CONFIG:
+    if parser_config in (DOCLING_TEXT_PARSER_CONFIG, UNSTRUCTURED_PARSER_CONFIG):
         return ParsingPreset.TEXT_LOCAL_V1
-    if parser_config == MULTIMODAL_PARSER_CONFIG:
-        return ParsingPreset.MULTIMODAL_LOCAL_V1
-    if parser_config == LEGACY_MULTIMODAL_PARSER_CONFIG_V1:
+    if parser_config in (
+        DOCLING_MULTIMODAL_PARSER_CONFIG,
+        MULTIMODAL_PARSER_CONFIG,
+        LEGACY_MULTIMODAL_PARSER_CONFIG_V1,
+    ):
         return ParsingPreset.MULTIMODAL_LOCAL_V1
     raise ValueError("unknown parser profile")
 
@@ -226,11 +317,12 @@ def public_parsing_descriptor(parser_config: dict) -> dict[str, str]:
 
 
 def public_descriptor(chunking_config: dict) -> dict[str, str]:
-    if chunking_config == UNSTRUCTURED_CHUNKING_CONFIG:
-        return {
-            "preset": ChunkingPreset.STRUCTURAL_BALANCED_V2.value,
-            "profile": UNSTRUCTURED_CHUNKING_CONFIG["profile"],
-        }
+    for config in (STRUCTURAL_CHUNKING_CONFIG_V3, UNSTRUCTURED_CHUNKING_CONFIG):
+        if chunking_config == config:
+            return {
+                "preset": ChunkingPreset.STRUCTURAL_BALANCED_V2.value,
+                "profile": config["profile"],
+            }
     if chunking_config == SEMANTIC_CHUNKING_CONFIG:
         return {
             "preset": ChunkingPreset.SEMANTIC_BALANCED_V1.value,

@@ -5,12 +5,18 @@ import unittest
 from dataclasses import replace
 from uuid import UUID, uuid4
 
+from PIL import Image
+from docling_core.types.doc import DocItemLabel, DoclingDocument
+from docling_core.types.doc.common.origin import DocumentOrigin
+from docling_core.types.doc.common.reference import ImageRef
+
 from rag_kb.adapters import FixedPgVectorSpace
 from rag_kb.document_processing import (
+    DOCLING_ENRICHMENT_CONFIG,
+    DOCLING_REPRESENTATION_CONFIG,
     LEGACY_MULTIMODAL_PARSER_CONFIG_V1,
-    MULTIMODAL_ENRICHMENT_CONFIG,
-    MULTIMODAL_REPRESENTATION_CONFIG,
-    UNSTRUCTURED_CHUNKING_CONFIG,
+    STRUCTURAL_CHUNKING_CONFIG_V3,
+    count_chunk_tokens,
     index_profile,
     public_parsing_descriptor,
     profile_for_preset,
@@ -20,7 +26,6 @@ from rag_kb.domain import (
     EmbeddingBatch,
     EmbeddingSpaceDefinition,
     ErrorCode,
-    IndexChunkDraft,
     IndexingCommand,
     IndexingExecutionError,
     IndexingPhase,
@@ -28,10 +33,7 @@ from rag_kb.domain import (
     PromotionReason,
     PromotionResult,
     PromotionStatus,
-    ProcessedDocument,
-    ParsedDocument,
-    ParsedElement,
-    ParsedAssetDraft,
+    ParserExecutionError,
     ContentModality,
     SourceFileIdentity,
     stable_chunk_id,
@@ -51,7 +53,7 @@ class IndexingDomainTests(unittest.TestCase):
 
         self.assertEqual(
             profile.chunking_config["profile"],
-            "unstructured_by_title_token_v2",
+            "structural_by_title_token_v3",
         )
         self.assertEqual(
             (
@@ -61,8 +63,11 @@ class IndexingDomainTests(unittest.TestCase):
             ),
             (800, 600, "cl100k_base"),
         )
-        self.assertNotIn("max_characters", UNSTRUCTURED_CHUNKING_CONFIG)
-        self.assertNotIn("new_after_n_chars", UNSTRUCTURED_CHUNKING_CONFIG)
+        self.assertEqual(
+            profile.parser_config["profile"], "docling_text_local_v1"
+        )
+        self.assertNotIn("max_characters", STRUCTURAL_CHUNKING_CONFIG_V3)
+        self.assertNotIn("new_after_n_chars", STRUCTURAL_CHUNKING_CONFIG_V3)
 
     def test_stable_chunk_and_vector_business_keys(self) -> None:
         target = uuid4()
@@ -81,14 +86,14 @@ class IndexingDomainTests(unittest.TestCase):
 
         self.assertEqual(
             profile.parser_config["profile"],
-            "unstructured_multimodal_local_v2",
+            "docling_multimodal_local_v1",
         )
-        self.assertNotIn("caption", MULTIMODAL_ENRICHMENT_CONFIG)
+        self.assertNotIn("caption", DOCLING_ENRICHMENT_CONFIG)
         self.assertEqual(
-            MULTIMODAL_REPRESENTATION_CONFIG["image"]["optional"], []
+            DOCLING_REPRESENTATION_CONFIG["image"]["optional"], []
         )
         self.assertNotIn(
-            "caption_text", str(MULTIMODAL_REPRESENTATION_CONFIG)
+            "caption_text", str(DOCLING_REPRESENTATION_CONFIG)
         )
         self.assertEqual(
             public_parsing_descriptor(LEGACY_MULTIMODAL_PARSER_CONFIG_V1),
@@ -130,7 +135,7 @@ class IndexingPipelineTests(unittest.IsolatedAsyncioTestCase):
         pipeline = IndexingPipeline(
             factory,
             _FileStore(factory),
-            _MultimodalProcessor(factory),
+            _MultimodalParser(factory),
             text_provider,
             FixedPgVectorSpace(_embedding()),
             asset_store=asset_store,
@@ -189,7 +194,10 @@ class IndexingPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(repository.vectors), 2)
         self.assertEqual(
             [repository.chunks[ordinal].token_count for ordinal in range(2)],
-            [11, 12],
+            [
+                count_chunk_tokens("Alpha\n\nfirst"),
+                count_chunk_tokens("Beta\n\nsecond"),
+            ],
         )
         self.assertEqual(provider.calls, 2)
         self.assertEqual(repository.status, "completed")
@@ -246,7 +254,7 @@ class IndexingPipelineTests(unittest.IsolatedAsyncioTestCase):
         pipeline = IndexingPipeline(
             factory,
             _FileStore(factory),
-            _FailingProcessor(factory),
+            _FailingParser(factory),
             _Provider(factory),
             FixedPgVectorSpace(_embedding()),
         )
@@ -267,7 +275,7 @@ class IndexingPipelineTests(unittest.IsolatedAsyncioTestCase):
         repository = _Repository(_target(ChunkingPreset.SEMANTIC_BALANCED_V1))
         factory = _Factory(repository)
         provider = _Provider(factory, fail_call=8)
-        pipeline = _pipeline(factory, provider)
+        pipeline = _pipeline(factory, provider, _SemanticParser(factory))
         command = IndexingCommand(
             repository.target.job_id,
             repository.target.indexed_document_version_id,
@@ -467,103 +475,80 @@ class _FileStore:
             raise AssertionError("file I/O ran inside transaction")
 
 
-class _Processor:
+class _Parser:
+    """A text-only parser double returning a synthetic converted document."""
+
     def __init__(self, factory) -> None:
         self.factory = factory
+        self.calls = 0
 
-    async def process(self, source):
+    async def parse(self, source, *, preset):
         if self.factory.active:
             raise AssertionError("parser ran inside transaction")
-        del source
-        drafts = tuple(
-            IndexChunkDraft(
-                ordinal=ordinal,
-                text=text,
-                token_count=ordinal + 11,
-                source_location={
-                    "page_start": ordinal + 1,
-                    "page_end": ordinal + 1,
-                },
-                hierarchy={"titles": []},
-                processing_metadata={"integration": "test"},
-                content_sha256=hashlib.sha256(text.encode()).hexdigest(),
-            )
-            for ordinal, text in enumerate(("first", "second"))
-        )
-        return ProcessedDocument(
-            chunks=drafts,
-            extracted_character_count=sum(len(draft.text) for draft in drafts),
-        )
-
-    async def partition(self, source):
-        if self.factory.active:
-            raise AssertionError("parser ran inside transaction")
-        del source
-        elements = tuple(
-            ParsedElement(
-                ordinal=ordinal,
-                text=("word " * 120 + f"topic{ordinal}").strip(),
-                token_count=0,
-                category="NarrativeText",
-                source_location={},
-                hierarchy={},
-                is_title=False,
-                is_table=False,
-            )
-            for ordinal in range(7)
-        )
-        return ParsedDocument(
-            elements=elements,
-            extracted_character_count=sum(len(item.text) for item in elements),
-        )
+        del source, preset
+        self.calls += 1
+        return _text_document()
 
 
-class _MultimodalProcessor:
+class _MultimodalParser:
     def __init__(self, factory) -> None:
         self.factory = factory
+        self.calls = 0
 
-    async def partition_multimodal(self, source):
+    async def parse(self, source, *, preset):
         if self.factory.active:
             raise AssertionError("parser ran inside transaction")
-        del source
-        content = b"fixture-image"
-        checksum = hashlib.sha256(content).hexdigest()
-        asset = ParsedAssetDraft(
-            asset_key="b" * 64,
-            kind="docx_picture",
-            media_type="image/png",
-            content=content,
-            content_sha256=checksum,
-            width=120,
-            height=80,
-            source_location={"block_ordinal": 1},
-            processing_metadata={},
+        del source, preset
+        self.calls += 1
+        return _visual_document()
+
+
+class _SemanticParser:
+    def __init__(self, factory) -> None:
+        self.factory = factory
+        self.calls = 0
+
+    async def parse(self, source, *, preset):
+        if self.factory.active:
+            raise AssertionError("parser ran inside transaction")
+        del source, preset
+        self.calls += 1
+        return _analysis_document()
+
+
+def _document(name: str) -> DoclingDocument:
+    document = DoclingDocument(name=name)
+    document.origin = DocumentOrigin(
+        mimetype="text/plain", binary_hash=17, filename=f"{name}.txt"
+    )
+    return document
+
+
+def _text_document() -> DoclingDocument:
+    document = _document("guide")
+    for heading, body in (("Alpha", "first"), ("Beta", "second")):
+        document.add_heading(text=heading, level=1)
+        document.add_text(label=DocItemLabel.TEXT, text=body)
+    return document
+
+
+def _analysis_document() -> DoclingDocument:
+    document = _document("analysis")
+    for ordinal in range(7):
+        document.add_text(
+            label=DocItemLabel.TEXT,
+            text=("word " * 120 + f"topic{ordinal}").strip(),
         )
-        return ParsedDocument(
-            elements=(
-                ParsedElement(
-                    ordinal=0,
-                    text="body evidence",
-                    token_count=2,
-                    category="NarrativeText",
-                    source_location={"block_ordinal": 0},
-                    hierarchy={},
-                    element_key="text-element",
-                ),
-                ParsedElement(
-                    ordinal=1,
-                    text="author diagram caption",
-                    token_count=3,
-                    category="Image",
-                    source_location={"block_ordinal": 1},
-                    hierarchy={},
-                    element_key="image-element",
-                    asset_key=asset.asset_key,
-                ),
-            ),
-            extracted_character_count=36,
-            assets=(asset,),
-        )
+    return document
+
+
+def _visual_document() -> DoclingDocument:
+    document = _document("evidence")
+    document.add_text(label=DocItemLabel.TEXT, text="body evidence")
+    document.add_picture(
+        image=ImageRef.from_pil(Image.new("RGB", (120, 80), (10, 20, 30)), dpi=72)
+    )
+    return document
 
 
 class _Provider:
@@ -614,29 +599,27 @@ class _AssetStore:
         self.writes.append((identity, content, checksum))
 
 
-class _FailingProcessor:
+class _FailingParser:
     def __init__(self, factory) -> None:
         self.factory = factory
 
-    async def process(self, source):
-        del source
+    async def parse(self, source, *, preset):
+        del source, preset
         if self.factory.active:
             raise AssertionError("parser ran inside transaction")
-        from rag_kb.domain import ParserExecutionError
-
         raise ParserExecutionError(
             ErrorCode.PARSER_CRASHED,
-            diagnostic={"check": "unstructured_loader"},
+            diagnostic={"check": "docling_conversion"},
         )
 
 
-def _pipeline(factory, provider):
+def _pipeline(factory, provider, parser=None):
     global _CURRENT_FACTORY
     _CURRENT_FACTORY = factory
     return IndexingPipeline(
         factory,
         _FileStore(factory),
-        _Processor(factory),
+        parser or _Parser(factory),
         provider,
         FixedPgVectorSpace(_embedding()),
     )

@@ -44,11 +44,17 @@ export interface KnowledgeBase {
   embedding_space_id: UUID;
   parsing: {
     preset: ParsingPreset;
-    profile: "unstructured_local_v1" | "unstructured_multimodal_local_v1" | "unstructured_multimodal_local_v2";
+    profile:
+      | "docling_text_local_v1"
+      | "docling_multimodal_local_v1"
+      | "unstructured_local_v1"
+      | "unstructured_multimodal_local_v1"
+      | "unstructured_multimodal_local_v2";
   };
   chunking: {
     preset: ChunkingPreset | "legacy_incompatible";
     profile:
+      | "structural_by_title_token_v3"
       | "unstructured_by_title_token_v2"
       | "semantic_breakpoint_v1"
       | "unstructured_title_semantic_qwen_v1";

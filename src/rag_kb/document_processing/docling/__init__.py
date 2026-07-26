@@ -9,6 +9,11 @@ from rag_kb.document_processing.docling.assets import (
     extract_docling_assets,
     relate_assets_to_chunks,
 )
+from rag_kb.document_processing.docling.evidence import (
+    composite_evidence,
+    docling_item_sequence_hash,
+    text_only_document,
+)
 from rag_kb.document_processing.docling.provenance import (
     PROVENANCE_VERSION,
     ItemSurface,
@@ -44,9 +49,12 @@ __all__ = [
     "assemble_structural",
     "chunk_assembly_key",
     "classify_item",
+    "composite_evidence",
+    "docling_item_sequence_hash",
     "docling_semantic_units",
     "docling_unit_sequence_hash",
     "extract_docling_assets",
+    "text_only_document",
     "iterate_body_items",
     "item_ref",
     "item_text",

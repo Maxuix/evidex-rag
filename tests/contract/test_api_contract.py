@@ -1156,7 +1156,7 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
             created.json()["chunking"],
             {
                 "preset": "structural_balanced_v2",
-                "profile": "unstructured_by_title_token_v2",
+                "profile": "structural_by_title_token_v3",
             },
         )
         self.assertEqual(

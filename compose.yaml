@@ -6,7 +6,7 @@ x-runtime-environment: &runtime-environment
   TIKTOKEN_CACHE_DIR: /var/lib/rag-kb/sources/.tiktoken-cache
 
 x-app-image: &app-image
-  image: rag-kb-app:unstructured-v1
+  image: rag-kb-app:docling-v1
   build:
     context: .
     dockerfile: Dockerfile
