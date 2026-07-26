@@ -15,16 +15,28 @@ from docling.datamodel.pipeline_options import (
     RapidOcrOptions,
 )
 from docling.document_converter import (
+    CsvFormatOption,
     DocumentConverter,
+    ExcelFormatOption,
+    HTMLFormatOption,
     MarkdownFormatOption,
     PdfFormatOption,
+    PowerpointFormatOption,
     WordFormatOption,
 )
 
 from rag_kb.domain import ParserLimits, ParsingPreset
 
 
-ALLOWED_FORMATS = (InputFormat.MD, InputFormat.PDF, InputFormat.DOCX)
+ALLOWED_FORMATS = (
+    InputFormat.MD,
+    InputFormat.PDF,
+    InputFormat.DOCX,
+    InputFormat.HTML,
+    InputFormat.CSV,
+    InputFormat.PPTX,
+    InputFormat.XLSX,
+)
 
 
 def build_docling_converter(
@@ -87,6 +99,18 @@ def build_docling_converter(
             ),
             InputFormat.PDF: PdfFormatOption(pipeline_options=pdf_options),
             InputFormat.DOCX: WordFormatOption(
+                pipeline_options=simple_options,
+            ),
+            InputFormat.HTML: HTMLFormatOption(
+                pipeline_options=simple_options,
+            ),
+            InputFormat.CSV: CsvFormatOption(
+                pipeline_options=simple_options,
+            ),
+            InputFormat.PPTX: PowerpointFormatOption(
+                pipeline_options=simple_options,
+            ),
+            InputFormat.XLSX: ExcelFormatOption(
                 pipeline_options=simple_options,
             ),
         },

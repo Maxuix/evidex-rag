@@ -9,6 +9,7 @@ was actually used.
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass
 import hashlib
 from io import BytesIO
@@ -69,6 +70,7 @@ def extract_docling_assets(
     limits: ParserLimits | None = None,
     *,
     page_image_surfaces: frozenset[int] | None = None,
+    surface_labels: Mapping[int, str] | None = None,
 ) -> tuple[ParsedAssetDraft, ...]:
     """Materialize every visual the converted document already carries.
 
@@ -91,7 +93,9 @@ def extract_docling_assets(
         asset = _bounded_asset(
             image,
             kind=ASSET_KIND_PICTURE,
-            source_location=project_source_location(document, (reference,), resolved),
+            source_location=project_source_location(
+                document, (reference,), resolved, surface_labels=surface_labels
+            ),
             metadata={
                 "item_ref": reference,
                 "source": "docling_picture",
@@ -112,7 +116,9 @@ def extract_docling_assets(
         asset = _bounded_asset(
             image,
             kind=ASSET_KIND_TABLE_IMAGE,
-            source_location=project_source_location(document, (reference,), resolved),
+            source_location=project_source_location(
+                document, (reference,), resolved, surface_labels=surface_labels
+            ),
             metadata={
                 "item_ref": reference,
                 "source": "docling_table",
@@ -132,7 +138,7 @@ def extract_docling_assets(
         asset = _bounded_asset(
             image,
             kind=ASSET_KIND_PAGE_IMAGE,
-            source_location=surface_location(kind, ordinal),
+            source_location=surface_location(kind, ordinal, surface_labels),
             metadata={"source": "docling_page", "surface_ordinal": ordinal},
             limits=resolved,
         )

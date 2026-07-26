@@ -24,6 +24,20 @@ import type {
 const API_PATH = "/api/v1";
 const SAFE_LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
 
+const OOXML = "application/vnd.openxmlformats-officedocument";
+
+/** The upload media types the API admits, keyed by lowercase extension. */
+const UPLOAD_MEDIA_TYPES: Record<string, string> = {
+  txt: "text/plain",
+  md: "text/markdown",
+  html: "text/html",
+  csv: "text/csv",
+  pdf: "application/pdf",
+  docx: `${OOXML}.wordprocessingml.document`,
+  pptx: `${OOXML}.presentationml.presentation`,
+  xlsx: `${OOXML}.spreadsheetml.sheet`,
+};
+
 export class ApiClientError extends Error {
   readonly status: number | null;
   readonly code: string;
@@ -290,20 +304,13 @@ export class ApiClient {
     displayName: string,
     idempotencyKey: UUID,
   ): Promise<DocumentUpload> {
-    const extension = file.name.toLowerCase().split(".").pop();
-    const mediaType = extension === "md"
-      ? "text/markdown"
-      : extension === "txt"
-        ? "text/plain"
-        : extension === "pdf"
-          ? "application/pdf"
-          : extension === "docx"
-            ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-            : null;
+    const extension = file.name.toLowerCase().split(".").pop() ?? "";
+    const mediaType = UPLOAD_MEDIA_TYPES[extension] ?? null;
     if (!mediaType) {
-      throw new ApiClientError("Choose a .txt, .md, .pdf, or .docx file.", {
-        code: "FRONTEND_FILE_TYPE_UNSUPPORTED",
-      });
+      throw new ApiClientError(
+        "Choose a .txt, .md, .html, .csv, .pdf, .docx, .pptx, or .xlsx file.",
+        { code: "FRONTEND_FILE_TYPE_UNSUPPORTED" },
+      );
     }
     return this.request(path, {
       method: "POST",

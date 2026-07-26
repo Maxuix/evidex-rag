@@ -17,6 +17,10 @@ COMPOSE = ROOT / "compose.yaml"
 DOCKERFILE = ROOT / "Dockerfile"
 
 
+def _seconds(value: str | int) -> int:
+    return int(value) if isinstance(value, int) else int(str(value).rstrip("s"))
+
+
 class StartLocalScriptTests(unittest.TestCase):
     def test_compose_allows_bounded_cold_application_startup(self) -> None:
         configuration = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
@@ -24,8 +28,15 @@ class StartLocalScriptTests(unittest.TestCase):
         self.assertEqual(
             configuration["services"]["api"]["healthcheck"]["retries"], 40
         )
-        self.assertEqual(
-            configuration["services"]["worker"]["healthcheck"]["retries"], 24
+        worker = configuration["services"]["worker"]["healthcheck"]
+        # The Worker check builds the real dependency graph, so it pays the
+        # native Docling import cost on every run; both the per-run timeout and
+        # the whole cold window have to clear it.
+        self.assertGreaterEqual(_seconds(worker["timeout"]), 15)
+        self.assertGreaterEqual(
+            _seconds(worker["start_period"])
+            + _seconds(worker["interval"]) * worker["retries"],
+            240,
         )
 
     def test_compose_persists_worker_inference_models_separately(self) -> None:

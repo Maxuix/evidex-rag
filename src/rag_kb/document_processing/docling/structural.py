@@ -7,6 +7,7 @@ or loader produces chunks any more.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -55,6 +56,8 @@ class _Entry:
 def assemble_structural(
     document: DoclingDocument,
     limits: ParserLimits | None = None,
+    *,
+    surface_labels: Mapping[int, str] | None = None,
 ) -> tuple[ChunkAssemblyDraft, ...]:
     """Assemble structural chunks without materializing a second document model."""
 
@@ -81,7 +84,7 @@ def assemble_structural(
         headings = []
         region = []
         for text, refs in parts:
-            drafts.append(_draft(document, paths, text, refs, resolved))
+            drafts.append(_draft(document, paths, text, refs, resolved, surface_labels))
             _require_chunk_limit(drafts, resolved)
         if trailing and drafts:
             # A region that ends with a visual keeps that reference on the
@@ -93,6 +96,7 @@ def assemble_structural(
                 last.text,
                 tuple(dict.fromkeys((*last.item_refs, *trailing))),
                 resolved,
+                surface_labels,
             )
 
     for item, _level in iterate_body_items(document):
@@ -114,7 +118,7 @@ def assemble_structural(
             flush()
             visuals += 1
             headings = _append_table(
-                document, paths, drafts, item, headings, resolved
+                document, paths, drafts, item, headings, resolved, surface_labels
             )
             _require_chunk_limit(drafts, resolved)
             continue
@@ -134,7 +138,7 @@ def assemble_structural(
     if headings:
         # Trailing headings introduced nothing; they are still document content.
         for text, refs in _region_parts(headings)[0]:
-            drafts.append(_draft(document, paths, text, refs, resolved))
+            drafts.append(_draft(document, paths, text, refs, resolved, surface_labels))
             _require_chunk_limit(drafts, resolved)
 
     if not drafts and not visuals:
@@ -155,6 +159,7 @@ def _append_table(
     item: DocItem,
     headings: list[_Entry],
     limits: ParserLimits,
+    surface_labels: Mapping[int, str] | None,
 ) -> list[_Entry]:
     """Emit a table as its own chunks; return the headings still unattached."""
 
@@ -188,10 +193,13 @@ def _append_table(
                         )
                     ),
                     limits,
+                    surface_labels,
                 )
             )
             continue
-        drafts.append(_draft(document, paths, part, (reference,), limits))
+        drafts.append(
+            _draft(document, paths, part, (reference,), limits, surface_labels)
+        )
     return [] if attached else headings
 
 
@@ -201,12 +209,15 @@ def _draft(
     text: str,
     refs: tuple[str, ...],
     limits: ParserLimits,
+    surface_labels: Mapping[int, str] | None = None,
 ) -> ChunkAssemblyDraft:
     return ChunkAssemblyDraft(
         text=text,
         token_count=count_chunk_tokens(text),
         item_refs=refs,
-        source_location=project_source_location(document, refs, limits),
+        source_location=project_source_location(
+            document, refs, limits, surface_labels=surface_labels
+        ),
         hierarchy=common_hierarchy(tuple(paths.get(ref, ()) for ref in refs)),
     )
 

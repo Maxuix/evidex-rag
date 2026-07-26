@@ -8,7 +8,7 @@ reported.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 import hashlib
 import json
@@ -28,16 +28,23 @@ SURFACE_SLIDE = "slide"
 SURFACE_SHEET = "sheet"
 SURFACE_LOGICAL = "logical"
 
+_OOXML_PREFIX = "application/vnd.openxmlformats-officedocument"
 _SURFACE_BY_MIMETYPE = {
     "application/pdf": SURFACE_PAGE,
     "image/png": SURFACE_PAGE,
     "image/jpeg": SURFACE_PAGE,
     "image/tiff": SURFACE_PAGE,
-    "application/vnd.openxmlformats-officedocument.presentationml.presentation": (
-        SURFACE_SLIDE
-    ),
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": SURFACE_SHEET,
+    # Docling reports the template mimetype for decks built from one, so both
+    # presentation packages have to map onto the slide surface.
+    f"{_OOXML_PREFIX}.presentationml.presentation": SURFACE_SLIDE,
+    f"{_OOXML_PREFIX}.presentationml.template": SURFACE_SLIDE,
+    f"{_OOXML_PREFIX}.spreadsheetml.sheet": SURFACE_SHEET,
+    f"{_OOXML_PREFIX}.spreadsheetml.template": SURFACE_SHEET,
 }
+
+#: Bound on the sheet or slide names one chunk may name before the range alone
+#: has to speak for it.
+_MAX_SURFACE_LABELS = 32
 
 #: Location keys written by retired Unstructured revisions. The migration-period
 #: reader accepts them so already indexed revisions keep answering.
@@ -107,6 +114,8 @@ def project_source_location(
     document: DoclingDocument,
     item_refs: Sequence[str],
     limits: ParserLimits,
+    *,
+    surface_labels: Mapping[int, str] | None = None,
 ) -> dict[str, Any]:
     """Project one chunk's items onto the frozen bounded location view."""
 
@@ -114,6 +123,7 @@ def project_source_location(
         document_surfaces(document, item_refs),
         item_refs,
         max_metadata_bytes=limits.max_metadata_bytes,
+        surface_labels=surface_labels,
     )
 
 
@@ -122,6 +132,7 @@ def aggregate_provenance(
     item_refs: Sequence[str],
     *,
     max_metadata_bytes: int,
+    surface_labels: Mapping[int, str] | None = None,
 ) -> dict[str, Any]:
     """Apply the frozen aggregation rules to already-resolved provenance."""
 
@@ -148,6 +159,7 @@ def aggregate_provenance(
     if ordinals:
         projection["surface_start"] = min(ordinals)
         projection["surface_end"] = max(ordinals)
+        projection.update(_labels(sorted(set(ordinals)), surface_labels))
     if len(item_refs) == 1 and len(flattened) == 1:
         # Only a single item on a single surface has one true rectangle; several
         # items never get a merged box that covers content between them.
@@ -158,7 +170,11 @@ def aggregate_provenance(
     return _with_bounded_refs(projection, item_refs, max_metadata_bytes)
 
 
-def surface_location(kind: str, ordinal: int) -> dict[str, Any]:
+def surface_location(
+    kind: str,
+    ordinal: int,
+    surface_labels: Mapping[int, str] | None = None,
+) -> dict[str, Any]:
     """Describe a whole surface, used by assets that belong to no single item."""
 
     return {
@@ -166,9 +182,28 @@ def surface_location(kind: str, ordinal: int) -> dict[str, Any]:
         "surface_type": kind,
         "surface_start": ordinal,
         "surface_end": ordinal,
+        **_labels([ordinal], surface_labels),
         "item_refs": [],
         "item_ref_count": 0,
     }
+
+
+def _labels(
+    ordinals: Sequence[int],
+    surface_labels: Mapping[int, str] | None,
+) -> dict[str, Any]:
+    """Name the covered surfaces when the format supplies names."""
+
+    if not surface_labels:
+        return {}
+    named = [
+        surface_labels[ordinal] for ordinal in ordinals if ordinal in surface_labels
+    ]
+    if not named:
+        return {}
+    if len(named) == 1 and len(ordinals) == 1:
+        return {"surface_label": named[0]}
+    return {"surface_labels": named[:_MAX_SURFACE_LABELS]}
 
 
 def chunk_assembly_key(

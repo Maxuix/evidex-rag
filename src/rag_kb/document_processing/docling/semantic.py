@@ -7,6 +7,7 @@ asynchronous embedding round never extends the converted document's lifetime.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 import hashlib
 import json
@@ -68,6 +69,8 @@ class _Fragment:
 def docling_semantic_units(
     document: DoclingDocument,
     limits: ParserLimits | None = None,
+    *,
+    surface_labels: Mapping[int, str] | None = None,
 ) -> tuple[DoclingSemanticUnit, ...]:
     """Build bounded analysis units without provider or persistence I/O."""
 
@@ -167,7 +170,9 @@ def docling_semantic_units(
             text=fragment.text,
             token_count=fragment.token_count,
             item_refs=fragment.refs,
-            source_location=_unit_location(document, fragment, resolved),
+            source_location=_unit_location(
+                document, fragment, resolved, surface_labels
+            ),
             hard_boundary_before=fragment.boundary,
         )
         for ordinal, fragment in enumerate(merged)
@@ -181,6 +186,8 @@ def assemble_semantic_chunks(
     units: tuple[DoclingSemanticUnit, ...],
     plan: IndexChunkPlan,
     limits: ParserLimits | None = None,
+    *,
+    surface_labels: Mapping[int, str] | None = None,
 ) -> tuple[ChunkAssemblyDraft, ...]:
     """Cut the analysis units at the immutable plan boundaries."""
 
@@ -208,7 +215,9 @@ def assemble_semantic_chunks(
                 text=text,
                 token_count=token_count,
                 item_refs=refs,
-                source_location=project_source_location(document, refs, resolved),
+                source_location=project_source_location(
+                    document, refs, resolved, surface_labels=surface_labels
+                ),
                 hierarchy=common_hierarchy(
                     tuple(paths.get(reference, ()) for reference in refs)
                 ),
@@ -276,8 +285,11 @@ def _unit_location(
     document: DoclingDocument,
     fragment: _Fragment,
     limits: ParserLimits,
+    surface_labels: Mapping[int, str] | None = None,
 ) -> dict[str, Any]:
-    location = project_source_location(document, fragment.refs, limits)
+    location = project_source_location(
+        document, fragment.refs, limits, surface_labels=surface_labels
+    )
     if fragment.fragment_count > 1:
         detail: dict[str, Any] = {
             "index": fragment.fragment_index,

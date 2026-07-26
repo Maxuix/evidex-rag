@@ -18,13 +18,26 @@ from rag_kb.domain import (
 
 
 _FILENAME = re.compile(r"^[^/\\\x00]{1,255}$")
+_OOXML_PREFIX = "application/vnd.openxmlformats-officedocument"
 _MEDIA_TYPES = {
     ".txt": "text/plain",
     ".md": "text/markdown",
+    ".html": "text/html",
+    ".csv": "text/csv",
     ".pdf": "application/pdf",
-    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".docx": f"{_OOXML_PREFIX}.wordprocessingml.document",
+    ".pptx": f"{_OOXML_PREFIX}.presentationml.presentation",
+    ".xlsx": f"{_OOXML_PREFIX}.spreadsheetml.sheet",
 }
-_TEXT_EXTENSIONS = {".txt", ".md"}
+_TEXT_EXTENSIONS = {".txt", ".md", ".html", ".csv"}
+
+#: The content part every OOXML family must carry, checked alongside the shared
+#: archive bounds so a renamed or hollowed-out package cannot reach the parser.
+_OOXML_REQUIRED_PARTS = {
+    ".docx": "word/document.xml",
+    ".pptx": "ppt/presentation.xml",
+    ".xlsx": "xl/workbook.xml",
+}
 
 
 class FileAdmissionService:
@@ -81,8 +94,8 @@ class FileAdmissionService:
             line_count = self._validate_text(content)
         elif extension == ".pdf":
             self._validate_pdf(content)
-        elif extension == ".docx":
-            self._validate_docx(content)
+        elif extension in _OOXML_REQUIRED_PARTS:
+            self._validate_ooxml(content, _OOXML_REQUIRED_PARTS[extension])
         source.seek(0)
         return AdmittedFile(
             original_filename=filename,
@@ -112,7 +125,9 @@ class FileAdmissionService:
         if b"%PDF-" not in content[:1024]:
             raise FileAdmissionError(ErrorCode.FILE_CONTENT_INVALID)
 
-    def _validate_docx(self, content: bytes) -> None:
+    def _validate_ooxml(self, content: bytes, required_part: str) -> None:
+        """Apply one archive safety policy to every OOXML family."""
+
         try:
             with ZipFile(BytesIO(content)) as archive:
                 entries = archive.infolist()
@@ -132,7 +147,7 @@ class FileAdmissionService:
                 names = {item.filename for item in entries}
                 if (
                     "[Content_Types].xml" not in names
-                    or "word/document.xml" not in names
+                    or required_part not in names
                     or any(
                         item.flag_bits & 0x1 or _unsafe_archive_name(item.filename)
                         for item in entries

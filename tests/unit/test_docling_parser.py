@@ -220,7 +220,15 @@ class DoclingConverterFactoryTests(unittest.TestCase):
 
         self.assertEqual(
             set(text.allowed_formats),
-            {InputFormat.MD, InputFormat.PDF, InputFormat.DOCX},
+            {
+                InputFormat.MD,
+                InputFormat.PDF,
+                InputFormat.DOCX,
+                InputFormat.HTML,
+                InputFormat.CSV,
+                InputFormat.PPTX,
+                InputFormat.XLSX,
+            },
         )
         text_options = text.format_to_options[InputFormat.PDF].pipeline_options
         multimodal_options = (

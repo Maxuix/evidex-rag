@@ -83,8 +83,13 @@ _DOCLING_PARSER_BASE = {
     "core_version": "2.87.1",
     "document_schema": "DoclingDocument",
     "document_version": "1.10.0",
-    "allowed_formats": [".txt", ".md", ".pdf", ".docx"],
-    "supported_extensions": [".txt", ".md", ".pdf", ".docx"],
+    "allowed_formats": [
+        ".txt", ".md", ".html", ".csv", ".pdf", ".docx", ".pptx", ".xlsx",
+    ],
+    "supported_extensions": [
+        ".txt", ".md", ".html", ".csv", ".pdf", ".docx", ".pptx", ".xlsx",
+    ],
+    "sheet_name_supplement": "bounded_ooxml_workbook_v1",
     "pdf_pipeline": "standard",
     "pdf_backend": "default_2_114_0",
     "ocr_engine": "rapidocr",
@@ -174,11 +179,9 @@ UNSTRUCTURED_CHUNKING_CONFIG = {
 }
 
 # The native Docling structural profile. Token thresholds and tokenizer stay
-# identical to the v2 profile so parity against the retired Unstructured chain
-# is measurable; boundary sources, unknown-item policy and the provenance
-# projection are the new frozen facts. Index execution deliberately does not
-# resolve this profile yet — no revision may be created with it until the
-# pipeline itself parses once through Docling.
+# identical to the retired v2 profile so parity against the Unstructured chain
+# stays measurable; boundary sources, unknown-item policy and the provenance
+# projection are the new frozen facts.
 STRUCTURAL_CHUNKING_CONFIG_V3 = {
     "profile": "structural_by_title_token_v3",
     "strategy": "docling_structural",

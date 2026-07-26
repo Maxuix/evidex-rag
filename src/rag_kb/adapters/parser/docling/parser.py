@@ -33,13 +33,16 @@ from rag_kb.domain import (
 )
 
 
+_OOXML_PREFIX = "application/vnd.openxmlformats-officedocument"
 _MEDIA_TYPES = {
     ".txt": "text/plain",
     ".md": "text/markdown",
+    ".html": "text/html",
+    ".csv": "text/csv",
     ".pdf": "application/pdf",
-    ".docx": (
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-    ),
+    ".docx": f"{_OOXML_PREFIX}.wordprocessingml.document",
+    ".pptx": f"{_OOXML_PREFIX}.presentationml.presentation",
+    ".xlsx": f"{_OOXML_PREFIX}.spreadsheetml.sheet",
 }
 _DATA_URI_PREFIX = "data:"
 _BASE64_MARKER = ";base64,"

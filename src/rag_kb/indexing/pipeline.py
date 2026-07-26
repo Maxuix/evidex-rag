@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import replace
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from typing import TypeVar
 
 from rag_kb.adapters import (
@@ -16,6 +16,7 @@ from rag_kb.adapters import (
 )
 from rag_kb.adapters.file_store import IndexAssetStore
 from rag_kb.adapters.model_api import MultimodalEmbeddingAdapter
+from rag_kb.adapters.parser.ooxml_metadata import worksheet_labels
 from rag_kb.adapters.parser.scanned_pages import scanned_surfaces
 from docling_core.types.doc import DoclingDocument
 
@@ -156,10 +157,13 @@ class IndexingPipeline:
                     else ParsingPreset.TEXT_LOCAL_V1
                 ),
             )
-            chunks = await self._chunks(command, target, document, strategy)
+            labels = self._surface_labels(source)
+            chunks = await self._chunks(
+                command, target, document, strategy, labels
+            )
             if multimodal:
                 result = await self._execute_multimodal(
-                    command, target, source, document, chunks, cross_space
+                    command, target, source, document, chunks, cross_space, labels
                 )
                 promotion = await self._promotion.promote(_promotion_command(command))
                 return IndexingResult(
@@ -391,35 +395,55 @@ class IndexingPipeline:
                 diagnostic={"check": "parser_contract"},
             ) from error
 
+    def _surface_labels(self, source: ParserSource) -> dict[int, str]:
+        """Recover surface names Docling does not expose, such as sheet names."""
+
+        try:
+            return worksheet_labels(source)
+        except ParserExecutionError as error:
+            raise IndexingExecutionError(
+                error.code,
+                phase=IndexingPhase.PARSING,
+                diagnostic=error.diagnostic,
+            ) from error
+
     async def _chunks(
         self,
         command: IndexingCommand,
         target: IndexingTarget,
         document: DoclingDocument,
         strategy: ChunkingStrategyKind,
+        surface_labels: Mapping[int, str],
     ) -> tuple[ChunkAssemblyDraft, ...]:
         """Apply the revision's chunking strategy to the converted document."""
 
         if strategy is ChunkingStrategyKind.STRUCTURAL:
             try:
-                return assemble_structural(document, self._parser_limits)
+                return assemble_structural(
+                    document, self._parser_limits, surface_labels=surface_labels
+                )
             except ParserExecutionError as error:
                 raise IndexingExecutionError(
                     error.code,
                     phase=IndexingPhase.PARSING,
                     diagnostic=error.diagnostic,
                 ) from error
-        return await self._semantic_chunks(command, target, document)
+        return await self._semantic_chunks(
+            command, target, document, surface_labels
+        )
 
     async def _semantic_chunks(
         self,
         command: IndexingCommand,
         target: IndexingTarget,
         document: DoclingDocument,
+        surface_labels: Mapping[int, str],
     ) -> tuple[ChunkAssemblyDraft, ...]:
         await self._set_phase(command, IndexingPhase.SEMANTIC_ANALYSIS)
         try:
-            units = docling_semantic_units(document, self._parser_limits)
+            units = docling_semantic_units(
+                document, self._parser_limits, surface_labels=surface_labels
+            )
         except ParserExecutionError as error:
             raise IndexingExecutionError(
                 error.code,
@@ -440,7 +464,7 @@ class IndexingPipeline:
             validate_plan(
                 existing, **plan_facts, units=units, sequence_hash=sequence_hash
             )
-            return self._assemble_semantic(document, units, existing)
+            return self._assemble_semantic(document, units, existing, surface_labels)
 
         requires_analysis = (
             count_chunk_tokens("\n\n".join(unit.text for unit in units))
@@ -461,16 +485,23 @@ class IndexingPipeline:
             lambda uow: uow.indexing.create_or_get_chunk_plan(command, proposed)
         )
         validate_plan(winner, **plan_facts, units=units, sequence_hash=sequence_hash)
-        return self._assemble_semantic(document, units, winner)
+        return self._assemble_semantic(document, units, winner, surface_labels)
 
     def _assemble_semantic(
         self,
         document: DoclingDocument,
         units,
         plan,
+        surface_labels: Mapping[int, str],
     ) -> tuple[ChunkAssemblyDraft, ...]:
         try:
-            return assemble_semantic_chunks(document, units, plan, self._parser_limits)
+            return assemble_semantic_chunks(
+                document,
+                units,
+                plan,
+                self._parser_limits,
+                surface_labels=surface_labels,
+            )
         except ParserExecutionError as error:
             raise IndexingExecutionError(
                 error.code,
@@ -516,12 +547,13 @@ class IndexingPipeline:
         document: DoclingDocument,
         assembled: tuple[ChunkAssemblyDraft, ...],
         cross_space,
+        surface_labels: Mapping[int, str],
     ) -> int:
         assert self._asset_store is not None
         cross_space_id = target.embedding_space_ids["cross_modal_retrieval"]
         await self._set_phase(command, IndexingPhase.ASSET_EXTRACTION)
         assembly, extracted = self._composite_evidence(
-            target, source, document, assembled
+            target, source, document, assembled, surface_labels
         )
         units = assembly.units
         relations = assembly.relations
@@ -650,6 +682,7 @@ class IndexingPipeline:
         source: ParserSource,
         document: DoclingDocument,
         assembled: tuple[ChunkAssemblyDraft, ...],
+        surface_labels: Mapping[int, str],
     ) -> tuple[CompositeEvidenceDraft, tuple[ParsedAssetDraft, ...]]:
         """Derive assets, relations and evidence units from the one conversion."""
 
@@ -658,6 +691,7 @@ class IndexingPipeline:
                 document,
                 self._parser_limits,
                 page_image_surfaces=scanned_surfaces(source),
+                surface_labels=surface_labels,
             )
             relations = relate_assets_to_chunks(
                 document, assembled, assets, self._parser_limits
