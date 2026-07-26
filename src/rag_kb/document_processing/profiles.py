@@ -135,7 +135,7 @@ DOCLING_ENRICHMENT_CONFIG = {
     "author_caption": "docling_caption_ref_v1",
     "figure_reference": "deterministic_figure_reference_v2",
     "relation_builder": "docling_chunk_asset_relations_v1",
-    "visual_filter": "docling_asset_identity_v1",
+    "visual_filter": "docling_decorative_repeat_v1",
     "table_normalization": "docling_markdown_bounded_html_v1",
 }
 

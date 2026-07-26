@@ -56,6 +56,14 @@ ASSET_KIND_PAGE_IMAGE = "page_image"
 _PNG_MEDIA_TYPE = "image/png"
 _ENCODABLE_MODES = frozenset({"L", "LA", "RGB", "RGBA"})
 
+#: A visual smaller than this in either dimension carries no readable evidence.
+_MIN_EVIDENCE_EDGE = 64
+#: A small visual repeated this often is furniture — a logo or watermark.
+_REPEAT_THRESHOLD = 3
+_REPEAT_AREA_RATIO = 0.08
+#: Comparing the tail of the data URI is enough to spot an identical repeat.
+_URI_DIGEST_CHARS = 256
+
 
 @dataclass(frozen=True, slots=True)
 class _Candidate:
@@ -84,12 +92,17 @@ def extract_docling_assets(
     resolved = limits or ParserLimits()
     assets: list[ParsedAssetDraft] = []
     total_bytes = 0
+    kind = surface_kind(document)
+    decorative = _decorative_pictures(document, kind)
 
     for picture in document.pictures:
         image = _image_of(picture, document)
         if image is None:
             continue
         reference = item_ref(picture)
+        if reference in decorative:
+            # Logos, rules and repeated watermarks are furniture, not evidence.
+            continue
         asset = _bounded_asset(
             image,
             kind=ASSET_KIND_PICTURE,
@@ -129,7 +142,6 @@ def extract_docling_assets(
         assets.append(asset)
         total_bytes = _require_asset_limits(assets, total_bytes, asset, resolved)
 
-    kind = surface_kind(document)
     for ordinal in _page_image_surfaces(document, kind, page_image_surfaces):
         page = document.pages[ordinal]
         image = page.image.pil_image if page.image is not None else None
@@ -308,6 +320,53 @@ def _candidate(
 def _asset_labels(asset: ParsedAssetDraft) -> frozenset[str]:
     caption = asset.processing_metadata.get("caption")
     return frozenset(normalize_figure_labels(caption)) if isinstance(caption, str) else frozenset()
+
+
+def _decorative_pictures(document: DoclingDocument, kind: str) -> frozenset[str]:
+    """Identify visuals that repeat as page furniture rather than carry content.
+
+    Docling reports every picture it finds, including logos and watermarks. The
+    frozen rule keeps the retired chain's behaviour: anything too small to read,
+    or small and repeated across the document, is not evidence.
+    """
+
+    sizes: dict[str, tuple[int, int]] = {}
+    digests: dict[str, str] = {}
+    for picture in document.pictures:
+        image = picture.image
+        if image is None:
+            continue
+        reference = item_ref(picture)
+        sizes[reference] = (int(image.size.width), int(image.size.height))
+        digests[reference] = str(image.uri)[-_URI_DIGEST_CHARS:]
+    repeats = Counter(digests.values())
+
+    decorative: set[str] = set()
+    for reference, (width, height) in sizes.items():
+        if width < _MIN_EVIDENCE_EDGE or height < _MIN_EVIDENCE_EDGE:
+            decorative.add(reference)
+            continue
+        if repeats[digests[reference]] < _REPEAT_THRESHOLD:
+            continue
+        surface = _surface_size(document, reference, kind)
+        if surface is not None and (width * height) / surface < _REPEAT_AREA_RATIO:
+            decorative.add(reference)
+    return frozenset(decorative)
+
+
+def _surface_size(
+    document: DoclingDocument,
+    reference: str,
+    kind: str,
+) -> float | None:
+    for picture in document.pictures:
+        if item_ref(picture) != reference:
+            continue
+        for surface in item_surfaces(picture, kind=kind):
+            page = document.pages.get(surface.ordinal)
+            if page is not None and page.size.width > 0 and page.size.height > 0:
+                return float(page.size.width) * float(page.size.height)
+    return None
 
 
 def _page_image_surfaces(

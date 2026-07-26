@@ -472,6 +472,42 @@ class AssetExtractionTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, ErrorCode.PARSER_RESOURCE_LIMIT)
 
 
+class DecorativeVisualTests(unittest.TestCase):
+    def _document(self, *, repeats: int, size: tuple[int, int]) -> DoclingDocument:
+        document = DoclingDocument(name="furniture")
+        document.origin = DocumentOrigin(
+            mimetype=PDF_MIMETYPE, binary_hash=21, filename="furniture.pdf"
+        )
+        document.add_page(page_no=1, size=Size(width=600, height=800))
+        document.add_text(
+            label=DocItemLabel.TEXT, text="Body text beside the mark.", prov=prov(1)
+        )
+        mark = image(size[0], size[1], colour=64)
+        for _ in range(repeats):
+            document.add_picture(image=mark, prov=prov(1))
+        return document
+
+    def test_visuals_too_small_to_read_are_not_evidence(self) -> None:
+        assets = extract_docling_assets(self._document(repeats=1, size=(40, 40)))
+
+        self.assertEqual(assets, ())
+
+    def test_a_small_repeated_mark_is_treated_as_furniture(self) -> None:
+        assets = extract_docling_assets(self._document(repeats=3, size=(96, 64)))
+
+        self.assertEqual(assets, ())
+
+    def test_a_repeated_but_large_visual_stays_evidence(self) -> None:
+        assets = extract_docling_assets(self._document(repeats=3, size=(420, 460)))
+
+        self.assertEqual(len(assets), 3)
+
+    def test_a_single_ordinary_figure_stays_evidence(self) -> None:
+        assets = extract_docling_assets(self._document(repeats=1, size=(96, 64)))
+
+        self.assertEqual(len(assets), 1)
+
+
 class RelationTests(unittest.TestCase):
     def test_docling_caption_reference_wins_over_surface_heuristics(self) -> None:
         document = paginated_document()
