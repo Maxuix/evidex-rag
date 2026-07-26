@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import unittest
 from typing import Any
 from uuid import UUID
@@ -23,6 +24,8 @@ from rag_kb.document_processing.docling import (
     assemble_structural,
     chunk_assembly_key,
     classify_item,
+    composite_evidence,
+    docling_item_sequence_hash,
     docling_semantic_units,
     docling_unit_sequence_hash,
     extract_docling_assets,
@@ -31,6 +34,7 @@ from rag_kb.document_processing.docling import (
     project_source_location,
     relate_assets_to_chunks,
     section_paths,
+    text_only_document,
 )
 from rag_kb.document_processing.docling.assets import (
     ASSET_KIND_PAGE_IMAGE,
@@ -41,6 +45,7 @@ from rag_kb.document_processing.semantic_boundaries import build_chunk_plan
 from rag_kb.domain import (
     ChunkAssetRelationProvenance,
     ChunkAssetRelationType,
+    ContentModality,
     ErrorCode,
     ParserExecutionError,
     ParserLimits,
@@ -52,6 +57,7 @@ DOCX_MIMETYPE = (
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 )
 VERSION_ID = UUID("01900000-0000-7000-8000-0000000009a1")
+PROFILE = "docling_multimodal_local_v1:structural_by_title_token_v3"
 
 
 def prov(page: int, span: tuple[int, int] = (0, 10)) -> ProvenanceItem:
@@ -609,6 +615,133 @@ class RelationTests(unittest.TestCase):
             ]
 
         self.assertEqual(manifest(), manifest())
+
+
+class EvidenceProjectionTests(unittest.TestCase):
+    def _projection(self, *, page_images: bool = False):
+        document = paginated_document(page_images=page_images)
+        document.tables[0].image = image(200, 150, colour=90)
+        chunks = assemble_structural(document)
+        assets = extract_docling_assets(
+            document,
+            page_image_surfaces=frozenset({2}) if page_images else None,
+        )
+        relations = relate_assets_to_chunks(document, chunks, assets)
+        return (
+            composite_evidence(
+                document,
+                chunks,
+                assets,
+                relations,
+                profile=PROFILE,
+                source_checksum_sha256="d" * 64,
+            ),
+            chunks,
+            assets,
+        )
+
+    def test_text_only_projection_keeps_chunk_order_and_hashes(self) -> None:
+        chunks = assemble_structural(paginated_document())
+
+        processed = text_only_document(chunks, profile=PROFILE)
+
+        self.assertEqual(len(processed.chunks), len(chunks))
+        self.assertEqual(
+            [draft.ordinal for draft in processed.chunks], list(range(len(chunks)))
+        )
+        self.assertEqual(
+            [draft.text for draft in processed.chunks], [chunk.text for chunk in chunks]
+        )
+        self.assertEqual(
+            processed.chunks[0].content_sha256,
+            hashlib.sha256(chunks[0].text.encode("utf-8")).hexdigest(),
+        )
+        self.assertEqual(
+            processed.extracted_character_count,
+            sum(len(chunk.text) for chunk in chunks),
+        )
+
+    def test_an_empty_assembly_fails_closed(self) -> None:
+        with self.assertRaises(ParserExecutionError) as raised:
+            text_only_document((), profile=PROFILE)
+        self.assertEqual(raised.exception.code, ErrorCode.PARSER_OUTPUT_INVALID)
+
+    def test_units_interleave_visuals_in_reading_order(self) -> None:
+        draft, chunks, _assets = self._projection()
+
+        self.assertEqual(
+            [unit.ordinal for unit in draft.units], list(range(len(draft.units)))
+        )
+        self.assertEqual(len(draft.units), len(chunks) + 1)
+        self.assertEqual(
+            [unit.modality for unit in draft.units],
+            [
+                ContentModality.TEXT,
+                ContentModality.IMAGE,
+                ContentModality.TABLE,
+                ContentModality.TEXT,
+            ],
+        )
+
+    def test_a_table_image_is_an_optional_representation_of_its_chunk(self) -> None:
+        draft, _chunks, assets = self._projection()
+        table_asset = next(
+            asset for asset in assets if asset.kind == ASSET_KIND_TABLE_IMAGE
+        )
+        table_unit = next(
+            unit for unit in draft.units if unit.modality is ContentModality.TABLE
+        )
+
+        self.assertEqual(table_unit.asset_key, table_asset.asset_key)
+        self.assertEqual(table_unit.required_representations, ("table_text",))
+        self.assertNotIn(
+            table_asset.asset_key,
+            {
+                unit.asset_key
+                for unit in draft.units
+                if unit.modality is ContentModality.IMAGE
+            },
+        )
+
+    def test_relations_resolve_to_real_visual_units(self) -> None:
+        draft, _chunks, _assets = self._projection(page_images=True)
+        keys = {unit.unit_key: unit for unit in draft.units}
+
+        self.assertTrue(draft.relations)
+        for relation in draft.relations:
+            self.assertIn(relation.chunk_unit_key, keys)
+            self.assertIn(relation.visual_unit_key, keys)
+            self.assertEqual(
+                keys[relation.visual_unit_key].asset_key, relation.asset_key
+            )
+            self.assertTrue(relation.evidence_group_key)
+        self.assertEqual(
+            [relation.ordinal for relation in draft.relations],
+            list(range(len(draft.relations))),
+        )
+
+    def test_a_table_relation_closes_on_its_own_chunk(self) -> None:
+        draft, _chunks, _assets = self._projection()
+        table = next(
+            relation
+            for relation in draft.relations
+            if relation.relation_type is ChunkAssetRelationType.TABLE_OF
+        )
+
+        self.assertEqual(table.chunk_unit_key, table.visual_unit_key)
+
+    def test_repeated_projection_is_identical(self) -> None:
+        first, _chunks, _assets = self._projection(page_images=True)
+        second, _chunks, _assets = self._projection(page_images=True)
+
+        self.assertEqual(
+            [(unit.unit_key, unit.ordinal, unit.content) for unit in first.units],
+            [(unit.unit_key, unit.ordinal, unit.content) for unit in second.units],
+        )
+        self.assertEqual(
+            docling_item_sequence_hash(paginated_document()),
+            docling_item_sequence_hash(paginated_document()),
+        )
 
 
 class LocationProjectionTests(unittest.TestCase):
