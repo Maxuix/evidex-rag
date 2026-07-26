@@ -38,6 +38,13 @@ class ChunkAssetRelationProvenance(StrEnum):
     TABLE_IDENTITY_V2 = "table_identity_v2"
     BOUNDED_GEOMETRY_V2 = "bounded_geometry_v2"
     PAGE_IDENTITY_V2 = "page_identity_v2"
+    DOCLING_TABLE_IDENTITY_V1 = "docling_table_identity_v1"
+    DOCLING_PAGE_OCR_V1 = "docling_page_ocr_v1"
+    DOCLING_CAPTION_REF_V1 = "docling_caption_ref_v1"
+    DOCLING_PARENT_REF_V1 = "docling_parent_ref_v1"
+    DOCLING_ITEM_REF_V1 = "docling_item_ref_v1"
+    DOCLING_SURFACE_NEIGHBOR_V1 = "docling_surface_neighbor_v1"
+    DOCLING_SURFACE_CO_LOCATION_V1 = "docling_surface_co_location_v1"
 
 
 class VisualEvidenceReason(StrEnum):
@@ -126,6 +133,43 @@ class ChunkAssetRelationDraft:
         if self.figure_label is not None:
             normalized = self.figure_label.strip()
             object.__setattr__(self, "figure_label", normalized or None)
+
+
+@dataclass(frozen=True, slots=True)
+class DoclingAssetRelationDraft:
+    """A relation between an assembled chunk position and an extracted asset.
+
+    Chunk identity is not yet materialized while assembling from a
+    ``DoclingDocument``, so the chunk side is the assembly index; the indexing
+    pipeline resolves it to a persisted chunk identity.
+    """
+
+    chunk_index: int
+    asset_key: str
+    relation_type: ChunkAssetRelationType
+    confidence_micros: int
+    ordinal: int
+    provenance: ChunkAssetRelationProvenance
+    figure_label: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.asset_key:
+            raise ValueError("relation identities must not be empty")
+        for value in (self.chunk_index, self.ordinal):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError("relation positions must be non-negative integers")
+        if isinstance(self.confidence_micros, bool):
+            raise ValueError("relation confidence must be integer micros")
+        if not 0 <= self.confidence_micros <= 1_000_000:
+            raise ValueError("relation confidence must be integer micros")
+        object.__setattr__(
+            self, "relation_type", ChunkAssetRelationType(self.relation_type)
+        )
+        object.__setattr__(
+            self, "provenance", ChunkAssetRelationProvenance(self.provenance)
+        )
+        if self.figure_label is not None:
+            object.__setattr__(self, "figure_label", self.figure_label.strip() or None)
 
 
 @dataclass(frozen=True, slots=True)

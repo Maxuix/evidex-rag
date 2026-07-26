@@ -95,6 +95,39 @@ UNSTRUCTURED_CHUNKING_CONFIG = {
     "metadata_policy": "bounded_v2",
 }
 
+# The native Docling structural profile. Token thresholds and tokenizer stay
+# identical to the v2 profile so parity against the retired Unstructured chain
+# is measurable; boundary sources, unknown-item policy and the provenance
+# projection are the new frozen facts. Index execution deliberately does not
+# resolve this profile yet — no revision may be created with it until the
+# pipeline itself parses once through Docling.
+STRUCTURAL_CHUNKING_CONFIG_V3 = {
+    "profile": "structural_by_title_token_v3",
+    "strategy": "docling_structural",
+    "max_tokens": 800,
+    "new_after_n_tokens": 600,
+    "tokenizer": "cl100k_base",
+    "tokenizer_library": "tiktoken",
+    "tokenizer_version": "0.13.0",
+    "overlap": 100,
+    "overlap_unit": "tokens",
+    "overlap_all": False,
+    "boundary_sources": [
+        "title",
+        "section_header",
+        "table",
+        "surface",
+        "max_tokens",
+    ],
+    "multipage_sections": False,
+    "caption_policy": "relation_only_v1",
+    "picture_policy": "relation_only_v1",
+    "table_serialization": "docling_markdown_bounded_html_v1",
+    "unknown_item_policy": "text_or_skip_v1",
+    "provenance_projection": "docling_prov_v1",
+    "metadata_policy": "bounded_v3",
+}
+
 SEMANTIC_CHUNKING_CONFIG = {
     "profile": "semantic_breakpoint_v1",
     "preset": "semantic_balanced_v1",

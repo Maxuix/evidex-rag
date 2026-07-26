@@ -104,6 +104,34 @@ class ParsedDocument:
 
 
 @dataclass(frozen=True, slots=True)
+class ChunkAssemblyDraft:
+    """One assembled chunk, positioned by its index in the assembly tuple.
+
+    ``item_refs`` records which Docling items the chunk consumed; it never holds
+    Docling item objects, so an assembly cannot extend a ``DoclingDocument``
+    lifetime into planning or embedding.
+    """
+
+    text: str
+    token_count: int
+    item_refs: tuple[str, ...]
+    source_location: dict[str, Any]
+    hierarchy: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class DoclingSemanticUnit:
+    """A bounded analysis unit derived directly from Docling items."""
+
+    ordinal: int
+    text: str
+    token_count: int
+    item_refs: tuple[str, ...]
+    source_location: dict[str, Any]
+    hard_boundary_before: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class IndexChunkDraft:
     ordinal: int
     text: str

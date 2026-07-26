@@ -64,6 +64,7 @@ from rag_kb.document_processing import (
     relate_composite_units,
     with_composite_embedding_text,
 )
+from rag_kb.document_processing.docling.provenance import surface_ordinals
 from rag_kb.document_processing.semantic_assembly import assemble_semantic_document
 from rag_kb.document_processing.semantic_boundaries import (
     build_chunk_plan,
@@ -1270,22 +1271,8 @@ def _text_regions_overlap(left: str, right: str) -> bool:
 
 
 def _locations_overlap(left: dict, right: dict) -> bool:
-    def pages(value: dict) -> set[int]:
-        result = {
-            item
-            for key in ("page_number", "page_start", "page_end")
-            if isinstance((item := value.get(key)), int)
-            and not isinstance(item, bool)
-        }
-        listed = value.get("page_numbers")
-        if isinstance(listed, list):
-            result.update(
-                item
-                for item in listed
-                if isinstance(item, int) and not isinstance(item, bool)
-            )
-        return result
-
-    left_pages = pages(left)
-    right_pages = pages(right)
+    # The shared reader accepts both retired revision keys and the Docling
+    # provenance view, so this stays correct once the pipeline parses natively.
+    left_pages = surface_ordinals(left)
+    right_pages = surface_ordinals(right)
     return bool(left_pages and right_pages and left_pages.intersection(right_pages))

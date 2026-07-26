@@ -28,6 +28,8 @@ class ChunkBoundaryReason(StrEnum):
     PAGE = "page"
     TABLE = "table"
     SECTION = "section"
+    #: A non-prose structural block such as code or a formula.
+    BLOCK = "block"
     MAX_TOKENS = "max_tokens"
 
 
