@@ -22,6 +22,19 @@ def _seconds(value: str | int) -> int:
 
 
 class StartLocalScriptTests(unittest.TestCase):
+    def test_python_image_reuses_downloads_across_network_retries(self) -> None:
+        dockerfile = DOCKERFILE.read_text(encoding="utf-8")
+
+        self.assertIn("PIP_DEFAULT_TIMEOUT=120", dockerfile)
+        self.assertIn("PIP_RETRIES=10", dockerfile)
+        self.assertIn(
+            "--mount=type=cache,id=rag-kb-pip-v1,"
+            "target=/root/.cache/pip,sharing=locked",
+            dockerfile,
+        )
+        self.assertIn("pip install --require-hashes", dockerfile)
+        self.assertNotIn("pip install --no-cache-dir", dockerfile)
+
     def test_compose_allows_bounded_cold_application_startup(self) -> None:
         configuration = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
 

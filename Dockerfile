@@ -3,6 +3,8 @@ FROM docker.io/library/python:3.12.13-slim-bookworm@sha256:8a7e7cc04fd3e2bd787f7
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_DEFAULT_TIMEOUT=120 \
+    PIP_RETRIES=10 \
     PYTHONPATH=/app/src:/app
 
 WORKDIR /app
@@ -16,7 +18,8 @@ RUN apt-get update \
     && useradd --uid 10001 --gid rag-kb --no-create-home --shell /usr/sbin/nologin rag-kb
 
 COPY requirements.lock /app/requirements.lock
-RUN python -m pip install --no-cache-dir --require-hashes -r /app/requirements.lock
+RUN --mount=type=cache,id=rag-kb-pip-v1,target=/root/.cache/pip,sharing=locked \
+    python -m pip install --require-hashes -r /app/requirements.lock
 
 COPY config/docling-artifacts-v1.json /app/config/docling-artifacts-v1.json
 COPY tools/prepare_docling_artifacts.py /app/tools/prepare_docling_artifacts.py
