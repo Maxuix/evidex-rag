@@ -35,6 +35,35 @@ class StartLocalScriptTests(unittest.TestCase):
         self.assertIn("pip install --require-hashes", dockerfile)
         self.assertNotIn("pip install --no-cache-dir", dockerfile)
 
+    def test_application_build_uses_single_overridable_china_mirrors(self) -> None:
+        configuration = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
+        arguments = configuration["x-app-image"]["build"]["args"]
+        dockerfile = DOCKERFILE.read_text(encoding="utf-8")
+
+        self.assertEqual(
+            arguments["RAG_KB_BUILD_DEBIAN_MIRROR"],
+            (
+                "${RAG_KB_BUILD_DEBIAN_MIRROR:-"
+                "https://mirrors.tuna.tsinghua.edu.cn/debian}"
+            ),
+        )
+        self.assertEqual(
+            arguments["RAG_KB_BUILD_PYPI_INDEX_URL"],
+            (
+                "${RAG_KB_BUILD_PYPI_INDEX_URL:-"
+                "https://pypi.tuna.tsinghua.edu.cn/simple}"
+            ),
+        )
+        self.assertIn(
+            'PIP_INDEX_URL="${RAG_KB_BUILD_PYPI_INDEX_URL}"',
+            dockerfile,
+        )
+        self.assertIn(
+            'grep -F "URIs: http://deb.debian.org/debian-security"',
+            dockerfile,
+        )
+        self.assertNotIn("extra-index-url", dockerfile.lower())
+
     def test_compose_allows_bounded_cold_application_startup(self) -> None:
         configuration = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
 

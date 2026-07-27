@@ -10,6 +10,9 @@ x-app-image: &app-image
   build:
     context: .
     dockerfile: Dockerfile
+    args:
+      RAG_KB_BUILD_DEBIAN_MIRROR: ${RAG_KB_BUILD_DEBIAN_MIRROR:-https://mirrors.tuna.tsinghua.edu.cn/debian}
+      RAG_KB_BUILD_PYPI_INDEX_URL: ${RAG_KB_BUILD_PYPI_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
 
 x-user-frontend-image: &user-frontend-image
   image: rag-kb-user-frontend:chat-v1

@@ -20,7 +20,9 @@ Open:
 The starter manages the local database password in ignored `.env.local`, runs
 migrations, rebuilds the API/Worker and both frontend images with Docker layer
 cache, starts all services, and waits for health. Existing database and file
-volumes are retained.
+volumes are retained. Local image builds default to HTTPS TUNA mirrors for PyPI
+and the Debian main repository while retaining Debian's official security
+repository; build-only mirror URLs remain explicitly overridable.
 
 Chat model integration defaults to LangChain and the fixed evidence-only chat
 workflow defaults to a checkpoint-free LangGraph `StateGraph`. PostgreSQL

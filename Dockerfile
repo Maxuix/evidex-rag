@@ -1,5 +1,8 @@
 FROM docker.io/library/python:3.12.13-slim-bookworm@sha256:8a7e7cc04fd3e2bd787f7f24e22d5d119aa590d429b50c95dfe12b3abe52f48b
 
+ARG RAG_KB_BUILD_DEBIAN_MIRROR=https://mirrors.tuna.tsinghua.edu.cn/debian
+ARG RAG_KB_BUILD_PYPI_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
@@ -9,7 +12,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-RUN apt-get update \
+RUN sed -i \
+        "s|URIs: http://deb.debian.org/debian$|URIs: ${RAG_KB_BUILD_DEBIAN_MIRROR}|" \
+        /etc/apt/sources.list.d/debian.sources \
+    && grep -F "URIs: ${RAG_KB_BUILD_DEBIAN_MIRROR}" \
+        /etc/apt/sources.list.d/debian.sources \
+    && grep -F "URIs: http://deb.debian.org/debian-security" \
+        /etc/apt/sources.list.d/debian.sources \
+    && apt-get update \
     && apt-get install --yes --no-install-recommends \
         libgl1 \
         libglib2.0-0 \
@@ -19,6 +29,7 @@ RUN apt-get update \
 
 COPY requirements.lock /app/requirements.lock
 RUN --mount=type=cache,id=rag-kb-pip-v1,target=/root/.cache/pip,sharing=locked \
+    PIP_INDEX_URL="${RAG_KB_BUILD_PYPI_INDEX_URL}" \
     python -m pip install --require-hashes -r /app/requirements.lock
 
 COPY config/docling-artifacts-v1.json /app/config/docling-artifacts-v1.json
