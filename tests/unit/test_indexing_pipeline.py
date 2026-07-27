@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import threading
 import unittest
 from dataclasses import replace
+from unittest.mock import patch
 from uuid import UUID, uuid4
 
 from PIL import Image
@@ -10,6 +13,7 @@ from docling_core.types.doc import DocItemLabel, DoclingDocument
 from docling_core.types.doc.common.origin import DocumentOrigin
 from docling_core.types.doc.common.reference import ImageRef
 
+import rag_kb.indexing.pipeline as pipeline_module
 from rag_kb.adapters import FixedPgVectorSpace
 from rag_kb.document_processing import (
     DOCLING_ENRICHMENT_CONFIG,
@@ -321,6 +325,52 @@ class IndexingPipelineTests(unittest.IsolatedAsyncioTestCase):
             [repository.chunks[index].ordinal for index in repository.chunks],
             list(range(result.chunk_count)),
         )
+
+    async def test_semantic_planning_does_not_block_event_loop(self) -> None:
+        repository = _Repository(_target(ChunkingPreset.SEMANTIC_BALANCED_V1))
+        factory = _Factory(repository)
+        provider = _Provider(factory)
+        pipeline = _pipeline(factory, provider, _SemanticParser(factory))
+        command = IndexingCommand(
+            repository.target.job_id,
+            repository.target.indexed_document_version_id,
+        )
+        loop_thread = threading.get_ident()
+        planner_entered = threading.Event()
+        planner_release = threading.Event()
+        planner_thread: list[int] = []
+        original = pipeline_module.build_chunk_plan
+
+        def blocked_planner(*args, **kwargs):
+            planner_thread.append(threading.get_ident())
+            planner_entered.set()
+            if not planner_release.wait(timeout=2):
+                raise AssertionError("event loop did not release semantic planner")
+            return original(*args, **kwargs)
+
+        async def release_after_planner_starts() -> None:
+            while not planner_entered.is_set():
+                await asyncio.sleep(0)
+            planner_release.set()
+
+        release_task = asyncio.create_task(release_after_planner_starts())
+        try:
+            with patch.object(
+                pipeline_module,
+                "build_chunk_plan",
+                side_effect=blocked_planner,
+            ):
+                result = await pipeline.execute(command)
+            await release_task
+        finally:
+            planner_release.set()
+            if not release_task.done():
+                release_task.cancel()
+                await asyncio.gather(release_task, return_exceptions=True)
+
+        self.assertEqual(result.status, "ready")
+        self.assertEqual(len(planner_thread), 1)
+        self.assertNotEqual(planner_thread[0], loop_thread)
 
 
 class _Factory:

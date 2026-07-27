@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from dataclasses import replace
@@ -45,6 +46,7 @@ from rag_kb.domain import (
     ParserSource,
     ParsingPreset,
     PromotionCommand,
+    SemanticUnit,
     SourceFileMissingError,
     VectorRecordWrite,
     ImageEmbeddingInput,
@@ -446,8 +448,11 @@ class IndexingPipeline:
     ) -> tuple[ChunkAssemblyDraft, ...]:
         await self._set_phase(command, IndexingPhase.SEMANTIC_ANALYSIS)
         try:
-            units = docling_semantic_units(
-                document, self._parser_limits, surface_labels=surface_labels
+            units = await asyncio.to_thread(
+                docling_semantic_units,
+                document,
+                self._parser_limits,
+                surface_labels=surface_labels,
             )
         except ParserExecutionError as error:
             raise IndexingExecutionError(
@@ -455,7 +460,7 @@ class IndexingPipeline:
                 phase=IndexingPhase.SEMANTIC_ANALYSIS,
                 diagnostic=error.diagnostic,
             ) from error
-        sequence_hash = docling_unit_sequence_hash(units)
+        sequence_hash = await asyncio.to_thread(docling_unit_sequence_hash, units)
         fingerprint = self._fingerprint(target)
         plan_facts = {
             "indexed_document_version_id": target.indexed_document_version_id,
@@ -466,31 +471,51 @@ class IndexingPipeline:
             lambda uow: uow.indexing.get_chunk_plan(command)
         )
         if existing is not None:
-            validate_plan(
+            await asyncio.to_thread(
+                validate_plan,
                 existing, **plan_facts, units=units, sequence_hash=sequence_hash
             )
-            return self._assemble_semantic(document, units, existing, surface_labels)
+            return await asyncio.to_thread(
+                self._assemble_semantic,
+                document,
+                units,
+                existing,
+                surface_labels,
+            )
 
-        requires_analysis = (
-            count_chunk_tokens("\n\n".join(unit.text for unit in units))
-            > int(SEMANTIC_CHUNKING_CONFIG["max_chunk_tokens"])
-            or any(unit.hard_boundary_before for unit in units[1:])
+        requires_analysis = await asyncio.to_thread(
+            _requires_semantic_analysis,
+            units,
         )
-        proposed = build_chunk_plan(
+        vectors = (
+            await self._embed_analysis_units(target, units)
+            if requires_analysis
+            else None
+        )
+        proposed = await asyncio.to_thread(
+            build_chunk_plan,
             **plan_facts,
             units=units,
-            vectors=(
-                await self._embed_analysis_units(target, units)
-                if requires_analysis
-                else None
-            ),
+            vectors=vectors,
             sequence_hash=sequence_hash,
         )
         winner = await self._transaction(
             lambda uow: uow.indexing.create_or_get_chunk_plan(command, proposed)
         )
-        validate_plan(winner, **plan_facts, units=units, sequence_hash=sequence_hash)
-        return self._assemble_semantic(document, units, winner, surface_labels)
+        await asyncio.to_thread(
+            validate_plan,
+            winner,
+            **plan_facts,
+            units=units,
+            sequence_hash=sequence_hash,
+        )
+        return await asyncio.to_thread(
+            self._assemble_semantic,
+            document,
+            units,
+            winner,
+            surface_labels,
+        )
 
     def _assemble_semantic(
         self,
@@ -1091,6 +1116,14 @@ class IndexingPipeline:
                 )
             )
         return tuple(chunks), tuple(vectors)
+
+
+def _requires_semantic_analysis(units: tuple[SemanticUnit, ...]) -> bool:
+    return (
+        count_chunk_tokens("\n\n".join(unit.text for unit in units))
+        > int(SEMANTIC_CHUNKING_CONFIG["max_chunk_tokens"])
+        or any(unit.hard_boundary_before for unit in units[1:])
+    )
 
 
 def _safe_diagnostic(value: dict) -> dict:

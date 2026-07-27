@@ -156,8 +156,13 @@ def _select_region(
 ) -> list[ChunkBoundary]:
     if start >= end:
         return []
-    if count_chunk_tokens(_joined(units, start, end)) <= _config_int("max_chunk_tokens"):
+    maximum = _config_int("max_chunk_tokens")
+    minimum = _config_int("min_chunk_tokens")
+    target = _config_int("target_chunk_tokens")
+    region_tokens = count_chunk_tokens(_joined(units, start, end))
+    if region_tokens <= maximum:
         return []
+    region_is_small = region_tokens < minimum
 
     region_scores = [
         int(scores[index])
@@ -178,15 +183,12 @@ def _select_region(
         best: tuple[int, int, int, tuple[int, ...]] | None = None
         for prior in range(position - 1, start - 1, -1):
             tokens = count_chunk_tokens(_joined(units, prior, position))
-            if tokens > _config_int("max_chunk_tokens"):
+            if tokens > maximum:
                 break
             prior_state = states.get(prior)
             if prior_state is None:
                 continue
-            region_is_small = count_chunk_tokens(_joined(units, start, end)) < _config_int(
-                "min_chunk_tokens"
-            )
-            if tokens < _config_int("min_chunk_tokens") and not region_is_small:
+            if tokens < minimum and not region_is_small:
                 continue
             penalty = _size_penalty(tokens)
             reward = prior_state[0] - penalty
@@ -195,7 +197,7 @@ def _select_region(
             path = (*prior_state[3], position - 1) if position < end else prior_state[3]
             candidate = (
                 reward,
-                -abs(tokens - _config_int("target_chunk_tokens")),
+                -abs(tokens - target),
                 -(prior_state[2] + 1),
                 path,
             )

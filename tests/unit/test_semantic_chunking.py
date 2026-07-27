@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import unittest
 from dataclasses import replace
-from uuid import uuid4
+from unittest.mock import patch
+from uuid import UUID, uuid4
 
 from rag_kb.document_processing import (
     count_chunk_tokens,
@@ -13,6 +14,7 @@ from rag_kb.document_processing import (
     public_descriptor,
     resolve,
 )
+from rag_kb.document_processing import semantic_boundaries
 from rag_kb.document_processing.semantic_boundaries import (
     build_chunk_plan,
     smoothed_distances,
@@ -72,6 +74,74 @@ class SemanticProfileTests(unittest.TestCase):
 
 
 class SemanticBoundaryTests(unittest.TestCase):
+    def test_region_size_is_tokenized_once_outside_dynamic_programming(self) -> None:
+        units = tuple(_unit(index, "bounded " * 80) for index in range(40))
+        scores = tuple(0 for _ in range(len(units) - 1))
+        full_region = "\n\n".join(unit.text for unit in units)
+        full_region_calls = 0
+
+        def counted(text: str) -> int:
+            nonlocal full_region_calls
+            if text == full_region:
+                full_region_calls += 1
+            return count_chunk_tokens(text)
+
+        with patch.object(
+            semantic_boundaries,
+            "count_chunk_tokens",
+            side_effect=counted,
+        ):
+            boundaries = semantic_boundaries._select_region(
+                units,
+                scores,
+                0,
+                len(units),
+            )
+
+        self.assertTrue(boundaries)
+        self.assertEqual(full_region_calls, 1)
+
+    def test_planner_optimization_preserves_v1_plan_identity(self) -> None:
+        units = tuple(
+            _unit(index, ("alpha " if index < 4 else "beta ") * 120)
+            for index in range(8)
+        )
+        vectors = tuple(
+            (1.0, 0.0) if index < 4 else (0.0, 1.0)
+            for index in range(8)
+        )
+        profile = profile_for_preset(ChunkingPreset.SEMANTIC_BALANCED_V1)
+
+        plan = build_chunk_plan(
+            indexed_document_version_id=UUID(
+                "00000000-0000-0000-0000-000000000001"
+            ),
+            source_checksum_sha256="b" * 64,
+            profile_fingerprint=profile_fingerprint(
+                profile.parser_config,
+                profile.chunking_config,
+            ),
+            units=units,
+            vectors=vectors,
+            sequence_hash=docling_unit_sequence_hash(units),
+        )
+
+        self.assertEqual(
+            [
+                (
+                    boundary.after_unit_ordinal,
+                    boundary.reason.value,
+                    boundary.score_micros,
+                )
+                for boundary in plan.boundaries
+            ],
+            [(3, "semantic", 500000)],
+        )
+        self.assertEqual(
+            plan.plan_hash,
+            "3bcbf8e4c4ef795d0e8e054de496d8c9c9a06039e627f039bf1fbdcff73cb99c",
+        )
+
     def test_short_document_skips_vectors_and_assembles_one_chunk(self) -> None:
         units = (_unit(0, "short evidence"),)
         profile = profile_for_preset(ChunkingPreset.SEMANTIC_BALANCED_V1)
