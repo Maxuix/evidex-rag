@@ -18,8 +18,9 @@ Open:
 - API docs: <http://127.0.0.1:8000/api/v1/docs>
 
 The starter manages the local database password in ignored `.env.local`, runs
-migrations, starts PostgreSQL, API, Worker, and both frontends, and waits for
-health.
+migrations, rebuilds the API/Worker and both frontend images with Docker layer
+cache, starts all services, and waits for health. Existing database and file
+volumes are retained.
 
 Chat model integration defaults to LangChain and the fixed evidence-only chat
 workflow defaults to a checkpoint-free LangGraph `StateGraph`. PostgreSQL

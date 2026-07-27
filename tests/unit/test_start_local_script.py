@@ -163,6 +163,11 @@ class StartLocalScriptTests(unittest.TestCase):
                 f"compose --env-file {state_file} up -d --wait postgres",
                 calls,
             )
+            build_call = (
+                f"compose --env-file {state_file} build api worker frontend "
+                "frontend-diagnostic"
+            )
+            self.assertIn(build_call, calls)
             self.assertIn(
                 f"compose --env-file {state_file} up storage-init",
                 calls,
@@ -176,6 +181,13 @@ class StartLocalScriptTests(unittest.TestCase):
                 f"compose --env-file {state_file} up -d --wait api worker "
                 "frontend frontend-diagnostic",
                 calls,
+            )
+            self.assertLess(
+                calls.index(build_call),
+                calls.index(
+                    f"compose --env-file {state_file} --profile tools run "
+                    "--rm migrate"
+                ),
             )
             self.assertIn("User Chat: http://127.0.0.1:3000", completed.stdout)
             self.assertIn(
