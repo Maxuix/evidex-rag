@@ -136,11 +136,13 @@ class FileAdmissionError(ValueError):
         *,
         limit: int | None = None,
         observed: int | None = None,
+        check: str | None = None,
     ) -> None:
         super().__init__(code.value)
         self.code = code
         self.limit = limit
         self.observed = observed
+        self.check = check
 
 
 class ParserExecutionError(RuntimeError):

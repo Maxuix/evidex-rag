@@ -34,7 +34,7 @@ export async function buildMarkdownBundle(
   if (!selected) throw new Error("The selected Markdown entrypoint is unavailable.");
 
   const accepted = normalized.filter(({ path }) =>
-    path === entrypoint || /\.(png|jpe?g|webp)$/i.test(path)
+    path === entrypoint || /\.(png|jpe?g|webp|gif|bmp|tiff?|avif)$/i.test(path)
   );
   const encoder = new TextEncoder();
   const members: ZipMember[] = [];

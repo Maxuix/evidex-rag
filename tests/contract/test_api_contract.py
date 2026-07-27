@@ -50,6 +50,7 @@ from rag_kb.domain import (
     DocumentVersion,
     Evidence,
     EvidencePack,
+    FileAdmissionError,
     IdempotencyKeyReusedError,
     IdempotencyScope,
     InsufficiencyPolicy,
@@ -122,6 +123,14 @@ async def unexpected() -> None:
 @router.get("/denied")
 async def denied() -> None:
     raise AccessDeniedError("policy internals must not leak")
+
+
+@router.get("/markdown-media-error")
+async def markdown_media_error() -> None:
+    raise FileAdmissionError(
+        ErrorCode.MARKDOWN_MEDIA_UNSUPPORTED,
+        check="image_animated",
+    )
 
 
 @router.post("/validate")
@@ -366,6 +375,40 @@ class ApiContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body["trace_id"], response.headers["x-trace-id"])
         self.assertNotEqual(body["trace_id"], "client-selected-trace")
         self.assertFalse(body["retryable"])
+
+    async def test_markdown_media_error_exposes_safe_specific_detail(
+        self,
+    ) -> None:
+        with self.assertLogs("rag_kb.api.errors", level="INFO") as captured:
+            response = await request(
+                self.app,
+                "GET",
+                f"{API_PREFIX}/markdown-media-error",
+            )
+
+        self.assertEqual(response.status, 422)
+        self.assertEqual(
+            response.json()["code"],
+            "MARKDOWN_MEDIA_UNSUPPORTED",
+        )
+        self.assertEqual(
+            response.json()["detail"],
+            "Animated Markdown images are unsupported; provide a static image.",
+        )
+        admission_record = next(
+            record
+            for record in captured.records
+            if getattr(record, "safe_event", None)
+            == "file_admission_rejected"
+        )
+        self.assertEqual(
+            admission_record.safe_fields["trace_id"],
+            response.json()["trace_id"],
+        )
+        self.assertEqual(
+            admission_record.safe_fields["reason_code"],
+            "image_animated",
+        )
 
     async def test_health_routes_report_process_and_dependency_state(self) -> None:
         live = await request(self.app, "GET", "/health/live")

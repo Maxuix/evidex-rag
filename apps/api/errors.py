@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException
 
 from rag_kb.auth import AccessDeniedError
+from rag_kb.observability import get_logger, log_event
 from rag_kb.services import (
     AnswerPolicyNotSupportedError,
     ChatSessionBusyError,
@@ -21,6 +22,9 @@ from rag_kb.services import (
 )
 from rag_kb.schemas import ErrorCode, FieldViolation, ProblemDetails
 from rag_kb.retrieval import RetrievalExecutionError
+
+
+LOGGER = get_logger("rag_kb.api.errors")
 
 
 class ApiProblem(Exception):
@@ -183,12 +187,53 @@ async def _file_admission_handler(
         ErrorCode.MARKDOWN_MEDIA_FETCH_FAILED: "A remote Markdown image could not be fetched safely.",
         ErrorCode.PARSER_NOT_CONFIGURED: "No parser is configured for this document format.",
     }
+    markdown_media_details = {
+        "reference_scheme": (
+            "Markdown images must use HTTP(S), a protocol-relative public URL, "
+            "a bundle-relative path, or a supported image Data URI."
+        ),
+        "data_uri": "A Markdown image Data URI is invalid or unsupported.",
+        "image_empty": "A Markdown image is empty.",
+        "image_format": (
+            "A Markdown image must be PNG, JPEG, WebP, or a supported static "
+            "raster image."
+        ),
+        "image_animated": (
+            "Animated Markdown images are unsupported; provide a static image."
+        ),
+        "image_dimensions": (
+            "A Markdown image exceeds the configured pixel or dimension limit."
+        ),
+        "image_total_pixels": (
+            "Markdown images exceed the configured total pixel-processing limit."
+        ),
+        "image_decode": "A Markdown image is corrupt or cannot be decoded.",
+        "html_image": "A Markdown HTML image tag is invalid or has no src.",
+    }
+    detail = details[error.code]
+    if (
+        error.code is ErrorCode.MARKDOWN_MEDIA_UNSUPPORTED
+        and error.check in markdown_media_details
+    ):
+        detail = markdown_media_details[error.check]
+    safe_reason = (
+        error.check
+        if error.check in markdown_media_details
+        else error.code.value
+    )
+    log_event(
+        LOGGER,
+        "file_admission_rejected",
+        process="api",
+        trace_id=getattr(request.state, "trace_id", None),
+        reason_code=safe_reason,
+    )
     return problem_response(
         request,
         code=error.code,
         status=status,
         title="Document upload rejected",
-        detail=details[error.code],
+        detail=detail,
         retryable=False,
     )
 

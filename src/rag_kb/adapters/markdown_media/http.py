@@ -99,7 +99,8 @@ class PublicHttpImageFetcher:
             request = (
                 f"GET {target} HTTP/1.1\r\n"
                 f"Host: {host}\r\n"
-                "Accept: image/png,image/jpeg,image/webp\r\n"
+                "Accept: image/png,image/jpeg,image/webp,image/avif,"
+                "image/gif,image/bmp,image/tiff\r\n"
                 "User-Agent: rag-kb-markdown-media/1\r\n"
                 "Connection: close\r\n\r\n"
             ).encode("ascii", errors="strict")

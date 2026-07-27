@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 from zipfile import ZIP_STORED, ZipFile
 
 from PIL import Image
@@ -27,6 +28,23 @@ from rag_kb.services.markdown_media import MarkdownMediaNormalizer
 def _image_bytes(image_format: str = "PNG") -> bytes:
     target = BytesIO()
     Image.new("RGB", (96, 80), "navy").save(target, format=image_format)
+    return target.getvalue()
+
+
+def _animated_gif_bytes() -> bytes:
+    target = BytesIO()
+    frames = [
+        Image.new("RGB", (96, 80), color)
+        for color in ("navy", "gold")
+    ]
+    frames[0].save(
+        target,
+        format="GIF",
+        save_all=True,
+        append_images=frames[1:],
+        duration=100,
+        loop=0,
+    )
     return target.getvalue()
 
 
@@ -118,31 +136,242 @@ class MarkdownMediaNormalizerTests(unittest.IsolatedAsyncioTestCase):
             1,
         )
 
-    async def test_fails_closed_for_missing_local_and_unsupported_media(self) -> None:
+    async def test_normalizes_html_images_static_gif_and_protocol_relative_url(
+        self,
+    ) -> None:
+        gif = _image_bytes("GIF")
+        data_uri = (
+            "data:image/gif;base64,"
+            + base64.b64encode(gif).decode("ascii")
+        )
+        source = (
+            'Before <img src="//example.com/inline.gif" alt="inline"> after\n\n'
+            "<figure>\n"
+            f'<img src="{data_uri}" alt="block">\n'
+            "<figcaption>Important chart</figcaption>\n"
+            "</figure>\n"
+        ).encode()
+        fetcher = _Fetcher(gif)
+
+        normalized = await MarkdownMediaNormalizer(fetcher).normalize(
+            source,
+            original_filename="evidence.md",
+            media_type="text/markdown",
+        )
+
+        self.assertEqual(fetcher.calls, ["https://example.com/inline.gif"])
+        entrypoint, files = read_normalized_markdown_bundle(normalized)
+        markdown = files[entrypoint].decode()
+        self.assertNotIn("<img", markdown)
+        self.assertIn("Before ![inline](.rag-media/", markdown)
+        self.assertIn("![block](.rag-media/", markdown)
+        self.assertIn("Important chart", markdown)
+        media = [
+            (name, content)
+            for name, content in files.items()
+            if name.startswith(".rag-media/")
+        ]
+        self.assertEqual(len(media), 1)
+        self.assertTrue(media[0][0].endswith(".png"))
+        with Image.open(BytesIO(media[0][1])) as image:
+            self.assertEqual(image.format, "PNG")
+            self.assertEqual(image.size, (96, 80))
+
+    async def test_converts_supported_static_raster_formats_to_png(self) -> None:
+        cases = (
+            ("GIF", "gif"),
+            ("BMP", "bmp"),
+            ("TIFF", "tiff"),
+            ("AVIF", "avif"),
+        )
+        for image_format, extension in cases:
+            with self.subTest(image_format=image_format):
+                source_image = _image_bytes(image_format)
+                source = _bundle(
+                    f"![chart](../images/chart.{extension})\n",
+                    files={f"images/chart.{extension}": source_image},
+                )
+
+                normalized = await MarkdownMediaNormalizer(
+                    _Fetcher(b"unused")
+                ).normalize(
+                    source,
+                    original_filename="evidence.mdz",
+                    media_type=MARKDOWN_BUNDLE_MEDIA_TYPE,
+                )
+
+                entrypoint, files = read_normalized_markdown_bundle(normalized)
+                markdown = files[entrypoint].decode()
+                self.assertIn("![chart](.rag-media/", markdown)
+                media = [
+                    (name, content)
+                    for name, content in files.items()
+                    if name.startswith(".rag-media/")
+                ]
+                self.assertEqual(len(media), 1)
+                self.assertTrue(media[0][0].endswith(".png"))
+                with Image.open(BytesIO(media[0][1])) as image:
+                    self.assertEqual(image.format, "PNG")
+                    self.assertEqual(image.size, (96, 80))
+
+    async def test_large_data_uri_is_not_limited_as_a_url(self) -> None:
+        bmp = _image_bytes("BMP")
+        data_uri = (
+            "data:image/bmp;base64,"
+            + base64.b64encode(bmp).decode("ascii")
+        )
+        self.assertGreater(len(data_uri), 4096)
+
+        normalized = await MarkdownMediaNormalizer(
+            _Fetcher(b"unused")
+        ).normalize(
+            f"![chart]({data_uri})\n".encode(),
+            original_filename="evidence.md",
+            media_type="text/markdown",
+        )
+
+        entrypoint, files = read_normalized_markdown_bundle(normalized)
+        self.assertIn("![chart](.rag-media/", files[entrypoint].decode())
+
+    async def test_repeated_references_are_cached_and_processing_is_bounded(
+        self,
+    ) -> None:
+        repeated = "\n".join(
+            "![chart](https://example.com/chart.png)"
+            for _ in range(64)
+        ).encode()
+        repeated_fetcher = _Fetcher(_image_bytes())
+
+        await MarkdownMediaNormalizer(repeated_fetcher).normalize(
+            repeated,
+            original_filename="evidence.md",
+            media_type="text/markdown",
+        )
+
+        self.assertEqual(
+            repeated_fetcher.calls,
+            ["https://example.com/chart.png"],
+        )
+
+        pixel_fetcher = _Fetcher(_image_bytes())
+        with patch(
+            "rag_kb.services.markdown_media._MAX_TOTAL_IMAGE_PIXELS",
+            10_000,
+        ), self.assertRaises(FileAdmissionError) as pixel_error:
+            await MarkdownMediaNormalizer(pixel_fetcher).normalize(
+                b"![one](https://example.com/same.png)\n"
+                b"![two](https://example.com/same.png)\n",
+                original_filename="evidence.md",
+                media_type="text/markdown",
+            )
+        self.assertEqual(
+            pixel_error.exception.code,
+            ErrorCode.MARKDOWN_MEDIA_UNSUPPORTED,
+        )
+        self.assertEqual(
+            pixel_error.exception.check,
+            "image_total_pixels",
+        )
+        self.assertEqual(
+            pixel_fetcher.calls,
+            ["https://example.com/same.png"],
+        )
+
+        large_bmp = BytesIO()
+        Image.new("RGB", (1024, 1024), "navy").save(
+            large_bmp,
+            format="BMP",
+        )
+        distinct_fetcher = _Fetcher(large_bmp.getvalue())
+        distinct = "\n".join(
+            f"![chart](https://example.com/chart-{index}.bmp)"
+            for index in range(4)
+        ).encode()
+
+        with self.assertRaises(FileAdmissionError) as raised:
+            await MarkdownMediaNormalizer(distinct_fetcher).normalize(
+                distinct,
+                original_filename="evidence.md",
+                media_type="text/markdown",
+            )
+
+        self.assertEqual(raised.exception.code, ErrorCode.FILE_TOO_LARGE)
+        self.assertEqual(len(distinct_fetcher.calls), 3)
+
+    async def test_rejects_complex_html_blocks_and_attribute_injection(
+        self,
+    ) -> None:
+        fetcher = _Fetcher(_image_bytes())
+        cases = (
+            (
+                b"<table><tr><td><img "
+                b'src="https://example.com/chart.png"></td></tr></table>\n'
+            ),
+            (
+                b'<img src="https://example.com/a.png&#10;'
+                b'![evil](https://example.com/b.png)">\n'
+            ),
+        )
+        for source in cases:
+            with self.subTest(source=source), self.assertRaises(
+                FileAdmissionError
+            ) as raised:
+                await MarkdownMediaNormalizer(fetcher).normalize(
+                    source,
+                    original_filename="evidence.md",
+                    media_type="text/markdown",
+                )
+            self.assertEqual(
+                raised.exception.code,
+                ErrorCode.MARKDOWN_MEDIA_UNSUPPORTED,
+            )
+            self.assertEqual(raised.exception.check, "html_image")
+        self.assertEqual(fetcher.calls, [])
+
+    async def test_fails_closed_for_missing_and_unsafe_media(self) -> None:
+        animated_gif = base64.b64encode(_animated_gif_bytes()).decode("ascii")
         cases = (
             (
                 _bundle("![missing](../images/missing.png)\n"),
                 MARKDOWN_BUNDLE_MEDIA_TYPE,
                 ErrorCode.MARKDOWN_MEDIA_UNRESOLVED,
+                None,
             ),
             (
                 b"![file](file:///tmp/private.png)\n",
                 "text/markdown",
                 ErrorCode.MARKDOWN_MEDIA_UNSUPPORTED,
+                "reference_scheme",
             ),
             (
-                b"![gif](data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==)\n",
+                (
+                    f"![animated](data:image/gif;base64,{animated_gif})\n"
+                ).encode(),
                 "text/markdown",
                 ErrorCode.MARKDOWN_MEDIA_UNSUPPORTED,
+                "image_animated",
             ),
             (
-                b'<img src="https://example.com/chart.png">\n',
+                b"![svg](data:image/svg+xml;base64,PHN2Zy8+)\n",
                 "text/markdown",
                 ErrorCode.MARKDOWN_MEDIA_UNSUPPORTED,
+                "data_uri",
+            ),
+            (
+                b'<img alt="missing source">\n',
+                "text/markdown",
+                ErrorCode.MARKDOWN_MEDIA_UNSUPPORTED,
+                "html_image",
+            ),
+            (
+                b"![broken](data:image/png;base64,bm90LWltYWdl)\n",
+                "text/markdown",
+                ErrorCode.MARKDOWN_MEDIA_UNSUPPORTED,
+                "image_decode",
             ),
         )
-        for content, media_type, code in cases:
-            with self.subTest(code=code), self.assertRaises(
+        for content, media_type, code, check in cases:
+            with self.subTest(code=code, check=check), self.assertRaises(
                 FileAdmissionError
             ) as raised:
                 await MarkdownMediaNormalizer(_Fetcher(b"unused")).normalize(
@@ -155,6 +384,7 @@ class MarkdownMediaNormalizerTests(unittest.IsolatedAsyncioTestCase):
                     media_type=media_type,
                 )
             self.assertEqual(raised.exception.code, code)
+            self.assertEqual(raised.exception.check, check)
 
     async def test_rejects_bundle_path_traversal(self) -> None:
         source = _bundle(
@@ -199,7 +429,8 @@ class MarkdownMediaNormalizerTests(unittest.IsolatedAsyncioTestCase):
     async def test_docling_v2_loads_bundle_image_as_pixels(self) -> None:
         image = _image_bytes()
         normalized = await MarkdownMediaNormalizer(_Fetcher(image)).normalize(
-            b"# Evidence\n\n![chart](https://example.com/chart.png)\n",
+            b'# Evidence\n\n<img src="https://example.com/chart.png" '
+            b'alt="chart">\n',
             original_filename="evidence.md",
             media_type="text/markdown",
         )

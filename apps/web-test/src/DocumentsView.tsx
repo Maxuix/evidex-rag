@@ -467,7 +467,8 @@ export function DocumentsView({
                 />
                 <span className="field-hint">
                   The browser packages the Markdown entrypoint with local PNG,
-                  JPEG, and WebP resources; no manual ZIP step is required.
+                  JPEG, WebP, and supported static raster resources; no manual
+                  ZIP step is required.
                 </span>
               </label>
               {markdownEntrypoints.length > 1 ? (
