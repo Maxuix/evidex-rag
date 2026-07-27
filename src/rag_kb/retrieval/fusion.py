@@ -7,7 +7,11 @@ from decimal import Decimal, ROUND_HALF_EVEN
 from typing import Mapping
 from uuid import UUID
 
-from rag_kb.domain import VectorSearchHit
+from rag_kb.domain import (
+    EvidenceGroupIdentity,
+    VectorSearchHit,
+    evidence_group_identity,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,7 +35,7 @@ def reciprocal_rank_fusion(
 ) -> tuple[FusedHit, ...]:
     if rrf_k < 1 or cross_modal_weight_micros < 1 or top_k < 1:
         raise ValueError("RRF settings must be positive")
-    grouped: dict[str, dict] = {}
+    grouped: dict[EvidenceGroupIdentity, dict] = {}
     for lane, hits, weight in (
         ("text", text_hits, Decimal(1)),
         (
@@ -40,7 +44,7 @@ def reciprocal_rank_fusion(
             Decimal(cross_modal_weight_micros) / Decimal(1_000_000),
         ),
     ):
-        seen_groups: set[str] = set()
+        seen_groups: set[EvidenceGroupIdentity] = set()
         for rank, hit in enumerate(hits, start=1):
             groups = (
                 group_keys_by_chunk.get(hit.index_chunk_id, ())
@@ -48,14 +52,18 @@ def reciprocal_rank_fusion(
                 else ()
             ) or (hit.evidence_group_key or str(hit.index_chunk_id),)
             for group in groups:
-                if group in seen_groups:
-                    entry = grouped.get(group)
+                identity = evidence_group_identity(
+                    hit.indexed_document_version_id,
+                    group,
+                )
+                if identity in seen_groups:
+                    entry = grouped.get(identity)
                     if entry is not None:
                         entry["representations"].add(hit.representation_kind)
                     continue
-                seen_groups.add(group)
+                seen_groups.add(identity)
                 entry = grouped.setdefault(
-                    group,
+                    identity,
                     {
                         "group_key": group,
                         "hit": hit,

@@ -188,6 +188,7 @@ from rag_kb.domain.parsing import (
 from rag_kb.domain.retrieval import (
     Evidence,
     EvidenceAsset,
+    EvidenceGroupIdentity,
     EvidencePack,
     EvidenceScoreKind,
     RelatedVisualEvidence,
@@ -200,6 +201,7 @@ from rag_kb.domain.retrieval import (
     RevisionSelector,
     VectorSearchHit,
     VectorSearchResult,
+    evidence_group_identity,
 )
 from rag_kb.domain.workspaces import Workspace
 
@@ -283,6 +285,7 @@ __all__ = [
     "GroundingPolicy",
     "Evidence",
     "EvidenceAsset",
+    "EvidenceGroupIdentity",
     "EvidenceAssessment",
     "EvidenceCoverage",
     "EvidenceEnvelope",
@@ -373,6 +376,7 @@ __all__ = [
     "EvaluationRunSnapshot",
     "EvaluationRunState",
     "canonical_request_hash",
+    "evidence_group_identity",
     "resolve_p1_policy",
     "validate_p1_answer_policy_defaults",
     "stable_chunk_id",

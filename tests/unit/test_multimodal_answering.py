@@ -446,6 +446,55 @@ class MultimodalAnsweringTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(result.answering.visual_content), 1)
         self.assertEqual(len(reader.calls), 1)
 
+    def test_same_raw_visual_group_in_different_index_targets_is_not_deduplicated(
+        self,
+    ) -> None:
+        context = _context()
+        pack, _ = _related_visual_pack(context, count=1, same_group=True)
+        first = pack.evidence[0]
+        first_visual = first.related_visuals[0]
+        second_asset = replace(
+            first_visual.asset,
+            id=uuid4(),
+            checksum_sha256="b" * 64,
+            content_url="/api/v1/index-assets/second/content",
+        )
+        second = replace(
+            first,
+            rank=2,
+            index_chunk_id=uuid4(),
+            indexed_document_version_id=uuid4(),
+            document_id=uuid4(),
+            document_version_id=uuid4(),
+            related_visuals=(
+                replace(
+                    first_visual,
+                    visual_unit_id=uuid4(),
+                    asset=second_asset,
+                    parent_chunk_id=uuid4(),
+                    text_space_rank=2,
+                ),
+            ),
+        )
+        scoped_pack = replace(pack, evidence=(first, second))
+
+        candidates = VisualEvidenceAdmissionPolicy().rank_candidates(
+            scoped_pack,
+            ("cite_1", "cite_2"),
+        )
+
+        self.assertEqual(len(candidates), 2)
+        self.assertEqual(
+            {
+                candidate.parent_evidence.indexed_document_version_id
+                for candidate in candidates
+            },
+            {
+                first.indexed_document_version_id,
+                second.indexed_document_version_id,
+            },
+        )
+
     async def test_native_image_is_admitted_loaded_and_attached_to_generation(self) -> None:
         context = _context()
         pack, loaded = _visual_pack(context, b"validated-image-bytes")

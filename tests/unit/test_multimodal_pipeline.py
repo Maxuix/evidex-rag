@@ -305,6 +305,32 @@ class RankFusionTests(unittest.TestCase):
         )
         self.assertTrue(math.isclose(fused[0].score, 2 / 61, abs_tol=1e-12))
 
+    def test_rrf_keeps_same_raw_group_separate_across_index_targets(self) -> None:
+        group = "docling-table-group"
+        text = _hit(uuid4(), "table_text", "table", group, 0.08, "table A")
+        other_target = uuid4()
+        native = replace(
+            _hit(uuid4(), "table_image", "table", group, 0.04, "table B"),
+            indexed_document_version_id=other_target,
+            document_id=uuid4(),
+            document_version_id=uuid4(),
+        )
+
+        fused = reciprocal_rank_fusion((text,), (native,), rrf_k=60, top_k=10)
+
+        self.assertEqual(len(fused), 2)
+        self.assertEqual(
+            {item.hit.indexed_document_version_id for item in fused},
+            {INDEXED_VERSION, other_target},
+        )
+        self.assertEqual(
+            {item.matched_representations for item in fused},
+            {("table_text",), ("table_image",)},
+        )
+        self.assertTrue(
+            all(math.isclose(item.score, 1 / 61, abs_tol=1e-12) for item in fused)
+        )
+
 
 def _hit(
     chunk_id: UUID,

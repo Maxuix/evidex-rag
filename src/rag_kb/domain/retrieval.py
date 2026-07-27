@@ -11,6 +11,18 @@ from uuid import UUID
 from rag_kb.domain.errors import ErrorCode
 
 
+EvidenceGroupIdentity = tuple[UUID, str]
+
+
+def evidence_group_identity(
+    indexed_document_version_id: UUID,
+    group_key: str,
+) -> EvidenceGroupIdentity:
+    """Scope a raw evidence-group key to one indexed document target."""
+
+    return indexed_document_version_id, group_key
+
+
 class RetrievalStrategy(StrEnum):
     EXACT_VECTOR = "exact_vector"
     ANN_VECTOR = "ann_vector"

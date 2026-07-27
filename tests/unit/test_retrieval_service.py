@@ -400,6 +400,62 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(pack.evidence[0].modality, "text")
         self.assertEqual(pack.evidence[0].cross_modal_rank, 1)
 
+    async def test_same_raw_table_group_is_scoped_to_each_index_target(self) -> None:
+        gates = _ParallelGates()
+        shared_group = "docling-table-group"
+        first = replace(
+            _hit(CHUNK_1, distance=0.10),
+            text="Alpha budget table",
+            modality="table",
+            evidence_group_key=shared_group,
+            representation_kind="table_text",
+        )
+        second_target = UUID("01900000-0000-7000-8000-000000000824")
+        second = replace(
+            _hit(CHUNK_2, distance=0.12, ordinal=1),
+            indexed_document_version_id=second_target,
+            document_id=UUID("01900000-0000-7000-8000-000000000825"),
+            document_version_id=UUID("01900000-0000-7000-8000-000000000826"),
+            text="Beta headcount table",
+            modality="table",
+            evidence_group_key=shared_group,
+            representation_kind="table_text",
+        )
+        service = RetrievalService(
+            SingleWorkspaceAccessPolicy(WORKSPACE),
+            _ParallelTextProvider(gates),
+            _MultimodalStore(
+                VectorSearchResult(REVISION_ID, (first, second)),
+                VectorSearchResult(
+                    REVISION_ID,
+                    space_role="cross_modal_retrieval",
+                ),
+                gates,
+            ),
+            multimodal_embedding_provider=_ParallelMultimodalProvider(gates),
+        )
+
+        pack = await service.retrieve(
+            _context(),
+            RetrievalRequest(
+                KB_ID,
+                "budget headcount",
+                top_k=2,
+                include_debug=True,
+            ),
+        )
+
+        self.assertEqual(len(pack.evidence), 2)
+        self.assertEqual(
+            {item.indexed_document_version_id for item in pack.evidence},
+            {
+                first.indexed_document_version_id,
+                second.indexed_document_version_id,
+            },
+        )
+        assert pack.debug is not None
+        self.assertEqual(pack.debug.evidence_group_count, 2)
+
     async def test_weak_relation_does_not_expand_visual(self) -> None:
         gates = _ParallelGates()
         service = RetrievalService(

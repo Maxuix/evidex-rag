@@ -18,6 +18,7 @@ from rag_kb.domain import (
     ChunkAssetRelationType,
     Evidence,
     EvidenceAsset,
+    evidence_group_identity,
     EvidencePack,
     EvidenceScoreKind,
     IndexChunkAssetRelationSnapshot,
@@ -213,7 +214,16 @@ class RetrievalService:
                 ),
                 hydrated_relation_count=len(relations) if multimodal else None,
                 evidence_group_count=(
-                    len({item.evidence_group_key for item in evidence})
+                    len(
+                        {
+                            evidence_group_identity(
+                                item.indexed_document_version_id,
+                                item.evidence_group_key
+                                or str(item.index_chunk_id),
+                            )
+                            for item in evidence
+                        }
+                    )
                     if multimodal
                     else None
                 ),
@@ -296,7 +306,11 @@ class RetrievalService:
             group_relations = tuple(
                 relation
                 for relation in strong_relations
-                if relation.evidence_group_key == item.group_key
+                if (
+                    relation.indexed_document_version_id
+                    == hit.indexed_document_version_id
+                    and relation.evidence_group_key == item.group_key
+                )
             )
             parent = min(
                 (

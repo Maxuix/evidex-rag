@@ -10,6 +10,7 @@ from rag_kb.domain import (
     ChunkAssetRelationType,
     Evidence,
     EvidenceAsset,
+    evidence_group_identity,
     EvidencePack,
     VisualEvidenceDecision,
     VisualEvidenceReason,
@@ -234,15 +235,19 @@ class VisualEvidenceAdmissionPolicy:
         checksums = set()
         groups = set()
         for candidate in ordered:
+            group_identity = evidence_group_identity(
+                candidate.parent_evidence.indexed_document_version_id,
+                candidate.evidence_group_key,
+            )
             if (
                 candidate.asset.id in asset_ids
                 or candidate.asset.checksum_sha256 in checksums
-                or candidate.evidence_group_key in groups
+                or group_identity in groups
             ):
                 continue
             asset_ids.add(candidate.asset.id)
             checksums.add(candidate.asset.checksum_sha256)
-            groups.add(candidate.evidence_group_key)
+            groups.add(group_identity)
             unique.append(candidate)
         return tuple(unique[: self.HARD_MAX_IMAGES])
 
