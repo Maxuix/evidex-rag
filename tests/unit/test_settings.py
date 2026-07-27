@@ -88,6 +88,10 @@ class SettingsTests(unittest.TestCase):
         )
         self.assertFalse(settings.security.cors_allow_credentials)
         self.assertEqual(settings.file_admission.max_bytes, 10 * 1024 * 1024)
+        self.assertEqual(
+            settings.file_admission.max_markdown_bundle_bytes,
+            20 * 1024 * 1024,
+        )
         self.assertEqual(settings.file_admission.max_lines, 200_000)
         self.assertEqual(settings.file_admission.max_archive_entries, 10_000)
         self.assertEqual(
@@ -100,6 +104,10 @@ class SettingsTests(unittest.TestCase):
             Path("/opt/rag-kb/docling-artifacts"),
         )
         self.assertEqual(settings.parser.max_file_size, 10_485_760)
+        self.assertEqual(
+            settings.parser.max_markdown_bundle_size,
+            20_971_520,
+        )
         self.assertEqual(settings.parser.max_num_pages, 500)
         self.assertEqual(settings.parser.document_timeout_seconds, 600)
         self.assertEqual(settings.parser.max_docling_items, 20_000)
@@ -152,6 +160,7 @@ class SettingsTests(unittest.TestCase):
             root = Path(directory)
             for override in (
                 {"max_file_size": 1},
+                {"max_markdown_bundle_size": 1},
                 {"max_num_pages": 501},
                 {"document_timeout_seconds": 601},
                 {"max_docling_items": 20_001},

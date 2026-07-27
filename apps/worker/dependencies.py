@@ -153,6 +153,9 @@ def build_worker_dependencies(
     )
     parser_limits = ParserLimits(
         max_file_size=resolved_settings.parser.max_file_size,
+        max_markdown_bundle_size=(
+            resolved_settings.parser.max_markdown_bundle_size
+        ),
         max_num_pages=resolved_settings.parser.max_num_pages,
         document_timeout_seconds=(
             resolved_settings.parser.document_timeout_seconds

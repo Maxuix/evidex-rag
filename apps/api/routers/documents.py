@@ -19,7 +19,10 @@ from apps.api.upload_metadata import resolve_upload_metadata
 from rag_kb.auth import AuthContext
 from rag_kb.domain import DocumentChunk, DocumentChunkAsset
 from rag_kb.document_processing import DOCLING_MULTIMODAL_PARSER_CONFIG_V2
-from rag_kb.document_processing.markdown_bundle import MARKDOWN_BUNDLE_MEDIA_TYPE
+from rag_kb.document_processing.markdown_bundle import (
+    MARKDOWN_BUNDLE_EXTENSION,
+    MARKDOWN_BUNDLE_MEDIA_TYPE,
+)
 from rag_kb.schemas import (
     CursorPayload,
     DocumentChunkAssetResponse,
@@ -394,7 +397,20 @@ async def _accept_upload(
     display_name: str,
 ) -> DocumentUploadResponse:
     dependencies = request.app.state.dependencies
-    maximum = dependencies.file_admission_service.limits.max_bytes
+    limits = dependencies.file_admission_service.limits
+    is_markdown_bundle = (
+        original_filename.lower().endswith(MARKDOWN_BUNDLE_EXTENSION)
+        and request.headers.get("content-type", "")
+        .split(";", 1)[0]
+        .strip()
+        .lower()
+        == MARKDOWN_BUNDLE_MEDIA_TYPE
+    )
+    maximum = (
+        limits.max_markdown_bundle_bytes
+        if is_markdown_bundle
+        else limits.max_bytes
+    )
     source = tempfile.SpooledTemporaryFile(max_size=1024 * 1024, mode="w+b")
     size = 0
     try:

@@ -85,14 +85,19 @@ class FileAdmissionService:
         ):
             raise FileAdmissionError(ErrorCode.FILE_MEDIA_TYPE_UNSUPPORTED)
 
+        maximum = (
+            self.limits.max_markdown_bundle_bytes
+            if extension == MARKDOWN_BUNDLE_EXTENSION
+            else self.limits.max_bytes
+        )
         source.seek(0)
-        content = source.read(self.limits.max_bytes + 1)
+        content = source.read(maximum + 1)
         if not isinstance(content, bytes):
             raise TypeError("source file must yield bytes")
-        if len(content) > self.limits.max_bytes:
+        if len(content) > maximum:
             raise FileAdmissionError(
                 ErrorCode.FILE_TOO_LARGE,
-                limit=self.limits.max_bytes,
+                limit=maximum,
                 observed=len(content),
             )
         line_count = None

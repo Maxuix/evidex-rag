@@ -57,12 +57,13 @@ _DATA_IMAGE_MEDIA_TYPES = frozenset(
 _MAX_REFERENCES = 64
 _MAX_REFERENCE_LENGTH = 4096
 _MAX_IMAGE_BYTES = 8 * 1024 * 1024
-_MAX_TOTAL_IMAGE_BYTES = 9 * 1024 * 1024
-_MAX_BUNDLE_BYTES = 10 * 1024 * 1024
+_MAX_TOTAL_IMAGE_BYTES = 20 * 1024 * 1024
+_MAX_BUNDLE_BYTES = 20 * 1024 * 1024
 _MAX_IMAGE_PIXELS = 40_000_000
 _MAX_TOTAL_IMAGE_PIXELS = 80_000_000
 _MAX_IMAGE_WIDTH = 16_384
 _MAX_IMAGE_HEIGHT = 16_384
+_MAX_DECORATIVE_HTML_IMAGE_DIMENSION = 128
 _MAX_DATA_URI_REFERENCE_LENGTH = ((_MAX_IMAGE_BYTES + 2) // 3) * 4 + 128
 _DATA_PREFIX = "data:"
 _HTML_IMAGE = re.compile(r"<\s*img\b", re.IGNORECASE)
@@ -70,15 +71,36 @@ _FIXED_ZIP_TIME = (1980, 1, 1, 0, 0, 0)
 _HTML_IMAGE_BLOCK_TAGS = frozenset(
     {
         "a",
+        "abbr",
+        "b",
         "br",
         "center",
+        "cite",
+        "code",
+        "del",
         "div",
+        "em",
         "figcaption",
         "figure",
+        "i",
+        "ins",
+        "kbd",
+        "mark",
         "p",
         "picture",
+        "q",
+        "s",
+        "samp",
+        "small",
         "source",
         "span",
+        "strong",
+        "sub",
+        "sup",
+        "time",
+        "u",
+        "var",
+        "wbr",
     }
 )
 _HTML_BLOCK_BREAKS = frozenset(
@@ -323,15 +345,17 @@ def _normalize_html_images(
     children[:] = normalized
 
 
-def _inline_html_image(value: str) -> Image:
+def _inline_html_image(value: str) -> Image | RawText:
     parser = _SingleImageTagParser()
     parser.feed(value)
     parser.close()
-    if parser.image is None or parser.invalid:
+    if not parser.saw_image or parser.invalid:
         raise FileAdmissionError(
             ErrorCode.MARKDOWN_MEDIA_UNSUPPORTED,
-            check="html_image",
+            check="html_image_structure",
         )
+    if parser.image is None:
+        return RawText("")
     reference, alt, title = parser.image
     return _new_image(reference, alt=alt, title=title)
 
@@ -343,7 +367,7 @@ def _html_block_to_markdown(value: str) -> str:
     if parser.invalid or parser.image_count == 0:
         raise FileAdmissionError(
             ErrorCode.MARKDOWN_MEDIA_UNSUPPORTED,
-            check="html_image",
+            check="html_image_structure",
         )
     rendered = "".join(parser.output)
     return re.sub(r"\n{3,}", "\n\n", rendered).strip() + "\n"
@@ -353,6 +377,7 @@ class _SingleImageTagParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.image: tuple[str, str, str | None] | None = None
+        self.saw_image = False
         self.invalid = False
 
     def handle_starttag(
@@ -360,12 +385,13 @@ class _SingleImageTagParser(HTMLParser):
         tag: str,
         attrs: list[tuple[str, str | None]],
     ) -> None:
-        if tag.lower() != "img" or self.image is not None:
+        if tag.lower() != "img" or self.saw_image:
             self.invalid = True
             return
-        self.image = _image_attributes(attrs)
-        if self.image is None:
-            self.invalid = True
+        self.saw_image = True
+        image = _image_attributes(attrs)
+        if not _is_decorative_html_image(attrs):
+            self.image = image
 
     def handle_startendtag(
         self,
@@ -401,14 +427,13 @@ class _HtmlImageBlockParser(HTMLParser):
             return
         if normalized_tag == "img":
             image = _image_attributes(attrs)
-            if image is None:
-                self.invalid = True
+            self.image_count += 1
+            if _is_decorative_html_image(attrs):
                 return
             reference, alt, title = image
             self.output.append(
                 f"\n\n{_markdown_image(reference, alt=alt, title=title)}\n\n"
             )
-            self.image_count += 1
         elif normalized_tag not in _HTML_IMAGE_BLOCK_TAGS:
             self.invalid = True
         elif normalized_tag in _HTML_BLOCK_BREAKS:
@@ -442,7 +467,7 @@ class _HtmlImageBlockParser(HTMLParser):
 
 def _image_attributes(
     attrs: list[tuple[str, str | None]],
-) -> tuple[str, str, str | None] | None:
+) -> tuple[str, str, str | None]:
     values = {
         name.lower(): value
         for name, value in attrs
@@ -451,19 +476,62 @@ def _image_attributes(
     reference = values.get("src", "").strip()
     alt = values.get("alt", "")
     title = values.get("title")
+    if not reference:
+        raise FileAdmissionError(
+            ErrorCode.MARKDOWN_MEDIA_UNSUPPORTED,
+            check="html_image_missing_src",
+        )
     if (
-        not reference
-        or _has_control_character(reference)
+        _has_control_character(reference)
         or _has_control_character(alt)
         or (title is not None and _has_control_character(title))
     ):
-        return None
+        raise FileAdmissionError(
+            ErrorCode.MARKDOWN_MEDIA_UNSUPPORTED,
+            check="html_image_attribute",
+        )
     if _is_data_reference(reference):
         if len(reference) > _MAX_DATA_URI_REFERENCE_LENGTH:
-            return None
+            raise FileAdmissionError(
+                ErrorCode.MARKDOWN_MEDIA_UNSUPPORTED,
+                check="html_image_attribute",
+            )
     elif len(reference) > _MAX_REFERENCE_LENGTH:
-        return None
+        raise FileAdmissionError(
+            ErrorCode.MARKDOWN_MEDIA_UNSUPPORTED,
+            check="html_image_attribute",
+        )
     return reference, alt, title
+
+
+def _is_decorative_html_image(
+    attrs: list[tuple[str, str | None]],
+) -> bool:
+    values = {
+        name.lower(): value
+        for name, value in attrs
+        if value is not None
+    }
+    if "alt" in values:
+        return not values["alt"].strip()
+    width = _declared_html_dimension(values.get("width"))
+    height = _declared_html_dimension(values.get("height"))
+    return (
+        width is not None
+        and height is not None
+        and width <= _MAX_DECORATIVE_HTML_IMAGE_DIMENSION
+        and height <= _MAX_DECORATIVE_HTML_IMAGE_DIMENSION
+    )
+
+
+def _declared_html_dimension(value: str | None) -> int | None:
+    if value is None:
+        return None
+    normalized = value.strip()
+    if not normalized.isascii() or not normalized.isdecimal():
+        return None
+    dimension = int(normalized)
+    return dimension if dimension > 0 else None
 
 
 def _new_image(

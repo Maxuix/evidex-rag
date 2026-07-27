@@ -508,7 +508,8 @@ export function DocumentsView({
               <span className="field-hint">
                 Supports UTF-8 .txt/.md/.html/.csv, .pdf, .docx/.pptx/.xlsx,
                 and v2 Markdown .mdz bundles. Remote images in a v2 .md file
-                are snapshotted automatically.
+                are snapshotted automatically. If a .md references local
+                ./images or ../images paths, use Markdown folder instead.
               </span>
             </label>
           )}

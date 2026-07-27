@@ -209,6 +209,15 @@ async def _file_admission_handler(
         ),
         "image_decode": "A Markdown image is corrupt or cannot be decoded.",
         "html_image": "A Markdown HTML image tag is invalid or has no src.",
+        "html_image_missing_src": (
+            "A Markdown HTML image tag has no src attribute."
+        ),
+        "html_image_attribute": (
+            "A Markdown HTML image tag contains an invalid or oversized attribute."
+        ),
+        "html_image_structure": (
+            "A Markdown HTML image uses an unsupported wrapper or structure."
+        ),
     }
     detail = details[error.code]
     if (

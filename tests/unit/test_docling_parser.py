@@ -36,12 +36,16 @@ from rag_kb.adapters.parser.docling import (
     build_docling_converter,
     verify_docling_artifacts,
 )
+from rag_kb.adapters.parser.docling.parser import _validate_source
 from rag_kb.domain import (
     ErrorCode,
     ParserExecutionError,
     ParserLimits,
     ParserSource,
     ParsingPreset,
+)
+from rag_kb.document_processing.markdown_bundle import (
+    MARKDOWN_BUNDLE_MEDIA_TYPE,
 )
 
 
@@ -288,6 +292,35 @@ class DoclingConverterFactoryTests(unittest.TestCase):
 
 
 class DoclingParserTests(unittest.IsolatedAsyncioTestCase):
+    async def test_markdown_bundle_uses_its_distinct_source_limit(self) -> None:
+        limits = ParserLimits(
+            max_file_size=32,
+            max_markdown_bundle_size=64,
+        )
+        _validate_source(
+            ParserSource(
+                "guide.mdz",
+                MARKDOWN_BUNDLE_MEDIA_TYPE,
+                b"x" * 64,
+            ),
+            limits,
+            ParsingPreset.MULTIMODAL_LOCAL_V2,
+        )
+        with self.assertRaises(ParserExecutionError) as raised:
+            _validate_source(
+                ParserSource(
+                    "guide.mdz",
+                    MARKDOWN_BUNDLE_MEDIA_TYPE,
+                    b"x" * 65,
+                ),
+                limits,
+                ParsingPreset.MULTIMODAL_LOCAL_V2,
+            )
+        self.assertEqual(
+            raised.exception.diagnostic["limit_name"],
+            "max_markdown_bundle_size",
+        )
+
     async def test_uses_memory_stream_and_converts_each_source_once(self) -> None:
         converter = _FakeConverter()
         harness = _ParserHarness(self, converter)

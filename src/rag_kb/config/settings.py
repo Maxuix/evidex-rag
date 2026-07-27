@@ -58,6 +58,9 @@ FixedBatchSize = Annotated[Literal[10], BeforeValidator(parse_environment_intege
 FixedMaxUploadBytes = Annotated[
     Literal[10_485_760], BeforeValidator(parse_environment_integer)
 ]
+FixedMaxMarkdownBundleBytes = Annotated[
+    Literal[20_971_520], BeforeValidator(parse_environment_integer)
+]
 FixedMaxLines = Annotated[Literal[200_000], BeforeValidator(parse_environment_integer)]
 FixedMaxArchiveEntries = Annotated[
     Literal[10_000], BeforeValidator(parse_environment_integer)
@@ -382,6 +385,7 @@ class MaintenanceSettings(StrictSettingsModel):
 
 class FileAdmissionSettings(StrictSettingsModel):
     max_bytes: FixedMaxUploadBytes = 10_485_760
+    max_markdown_bundle_bytes: FixedMaxMarkdownBundleBytes = 20_971_520
     max_lines: FixedMaxLines = 200_000
     max_archive_entries: FixedMaxArchiveEntries = 10_000
     max_expanded_bytes: FixedMaxExpandedBytes = 104_857_600
@@ -394,6 +398,7 @@ class ParserSettings(StrictSettingsModel):
         "/app/config/docling-artifacts-v1.json"
     )
     max_file_size: FixedMaxUploadBytes = 10_485_760
+    max_markdown_bundle_size: FixedMaxMarkdownBundleBytes = 20_971_520
     max_num_pages: FixedMaxDoclingPages = 500
     document_timeout_seconds: FixedDoclingTimeoutSeconds = 600
     max_docling_items: FixedMaxDoclingItems = 20_000

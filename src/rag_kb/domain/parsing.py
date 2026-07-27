@@ -12,6 +12,7 @@ from rag_kb.domain.errors import ErrorCode
 @dataclass(frozen=True, slots=True)
 class AdmissionLimits:
     max_bytes: int = 10 * 1024 * 1024
+    max_markdown_bundle_bytes: int = 20 * 1024 * 1024
     max_lines: int = 200_000
     max_archive_entries: int = 10_000
     max_expanded_bytes: int = 100 * 1024 * 1024
@@ -20,6 +21,7 @@ class AdmissionLimits:
 @dataclass(frozen=True, slots=True)
 class ParserLimits:
     max_file_size: int = 10 * 1024 * 1024
+    max_markdown_bundle_size: int = 20 * 1024 * 1024
     max_num_pages: int = 500
     document_timeout_seconds: float = 600.0
     max_docling_items: int = 20_000

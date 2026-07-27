@@ -33,8 +33,19 @@ export async function buildMarkdownBundle(
   const selected = normalized.find(({ path }) => path === entrypoint);
   if (!selected) throw new Error("The selected Markdown entrypoint is unavailable.");
 
+  const localMedia = referencedLocalMediaPaths(
+    await selected.file.text(),
+    entrypoint,
+  );
+  const available = new Set(normalized.map(({ path }) => path));
+  const missing = [...localMedia].filter((path) => !available.has(path));
+  if (missing.length > 0) {
+    throw new Error(
+      `A local Markdown image is missing from the selected folder: ${missing[0]}`,
+    );
+  }
   const accepted = normalized.filter(({ path }) =>
-    path === entrypoint || /\.(png|jpe?g|webp|gif|bmp|tiff?|avif)$/i.test(path)
+    path === entrypoint || localMedia.has(path)
   );
   const encoder = new TextEncoder();
   const members: ZipMember[] = [];
@@ -121,6 +132,87 @@ export async function buildMarkdownBundle(
   return new File([archive.buffer], name, {
     type: BUNDLE_MEDIA_TYPE,
   });
+}
+
+export function referencedLocalMediaPaths(
+  markdown: string,
+  entrypoint: string,
+): Set<string> {
+  const references = new Set<string>();
+  const withoutCode = markdown
+    .replace(/^( {0,3})(`{3,}|~{3,})[^\n]*\n[\s\S]*?^\1\2[ \t]*$/gm, "")
+    .replace(/`[^`\n]*`/g, "");
+  const definitions = new Map<string, string>();
+  for (const match of withoutCode.matchAll(
+    /^[ \t]{0,3}\[([^\]]+)\]:[ \t]*(?:<([^>\n]+)>|([^\s]+))/gm,
+  )) {
+    definitions.set(normalizeReferenceLabel(match[1]), match[2] || match[3]);
+  }
+  for (const match of withoutCode.matchAll(
+    /!\[([^\]]*)\]\[([^\]]*)\]/g,
+  )) {
+    const label = normalizeReferenceLabel(match[2] || match[1]);
+    const reference = definitions.get(label);
+    if (reference) references.add(reference);
+  }
+  for (const match of withoutCode.matchAll(
+    /!\[[^\]]*\]\([ \t]*(?:<([^>\n]+)>|([^\s)]+))/g,
+  )) {
+    references.add(match[1] || match[2]);
+  }
+  for (const match of withoutCode.matchAll(
+    /<img\b[^>]*\bsrc[ \t]*=[ \t]*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))[^>]*>/gi,
+  )) {
+    references.add(match[1] || match[2] || match[3]);
+  }
+
+  const resolved = new Set<string>();
+  for (const reference of references) {
+    const path = resolveLocalMediaPath(reference, entrypoint);
+    if (path) resolved.add(path);
+  }
+  return resolved;
+}
+
+function resolveLocalMediaPath(
+  reference: string,
+  entrypoint: string,
+): string | null {
+  const value = reference.trim();
+  if (
+    !value
+    || value.startsWith("//")
+    || /^(?:data|https?):/i.test(value)
+    || /^[a-z][a-z0-9+.-]*:/i.test(value)
+  ) {
+    return null;
+  }
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(value.split(/[?#]/, 1)[0]);
+  } catch {
+    throw new Error(`A local Markdown image path is invalid: ${value}`);
+  }
+  const base = entrypoint.split("/").slice(0, -1);
+  const segments = decoded.startsWith("/")
+    ? []
+    : [...base];
+  for (const segment of decoded.split("/")) {
+    if (!segment || segment === ".") continue;
+    if (segment === "..") {
+      if (segments.length === 0) {
+        throw new Error(`A local Markdown image escapes the selected folder: ${value}`);
+      }
+      segments.pop();
+      continue;
+    }
+    segments.push(segment);
+  }
+  return segments.join("/");
+}
+
+function normalizeReferenceLabel(value: string): string {
+  return value.trim().replace(/\s+/g, " ").toLowerCase();
 }
 
 function concatenate(parts: Uint8Array[]): Uint8Array<ArrayBuffer> {

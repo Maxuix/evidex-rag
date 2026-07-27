@@ -239,12 +239,12 @@ def _validate_source(
             or extension not in {".md", ".mdz"}
         ):
             raise ParserExecutionError(ErrorCode.PARSER_NOT_CONFIGURED)
-        if len(source.content) > limits.max_file_size:
+        if len(source.content) > limits.max_markdown_bundle_size:
             raise ParserExecutionError(
                 ErrorCode.PARSER_RESOURCE_LIMIT,
                 diagnostic={
-                    "limit_name": "max_file_size",
-                    "limit": limits.max_file_size,
+                    "limit_name": "max_markdown_bundle_size",
+                    "limit": limits.max_markdown_bundle_size,
                 },
             )
         return

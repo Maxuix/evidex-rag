@@ -201,6 +201,9 @@ def build_api_dependencies(
         file_admission_service=FileAdmissionService(
             AdmissionLimits(
                 max_bytes=resolved_settings.file_admission.max_bytes,
+                max_markdown_bundle_bytes=(
+                    resolved_settings.file_admission.max_markdown_bundle_bytes
+                ),
                 max_lines=resolved_settings.file_admission.max_lines,
                 max_archive_entries=(
                     resolved_settings.file_admission.max_archive_entries

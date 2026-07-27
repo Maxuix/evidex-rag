@@ -5,7 +5,7 @@ import os
 import socket
 import unittest
 from unittest.mock import patch
-from zipfile import ZIP_DEFLATED, ZipFile
+from zipfile import ZIP_DEFLATED, ZIP_STORED, ZipFile
 
 from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
@@ -213,3 +213,25 @@ class FileAdmissionTests(unittest.TestCase):
 
         self.assertEqual(admitted.extension, ".mdz")
         self.assertEqual(admitted.media_type, MARKDOWN_BUNDLE_MEDIA_TYPE)
+
+    def test_markdown_bundle_has_a_distinct_bounded_upload_limit(self) -> None:
+        target = io.BytesIO()
+        with ZipFile(target, "w", ZIP_STORED) as archive:
+            archive.writestr(
+                "manifest.json",
+                '{"version":1,"entrypoint":"guide.md"}',
+            )
+            archive.writestr("guide.md", "# Guide\n")
+            archive.writestr("images/evidence.png", os.urandom(300 * 1024))
+
+        admitted = self.service.validate(
+            io.BytesIO(target.getvalue()),
+            original_filename="guide.mdz",
+            media_type=MARKDOWN_BUNDLE_MEDIA_TYPE,
+        )
+
+        self.assertGreater(admitted.size_bytes, self.service.limits.max_bytes)
+        self.assertLess(
+            admitted.size_bytes,
+            self.service.limits.max_markdown_bundle_bytes,
+        )
