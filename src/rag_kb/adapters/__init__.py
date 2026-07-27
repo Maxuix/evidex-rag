@@ -5,6 +5,11 @@ from rag_kb.adapters.file_store import (
     LocalIndexAssetStore,
     SourceFileStore,
 )
+from rag_kb.adapters.markdown_media import (
+    FetchedImage,
+    PublicHttpImageFetcher,
+    RemoteImageFetcher,
+)
 from rag_kb.adapters.parser import (
     DocumentParser,
 )
@@ -25,12 +30,15 @@ __all__ = [
     "FixedPgVectorSpace",
     "LangChainChatModelAdapter",
     "LangChainEmbeddingModelAdapter",
+    "FetchedImage",
     "IndexAssetStore",
     "MultimodalEmbeddingAdapter",
     "TongyiVisionEmbeddingAdapter",
     "LocalFileStore",
     "LocalIndexAssetStore",
     "PgVectorStore",
+    "PublicHttpImageFetcher",
+    "RemoteImageFetcher",
     "SourceFileStore",
     "VectorStore",
 ]

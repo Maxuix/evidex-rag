@@ -786,7 +786,9 @@ markdown-it-py==4.2.0 \
 marko==2.2.3 \
     --hash=sha256:8e1d7a0387281e59dfbc52a381b58c570156970e36b2bbe047f8a3a2f368cacc \
     --hash=sha256:e31ec2875383bc62f9093d16babed5a2c2cde601c00d834ea935a2222120ec19
-    # via docling-slim
+    # via
+    #   docling-slim
+    #   rag-kb (pyproject.toml)
 markupsafe==3.0.3 \
     --hash=sha256:0303439a41979d9e74d18ff5e2dd8c43ed6c6001fd40e5bf2e43f7bd9bbc523f \
     --hash=sha256:068f375c472b3e7acbe2d5318dea141359e6900156b5b2ba06a30b169086b91a \

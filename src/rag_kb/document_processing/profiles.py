@@ -138,6 +138,29 @@ DOCLING_MULTIMODAL_PARSER_CONFIG = {
     "page_image_policy": "scanned_surface_v1",
 }
 
+DOCLING_MULTIMODAL_PARSER_CONFIG_V2 = {
+    **DOCLING_MULTIMODAL_PARSER_CONFIG,
+    "profile": "docling_multimodal_local_v2",
+    "markdown_media": {
+        "bundle_format": "markdown_bundle_v1",
+        "normalizer": "markdown_media_snapshot_v1",
+        "admission_remote_snapshot": True,
+        "docling_fetch_images": True,
+        "docling_local_fetch": True,
+        "docling_remote_fetch": False,
+        "unresolved_media_policy": "reject",
+        "supported_media_types": ["image/png", "image/jpeg", "image/webp"],
+        "max_references": 64,
+        "max_image_bytes": 8_388_608,
+        "max_total_image_bytes": 9_437_184,
+        "max_bundle_bytes": 10_485_760,
+        "max_redirects": 3,
+        "connect_timeout_seconds": 5,
+        "read_timeout_seconds": 10,
+        "remote_address_policy": "all_dns_answers_public_v1",
+    },
+}
+
 DOCLING_ENRICHMENT_CONFIG = {
     "profile": "composite_visual_enrichment_v3",
     "ocr": "docling_rapidocr_v1",
@@ -262,13 +285,17 @@ def profile_for_preset(
         else SEMANTIC_CHUNKING_CONFIG
     )
     parsing = ParsingPreset(parsing_preset)
-    multimodal = parsing is ParsingPreset.MULTIMODAL_LOCAL_V1
+    multimodal = parsing in {
+        ParsingPreset.MULTIMODAL_LOCAL_V1,
+        ParsingPreset.MULTIMODAL_LOCAL_V2,
+    }
+    parser_config = DOCLING_TEXT_PARSER_CONFIG
+    if parsing is ParsingPreset.MULTIMODAL_LOCAL_V1:
+        parser_config = DOCLING_MULTIMODAL_PARSER_CONFIG
+    elif parsing is ParsingPreset.MULTIMODAL_LOCAL_V2:
+        parser_config = DOCLING_MULTIMODAL_PARSER_CONFIG_V2
     return IndexProfileDefinition(
-        parser_config=deepcopy(
-            DOCLING_MULTIMODAL_PARSER_CONFIG
-            if multimodal
-            else DOCLING_TEXT_PARSER_CONFIG
-        ),
+        parser_config=deepcopy(parser_config),
         chunking_config=deepcopy(chunking),
         enrichment_config=deepcopy(DOCLING_ENRICHMENT_CONFIG) if multimodal else {},
         representation_config=(
@@ -298,6 +325,7 @@ def resolve(
     if parser_config not in (
         DOCLING_TEXT_PARSER_CONFIG,
         DOCLING_MULTIMODAL_PARSER_CONFIG,
+        DOCLING_MULTIMODAL_PARSER_CONFIG_V2,
     ):
         raise ValueError("unknown parser profile")
     if chunking_config == STRUCTURAL_CHUNKING_CONFIG_V3:
@@ -316,6 +344,8 @@ def parsing_preset(parser_config: dict) -> ParsingPreset:
         LEGACY_MULTIMODAL_PARSER_CONFIG_V1,
     ):
         return ParsingPreset.MULTIMODAL_LOCAL_V1
+    if parser_config == DOCLING_MULTIMODAL_PARSER_CONFIG_V2:
+        return ParsingPreset.MULTIMODAL_LOCAL_V2
     raise ValueError("unknown parser profile")
 
 

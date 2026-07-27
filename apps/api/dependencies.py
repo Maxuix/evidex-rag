@@ -12,6 +12,7 @@ from rag_kb.adapters import (
     LangChainEmbeddingModelAdapter,
     LocalFileStore,
     LocalIndexAssetStore,
+    PublicHttpImageFetcher,
     PgVectorStore,
     TongyiVisionEmbeddingAdapter,
 )
@@ -39,6 +40,7 @@ from rag_kb.services import (
     IndexingJobService,
     IndexAssetService,
     KnowledgeBaseService,
+    MarkdownMediaNormalizer,
     SourceFileService,
     build_content_services,
     chat_model_configuration,
@@ -194,6 +196,7 @@ def build_api_dependencies(
         source_file_service=SourceFileService(
             content_services.documents,
             file_store,
+            MarkdownMediaNormalizer(PublicHttpImageFetcher()),
         ),
         file_admission_service=FileAdmissionService(
             AdmissionLimits(

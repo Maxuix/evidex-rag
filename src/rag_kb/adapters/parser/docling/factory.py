@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from docling.backend.md_backend import MarkdownBackendOptions
 from docling.datamodel.accelerator_options import (
     AcceleratorDevice,
     AcceleratorOptions,
@@ -47,7 +48,10 @@ def build_docling_converter(
 ) -> DocumentConverter:
     """Build one local-only converter for a frozen parsing preset."""
 
-    multimodal = preset is ParsingPreset.MULTIMODAL_LOCAL_V1
+    multimodal = preset in {
+        ParsingPreset.MULTIMODAL_LOCAL_V1,
+        ParsingPreset.MULTIMODAL_LOCAL_V2,
+    }
     accelerator_options = AcceleratorOptions(
         num_threads=1,
         device=AcceleratorDevice.CPU,
@@ -96,6 +100,16 @@ def build_docling_converter(
         format_options={
             InputFormat.MD: MarkdownFormatOption(
                 pipeline_options=simple_options,
+                backend_options=(
+                    MarkdownBackendOptions(
+                        fetch_images=True,
+                        enable_local_fetch=True,
+                        enable_remote_fetch=False,
+                        max_image_data_base64_bytes=limits.max_total_asset_bytes,
+                    )
+                    if preset is ParsingPreset.MULTIMODAL_LOCAL_V2
+                    else MarkdownBackendOptions()
+                ),
             ),
             InputFormat.PDF: PdfFormatOption(pipeline_options=pdf_options),
             InputFormat.DOCX: WordFormatOption(

@@ -44,6 +44,7 @@ class KnowledgeBaseParsingResponse(PublicSchema):
     profile: Literal[
         "docling_text_local_v1",
         "docling_multimodal_local_v1",
+        "docling_multimodal_local_v2",
         "unstructured_local_v1",
         "unstructured_multimodal_local_v1",
         "unstructured_multimodal_local_v2",

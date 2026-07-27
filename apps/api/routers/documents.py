@@ -18,7 +18,8 @@ from apps.api.security import get_auth_context
 from apps.api.upload_metadata import resolve_upload_metadata
 from rag_kb.auth import AuthContext
 from rag_kb.domain import DocumentChunk, DocumentChunkAsset
-from rag_kb.services import Document, DocumentMutationResult, FileAdmissionError
+from rag_kb.document_processing import DOCLING_MULTIMODAL_PARSER_CONFIG_V2
+from rag_kb.document_processing.markdown_bundle import MARKDOWN_BUNDLE_MEDIA_TYPE
 from rag_kb.schemas import (
     CursorPayload,
     DocumentChunkAssetResponse,
@@ -34,6 +35,7 @@ from rag_kb.schemas import (
     DocumentVersionResponse,
     ErrorCode,
 )
+from rag_kb.services import Document, DocumentMutationResult, FileAdmissionError
 
 
 router = APIRouter(tags=["documents"])
@@ -44,6 +46,9 @@ _BINARY_BODY = {
         "content": {
             "text/plain": {"schema": {"type": "string", "format": "binary"}},
             "text/markdown": {"schema": {"type": "string", "format": "binary"}},
+            MARKDOWN_BUNDLE_MEDIA_TYPE: {
+                "schema": {"type": "string", "format": "binary"}
+            },
             "application/pdf": {"schema": {"type": "string", "format": "binary"}},
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document": {
                 "schema": {"type": "string", "format": "binary"}
@@ -393,6 +398,14 @@ async def _accept_upload(
     source = tempfile.SpooledTemporaryFile(max_size=1024 * 1024, mode="w+b")
     size = 0
     try:
+        knowledge_base = await dependencies.knowledge_base_service.get(
+            context,
+            kb_id,
+        )
+        markdown_v2 = (
+            knowledge_base.parser_config
+            == DOCLING_MULTIMODAL_PARSER_CONFIG_V2
+        )
         async for block in request.stream():
             size += len(block)
             if size > maximum:
@@ -406,6 +419,11 @@ async def _accept_upload(
             original_filename=original_filename,
             media_type=request.headers.get("content-type", ""),
         )
+        if (
+            admitted.media_type == MARKDOWN_BUNDLE_MEDIA_TYPE
+            and not markdown_v2
+        ):
+            raise FileAdmissionError(ErrorCode.PARSER_NOT_CONFIGURED)
         result = await dependencies.source_file_service.store_and_activate(
             context,
             idempotency_key,
@@ -415,6 +433,11 @@ async def _accept_upload(
             original_filename=admitted.original_filename,
             media_type=admitted.media_type,
             source=source,
+            normalize_markdown_media=(
+                markdown_v2
+                and admitted.media_type
+                in {"text/markdown", MARKDOWN_BUNDLE_MEDIA_TYPE}
+            ),
         )
         return _upload_response(result)
     finally:

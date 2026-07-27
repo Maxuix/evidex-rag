@@ -24,6 +24,10 @@ import {
   trackJob,
   type TrackedJobReference,
 } from "./storage";
+import {
+  buildMarkdownBundle,
+  inspectMarkdownFolder,
+} from "./markdownBundle";
 
 interface PendingUpload {
   file: File;
@@ -59,6 +63,10 @@ export function DocumentsView({
   const [uploadMode, setUploadMode] = useState<"new" | "version">("new");
   const [versionDocumentId, setVersionDocumentId] = useState("");
   const [file, setFile] = useState<File | null>(null);
+  const [sourceMode, setSourceMode] = useState<"file" | "markdown-folder">("file");
+  const [folderFiles, setFolderFiles] = useState<File[]>([]);
+  const [markdownEntrypoints, setMarkdownEntrypoints] = useState<string[]>([]);
+  const [markdownEntrypoint, setMarkdownEntrypoint] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [uploading, setUploading] = useState(false);
   const [pendingUpload, setPendingUpload] = useState<PendingUpload | null>(null);
@@ -74,6 +82,8 @@ export function DocumentsView({
   const [inspectedDocumentId, setInspectedDocumentId] = useState<string | null>(null);
   const pollGeneration = useRef(0);
   const mutationPending = pendingUpload !== null || pendingRetry !== null;
+  const markdownMediaEnabled =
+    knowledgeBase.parsing.preset === "multimodal_local_v2";
 
   useEffect(() => {
     onMutationPendingChange(mutationPending);
@@ -100,6 +110,10 @@ export function DocumentsView({
     setDocuments([]);
     setNextCursor(null);
     setFile(null);
+    setSourceMode("file");
+    setFolderFiles([]);
+    setMarkdownEntrypoints([]);
+    setMarkdownEntrypoint("");
     setDisplayName("");
     setUploadError(null);
     setPendingUpload(null);
@@ -209,6 +223,10 @@ export function DocumentsView({
       setUploadError(null);
       const input = document.getElementById("document-file") as HTMLInputElement | null;
       if (input) input.value = "";
+      const folderInput = document.getElementById(
+        "markdown-folder",
+      ) as HTMLInputElement | null;
+      if (folderInput) folderInput.value = "";
     } catch (error) {
       setUploadError(error);
     } finally {
@@ -252,6 +270,40 @@ export function DocumentsView({
   const forgetJob = (jobId: string) => {
     forgetTrackedJob(jobId);
     setTrackedJobs(readTrackedJobs(knowledgeBase.id));
+  };
+
+  const selectMarkdownFolder = async (selected: File[]) => {
+    setUploadError(null);
+    try {
+      const inspected = inspectMarkdownFolder(selected);
+      if (inspected.entrypoints.length === 0) {
+        throw new Error("The selected folder does not contain a Markdown file.");
+      }
+      const entrypoint = inspected.entrypoints[0];
+      setFolderFiles(selected);
+      setMarkdownEntrypoints(inspected.entrypoints);
+      setMarkdownEntrypoint(entrypoint);
+      const bundle = await buildMarkdownBundle(selected, entrypoint);
+      setFile(bundle);
+      if (!displayName) setDisplayName(entrypoint.split("/").pop() ?? entrypoint);
+    } catch (error) {
+      setFolderFiles([]);
+      setMarkdownEntrypoints([]);
+      setMarkdownEntrypoint("");
+      setFile(null);
+      setUploadError(error);
+    }
+  };
+
+  const selectMarkdownEntrypoint = async (entrypoint: string) => {
+    setMarkdownEntrypoint(entrypoint);
+    setUploadError(null);
+    try {
+      setFile(await buildMarkdownBundle(folderFiles, entrypoint));
+    } catch (error) {
+      setFile(null);
+      setUploadError(error);
+    }
   };
 
   return (
@@ -350,6 +402,37 @@ export function DocumentsView({
               New version
             </label>
           </fieldset>
+          {markdownMediaEnabled ? (
+            <fieldset className="segmented-field">
+              <legend>Source input</legend>
+              <label>
+                <input
+                  type="radio"
+                  name="source-mode"
+                  checked={sourceMode === "file"}
+                  onChange={() => {
+                    setSourceMode("file");
+                    setFile(null);
+                  }}
+                  disabled={loading || mutationPending}
+                />
+                Single file
+              </label>
+              <label>
+                <input
+                  type="radio"
+                  name="source-mode"
+                  checked={sourceMode === "markdown-folder"}
+                  onChange={() => {
+                    setSourceMode("markdown-folder");
+                    setFile(null);
+                  }}
+                  disabled={loading || mutationPending}
+                />
+                Markdown folder
+              </label>
+            </fieldset>
+          ) : null}
           {uploadMode === "version" ? (
             <label>
               Existing document
@@ -366,24 +449,68 @@ export function DocumentsView({
               </select>
             </label>
           ) : null}
-          <label>
-            Document file
-            <input
-              id="document-file"
-              type="file"
-              accept=".txt,.md,.html,.csv,.pdf,.docx,.pptx,.xlsx"
-              required
-              disabled={loading || mutationPending}
-              onChange={(event) => {
-                const selected = event.target.files?.[0] ?? null;
-                setFile(selected);
-                if (selected && !displayName) setDisplayName(selected.name);
-              }}
-            />
-            <span className="field-hint">
-              Supports UTF-8 .txt/.md/.html/.csv, .pdf, and .docx/.pptx/.xlsx files.
-            </span>
-          </label>
+          {sourceMode === "markdown-folder" && markdownMediaEnabled ? (
+            <>
+              <label>
+                Markdown folder
+                <input
+                  id="markdown-folder"
+                  type="file"
+                  required
+                  disabled={loading || mutationPending}
+                  ref={(node) => node?.setAttribute("webkitdirectory", "")}
+                  onChange={(event) =>
+                    void selectMarkdownFolder(
+                      Array.from(event.target.files ?? []),
+                    )
+                  }
+                />
+                <span className="field-hint">
+                  The browser packages the Markdown entrypoint with local PNG,
+                  JPEG, and WebP resources; no manual ZIP step is required.
+                </span>
+              </label>
+              {markdownEntrypoints.length > 1 ? (
+                <label>
+                  Markdown entrypoint
+                  <select
+                    value={markdownEntrypoint}
+                    disabled={loading || mutationPending}
+                    onChange={(event) =>
+                      void selectMarkdownEntrypoint(event.target.value)
+                    }
+                  >
+                    {markdownEntrypoints.map((entrypoint) => (
+                      <option key={entrypoint} value={entrypoint}>
+                        {entrypoint}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
+            </>
+          ) : (
+            <label>
+              Document file
+              <input
+                id="document-file"
+                type="file"
+                accept=".txt,.md,.mdz,.html,.csv,.pdf,.docx,.pptx,.xlsx"
+                required
+                disabled={loading || mutationPending}
+                onChange={(event) => {
+                  const selected = event.target.files?.[0] ?? null;
+                  setFile(selected);
+                  if (selected && !displayName) setDisplayName(selected.name);
+                }}
+              />
+              <span className="field-hint">
+                Supports UTF-8 .txt/.md/.html/.csv, .pdf, .docx/.pptx/.xlsx,
+                and v2 Markdown .mdz bundles. Remote images in a v2 .md file
+                are snapshotted automatically.
+              </span>
+            </label>
+          )}
           <label>
             Display name
             <input

@@ -15,6 +15,11 @@ from rag_kb.domain import (
     ErrorCode,
     FileAdmissionError,
 )
+from rag_kb.document_processing.markdown_bundle import (
+    MARKDOWN_BUNDLE_EXTENSION,
+    MARKDOWN_BUNDLE_MEDIA_TYPE,
+    read_markdown_bundle,
+)
 
 
 _FILENAME = re.compile(r"^[^/\\\x00]{1,255}$")
@@ -22,6 +27,7 @@ _OOXML_PREFIX = "application/vnd.openxmlformats-officedocument"
 _MEDIA_TYPES = {
     ".txt": "text/plain",
     ".md": "text/markdown",
+    MARKDOWN_BUNDLE_EXTENSION: MARKDOWN_BUNDLE_MEDIA_TYPE,
     ".html": "text/html",
     ".csv": "text/csv",
     ".pdf": "application/pdf",
@@ -96,6 +102,8 @@ class FileAdmissionService:
             self._validate_pdf(content)
         elif extension in _OOXML_REQUIRED_PARTS:
             self._validate_ooxml(content, _OOXML_REQUIRED_PARTS[extension])
+        elif extension == MARKDOWN_BUNDLE_EXTENSION:
+            read_markdown_bundle(content)
         source.seek(0)
         return AdmittedFile(
             original_filename=filename,

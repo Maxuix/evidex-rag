@@ -9,7 +9,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
 
-from rag_kb.adapters import LocalFileStore, SourceFileStore
+from PIL import Image
+
+from rag_kb.adapters import FetchedImage, LocalFileStore, SourceFileStore
 from rag_kb.auth import AuthContext
 from rag_kb.domain import (
     Document,
@@ -19,7 +21,9 @@ from rag_kb.domain import (
     SourceFileDigest,
     SourceFileIntegrityError,
 )
+from rag_kb.document_processing.markdown_bundle import MARKDOWN_BUNDLE_MEDIA_TYPE
 from rag_kb.services import SourceFileService
+from rag_kb.services.markdown_media import MarkdownMediaNormalizer
 
 
 WORKSPACE = UUID("01900000-0000-7000-8000-000000000001")
@@ -154,6 +158,67 @@ class SourceFileServiceTests(unittest.TestCase):
 
             asyncio.run(scenario())
             self.assertEqual(events, ["reserved", "activated"])
+
+    def test_markdown_snapshot_replay_does_not_fetch_remote_media_again(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            staging = root / "staging"
+            final = root / "final"
+            staging.mkdir()
+            final.mkdir()
+            store = LocalFileStore(staging, final)
+            context = AuthContext("principal", "client", WORKSPACE)
+            image_target = io.BytesIO()
+            Image.new("RGB", (4, 3), "blue").save(image_target, "PNG")
+
+            class Fetcher:
+                calls = 0
+
+                def fetch(self, url: str, *, max_bytes: int) -> FetchedImage:
+                    del max_bytes
+                    self.calls += 1
+                    return FetchedImage(image_target.getvalue(), url)
+
+            class Documents:
+                async def reserve_version(self, *args, **kwargs):
+                    self_test.assertEqual(
+                        kwargs["source"].media_type,
+                        MARKDOWN_BUNDLE_MEDIA_TYPE,
+                    )
+                    return DocumentMutationResult(
+                        document=_document(), document_version_id=VERSION_ID
+                    )
+
+                async def activate_reserved_version(self, *args, **kwargs):
+                    return DocumentMutationResult(
+                        document=_document(), document_version_id=VERSION_ID
+                    )
+
+            self_test = self
+            fetcher = Fetcher()
+            service = SourceFileService(
+                Documents(),  # type: ignore[arg-type]
+                store,
+                MarkdownMediaNormalizer(fetcher),
+            )
+            markdown = b"![chart](https://example.com/chart.png)\n"
+
+            async def scenario() -> None:
+                for _ in range(2):
+                    await service.store_and_activate(
+                        context,
+                        IDEMPOTENCY_KEY,
+                        kb_id=KB_ID,
+                        document_id=None,
+                        display_name="Guide",
+                        original_filename="guide.md",
+                        media_type="text/markdown",
+                        source=io.BytesIO(markdown),
+                        normalize_markdown_media=True,
+                    )
+
+            asyncio.run(scenario())
+            self.assertEqual(fetcher.calls, 1)
 
 
 def _document() -> Document:

@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from pathlib import Path, PurePath
 import re
+from tempfile import TemporaryDirectory
 from typing import Any
 
 from docling.datamodel.base_models import (
@@ -15,6 +16,7 @@ from docling.datamodel.base_models import (
     DoclingComponentType,
     DocumentStream,
     FailureCategory,
+    InputFormat,
 )
 from docling.document_converter import DocumentConverter
 from docling_core.types.doc import DoclingDocument
@@ -26,10 +28,15 @@ from rag_kb.adapters.parser.docling.artifacts import (
 from rag_kb.adapters.parser.docling.factory import build_docling_converter
 from rag_kb.domain import (
     ErrorCode,
+    FileAdmissionError,
     ParserExecutionError,
     ParserLimits,
     ParserSource,
     ParsingPreset,
+)
+from rag_kb.document_processing.markdown_bundle import (
+    MARKDOWN_BUNDLE_MEDIA_TYPE,
+    read_normalized_markdown_bundle,
 )
 
 
@@ -86,7 +93,7 @@ class DoclingParser:
             resolved_preset = ParsingPreset(preset)
         except ValueError as error:
             raise ParserExecutionError(ErrorCode.PARSER_NOT_CONFIGURED) from error
-        _validate_source(source, self._limits)
+        _validate_source(source, self._limits, resolved_preset)
         if self._closed:
             raise ParserExecutionError(
                 ErrorCode.PARSER_NOT_CONFIGURED,
@@ -125,16 +132,19 @@ class DoclingParser:
     ) -> DoclingDocument:
         try:
             converter = self._get_converter(preset)
-            stream = DocumentStream(
-                name=source.original_filename,
-                stream=BytesIO(source.content),
-            )
-            result = converter.convert(
-                stream,
-                raises_on_error=False,
-                max_num_pages=self._limits.max_num_pages,
-                max_file_size=self._limits.max_file_size,
-            )
+            if source.media_type == MARKDOWN_BUNDLE_MEDIA_TYPE:
+                result = self._convert_markdown_bundle(converter, source.content)
+            else:
+                stream = DocumentStream(
+                    name=source.original_filename,
+                    stream=BytesIO(source.content),
+                )
+                result = converter.convert(
+                    stream,
+                    raises_on_error=False,
+                    max_num_pages=self._limits.max_num_pages,
+                    max_file_size=self._limits.max_file_size,
+                )
         except ParserExecutionError:
             raise
         except (FileNotFoundError, ImportError, ModuleNotFoundError) as error:
@@ -153,6 +163,36 @@ class DoclingParser:
                 diagnostic={"check": "docling_conversion"},
             ) from error
         return _validate_conversion_result(result, self._limits)
+
+    def _convert_markdown_bundle(
+        self,
+        converter: DocumentConverter,
+        content: bytes,
+    ) -> Any:
+        try:
+            entrypoint, files = read_normalized_markdown_bundle(content)
+        except FileAdmissionError as error:
+            raise ParserExecutionError(error.code) from error
+        with TemporaryDirectory(prefix="rag-kb-md-") as directory:
+            root = Path(directory)
+            for name, member in files.items():
+                target = root / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(member)
+            markdown_path = root / entrypoint
+            options = converter.format_to_options[InputFormat.MD].backend_options
+            if options is None:
+                raise ParserExecutionError(
+                    ErrorCode.PARSER_NOT_CONFIGURED,
+                    diagnostic={"check": "markdown_backend_options"},
+                )
+            options.source_uri = markdown_path
+            return converter.convert(
+                markdown_path,
+                raises_on_error=False,
+                max_num_pages=self._limits.max_num_pages,
+                max_file_size=self._limits.max_file_size,
+            )
 
     def _get_converter(self, preset: ParsingPreset) -> DocumentConverter:
         converter = self._converters.get(preset)
@@ -187,8 +227,27 @@ class DoclingParser:
         return converter
 
 
-def _validate_source(source: ParserSource, limits: ParserLimits) -> None:
+def _validate_source(
+    source: ParserSource,
+    limits: ParserLimits,
+    preset: ParsingPreset,
+) -> None:
     extension = PurePath(source.original_filename).suffix.lower()
+    if source.media_type == MARKDOWN_BUNDLE_MEDIA_TYPE:
+        if (
+            preset is not ParsingPreset.MULTIMODAL_LOCAL_V2
+            or extension not in {".md", ".mdz"}
+        ):
+            raise ParserExecutionError(ErrorCode.PARSER_NOT_CONFIGURED)
+        if len(source.content) > limits.max_file_size:
+            raise ParserExecutionError(
+                ErrorCode.PARSER_RESOURCE_LIMIT,
+                diagnostic={
+                    "limit_name": "max_file_size",
+                    "limit": limits.max_file_size,
+                },
+            )
+        return
     expected_media_type = _MEDIA_TYPES.get(extension)
     if expected_media_type is None:
         raise ParserExecutionError(ErrorCode.PARSER_NOT_CONFIGURED)

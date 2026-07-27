@@ -16,6 +16,9 @@ from rag_kb.domain import (
     FileAdmissionError,
 )
 from rag_kb.services import FileAdmissionService
+from rag_kb.document_processing.markdown_bundle import (
+    MARKDOWN_BUNDLE_MEDIA_TYPE,
+)
 
 def _minimal_docx() -> bytes:
     target = io.BytesIO()
@@ -192,3 +195,21 @@ class FileAdmissionTests(unittest.TestCase):
         self.assertEqual(
             raised.exception.code, ErrorCode.FILE_ARCHIVE_LIMIT_EXCEEDED
         )
+
+    def test_markdown_bundle_is_admitted_as_a_versioned_archive(self) -> None:
+        target = io.BytesIO()
+        with ZipFile(target, "w", ZIP_DEFLATED) as archive:
+            archive.writestr(
+                "manifest.json",
+                '{"version":1,"entrypoint":"guide.md"}',
+            )
+            archive.writestr("guide.md", "# Guide\n")
+
+        admitted = self.service.validate(
+            io.BytesIO(target.getvalue()),
+            original_filename="guide.mdz",
+            media_type=MARKDOWN_BUNDLE_MEDIA_TYPE,
+        )
+
+        self.assertEqual(admitted.extension, ".mdz")
+        self.assertEqual(admitted.media_type, MARKDOWN_BUNDLE_MEDIA_TYPE)

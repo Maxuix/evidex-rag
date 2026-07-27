@@ -57,10 +57,12 @@ from rag_kb.domain import (
 from rag_kb.document_processing import (
     DOCLING_ENRICHMENT_CONFIG,
     DOCLING_MULTIMODAL_PARSER_CONFIG,
+    DOCLING_MULTIMODAL_PARSER_CONFIG_V2,
     DOCLING_REPRESENTATION_CONFIG,
     SEMANTIC_CHUNKING_CONFIG,
     count_chunk_tokens,
     profile_fingerprint,
+    parsing_preset,
     resolve,
     with_composite_embedding_text,
 )
@@ -144,18 +146,18 @@ class IndexingPipeline:
                 media_type=target.media_type,
                 content=content,
             )
-            multimodal = target.parser_config == DOCLING_MULTIMODAL_PARSER_CONFIG
+            resolved_parsing = parsing_preset(target.parser_config)
+            multimodal = resolved_parsing in {
+                ParsingPreset.MULTIMODAL_LOCAL_V1,
+                ParsingPreset.MULTIMODAL_LOCAL_V2,
+            }
             cross_space = (
                 self._require_multimodal_runtime(target) if multimodal else None
             )
             document = await self._parse(
                 command,
                 source,
-                preset=(
-                    ParsingPreset.MULTIMODAL_LOCAL_V1
-                    if multimodal
-                    else ParsingPreset.TEXT_LOCAL_V1
-                ),
+                preset=resolved_parsing,
             )
             labels = self._surface_labels(source)
             chunks = await self._chunks(
@@ -355,7 +357,10 @@ class IndexingPipeline:
     ) -> ChunkingStrategyKind:
         try:
             strategy = resolve(target.parser_config, target.chunking_config)
-            if target.parser_config == DOCLING_MULTIMODAL_PARSER_CONFIG and (
+            if target.parser_config in (
+                DOCLING_MULTIMODAL_PARSER_CONFIG,
+                DOCLING_MULTIMODAL_PARSER_CONFIG_V2,
+            ) and (
                 target.enrichment_config != DOCLING_ENRICHMENT_CONFIG
                 or target.representation_config != DOCLING_REPRESENTATION_CONFIG
             ):

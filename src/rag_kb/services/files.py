@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from datetime import UTC, datetime, timedelta
+from io import BytesIO
 from typing import BinaryIO
 from uuid import UUID
 
@@ -18,21 +19,30 @@ from rag_kb.domain import (
     InvalidStorageIdentityError,
     SourceFileDigest,
     SourceFileIdentity,
+    StagedSourceFile,
 )
+from rag_kb.document_processing.markdown_bundle import MARKDOWN_BUNDLE_MEDIA_TYPE
 from rag_kb.services.content import (
     CREATE_DOCUMENT_ENDPOINT,
     CREATE_VERSION_ENDPOINT,
     DocumentService,
 )
+from rag_kb.services.markdown_media import MarkdownMediaNormalizer
 from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, UnitOfWorkPurpose, execute_in_transaction
 
 
 class SourceFileService:
     """Stage bytes, reserve immutable metadata, finalize, then activate."""
 
-    def __init__(self, documents: DocumentService, file_store: SourceFileStore) -> None:
+    def __init__(
+        self,
+        documents: DocumentService,
+        file_store: SourceFileStore,
+        markdown_media: MarkdownMediaNormalizer | None = None,
+    ) -> None:
         self._documents = documents
         self._file_store = file_store
+        self._markdown_media = markdown_media
 
     async def store_and_activate(
         self,
@@ -45,6 +55,7 @@ class SourceFileService:
         original_filename: str,
         media_type: str,
         source: BinaryIO,
+        normalize_markdown_media: bool = False,
     ) -> DocumentMutationResult:
         endpoint = (
             CREATE_DOCUMENT_ENDPOINT
@@ -64,11 +75,51 @@ class SourceFileService:
                 )
             ).encode("utf-8")
         ).hexdigest()
-        staged = await self._file_store.stage(
-            context.workspace_id,
-            key_material,
-            source,
-        )
+        stored_media_type = media_type
+        if normalize_markdown_media:
+            if self._markdown_media is None:
+                raise RuntimeError("Markdown media normalizer is not configured")
+            source.seek(0)
+            raw_content = source.read()
+            if not isinstance(raw_content, bytes):
+                raise TypeError("source file must yield bytes")
+            raw_checksum = hashlib.sha256(raw_content).hexdigest()
+            identity = SourceFileIdentity(
+                workspace_id=context.workspace_id,
+                key=hashlib.sha256(
+                    f"markdown-media-v2\x1f{key_material}\x1f{raw_checksum}".encode(
+                        "utf-8"
+                    )
+                ).hexdigest(),
+            )
+            existing = await self._file_store.inspect(
+                identity,
+                FileLocation.FINAL,
+            )
+            if existing is None:
+                existing = await self._file_store.inspect(
+                    identity,
+                    FileLocation.STAGING,
+                )
+            if existing is None:
+                normalized = await self._markdown_media.normalize(
+                    raw_content,
+                    original_filename=original_filename,
+                    media_type=media_type,
+                )
+                staged = await self._file_store.stage_at(
+                    identity,
+                    BytesIO(normalized),
+                )
+            else:
+                staged = StagedSourceFile(identity=identity, digest=existing)
+            stored_media_type = MARKDOWN_BUNDLE_MEDIA_TYPE
+        else:
+            staged = await self._file_store.stage(
+                context.workspace_id,
+                key_material,
+                source,
+            )
         try:
             reserved = await self._documents.reserve_version(
                 context,
@@ -80,12 +131,13 @@ class SourceFileService:
                     checksum_sha256=staged.digest.checksum_sha256,
                     storage_uri=staged.identity.storage_uri,
                     original_filename=original_filename,
-                    media_type=media_type,
+                    media_type=stored_media_type,
                     size_bytes=staged.digest.size_bytes,
                 ),
             )
         except Exception:
-            await self._file_store.discard_staged(staged.identity)
+            if not normalize_markdown_media:
+                await self._file_store.discard_staged(staged.identity)
             raise
         await self._file_store.finalize(staged.identity, staged.digest)
         return await self._documents.activate_reserved_version(

@@ -130,7 +130,11 @@ class KnowledgeBaseService:
         resolved_parsing = ParsingPreset(parsing_preset)
         resolved_profile = profile_for_preset(resolved_preset, resolved_parsing)
         if (
-            resolved_parsing is ParsingPreset.MULTIMODAL_LOCAL_V1
+            resolved_parsing
+            in {
+                ParsingPreset.MULTIMODAL_LOCAL_V1,
+                ParsingPreset.MULTIMODAL_LOCAL_V2,
+            }
             and self._cross_modal_embedding_space is None
         ):
             raise ResourceStateConflictError(
@@ -199,7 +203,11 @@ class KnowledgeBaseService:
                 embedding_space=self._embedding_space,
                 cross_modal_embedding_space=(
                     self._cross_modal_embedding_space
-                    if resolved_parsing is ParsingPreset.MULTIMODAL_LOCAL_V1
+                    if resolved_parsing
+                    in {
+                        ParsingPreset.MULTIMODAL_LOCAL_V1,
+                        ParsingPreset.MULTIMODAL_LOCAL_V2,
+                    }
                     else None
                 ),
                 index_profile=resolved_profile,

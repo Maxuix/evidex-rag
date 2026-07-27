@@ -23,6 +23,7 @@ from rag_kb.document_processing import (
 )
 from rag_kb.domain import (
     ChunkingPreset,
+    ContentModality,
     EmbeddingBatch,
     EmbeddingSpaceDefinition,
     ErrorCode,
@@ -34,7 +35,7 @@ from rag_kb.domain import (
     PromotionResult,
     PromotionStatus,
     ParserExecutionError,
-    ContentModality,
+    ParsingPreset,
     SourceFileIdentity,
     stable_chunk_id,
     stable_vector_id,
@@ -83,6 +84,10 @@ class IndexingDomainTests(unittest.TestCase):
         profile = profile_for_preset(
             ChunkingPreset.STRUCTURAL_BALANCED_V2, "multimodal_local_v1"
         )
+        markdown_profile = profile_for_preset(
+            ChunkingPreset.STRUCTURAL_BALANCED_V2,
+            "multimodal_local_v2",
+        )
 
         self.assertEqual(
             profile.parser_config["profile"],
@@ -94,6 +99,23 @@ class IndexingDomainTests(unittest.TestCase):
         )
         self.assertNotIn(
             "caption_text", str(DOCLING_REPRESENTATION_CONFIG)
+        )
+        self.assertEqual(
+            public_parsing_descriptor(markdown_profile.parser_config),
+            {
+                "preset": "multimodal_local_v2",
+                "profile": "docling_multimodal_local_v2",
+            },
+        )
+        self.assertTrue(
+            markdown_profile.parser_config["markdown_media"][
+                "admission_remote_snapshot"
+            ]
+        )
+        self.assertFalse(
+            markdown_profile.parser_config["markdown_media"][
+                "docling_remote_fetch"
+            ]
         )
         self.assertEqual(
             public_parsing_descriptor(LEGACY_MULTIMODAL_PARSER_CONFIG_V1),
@@ -123,19 +145,20 @@ class IndexingDomainTests(unittest.TestCase):
             self.assertEqual(response.exception.code, ErrorCode.EMBEDDING_RESPONSE_INVALID)
 
 class IndexingPipelineTests(unittest.IsolatedAsyncioTestCase):
-    async def test_multimodal_execution_persists_manifest_assets_and_both_spaces(self) -> None:
-        repository = _Repository(_target(multimodal=True))
+    async def test_markdown_v2_reuses_multimodal_assets_and_both_spaces(self) -> None:
+        repository = _Repository(_target(multimodal=True, markdown_v2=True))
         factory = _Factory(repository)
         text_provider = _Provider(factory)
         text_provider.max_batch_size = 10
         visual_provider = _MultimodalProvider(factory)
         asset_store = _AssetStore(factory)
+        parser = _MultimodalParser(factory)
         global _CURRENT_FACTORY
         _CURRENT_FACTORY = factory
         pipeline = IndexingPipeline(
             factory,
             _FileStore(factory),
-            _MultimodalParser(factory),
+            parser,
             text_provider,
             FixedPgVectorSpace(_embedding()),
             asset_store=asset_store,
@@ -155,6 +178,7 @@ class IndexingPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(repository.manifest.representation_count, 2)
         self.assertEqual(repository.manifest.relation_count, 1)
         self.assertEqual(len(asset_store.writes), 1)
+        self.assertEqual(parser.presets, [ParsingPreset.MULTIMODAL_LOCAL_V2])
         self.assertEqual(text_provider.calls, 1)
         self.assertEqual(text_provider.inputs, [("[body]\nbody evidence",)])
         self.assertEqual(visual_provider.image_calls, 1)
@@ -494,12 +518,14 @@ class _MultimodalParser:
     def __init__(self, factory) -> None:
         self.factory = factory
         self.calls = 0
+        self.presets = []
 
     async def parse(self, source, *, preset):
         if self.factory.active:
             raise AssertionError("parser ran inside transaction")
-        del source, preset
+        del source
         self.calls += 1
+        self.presets.append(preset)
         return _visual_document()
 
 
@@ -629,12 +655,16 @@ def _target(
     preset: ChunkingPreset = ChunkingPreset.STRUCTURAL_BALANCED_V2,
     *,
     multimodal: bool = False,
+    markdown_v2: bool = False,
 ):
     version = uuid4()
     target = uuid4()
-    profile = profile_for_preset(
-        preset, "multimodal_local_v1" if multimodal else "text_local_v1"
+    parsing = (
+        "multimodal_local_v2"
+        if markdown_v2
+        else "multimodal_local_v1" if multimodal else "text_local_v1"
     )
+    profile = profile_for_preset(preset, parsing)
     cross_space_id = uuid4()
     return IndexingTarget(
         job_id=uuid4(),

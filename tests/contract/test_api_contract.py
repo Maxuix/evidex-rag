@@ -1440,6 +1440,48 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(response.json()["code"], code)
         self.assertEqual(self.dependencies.source_file_service.calls, [])
 
+    async def test_markdown_v2_upload_requests_admission_snapshot(self) -> None:
+        created = await request(
+            self.app,
+            "POST",
+            f"{API_PREFIX}/knowledge-bases",
+            headers={"idempotency-key": str(uuid4())},
+            json_body={
+                "name": "Markdown media",
+                "parsing": {"preset": "multimodal_local_v2"},
+            },
+        )
+        self.assertEqual(created.status, 201)
+        self.assertEqual(
+            created.json()["parsing"],
+            {
+                "preset": "multimodal_local_v2",
+                "profile": "docling_multimodal_local_v2",
+            },
+        )
+
+        uploaded = await request(
+            self.app,
+            "POST",
+            (
+                f"{API_PREFIX}/knowledge-bases/"
+                f"{self.dependencies.knowledge_base_service.value.id}/documents"
+            ),
+            headers={
+                "idempotency-key": str(uuid4()),
+                "content-type": "text/markdown",
+                "x-document-filename": "evidence.md",
+            },
+            raw_body=b"![x](https://x.co/a)",
+        )
+
+        self.assertEqual(uploaded.status, 202)
+        self.assertTrue(
+            self.dependencies.source_file_service.calls[-1][
+                "normalize_markdown_media"
+            ]
+        )
+
     async def test_indexing_status_and_explicit_retry_are_published(self) -> None:
         service = self.dependencies.indexing_job_service
         status = await request(

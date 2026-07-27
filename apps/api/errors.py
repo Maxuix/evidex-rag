@@ -177,6 +177,10 @@ async def _file_admission_handler(
         ErrorCode.FILE_LINE_LIMIT_EXCEEDED: "The document exceeds the configured line limit.",
         ErrorCode.FILE_CONTENT_INVALID: "The document content does not match the declared format.",
         ErrorCode.FILE_ARCHIVE_LIMIT_EXCEEDED: "The document archive exceeds a configured safety limit.",
+        ErrorCode.MARKDOWN_BUNDLE_INVALID: "The Markdown bundle is invalid.",
+        ErrorCode.MARKDOWN_MEDIA_UNRESOLVED: "A Markdown image could not be resolved.",
+        ErrorCode.MARKDOWN_MEDIA_UNSUPPORTED: "A Markdown image format is unsupported.",
+        ErrorCode.MARKDOWN_MEDIA_FETCH_FAILED: "A remote Markdown image could not be fetched safely.",
         ErrorCode.PARSER_NOT_CONFIGURED: "No parser is configured for this document format.",
     }
     return problem_response(

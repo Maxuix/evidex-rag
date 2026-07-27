@@ -24,6 +24,12 @@ class SourceFileStore(Protocol):
         source: BinaryIO,
     ) -> StagedSourceFile: ...
 
+    async def stage_at(
+        self,
+        identity: SourceFileIdentity,
+        source: BinaryIO,
+    ) -> StagedSourceFile: ...
+
     async def finalize(
         self,
         identity: SourceFileIdentity,

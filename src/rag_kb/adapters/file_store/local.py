@@ -53,6 +53,13 @@ class LocalFileStore:
     ) -> None:
         await asyncio.to_thread(self._finalize, identity, expected)
 
+    async def stage_at(
+        self,
+        identity: SourceFileIdentity,
+        source: BinaryIO,
+    ) -> StagedSourceFile:
+        return await asyncio.to_thread(self._stage_at, identity, source)
+
     async def inspect(
         self,
         identity: SourceFileIdentity,
@@ -145,6 +152,51 @@ class LocalFileStore:
         os.replace(staging, final)
         self._fsync_directory(final.parent)
         self._require_digest(final, expected)
+
+    def _stage_at(
+        self,
+        identity: SourceFileIdentity,
+        source: BinaryIO,
+    ) -> StagedSourceFile:
+        final = self._path(identity, FileLocation.FINAL)
+        if final.is_file():
+            return StagedSourceFile(identity=identity, digest=self._digest(final))
+
+        incoming = self._staging / str(identity.workspace_id) / ".incoming"
+        incoming.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if not incoming.resolve(strict=True).is_relative_to(self._staging):
+            raise InvalidStorageIdentityError("source file escaped configured root")
+        temporary = incoming / f"{uuid4().hex}.part"
+        digest = hashlib.sha256()
+        size = 0
+        try:
+            with temporary.open("xb") as handle:
+                os.chmod(temporary, 0o600)
+                while True:
+                    block = source.read(_CHUNK_SIZE)
+                    if not block:
+                        break
+                    if not isinstance(block, bytes):
+                        raise TypeError("source file must yield bytes")
+                    handle.write(block)
+                    digest.update(block)
+                    size += len(block)
+                handle.flush()
+                os.fsync(handle.fileno())
+            target = self._path(
+                identity,
+                FileLocation.STAGING,
+                create_parent=True,
+            )
+            try:
+                os.link(temporary, target)
+                self._fsync_directory(target.parent)
+                stored_digest = SourceFileDigest(digest.hexdigest(), size)
+            except FileExistsError:
+                stored_digest = self._digest(target)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return StagedSourceFile(identity=identity, digest=stored_digest)
 
     def _inspect(
         self,

@@ -1849,6 +1849,10 @@
           "FILE_LINE_LIMIT_EXCEEDED",
           "FILE_CONTENT_INVALID",
           "FILE_ARCHIVE_LIMIT_EXCEEDED",
+          "MARKDOWN_BUNDLE_INVALID",
+          "MARKDOWN_MEDIA_UNRESOLVED",
+          "MARKDOWN_MEDIA_UNSUPPORTED",
+          "MARKDOWN_MEDIA_FETCH_FAILED",
           "PARSER_NOT_CONFIGURED",
           "PARSER_CHUNK_LIMIT_EXCEEDED",
           "PARSER_RESOURCE_LIMIT",
@@ -2545,6 +2549,7 @@
             "enum": [
               "docling_text_local_v1",
               "docling_multimodal_local_v1",
+              "docling_multimodal_local_v2",
               "unstructured_local_v1",
               "unstructured_multimodal_local_v1",
               "unstructured_multimodal_local_v2"
@@ -2677,7 +2682,8 @@
       "ParsingPreset": {
         "enum": [
           "text_local_v1",
-          "multimodal_local_v1"
+          "multimodal_local_v1",
+          "multimodal_local_v2"
         ],
         "title": "ParsingPreset",
         "type": "string"
@@ -3990,6 +3996,12 @@
                 "type": "string"
               }
             },
+            "application/vnd.rag-kb.markdown-bundle+zip": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            },
             "text/markdown": {
               "schema": {
                 "format": "binary",
@@ -4757,6 +4769,12 @@
               }
             },
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            },
+            "application/vnd.rag-kb.markdown-bundle+zip": {
               "schema": {
                 "format": "binary",
                 "type": "string"

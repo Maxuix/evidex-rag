@@ -34,7 +34,10 @@ export type InsufficiencyPolicy = "refuse" | "partial_answer";
 export type ChunkingPreset =
   | "structural_balanced_v2"
   | "semantic_balanced_v1";
-export type ParsingPreset = "text_local_v1" | "multimodal_local_v1";
+export type ParsingPreset =
+  | "text_local_v1"
+  | "multimodal_local_v1"
+  | "multimodal_local_v2";
 
 export interface KnowledgeBase {
   id: UUID;
@@ -47,6 +50,7 @@ export interface KnowledgeBase {
     profile:
       | "docling_text_local_v1"
       | "docling_multimodal_local_v1"
+      | "docling_multimodal_local_v2"
       | "unstructured_local_v1"
       | "unstructured_multimodal_local_v1"
       | "unstructured_multimodal_local_v2";

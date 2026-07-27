@@ -225,6 +225,9 @@ export function ObservationApp({ client }: { client: ApiClient }) {
             >
               <option value="text_local_v1">Text-only local</option>
               <option value="multimodal_local_v1">Multimodal local</option>
+              <option value="multimodal_local_v2">
+                Multimodal local v2 (Markdown media)
+              </option>
             </select>
             <select
               aria-label="Chunking preset"
@@ -246,8 +249,10 @@ export function ObservationApp({ client }: { client: ApiClient }) {
             </button>
           </div>
           <small className="field-help">
-            {newParsingPreset === "multimodal_local_v1"
-              ? "Extracts and indexes document images and tables; requires the configured multimodal provider. "
+            {newParsingPreset === "multimodal_local_v2"
+              ? "Snapshots Markdown images, including folder resources and public remote URLs; requires the configured multimodal provider. "
+              : newParsingPreset === "multimodal_local_v1"
+                ? "Extracts and indexes document images and tables; requires the configured multimodal provider. "
               : "Uses the existing text-only parser. "}
             {newChunkingPreset === "structural_balanced_v2"
               ? "Uses titles and token windows."
@@ -323,9 +328,13 @@ export function ObservationApp({ client }: { client: ApiClient }) {
               </div>
               <div>
                 <span>Parsing</span>
-                <strong>{selectedKnowledgeBase.parsing.preset === "multimodal_local_v1"
-                  ? "Multimodal local"
-                  : "Text-only local"}</strong>
+                <strong>
+                  {selectedKnowledgeBase.parsing.preset === "multimodal_local_v2"
+                    ? "Multimodal local v2"
+                    : selectedKnowledgeBase.parsing.preset === "multimodal_local_v1"
+                      ? "Multimodal local"
+                      : "Text-only local"}
+                </strong>
               </div>
               <div>
                 <span>Chunking preset</span>

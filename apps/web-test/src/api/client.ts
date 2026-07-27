@@ -30,6 +30,7 @@ const OOXML = "application/vnd.openxmlformats-officedocument";
 const UPLOAD_MEDIA_TYPES: Record<string, string> = {
   txt: "text/plain",
   md: "text/markdown",
+  mdz: "application/vnd.rag-kb.markdown-bundle+zip",
   html: "text/html",
   csv: "text/csv",
   pdf: "application/pdf",
@@ -308,7 +309,7 @@ export class ApiClient {
     const mediaType = UPLOAD_MEDIA_TYPES[extension] ?? null;
     if (!mediaType) {
       throw new ApiClientError(
-        "Choose a .txt, .md, .html, .csv, .pdf, .docx, .pptx, or .xlsx file.",
+        "Choose a .txt, .md, .mdz, .html, .csv, .pdf, .docx, .pptx, or .xlsx file.",
         { code: "FRONTEND_FILE_TYPE_UNSUPPORTED" },
       );
     }

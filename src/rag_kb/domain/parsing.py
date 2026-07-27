@@ -44,6 +44,7 @@ class ParserLimits:
 class ParsingPreset(StrEnum):
     TEXT_LOCAL_V1 = "text_local_v1"
     MULTIMODAL_LOCAL_V1 = "multimodal_local_v1"
+    MULTIMODAL_LOCAL_V2 = "multimodal_local_v2"
 
 
 class ContentModality(StrEnum):
