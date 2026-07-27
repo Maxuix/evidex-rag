@@ -150,8 +150,8 @@ unset RAG_KB_LOCAL_DATABASE_PASSWORD
 
 printf 'Using %s from %s (mode 600; values are not printed).\n' "$credential_source" "$STATE_FILE"
 run_compose "Starting PostgreSQL..." up -d --wait postgres
-run_compose "Building API, Worker, and frontend images..." \
-  build api worker frontend frontend-diagnostic
+run_compose "Building the shared application and frontend images..." \
+  build api frontend frontend-diagnostic
 run_compose "Preparing local source storage..." up storage-init
 run_compose "Applying database migrations..." --profile tools run --rm migrate
 run_compose "Starting API, Worker, and frontends..." up -d --wait api worker frontend frontend-diagnostic

@@ -26,6 +26,14 @@ class StartLocalScriptTests(unittest.TestCase):
         configuration = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
 
         self.assertEqual(
+            configuration["services"]["api"]["image"],
+            configuration["services"]["worker"]["image"],
+        )
+        self.assertEqual(
+            configuration["services"]["api"]["build"],
+            configuration["services"]["worker"]["build"],
+        )
+        self.assertEqual(
             configuration["services"]["api"]["healthcheck"]["retries"], 40
         )
         worker = configuration["services"]["worker"]["healthcheck"]
@@ -164,10 +172,11 @@ class StartLocalScriptTests(unittest.TestCase):
                 calls,
             )
             build_call = (
-                f"compose --env-file {state_file} build api worker frontend "
+                f"compose --env-file {state_file} build api frontend "
                 "frontend-diagnostic"
             )
             self.assertIn(build_call, calls)
+            self.assertNotIn("build api worker", calls)
             self.assertIn(
                 f"compose --env-file {state_file} up storage-init",
                 calls,
