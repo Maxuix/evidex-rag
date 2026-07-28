@@ -53,11 +53,29 @@ def main() -> int:
         action="store_true",
         help="run retrieval evaluation without provider-backed ChatRun cases",
     )
+    parser.add_argument(
+        "--retrieval-strategy",
+        action="append",
+        choices=("exact_vector", "hybrid"),
+        dest="retrieval_strategies",
+        help=(
+            "retrieval strategy to evaluate; repeat for an exact/hybrid A/B "
+            "(default: exact_vector)"
+        ),
+    )
     arguments = parser.parse_args()
     if not 1 <= arguments.top_k <= 20:
         parser.error("--top-k must be between 1 and 20")
     if arguments.timeout_seconds <= 0 or arguments.poll_seconds <= 0:
         parser.error("timeouts must be positive")
+    retrieval_strategies = tuple(
+        dict.fromkeys(arguments.retrieval_strategies or ("exact_vector",))
+    )
+    if not arguments.skip_chat and retrieval_strategies != ("exact_vector",):
+        parser.error(
+            "--skip-chat is required when evaluating retrieval strategies "
+            "other than exact_vector"
+        )
 
     try:
         api = _validated_api_base(arguments.api)
@@ -75,6 +93,7 @@ def main() -> int:
             timeout_seconds=arguments.timeout_seconds,
             poll_seconds=arguments.poll_seconds,
             evaluate_chat=not arguments.skip_chat,
+            retrieval_strategies=retrieval_strategies,
         )
     report["elapsed_seconds"] = round(time.perf_counter() - started, 3)
     print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
@@ -95,6 +114,7 @@ def _evaluate(
     timeout_seconds: float,
     poll_seconds: float,
     evaluate_chat: bool,
+    retrieval_strategies: tuple[str, ...],
 ) -> dict[str, object]:
     kb = _json_request(
         f"{api}/knowledge-bases",
@@ -204,6 +224,61 @@ def _evaluate(
             "expected_relation": None,
             "evaluate_chat": False,
         },
+        {
+            "case_key": "compound_model",
+            "query": "What does POL-7.3/REV:2 require?",
+            "relevant_label": "lexical_identifiers",
+            "lane": "text",
+            "expects_visual": False,
+            "expected_relation": None,
+            "evaluate_chat": False,
+        },
+        {
+            "case_key": "standard_clause",
+            "query": "Which standard is ISO/IEC-27001:A.5.17?",
+            "relevant_label": "lexical_identifiers",
+            "lane": "text",
+            "expects_visual": False,
+            "expected_relation": None,
+            "evaluate_chat": False,
+        },
+        {
+            "case_key": "snake_case_identifier",
+            "query": "Which recovery function is recover_index_target_v2?",
+            "relevant_label": "lexical_identifiers",
+            "lane": "text",
+            "expects_visual": False,
+            "expected_relation": None,
+            "evaluate_chat": False,
+        },
+        {
+            "case_key": "mixed_name",
+            "query": "谁负责执行星河协议XQ-77？",
+            "relevant_label": "lexical_identifiers",
+            "lane": "text",
+            "expects_visual": False,
+            "expected_relation": None,
+            "evaluate_chat": False,
+        },
+        {
+            "case_key": "cjk_phrase",
+            "query": "苍穹网关负责什么？",
+            "relevant_label": "lexical_identifiers",
+            "lane": "text",
+            "expects_visual": False,
+            "expected_relation": None,
+            "evaluate_chat": False,
+        },
+        {
+            "case_key": "noise_exact",
+            "query": "What retention period does NOISE-ONLY-999 define?",
+            "relevant_label": None,
+            "lane": "text",
+            "expects_visual": False,
+            "expected_relation": None,
+            "evaluate_chat": False,
+            "evaluation_scope": "noise",
+        },
     )
     if indexing["resource_stress"]["status"] == "completed":
         cases += (
@@ -218,93 +293,24 @@ def _evaluate(
             },
         )
 
-    results: list[dict[str, object]] = []
-    for case in cases:
-        case_key = str(case["case_key"])
-        query = str(case["query"])
-        relevant_label = str(case["relevant_label"])
-        lane = str(case["lane"])
-        query_started = time.perf_counter()
-        response = _json_request(
-            f"{api}/retrieval/query",
-            method="POST",
-            payload={
-                "knowledge_base_id": kb_id,
-                "query": query,
-                "top_k": top_k,
-                "strategy": "exact_vector",
-                "rerank": True,
-                "include_debug": True,
-            },
+    results_by_strategy = {
+        strategy: _evaluate_retrieval_cases(
+            api,
+            kb_id,
+            documents,
+            cases,
+            strategy=strategy,
+            top_k=top_k,
         )
-        elapsed = time.perf_counter() - query_started
-        evidence = response.get("evidence")
-        if not isinstance(evidence, list):
-            raise RuntimeError("retrieval response omitted evidence")
-        expected_document_id = documents[relevant_label]
-        rank = next(
-            (
-                index
-                for index, item in enumerate(evidence, start=1)
-                if isinstance(item, dict)
-                and item.get("document_id") == expected_document_id
-            ),
-            None,
-        )
-        relevant_evidence = [
-            item
-            for item in evidence
-            if isinstance(item, dict)
-            and item.get("document_id") == expected_document_id
-        ]
-        related_visuals = [
-            visual
-            for item in relevant_evidence
-            for visual in item.get("related_visuals", [])
-            if isinstance(item.get("related_visuals"), list)
-            and isinstance(visual, dict)
-        ]
-        direct_visual_count = sum(
-            item.get("modality") in {"image", "table"}
-            for item in relevant_evidence
-        )
-        predicted_visual = bool(related_visuals or direct_visual_count)
-        expected_relation = case["expected_relation"]
-        relation_matched = expected_relation is None or any(
-            item.get("relation_type") == expected_relation
-            for item in related_visuals
-        )
-        results.append(
-            {
-                "case_key": case_key,
-                "lane": lane,
-                "relevant_document": relevant_label,
-                "rank": rank,
-                "recalled": rank is not None,
-                "group_recalled": rank is not None and relation_matched,
-                "expects_visual": bool(case["expects_visual"]),
-                "predicted_visual": predicted_visual,
-                "relation_matched": relation_matched,
-                "related_visual_count": len(related_visuals),
-                "direct_visual_count": direct_visual_count,
-                "elapsed_seconds": round(elapsed, 3),
-                "result_count": len(evidence),
-                "top_modalities": [
-                    item.get("modality")
-                    for item in evidence
-                    if isinstance(item, dict)
-                ],
-                "top_matched_representations": [
-                    item.get("matched_representations")
-                    for item in evidence
-                    if isinstance(item, dict)
-                ],
-            }
-        )
-
-    required = [item for item in results if item["case_key"] != "stress_table"]
-    text_cases = [item for item in required if item["lane"] == "text"]
-    image_cases = [item for item in required if item["lane"] == "image"]
+        for strategy in retrieval_strategies
+    }
+    metrics_by_strategy = {
+        strategy: _retrieval_metrics(results, top_k=top_k)
+        for strategy, results in results_by_strategy.items()
+    }
+    primary_strategy = retrieval_strategies[0]
+    primary_results = results_by_strategy[primary_strategy]
+    primary_metrics = metrics_by_strategy[primary_strategy]
     chat_results = (
         _evaluate_chat_cases(
             api,
@@ -318,25 +324,14 @@ def _evaluate(
         if evaluate_chat
         else []
     )
-    retrieval_attachment = _attachment_metrics(required)
     chat_attachment = _attachment_metrics(chat_results)
     metrics = {
-        "top_k": top_k,
-        "text_recall_at_k": _recall(text_cases),
-        "text_mrr": _mrr(text_cases),
-        "image_recall_at_k": _recall(image_cases),
-        "image_mrr": _mrr(image_cases),
-        "group_recall_at_k": _group_recall(required),
-        "retrieval_visual_attachment_precision": retrieval_attachment["precision"],
-        "retrieval_visual_attachment_accuracy": retrieval_attachment["accuracy"],
-        "retrieval_visual_count": sum(
-            int(item["related_visual_count"]) + int(item["direct_visual_count"])
-            for item in required
-        ),
-        "all_required_cases_recalled": all(item["recalled"] for item in required),
-        "retrieval_call_count": len(results),
-        "retrieval_elapsed_seconds": round(
-            sum(float(item["elapsed_seconds"]) for item in results), 3
+        **primary_metrics,
+        "primary_retrieval_strategy": primary_strategy,
+        "retrieval_strategies": metrics_by_strategy,
+        "all_required_cases_recalled": all(
+            bool(item["all_required_cases_recalled"])
+            for item in metrics_by_strategy.values()
         ),
         "chat_case_count": len(chat_results),
         "chat_visual_attachment_precision": chat_attachment["precision"],
@@ -374,19 +369,186 @@ def _evaluate(
             }
             for label in corpus
         },
-        "cases": results,
+        "cases": primary_results,
+        "retrieval_cases_by_strategy": results_by_strategy,
         "chat_cases": chat_results,
         "metrics": metrics,
         "limitations": {
-            "provider_token_usage_available": True,
+            "provider_token_usage_available": evaluate_chat,
             "chat_evaluated": evaluate_chat,
             "note": (
                 "Retrieval elapsed time is measured at the public API boundary; "
                 "the API does not expose per-lane provider timing or embedding "
-                "token accounting. Asset-read failure is covered by deterministic "
-                "unit tests rather than destructive corpus mutation."
+                "token accounting. Each strategy executes the same query set, so "
+                "request counts are the observable provider-call parity boundary. "
+                "Asset-read failure is covered by deterministic unit tests rather "
+                "than destructive corpus mutation."
             ),
         },
+    }
+
+
+def _evaluate_retrieval_cases(
+    api: str,
+    kb_id: str,
+    documents: dict[str, str],
+    cases: tuple[dict[str, object], ...],
+    *,
+    strategy: str,
+    top_k: int,
+) -> list[dict[str, object]]:
+    results: list[dict[str, object]] = []
+    for case in cases:
+        relevant_label_value = case["relevant_label"]
+        relevant_label = (
+            str(relevant_label_value)
+            if relevant_label_value is not None
+            else None
+        )
+        started = time.perf_counter()
+        response = _json_request(
+            f"{api}/retrieval/query",
+            method="POST",
+            payload={
+                "knowledge_base_id": kb_id,
+                "query": str(case["query"]),
+                "top_k": top_k,
+                "strategy": strategy,
+                "rerank": True,
+                "include_debug": True,
+            },
+        )
+        elapsed = time.perf_counter() - started
+        evidence = response.get("evidence")
+        if not isinstance(evidence, list):
+            raise RuntimeError("retrieval response omitted evidence")
+        expected_document_id = (
+            documents[relevant_label] if relevant_label is not None else None
+        )
+        rank = (
+            next(
+                (
+                    index
+                    for index, item in enumerate(evidence, start=1)
+                    if isinstance(item, dict)
+                    and item.get("document_id") == expected_document_id
+                ),
+                None,
+            )
+            if expected_document_id is not None
+            else None
+        )
+        relevant_evidence = [
+            item
+            for item in evidence
+            if isinstance(item, dict)
+            and item.get("document_id") == expected_document_id
+        ]
+        related_visuals = [
+            visual
+            for item in relevant_evidence
+            for visual in item.get("related_visuals", [])
+            if isinstance(item.get("related_visuals"), list)
+            and isinstance(visual, dict)
+        ]
+        direct_visual_count = sum(
+            item.get("modality") in {"image", "table"}
+            for item in relevant_evidence
+        )
+        expected_relation = case["expected_relation"]
+        relation_matched = expected_relation is None or any(
+            item.get("relation_type") == expected_relation
+            for item in related_visuals
+        )
+        debug = response.get("debug")
+        if not isinstance(debug, dict):
+            debug = {}
+        results.append(
+            {
+                "case_key": str(case["case_key"]),
+                "strategy": strategy,
+                "evaluation_scope": case.get("evaluation_scope", "required"),
+                "lane": str(case["lane"]),
+                "relevant_document": relevant_label,
+                "rank": rank,
+                "recalled": (
+                    rank is not None if expected_document_id is not None else None
+                ),
+                "group_recalled": (
+                    rank is not None and relation_matched
+                    if expected_document_id is not None
+                    else None
+                ),
+                "expects_visual": bool(case["expects_visual"]),
+                "predicted_visual": bool(related_visuals or direct_visual_count),
+                "relation_matched": relation_matched,
+                "related_visual_count": len(related_visuals),
+                "direct_visual_count": direct_visual_count,
+                "elapsed_seconds": round(elapsed, 6),
+                "result_count": len(evidence),
+                "relevant_lane_ranks": [
+                    {
+                        "text_space_rank": item.get("text_space_rank"),
+                        "lexical_rank": item.get("lexical_rank"),
+                        "cross_modal_rank": item.get("cross_modal_rank"),
+                    }
+                    for item in relevant_evidence
+                ],
+                "candidate_counts": {
+                    "text": debug.get("text_candidate_count"),
+                    "lexical": debug.get("lexical_candidate_count"),
+                    "cross_modal": debug.get("cross_modal_candidate_count"),
+                },
+                "top_modalities": [
+                    item.get("modality")
+                    for item in evidence
+                    if isinstance(item, dict)
+                ],
+                "top_matched_representations": [
+                    item.get("matched_representations")
+                    for item in evidence
+                    if isinstance(item, dict)
+                ],
+            }
+        )
+    return results
+
+
+def _retrieval_metrics(
+    results: list[dict[str, object]], *, top_k: int
+) -> dict[str, object]:
+    required = [
+        item
+        for item in results
+        if item["evaluation_scope"] == "required"
+        and item["case_key"] != "stress_table"
+    ]
+    text_cases = [item for item in required if item["lane"] == "text"]
+    image_cases = [item for item in required if item["lane"] == "image"]
+    attachment = _attachment_metrics(required)
+    elapsed = [float(item["elapsed_seconds"]) for item in results]
+    return {
+        "top_k": top_k,
+        "text_recall_at_k": _recall(text_cases),
+        "text_mrr": _mrr(text_cases),
+        "text_ndcg_at_k": _ndcg(text_cases),
+        "image_recall_at_k": _recall(image_cases),
+        "image_mrr": _mrr(image_cases),
+        "image_ndcg_at_k": _ndcg(image_cases),
+        "group_recall_at_k": _group_recall(required),
+        "retrieval_visual_attachment_precision": attachment["precision"],
+        "retrieval_visual_attachment_accuracy": attachment["accuracy"],
+        "retrieval_visual_count": sum(
+            int(item["related_visual_count"]) + int(item["direct_visual_count"])
+            for item in required
+        ),
+        "all_required_cases_recalled": all(
+            bool(item["recalled"]) for item in required
+        ),
+        "retrieval_call_count": len(results),
+        "retrieval_elapsed_seconds": round(sum(elapsed), 6),
+        "retrieval_p50_seconds": round(_percentile(elapsed, 0.50), 6),
+        "retrieval_p95_seconds": round(_percentile(elapsed, 0.95), 6),
     }
 
 
@@ -635,10 +797,35 @@ def _mrr(cases: list[dict[str, object]]) -> float:
     )
 
 
+def _ndcg(cases: list[dict[str, object]]) -> float:
+    return round(
+        sum(
+            1.0 / math.log2(int(item["rank"]) + 1)
+            for item in cases
+            if item["rank"] is not None
+        )
+        / len(cases),
+        6,
+    )
+
+
 def _group_recall(cases: list[dict[str, object]]) -> float:
     return round(
         sum(bool(item["group_recalled"]) for item in cases) / len(cases), 6
     )
+
+
+def _percentile(values: list[float], quantile: float) -> float:
+    if not values:
+        raise ValueError("percentile values must not be empty")
+    ordered = sorted(values)
+    position = (len(ordered) - 1) * quantile
+    lower = math.floor(position)
+    upper = math.ceil(position)
+    if lower == upper:
+        return ordered[lower]
+    fraction = position - lower
+    return ordered[lower] + (ordered[upper] - ordered[lower]) * fraction
 
 
 def _attachment_metrics(cases: list[dict[str, object]]) -> dict[str, float]:
@@ -727,6 +914,37 @@ def _generate_corpus(root: Path) -> dict[str, Path]:
         ),
     )
 
+    lexical_identifiers = root / "lexical-identifiers.txt"
+    lexical_identifiers.write_text(
+        "\n\n".join(
+            (
+                "The exact audit clause POL-7.3/REV:2 requires dual approval.",
+                "The governing standard is ISO/IEC-27001:A.5.17.",
+                "The recovery function is recover_index_target_v2.",
+                "中英文混合专名“星河协议XQ-77”由苍穹网关负责执行。",
+                "NOISE-ONLY-999 is an unrelated retired checksum and does not "
+                "define any retention period.",
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    lexical_hard_negative = root / "lexical-hard-negative.txt"
+    lexical_hard_negative.write_text(
+        "\n\n".join(
+            (
+                "This negative sample mentions POL, section 7, subsection 3, "
+                "revision 2 as separate unrelated catalog fields.",
+                "ISO and IEC appear here only as organization names; 27001, "
+                "A, 5, and 17 are independent inventory values.",
+                "The words recover, index, target, and version 2 are separate "
+                "prose and do not name a function.",
+                "星河、协议、XQ、77、苍穹和网关在此均为互不相关的词条。",
+            )
+        ),
+        encoding="utf-8",
+    )
+
     resource_stress = root / "resource-stress.docx"
     stress = Document()
     stress.add_heading("Bounded Resource Stress", level=1)
@@ -749,6 +967,8 @@ def _generate_corpus(root: Path) -> dict[str, Path]:
         "rich_docx": rich_docx,
         "long_text": long_text,
         "repeated_watermark": repeated_watermark,
+        "lexical_identifiers": lexical_identifiers,
+        "lexical_hard_negative": lexical_hard_negative,
         "resource_stress": resource_stress,
     }
 

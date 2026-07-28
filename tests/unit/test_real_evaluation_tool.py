@@ -11,13 +11,17 @@ from tools.evaluate_multimodal_real import (
     _generate_corpus,
     _group_recall,
     _mrr,
+    _ndcg,
+    _percentile,
     _recall,
     _validated_api_base,
 )
 
 
 class RealEvaluationToolTests(unittest.TestCase):
-    def test_generated_corpus_covers_six_bounded_supported_files(self) -> None:
+    def test_generated_corpus_covers_bounded_supported_and_lexical_files(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             corpus = _generate_corpus(Path(directory))
 
@@ -29,6 +33,8 @@ class RealEvaluationToolTests(unittest.TestCase):
                     "rich_docx",
                     "long_text",
                     "repeated_watermark",
+                    "lexical_identifiers",
+                    "lexical_hard_negative",
                     "resource_stress",
                 },
             )
@@ -63,6 +69,16 @@ class RealEvaluationToolTests(unittest.TestCase):
             self.assertIn("As shown in Fig. 7", architecture_text)
             self.assertIn("Figure 7", architecture_text)
             self.assertEqual(scanned_text, "")
+            lexical_text = corpus["lexical_identifiers"].read_text(
+                encoding="utf-8"
+            )
+            hard_negative = corpus["lexical_hard_negative"].read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("POL-7.3/REV:2", lexical_text)
+            self.assertIn("recover_index_target_v2", lexical_text)
+            self.assertIn("星河协议XQ-77", lexical_text)
+            self.assertNotIn("POL-7.3/REV:2", hard_negative)
 
     def test_metrics_count_missing_ranks_as_zero(self) -> None:
         cases = [
@@ -73,6 +89,13 @@ class RealEvaluationToolTests(unittest.TestCase):
 
         self.assertEqual(_recall(cases), 0.666667)
         self.assertEqual(_mrr(cases), 0.5)
+        self.assertEqual(_ndcg(cases), 0.543643)
+
+    def test_percentile_uses_linear_interpolation(self) -> None:
+        values = [0.1, 0.2, 0.4, 0.8]
+
+        self.assertAlmostEqual(_percentile(values, 0.5), 0.3)
+        self.assertAlmostEqual(_percentile(values, 0.95), 0.74)
 
     def test_composite_group_and_attachment_metrics_are_explicit(self) -> None:
         cases = [
