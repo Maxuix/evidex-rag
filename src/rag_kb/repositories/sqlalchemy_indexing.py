@@ -60,6 +60,7 @@ from rag_kb.domain import (
     PromotionResult,
     PromotionStatus,
     PersistedVectorRepresentation,
+    RetiredIndexTargetAssets,
     ReconciliationResult,
     ResourceStateConflictError,
     VectorRecordWrite,
@@ -101,41 +102,111 @@ class SqlAlchemyIndexingRepository:
             checksum_sha256=row.checksum_sha256,
         )
 
-    async def list_retired_assets(
+    async def list_retired_target_assets(
         self, *, data_before: datetime, limit: int
-    ) -> tuple[IndexAssetSnapshot, ...]:
+    ) -> tuple[RetiredIndexTargetAssets, ...]:
         self._ensure_active()
+        if limit < 1:
+            raise ValueError("retired target limit must be positive")
+        target_ids = tuple(
+            (
+                await self._session.execute(
+                    select(IndexedDocumentVersionRow.id)
+                    .where(
+                        IndexedDocumentVersionRow.workspace_id
+                        == self._workspace_id,
+                        IndexedDocumentVersionRow.serving_status
+                        == IndexServingStatus.RETIRED,
+                        IndexedDocumentVersionRow.updated_at <= data_before,
+                        or_(
+                            exists(
+                                select(IndexChunkRow.id).where(
+                                    IndexChunkRow.workspace_id
+                                    == self._workspace_id,
+                                    IndexChunkRow.indexed_document_version_id
+                                    == IndexedDocumentVersionRow.id,
+                                )
+                            ),
+                            exists(
+                                select(IndexAssetRow.id).where(
+                                    IndexAssetRow.workspace_id
+                                    == self._workspace_id,
+                                    IndexAssetRow.indexed_document_version_id
+                                    == IndexedDocumentVersionRow.id,
+                                )
+                            ),
+                            exists(
+                                select(IndexChunkAssetRelationRow.id).where(
+                                    IndexChunkAssetRelationRow.workspace_id
+                                    == self._workspace_id,
+                                    IndexChunkAssetRelationRow.indexed_document_version_id
+                                    == IndexedDocumentVersionRow.id,
+                                )
+                            ),
+                            exists(
+                                select(
+                                    IndexArtifactManifestRow.indexed_document_version_id
+                                ).where(
+                                    IndexArtifactManifestRow.indexed_document_version_id
+                                    == IndexedDocumentVersionRow.id
+                                )
+                            ),
+                            exists(
+                                select(IndexChunkPlanRow.indexed_document_version_id)
+                                .where(
+                                    IndexChunkPlanRow.indexed_document_version_id
+                                    == IndexedDocumentVersionRow.id
+                                )
+                            ),
+                        ),
+                    )
+                    .order_by(
+                        IndexedDocumentVersionRow.updated_at,
+                        IndexedDocumentVersionRow.id,
+                    )
+                    .limit(limit)
+                )
+            ).scalars()
+        )
+        if not target_ids:
+            return ()
         rows = (
             await self._session.scalars(
                 select(IndexAssetRow)
-                .join(
-                    IndexedDocumentVersionRow,
-                    IndexedDocumentVersionRow.id
-                    == IndexAssetRow.indexed_document_version_id,
-                )
                 .where(
                     IndexAssetRow.workspace_id == self._workspace_id,
-                    IndexedDocumentVersionRow.serving_status
-                    == IndexServingStatus.RETIRED,
-                    IndexedDocumentVersionRow.updated_at <= data_before,
+                    IndexAssetRow.indexed_document_version_id.in_(target_ids),
                 )
-                .order_by(IndexAssetRow.created_at, IndexAssetRow.id)
-                .limit(limit)
+                .order_by(
+                    IndexAssetRow.indexed_document_version_id,
+                    IndexAssetRow.created_at,
+                    IndexAssetRow.id,
+                )
             )
         ).all()
-        return tuple(
-            IndexAssetSnapshot(
-                id=row.id,
-                workspace_id=row.workspace_id,
-                kb_id=row.kb_id,
-                document_id=row.document_id,
-                document_version_id=row.document_version_id,
-                indexed_document_version_id=row.indexed_document_version_id,
-                storage_uri=row.storage_uri,
-                media_type=row.media_type,
-                checksum_sha256=row.checksum_sha256,
+        assets_by_target: dict[UUID, list[IndexAssetSnapshot]] = {
+            target_id: [] for target_id in target_ids
+        }
+        for row in rows:
+            assets_by_target[row.indexed_document_version_id].append(
+                IndexAssetSnapshot(
+                    id=row.id,
+                    workspace_id=row.workspace_id,
+                    kb_id=row.kb_id,
+                    document_id=row.document_id,
+                    document_version_id=row.document_version_id,
+                    indexed_document_version_id=row.indexed_document_version_id,
+                    storage_uri=row.storage_uri,
+                    media_type=row.media_type,
+                    checksum_sha256=row.checksum_sha256,
+                )
             )
-            for row in rows
+        return tuple(
+            RetiredIndexTargetAssets(
+                indexed_document_version_id=target_id,
+                assets=tuple(assets_by_target[target_id]),
+            )
+            for target_id in target_ids
         )
 
     async def list_relations(
@@ -435,11 +506,17 @@ class SqlAlchemyIndexingRepository:
     async def cleanup_retired(
         self,
         *,
+        target_ids: tuple[UUID, ...],
         data_before: datetime,
         tasks_before: datetime,
         limit: int,
     ) -> IndexCleanupResult:
         self._ensure_active()
+        if limit < 1:
+            raise ValueError("retired cleanup limit must be positive")
+        requested_target_ids = tuple(dict.fromkeys(target_ids))
+        if len(requested_target_ids) > limit:
+            raise ValueError("approved retired targets exceed cleanup limit")
         targets = tuple(
             (
                 await self._session.execute(
@@ -447,45 +524,10 @@ class SqlAlchemyIndexingRepository:
                     .where(
                         IndexedDocumentVersionRow.workspace_id
                         == self._workspace_id,
+                        IndexedDocumentVersionRow.id.in_(requested_target_ids),
                         IndexedDocumentVersionRow.serving_status
                         == IndexServingStatus.RETIRED,
                         IndexedDocumentVersionRow.updated_at <= data_before,
-                        or_(
-                            exists(
-                                select(IndexChunkRow.id).where(
-                                    IndexChunkRow.workspace_id == self._workspace_id,
-                                    IndexChunkRow.indexed_document_version_id
-                                    == IndexedDocumentVersionRow.id,
-                                )
-                            ),
-                            exists(
-                                select(IndexAssetRow.id).where(
-                                    IndexAssetRow.indexed_document_version_id
-                                    == IndexedDocumentVersionRow.id
-                                )
-                            ),
-                            exists(
-                                select(IndexChunkAssetRelationRow.id).where(
-                                    IndexChunkAssetRelationRow.workspace_id
-                                    == self._workspace_id,
-                                    IndexChunkAssetRelationRow.indexed_document_version_id
-                                    == IndexedDocumentVersionRow.id,
-                                )
-                            ),
-                            exists(
-                                select(IndexArtifactManifestRow.indexed_document_version_id).where(
-                                    IndexArtifactManifestRow.indexed_document_version_id
-                                    == IndexedDocumentVersionRow.id
-                                )
-                            ),
-                            exists(
-                                select(IndexChunkPlanRow.indexed_document_version_id)
-                                .where(
-                                    IndexChunkPlanRow.indexed_document_version_id
-                                    == IndexedDocumentVersionRow.id
-                                )
-                            ),
-                        ),
                     )
                     .order_by(
                         IndexedDocumentVersionRow.updated_at,
@@ -568,6 +610,7 @@ class SqlAlchemyIndexingRepository:
                 (
                     await self._session.execute(
                         delete(IndexAssetRow).where(
+                            IndexAssetRow.workspace_id == self._workspace_id,
                             IndexAssetRow.indexed_document_version_id.in_(targets)
                         )
                     )

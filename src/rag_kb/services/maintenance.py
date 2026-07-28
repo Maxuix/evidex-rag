@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 from rag_kb.auth import AuthContext
 from rag_kb.domain import FileReconciliationResult, IndexCleanupResult
@@ -44,28 +45,53 @@ class MaintenanceCleanupService:
     ) -> MaintenanceCleanupResult:
         observed_at = now or datetime.now(UTC)
         files = await self._file_reconciliation.run_once(context, now=observed_at)
-        if self._asset_store is not None:
-            async def list_assets(uow: UnitOfWork):
-                return await uow.indexing.list_retired_assets(
-                    data_before=observed_at - self._retired_data_grace,
-                    limit=self._batch_size,
-                )
+        data_before = observed_at - self._retired_data_grace
 
-            assets = await execute_in_transaction(
-                self._unit_of_work,
-                list_assets,
-                purpose=UnitOfWorkPurpose.RECONCILIATION,
+        async def list_targets(uow: UnitOfWork):
+            if uow.workspace_id != context.workspace_id:
+                raise RuntimeError("maintenance workspace does not match identity")
+            return await uow.indexing.list_retired_target_assets(
+                data_before=data_before,
+                limit=self._batch_size,
             )
-            for asset in assets:
-                await self._asset_store.delete(
-                    self._asset_store.parse_uri(asset.storage_uri)
-                )
+
+        targets = await execute_in_transaction(
+            self._unit_of_work,
+            list_targets,
+            purpose=UnitOfWorkPurpose.RECONCILIATION,
+        )
+        approved_target_ids: list[UUID] = []
+        for target in targets:
+            if not target.assets:
+                approved_target_ids.append(target.indexed_document_version_id)
+                continue
+            if self._asset_store is None:
+                continue
+            all_deleted = True
+            for asset in target.assets:
+                try:
+                    identity = self._asset_store.parse_uri(asset.storage_uri)
+                    if (
+                        asset.workspace_id != context.workspace_id
+                        or asset.indexed_document_version_id
+                        != target.indexed_document_version_id
+                        or identity.workspace_id != context.workspace_id
+                        or identity.indexed_document_version_id
+                        != target.indexed_document_version_id
+                    ):
+                        raise ValueError("index asset identity differs from target")
+                    await self._asset_store.delete(identity)
+                except Exception:
+                    all_deleted = False
+            if all_deleted:
+                approved_target_ids.append(target.indexed_document_version_id)
 
         async def clean(uow: UnitOfWork) -> IndexCleanupResult:
             if uow.workspace_id != context.workspace_id:
                 raise RuntimeError("maintenance workspace does not match identity")
             index = await uow.indexing.cleanup_retired(
-                data_before=observed_at - self._retired_data_grace,
+                target_ids=tuple(approved_target_ids),
+                data_before=data_before,
                 tasks_before=observed_at - self._task_retention,
                 limit=self._batch_size,
             )

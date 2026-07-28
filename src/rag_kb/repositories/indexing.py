@@ -23,6 +23,7 @@ from rag_kb.domain import (
     PromotionCommand,
     PromotionResult,
     PersistedVectorRepresentation,
+    RetiredIndexTargetAssets,
     ReconciliationResult,
     VectorRecordWrite,
 )
@@ -32,9 +33,9 @@ from rag_kb.domain import (
 class IndexingRepository(Protocol):
     async def get_asset(self, asset_id: UUID) -> IndexAssetSnapshot | None: ...
 
-    async def list_retired_assets(
+    async def list_retired_target_assets(
         self, *, data_before: datetime, limit: int
-    ) -> tuple[IndexAssetSnapshot, ...]: ...
+    ) -> tuple[RetiredIndexTargetAssets, ...]: ...
 
     async def list_relations(
         self,
@@ -59,6 +60,7 @@ class IndexingRepository(Protocol):
     async def cleanup_retired(
         self,
         *,
+        target_ids: tuple[UUID, ...],
         data_before: datetime,
         tasks_before: datetime,
         limit: int,

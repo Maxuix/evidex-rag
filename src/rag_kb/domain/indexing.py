@@ -259,6 +259,12 @@ class IndexAssetSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class RetiredIndexTargetAssets:
+    indexed_document_version_id: UUID
+    assets: tuple[IndexAssetSnapshot, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class IndexAssetContent:
     snapshot: IndexAssetSnapshot
     content: bytes

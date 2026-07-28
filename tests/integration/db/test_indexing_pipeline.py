@@ -794,6 +794,7 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
         cleaned = await execute_in_transaction(
             self.factory,
             lambda uow: uow.indexing.cleanup_retired(
+                target_ids=(first.indexed_document_version_id,),
                 data_before=future,
                 tasks_before=past,
                 limit=10,
@@ -803,6 +804,7 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
         replay = await execute_in_transaction(
             self.factory,
             lambda uow: uow.indexing.cleanup_retired(
+                target_ids=(first.indexed_document_version_id,),
                 data_before=future,
                 tasks_before=past,
                 limit=10,
@@ -831,6 +833,7 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
         expired = await execute_in_transaction(
             self.factory,
             lambda uow: uow.indexing.cleanup_retired(
+                target_ids=(),
                 data_before=past,
                 tasks_before=future,
                 limit=10,
@@ -852,6 +855,144 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIsNotNone(serving)
         self.assertEqual(serving.serving_status, "serving")
+
+    async def test_retired_asset_cleanup_is_target_bounded_and_revalidates_scope(self) -> None:
+        kb = await self._create_kb()
+        first = await self._upload(kb.id, "guide.txt", "text/plain", b"version one")
+        pipeline = self._pipeline(_Provider())
+        await pipeline.execute(_command(first))
+        second = await self._upload(
+            kb.id,
+            "guide.txt",
+            "text/plain",
+            b"version two",
+            document_id=first.document.id,
+        )
+        await pipeline.execute(_command(second))
+        candidate = await self._upload(
+            kb.id,
+            "guide.txt",
+            "text/plain",
+            b"version three",
+            document_id=first.document.id,
+        )
+        asset_ids = tuple(uuid4() for _ in range(3))
+        asset_keys = tuple(f"{ordinal + 1:064x}" for ordinal in range(3))
+        connection = await asyncpg.connect(MIGRATION_DSN)
+        try:
+            for asset_id, asset_key in zip(asset_ids, asset_keys, strict=True):
+                await connection.execute(
+                    """
+                    INSERT INTO index_asset(
+                        id, workspace_id, kb_id, document_id, document_version_id,
+                        indexed_document_version_id, asset_key, kind, storage_uri,
+                        media_type, checksum_sha256, source_location,
+                        processing_metadata
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, $6, $7, 'picture', $8,
+                        'image/png', $9, '{}'::jsonb, '{}'::jsonb
+                    )
+                    """,
+                    asset_id,
+                    WORKSPACE,
+                    kb.id,
+                    first.document.id,
+                    first.document.current_version.id,
+                    first.indexed_document_version_id,
+                    asset_key,
+                    (
+                        f"local-index-asset://{WORKSPACE}/"
+                        f"{first.indexed_document_version_id}/{asset_key}"
+                    ),
+                    asset_key,
+                )
+        finally:
+            await connection.close()
+        future = datetime.now(UTC) + timedelta(days=30)
+        past = datetime.now(UTC) - timedelta(days=30)
+
+        listed = await execute_in_transaction(
+            self.factory,
+            lambda uow: uow.indexing.list_retired_target_assets(
+                data_before=future,
+                limit=1,
+            ),
+            purpose=UnitOfWorkPurpose.RECONCILIATION,
+        )
+        self.assertEqual(len(listed), 1)
+        self.assertEqual(
+            listed[0].indexed_document_version_id,
+            first.indexed_document_version_id,
+        )
+        self.assertEqual(
+            {asset.id for asset in listed[0].assets},
+            set(asset_ids),
+        )
+
+        wrong_workspace_factory = SqlAlchemyUnitOfWorkFactory(
+            self.database.sessions,
+            uuid4(),
+        )
+        wrong_workspace = await execute_in_transaction(
+            wrong_workspace_factory,
+            lambda uow: uow.indexing.cleanup_retired(
+                target_ids=(first.indexed_document_version_id,),
+                data_before=future,
+                tasks_before=past,
+                limit=1,
+            ),
+            purpose=UnitOfWorkPurpose.RECONCILIATION,
+        )
+        too_recent = await execute_in_transaction(
+            self.factory,
+            lambda uow: uow.indexing.cleanup_retired(
+                target_ids=(first.indexed_document_version_id,),
+                data_before=past,
+                tasks_before=past,
+                limit=1,
+            ),
+            purpose=UnitOfWorkPurpose.RECONCILIATION,
+        )
+        self.assertEqual(wrong_workspace.retired_targets_cleaned, 0)
+        self.assertEqual(too_recent.retired_targets_cleaned, 0)
+
+        cleaned = await execute_in_transaction(
+            self.factory,
+            lambda uow: uow.indexing.cleanup_retired(
+                target_ids=(
+                    first.indexed_document_version_id,
+                    second.indexed_document_version_id,
+                    candidate.indexed_document_version_id,
+                ),
+                data_before=future,
+                tasks_before=past,
+                limit=3,
+            ),
+            purpose=UnitOfWorkPurpose.RECONCILIATION,
+        )
+        self.assertEqual(cleaned.retired_targets_cleaned, 1)
+        self.assertEqual(cleaned.assets_deleted, 3)
+        connection = await asyncpg.connect(MIGRATION_DSN)
+        try:
+            counts = await connection.fetchrow(
+                """
+                SELECT
+                  (SELECT count(*) FROM index_chunk
+                    WHERE indexed_document_version_id = $1) AS retired_chunks,
+                  (SELECT count(*) FROM index_chunk
+                    WHERE indexed_document_version_id = $2) AS serving_chunks,
+                  (SELECT count(*) FROM indexed_document_version
+                    WHERE id = $3 AND serving_status = 'candidate') AS candidate_targets
+                """,
+                first.indexed_document_version_id,
+                second.indexed_document_version_id,
+                candidate.indexed_document_version_id,
+            )
+        finally:
+            await connection.close()
+        self.assertEqual(counts["retired_chunks"], 0)
+        self.assertGreater(counts["serving_chunks"], 0)
+        self.assertEqual(counts["candidate_targets"], 1)
 
     async def test_embedding_mismatch_fails_before_any_derived_write(self) -> None:
         kb = await self._create_kb()
