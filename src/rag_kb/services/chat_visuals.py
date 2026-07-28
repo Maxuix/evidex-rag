@@ -74,7 +74,9 @@ class VisualEvidencePreparationStep:
             raise _context_error("visual_preparation_state")
 
         usable = list(answering.assessment.usable_citation_ids)
+        initially_usable = frozenset(usable)
         usable_set = set(usable)
+        attached_native_citation_ids: set[str] = set()
         visual_content: list[ChatModelVisualContent] = []
         evidence_items = list(answering.evidence.items)
         total_bytes = 0
@@ -254,6 +256,8 @@ class VisualEvidencePreparationStep:
                     usable_set.discard(citation_id)
                 continue
             visual_content.append(visual)
+            if candidate.relation_type is None:
+                attached_native_citation_ids.add(citation_id)
             if prompt_visual is not None:
                 evidence_items.append(prompt_visual)
             _record_decision(
@@ -263,9 +267,20 @@ class VisualEvidencePreparationStep:
                 candidate.reason_code,
             )
             if visual_citation_id not in usable_set:
-                usable.append(visual_citation_id)
+                if visual_citation_id not in usable:
+                    usable.append(visual_citation_id)
                 usable_set.add(visual_citation_id)
             total_bytes += content_size
+
+        for evidence in pack.evidence:
+            citation_id = f"cite_{evidence.rank}"
+            if (
+                citation_id in initially_usable
+                and evidence.modality in {"image", "table"}
+                and not _has_textual_representation(evidence)
+                and citation_id not in attached_native_citation_ids
+            ):
+                usable_set.discard(citation_id)
 
         retained = tuple(value for value in usable if value in usable_set)
         assessment = answering.assessment

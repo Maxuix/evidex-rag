@@ -200,6 +200,83 @@ def _visual_pack(
     return pack, loaded
 
 
+def _native_visual_pack(
+    context: ChatExecutionContext,
+    *,
+    count: int,
+    duplicate_checksum_from: int | None = None,
+) -> tuple[EvidencePack, dict[UUID, IndexAssetContent]]:
+    evidence_items = []
+    loaded = {}
+    contents = [f"native-visual-{ordinal}".encode() for ordinal in range(count)]
+    if duplicate_checksum_from is not None:
+        contents[-1] = contents[duplicate_checksum_from]
+    for ordinal, content in enumerate(contents):
+        asset_id = UUID(int=1_000 + ordinal)
+        indexed_version_id = UUID(int=2_000 + ordinal)
+        document_id = UUID(int=3_000 + ordinal)
+        document_version_id = UUID(int=4_000 + ordinal)
+        checksum = hashlib.sha256(content).hexdigest()
+        asset = EvidenceAsset(
+            id=asset_id,
+            media_type="image/png",
+            checksum_sha256=checksum,
+            content_url=f"/api/v1/index-assets/{asset_id}/content",
+            width=320,
+            height=200,
+        )
+        evidence_items.append(
+            Evidence(
+                rank=ordinal + 1,
+                index_chunk_id=UUID(int=5_000 + ordinal),
+                indexed_document_version_id=indexed_version_id,
+                document_id=document_id,
+                document_version_id=document_version_id,
+                index_revision_id=context.index_revision_id,
+                ordinal=ordinal,
+                text="",
+                source_location={"page_number": ordinal + 1},
+                hierarchy={},
+                source_metadata={},
+                score=0.016393,
+                score_kind=EvidenceScoreKind.RECIPROCAL_RANK_FUSION,
+                vector_similarity=0.82,
+                modality="image",
+                asset=asset,
+                evidence_group_key=f"figure:{ordinal}",
+                matched_representations=("native_image",),
+                cross_modal_rank=ordinal + 1,
+            )
+        )
+        loaded[asset_id] = IndexAssetContent(
+            snapshot=IndexAssetSnapshot(
+                id=asset_id,
+                workspace_id=context.workspace_id,
+                kb_id=context.knowledge_base_id,
+                document_id=document_id,
+                document_version_id=document_version_id,
+                indexed_document_version_id=indexed_version_id,
+                storage_uri=(
+                    f"local-index-asset://{context.workspace_id}/"
+                    f"{indexed_version_id}/{checksum}"
+                ),
+                media_type="image/png",
+                checksum_sha256=checksum,
+                size_bytes=len(content),
+            ),
+            content=content,
+        )
+    return (
+        EvidencePack(
+            knowledge_base_id=context.knowledge_base_id,
+            index_revision_id=context.index_revision_id,
+            strategy=RetrievalStrategy.EXACT_VECTOR,
+            evidence=tuple(evidence_items),
+        ),
+        loaded,
+    )
+
+
 def _related_visual_pack(
     context: ChatExecutionContext,
     *,
@@ -523,6 +600,72 @@ class MultimodalAnsweringTests(unittest.IsolatedAsyncioTestCase):
         citation = validated.answering.rendered.citations[0]
         self.assertEqual(citation.modality, "image")
         self.assertIsNotNone(citation.asset_snapshot)
+
+    async def test_native_only_citations_are_limited_to_attached_images(self) -> None:
+        context = _context()
+        pack, loaded = _native_visual_pack(context, count=3)
+        state = await CosineEvidenceAssessmentStep(0.35, 0.45, 0.25).run(
+            ChatPipelineState(context=context, evidence_pack=pack)
+        )
+        reader = _MultiAssetReader(loaded)
+
+        result = await VisualEvidencePreparationStep(reader, max_images=2).run(state)
+
+        assert result.answering is not None
+        self.assertEqual(len(reader.calls), 2)
+        self.assertEqual(len(result.answering.visual_content), 2)
+        self.assertEqual(
+            result.answering.assessment.usable_citation_ids,
+            ("cite_1", "cite_2"),
+        )
+
+    async def test_native_only_citations_beyond_hard_max_are_removed(self) -> None:
+        context = _context()
+        pack, loaded = _native_visual_pack(
+            context,
+            count=VisualEvidenceAdmissionPolicy.HARD_MAX_IMAGES + 1,
+        )
+        state = await CosineEvidenceAssessmentStep(0.35, 0.45, 0.25).run(
+            ChatPipelineState(context=context, evidence_pack=pack)
+        )
+        reader = _MultiAssetReader(loaded)
+
+        result = await VisualEvidencePreparationStep(
+            reader,
+            max_images=VisualEvidenceAdmissionPolicy.HARD_MAX_IMAGES,
+        ).run(state)
+
+        assert result.answering is not None
+        self.assertEqual(
+            len(reader.calls),
+            VisualEvidenceAdmissionPolicy.HARD_MAX_IMAGES,
+        )
+        self.assertEqual(
+            result.answering.assessment.usable_citation_ids,
+            ("cite_1", "cite_2", "cite_3", "cite_4"),
+        )
+
+    async def test_deduplicated_native_only_citation_is_removed(self) -> None:
+        context = _context()
+        pack, loaded = _native_visual_pack(
+            context,
+            count=2,
+            duplicate_checksum_from=0,
+        )
+        state = await CosineEvidenceAssessmentStep(0.35, 0.45, 0.25).run(
+            ChatPipelineState(context=context, evidence_pack=pack)
+        )
+        reader = _MultiAssetReader(loaded)
+
+        result = await VisualEvidencePreparationStep(reader).run(state)
+
+        assert result.answering is not None
+        self.assertEqual(len(reader.calls), 1)
+        self.assertEqual(len(result.answering.visual_content), 1)
+        self.assertEqual(
+            result.answering.assessment.usable_citation_ids,
+            ("cite_1",),
+        )
 
     async def test_structure_repair_reuses_identical_visual_content(self) -> None:
         context = _context()
