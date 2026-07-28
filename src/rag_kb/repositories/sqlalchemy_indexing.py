@@ -184,6 +184,18 @@ class SqlAlchemyIndexingRepository:
                     DocumentRow.id == IndexedDocumentVersionRow.document_id,
                 )
                 .join(
+                    DocumentVersionRow,
+                    and_(
+                        DocumentVersionRow.id
+                        == IndexedDocumentVersionRow.document_version_id,
+                        DocumentVersionRow.document_id
+                        == IndexedDocumentVersionRow.document_id,
+                        DocumentVersionRow.kb_id == IndexedDocumentVersionRow.kb_id,
+                        DocumentVersionRow.workspace_id
+                        == IndexedDocumentVersionRow.workspace_id,
+                    ),
+                )
+                .join(
                     KnowledgeBaseRow,
                     KnowledgeBaseRow.id == IndexedDocumentVersionRow.kb_id,
                 )
@@ -225,9 +237,9 @@ class SqlAlchemyIndexingRepository:
                     IndexedDocumentVersionRow.serving_status == IndexServingStatus.SERVING,
                     DocumentRow.workspace_id == self._workspace_id,
                     DocumentRow.kb_id == kb_id,
-                    DocumentRow.current_version_id
-                    == IndexedDocumentVersionRow.document_version_id,
                     DocumentRow.deleted_at.is_(None),
+                    DocumentVersionRow.source_status
+                    == DocumentSourceStatus.AVAILABLE,
                     or_(*selectors),
                 )
                 .order_by(

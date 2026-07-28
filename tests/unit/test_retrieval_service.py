@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import unittest
 from dataclasses import replace
+from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
 from sqlalchemy.dialects import postgresql
@@ -27,6 +28,7 @@ from rag_kb.domain import (
     VectorSearchHit,
     VectorSearchResult,
 )
+from rag_kb.repositories.sqlalchemy_indexing import SqlAlchemyIndexingRepository
 from rag_kb.retrieval import RetrievalService
 from rag_kb.retrieval.reranker import rerank_hits
 
@@ -108,6 +110,36 @@ class RetrievalContractTests(unittest.TestCase):
 
         reranked = replace(plan, rerank=True)
         self.assertEqual(reranked.candidate_count, 20)
+
+
+class RelationHydrationRepositoryQueryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_relation_hydration_uses_serving_source_predicate(self) -> None:
+        session = MagicMock()
+        session.execute = AsyncMock(
+            return_value=MagicMock(all=MagicMock(return_value=[]))
+        )
+        repository = SqlAlchemyIndexingRepository(
+            session,
+            WORKSPACE,
+            lambda: None,
+        )
+
+        relations = await repository.list_relations(
+            kb_id=KB_ID,
+            index_revision_id=REVISION_ID,
+            chunk_ids=(CHUNK_1,),
+        )
+
+        self.assertEqual(relations, ())
+        statement = session.execute.await_args.args[0]
+        sql = str(statement.compile(dialect=postgresql.dialect()))
+        self.assertNotIn("document.current_version_id", sql)
+        self.assertIn("JOIN document_version", sql)
+        self.assertIn("document_version.source_status", sql)
+        self.assertIn("indexed_document_version.build_status", sql)
+        self.assertIn("indexed_document_version.serving_status", sql)
+        self.assertIn("knowledge_base.active_index_revision_id", sql)
+        self.assertIn("document.deleted_at IS NULL", sql)
 
 
 class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):

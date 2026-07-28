@@ -20,6 +20,8 @@ from rag_kb.domain import (
     RetrievalRequest,
 )
 from rag_kb.retrieval import RetrievalService
+from rag_kb.services import CompositeEvidenceHydrationService
+from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWorkFactory
 
 
 MIGRATION_DSN = os.environ.get("RAG_KB_TEST_MIGRATION_DSN")
@@ -53,6 +55,9 @@ class ExactRetrievalDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.vector_store = PgVectorStore(
             self.database.sessions,
             FixedPgVectorSpace(self.definition),
+        )
+        self.hydrator = CompositeEvidenceHydrationService(
+            SqlAlchemyUnitOfWorkFactory(self.database.sessions, WORKSPACE)
         )
         self.service = RetrievalService(
             self.policy,
@@ -356,6 +361,71 @@ class ExactRetrievalDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await writer.close()
 
         self.assertEqual(set(observations), {old_snapshot, new_snapshot})
+
+    async def test_relation_hydration_keeps_old_serving_version_during_update(
+        self,
+    ) -> None:
+        foundation = await self._foundation()
+        old = await self._target(
+            foundation,
+            chunk_id=UUID("01900000-0000-7000-8000-000000001421"),
+            vector=_axis_vector(0),
+        )
+        old_asset_id = await self._relation(
+            foundation,
+            old,
+            visual_chunk_id=UUID("01900000-0000-7000-8000-000000001422"),
+            asset_id=UUID("01900000-0000-7000-8000-000000001423"),
+        )
+        candidate = await self._append_version_target(
+            foundation,
+            old,
+            chunk_id=UUID("01900000-0000-7000-8000-000000001424"),
+            vector=_axis_vector(0),
+        )
+        candidate_asset_id = await self._relation(
+            foundation,
+            candidate,
+            visual_chunk_id=UUID("01900000-0000-7000-8000-000000001425"),
+            asset_id=UUID("01900000-0000-7000-8000-000000001426"),
+        )
+
+        during_update = await self.hydrator.hydrate(
+            self.context,
+            kb_id=foundation.kb_id,
+            index_revision_id=foundation.revision_id,
+            chunk_ids=(old.chunk_id, candidate.chunk_id),
+            asset_ids=(old_asset_id, candidate_asset_id),
+        )
+
+        self.assertEqual(len(during_update), 1)
+        self.assertEqual(
+            during_update[0].indexed_document_version_id,
+            old.indexed_document_version_id,
+        )
+        self.assertEqual(during_update[0].chunk_id, old.chunk_id)
+
+        connection = await asyncpg.connect(MIGRATION_DSN)
+        try:
+            await connection.execute(
+                """
+                UPDATE document_version
+                   SET source_status = 'unavailable'
+                 WHERE id = $1
+                """,
+                old.document_version_id,
+            )
+        finally:
+            await connection.close()
+
+        unavailable = await self.hydrator.hydrate(
+            self.context,
+            kb_id=foundation.kb_id,
+            index_revision_id=foundation.revision_id,
+            chunk_ids=(old.chunk_id,),
+            asset_ids=(old_asset_id,),
+        )
+        self.assertEqual(unavailable, ())
 
     async def test_delete_commit_changes_visible_content_to_empty_atomically(self) -> None:
         foundation = await self._foundation()
@@ -712,6 +782,85 @@ class ExactRetrievalDatabaseTests(unittest.IsolatedAsyncioTestCase):
             _vector_literal(vector),
         )
         return _Target(document_id, document_version_id, indexed_id, chunk_id)
+
+    async def _relation(
+        self,
+        foundation: "_Foundation",
+        target: "_Target",
+        *,
+        visual_chunk_id: UUID,
+        asset_id: UUID,
+    ) -> UUID:
+        connection = await asyncpg.connect(MIGRATION_DSN)
+        try:
+            async with connection.transaction():
+                await connection.execute(
+                    """
+                    INSERT INTO index_asset (
+                        id, workspace_id, kb_id, document_id,
+                        document_version_id, indexed_document_version_id,
+                        asset_key, kind, storage_uri, media_type,
+                        checksum_sha256, width, height, source_location
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, $6, $7, 'image',
+                        $8, 'image/png', $9, 64, 64, '{}'::jsonb
+                    )
+                    """,
+                    asset_id,
+                    foundation.workspace_id,
+                    foundation.kb_id,
+                    target.document_id,
+                    target.document_version_id,
+                    target.indexed_document_version_id,
+                    f"asset:{asset_id}",
+                    f"local://asset/{asset_id}",
+                    asset_id.hex.ljust(64, "0")[:64],
+                )
+                await connection.execute(
+                    """
+                    INSERT INTO index_chunk (
+                        id, workspace_id, kb_id,
+                        indexed_document_version_id, ordinal, content,
+                        content_hash, token_count, source_location, hierarchy,
+                        source_metadata, unit_key, modality, index_asset_id,
+                        evidence_group_key
+                    ) VALUES (
+                        $1, $2, $3, $4, 1, '', $5, 0,
+                        '{"page_number": 1}', '{}', '{}', $6, 'image', $7, $8
+                    )
+                    """,
+                    visual_chunk_id,
+                    foundation.workspace_id,
+                    foundation.kb_id,
+                    target.indexed_document_version_id,
+                    visual_chunk_id.hex.ljust(64, "0")[:64],
+                    f"visual:{visual_chunk_id}",
+                    asset_id,
+                    f"group:{target.indexed_document_version_id}",
+                )
+                await connection.execute(
+                    """
+                    INSERT INTO index_chunk_asset_relation (
+                        workspace_id, kb_id, indexed_document_version_id,
+                        chunk_id, visual_unit_id, asset_id, relation_type,
+                        confidence_micros, ordinal, provenance,
+                        evidence_group_key
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, $6, 'caption_of',
+                        1000000, 0, 'author_caption_v2', $7
+                    )
+                    """,
+                    foundation.workspace_id,
+                    foundation.kb_id,
+                    target.indexed_document_version_id,
+                    target.chunk_id,
+                    visual_chunk_id,
+                    asset_id,
+                    f"group:{target.indexed_document_version_id}",
+                )
+        finally:
+            await connection.close()
+        return asset_id
 
     async def _race_reads_through_commit(
         self,
