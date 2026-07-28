@@ -10,7 +10,9 @@ from rag_kb.domain import (
     ChatPipelinePhase,
     ChatRunLease,
     ErrorCode,
+    IndexingExecutionError,
     IndexingLease,
+    IndexingPhase,
     IndexingResult,
     ReconciliationResult,
     WorkLane,
@@ -115,6 +117,27 @@ class IndexingSchedulerTests(unittest.IsolatedAsyncioTestCase):
         await execution
 
         self.assertEqual(repository.rescheduled["error_code"], "INDEXING_WORKER_STOPPED")
+
+    async def test_parser_wall_timeout_is_terminal_without_retry_cascade(self) -> None:
+        repository = _Repository()
+        factory = _Factory(repository)
+        pipeline = _Pipeline(
+            factory,
+            error=IndexingExecutionError(
+                ErrorCode.PARSER_RESOURCE_LIMIT,
+                phase=IndexingPhase.PARSING,
+                diagnostic={
+                    "limit_name": "document_timeout",
+                    "limit": 600,
+                },
+            ),
+        )
+        scheduler = _scheduler(factory, pipeline, deadline=900)
+
+        await scheduler._execute(_lease(attempt=1), asyncio.Event())  # noqa: SLF001
+
+        self.assertEqual(repository.failed, 1)
+        self.assertIsNone(repository.rescheduled)
 
 
 class ChatSchedulerTests(unittest.IsolatedAsyncioTestCase):
@@ -268,10 +291,11 @@ class _Repository:
 
 
 class _Pipeline:
-    def __init__(self, factory, *, delay=0, never=False) -> None:
+    def __init__(self, factory, *, delay=0, never=False, error=None) -> None:
         self.factory = factory
         self.delay = delay
         self.never = never
+        self.error = error
 
     async def execute(self, command):
         del command
@@ -280,6 +304,8 @@ class _Pipeline:
         if self.never:
             await asyncio.Event().wait()
         await asyncio.sleep(self.delay)
+        if self.error is not None:
+            raise self.error
         return IndexingResult(uuid4(), uuid4(), "ready", 1, serving_status="serving")
 
 

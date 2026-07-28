@@ -34,8 +34,8 @@ def validate_startup_environment(settings: Settings) -> StartupValidation:
         settings.file_store.final_path,
     )
     if settings.model_provider.multimodal_embedding is not None:
-        # Native Docling renders and recognizes in-process through pypdfium2 and
-        # RapidOCR, so multimodal parsing no longer shells out to any binary.
+        # The application-owned Docling child renders and recognizes through
+        # pypdfium2 and RapidOCR, so parsing never shells out to a system binary.
         configured_paths += (
             settings.file_store.asset_staging_path,
             settings.file_store.asset_final_path,

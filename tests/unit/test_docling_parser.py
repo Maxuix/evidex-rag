@@ -5,10 +5,11 @@ from dataclasses import replace
 import hashlib
 from importlib.metadata import version
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
-import threading
+import time
 import unittest
 
 from docling.datamodel.accelerator_options import AcceleratorDevice
@@ -20,6 +21,8 @@ from docling.datamodel.base_models import (
     FailureCategory,
     InputFormat,
 )
+from docling.pipeline.simple_pipeline import SimplePipeline
+from docling.pipeline.standard_pdf_pipeline import StandardPdfPipeline
 from docling_core.types.doc import (
     DocItemLabel,
     DoclingDocument,
@@ -36,7 +39,10 @@ from rag_kb.adapters.parser.docling import (
     build_docling_converter,
     verify_docling_artifacts,
 )
-from rag_kb.adapters.parser.docling.parser import _validate_source
+from rag_kb.adapters.parser.docling.parser import (
+    _DoclingRuntime,
+    _validate_source,
+)
 from rag_kb.domain import (
     ErrorCode,
     ParserExecutionError,
@@ -92,24 +98,23 @@ class _FakeConverter:
         return self.result
 
 
-class _BlockingConverter(_FakeConverter):
-    def __init__(self) -> None:
-        super().__init__()
-        self.release = threading.Event()
-        self.started = threading.Event()
-        self.lock = threading.Lock()
-        self.active = 0
-        self.max_active = 0
+class _InProcessParser:
+    def __init__(self, runtime: _DoclingRuntime, limits: ParserLimits) -> None:
+        self._runtime = runtime
+        self._limits = limits
 
-    def convert(self, source: object, **kwargs: object) -> SimpleNamespace:
-        with self.lock:
-            self.active += 1
-            self.max_active = max(self.max_active, self.active)
-            self.started.set()
-        self.release.wait(timeout=5)
-        with self.lock:
-            self.active -= 1
-        return super().convert(source, **kwargs)
+    async def parse(
+        self,
+        source: ParserSource,
+        *,
+        preset: ParsingPreset,
+    ) -> DoclingDocument:
+        resolved_preset = ParsingPreset(preset)
+        _validate_source(source, self._limits, resolved_preset)
+        return self._runtime.convert(source, resolved_preset)
+
+    def close(self) -> None:
+        pass
 
 
 class _ParserHarness:
@@ -139,16 +144,80 @@ class _ParserHarness:
             return converter
 
         self.calls = calls
-        self.parser = DoclingParser(
-            limits or ParserLimits(),
+        resolved_limits = limits or ParserLimits()
+        runtime = _DoclingRuntime(
+            resolved_limits,
             artifacts_path=root,
             artifact_manifest_path=manifest,
             converter_factory=factory,
+        )
+        self.parser = _InProcessParser(runtime, resolved_limits)
+
+    def close(self) -> None:
+        self.parser.close()
+        self._temporary.cleanup()
+
+
+class _ProcessHarness:
+    def __init__(
+        self,
+        *,
+        child_target,
+        timeout: float,
+    ) -> None:
+        self._temporary = tempfile.TemporaryDirectory()
+        root = Path(self._temporary.name)
+        self.root = root
+        self.parser = DoclingParser(
+            replace(ParserLimits(), document_timeout_seconds=timeout),
+            artifacts_path=root,
+            artifact_manifest_path=root / "manifest.json",
+            child_target=child_target,
         )
 
     def close(self) -> None:
         self.parser.close()
         self._temporary.cleanup()
+
+
+def _echo_child(connection, limits, artifacts_path, artifact_manifest_path) -> None:
+    del limits, artifacts_path, artifact_manifest_path
+    try:
+        while True:
+            try:
+                kind, source, _preset = connection.recv()
+            except EOFError:
+                return
+            if kind != "parse":
+                return
+            document = _document(source.original_filename)
+            document.name = str(os.getpid())
+            connection.send_bytes(b"O" + document.model_dump_json().encode("utf-8"))
+    finally:
+        connection.close()
+
+
+def _hang_once_child(connection, limits, artifacts_path, artifact_manifest_path) -> None:
+    del limits, artifact_manifest_path
+    marker = artifacts_path / "first-child-hung"
+    try:
+        kind, source, _preset = connection.recv()
+        if kind != "parse":
+            return
+        if not marker.exists():
+            marker.write_text(str(os.getpid()), encoding="utf-8")
+            time.sleep(30)
+            return
+        document = _document(source.original_filename)
+        connection.send_bytes(b"O" + document.model_dump_json().encode("utf-8"))
+    finally:
+        connection.close()
+
+
+def _crash_child(connection, limits, artifacts_path, artifact_manifest_path) -> None:
+    del limits, artifacts_path, artifact_manifest_path
+    connection.recv()
+    os._exit(17)
 
 
 def _write_manifest(path: Path, artifact: Path) -> None:
@@ -255,8 +324,23 @@ class DoclingConverterFactoryTests(unittest.TestCase):
         self.assertFalse(text_options.generate_picture_images)
         self.assertTrue(multimodal_options.generate_page_images)
         self.assertTrue(multimodal_options.generate_picture_images)
-        for input_format in (InputFormat.MD, InputFormat.DOCX):
+        self.assertIs(
+            text.format_to_options[InputFormat.PDF].pipeline_cls,
+            StandardPdfPipeline,
+        )
+        for input_format in (
+            InputFormat.MD,
+            InputFormat.HTML,
+            InputFormat.CSV,
+            InputFormat.DOCX,
+            InputFormat.PPTX,
+            InputFormat.XLSX,
+        ):
             options = text.format_to_options[input_format].pipeline_options
+            self.assertIs(
+                text.format_to_options[input_format].pipeline_cls,
+                SimplePipeline,
+            )
             self.assertEqual(options.document_timeout, 600)
             self.assertFalse(options.enable_remote_services)
             self.assertFalse(options.allow_external_plugins)
@@ -579,30 +663,113 @@ class DoclingParserTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(raised.exception.code, ErrorCode.FILE_MEDIA_TYPE_MISMATCH)
         self.assertEqual(converter.calls, [])
 
-    async def test_cancelled_wait_keeps_single_conversion_lane_occupied(self) -> None:
-        converter = _BlockingConverter()
-        harness = _ParserHarness(self, converter)
+    async def test_child_process_is_reused_for_serial_conversions(self) -> None:
+        harness = _ProcessHarness(child_target=_echo_child, timeout=5.0)
         self.addCleanup(harness.close)
         source = ParserSource("guide.txt", "text/plain", b"body")
+
+        first = await harness.parser.parse(
+            source,
+            preset=ParsingPreset.TEXT_LOCAL_V1,
+        )
+        second = await harness.parser.parse(
+            source,
+            preset=ParsingPreset.TEXT_LOCAL_V1,
+        )
+
+        self.assertEqual(first.name, second.name)
+
+    async def test_timeout_kills_child_and_next_conversion_uses_clean_process(
+        self,
+    ) -> None:
+        harness = _ProcessHarness(child_target=_hang_once_child, timeout=6.0)
+        self.addCleanup(harness.close)
+        source = ParserSource("guide.html", "text/html", b"<p>body</p>")
+
+        with self.assertRaises(ParserExecutionError) as raised:
+            await harness.parser.parse(
+                source,
+                preset=ParsingPreset.TEXT_LOCAL_V1,
+            )
+
+        self.assertEqual(raised.exception.code, ErrorCode.PARSER_RESOURCE_LIMIT)
+        self.assertEqual(
+            raised.exception.diagnostic,
+            {"limit_name": "document_timeout", "limit": 6.0},
+        )
+        document = await harness.parser.parse(
+            source,
+            preset=ParsingPreset.TEXT_LOCAL_V1,
+        )
+        self.assertEqual(document.texts[0].text, "guide.html")
+
+    async def test_cancellation_kills_child_and_next_conversion_recovers(self) -> None:
+        harness = _ProcessHarness(child_target=_hang_once_child, timeout=10.0)
+        self.addCleanup(harness.close)
+        source = ParserSource("guide.csv", "text/csv", b"a,b")
         first = asyncio.create_task(
             harness.parser.parse(source, preset=ParsingPreset.TEXT_LOCAL_V1)
         )
-        started = await asyncio.to_thread(converter.started.wait, 2)
-        self.assertTrue(started)
+        for _ in range(500):
+            if (harness.root / "first-child-hung").exists():
+                break
+            await asyncio.sleep(0.01)
+        self.assertTrue((harness.root / "first-child-hung").exists())
+
         first.cancel()
         with self.assertRaises(asyncio.CancelledError):
             await first
-
-        second = asyncio.create_task(
-            harness.parser.parse(source, preset=ParsingPreset.TEXT_LOCAL_V1)
+        document = await harness.parser.parse(
+            source,
+            preset=ParsingPreset.TEXT_LOCAL_V1,
         )
-        await asyncio.sleep(0.05)
-        self.assertFalse(second.done())
-        self.assertEqual(converter.max_active, 1)
-        converter.release.set()
-        await second
-        self.assertEqual(converter.max_active, 1)
-        self.assertEqual(len(converter.calls), 2)
+        self.assertEqual(document.texts[0].text, "guide.csv")
+
+    async def test_abnormal_child_exit_is_redacted_and_recoverable(self) -> None:
+        harness = _ProcessHarness(child_target=_crash_child, timeout=5.0)
+        self.addCleanup(harness.close)
+
+        with self.assertRaises(ParserExecutionError) as raised:
+            await harness.parser.parse(
+                ParserSource(
+                    "guide.docx",
+                    "application/vnd.openxmlformats-officedocument."
+                    "wordprocessingml.document",
+                    b"secret-source",
+                ),
+                preset=ParsingPreset.TEXT_LOCAL_V1,
+            )
+
+        self.assertEqual(raised.exception.code, ErrorCode.PARSER_CRASHED)
+        self.assertEqual(
+            raised.exception.diagnostic,
+            {"check": "docling_child_ipc"},
+        )
+        self.assertNotIn("secret-source", str(raised.exception.diagnostic))
+
+    async def test_close_terminates_and_reaps_active_conversion_child(self) -> None:
+        harness = _ProcessHarness(child_target=_hang_once_child, timeout=10.0)
+        self.addCleanup(harness.close)
+        execution = asyncio.create_task(
+            harness.parser.parse(
+                ParserSource("guide.txt", "text/plain", b"body"),
+                preset=ParsingPreset.TEXT_LOCAL_V1,
+            )
+        )
+        marker = harness.root / "first-child-hung"
+        for _ in range(500):
+            if marker.exists():
+                break
+            await asyncio.sleep(0.01)
+        self.assertTrue(marker.exists())
+        child_pid = int(marker.read_text(encoding="utf-8"))
+
+        await asyncio.to_thread(harness.parser.close)
+
+        with self.assertRaises(ProcessLookupError):
+            os.kill(child_pid, 0)
+        with self.assertRaises(ParserExecutionError):
+            await execution
 
 
 if __name__ == "__main__":

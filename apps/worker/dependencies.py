@@ -104,9 +104,9 @@ class WorkerDependencies:
     async def close(self) -> None:
         """Release process-owned resources during Worker shutdown."""
 
-        # The parser owns a conversion thread; stop accepting work before the
+        # The parser owns a killable conversion child; reap it before the
         # database goes away so no conversion outlives its job.
-        self.document_parser.close(wait=False)
+        self.document_parser.close()
         await self.database.close()
 
     async def start(self) -> RuntimeReadiness:
