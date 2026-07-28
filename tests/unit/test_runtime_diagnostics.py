@@ -5,12 +5,13 @@ from datetime import UTC, datetime, timedelta
 import io
 import json
 import logging
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
-from apps.api.main import server_address
+from apps.api.main import main as api_main, server_address
 from apps.worker.main import (
     WORKER_HEARTBEAT_MAX_AGE_SECONDS,
     WorkerBackgroundTaskError,
@@ -66,7 +67,29 @@ class RuntimeDiagnosticsTests(unittest.TestCase):
         rendered = formatter.format(record)
         payload = json.loads(rendered)
         self.assertEqual(payload["event"], "external_log")
+        self.assertEqual(payload["error_type"], "RuntimeError")
         self.assertNotIn("must-not-leak", rendered)
+
+    def test_external_traceback_exposes_only_exception_type(self) -> None:
+        formatter = ContentSafeJsonFormatter()
+        try:
+            raise ValueError("provider-secret-must-not-leak")
+        except ValueError:
+            record = logging.LogRecord(
+                "third.party",
+                logging.ERROR,
+                __file__,
+                1,
+                "header-secret-must-not-leak",
+                (),
+                sys.exc_info(),
+            )
+
+        rendered = formatter.format(record)
+        payload = json.loads(rendered)
+        self.assertEqual(payload["event"], "external_log")
+        self.assertEqual(payload["error_type"], "ValueError")
+        self.assertNotIn("secret-must-not-leak", rendered)
 
     def test_structured_events_accept_only_allowlisted_metadata(self) -> None:
         stream = io.StringIO()
@@ -115,6 +138,47 @@ class RuntimeDiagnosticsTests(unittest.TestCase):
             logged.call_args.kwargs["error_type"],
             "WorkerBackgroundTaskError",
         )
+
+    def test_api_startup_failure_returns_nonzero_without_exception_message(
+        self,
+    ) -> None:
+        with (
+            patch("sys.argv", ["api"]),
+            patch("apps.api.main.configure_logging"),
+            patch(
+                "apps.api.main.load_settings",
+                side_effect=RuntimeError("settings-secret-must-not-leak"),
+            ),
+            patch("apps.api.main.log_event") as logged,
+        ):
+            self.assertEqual(api_main(), 1)
+
+        self.assertEqual(logged.call_args.args[1], "process_failed")
+        self.assertEqual(logged.call_args.kwargs["process"], "api")
+        self.assertEqual(logged.call_args.kwargs["error_type"], "RuntimeError")
+        self.assertNotIn("settings-secret-must-not-leak", repr(logged.mock_calls))
+
+    def test_api_uvicorn_failure_returns_nonzero_without_exception_message(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            settings = build_settings(Path(directory))
+        with (
+            patch("sys.argv", ["api"]),
+            patch("apps.api.main.configure_logging"),
+            patch("apps.api.main.load_settings", return_value=settings),
+            patch(
+                "apps.api.main.uvicorn.run",
+                side_effect=SystemExit("lifespan-secret-must-not-leak"),
+            ),
+            patch("apps.api.main.log_event") as logged,
+        ):
+            self.assertEqual(api_main(), 1)
+
+        self.assertEqual(logged.call_args.args[1], "process_failed")
+        self.assertEqual(logged.call_args.kwargs["process"], "api")
+        self.assertEqual(logged.call_args.kwargs["error_type"], "SystemExit")
+        self.assertNotIn("lifespan-secret-must-not-leak", repr(logged.mock_calls))
 
 
 class WorkerRuntimeDiagnosticsTests(unittest.IsolatedAsyncioTestCase):

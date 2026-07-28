@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import unittest
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -118,6 +119,12 @@ async def problem() -> None:
 
 @router.get("/unexpected")
 async def unexpected() -> None:
+    raise RuntimeError("internal-secret-must-not-leak")
+
+
+@router.get("/unexpected/{resource_id}")
+async def unexpected_with_path_parameter(resource_id: str) -> None:
+    del resource_id
     raise RuntimeError("internal-secret-must-not-leak")
 
 
@@ -507,16 +514,33 @@ class ApiContractTests(unittest.IsolatedAsyncioTestCase):
                 )
 
     async def test_internal_errors_do_not_expose_exception_details(self) -> None:
-        response = await request(
-            self.app,
-            "GET",
-            f"{API_PREFIX}/unexpected",
-            suppress_application_error=True,
-        )
+        with self.assertLogs("rag_kb.api.errors", level=logging.ERROR) as captured:
+            response = await request(
+                self.app,
+                "GET",
+                f"{API_PREFIX}/unexpected/runtime-resource-id",
+                suppress_application_error=True,
+            )
         body = response.json()
         self.assertEqual(response.status, 500)
         self.assertEqual(body["code"], "INTERNAL_SERVER_ERROR")
         self.assertNotIn("internal-secret", response.body.decode("utf-8"))
+        error_record = next(
+            record
+            for record in captured.records
+            if getattr(record, "safe_event", None) == "unexpected_api_error"
+        )
+        self.assertEqual(
+            error_record.safe_fields,
+            {
+                "trace_id": body["trace_id"],
+                "method": "GET",
+                "path": f"{API_PREFIX}/unexpected/{{resource_id}}",
+                "error_type": "RuntimeError",
+            },
+        )
+        self.assertNotIn("internal-secret", repr(captured.records))
+        self.assertNotIn("runtime-resource-id", repr(captured.records))
 
     async def test_access_denial_is_normalized_without_policy_details(self) -> None:
         response = await request(self.app, "GET", f"{API_PREFIX}/denied")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from http import HTTPStatus
+import logging
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -398,7 +399,15 @@ async def _unexpected_exception_handler(
     request: Request,
     error: Exception,
 ) -> JSONResponse:
-    del error
+    log_event(
+        LOGGER,
+        "unexpected_api_error",
+        level=logging.ERROR,
+        trace_id=getattr(request.state, "trace_id", None),
+        method=request.method,
+        path=_normalized_route_path(request),
+        error_type=type(error).__name__,
+    )
     return problem_response(
         request,
         code=ErrorCode.INTERNAL_SERVER_ERROR,
@@ -407,6 +416,15 @@ async def _unexpected_exception_handler(
         detail="The request could not be completed.",
         retryable=False,
     )
+
+
+def _normalized_route_path(request: Request) -> str:
+    route = request.scope.get("route")
+    for attribute in ("path_format", "path"):
+        path = getattr(route, attribute, None)
+        if isinstance(path, str) and path.startswith("/"):
+            return path
+    return "/unresolved"
 
 
 def problem_response(
