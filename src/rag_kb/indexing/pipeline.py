@@ -8,6 +8,7 @@ import json
 from dataclasses import replace
 from collections.abc import Awaitable, Callable, Mapping
 from typing import TypeVar
+from uuid import UUID
 
 from rag_kb.adapters import (
     DocumentParser,
@@ -45,6 +46,7 @@ from rag_kb.domain import (
     ParserLimits,
     ParserSource,
     ParsingPreset,
+    PersistedVectorRepresentation,
     PromotionCommand,
     SemanticUnit,
     SourceFileMissingError,
@@ -89,6 +91,8 @@ from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, UnitOfWorkPurpose, execute
 
 
 ResultT = TypeVar("ResultT")
+RepresentationIdentity = tuple[UUID, UUID, UUID, str]
+_CHUNK_CAS_BATCH_SIZE = 500
 
 
 class IndexingPipeline:
@@ -188,9 +192,28 @@ class IndexingPipeline:
 
             phase = IndexingPhase.EMBEDDING
             await self._set_phase(command, phase)
+            persisted = await self._persisted_representations(command)
+            persisted_chunks = tuple(
+                draft
+                for draft in processed.chunks
+                if self._text_representation_identity(target, draft.ordinal)
+                in persisted
+            )
+            if persisted_chunks:
+                phase = IndexingPhase.PERSISTING
+                await self._revalidate_persisted_chunks(
+                    command, self._chunk_writes(target, persisted_chunks)
+                )
+                phase = IndexingPhase.EMBEDDING
+            missing_chunks = tuple(
+                draft
+                for draft in processed.chunks
+                if self._text_representation_identity(target, draft.ordinal)
+                not in persisted
+            )
             batch_size = self._embedding_provider.max_batch_size
-            for offset in range(0, len(processed.chunks), batch_size):
-                drafts = processed.chunks[offset : offset + batch_size]
+            for offset in range(0, len(missing_chunks), batch_size):
+                drafts = missing_chunks[offset : offset + batch_size]
                 try:
                     embedded = await self._embedding_provider.embed_documents(
                         tuple(draft.text for draft in drafts)
@@ -699,8 +722,16 @@ class IndexingPipeline:
                 diagnostic={"check": "artifact_manifest_reuse"},
             )
 
+        persisted = await self._persisted_representations(command)
         await self._embed_multimodal_representations(
-            command, target, assets, units, chunks, planned, cross_space
+            command,
+            target,
+            assets,
+            units,
+            chunks,
+            planned,
+            cross_space,
+            persisted,
         )
         changed = await self._transaction(
             lambda uow: uow.indexing.upsert_relations(command, relation_writes)
@@ -908,13 +939,36 @@ class IndexingPipeline:
         )
 
     async def _embed_multimodal_representations(
-        self, command, target, extracted, units, chunks, planned, cross_space
+        self,
+        command,
+        target,
+        extracted,
+        units,
+        chunks,
+        planned,
+        cross_space,
+        persisted: frozenset[RepresentationIdentity],
     ) -> None:
         assets = {item.asset_key: item for item in extracted}
         units_by_id = {str(chunk.id): unit for chunk, unit in zip(chunks, units, strict=True)}
         chunks_by_id = {str(chunk.id): chunk for chunk in chunks}
+        persisted_chunk_ids = {
+            item["unit_id"]
+            for item in planned
+            if self._planned_representation_identity(item) in persisted
+        }
+        if persisted_chunk_ids:
+            await self._revalidate_persisted_chunks(
+                command,
+                tuple(
+                    chunk for chunk in chunks if str(chunk.id) in persisted_chunk_ids
+                ),
+            )
         text_items = tuple(
-            item for item in planned if item["space_role"] == "text_retrieval"
+            item
+            for item in planned
+            if item["space_role"] == "text_retrieval"
+            and self._planned_representation_identity(item) not in persisted
         )
         text_batch_size = self._embedding_provider.max_batch_size
         for offset in range(0, len(text_items), text_batch_size):
@@ -981,6 +1035,7 @@ class IndexingPipeline:
             item
             for item in planned
             if item["space_role"] == "cross_modal_retrieval"
+            and self._planned_representation_identity(item) not in persisted
         )
         for offset in range(0, len(image_items), provider.max_batch_size):
             batch = image_items[offset : offset + provider.max_batch_size]
@@ -1040,6 +1095,75 @@ class IndexingPipeline:
                 )
             await self._upsert(command, tuple(batch_chunks), tuple(writes))
 
+    async def _persisted_representations(
+        self, command: IndexingCommand
+    ) -> frozenset[RepresentationIdentity]:
+        records = await self._transaction(
+            lambda uow: uow.indexing.list_persisted_representations(
+                command,
+                limit=self._parser_limits.max_representations,
+            )
+        )
+        return frozenset(self._representation_identity(record) for record in records)
+
+    @staticmethod
+    def _representation_identity(
+        record: PersistedVectorRepresentation | VectorRecordWrite,
+    ) -> RepresentationIdentity:
+        return (
+            record.id,
+            record.index_chunk_id,
+            record.embedding_space_id,
+            record.representation_kind,
+        )
+
+    @staticmethod
+    def _planned_representation_identity(item) -> RepresentationIdentity:
+        chunk_id = UUID(item["unit_id"])
+        embedding_space_id = UUID(item["space_id"])
+        representation_kind = item["representation_kind"]
+        return (
+            stable_vector_id(
+                embedding_space_id,
+                chunk_id,
+                representation_kind,
+            ),
+            chunk_id,
+            embedding_space_id,
+            representation_kind,
+        )
+
+    @staticmethod
+    def _text_representation_identity(
+        target, ordinal: int
+    ) -> RepresentationIdentity:
+        chunk_id = stable_chunk_id(target.indexed_document_version_id, ordinal)
+        return (
+            stable_vector_id(target.embedding_space_id, chunk_id),
+            chunk_id,
+            target.embedding_space_id,
+            "text",
+        )
+
+    async def _revalidate_persisted_chunks(
+        self,
+        command: IndexingCommand,
+        chunks: tuple[IndexChunkWrite, ...],
+    ) -> None:
+        batch_size = max(
+            1,
+            min(
+                self._embedding_provider.max_batch_size,
+                _CHUNK_CAS_BATCH_SIZE,
+            ),
+        )
+        for offset in range(0, len(chunks), batch_size):
+            await self._upsert(
+                command,
+                chunks[offset : offset + batch_size],
+                (),
+            )
+
     async def _embed_analysis_units(
         self,
         target: IndexingTarget,
@@ -1088,11 +1212,12 @@ class IndexingPipeline:
         return tuple(vectors)
 
     @staticmethod
-    def _writes(target, drafts, embeddings):
+    def _chunk_writes(target, drafts) -> tuple[IndexChunkWrite, ...]:
         chunks: list[IndexChunkWrite] = []
-        vectors: list[VectorRecordWrite] = []
-        for draft, embedding in zip(drafts, embeddings, strict=True):
-            chunk_id = stable_chunk_id(target.indexed_document_version_id, draft.ordinal)
+        for draft in drafts:
+            chunk_id = stable_chunk_id(
+                target.indexed_document_version_id, draft.ordinal
+            )
             chunks.append(
                 IndexChunkWrite(
                     id=chunk_id,
@@ -1112,15 +1237,22 @@ class IndexingPipeline:
                     },
                 )
             )
+        return tuple(chunks)
+
+    @classmethod
+    def _writes(cls, target, drafts, embeddings):
+        chunks = cls._chunk_writes(target, drafts)
+        vectors: list[VectorRecordWrite] = []
+        for chunk, embedding in zip(chunks, embeddings, strict=True):
             vectors.append(
                 VectorRecordWrite(
-                    id=stable_vector_id(target.embedding_space_id, chunk_id),
-                    index_chunk_id=chunk_id,
+                    id=stable_vector_id(target.embedding_space_id, chunk.id),
+                    index_chunk_id=chunk.id,
                     embedding_space_id=target.embedding_space_id,
                     embedding=embedding,
                 )
             )
-        return tuple(chunks), tuple(vectors)
+        return chunks, tuple(vectors)
 
 
 def _requires_semantic_analysis(units: tuple[SemanticUnit, ...]) -> bool:

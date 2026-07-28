@@ -59,6 +59,7 @@ from rag_kb.domain import (
     PromotionReason,
     PromotionResult,
     PromotionStatus,
+    PersistedVectorRepresentation,
     ReconciliationResult,
     ResourceStateConflictError,
     VectorRecordWrite,
@@ -1344,6 +1345,115 @@ class SqlAlchemyIndexingRepository:
             )
         return winner
 
+    async def list_persisted_representations(
+        self, command: IndexingCommand, *, limit: int
+    ) -> tuple[PersistedVectorRepresentation, ...]:
+        self._ensure_active()
+        if limit <= 0:
+            raise _execution_error(
+                ErrorCode.INDEX_PERSISTENCE_FAILED,
+                IndexingPhase.PERSISTING,
+                "persisted_representation_limit",
+            )
+
+        def branch(vector_model, physical_dimension: int):
+            return (
+                select(
+                    vector_model.id.label("id"),
+                    vector_model.index_chunk_id.label("index_chunk_id"),
+                    vector_model.embedding_space_id.label("embedding_space_id"),
+                    vector_model.representation_kind.label("representation_kind"),
+                )
+                .join(
+                    IndexChunkRow,
+                    and_(
+                        IndexChunkRow.id == vector_model.index_chunk_id,
+                        IndexChunkRow.workspace_id == vector_model.workspace_id,
+                        IndexChunkRow.kb_id == vector_model.kb_id,
+                    ),
+                )
+                .join(
+                    EmbeddingSpaceRow,
+                    and_(
+                        EmbeddingSpaceRow.id
+                        == vector_model.embedding_space_id,
+                        EmbeddingSpaceRow.workspace_id
+                        == vector_model.workspace_id,
+                    ),
+                )
+                .join(
+                    IndexedDocumentVersionRow,
+                    and_(
+                        IndexedDocumentVersionRow.id
+                        == IndexChunkRow.indexed_document_version_id,
+                        IndexedDocumentVersionRow.workspace_id
+                        == IndexChunkRow.workspace_id,
+                        IndexedDocumentVersionRow.kb_id == IndexChunkRow.kb_id,
+                    ),
+                )
+                .join(
+                    IndexingJobRow,
+                    and_(
+                        IndexingJobRow.indexed_document_version_id
+                        == IndexedDocumentVersionRow.id,
+                        IndexingJobRow.workspace_id
+                        == IndexedDocumentVersionRow.workspace_id,
+                        IndexingJobRow.kb_id == IndexedDocumentVersionRow.kb_id,
+                    ),
+                )
+                .where(
+                    vector_model.workspace_id == self._workspace_id,
+                    IndexChunkRow.workspace_id == self._workspace_id,
+                    IndexedDocumentVersionRow.workspace_id == self._workspace_id,
+                    IndexingJobRow.workspace_id == self._workspace_id,
+                    IndexingJobRow.id == command.job_id,
+                    IndexedDocumentVersionRow.id
+                    == command.indexed_document_version_id,
+                    EmbeddingSpaceRow.dimension == physical_dimension,
+                    exists(
+                        select(literal(1)).where(
+                            IndexRevisionEmbeddingSpaceRow.workspace_id
+                            == self._workspace_id,
+                            IndexRevisionEmbeddingSpaceRow.index_revision_id
+                            == IndexedDocumentVersionRow.index_revision_id,
+                            IndexRevisionEmbeddingSpaceRow.embedding_space_id
+                            == vector_model.embedding_space_id,
+                        )
+                    ),
+                )
+            )
+
+        representations = branch(VectorRecordRow, 1024).union_all(
+            branch(VectorRecord768Row, 768)
+        ).subquery()
+        rows = (
+            await self._session.execute(
+                select(representations)
+                .order_by(
+                    representations.c.index_chunk_id,
+                    representations.c.embedding_space_id,
+                    representations.c.representation_kind,
+                    representations.c.id,
+                )
+                .limit(limit + 1)
+            )
+        ).all()
+        if len(rows) > limit:
+            raise _execution_error(
+                ErrorCode.INDEX_PERSISTENCE_FAILED,
+                IndexingPhase.PERSISTING,
+                "persisted_representation_limit",
+            )
+        return tuple(
+            PersistedVectorRepresentation(
+                id=row.id,
+                index_chunk_id=row.index_chunk_id,
+                embedding_space_id=row.embedding_space_id,
+                representation_kind=row.representation_kind,
+            )
+            for row in rows
+        )
+
     async def upsert_assets(
         self, command: IndexingCommand, assets: tuple[IndexAssetWrite, ...]
     ) -> bool:
@@ -1612,11 +1722,8 @@ class SqlAlchemyIndexingRepository:
                             "embedding_space_id",
                             "representation_kind",
                         ],
-                        set_={"embedding": vector_model.embedding},
-                        where=and_(
-                            vector_model.id == vector_insert.excluded.id,
-                            vector_model.embedding == vector_insert.excluded.embedding,
-                        ),
+                        set_={"embedding": vector_insert.excluded.embedding},
+                        where=vector_model.id == vector_insert.excluded.id,
                     ).returning(vector_model.id, vector_model.index_chunk_id)
                 )
             ).all()

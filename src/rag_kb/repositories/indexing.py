@@ -22,6 +22,7 @@ from rag_kb.domain import (
     IndexingTarget,
     PromotionCommand,
     PromotionResult,
+    PersistedVectorRepresentation,
     ReconciliationResult,
     VectorRecordWrite,
 )
@@ -123,6 +124,10 @@ class IndexingRepository(Protocol):
     async def create_or_get_artifact_manifest(
         self, command: IndexingCommand, proposed: IndexArtifactManifest
     ) -> IndexArtifactManifest: ...
+
+    async def list_persisted_representations(
+        self, command: IndexingCommand, *, limit: int
+    ) -> tuple[PersistedVectorRepresentation, ...]: ...
 
     async def upsert_assets(
         self, command: IndexingCommand, assets: tuple[IndexAssetWrite, ...]

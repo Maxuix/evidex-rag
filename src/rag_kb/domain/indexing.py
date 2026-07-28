@@ -184,6 +184,14 @@ class VectorRecordWrite:
 
 
 @dataclass(frozen=True, slots=True)
+class PersistedVectorRepresentation:
+    id: UUID
+    index_chunk_id: UUID
+    embedding_space_id: UUID
+    representation_kind: str
+
+
+@dataclass(frozen=True, slots=True)
 class EvidenceUnitDraft:
     unit_key: str
     ordinal: int

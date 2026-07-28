@@ -30,9 +30,11 @@ from rag_kb.domain import (
     ChatPipelineExecutionError,
     ChatPipelinePhase,
     ChunkingPreset,
+    ContentModality,
     EmbeddingBatch,
     EmbeddingSpaceDefinition,
     ErrorCode,
+    IndexChunkWrite,
     IndexingCommand,
     IndexingExecutionError,
     IndexingPhase,
@@ -41,6 +43,7 @@ from rag_kb.domain import (
     PromotionCommand,
     PromotionReason,
     ResourceStateConflictError,
+    VectorRecordWrite,
 )
 from rag_kb.indexing import CandidatePromotionService, IndexingPipeline
 from rag_kb.scheduling import (
@@ -225,10 +228,110 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
         provider.calls = 0
         completed = await pipeline.execute(_command(uploaded))
         self.assertEqual((completed.status, completed.chunk_count), ("ready", 2))
+        self.assertEqual(provider.calls, 1)
         replayed = await self._target_state(uploaded.indexed_document_version_id)
         self.assertEqual(
             tuple(replayed),
             ("ready", "serving", "completed", "completed", None, 2, 2),
+        )
+
+    async def test_vector_upsert_refreshes_drift_only_for_the_same_stable_identity(
+        self,
+    ) -> None:
+        kb = await self._create_kb()
+        uploaded = await self._upload(
+            kb.id, "large.txt", "text/plain", b"word " * 1000
+        )
+        pipeline = self._pipeline(_Provider(max_batch_size=1, fail_call=2))
+        command = _command(uploaded)
+        with self.assertRaises(IndexingExecutionError):
+            await pipeline.execute(command)
+
+        connection = await asyncpg.connect(MIGRATION_DSN)
+        try:
+            row = await connection.fetchrow(
+                """
+                SELECT chunk.id, chunk.ordinal, chunk.unit_key,
+                       chunk.modality, chunk.index_asset_id,
+                       chunk.evidence_group_key, chunk.relations,
+                       chunk.content, chunk.content_hash, chunk.token_count,
+                       chunk.source_location, chunk.hierarchy,
+                       chunk.source_metadata, chunk.embedding_text,
+                       chunk.embedding_text_hash,
+                       vector.id AS vector_id,
+                       vector.embedding_space_id,
+                       vector.representation_kind
+                  FROM index_chunk chunk
+                  JOIN vector_record_1024 vector
+                    ON vector.index_chunk_id = chunk.id
+                 WHERE chunk.indexed_document_version_id = $1
+                 ORDER BY chunk.ordinal
+                 LIMIT 1
+                """,
+                uploaded.indexed_document_version_id,
+            )
+        finally:
+            await connection.close()
+        assert row is not None
+        chunk = IndexChunkWrite(
+            id=row["id"],
+            ordinal=row["ordinal"],
+            unit_key=row["unit_key"],
+            modality=ContentModality(row["modality"]),
+            index_asset_id=row["index_asset_id"],
+            evidence_group_key=row["evidence_group_key"],
+            relations=dict(row["relations"] or {}),
+            content=row["content"],
+            content_hash=row["content_hash"],
+            token_count=row["token_count"],
+            source_location=dict(row["source_location"]),
+            hierarchy=dict(row["hierarchy"]),
+            source_metadata=dict(row["source_metadata"]),
+            embedding_text=row["embedding_text"],
+            embedding_text_hash=row["embedding_text_hash"],
+        )
+        drifted = (0.0, 1.0) + (0.0,) * 1022
+        vector = VectorRecordWrite(
+            id=row["vector_id"],
+            index_chunk_id=row["id"],
+            embedding_space_id=row["embedding_space_id"],
+            representation_kind=row["representation_kind"],
+            embedding=drifted,
+        )
+        await execute_in_transaction(
+            self.factory,
+            lambda uow: uow.indexing.prepare(command),
+            purpose=UnitOfWorkPurpose.INDEXING,
+        )
+        changed = await execute_in_transaction(
+            self.factory,
+            lambda uow: uow.indexing.upsert_batch(command, (chunk,), (vector,)),
+            purpose=UnitOfWorkPurpose.INDEXING,
+        )
+        self.assertTrue(changed)
+
+        connection = await asyncpg.connect(MIGRATION_DSN)
+        try:
+            stored = await connection.fetchval(
+                "SELECT embedding::text FROM vector_record_1024 WHERE id = $1",
+                row["vector_id"],
+            )
+        finally:
+            await connection.close()
+        self.assertTrue(stored.startswith("[0,1,"))
+
+        conflicting = replace(vector, id=uuid4())
+        with self.assertRaises(IndexingExecutionError) as failure:
+            await execute_in_transaction(
+                self.factory,
+                lambda uow: uow.indexing.upsert_batch(
+                    command, (chunk,), (conflicting,)
+                ),
+                purpose=UnitOfWorkPurpose.INDEXING,
+            )
+        self.assertEqual(
+            failure.exception.code,
+            ErrorCode.INDEX_PERSISTENCE_FAILED,
         )
 
     async def test_new_version_switches_atomically_after_ready(self) -> None:

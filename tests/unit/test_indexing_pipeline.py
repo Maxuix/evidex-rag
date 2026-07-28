@@ -12,6 +12,7 @@ from PIL import Image
 from docling_core.types.doc import DocItemLabel, DoclingDocument
 from docling_core.types.doc.common.origin import DocumentOrigin
 from docling_core.types.doc.common.reference import ImageRef
+from docling_core.types.doc.items.table.table_data import TableCell, TableData
 
 import rag_kb.indexing.pipeline as pipeline_module
 from rag_kb.adapters import FixedPgVectorSpace
@@ -40,6 +41,7 @@ from rag_kb.domain import (
     PromotionStatus,
     ParserExecutionError,
     ParsingPreset,
+    PersistedVectorRepresentation,
     SourceFileIdentity,
     stable_chunk_id,
     stable_vector_id,
@@ -251,11 +253,164 @@ class IndexingPipelineTests(unittest.IsolatedAsyncioTestCase):
 
         provider.fail_call = None
         provider.calls = 0
+        provider.inputs = []
         result = await pipeline.execute(command)
         self.assertEqual((result.status, result.chunk_count), ("ready", 2))
         self.assertEqual(result.serving_status, "serving")
         self.assertEqual(len(repository.chunks), 2)
         self.assertEqual(len(repository.vectors), 2)
+        self.assertEqual(provider.calls, 1)
+        self.assertEqual(provider.inputs, [("Beta\n\nsecond",)])
+
+    async def test_multimodal_retry_reuses_text_and_only_repurchases_missing_native_image(
+        self,
+    ) -> None:
+        repository = _Repository(_target(multimodal=True))
+        factory = _Factory(repository)
+        text_provider = _Provider(factory)
+        text_provider.max_batch_size = 10
+        visual_provider = _MultimodalProvider(factory, fail_call=2)
+        visual_provider.max_batch_size = 1
+        global _CURRENT_FACTORY
+        _CURRENT_FACTORY = factory
+        pipeline = IndexingPipeline(
+            factory,
+            _FileStore(factory),
+            _MultimodalParser(factory, document=_table_and_picture_document()),
+            text_provider,
+            FixedPgVectorSpace(_embedding()),
+            asset_store=_AssetStore(factory),
+            multimodal_embedding_provider=visual_provider,
+        )
+        command = IndexingCommand(
+            repository.target.job_id,
+            repository.target.indexed_document_version_id,
+        )
+
+        with self.assertRaises(IndexingExecutionError) as failed:
+            await pipeline.execute(command)
+        self.assertEqual(
+            failed.exception.code,
+            ErrorCode.EMBEDDING_PROVIDER_UNAVAILABLE,
+        )
+        self.assertEqual(text_provider.calls, 1)
+        self.assertEqual(len(repository.vectors), 2)
+
+        text_provider.calls = 0
+        text_provider.inputs = []
+        visual_provider.fail_call = None
+        visual_provider.image_calls = 0
+        result = await pipeline.execute(command)
+
+        self.assertEqual(result.status, "ready")
+        self.assertEqual(text_provider.calls, 0)
+        self.assertEqual(visual_provider.image_calls, 1)
+        self.assertEqual(len(repository.vectors), 3)
+
+    async def test_persisted_representation_rejects_wrong_target_space_and_kind(
+        self,
+    ) -> None:
+        repository = _Repository(_target())
+        first_chunk_id = stable_chunk_id(
+            repository.target.indexed_document_version_id, 0
+        )
+        wrong_space = uuid4()
+        repository.persisted_override = (
+            PersistedVectorRepresentation(
+                id=stable_vector_id(
+                    repository.target.embedding_space_id, first_chunk_id
+                ),
+                index_chunk_id=first_chunk_id,
+                embedding_space_id=wrong_space,
+                representation_kind="text",
+            ),
+            PersistedVectorRepresentation(
+                id=stable_vector_id(
+                    repository.target.embedding_space_id, first_chunk_id
+                ),
+                index_chunk_id=uuid4(),
+                embedding_space_id=repository.target.embedding_space_id,
+                representation_kind="text",
+            ),
+            PersistedVectorRepresentation(
+                id=stable_vector_id(
+                    repository.target.embedding_space_id, first_chunk_id
+                ),
+                index_chunk_id=first_chunk_id,
+                embedding_space_id=repository.target.embedding_space_id,
+                representation_kind="native_image",
+            ),
+        )
+        factory = _Factory(repository)
+        provider = _Provider(factory)
+        pipeline = _pipeline(factory, provider)
+
+        result = await pipeline.execute(
+            IndexingCommand(
+                repository.target.job_id,
+                repository.target.indexed_document_version_id,
+            )
+        )
+
+        self.assertEqual(result.status, "ready")
+        self.assertEqual(provider.calls, 2)
+
+    async def test_reused_representation_still_enforces_stable_chunk_cas(
+        self,
+    ) -> None:
+        repository = _Repository(_target())
+        factory = _Factory(repository)
+        provider = _Provider(factory, fail_call=2)
+        parser = _Parser(factory)
+        pipeline = _pipeline(factory, provider, parser)
+        command = IndexingCommand(
+            repository.target.job_id,
+            repository.target.indexed_document_version_id,
+        )
+        with self.assertRaises(IndexingExecutionError):
+            await pipeline.execute(command)
+
+        changed = _document("guide")
+        changed.add_heading(text="Alpha", level=1)
+        changed.add_text(label=DocItemLabel.TEXT, text="changed")
+        changed.add_heading(text="Beta", level=1)
+        changed.add_text(label=DocItemLabel.TEXT, text="second")
+        parser.document = changed
+        provider.fail_call = None
+        provider.calls = 0
+
+        with self.assertRaises(IndexingExecutionError) as failure:
+            await pipeline.execute(command)
+
+        self.assertEqual(
+            failure.exception.code,
+            ErrorCode.INDEX_PERSISTENCE_FAILED,
+        )
+        self.assertEqual(provider.calls, 0)
+
+    async def test_reused_chunk_cas_is_split_into_safe_batches(self) -> None:
+        repository = _Repository(_target())
+        factory = _Factory(repository)
+        provider = _Provider(factory, fail_call=3)
+        provider.max_batch_size = 2
+        parser = _Parser(factory, document=_many_text_document(5))
+        pipeline = _pipeline(factory, provider, parser)
+        command = IndexingCommand(
+            repository.target.job_id,
+            repository.target.indexed_document_version_id,
+        )
+        with self.assertRaises(IndexingExecutionError):
+            await pipeline.execute(command)
+        self.assertEqual(len(repository.vectors), 4)
+
+        provider.fail_call = None
+        provider.calls = 0
+        repository.chunk_only_batch_sizes = []
+        result = await pipeline.execute(command)
+
+        self.assertEqual(result.status, "ready")
+        self.assertEqual(repository.chunk_only_batch_sizes, [2, 2])
+        self.assertEqual(provider.calls, 1)
 
     async def test_completed_replay_compensates_interrupted_promotion(self) -> None:
         repository = _Repository(_target())
@@ -471,6 +626,8 @@ class _Repository:
         self.manifest = None
         self.assets = ()
         self.relations = ()
+        self.persisted_override = None
+        self.chunk_only_batch_sizes = []
 
     async def prepare(self, command):
         self._active()
@@ -554,19 +711,71 @@ class _Repository:
             self.manifest = proposed
         return self.manifest
 
+    async def list_persisted_representations(self, command, *, limit):
+        del command
+        self._active()
+        records = (
+            self.persisted_override
+            if self.persisted_override is not None
+            else tuple(self.vectors.values())
+        )
+        if len(records) > limit:
+            raise AssertionError("persisted representation limit exceeded")
+        return records
+
     async def upsert_batch(self, command, chunks, vectors):
         del command
         self._active()
-        for chunk, vector in zip(chunks, vectors, strict=True):
+        if chunks and not vectors:
+            self.chunk_only_batch_sizes.append(len(chunks))
+        for chunk in chunks:
+            existing = self.chunks.get(chunk.ordinal)
+            if existing is not None and existing.content_hash != chunk.content_hash:
+                raise IndexingExecutionError(
+                    ErrorCode.INDEX_PERSISTENCE_FAILED,
+                    phase=IndexingPhase.PERSISTING,
+                    diagnostic={"check": "stable_chunk_key"},
+                )
             self.chunks[chunk.ordinal] = chunk
-            self.vectors[vector.index_chunk_id] = vector
+        for vector in vectors:
+            self.vectors[
+                (
+                    vector.id,
+                    vector.index_chunk_id,
+                    vector.embedding_space_id,
+                    vector.representation_kind,
+                )
+            ] = vector
         return True
 
     async def complete(self, command, *, expected_chunks):
         del command
         self._active()
-        if len(self.chunks) != expected_chunks or len(self.vectors) != expected_chunks:
+        if len(self.chunks) != expected_chunks:
             raise AssertionError("incomplete")
+        if self.manifest is None:
+            if len(self.vectors) != expected_chunks:
+                raise AssertionError("incomplete")
+        else:
+            identities = {
+                (
+                    str(vector.index_chunk_id),
+                    str(vector.embedding_space_id),
+                    vector.representation_kind,
+                )
+                for vector in self.vectors.values()
+            }
+            if any(
+                item["required"]
+                and (
+                    item["unit_id"],
+                    item["space_id"],
+                    item["representation_kind"],
+                )
+                not in identities
+                for item in self.manifest.representation_matrix
+            ):
+                raise AssertionError("incomplete")
         self.status = "completed"
         return True
 
@@ -609,23 +818,25 @@ class _FileStore:
 class _Parser:
     """A text-only parser double returning a synthetic converted document."""
 
-    def __init__(self, factory) -> None:
+    def __init__(self, factory, *, document=None) -> None:
         self.factory = factory
         self.calls = 0
+        self.document = document
 
     async def parse(self, source, *, preset):
         if self.factory.active:
             raise AssertionError("parser ran inside transaction")
         del source, preset
         self.calls += 1
-        return _text_document()
+        return self.document or _text_document()
 
 
 class _MultimodalParser:
-    def __init__(self, factory) -> None:
+    def __init__(self, factory, *, document=None) -> None:
         self.factory = factory
         self.calls = 0
         self.presets = []
+        self.document = document
 
     async def parse(self, source, *, preset):
         if self.factory.active:
@@ -633,7 +844,7 @@ class _MultimodalParser:
         del source
         self.calls += 1
         self.presets.append(preset)
-        return _visual_document()
+        return self.document or _visual_document()
 
 
 class _SemanticParser:
@@ -665,6 +876,14 @@ def _text_document() -> DoclingDocument:
     return document
 
 
+def _many_text_document(count: int) -> DoclingDocument:
+    document = _document("many")
+    for ordinal in range(count):
+        document.add_heading(text=f"Section {ordinal}", level=1)
+        document.add_text(label=DocItemLabel.TEXT, text=f"evidence {ordinal}")
+    return document
+
+
 def _analysis_document() -> DoclingDocument:
     document = _document("analysis")
     for ordinal in range(7):
@@ -680,6 +899,34 @@ def _visual_document() -> DoclingDocument:
     document.add_text(label=DocItemLabel.TEXT, text="body evidence")
     document.add_picture(
         image=ImageRef.from_pil(Image.new("RGB", (120, 80), (10, 20, 30)), dpi=72)
+    )
+    return document
+
+
+def _table_and_picture_document() -> DoclingDocument:
+    document = _document("table-evidence")
+    cells = [
+        TableCell(
+            text=value,
+            start_row_offset_idx=row,
+            end_row_offset_idx=row + 1,
+            start_col_offset_idx=column,
+            end_col_offset_idx=column + 1,
+            column_header=row == 0,
+        )
+        for row, values in enumerate((("Service", "Owner"), ("API", "Platform")))
+        for column, value in enumerate(values)
+    ]
+    table = document.add_table(
+        data=TableData(num_rows=2, num_cols=2, table_cells=cells)
+    )
+    table.image = ImageRef.from_pil(
+        Image.new("RGB", (160, 100), (60, 70, 80)), dpi=72
+    )
+    document.add_picture(
+        image=ImageRef.from_pil(
+            Image.new("RGB", (120, 80), (10, 20, 30)), dpi=72
+        )
     )
     return document
 
@@ -708,16 +955,23 @@ class _Provider:
 
 
 class _MultimodalProvider:
-    def __init__(self, factory) -> None:
+    def __init__(self, factory, *, fail_call=None) -> None:
         self.factory = factory
         self.embedding_space = _multimodal_embedding()
         self.max_batch_size = 20
         self.image_calls = 0
+        self.fail_call = fail_call
 
     async def embed_images(self, images):
         if self.factory.active:
             raise AssertionError("provider ran inside transaction")
         self.image_calls += 1
+        if self.image_calls == self.fail_call:
+            raise IndexingExecutionError(
+                ErrorCode.EMBEDDING_PROVIDER_UNAVAILABLE,
+                phase=IndexingPhase.MULTIMODAL_EMBEDDING,
+                diagnostic={"retry_exhausted": True},
+            )
         return EmbeddingBatch(tuple(_multimodal_vector() for _ in images))
 
 
