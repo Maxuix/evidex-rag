@@ -205,11 +205,20 @@ def build_api_dependencies(
                     resolved_settings.file_admission.max_markdown_bundle_bytes
                 ),
                 max_lines=resolved_settings.file_admission.max_lines,
+                max_csv_columns=resolved_settings.parser.max_csv_columns,
+                max_csv_cells=resolved_settings.parser.max_csv_cells,
                 max_archive_entries=(
                     resolved_settings.file_admission.max_archive_entries
                 ),
                 max_expanded_bytes=(
                     resolved_settings.file_admission.max_expanded_bytes
+                ),
+                max_assets=resolved_settings.parser.max_assets,
+                max_image_width=resolved_settings.parser.max_image_width,
+                max_image_height=resolved_settings.parser.max_image_height,
+                max_image_pixels=resolved_settings.parser.max_image_pixels,
+                max_total_image_pixels=(
+                    resolved_settings.parser.max_total_image_pixels
                 ),
             )
         ),

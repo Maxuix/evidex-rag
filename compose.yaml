@@ -113,6 +113,8 @@ services:
   worker:
     <<: *runtime-service
     command: ["python", "-m", "apps.worker.main"]
+    mem_limit: 6g
+    pids_limit: 256
     volumes:
       - source-data:/var/lib/rag-kb/sources
       - inference-model-cache:/var/lib/rag-kb/model-cache

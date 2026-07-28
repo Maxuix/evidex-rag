@@ -20,6 +20,12 @@ from rag_kb.document_processing.markdown_bundle import (
     MARKDOWN_BUNDLE_MEDIA_TYPE,
     read_markdown_bundle,
 )
+from rag_kb.document_processing.resource_preflight import (
+    ResourcePreflightContentError,
+    ResourcePreflightLimitError,
+    validate_csv_structure,
+    validate_ooxml_images,
+)
 
 
 _FILENAME = re.compile(r"^[^/\\\x00]{1,255}$")
@@ -102,11 +108,17 @@ class FileAdmissionService:
             )
         line_count = None
         if extension in _TEXT_EXTENSIONS:
-            line_count = self._validate_text(content)
+            text, line_count = self._validate_text(content)
+            if extension == ".csv":
+                self._validate_csv(text)
         elif extension == ".pdf":
             self._validate_pdf(content)
         elif extension in _OOXML_REQUIRED_PARTS:
-            self._validate_ooxml(content, _OOXML_REQUIRED_PARTS[extension])
+            self._validate_ooxml(
+                content,
+                extension=extension,
+                required_part=_OOXML_REQUIRED_PARTS[extension],
+            )
         elif extension == MARKDOWN_BUNDLE_EXTENSION:
             read_markdown_bundle(content)
         source.seek(0)
@@ -118,7 +130,7 @@ class FileAdmissionService:
             line_count=line_count,
         )
 
-    def _validate_text(self, content: bytes) -> int:
+    def _validate_text(self, content: bytes) -> tuple[str, int]:
         try:
             text = content.decode("utf-8-sig", errors="strict")
         except UnicodeDecodeError as error:
@@ -131,14 +143,37 @@ class FileAdmissionService:
                 limit=self.limits.max_lines,
                 observed=line_count,
             )
-        return line_count
+        return normalized, line_count
+
+    def _validate_csv(self, text: str) -> None:
+        try:
+            validate_csv_structure(
+                text,
+                max_columns=self.limits.max_csv_columns,
+                max_cells=self.limits.max_csv_cells,
+            )
+        except ResourcePreflightLimitError as error:
+            raise FileAdmissionError(
+                ErrorCode.FILE_STRUCTURE_LIMIT_EXCEEDED,
+                limit=error.limit,
+                observed=error.observed,
+                check=error.limit_name,
+            ) from error
+        except ResourcePreflightContentError as error:
+            raise FileAdmissionError(ErrorCode.FILE_CONTENT_INVALID) from error
 
     @staticmethod
     def _validate_pdf(content: bytes) -> None:
         if b"%PDF-" not in content[:1024]:
             raise FileAdmissionError(ErrorCode.FILE_CONTENT_INVALID)
 
-    def _validate_ooxml(self, content: bytes, required_part: str) -> None:
+    def _validate_ooxml(
+        self,
+        content: bytes,
+        *,
+        extension: str,
+        required_part: str,
+    ) -> None:
         """Apply one archive safety policy to every OOXML family."""
 
         try:
@@ -167,8 +202,26 @@ class FileAdmissionService:
                     )
                 ):
                     raise FileAdmissionError(ErrorCode.FILE_CONTENT_INVALID)
+                validate_ooxml_images(
+                    archive,
+                    extension=extension,
+                    max_images=self.limits.max_assets,
+                    max_image_width=self.limits.max_image_width,
+                    max_image_height=self.limits.max_image_height,
+                    max_image_pixels=self.limits.max_image_pixels,
+                    max_total_image_pixels=self.limits.max_total_image_pixels,
+                )
         except FileAdmissionError:
             raise
+        except ResourcePreflightLimitError as error:
+            raise FileAdmissionError(
+                ErrorCode.FILE_STRUCTURE_LIMIT_EXCEEDED,
+                limit=error.limit,
+                observed=error.observed,
+                check=error.limit_name,
+            ) from error
+        except ResourcePreflightContentError as error:
+            raise FileAdmissionError(ErrorCode.FILE_CONTENT_INVALID) from error
         except (BadZipFile, OSError, ValueError) as error:
             raise FileAdmissionError(ErrorCode.FILE_CONTENT_INVALID) from error
 

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import unittest
 from io import BytesIO
+import struct
+import zlib
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from openpyxl import Workbook
@@ -49,6 +51,20 @@ def package(parts: dict[str, bytes]) -> bytes:
     return buffer.getvalue()
 
 
+def png_with_dimensions(width: int, height: int) -> bytes:
+    def chunk(kind: bytes, payload: bytes) -> bytes:
+        checksum = zlib.crc32(kind + payload) & 0xFFFFFFFF
+        return (
+            struct.pack(">I", len(payload))
+            + kind
+            + payload
+            + struct.pack(">I", checksum)
+        )
+
+    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IEND", b"")
+
+
 def source(name: str, content: bytes) -> ParserSource:
     return ParserSource(
         original_filename=name, media_type=XLSX_MEDIA_TYPE, content=content
@@ -79,6 +95,38 @@ class AdmissionFormatTests(unittest.TestCase):
         with self.assertRaises(FileAdmissionError) as raised:
             self.admit("page.html", "text/html", b"\xff\xfe not utf8")
         self.assertEqual(raised.exception.code, ErrorCode.FILE_INVALID_UTF8)
+
+    def test_csv_cell_and_column_budgets_apply_before_docling(self) -> None:
+        for limits, content, check in (
+            (
+                AdmissionLimits(max_csv_cells=3),
+                b"a,b\n1,2\n",
+                "max_csv_cells",
+            ),
+            (
+                AdmissionLimits(max_csv_columns=2),
+                b"a,b,c\n",
+                "max_csv_columns",
+            ),
+        ):
+            with self.subTest(check=check), self.assertRaises(
+                FileAdmissionError
+            ) as raised:
+                FileAdmissionService(limits).validate(
+                    BytesIO(content),
+                    original_filename="data.csv",
+                    media_type="text/csv",
+                )
+            self.assertEqual(
+                raised.exception.code,
+                ErrorCode.FILE_STRUCTURE_LIMIT_EXCEEDED,
+            )
+            self.assertEqual(raised.exception.check, check)
+
+    def test_malformed_csv_fails_closed(self) -> None:
+        with self.assertRaises(FileAdmissionError) as raised:
+            self.admit("data.csv", "text/csv", b'a,"unterminated\n')
+        self.assertEqual(raised.exception.code, ErrorCode.FILE_CONTENT_INVALID)
 
     def test_every_ooxml_family_requires_its_own_content_part(self) -> None:
         cases = (
@@ -113,6 +161,84 @@ class AdmissionFormatTests(unittest.TestCase):
                 ),
             )
         self.assertEqual(raised.exception.code, ErrorCode.FILE_CONTENT_INVALID)
+
+    def test_ooxml_image_headers_enforce_single_and_total_pixel_budgets(
+        self,
+    ) -> None:
+        for name, media_type, required, media_path in (
+            (
+                "text.docx",
+                DOCX_MEDIA_TYPE,
+                "word/document.xml",
+                "word/media/large.png",
+            ),
+            (
+                "deck.pptx",
+                PPTX_MEDIA_TYPE,
+                "ppt/presentation.xml",
+                "ppt/media/large.png",
+            ),
+            (
+                "book.xlsx",
+                XLSX_MEDIA_TYPE,
+                "xl/workbook.xml",
+                "xl/media/large.png",
+            ),
+        ):
+            with self.subTest(name=name), self.assertRaises(
+                FileAdmissionError
+            ) as raised:
+                FileAdmissionService(
+                    AdmissionLimits(max_image_pixels=8)
+                ).validate(
+                    BytesIO(
+                        package(
+                            {
+                                "[Content_Types].xml": b"<Types/>",
+                                required: b"<x/>",
+                                media_path: png_with_dimensions(3, 3),
+                            }
+                        )
+                    ),
+                    original_filename=name,
+                    media_type=media_type,
+                )
+            self.assertEqual(
+                raised.exception.code,
+                ErrorCode.FILE_STRUCTURE_LIMIT_EXCEEDED,
+            )
+            self.assertEqual(raised.exception.check, "max_image_pixels")
+
+        aggregate = package(
+            {
+                "[Content_Types].xml": b"<Types/>",
+                "word/document.xml": b"<x/>",
+                "word/media/one.png": png_with_dimensions(2, 2),
+                "word/media/two.png": png_with_dimensions(2, 2),
+            }
+        )
+        with self.assertRaises(FileAdmissionError) as raised:
+            FileAdmissionService(
+                AdmissionLimits(max_total_image_pixels=7)
+            ).validate(
+                BytesIO(aggregate),
+                original_filename="text.docx",
+                media_type=DOCX_MEDIA_TYPE,
+            )
+        self.assertEqual(raised.exception.check, "max_total_image_pixels")
+
+    def test_ooxml_vector_media_is_not_misclassified_as_a_raster(self) -> None:
+        self.admit(
+            "text.docx",
+            DOCX_MEDIA_TYPE,
+            package(
+                {
+                    "[Content_Types].xml": b"<Types/>",
+                    "word/document.xml": b"<x/>",
+                    "word/media/diagram.emf": b"not-a-pillow-raster",
+                }
+            ),
+        )
 
     def test_path_traversal_entries_are_rejected_for_every_family(self) -> None:
         for name, media_type, required in (

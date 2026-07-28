@@ -164,6 +164,7 @@ async def _file_admission_handler(
     if error.code in {
         ErrorCode.FILE_TOO_LARGE,
         ErrorCode.FILE_ARCHIVE_LIMIT_EXCEEDED,
+        ErrorCode.FILE_STRUCTURE_LIMIT_EXCEEDED,
     }:
         status = 413
     elif error.code in {
@@ -179,6 +180,9 @@ async def _file_admission_handler(
         ErrorCode.FILE_TOO_LARGE: "The document exceeds the configured byte limit.",
         ErrorCode.FILE_INVALID_UTF8: "The document is not valid UTF-8 text.",
         ErrorCode.FILE_LINE_LIMIT_EXCEEDED: "The document exceeds the configured line limit.",
+        ErrorCode.FILE_STRUCTURE_LIMIT_EXCEEDED: (
+            "The document exceeds a configured structural resource limit."
+        ),
         ErrorCode.FILE_CONTENT_INVALID: "The document content does not match the declared format.",
         ErrorCode.FILE_ARCHIVE_LIMIT_EXCEEDED: "The document archive exceeds a configured safety limit.",
         ErrorCode.MARKDOWN_BUNDLE_INVALID: "The Markdown bundle is invalid.",

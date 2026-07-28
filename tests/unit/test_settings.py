@@ -110,10 +110,13 @@ class SettingsTests(unittest.TestCase):
         )
         self.assertEqual(settings.parser.max_num_pages, 500)
         self.assertEqual(settings.parser.document_timeout_seconds, 600)
+        self.assertEqual(settings.parser.max_csv_columns, 1_024)
+        self.assertEqual(settings.parser.max_csv_cells, 200_000)
         self.assertEqual(settings.parser.max_docling_items, 20_000)
         self.assertEqual(settings.parser.max_chunks, 20_000)
         self.assertEqual(settings.parser.max_extracted_characters, 5_000_000)
         self.assertEqual(settings.parser.max_metadata_bytes, 65_536)
+        self.assertEqual(settings.parser.max_total_image_pixels, 80_000_000)
         self.assertEqual(settings.job_poller.required_worker_connections, 7)
         self.assertEqual(settings.job_poller.indexing_deadline_seconds, 900)
         self.assertEqual(settings.job_poller.chat_deadline_seconds, 120)
@@ -163,7 +166,10 @@ class SettingsTests(unittest.TestCase):
                 {"max_markdown_bundle_size": 1},
                 {"max_num_pages": 501},
                 {"document_timeout_seconds": 601},
+                {"max_csv_columns": 1_025},
+                {"max_csv_cells": 200_001},
                 {"max_docling_items": 20_001},
+                {"max_total_image_pixels": 80_000_001},
             ):
                 with self.subTest(override=override), self.assertRaises(
                     ValidationError

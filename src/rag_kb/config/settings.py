@@ -62,6 +62,12 @@ FixedMaxMarkdownBundleBytes = Annotated[
     Literal[20_971_520], BeforeValidator(parse_environment_integer)
 ]
 FixedMaxLines = Annotated[Literal[200_000], BeforeValidator(parse_environment_integer)]
+FixedMaxCsvColumns = Annotated[
+    Literal[1_024], BeforeValidator(parse_environment_integer)
+]
+FixedMaxCsvCells = Annotated[
+    Literal[200_000], BeforeValidator(parse_environment_integer)
+]
 FixedMaxArchiveEntries = Annotated[
     Literal[10_000], BeforeValidator(parse_environment_integer)
 ]
@@ -83,6 +89,9 @@ FixedDoclingTimeoutSeconds = Annotated[
 ]
 FixedMaxDoclingItems = Annotated[
     Literal[20_000], BeforeValidator(parse_environment_integer)
+]
+FixedMaxTotalImagePixels = Annotated[
+    Literal[80_000_000], BeforeValidator(parse_environment_integer)
 ]
 FixedContextTurns = Annotated[Literal[6], BeforeValidator(parse_environment_integer)]
 FixedContextTokens = Annotated[
@@ -401,6 +410,8 @@ class ParserSettings(StrictSettingsModel):
     max_markdown_bundle_size: FixedMaxMarkdownBundleBytes = 20_971_520
     max_num_pages: FixedMaxDoclingPages = 500
     document_timeout_seconds: FixedDoclingTimeoutSeconds = 600
+    max_csv_columns: FixedMaxCsvColumns = 1_024
+    max_csv_cells: FixedMaxCsvCells = 200_000
     max_docling_items: FixedMaxDoclingItems = 20_000
     max_chunks: FixedMaxChunks = 20_000
     max_extracted_characters: FixedMaxExtractedCharacters = 5_000_000
@@ -408,6 +419,7 @@ class ParserSettings(StrictSettingsModel):
     max_assets: Annotated[int, Field(ge=1, le=10_000)] = 1_000
     max_total_asset_bytes: Annotated[int, Field(ge=1, le=1_073_741_824)] = 104_857_600
     max_image_pixels: Annotated[int, Field(ge=1, le=100_000_000)] = 40_000_000
+    max_total_image_pixels: FixedMaxTotalImagePixels = 80_000_000
     max_image_width: Annotated[int, Field(ge=1, le=32_768)] = 16_384
     max_image_height: Annotated[int, Field(ge=1, le=32_768)] = 16_384
     max_ocr_characters: Annotated[int, Field(ge=1, le=10_000_000)] = 2_000_000

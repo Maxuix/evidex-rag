@@ -160,6 +160,8 @@ def build_worker_dependencies(
         document_timeout_seconds=(
             resolved_settings.parser.document_timeout_seconds
         ),
+        max_csv_columns=resolved_settings.parser.max_csv_columns,
+        max_csv_cells=resolved_settings.parser.max_csv_cells,
         max_docling_items=resolved_settings.parser.max_docling_items,
         max_chunks=resolved_settings.parser.max_chunks,
         max_extracted_characters=(
@@ -169,6 +171,9 @@ def build_worker_dependencies(
         max_assets=resolved_settings.parser.max_assets,
         max_total_asset_bytes=resolved_settings.parser.max_total_asset_bytes,
         max_image_pixels=resolved_settings.parser.max_image_pixels,
+        max_total_image_pixels=(
+            resolved_settings.parser.max_total_image_pixels
+        ),
         max_image_width=resolved_settings.parser.max_image_width,
         max_image_height=resolved_settings.parser.max_image_height,
         max_ocr_characters=resolved_settings.parser.max_ocr_characters,

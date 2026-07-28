@@ -11,9 +11,12 @@ import multiprocessing
 from multiprocessing.connection import Connection
 from pathlib import Path, PurePath
 import re
+import signal
 from tempfile import TemporaryDirectory
 import threading
 from typing import Any
+import warnings
+from zipfile import BadZipFile, ZipFile
 
 from docling.datamodel.base_models import (
     ConversionStatus,
@@ -24,6 +27,7 @@ from docling.datamodel.base_models import (
 )
 from docling.document_converter import DocumentConverter
 from docling_core.types.doc import DoclingDocument
+from PIL import Image as PillowImage
 
 from rag_kb.adapters.parser.docling.artifacts import (
     ArtifactManifestError,
@@ -41,6 +45,12 @@ from rag_kb.domain import (
 from rag_kb.document_processing.markdown_bundle import (
     MARKDOWN_BUNDLE_MEDIA_TYPE,
     read_normalized_markdown_bundle,
+)
+from rag_kb.document_processing.resource_preflight import (
+    ResourcePreflightContentError,
+    ResourcePreflightLimitError,
+    validate_csv_structure,
+    validate_ooxml_images,
 )
 
 
@@ -140,7 +150,12 @@ class DoclingParser:
                 await self._reset_child()
                 raise
             except (EOFError, BrokenPipeError, OSError) as error:
-                await self._reset_child()
+                exit_code = await self._reset_child()
+                if exit_code == -signal.SIGKILL:
+                    raise ParserExecutionError(
+                        ErrorCode.PARSER_RESOURCE_LIMIT,
+                        diagnostic={"limit_name": "process_memory"},
+                    ) from error
                 raise ParserExecutionError(
                     ErrorCode.PARSER_CRASHED,
                     diagnostic={"check": "docling_child_ipc"},
@@ -206,10 +221,10 @@ class DoclingParser:
             self._connection = parent
             return parent
 
-    async def _reset_child(self) -> None:
+    async def _reset_child(self) -> int | None:
         with self._state_lock:
             resources = self._detach_child()
-        await asyncio.shield(asyncio.to_thread(_stop_child, *resources))
+        return await asyncio.shield(asyncio.to_thread(_stop_child, *resources))
 
     def _detach_child(
         self,
@@ -245,6 +260,7 @@ class _DoclingRuntime:
         preset: ParsingPreset,
     ) -> DoclingDocument:
         try:
+            _preflight_conversion_source(source, self._limits)
             converter = self._get_converter(preset)
             if source.media_type == MARKDOWN_BUNDLE_MEDIA_TYPE:
                 result = self._convert_markdown_bundle(converter, source.content)
@@ -270,6 +286,17 @@ class _DoclingRuntime:
             raise ParserExecutionError(
                 ErrorCode.PARSER_RESOURCE_LIMIT,
                 diagnostic={"limit_name": "process_memory"},
+            ) from error
+        except (
+            PillowImage.DecompressionBombWarning,
+            PillowImage.DecompressionBombError,
+        ) as error:
+            raise ParserExecutionError(
+                ErrorCode.PARSER_RESOURCE_LIMIT,
+                diagnostic={
+                    "limit_name": "max_image_pixels",
+                    "limit": self._limits.max_image_pixels,
+                },
             ) from error
         except Exception as error:
             raise ParserExecutionError(
@@ -347,6 +374,7 @@ def _parser_child(
     artifacts_path: Path,
     artifact_manifest_path: Path,
 ) -> None:
+    _configure_pillow_resource_guard(limits)
     runtime = _DoclingRuntime(
         limits,
         artifacts_path=artifacts_path,
@@ -384,6 +412,64 @@ def _parser_child(
                 return
     finally:
         connection.close()
+
+
+def _configure_pillow_resource_guard(limits: ParserLimits) -> None:
+    """Make Pillow's lazy decoder fail at the application's pixel budget."""
+
+    PillowImage.MAX_IMAGE_PIXELS = limits.max_image_pixels
+    warnings.filterwarnings(
+        "error",
+        category=PillowImage.DecompressionBombWarning,
+    )
+
+
+def _preflight_conversion_source(
+    source: ParserSource,
+    limits: ParserLimits,
+) -> None:
+    extension = PurePath(source.original_filename).suffix.lower()
+    try:
+        if extension == ".csv":
+            text = source.content.decode("utf-8-sig", errors="strict")
+            validate_csv_structure(
+                text.replace("\r\n", "\n").replace("\r", "\n"),
+                max_columns=limits.max_csv_columns,
+                max_cells=limits.max_csv_cells,
+            )
+        elif extension in {".docx", ".pptx", ".xlsx"}:
+            with ZipFile(BytesIO(source.content)) as archive:
+                validate_ooxml_images(
+                    archive,
+                    extension=extension,
+                    max_images=limits.max_assets,
+                    max_image_width=limits.max_image_width,
+                    max_image_height=limits.max_image_height,
+                    max_image_pixels=limits.max_image_pixels,
+                    max_total_image_pixels=limits.max_total_image_pixels,
+                )
+    except ResourcePreflightLimitError as error:
+        diagnostic = {
+            "limit_name": error.limit_name,
+            "limit": error.limit,
+        }
+        if error.observed is not None:
+            diagnostic["observed"] = error.observed
+        raise ParserExecutionError(
+            ErrorCode.PARSER_RESOURCE_LIMIT,
+            diagnostic=diagnostic,
+        ) from error
+    except (
+        ResourcePreflightContentError,
+        BadZipFile,
+        OSError,
+        UnicodeError,
+        ValueError,
+    ) as error:
+        raise ParserExecutionError(
+            ErrorCode.FILE_CONTENT_INVALID,
+            diagnostic={"check": "resource_preflight"},
+        ) from error
 
 
 def _round_trip(
@@ -446,17 +532,18 @@ def _encode_error_response(code: ErrorCode, diagnostic: dict[str, Any]) -> bytes
 def _stop_child(
     process: multiprocessing.Process | None,
     connection: Connection | None,
-) -> None:
+) -> int | None:
     if connection is not None:
         try:
             connection.close()
         except OSError:
             pass
     if process is None:
-        return
+        return None
     if process.pid is None:
         process.close()
-        return
+        return None
+    exit_code = process.exitcode
     try:
         if process.is_alive():
             process.terminate()
@@ -464,9 +551,11 @@ def _stop_child(
         if process.is_alive():
             process.kill()
             process.join(timeout=_PROCESS_STOP_GRACE_SECONDS)
+        exit_code = process.exitcode
     finally:
         if not process.is_alive():
             process.close()
+    return exit_code
 
 
 def _validate_source(

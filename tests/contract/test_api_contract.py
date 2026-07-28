@@ -1181,7 +1181,7 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
         self.dependencies.knowledge_base_service = _FakeKnowledgeBaseService()
         self.dependencies.document_service = _FakeDocumentService()
         self.dependencies.file_admission_service = FileAdmissionService(
-            AdmissionLimits(max_bytes=32, max_lines=3)
+            AdmissionLimits(max_bytes=32, max_lines=3, max_csv_cells=2)
         )
         self.dependencies.source_file_service = _FakeSourceFileService(
             self.dependencies.document_service
@@ -1495,6 +1495,13 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
             ("guide.md", "text/plain", b"text", 415, "FILE_MEDIA_TYPE_MISMATCH"),
             ("guide.txt", "text/plain", b"\xff", 422, "FILE_INVALID_UTF8"),
             ("guide.txt", "text/plain", b"x" * 33, 413, "FILE_TOO_LARGE"),
+            (
+                "guide.csv",
+                "text/csv",
+                b"a,b\n1,2\n",
+                413,
+                "FILE_STRUCTURE_LIMIT_EXCEEDED",
+            ),
         )
         for filename, media_type, body, status, code in cases:
             with self.subTest(code=code):

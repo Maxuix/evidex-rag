@@ -4,13 +4,19 @@ import asyncio
 from dataclasses import replace
 import hashlib
 from importlib.metadata import version
+from io import BytesIO
 import json
 import os
 from pathlib import Path
+import signal
+import struct
 from types import SimpleNamespace
 import tempfile
 import time
 import unittest
+import warnings
+import zlib
+from zipfile import ZIP_DEFLATED, ZipFile
 
 from docling.datamodel.accelerator_options import AcceleratorDevice
 from docling.datamodel.base_models import (
@@ -41,6 +47,7 @@ from rag_kb.adapters.parser.docling import (
 )
 from rag_kb.adapters.parser.docling.parser import (
     _DoclingRuntime,
+    _configure_pillow_resource_guard,
     _validate_source,
 )
 from rag_kb.domain import (
@@ -75,6 +82,29 @@ def _result(
         errors=errors or [],
         input=SimpleNamespace(valid=input_valid),
     )
+
+
+def _png_with_dimensions(width: int, height: int) -> bytes:
+    def chunk(kind: bytes, payload: bytes) -> bytes:
+        checksum = zlib.crc32(kind + payload) & 0xFFFFFFFF
+        return (
+            struct.pack(">I", len(payload))
+            + kind
+            + payload
+            + struct.pack(">I", checksum)
+        )
+
+    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IEND", b"")
+
+
+def _docx_with_image(image: bytes) -> bytes:
+    target = BytesIO()
+    with ZipFile(target, "w", ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", b"<Types/>")
+        archive.writestr("word/document.xml", b"<document/>")
+        archive.writestr("word/media/image.png", image)
+    return target.getvalue()
 
 
 class _FakeConverter:
@@ -218,6 +248,17 @@ def _crash_child(connection, limits, artifacts_path, artifact_manifest_path) -> 
     del limits, artifacts_path, artifact_manifest_path
     connection.recv()
     os._exit(17)
+
+
+def _oom_killed_child(
+    connection,
+    limits,
+    artifacts_path,
+    artifact_manifest_path,
+) -> None:
+    del limits, artifacts_path, artifact_manifest_path
+    connection.recv()
+    os.kill(os.getpid(), signal.SIGKILL)
 
 
 def _write_manifest(path: Path, artifact: Path) -> None:
@@ -526,6 +567,14 @@ class DoclingParserTests(unittest.IsolatedAsyncioTestCase):
             (ImportError("missing"), ErrorCode.PARSER_NOT_CONFIGURED),
             (FileNotFoundError("artifact"), ErrorCode.PARSER_NOT_CONFIGURED),
             (MemoryError(), ErrorCode.PARSER_RESOURCE_LIMIT),
+            (
+                Image.DecompressionBombWarning("image"),
+                ErrorCode.PARSER_RESOURCE_LIMIT,
+            ),
+            (
+                Image.DecompressionBombError("image"),
+                ErrorCode.PARSER_RESOURCE_LIMIT,
+            ),
             (RuntimeError("boom"), ErrorCode.PARSER_CRASHED),
         ):
             with self.subTest(expected=expected):
@@ -542,6 +591,65 @@ class DoclingParserTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(raised.exception.code, expected)
                 finally:
                     harness.close()
+
+    async def test_csv_and_ooxml_preflight_reject_before_converter_call(
+        self,
+    ) -> None:
+        cases = (
+            (
+                ParserLimits(max_csv_cells=3),
+                ParserSource("guide.csv", "text/csv", b"a,b\n1,2\n"),
+                "max_csv_cells",
+            ),
+            (
+                ParserLimits(max_image_pixels=8),
+                ParserSource(
+                    "guide.docx",
+                    "application/vnd.openxmlformats-officedocument."
+                    "wordprocessingml.document",
+                    _docx_with_image(_png_with_dimensions(3, 3)),
+                ),
+                "max_image_pixels",
+            ),
+        )
+        for limits, source, limit_name in cases:
+            with self.subTest(limit_name=limit_name):
+                converter = _FakeConverter()
+                harness = _ParserHarness(self, converter, limits=limits)
+                try:
+                    with self.assertRaises(ParserExecutionError) as raised:
+                        await harness.parser.parse(
+                            source,
+                            preset=ParsingPreset.TEXT_LOCAL_V1,
+                        )
+                    self.assertEqual(
+                        raised.exception.code,
+                        ErrorCode.PARSER_RESOURCE_LIMIT,
+                    )
+                    self.assertEqual(
+                        raised.exception.diagnostic["limit_name"],
+                        limit_name,
+                    )
+                    self.assertEqual(converter.calls, [])
+                finally:
+                    harness.close()
+
+    async def test_child_pillow_guard_uses_application_pixel_limit(self) -> None:
+        previous = Image.MAX_IMAGE_PIXELS
+        try:
+            with warnings.catch_warnings():
+                _configure_pillow_resource_guard(
+                    replace(ParserLimits(), max_image_pixels=123)
+                )
+                self.assertEqual(Image.MAX_IMAGE_PIXELS, 123)
+                with self.assertRaises(Image.DecompressionBombWarning):
+                    warnings.warn(
+                        "bounded",
+                        Image.DecompressionBombWarning,
+                        stacklevel=1,
+                    )
+        finally:
+            Image.MAX_IMAGE_PIXELS = previous
 
     async def test_enforces_source_item_page_character_and_image_limits(self) -> None:
         oversized_source = _ParserHarness(
@@ -746,6 +854,27 @@ class DoclingParserTests(unittest.IsolatedAsyncioTestCase):
             {"check": "docling_child_ipc"},
         )
         self.assertNotIn("secret-source", str(raised.exception.diagnostic))
+
+    async def test_sigkill_child_is_a_non_retryable_memory_resource_failure(
+        self,
+    ) -> None:
+        harness = _ProcessHarness(child_target=_oom_killed_child, timeout=5.0)
+        self.addCleanup(harness.close)
+
+        with self.assertRaises(ParserExecutionError) as raised:
+            await harness.parser.parse(
+                ParserSource("guide.csv", "text/csv", b"a,b\n"),
+                preset=ParsingPreset.TEXT_LOCAL_V1,
+            )
+
+        self.assertEqual(
+            raised.exception.code,
+            ErrorCode.PARSER_RESOURCE_LIMIT,
+        )
+        self.assertEqual(
+            raised.exception.diagnostic,
+            {"limit_name": "process_memory"},
+        )
 
     async def test_close_terminates_and_reaps_active_conversion_child(self) -> None:
         harness = _ProcessHarness(child_target=_hang_once_child, timeout=10.0)

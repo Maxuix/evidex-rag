@@ -106,6 +106,13 @@ class StartLocalScriptTests(unittest.TestCase):
             DOCKERFILE.read_text(encoding="utf-8"),
         )
 
+    def test_worker_has_hard_memory_and_pid_limits(self) -> None:
+        configuration = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
+        worker = configuration["services"]["worker"]
+
+        self.assertEqual(worker["mem_limit"], "6g")
+        self.assertEqual(worker["pids_limit"], 256)
+
     def test_compose_runs_user_and_diagnostic_frontends_on_separate_ports(self) -> None:
         configuration = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
 

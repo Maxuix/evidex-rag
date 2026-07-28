@@ -14,8 +14,15 @@ class AdmissionLimits:
     max_bytes: int = 10 * 1024 * 1024
     max_markdown_bundle_bytes: int = 20 * 1024 * 1024
     max_lines: int = 200_000
+    max_csv_columns: int = 1_024
+    max_csv_cells: int = 200_000
     max_archive_entries: int = 10_000
     max_expanded_bytes: int = 100 * 1024 * 1024
+    max_assets: int = 1_000
+    max_image_width: int = 16_384
+    max_image_height: int = 16_384
+    max_image_pixels: int = 40_000_000
+    max_total_image_pixels: int = 80_000_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,6 +31,8 @@ class ParserLimits:
     max_markdown_bundle_size: int = 20 * 1024 * 1024
     max_num_pages: int = 500
     document_timeout_seconds: float = 600.0
+    max_csv_columns: int = 1_024
+    max_csv_cells: int = 200_000
     max_docling_items: int = 20_000
     max_chunks: int = 20_000
     max_extracted_characters: int = 5_000_000
@@ -31,6 +40,7 @@ class ParserLimits:
     max_assets: int = 1_000
     max_total_asset_bytes: int = 100 * 1024 * 1024
     max_image_pixels: int = 40_000_000
+    max_total_image_pixels: int = 80_000_000
     max_image_width: int = 16_384
     max_image_height: int = 16_384
     max_ocr_characters: int = 2_000_000
