@@ -348,6 +348,40 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(failure.exception.code, ErrorCode.EMBEDDING_RESPONSE_INVALID)
         self.assertEqual(store.plans, [])
 
+    async def test_absolute_deadline_cancels_hanging_retrieval(self) -> None:
+        provider = _HangingProvider()
+        service = RetrievalService(
+            SingleWorkspaceAccessPolicy(WORKSPACE),
+            provider,
+            _Store(VectorSearchResult(REVISION_ID)),
+            deadline_seconds=0.01,
+        )
+
+        with self.assertRaises(RetrievalExecutionError) as failure:
+            await service.retrieve(_context(), RetrievalRequest(KB_ID, "query"))
+
+        self.assertEqual(
+            failure.exception.code,
+            ErrorCode.RETRIEVAL_DEADLINE_EXCEEDED,
+        )
+        self.assertEqual(
+            failure.exception.diagnostic,
+            {"check": "absolute_deadline"},
+        )
+        self.assertTrue(provider.cancelled)
+
+    async def test_retrieval_deadline_must_be_positive(self) -> None:
+        for deadline_seconds in (0, float("inf"), float("nan")):
+            with self.subTest(deadline_seconds=deadline_seconds), self.assertRaises(
+                ValueError
+            ):
+                RetrievalService(
+                    SingleWorkspaceAccessPolicy(WORKSPACE),
+                    _Provider(),
+                    _Store(VectorSearchResult(REVISION_ID)),
+                    deadline_seconds=deadline_seconds,
+                )
+
     async def test_composite_retrieval_runs_lanes_in_parallel_and_hydrates_strong_visual(
         self,
     ) -> None:
@@ -520,6 +554,21 @@ class _Provider:
     async def embed_query(self, text: str) -> tuple[float, ...]:
         self.queries.append(text)
         return self.vector
+
+
+class _HangingProvider(_Provider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.cancelled = False
+
+    async def embed_query(self, text: str) -> tuple[float, ...]:
+        self.queries.append(text)
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
+        raise AssertionError("unreachable")
 
 
 class _Store:

@@ -138,6 +138,12 @@ async def _retrieval_execution_handler(
             "The active index is incompatible with the configured retrieval space.",
             False,
         ),
+        ErrorCode.RETRIEVAL_DEADLINE_EXCEEDED: (
+            503,
+            "Retrieval deadline exceeded",
+            "The retrieval request exceeded its execution deadline.",
+            True,
+        ),
     }
     status, title, detail, retryable = mapping.get(
         error.code,

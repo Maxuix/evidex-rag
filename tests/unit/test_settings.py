@@ -17,7 +17,11 @@ from rag_kb.adapters import (
     LangChainEmbeddingModelAdapter,
 )
 from rag_kb.config import StartupConfigurationError, validate_startup_environment
-from rag_kb.config.settings import Settings, load_settings
+from rag_kb.config.settings import (
+    Settings,
+    embedding_retry_budget_seconds,
+    load_settings,
+)
 from rag_kb.db import DatabaseProcess
 from rag_kb.domain import WorkLane
 from rag_kb.workflows import LangGraphRunner
@@ -122,6 +126,18 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.job_poller.chat_deadline_seconds, 120)
         self.assertEqual(settings.job_poller.chat_start_target_seconds, 2.0)
         self.assertEqual(settings.database.required_api_connections, 3)
+        self.assertEqual(settings.database.api_statement_timeout_ms, 30_000)
+        self.assertEqual(settings.database.worker_statement_timeout_ms, 60_000)
+        self.assertEqual(
+            settings.database.maintenance_statement_timeout_ms,
+            300_000,
+        )
+        self.assertEqual(settings.database.lock_timeout_ms, 5_000)
+        self.assertEqual(
+            settings.database.idle_in_transaction_session_timeout_ms,
+            30_000,
+        )
+        self.assertEqual(settings.retrieval.deadline_seconds, 240.0)
         self.assertEqual(settings.chat_delivery.poll_interval_seconds, 1.0)
         self.assertEqual(settings.chat_delivery.jitter_ratio, 0.2)
         self.assertEqual(
@@ -373,6 +389,70 @@ class SettingsTests(unittest.TestCase):
             with self.assertRaises(ValidationError):
                 Settings(_env_file=None, **{**payload, "database": database})
 
+    def test_database_session_timeouts_fail_closed(self) -> None:
+        fields = (
+            "api_statement_timeout_ms",
+            "worker_statement_timeout_ms",
+            "maintenance_statement_timeout_ms",
+            "lock_timeout_ms",
+            "idle_in_transaction_session_timeout_ms",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for field_name in fields:
+                for invalid_value in (0, 86_400_001):
+                    payload = valid_payload(root)
+                    database = copy.deepcopy(payload["database"])
+                    assert isinstance(database, dict)
+                    database[field_name] = invalid_value
+                    with self.subTest(
+                        field_name=field_name,
+                        invalid_value=invalid_value,
+                    ), self.assertRaises(ValidationError):
+                        Settings(
+                            _env_file=None,
+                            **{**payload, "database": database},
+                        )
+
+    def test_retrieval_deadline_exceeds_embedding_retry_budgets(self) -> None:
+        self.assertEqual(embedding_retry_budget_seconds(30, 2), 211)
+        self.assertEqual(embedding_retry_budget_seconds(30, 0), 31)
+        self.assertEqual(embedding_retry_budget_seconds(2.5, 3), 191)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for invalid_deadline in (0, 211, float("inf"), float("nan")):
+                with self.subTest(
+                    invalid_deadline=invalid_deadline
+                ), self.assertRaises(ValidationError):
+                    build_settings(
+                        root,
+                        retrieval={"deadline_seconds": invalid_deadline},
+                    )
+            accepted = build_settings(
+                root,
+                retrieval={"deadline_seconds": 211.001},
+            )
+            self.assertEqual(accepted.retrieval.deadline_seconds, 211.001)
+
+            payload = valid_payload(root)
+            providers = copy.deepcopy(payload["model_provider"])
+            assert isinstance(providers, dict)
+            providers["multimodal_embedding"] = {
+                "base_url": "https://multimodal.example.invalid/v1",
+                "api_key": "multimodal-secret",
+                "timeout_seconds": 100,
+                "max_retries": 1,
+            }
+            with self.assertRaises(ValidationError):
+                Settings(
+                    _env_file=None,
+                    **{
+                        **payload,
+                        "model_provider": providers,
+                        "retrieval": {"deadline_seconds": 240},
+                    },
+                )
+
     def test_fixed_embedding_space_rejects_in_place_changes(self) -> None:
         changes = {
             "dimension": 1536,
@@ -612,6 +692,14 @@ class StartupValidationTests(unittest.TestCase):
             self.assertEqual(
                 worker.evidence_assessor._min_cosine_similarity,
                 settings.retrieval.min_cosine_similarity,
+            )
+            self.assertEqual(
+                api.retrieval_service._deadline_seconds,
+                settings.retrieval.deadline_seconds,
+            )
+            self.assertEqual(
+                worker.retrieval_service._deadline_seconds,
+                settings.retrieval.deadline_seconds,
             )
             self.assertIs(
                 worker.answer_generator._model,

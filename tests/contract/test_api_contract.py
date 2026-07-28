@@ -879,6 +879,7 @@ class RetrievalApiContractTests(unittest.IsolatedAsyncioTestCase):
             (ErrorCode.EMBEDDING_PROVIDER_UNAVAILABLE, 503, True),
             (ErrorCode.EMBEDDING_RESPONSE_INVALID, 502, False),
             (ErrorCode.EMBEDDING_SPACE_MISMATCH, 503, False),
+            (ErrorCode.RETRIEVAL_DEADLINE_EXCEEDED, 503, True),
             (ErrorCode.INTERNAL_SERVER_ERROR, 500, False),
         )
         for code, status, retryable in cases:

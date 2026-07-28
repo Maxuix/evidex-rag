@@ -67,6 +67,30 @@ class AsyncDataAccessTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(loaded, created)
 
+    async def test_runtime_connections_apply_bounded_server_settings(self) -> None:
+        async with self.database.sessions() as session:
+            statement_timeout = (
+                await session.execute(text("SHOW statement_timeout"))
+            ).scalar_one()
+            lock_timeout = (
+                await session.execute(text("SHOW lock_timeout"))
+            ).scalar_one()
+            idle_timeout = (
+                await session.execute(
+                    text("SHOW idle_in_transaction_session_timeout")
+                )
+            ).scalar_one()
+            application_name = (
+                await session.execute(text("SHOW application_name"))
+            ).scalar_one()
+            await session.rollback()
+
+        self.assertEqual(statement_timeout, "1min")
+        self.assertEqual(lock_timeout, "5s")
+        self.assertEqual(idle_timeout, "30s")
+        self.assertEqual(application_name, "rag-kb-worker")
+        self.assertEqual(self.database.engine.pool.checkedout(), 0)
+
     async def test_uncommitted_and_failed_work_rolls_back(self) -> None:
         async with self.factory() as unit_of_work:
             await unit_of_work.workspaces.add("uncommitted")

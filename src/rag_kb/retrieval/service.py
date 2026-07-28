@@ -70,6 +70,7 @@ class RetrievalService:
         rrf_k: int = 60,
         cross_modal_weight_micros: int = 1_000_000,
         relation_hydrator: CompositeEvidenceHydrator | None = None,
+        deadline_seconds: float = 240.0,
     ) -> None:
         if candidate_multiplier < 2:
             raise ValueError("candidate_multiplier must be at least two")
@@ -79,6 +80,8 @@ class RetrievalService:
             raise ValueError("rerank weights must sum to one")
         if not 0.0 < mmr_lambda <= 1.0:
             raise ValueError("mmr_lambda must be between zero and one")
+        if not math.isfinite(deadline_seconds) or deadline_seconds <= 0:
+            raise ValueError("retrieval deadline must be positive")
         self._access_policy = access_policy
         self._embedding_provider = embedding_provider
         self._vector_store = vector_store
@@ -94,8 +97,26 @@ class RetrievalService:
         self._rrf_k = rrf_k
         self._cross_modal_weight_micros = cross_modal_weight_micros
         self._relation_hydrator = relation_hydrator
+        self._deadline_seconds = deadline_seconds
 
     async def retrieve(
+        self,
+        context: AuthContext,
+        request: RetrievalRequest,
+    ) -> EvidencePack:
+        deadline = asyncio.timeout(self._deadline_seconds)
+        try:
+            async with deadline:
+                return await self._retrieve(context, request)
+        except TimeoutError as error:
+            if not deadline.expired():
+                raise
+            raise RetrievalExecutionError(
+                ErrorCode.RETRIEVAL_DEADLINE_EXCEEDED,
+                diagnostic={"check": "absolute_deadline"},
+            ) from error
+
+    async def _retrieve(
         self,
         context: AuthContext,
         request: RetrievalRequest,

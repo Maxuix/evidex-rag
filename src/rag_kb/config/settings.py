@@ -27,6 +27,24 @@ from rag_kb.config.profiles import DeploymentProfile
 PositiveInt = Annotated[int, Field(gt=0)]
 NonNegativeInt = Annotated[int, Field(ge=0)]
 PositiveFloat = Annotated[float, Field(gt=0)]
+BoundedDatabaseTimeoutMilliseconds = Annotated[
+    int, Field(gt=0, le=86_400_000)
+]
+_MAX_PROVIDER_RETRY_AFTER_SECONDS = 60
+_PROVIDER_TIMEOUT_SCHEDULING_MARGIN_SECONDS = 1
+
+
+def embedding_retry_budget_seconds(
+    timeout_seconds: float,
+    max_retries: int,
+) -> float:
+    """Return the bounded embedding-adapter budget for root validation."""
+
+    return (
+        timeout_seconds * (max_retries + 1)
+        + _MAX_PROVIDER_RETRY_AFTER_SECONDS * max_retries
+        + _PROVIDER_TIMEOUT_SCHEDULING_MARGIN_SECONDS
+    )
 
 
 def parse_environment_boolean(value: object) -> object:
@@ -197,6 +215,13 @@ class DatabaseSettings(StrictSettingsModel):
     api_max_overflow: NonNegativeInt = 5
     worker_pool_size: PositiveInt = 8
     worker_max_overflow: NonNegativeInt = 4
+    api_statement_timeout_ms: BoundedDatabaseTimeoutMilliseconds = 30_000
+    worker_statement_timeout_ms: BoundedDatabaseTimeoutMilliseconds = 60_000
+    maintenance_statement_timeout_ms: BoundedDatabaseTimeoutMilliseconds = 300_000
+    lock_timeout_ms: BoundedDatabaseTimeoutMilliseconds = 5_000
+    idle_in_transaction_session_timeout_ms: (
+        BoundedDatabaseTimeoutMilliseconds
+    ) = 30_000
 
     @field_validator("runtime_dsn", "migration_dsn")
     @classmethod
@@ -551,6 +576,9 @@ class ModelProviderSettings(StrictSettingsModel):
 
 class RetrievalSettings(StrictSettingsModel):
     strategy: Literal["exact_vector"] = "exact_vector"
+    deadline_seconds: Annotated[
+        float, Field(gt=0, allow_inf_nan=False)
+    ] = 240.0
     top_k: Annotated[int, Field(ge=1, le=100)] = 10
     min_cosine_similarity: Annotated[float, Field(ge=-1.0, le=1.0)] = 0.35
     min_rerank_score: Annotated[float, Field(ge=0.0, le=1.0)] = 0.45
@@ -652,6 +680,23 @@ class Settings(BaseSettings):
         if self.job_poller.stale_after_seconds <= longest_operation:
             raise ValueError(
                 "stale_after_seconds must exceed every bounded indexing operation"
+            )
+        retrieval_provider_budgets = [
+            embedding_retry_budget_seconds(
+                self.model_provider.embedding.timeout_seconds,
+                self.model_provider.embedding.max_retries,
+            )
+        ]
+        if self.model_provider.multimodal_embedding is not None:
+            retrieval_provider_budgets.append(
+                embedding_retry_budget_seconds(
+                    self.model_provider.multimodal_embedding.timeout_seconds,
+                    self.model_provider.multimodal_embedding.max_retries,
+                )
+            )
+        if self.retrieval.deadline_seconds <= max(retrieval_provider_budgets):
+            raise ValueError(
+                "retrieval deadline must exceed every query embedding retry budget"
             )
         return self
 

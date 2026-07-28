@@ -106,6 +106,11 @@ def build_api_dependencies(
         pool_size=database_settings.api_pool_size,
         max_overflow=database_settings.api_max_overflow,
         process=DatabaseProcess.API,
+        statement_timeout_ms=database_settings.api_statement_timeout_ms,
+        lock_timeout_ms=database_settings.lock_timeout_ms,
+        idle_in_transaction_session_timeout_ms=(
+            database_settings.idle_in_transaction_session_timeout_ms
+        ),
     )
     unit_of_work = SqlAlchemyUnitOfWorkFactory(
         database.sessions,
@@ -250,6 +255,7 @@ def build_api_dependencies(
                 resolved_settings.retrieval.cross_modal_weight_micros
             ),
             relation_hydrator=CompositeEvidenceHydrationService(unit_of_work),
+            deadline_seconds=resolved_settings.retrieval.deadline_seconds,
         ),
         chat_service=chat_service,
         chat_terminal_watcher=ChatTerminalWatcher(

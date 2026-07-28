@@ -42,6 +42,13 @@ def build_maintenance_dependencies(
         pool_size=resolved.database.worker_pool_size,
         max_overflow=resolved.database.worker_max_overflow,
         process=DatabaseProcess.MAINTENANCE,
+        statement_timeout_ms=(
+            resolved.database.maintenance_statement_timeout_ms
+        ),
+        lock_timeout_ms=resolved.database.lock_timeout_ms,
+        idle_in_transaction_session_timeout_ms=(
+            resolved.database.idle_in_transaction_session_timeout_ms
+        ),
     )
     unit_of_work = SqlAlchemyUnitOfWorkFactory(
         database.sessions,

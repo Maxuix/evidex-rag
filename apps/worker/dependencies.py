@@ -136,6 +136,11 @@ def build_worker_dependencies(
         pool_size=database_settings.worker_pool_size,
         max_overflow=database_settings.worker_max_overflow,
         process=DatabaseProcess.WORKER,
+        statement_timeout_ms=database_settings.worker_statement_timeout_ms,
+        lock_timeout_ms=database_settings.lock_timeout_ms,
+        idle_in_transaction_session_timeout_ms=(
+            database_settings.idle_in_transaction_session_timeout_ms
+        ),
     )
     unit_of_work = SqlAlchemyUnitOfWorkFactory(
         database.sessions,
@@ -286,6 +291,7 @@ def build_worker_dependencies(
             resolved_settings.retrieval.cross_modal_weight_micros
         ),
         relation_hydrator=CompositeEvidenceHydrationService(unit_of_work),
+        deadline_seconds=resolved_settings.retrieval.deadline_seconds,
     )
     evidence_assessor = CosineEvidenceAssessmentStep(
         resolved_settings.retrieval.min_cosine_similarity,
