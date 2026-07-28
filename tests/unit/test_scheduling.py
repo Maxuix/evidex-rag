@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 import unittest
 from datetime import UTC, datetime, timedelta
+from unittest.mock import patch
 from uuid import uuid4
 
+import rag_kb.scheduling.worker as worker_scheduling
 from rag_kb.domain import (
     ChatPipelineExecutionError,
     ChatPipelinePhase,
@@ -139,6 +141,36 @@ class IndexingSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(repository.failed, 1)
         self.assertIsNone(repository.rescheduled)
 
+    async def test_heartbeat_exception_emits_content_safe_event(self) -> None:
+        class FailingHeartbeatRepository(_Repository):
+            def __init__(self) -> None:
+                super().__init__()
+                self.calls = 0
+
+            async def heartbeat(self, lease, *, observed_at):
+                del lease, observed_at
+                self.calls += 1
+                if self.calls == 1:
+                    raise RuntimeError("document-body-must-not-leak")
+                return False
+
+        repository = FailingHeartbeatRepository()
+        factory = _Factory(repository)
+        scheduler = _scheduler(factory, _Pipeline(factory), deadline=1)
+        ownership_lost = asyncio.Event()
+
+        with patch("rag_kb.scheduling.indexing.log_event") as logged:
+            await scheduler._heartbeat(  # noqa: SLF001
+                _lease(attempt=1),
+                ownership_lost,
+            )
+
+        self.assertTrue(ownership_lost.is_set())
+        self.assertEqual(logged.call_args.args[1], "indexing_heartbeat_failed")
+        self.assertEqual(logged.call_args.kwargs["lane"], "indexing")
+        self.assertEqual(logged.call_args.kwargs["error_type"], "RuntimeError")
+        self.assertNotIn("document-body-must-not-leak", repr(logged.mock_calls))
+
 
 class ChatSchedulerTests(unittest.IsolatedAsyncioTestCase):
     async def test_heartbeat_and_pipeline_failure_are_settled(self) -> None:
@@ -199,6 +231,39 @@ class ChatSchedulerTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
 
+    async def test_heartbeat_exception_emits_content_safe_event(self) -> None:
+        class FailingHeartbeatCoordinator(_ChatCoordinator):
+            def __init__(self) -> None:
+                super().__init__()
+                self.calls = 0
+
+            async def heartbeat(self, lease, *, observed_at):
+                del lease, observed_at
+                self.calls += 1
+                if self.calls == 1:
+                    raise RuntimeError("chat-content-must-not-leak")
+                return False
+
+        coordinator = FailingHeartbeatCoordinator()
+        scheduler = _chat_scheduler(
+            coordinator,
+            _ChatPipeline(),
+            _ChatSettler(),
+        )
+        ownership_lost = asyncio.Event()
+
+        with patch("rag_kb.scheduling.chat.log_event") as logged:
+            await scheduler._heartbeat(  # noqa: SLF001
+                _chat_lease(),
+                ownership_lost,
+            )
+
+        self.assertTrue(ownership_lost.is_set())
+        self.assertEqual(logged.call_args.args[1], "chat_heartbeat_failed")
+        self.assertEqual(logged.call_args.kwargs["lane"], "chat")
+        self.assertEqual(logged.call_args.kwargs["error_type"], "RuntimeError")
+        self.assertNotIn("chat-content-must-not-leak", repr(logged.mock_calls))
+
 
 class FairWorkerSchedulerTests(unittest.IsolatedAsyncioTestCase):
     async def test_reserved_lane_capacity_starts_chat_under_indexing_load(self) -> None:
@@ -232,6 +297,74 @@ class FairWorkerSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(indexing.claimed, ["index-1"])
         release.set()
         await asyncio.gather(*active)
+
+    async def test_reconciliation_exception_emits_content_safe_event(self) -> None:
+        stopped = asyncio.Event()
+        release = asyncio.Event()
+        chat = _Lane(WorkLane.CHAT, [], release)
+        chat.reconciliation_error = RuntimeError("query-must-not-leak")
+        chat.stop_after_reconciliation = stopped
+        scheduler = _fair_scheduler(chat, _Lane(WorkLane.INDEXING, [], release))
+
+        with patch("rag_kb.scheduling.worker.log_event") as logged:
+            await scheduler.run(stopped)
+
+        self.assertEqual(
+            logged.call_args.args[1],
+            "worker_reconciliation_failed",
+        )
+        self.assertEqual(logged.call_args.kwargs["lane"], "chat")
+        self.assertEqual(logged.call_args.kwargs["error_type"], "RuntimeError")
+        self.assertNotIn("query-must-not-leak", repr(logged.mock_calls))
+
+    async def test_probe_and_claim_exceptions_emit_stable_events(self) -> None:
+        release = asyncio.Event()
+        probe_lane = _Lane(WorkLane.CHAT, [], release)
+        probe_lane.probe_error = RuntimeError("probe-content-must-not-leak")
+        probe_scheduler = _fair_scheduler(
+            probe_lane,
+            _Lane(WorkLane.INDEXING, [], release),
+        )
+        claim_lane = _Lane(WorkLane.CHAT, ["chat-1"], release)
+        claim_lane.claim_error = RuntimeError("claim-content-must-not-leak")
+        claim_scheduler = _fair_scheduler(
+            claim_lane,
+            _Lane(WorkLane.INDEXING, [], release),
+        )
+
+        with patch("rag_kb.scheduling.worker.log_event") as logged:
+            await probe_scheduler._dispatch({}, asyncio.Event())  # noqa: SLF001
+            await claim_scheduler._dispatch({}, asyncio.Event())  # noqa: SLF001
+
+        events = [call.args[1] for call in logged.call_args_list]
+        self.assertEqual(
+            events,
+            ["worker_lane_probe_failed", "worker_claim_failed"],
+        )
+        self.assertNotIn("must-not-leak", repr(logged.mock_calls))
+        for call in logged.call_args_list:
+            self.assertEqual(call.kwargs["lane"], "chat")
+            self.assertEqual(call.kwargs["error_type"], "RuntimeError")
+
+    async def test_completed_execution_exception_emits_stable_event(self) -> None:
+        async def fail_execution() -> None:
+            raise RuntimeError("pipeline-content-must-not-leak")
+
+        task = asyncio.create_task(fail_execution())
+        active = {task: WorkLane.INDEXING}
+        await asyncio.sleep(0)
+
+        with patch("rag_kb.scheduling.worker.log_event") as logged:
+            await worker_scheduling._reap(active)  # noqa: SLF001
+
+        self.assertEqual(active, {})
+        self.assertEqual(
+            logged.call_args.args[1],
+            "worker_execution_task_failed",
+        )
+        self.assertEqual(logged.call_args.kwargs["lane"], "indexing")
+        self.assertEqual(logged.call_args.kwargs["error_type"], "RuntimeError")
+        self.assertNotIn("pipeline-content-must-not-leak", repr(logged.mock_calls))
 
 
 class _Factory:
@@ -362,11 +495,19 @@ class _Lane:
         self.leases = list(leases)
         self.release = release
         self.claimed = []
+        self.probe_error = None
+        self.claim_error = None
+        self.reconciliation_error = None
+        self.stop_after_reconciliation = None
 
     async def oldest_claimable_at(self):
+        if self.probe_error is not None:
+            raise self.probe_error
         return NOW if self.leases else None
 
     async def claim_once(self):
+        if self.claim_error is not None:
+            raise self.claim_error
         if not self.leases:
             return None
         lease = self.leases.pop(0)
@@ -374,6 +515,10 @@ class _Lane:
         return lease
 
     async def reconcile_once(self):
+        if self.stop_after_reconciliation is not None:
+            self.stop_after_reconciliation.set()
+        if self.reconciliation_error is not None:
+            raise self.reconciliation_error
         return ReconciliationResult(0, 0)
 
     async def execute(self, lease, stopped):
@@ -387,6 +532,22 @@ def _lease(*, attempt):
 
 def _chat_lease():
     return ChatRunLease(uuid4(), uuid4(), "worker-a", 1, NOW)
+
+
+def _fair_scheduler(chat, indexing):
+    return FairWorkerScheduler(
+        chat,
+        indexing,
+        WeightedLaneSelector(
+            chat_weight=3,
+            indexing_weight=1,
+            aging_seconds=30,
+        ),
+        chat_concurrency=1,
+        indexing_concurrency=1,
+        poll_interval_seconds=0.01,
+        clock=lambda: NOW,
+    )
 
 
 def _scheduler(factory, pipeline, *, deadline):

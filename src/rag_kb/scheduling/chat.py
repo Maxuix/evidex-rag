@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+import logging
 from typing import Any, Protocol
 
 from rag_kb.domain import (
@@ -15,11 +16,13 @@ from rag_kb.domain import (
     ErrorCode,
     ReconciliationResult,
 )
+from rag_kb.observability import get_logger, log_event
 from rag_kb.scheduling.indexing import RetryPolicy
 from rag_kb.workflows import GraphRunner
 
 
 Clock = Callable[[], datetime]
+LOGGER = get_logger("rag_kb.scheduling.chat")
 
 
 class ChatCoordinator(Protocol):
@@ -166,7 +169,15 @@ class ChatRunScheduler:
                     lease,
                     observed_at=self._clock(),
                 )
-            except Exception:
+            except Exception as error:
+                log_event(
+                    LOGGER,
+                    "chat_heartbeat_failed",
+                    level=logging.ERROR,
+                    lane="chat",
+                    attempt=lease.attempt,
+                    error_type=type(error).__name__,
+                )
                 continue
             if not owned:
                 ownership_lost.set()

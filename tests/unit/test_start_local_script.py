@@ -79,14 +79,13 @@ class StartLocalScriptTests(unittest.TestCase):
             configuration["services"]["api"]["healthcheck"]["retries"], 40
         )
         worker = configuration["services"]["worker"]["healthcheck"]
-        # The Worker check builds the real dependency graph, so it pays the
-        # native Docling import cost on every run; both the per-run timeout and
-        # the whole cold window have to clear it.
+        # A fresh heartbeat still proceeds through the real dependency graph
+        # and pays the native Docling import cost on every run.
         self.assertGreaterEqual(_seconds(worker["timeout"]), 15)
-        self.assertGreaterEqual(
-            _seconds(worker["start_period"])
-            + _seconds(worker["interval"]) * worker["retries"],
-            240,
+        self.assertEqual(worker["retries"], 3)
+        self.assertLessEqual(
+            _seconds(worker["interval"]) * worker["retries"],
+            30,
         )
 
     def test_compose_persists_worker_inference_models_separately(self) -> None:

@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+import logging
 
 from rag_kb.domain import (
     ErrorCode,
@@ -15,10 +16,12 @@ from rag_kb.domain import (
     ReconciliationResult,
 )
 from rag_kb.indexing import IndexingPipeline
+from rag_kb.observability import get_logger, log_event
 from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, UnitOfWorkPurpose, execute_in_transaction
 
 
 Clock = Callable[[], datetime]
+LOGGER = get_logger("rag_kb.scheduling.indexing")
 
 
 @dataclass(frozen=True, slots=True)
@@ -266,7 +269,19 @@ class IndexingJobScheduler:
                     ),
                     purpose=UnitOfWorkPurpose.HEARTBEAT,
                 )
-            except Exception:
+            except Exception as error:
+                log_event(
+                    LOGGER,
+                    "indexing_heartbeat_failed",
+                    level=logging.ERROR,
+                    lane="indexing",
+                    job_id=lease.job_id,
+                    indexed_document_version_id=(
+                        lease.indexed_document_version_id
+                    ),
+                    attempt=lease.attempt,
+                    error_type=type(error).__name__,
+                )
                 continue
             if not owned:
                 ownership_lost.set()

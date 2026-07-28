@@ -5,13 +5,16 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from datetime import UTC, datetime
+import logging
 from typing import Any, Protocol
 
 from rag_kb.domain import WorkLane
+from rag_kb.observability import get_logger, log_event
 from rag_kb.scheduling.fairness import WeightedLaneSelector
 
 
 Clock = Callable[[], datetime]
+LOGGER = get_logger("rag_kb.scheduling.worker")
 
 
 class LaneScheduler(Protocol):
@@ -65,10 +68,25 @@ class FairWorkerScheduler:
         try:
             while not stopped.is_set():
                 await _reap(active)
-                await asyncio.gather(
-                    *(scheduler.reconcile_once() for scheduler in self._schedulers.values()),
+                lanes = tuple(self._schedulers)
+                reconciliation_results = await asyncio.gather(
+                    *(
+                        self._schedulers[lane].reconcile_once()
+                        for lane in lanes
+                    ),
                     return_exceptions=True,
                 )
+                for lane, result in zip(
+                    lanes,
+                    reconciliation_results,
+                    strict=True,
+                ):
+                    if isinstance(result, Exception):
+                        _log_failure(
+                            "worker_reconciliation_failed",
+                            lane,
+                            result,
+                        )
                 await self._dispatch(active, stopped)
                 await _wait_for_activity(
                     stopped,
@@ -81,6 +99,7 @@ class FairWorkerScheduler:
                 for task in pending:
                     task.cancel()
                 await asyncio.gather(*active, return_exceptions=True)
+                await _reap(active)
 
     async def _dispatch(
         self,
@@ -102,6 +121,13 @@ class FairWorkerScheduler:
                 return_exceptions=True,
             )
             oldest = dict(zip(candidates, oldest_values, strict=True))
+            for lane, value in oldest.items():
+                if isinstance(value, Exception):
+                    _log_failure(
+                        "worker_lane_probe_failed",
+                        lane,
+                        value,
+                    )
             available = {
                 lane
                 for lane, value in oldest.items()
@@ -128,8 +154,9 @@ class FairWorkerScheduler:
             await semaphore.acquire()
             try:
                 lease = await self._schedulers[lane].claim_once()
-            except Exception:
+            except Exception as error:
                 semaphore.release()
+                _log_failure("worker_claim_failed", lane, error)
                 unavailable.add(lane)
                 continue
             if lease is None:
@@ -158,9 +185,28 @@ async def _reap(active: dict[asyncio.Task[None], WorkLane]) -> None:
     finished = {task for task in active if task.done()}
     if not finished:
         return
-    await asyncio.gather(*finished, return_exceptions=True)
     for task in finished:
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception as error:
+            _log_failure(
+                "worker_execution_task_failed",
+                active[task],
+                error,
+            )
         del active[task]
+
+
+def _log_failure(event: str, lane: WorkLane, error: Exception) -> None:
+    log_event(
+        LOGGER,
+        event,
+        level=logging.ERROR,
+        lane=lane.value,
+        error_type=type(error).__name__,
+    )
 
 
 async def _wait_for_activity(

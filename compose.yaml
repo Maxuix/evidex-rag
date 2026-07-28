@@ -119,12 +119,12 @@ services:
       - source-data:/var/lib/rag-kb/sources
       - inference-model-cache:/var/lib/rag-kb/model-cache
     healthcheck:
-      # The readiness check builds the real dependency graph, so it pays the
-      # native Docling import cost (~7s) on every run.
+      # A cheap liveness heartbeat gate runs before the full dependency check.
+      # Fresh Workers still pay the native Docling import cost (~7s).
       test: ["CMD", "python", "-m", "apps.worker.main", "--check"]
-      interval: 20s
+      interval: 10s
       timeout: 20s
-      retries: 12
+      retries: 3
       start_period: 30s
     restart: unless-stopped
 
