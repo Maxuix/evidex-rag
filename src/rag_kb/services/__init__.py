@@ -58,7 +58,10 @@ from rag_kb.services.files import FileReconciliationService, SourceFileService
 from rag_kb.services.indexing import IndexingJobService
 from rag_kb.services.maintenance import MaintenanceCleanupResult, MaintenanceCleanupService
 from rag_kb.services.markdown_media import MarkdownMediaNormalizer
-from rag_kb.services.admission import FileAdmissionService
+from rag_kb.services.admission import (
+    FileAdmissionService,
+    SUPPORTED_UPLOAD_MEDIA_TYPES_BY_EXTENSION,
+)
 from rag_kb.services.assets import IndexAssetService
 from rag_kb.retrieval import RetrievalService
 
@@ -97,6 +100,7 @@ __all__ = [
     "IndexingJobService",
     "FileAdmissionService",
     "FileAdmissionError",
+    "SUPPORTED_UPLOAD_MEDIA_TYPES_BY_EXTENSION",
     "IdempotencyKeyReusedError",
     "KnowledgeBase",
     "KnowledgeBaseService",

@@ -182,6 +182,12 @@ scheduling;`DoclingDocument` 只以不透明句柄形式穿过 `indexing/pipelin
 
 ### 6.1 文档漂移(最大集群,均已核实两侧文件)
 
+> 后续状态（2026-07-28）：当前代码复核见
+> [实施计划](docs/implementation-plans/2026-07-28-resolve-documentation-drift.md)。
+> 下表八项中七项在复核时仍存在并已完成清理；“600 秒转换超时仅对 PDF 有效”已先由
+> 可终止 Docling 子进程和父进程全格式 wall-time 修复。下表继续保留 2026-07-26
+> 审查基线下的原始发现，不作为当前架构来源。
+
 | 文档侧 | 代码侧事实 |
 | --- | --- |
 | `docs/release/known-limitations.md:4`、`capability-matrix.md:6`:"仅支持 UTF-8 .txt/.md" | `services/admission.py:22-30` 实际准入 8 种格式 |

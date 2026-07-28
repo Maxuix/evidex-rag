@@ -38,7 +38,12 @@ from rag_kb.schemas import (
     DocumentVersionResponse,
     ErrorCode,
 )
-from rag_kb.services import Document, DocumentMutationResult, FileAdmissionError
+from rag_kb.services import (
+    Document,
+    DocumentMutationResult,
+    FileAdmissionError,
+    SUPPORTED_UPLOAD_MEDIA_TYPES_BY_EXTENSION,
+)
 
 
 router = APIRouter(tags=["documents"])
@@ -47,15 +52,8 @@ _BINARY_BODY = {
     "requestBody": {
         "required": True,
         "content": {
-            "text/plain": {"schema": {"type": "string", "format": "binary"}},
-            "text/markdown": {"schema": {"type": "string", "format": "binary"}},
-            MARKDOWN_BUNDLE_MEDIA_TYPE: {
-                "schema": {"type": "string", "format": "binary"}
-            },
-            "application/pdf": {"schema": {"type": "string", "format": "binary"}},
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document": {
-                "schema": {"type": "string", "format": "binary"}
-            },
+            media_type: {"schema": {"type": "string", "format": "binary"}}
+            for _, media_type in SUPPORTED_UPLOAD_MEDIA_TYPES_BY_EXTENSION
         },
     }
 }

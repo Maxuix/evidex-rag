@@ -3991,6 +3991,18 @@
                 "type": "string"
               }
             },
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            },
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            },
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document": {
               "schema": {
                 "format": "binary",
@@ -3998,6 +4010,18 @@
               }
             },
             "application/vnd.rag-kb.markdown-bundle+zip": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            },
+            "text/csv": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            },
+            "text/html": {
               "schema": {
                 "format": "binary",
                 "type": "string"
@@ -4769,6 +4793,18 @@
                 "type": "string"
               }
             },
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            },
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            },
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document": {
               "schema": {
                 "format": "binary",
@@ -4776,6 +4812,18 @@
               }
             },
             "application/vnd.rag-kb.markdown-bundle+zip": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            },
+            "text/csv": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            },
+            "text/html": {
               "schema": {
                 "format": "binary",
                 "type": "string"

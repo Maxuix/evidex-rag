@@ -27,9 +27,11 @@ repository; build-only mirror URLs remain explicitly overridable.
 Chat model integration defaults to LangChain and the fixed evidence-only chat
 workflow defaults to a checkpoint-free LangGraph `StateGraph`. PostgreSQL
 `ChatRun` remains the durable execution state, while the existing pgvector and
-embedding adapters remain responsible for indexing and retrieval. See the
-[local development guide](docs/release/local-development-guide.md) for the two
-configuration-only rollback switches.
+embedding adapters remain responsible for indexing and retrieval. These
+implementations have no runtime rollback switches; strict configuration rejects
+the retired backend keys. See the
+[local development guide](docs/release/local-development-guide.md) for the
+supported settings.
 
 ## Basic Check
 

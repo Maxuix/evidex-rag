@@ -30,17 +30,19 @@ from rag_kb.document_processing.resource_preflight import (
 
 _FILENAME = re.compile(r"^[^/\\\x00]{1,255}$")
 _OOXML_PREFIX = "application/vnd.openxmlformats-officedocument"
-_MEDIA_TYPES = {
-    ".txt": "text/plain",
-    ".md": "text/markdown",
-    MARKDOWN_BUNDLE_EXTENSION: MARKDOWN_BUNDLE_MEDIA_TYPE,
-    ".html": "text/html",
-    ".csv": "text/csv",
-    ".pdf": "application/pdf",
-    ".docx": f"{_OOXML_PREFIX}.wordprocessingml.document",
-    ".pptx": f"{_OOXML_PREFIX}.presentationml.presentation",
-    ".xlsx": f"{_OOXML_PREFIX}.spreadsheetml.sheet",
-}
+SUPPORTED_UPLOAD_MEDIA_TYPES_BY_EXTENSION: tuple[tuple[str, str], ...] = (
+    (".txt", "text/plain"),
+    (".md", "text/markdown"),
+    (MARKDOWN_BUNDLE_EXTENSION, MARKDOWN_BUNDLE_MEDIA_TYPE),
+    (".html", "text/html"),
+    (".csv", "text/csv"),
+    (".pdf", "application/pdf"),
+    (".docx", f"{_OOXML_PREFIX}.wordprocessingml.document"),
+    (".pptx", f"{_OOXML_PREFIX}.presentationml.presentation"),
+    (".xlsx", f"{_OOXML_PREFIX}.spreadsheetml.sheet"),
+)
+_MEDIA_TYPES = dict(SUPPORTED_UPLOAD_MEDIA_TYPES_BY_EXTENSION)
+_SUPPORTED_MEDIA_TYPES = frozenset(_MEDIA_TYPES.values())
 _TEXT_EXTENSIONS = {".txt", ".md", ".html", ".csv"}
 
 #: The content part every OOXML family must carry, checked alongside the shared
@@ -81,7 +83,7 @@ class FileAdmissionService:
             raise FileAdmissionError(ErrorCode.PARSER_NOT_CONFIGURED)
 
         normalized_media_type, charset = _parse_media_type(media_type)
-        if normalized_media_type not in set(_MEDIA_TYPES.values()):
+        if normalized_media_type not in _SUPPORTED_MEDIA_TYPES:
             raise FileAdmissionError(ErrorCode.FILE_MEDIA_TYPE_UNSUPPORTED)
         if normalized_media_type != expected_media_type:
             raise FileAdmissionError(ErrorCode.FILE_MEDIA_TYPE_MISMATCH)

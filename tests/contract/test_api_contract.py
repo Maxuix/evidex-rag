@@ -75,6 +75,7 @@ from rag_kb.services import (
     ChatSseConnectionLimiter,
     ChatTerminalWatcher,
     FileAdmissionService,
+    SUPPORTED_UPLOAD_MEDIA_TYPES_BY_EXTENSION,
 )
 from rag_kb.schemas import CursorPayload, ErrorCode, PaginationQuery
 from rag_kb.retrieval import RetrievalExecutionError
@@ -734,6 +735,21 @@ class CommonContractTests(unittest.TestCase):
         self.assertEqual(
             upload["requestBody"]["content"]["text/markdown"]["schema"]["format"],
             "binary",
+        )
+        supported_upload_media_types = {
+            media_type
+            for _, media_type in SUPPORTED_UPLOAD_MEDIA_TYPES_BY_EXTENSION
+        }
+        self.assertEqual(
+            set(upload["requestBody"]["content"]),
+            supported_upload_media_types,
+        )
+        version_upload = production["paths"][
+            "/api/v1/documents/{document_id}/versions"
+        ]["post"]
+        self.assertEqual(
+            set(version_upload["requestBody"]["content"]),
+            supported_upload_media_types,
         )
         create_conflict = production["paths"]["/api/v1/knowledge-bases"][
             "post"
