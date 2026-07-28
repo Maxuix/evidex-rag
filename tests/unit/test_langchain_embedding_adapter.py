@@ -70,6 +70,7 @@ def _adapter(
     model: object,
     *,
     timeout_seconds: float = 1.0,
+    max_retries: int = 2,
     max_concurrency: int = 1,
     max_batch_size: int = 10,
 ) -> LangChainEmbeddingModelAdapter:
@@ -79,7 +80,7 @@ def _adapter(
         embedding_space=_space(),
         max_batch_size=max_batch_size,
         timeout_seconds=timeout_seconds,
-        max_retries=2,
+        max_retries=max_retries,
         max_concurrency=max_concurrency,
         embedding_model=model,  # type: ignore[arg-type]
     )
@@ -101,8 +102,17 @@ class LangChainEmbeddingAdapterTests(unittest.IsolatedAsyncioTestCase):
                 max_retries=2,
                 max_concurrency=2,
             )
+            LangChainEmbeddingModelAdapter(
+                base_url="https://provider.invalid/v1",
+                api_key="secret",
+                embedding_space=_space(dimension=1024),
+                max_batch_size=10,
+                timeout_seconds=30,
+                max_retries=0,
+                max_concurrency=2,
+            )
 
-        arguments = constructor.call_args.kwargs
+        arguments = constructor.call_args_list[0].kwargs
         self.assertEqual(arguments["model"], "qwen3.7-text-embedding")
         self.assertEqual(arguments["dimensions"], 1024)
         self.assertEqual(arguments["chunk_size"], 10)
@@ -113,6 +123,9 @@ class LangChainEmbeddingAdapterTests(unittest.IsolatedAsyncioTestCase):
             arguments["model_kwargs"],
             {"encoding_format": "float"},
         )
+        zero_retry_arguments = constructor.call_args_list[1].kwargs
+        self.assertEqual(zero_retry_arguments["timeout"], 30)
+        self.assertEqual(zero_retry_arguments["max_retries"], 0)
 
     async def test_documents_and_query_use_distinct_langchain_async_methods(self) -> None:
         model = _FakeEmbeddings(
@@ -239,10 +252,23 @@ class LangChainEmbeddingAdapterTests(unittest.IsolatedAsyncioTestCase):
             )
 
     async def test_timeout_and_status_errors_are_stable_and_content_safe(self) -> None:
-        with self.assertRaises(IndexingExecutionError) as timeout:
+        with (
+            patch(
+                "rag_kb.adapters.model_api.langchain_embeddings."
+                "_MAX_RETRY_AFTER_SECONDS",
+                0.001,
+            ),
+            patch(
+                "rag_kb.adapters.model_api.langchain_embeddings."
+                "_TIMEOUT_SCHEDULING_MARGIN_SECONDS",
+                0.001,
+            ),
+            self.assertRaises(IndexingExecutionError) as timeout,
+        ):
             await _adapter(
                 _FakeEmbeddings(query=[0.6, 0.8], delay=0.02),
                 timeout_seconds=0.001,
+                max_retries=1,
             ).embed_query("query")
         self.assertEqual(timeout.exception.code, ErrorCode.EMBEDDING_PROVIDER_UNAVAILABLE)
         self.assertEqual(timeout.exception.diagnostic, {"check": "total_timeout"})
@@ -268,6 +294,84 @@ class LangChainEmbeddingAdapterTests(unittest.IsolatedAsyncioTestCase):
             rendered = str(raised.exception.diagnostic)
             self.assertNotIn("sensitive", rendered)
             self.assertNotIn("secret.invalid", rendered)
+
+    async def test_outer_timeout_covers_sdk_retry_budget(self) -> None:
+        model = _FakeEmbeddings(
+            documents=[[0.6, 0.8]],
+            query=[0.6, 0.8],
+            delay=0.02,
+        )
+        adapter = _adapter(
+            model,
+            timeout_seconds=0.01,
+            max_retries=1,
+        )
+
+        documents = await adapter.embed_documents(("document",))
+        query = await adapter.embed_query("query")
+
+        self.assertEqual(documents.vectors, ((0.6, 0.8),))
+        self.assertEqual(query, (0.6, 0.8))
+
+    async def test_outer_timeout_uses_exact_derived_budget(self) -> None:
+        real_timeout = asyncio.timeout
+        observed_budgets: list[float | None] = []
+
+        def recording_timeout(delay: float | None) -> asyncio.Timeout:
+            observed_budgets.append(delay)
+            return real_timeout(delay)
+
+        with patch(
+            "rag_kb.adapters.model_api.langchain_embeddings.asyncio.timeout",
+            side_effect=recording_timeout,
+        ):
+            await _adapter(
+                _FakeEmbeddings(query=[0.6, 0.8]),
+                timeout_seconds=30,
+                max_retries=2,
+            ).embed_query("query")
+            await _adapter(
+                _FakeEmbeddings(query=[0.6, 0.8]),
+                timeout_seconds=30,
+                max_retries=0,
+            ).embed_query("query")
+
+        self.assertEqual(observed_budgets, [211, 31])
+
+    async def test_semaphore_wait_does_not_consume_provider_timeout(self) -> None:
+        class _QueuedEmbeddings(_FakeEmbeddings):
+            def __init__(self) -> None:
+                super().__init__(query=[0.6, 0.8])
+                self.first_started = asyncio.Event()
+                self.calls = 0
+
+            async def aembed_query(self, text: str) -> object:
+                self.query_calls.append(text)
+                self.calls += 1
+                if self.calls == 1:
+                    self.first_started.set()
+                    await asyncio.sleep(0.02)
+                return self.query
+
+        model = _QueuedEmbeddings()
+        adapter = _adapter(model, max_retries=0)
+        adapter._total_timeout_seconds = 0.01
+        first = asyncio.create_task(adapter.embed_query("first"))
+        await model.first_started.wait()
+        second = asyncio.create_task(adapter.embed_query("second"))
+
+        first_result, second_result = await asyncio.gather(
+            first,
+            second,
+            return_exceptions=True,
+        )
+
+        self.assertIsInstance(first_result, IndexingExecutionError)
+        self.assertEqual(
+            first_result.diagnostic,  # type: ignore[union-attr]
+            {"check": "total_timeout"},
+        )
+        self.assertEqual(second_result, (0.6, 0.8))
 
     async def test_concurrency_limit_wraps_both_embedding_operations(self) -> None:
         class _ConcurrentEmbeddings(_FakeEmbeddings):
