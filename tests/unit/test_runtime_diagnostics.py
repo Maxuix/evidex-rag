@@ -30,6 +30,14 @@ from tests.unit.test_settings import build_settings
 
 
 class RuntimeDiagnosticsTests(unittest.TestCase):
+    def test_worker_heartbeat_uses_storage_initialized_runtime_directory(
+        self,
+    ) -> None:
+        self.assertEqual(
+            _heartbeat_path(Path("/source-store")),
+            Path("/source-store/.worker-runtime/.worker-heartbeat"),
+        )
+
     def test_direct_api_binding_remains_loopback_only(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             settings = build_settings(Path(directory))
@@ -113,6 +121,7 @@ class WorkerRuntimeDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
     async def test_heartbeat_gate_rejects_missing_and_stale_files(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = _heartbeat_path(Path(directory))
+            path.parent.mkdir()
 
             with self.assertRaises(WorkerHeartbeatError):
                 _require_fresh_heartbeat(path)
@@ -134,6 +143,7 @@ class WorkerRuntimeDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
     async def test_liveness_loop_publishes_heartbeat_until_stopped(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = _heartbeat_path(Path(directory))
+            path.parent.mkdir()
             stopped = asyncio.Event()
             task = asyncio.create_task(
                 _run_liveness_heartbeat(path, stopped, interval=0.01)
@@ -153,7 +163,9 @@ class WorkerRuntimeDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
     async def test_fresh_heartbeat_preserves_dependency_readiness_check(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             settings = build_settings(Path(directory))
-            _publish_heartbeat(_heartbeat_path(settings.file_store.root_path))
+            heartbeat_path = _heartbeat_path(settings.file_store.root_path)
+            heartbeat_path.parent.mkdir()
+            _publish_heartbeat(heartbeat_path)
             dependencies = Mock()
             dependencies.start = AsyncMock()
             dependencies.close = AsyncMock()

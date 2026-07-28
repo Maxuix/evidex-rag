@@ -17,6 +17,7 @@ from rag_kb.observability import configure_logging, get_logger, log_event
 
 
 LOGGER = get_logger("rag_kb.worker.runtime")
+WORKER_RUNTIME_DIRECTORY = ".worker-runtime"
 WORKER_HEARTBEAT_FILENAME = ".worker-heartbeat"
 WORKER_HEARTBEAT_INTERVAL_SECONDS = 5.0
 WORKER_HEARTBEAT_MAX_AGE_SECONDS = 30.0
@@ -246,7 +247,7 @@ def _task_error_type(task: asyncio.Task[None]) -> str | None:
 
 
 def _heartbeat_path(root: Path) -> Path:
-    return root / WORKER_HEARTBEAT_FILENAME
+    return root / WORKER_RUNTIME_DIRECTORY / WORKER_HEARTBEAT_FILENAME
 
 
 def _publish_heartbeat(path: Path) -> None:

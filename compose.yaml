@@ -65,7 +65,7 @@ services:
     command:
       - /bin/sh
       - -c
-      - install -d -o 10001 -g 10001 /var/lib/rag-kb/sources/staging /var/lib/rag-kb/sources/final /var/lib/rag-kb/sources/asset-staging /var/lib/rag-kb/sources/assets /var/lib/rag-kb/sources/parser-temp /var/lib/rag-kb/sources/.tiktoken-cache /var/lib/rag-kb/model-cache/huggingface
+      - install -d -o 10001 -g 10001 /var/lib/rag-kb/sources/staging /var/lib/rag-kb/sources/final /var/lib/rag-kb/sources/asset-staging /var/lib/rag-kb/sources/assets /var/lib/rag-kb/sources/parser-temp /var/lib/rag-kb/sources/.tiktoken-cache /var/lib/rag-kb/sources/.worker-runtime /var/lib/rag-kb/model-cache/huggingface
     depends_on: {}
     volumes:
       - source-data:/var/lib/rag-kb/sources

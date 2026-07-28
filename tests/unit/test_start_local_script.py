@@ -105,6 +105,21 @@ class StartLocalScriptTests(unittest.TestCase):
             DOCKERFILE.read_text(encoding="utf-8"),
         )
 
+    def test_storage_init_creates_runtime_owned_worker_heartbeat_directory(
+        self,
+    ) -> None:
+        configuration = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
+        command = " ".join(configuration["services"]["storage-init"]["command"])
+
+        self.assertIn(
+            "install -d -o 10001 -g 10001",
+            command,
+        )
+        self.assertIn(
+            "/var/lib/rag-kb/sources/.worker-runtime",
+            command,
+        )
+
     def test_worker_has_hard_memory_and_pid_limits(self) -> None:
         configuration = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
         worker = configuration["services"]["worker"]
