@@ -12,6 +12,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     CheckConstraint,
+    Computed,
     DateTime,
     Enum,
     Float,
@@ -25,7 +26,7 @@ from sqlalchemy import (
     UniqueConstraint,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB, UUID as PostgreSQLUUID
+from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR, UUID as PostgreSQLUUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.schema import conv
 
@@ -807,6 +808,99 @@ class IndexChunk(Base):
     source_metadata: Mapped[dict[str, Any]] = mapped_column(
         JSONB, nullable=False, server_default=text("'{}'::jsonb")
     )
+    created_at: Mapped[datetime] = created_timestamp()
+
+
+class IndexChunkLexical(Base):
+    __tablename__ = "index_chunk_lexical"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["workspace_id", "kb_id", "indexed_document_version_id"],
+            [
+                "indexed_document_version.workspace_id",
+                "indexed_document_version.kb_id",
+                "indexed_document_version.id",
+            ],
+            name="fk_chunk_lexical_same_scope_target",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["indexed_document_version_id", "index_chunk_id"],
+            ["index_chunk.indexed_document_version_id", "index_chunk.id"],
+            name="fk_chunk_lexical_same_target_chunk",
+            ondelete="CASCADE",
+        ),
+        Index(
+            "ix_index_chunk_lexical_scope",
+            "workspace_id",
+            "kb_id",
+            "analyzer_version",
+            "indexed_document_version_id",
+        ),
+        Index(
+            "ix_index_chunk_lexical_tsv",
+            "lexical_tsv",
+            postgresql_using="gin",
+        ),
+    )
+
+    index_chunk_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), primary_key=True
+    )
+    analyzer_version: Mapped[str] = mapped_column(String(64), primary_key=True)
+    workspace_id: Mapped[UUID] = mapped_column(
+        ForeignKey("workspace.id", ondelete="RESTRICT"), nullable=False
+    )
+    kb_id: Mapped[UUID] = mapped_column(
+        ForeignKey("knowledge_base.id", ondelete="CASCADE"), nullable=False
+    )
+    indexed_document_version_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), nullable=False
+    )
+    lexical_text: Mapped[str] = mapped_column(Text, nullable=False)
+    lexical_text_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    lexical_tsv: Mapped[Any] = mapped_column(
+        TSVECTOR,
+        Computed(
+            "to_tsvector('simple'::regconfig, lexical_text)",
+            persisted=True,
+        ),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = created_timestamp()
+
+
+class IndexLexicalManifest(Base):
+    __tablename__ = "index_lexical_manifest"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["workspace_id", "kb_id", "indexed_document_version_id"],
+            [
+                "indexed_document_version.workspace_id",
+                "indexed_document_version.kb_id",
+                "indexed_document_version.id",
+            ],
+            name="fk_lexical_manifest_same_scope_target",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "lexical_chunk_count >= 0",
+            name="lexical_manifest_chunk_count_nonnegative",
+        ),
+    )
+
+    indexed_document_version_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), primary_key=True
+    )
+    analyzer_version: Mapped[str] = mapped_column(String(64), primary_key=True)
+    workspace_id: Mapped[UUID] = mapped_column(
+        ForeignKey("workspace.id", ondelete="RESTRICT"), nullable=False
+    )
+    kb_id: Mapped[UUID] = mapped_column(
+        ForeignKey("knowledge_base.id", ondelete="CASCADE"), nullable=False
+    )
+    lexical_chunk_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    lexical_manifest_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = created_timestamp()
 
 

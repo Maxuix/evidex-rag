@@ -86,7 +86,8 @@ services:
   maintenance:
     <<: *runtime-service
     profiles: ["tools"]
-    command: ["python", "-m", "apps.maintenance.main", "cleanup"]
+    entrypoint: ["python", "-m", "apps.maintenance.main"]
+    command: ["cleanup"]
     volumes:
       - source-data:/var/lib/rag-kb/sources
     restart: "no"

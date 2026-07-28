@@ -21,6 +21,8 @@ from rag_kb.db.models import (
     IndexAsset as IndexAssetRow,
     IndexBuildStatus,
     IndexChunk as IndexChunkRow,
+    IndexChunkLexical as IndexChunkLexicalRow,
+    IndexLexicalManifest as IndexLexicalManifestRow,
     IndexChunkAssetRelation as IndexChunkAssetRelationRow,
     IndexChunkPlan as IndexChunkPlanRow,
     IndexedDocumentVersion as IndexedDocumentVersionRow,
@@ -39,6 +41,8 @@ from rag_kb.domain import (
     EmbeddingSpaceDefinition,
     ErrorCode,
     IndexChunkWrite,
+    IndexChunkLexicalWrite,
+    IndexLexicalManifest,
     IndexChunkAssetRelationSnapshot,
     IndexChunkAssetRelationWrite,
     IndexChunkPlan,
@@ -67,6 +71,10 @@ from rag_kb.domain import (
     stable_chunk_id,
 )
 from rag_kb.document_processing import profile_fingerprint
+from rag_kb.document_processing.lexical import (
+    LEXICAL_ANALYZER_VERSION,
+    lexical_manifest_hash,
+)
 
 
 class SqlAlchemyIndexingRepository:
@@ -1781,6 +1789,141 @@ class SqlAlchemyIndexingRepository:
         await self._session.flush()
         return True
 
+    async def upsert_lexical_rows(
+        self,
+        command: IndexingCommand,
+        rows: tuple[IndexChunkLexicalWrite, ...],
+    ) -> bool:
+        self._ensure_active()
+        loaded = await self._load(command, lock=True)
+        if loaded is None:
+            return False
+        job, target, *_ = loaded
+        if not _is_writable(job, target):
+            return False
+        if not rows:
+            return True
+        values = [
+            {
+                "index_chunk_id": item.index_chunk_id,
+                "analyzer_version": item.analyzer_version,
+                "workspace_id": self._workspace_id,
+                "kb_id": target.kb_id,
+                "indexed_document_version_id": target.id,
+                "lexical_text": item.lexical_text,
+                "lexical_text_hash": item.lexical_text_hash,
+            }
+            for item in rows
+        ]
+        inserted = pg_insert(IndexChunkLexicalRow).values(values)
+        await self._session.execute(
+            inserted.on_conflict_do_nothing(
+                index_elements=["index_chunk_id", "analyzer_version"]
+            )
+        )
+        stored = (
+            await self._session.execute(
+                select(IndexChunkLexicalRow).where(
+                    IndexChunkLexicalRow.indexed_document_version_id == target.id,
+                    IndexChunkLexicalRow.analyzer_version
+                    == rows[0].analyzer_version,
+                    IndexChunkLexicalRow.index_chunk_id.in_(
+                        tuple(item.index_chunk_id for item in rows)
+                    ),
+                )
+            )
+        ).scalars().all()
+        observed = {
+            item.index_chunk_id: (item.lexical_text, item.lexical_text_hash)
+            for item in stored
+        }
+        expected = {
+            item.index_chunk_id: (item.lexical_text, item.lexical_text_hash)
+            for item in rows
+        }
+        if observed != expected:
+            raise _execution_error(
+                ErrorCode.INDEX_PERSISTENCE_FAILED,
+                IndexingPhase.PERSISTING,
+                "stable_lexical_row",
+            )
+        return True
+
+    async def complete_lexical_manifest(
+        self,
+        command: IndexingCommand,
+        proposed: IndexLexicalManifest,
+    ) -> bool:
+        self._ensure_active()
+        loaded = await self._load(command, lock=True)
+        if loaded is None:
+            return False
+        job, target, *_ = loaded
+        if not _is_writable(job, target) or (
+            proposed.indexed_document_version_id != target.id
+        ):
+            return False
+        stored_rows = (
+            await self._session.execute(
+                select(
+                    IndexChunkLexicalRow.index_chunk_id,
+                    IndexChunkLexicalRow.lexical_text_hash,
+                )
+                .where(
+                    IndexChunkLexicalRow.indexed_document_version_id == target.id,
+                    IndexChunkLexicalRow.analyzer_version
+                    == proposed.analyzer_version,
+                )
+                .order_by(IndexChunkLexicalRow.index_chunk_id)
+            )
+        ).all()
+        observed_hash = lexical_manifest_hash(
+            proposed.analyzer_version,
+            (
+                (item.index_chunk_id, item.lexical_text_hash)
+                for item in stored_rows
+            ),
+        )
+        if (
+            len(stored_rows) != proposed.lexical_chunk_count
+            or observed_hash != proposed.lexical_manifest_hash
+        ):
+            raise _execution_error(
+                ErrorCode.INDEX_INCOMPLETE,
+                IndexingPhase.VALIDATING,
+                "lexical_manifest_content",
+            )
+        inserted = pg_insert(IndexLexicalManifestRow).values(
+            indexed_document_version_id=target.id,
+            analyzer_version=proposed.analyzer_version,
+            workspace_id=self._workspace_id,
+            kb_id=target.kb_id,
+            lexical_chunk_count=proposed.lexical_chunk_count,
+            lexical_manifest_hash=proposed.lexical_manifest_hash,
+        )
+        await self._session.execute(
+            inserted.on_conflict_do_nothing(
+                index_elements=[
+                    "indexed_document_version_id",
+                    "analyzer_version",
+                ]
+            )
+        )
+        manifest = await self._session.get(
+            IndexLexicalManifestRow,
+            (target.id, proposed.analyzer_version),
+        )
+        if manifest is None or (
+            manifest.lexical_chunk_count != proposed.lexical_chunk_count
+            or manifest.lexical_manifest_hash != proposed.lexical_manifest_hash
+        ):
+            raise _execution_error(
+                ErrorCode.INDEX_PERSISTENCE_FAILED,
+                IndexingPhase.VALIDATING,
+                "stable_lexical_manifest",
+            )
+        return True
+
     async def complete(self, command: IndexingCommand, *, expected_chunks: int) -> bool:
         self._ensure_active()
         row = await self._load(command, lock=True)
@@ -1999,6 +2142,16 @@ class SqlAlchemyIndexingRepository:
                     "observed_chunks": len(chunk_records),
                     "observed_vectors": len(vector_records),
                 },
+            )
+        lexical_manifest = await self._session.get(
+            IndexLexicalManifestRow,
+            (target.id, LEXICAL_ANALYZER_VERSION),
+        )
+        if lexical_manifest is None:
+            raise IndexingExecutionError(
+                ErrorCode.INDEX_INCOMPLETE,
+                phase=IndexingPhase.VALIDATING,
+                diagnostic={"check": "lexical_manifest"},
             )
         target.build_status = IndexBuildStatus.READY
         target.error_code = None

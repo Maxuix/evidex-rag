@@ -30,6 +30,8 @@ from rag_kb.domain import (
     CompositeEvidenceDraft,
     FileStoreError,
     IndexChunkWrite,
+    IndexChunkLexicalWrite,
+    IndexLexicalManifest,
     IndexChunkAssetRelationWrite,
     IndexArtifactManifest,
     IndexAssetIdentity,
@@ -86,6 +88,11 @@ from rag_kb.document_processing.semantic_boundaries import (
     build_chunk_plan,
     validate_plan,
 )
+from rag_kb.document_processing.lexical import (
+    LEXICAL_ANALYZER_VERSION,
+    analyze_document,
+    lexical_manifest_hash,
+)
 from rag_kb.indexing.promotion import CandidatePromotionService
 from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, UnitOfWorkPurpose, execute_in_transaction
 
@@ -93,6 +100,7 @@ from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, UnitOfWorkPurpose, execute
 ResultT = TypeVar("ResultT")
 RepresentationIdentity = tuple[UUID, UUID, UUID, str]
 _CHUNK_CAS_BATCH_SIZE = 500
+_LEXICAL_CAS_BATCH_SIZE = 250
 
 
 class IndexingPipeline:
@@ -245,6 +253,15 @@ class IndexingPipeline:
 
             phase = IndexingPhase.VALIDATING
             await self._set_phase(command, phase)
+            await self._persist_lexical(
+                command,
+                target,
+                self._chunk_writes(target, processed.chunks),
+                allowed_chunk_ids=frozenset(
+                    stable_chunk_id(target.indexed_document_version_id, item.ordinal)
+                    for item in processed.chunks
+                ),
+            )
             await self._complete(command, expected_chunks=len(processed.chunks))
             promotion = await self._promotion.promote(_promotion_command(command))
             return IndexingResult(
@@ -739,8 +756,60 @@ class IndexingPipeline:
         if not changed:
             raise IndexingCancelled
         await self._set_phase(command, IndexingPhase.VALIDATING)
+        await self._persist_lexical(
+            command,
+            target,
+            chunks,
+            allowed_chunk_ids=frozenset(
+                UUID(item["unit_id"])
+                for item in planned
+                if item["space_role"] == "text_retrieval"
+            ),
+        )
         await self._complete(command, expected_chunks=len(chunks))
         return len(chunks)
+
+    async def _persist_lexical(
+        self,
+        command: IndexingCommand,
+        target: IndexingTarget,
+        chunks: tuple[IndexChunkWrite, ...],
+        *,
+        allowed_chunk_ids: frozenset[UUID],
+    ) -> None:
+        rows = await asyncio.to_thread(
+            _lexical_rows,
+            chunks,
+            allowed_chunk_ids,
+        )
+        for offset in range(0, len(rows), _LEXICAL_CAS_BATCH_SIZE):
+            batch = rows[offset : offset + _LEXICAL_CAS_BATCH_SIZE]
+            changed = await self._transaction(
+                lambda uow, batch=batch: uow.indexing.upsert_lexical_rows(
+                    command, batch
+                )
+            )
+            if not changed:
+                raise IndexingCancelled
+        manifest = IndexLexicalManifest(
+            indexed_document_version_id=target.indexed_document_version_id,
+            analyzer_version=LEXICAL_ANALYZER_VERSION,
+            lexical_chunk_count=len(rows),
+            lexical_manifest_hash=lexical_manifest_hash(
+                LEXICAL_ANALYZER_VERSION,
+                (
+                    (item.index_chunk_id, item.lexical_text_hash)
+                    for item in rows
+                ),
+            ),
+        )
+        changed = await self._transaction(
+            lambda uow: uow.indexing.complete_lexical_manifest(
+                command, manifest
+            )
+        )
+        if not changed:
+            raise IndexingCancelled
 
     def _composite_evidence(
         self,
@@ -1261,6 +1330,28 @@ def _requires_semantic_analysis(units: tuple[SemanticUnit, ...]) -> bool:
         > int(SEMANTIC_CHUNKING_CONFIG["max_chunk_tokens"])
         or any(unit.hard_boundary_before for unit in units[1:])
     )
+
+
+def _lexical_rows(
+    chunks: tuple[IndexChunkWrite, ...],
+    allowed_chunk_ids: frozenset[UUID],
+) -> tuple[IndexChunkLexicalWrite, ...]:
+    rows: list[IndexChunkLexicalWrite] = []
+    for chunk in chunks:
+        if chunk.id not in allowed_chunk_ids:
+            continue
+        analyzed = analyze_document(chunk.embedding_text or chunk.content)
+        if analyzed is None:
+            continue
+        rows.append(
+            IndexChunkLexicalWrite(
+                index_chunk_id=chunk.id,
+                analyzer_version=LEXICAL_ANALYZER_VERSION,
+                lexical_text=analyzed.lexical_text,
+                lexical_text_hash=analyzed.lexical_text_hash,
+            )
+        )
+    return tuple(rows)
 
 
 def _safe_diagnostic(value: dict) -> dict:

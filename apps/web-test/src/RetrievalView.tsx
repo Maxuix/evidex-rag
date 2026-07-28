@@ -23,6 +23,7 @@ export function RetrievalView({
 }) {
   const [query, setQuery] = useState("");
   const [topK, setTopK] = useState(knowledgeBase.retrieval_defaults.top_k);
+  const [strategy, setStrategy] = useState<"exact_vector" | "hybrid">("exact_vector");
   const [result, setResult] = useState<EvidencePack | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<unknown | null>(null);
@@ -30,6 +31,7 @@ export function RetrievalView({
   useEffect(() => {
     setQuery("");
     setTopK(knowledgeBase.retrieval_defaults.top_k);
+    setStrategy("exact_vector");
     setResult(null);
     setError(null);
   }, [knowledgeBase.id, knowledgeBase.retrieval_defaults.top_k]);
@@ -40,7 +42,12 @@ export function RetrievalView({
     setLoading(true);
     setError(null);
     try {
-      const value = await client.queryRetrievalDebug(knowledgeBase.id, query.trim(), topK);
+      const value = await client.queryRetrievalDebug(
+        knowledgeBase.id,
+        query.trim(),
+        topK,
+        strategy,
+      );
       if (!value.debug) {
         throw new ApiClientError("The authorized debug contract was not returned.", {
           code: "FRONTEND_DEBUG_CONTRACT_MISSING",
@@ -64,7 +71,7 @@ export function RetrievalView({
             <h2>Retrieval Debug</h2>
             <p>Inspect the exact serving snapshot without weakening its filters.</p>
           </div>
-          <span className="policy-lock">Exact vector</span>
+          <span className="policy-lock">{strategy === "hybrid" ? "Hybrid FTS" : "Exact vector"}</span>
         </div>
         <form className="form-grid retrieval-form" onSubmit={submit}>
           <label className="wide-field">
@@ -87,8 +94,18 @@ export function RetrievalView({
               onChange={(event) => setTopK(Number(event.target.value))}
             />
           </label>
+          <label>
+            Strategy
+            <select
+              value={strategy}
+              onChange={(event) => setStrategy(event.target.value as "exact_vector" | "hybrid")}
+            >
+              <option value="exact_vector">Exact vector</option>
+              <option value="hybrid">Hybrid FTS + dense</option>
+            </select>
+          </label>
           <div className="locked-settings" aria-label="Locked retrieval settings">
-            <div><span>Strategy</span><strong>exact_vector</strong></div>
+            <div><span>Strategy</span><strong>{strategy}</strong></div>
             <div><span>Rerank</span><strong>disabled</strong></div>
             <div><span>Debug</span><strong>authorized</strong></div>
           </div>
@@ -131,7 +148,10 @@ export function RetrievalView({
               ["Rerank", result.debug!.query_plan.rerank],
               ["Result count", result.debug!.result_count],
               ["Text candidates", result.debug!.text_candidate_count],
+              ["Lexical candidates", result.debug!.lexical_candidate_count],
               ["Cross-modal candidates", result.debug!.cross_modal_candidate_count],
+              ["Lexical analyzer", result.debug!.lexical_analyzer_version],
+              ["Lexical manifests", result.debug!.lexical_manifest_target_count],
               ["Hydrated relations", result.debug!.hydrated_relation_count],
               ["Evidence groups", result.debug!.evidence_group_count],
               ["Active revision", shortId(result.debug!.resolved_active_revision_id)],
@@ -192,6 +212,7 @@ export function RetrievalView({
                         ["Modality", evidence.modality],
                         ["Representations", evidence.matched_representations.join(", ")],
                         ["Text lane rank", evidence.text_space_rank],
+                        ["Lexical lane rank", evidence.lexical_rank],
                         ["Cross-modal rank", evidence.cross_modal_rank],
                         ["Fusion score", evidence.fusion_score?.toFixed(8)],
                         ["Chunk", shortId(evidence.index_chunk_id)],
@@ -250,6 +271,7 @@ function RelatedVisualDescriptor({
         ["Visual unit", shortId(visual.visual_unit_id)],
         ["Group", visual.evidence_group_key],
         ["Text lane rank", visual.text_space_rank],
+        ["Lexical lane rank", visual.lexical_rank],
         ["Cross-modal rank", visual.cross_modal_rank],
       ]} />
       {previewUrl ? (

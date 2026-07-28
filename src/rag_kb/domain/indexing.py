@@ -175,6 +175,22 @@ class IndexChunkWrite:
 
 
 @dataclass(frozen=True, slots=True)
+class IndexChunkLexicalWrite:
+    index_chunk_id: UUID
+    analyzer_version: str
+    lexical_text: str
+    lexical_text_hash: str
+
+
+@dataclass(frozen=True, slots=True)
+class IndexLexicalManifest:
+    indexed_document_version_id: UUID
+    analyzer_version: str
+    lexical_chunk_count: int
+    lexical_manifest_hash: str
+
+
+@dataclass(frozen=True, slots=True)
 class VectorRecordWrite:
     id: UUID
     index_chunk_id: UUID

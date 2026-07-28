@@ -76,6 +76,7 @@ class EvidenceResponse(RetrievalPublicSchema):
     evidence_group_key: str | None = None
     matched_representations: tuple[str, ...] = ("text",)
     text_space_rank: int | None = None
+    lexical_rank: int | None = None
     cross_modal_rank: int | None = None
     fusion_score: float | None = None
     related_visuals: tuple["RelatedVisualEvidenceResponse", ...] = ()
@@ -102,6 +103,7 @@ class RelatedVisualEvidenceResponse(RetrievalPublicSchema):
     modality: str
     source_location: dict[str, Any]
     text_space_rank: int | None = None
+    lexical_rank: int | None = None
     cross_modal_rank: int | None = None
 
 
@@ -110,7 +112,10 @@ class RetrievalDebugResponse(RetrievalPublicSchema):
     resolved_active_revision_id: UUID
     result_count: int
     text_candidate_count: int | None = None
+    lexical_candidate_count: int | None = None
     cross_modal_candidate_count: int | None = None
+    lexical_analyzer_version: str | None = None
+    lexical_manifest_target_count: int | None = None
     hydrated_relation_count: int | None = None
     evidence_group_count: int | None = None
 

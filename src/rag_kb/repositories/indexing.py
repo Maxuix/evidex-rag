@@ -8,6 +8,8 @@ from uuid import UUID
 
 from rag_kb.domain import (
     IndexChunkWrite,
+    IndexChunkLexicalWrite,
+    IndexLexicalManifest,
     IndexChunkAssetRelationSnapshot,
     IndexChunkAssetRelationWrite,
     IndexCleanupResult,
@@ -148,6 +150,18 @@ class IndexingRepository(Protocol):
         command: IndexingCommand,
         chunks: tuple[IndexChunkWrite, ...],
         vectors: tuple[VectorRecordWrite, ...],
+    ) -> bool: ...
+
+    async def upsert_lexical_rows(
+        self,
+        command: IndexingCommand,
+        rows: tuple[IndexChunkLexicalWrite, ...],
+    ) -> bool: ...
+
+    async def complete_lexical_manifest(
+        self,
+        command: IndexingCommand,
+        proposed: IndexLexicalManifest,
     ) -> bool: ...
 
     async def complete(self, command: IndexingCommand, *, expected_chunks: int) -> bool: ...

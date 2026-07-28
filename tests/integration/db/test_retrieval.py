@@ -9,7 +9,7 @@ from uuid import UUID, uuid4
 import asyncpg
 from sqlalchemy import event
 
-from rag_kb.adapters import FixedPgVectorSpace, PgVectorStore
+from rag_kb.adapters import FixedPgVectorSpace, PgLexicalStore, PgVectorStore
 from rag_kb.auth import AuthContext, SingleWorkspaceAccessPolicy
 from rag_kb.db import DatabaseProcess, create_database_resources
 from rag_kb.domain import (
@@ -18,6 +18,12 @@ from rag_kb.domain import (
     ResourceNotFoundError,
     RetrievalExecutionError,
     RetrievalRequest,
+    RetrievalStrategy,
+)
+from rag_kb.document_processing.lexical import (
+    LEXICAL_ANALYZER_VERSION,
+    analyze_document,
+    lexical_manifest_hash,
 )
 from rag_kb.retrieval import RetrievalService
 from rag_kb.services import CompositeEvidenceHydrationService
@@ -123,6 +129,89 @@ class ExactRetrievalDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(pack.debug)
         assert pack.debug is not None
         self.assertEqual(pack.debug.result_count, 2)
+
+    async def test_hybrid_fts_validates_manifest_and_returns_lane_rank(
+        self,
+    ) -> None:
+        foundation = await self._foundation()
+        target = await self._target(
+            foundation,
+            chunk_id=UUID("01900000-0000-7000-8000-000000001121"),
+            vector=_axis_vector(0),
+        )
+        await self._lexical_target(foundation, target)
+        lexical_store = PgLexicalStore(self.database.sessions)
+        service = RetrievalService(
+            self.policy,
+            self.provider,
+            self.vector_store,
+            lexical_store=lexical_store,
+            hybrid_enabled=True,
+        )
+
+        pack = await service.retrieve(
+            self.context,
+            RetrievalRequest(
+                foundation.kb_id,
+                "evidence",
+                top_k=3,
+                strategy=RetrievalStrategy.HYBRID,
+                rerank=True,
+                include_debug=True,
+            ),
+        )
+
+        self.assertEqual(len(pack.evidence), 1)
+        self.assertEqual(pack.evidence[0].index_chunk_id, target.chunk_id)
+        self.assertEqual(pack.evidence[0].lexical_rank, 1)
+        self.assertEqual(pack.evidence[0].text_space_rank, 1)
+        assert pack.debug is not None
+        self.assertEqual(pack.debug.lexical_candidate_count, 1)
+        self.assertEqual(pack.debug.lexical_manifest_target_count, 1)
+        self.assertEqual(
+            pack.debug.lexical_analyzer_version,
+            LEXICAL_ANALYZER_VERSION,
+        )
+
+    async def test_hybrid_fts_rejects_partial_target_backfill(self) -> None:
+        foundation = await self._foundation()
+        target = await self._target(
+            foundation,
+            chunk_id=UUID("01900000-0000-7000-8000-000000001122"),
+            vector=_axis_vector(0),
+        )
+        await self._lexical_target(
+            foundation,
+            target,
+            create_manifest=False,
+        )
+        service = RetrievalService(
+            self.policy,
+            self.provider,
+            self.vector_store,
+            lexical_store=PgLexicalStore(self.database.sessions),
+            hybrid_enabled=True,
+        )
+
+        with self.assertRaises(RetrievalExecutionError) as failure:
+            await service.retrieve(
+                self.context,
+                RetrievalRequest(
+                    foundation.kb_id,
+                    "evidence",
+                    strategy=RetrievalStrategy.HYBRID,
+                    rerank=True,
+                ),
+            )
+
+        self.assertEqual(
+            failure.exception.code,
+            ErrorCode.INDEX_REVISION_INCOMPATIBLE,
+        )
+        self.assertEqual(
+            failure.exception.diagnostic,
+            {"check": "lexical_manifest_coverage"},
+        )
 
     async def test_empty_result_keeps_revision_and_missing_scope_is_not_found(self) -> None:
         foundation = await self._foundation()
@@ -653,6 +742,59 @@ class ExactRetrievalDatabaseTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await connection.close()
         return target
+
+    async def _lexical_target(
+        self,
+        foundation: "_Foundation",
+        target: "_Target",
+        *,
+        create_manifest: bool = True,
+    ) -> None:
+        connection = await asyncpg.connect(MIGRATION_DSN)
+        try:
+            async with connection.transaction():
+                content = await connection.fetchval(
+                    "SELECT content FROM index_chunk WHERE id = $1",
+                    target.chunk_id,
+                )
+                analyzed = analyze_document(content)
+                assert analyzed is not None
+                await connection.execute(
+                    """
+                    INSERT INTO index_chunk_lexical (
+                        index_chunk_id, analyzer_version, workspace_id, kb_id,
+                        indexed_document_version_id, lexical_text,
+                        lexical_text_hash
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+                    """,
+                    target.chunk_id,
+                    LEXICAL_ANALYZER_VERSION,
+                    foundation.workspace_id,
+                    foundation.kb_id,
+                    target.indexed_document_version_id,
+                    analyzed.lexical_text,
+                    analyzed.lexical_text_hash,
+                )
+                if create_manifest:
+                    await connection.execute(
+                        """
+                        INSERT INTO index_lexical_manifest (
+                            indexed_document_version_id, analyzer_version,
+                            workspace_id, kb_id, lexical_chunk_count,
+                            lexical_manifest_hash
+                        ) VALUES ($1, $2, $3, $4, 1, $5)
+                        """,
+                        target.indexed_document_version_id,
+                        LEXICAL_ANALYZER_VERSION,
+                        foundation.workspace_id,
+                        foundation.kb_id,
+                        lexical_manifest_hash(
+                            LEXICAL_ANALYZER_VERSION,
+                            ((target.chunk_id, analyzed.lexical_text_hash),),
+                        ),
+                    )
+        finally:
+            await connection.close()
 
     async def _append_version_target(
         self,

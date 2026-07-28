@@ -8,7 +8,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 
-EXPECTED_REVISION = "0012_citation_document_names"
+EXPECTED_REVISION = "0013_fts_hybrid_retrieval"
 EXPECTED_POSTGRES_MAJOR = 18
 EXPECTED_PGVECTOR_VERSION = "0.8.2"
 EXPECTED_VECTOR_COLUMN = "embedding"
@@ -31,6 +31,8 @@ EXPECTED_APPLICATION_TABLES = frozenset(
         "eval_result",
         "eval_run",
         "index_chunk",
+        "index_chunk_lexical",
+        "index_lexical_manifest",
         "index_chunk_asset_relation",
         "index_chunk_plan",
         "index_asset",
@@ -154,6 +156,64 @@ async def validate_database_compatibility(
     )
     if has_hnsw_index:
         raise DatabaseCompatibilityError("HNSW must remain disabled in P1A")
+
+    lexical_type = await connection.scalar(
+        text(
+            "SELECT format_type(attribute.atttypid, attribute.atttypmod) "
+            "FROM pg_attribute attribute "
+            "JOIN pg_class relation ON relation.oid = attribute.attrelid "
+            "JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace "
+            "WHERE namespace.nspname = 'public' "
+            "AND relation.relname = 'index_chunk_lexical' "
+            "AND attribute.attname = 'lexical_tsv' "
+            "AND attribute.attgenerated = 's'"
+        )
+    )
+    if lexical_type != "tsvector":
+        raise DatabaseCompatibilityError(
+            "index_chunk_lexical.lexical_tsv must be a stored generated tsvector"
+        )
+    has_lexical_gin = await connection.scalar(
+        text(
+            "SELECT EXISTS ("
+            "SELECT 1 FROM pg_indexes "
+            "WHERE schemaname = 'public' "
+            "AND tablename = 'index_chunk_lexical' "
+            "AND indexname = 'ix_index_chunk_lexical_tsv' "
+            "AND indexdef ILIKE '% USING gin %')"
+        )
+    )
+    if not has_lexical_gin:
+        raise DatabaseCompatibilityError("lexical FTS GIN index is unavailable")
+
+    lexical_constraint_rows = await connection.execute(
+        text(
+            "SELECT constraint_row.conname "
+            "FROM pg_constraint constraint_row "
+            "JOIN pg_class relation "
+            " ON relation.oid = constraint_row.conrelid "
+            "JOIN pg_namespace namespace "
+            " ON namespace.oid = relation.relnamespace "
+            "WHERE namespace.nspname = 'public' "
+            "AND constraint_row.conname IN ("
+            "'fk_chunk_lexical_same_scope_target', "
+            "'fk_chunk_lexical_same_target_chunk', "
+            "'fk_lexical_manifest_same_scope_target')"
+        )
+    )
+    lexical_constraints = frozenset(lexical_constraint_rows.scalars())
+    expected_lexical_constraints = frozenset(
+        {
+            "fk_chunk_lexical_same_scope_target",
+            "fk_chunk_lexical_same_target_chunk",
+            "fk_lexical_manifest_same_scope_target",
+        }
+    )
+    if lexical_constraints != expected_lexical_constraints:
+        missing = sorted(expected_lexical_constraints - lexical_constraints)
+        raise DatabaseCompatibilityError(
+            f"lexical composite constraints are unavailable; missing={missing}"
+        )
 
     return DatabaseCompatibility(
         postgres_major=postgres_major,

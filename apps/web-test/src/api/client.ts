@@ -241,6 +241,7 @@ export class ApiClient {
     knowledgeBaseId: UUID,
     query: string,
     topK: number,
+    strategy: "exact_vector" | "hybrid",
   ): Promise<EvidencePack> {
     return this.request("/retrieval/query", {
       method: "POST",
@@ -249,7 +250,7 @@ export class ApiClient {
         knowledge_base_id: knowledgeBaseId,
         query,
         top_k: topK,
-        strategy: "exact_vector",
+        strategy,
         rerank: true,
         include_debug: true,
       }),

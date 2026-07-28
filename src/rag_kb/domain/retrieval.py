@@ -67,12 +67,13 @@ class RelatedVisualEvidence:
     modality: str = "image"
     source_location: dict[str, Any] | None = None
     text_space_rank: int | None = None
+    lexical_rank: int | None = None
     cross_modal_rank: int | None = None
 
     def __post_init__(self) -> None:
         if not 0 <= self.relation_confidence_micros <= 1_000_000:
             raise ValueError("relation confidence must be integer micros")
-        for rank in (self.text_space_rank, self.cross_modal_rank):
+        for rank in (self.text_space_rank, self.lexical_rank, self.cross_modal_rank):
             if rank is not None and rank < 1:
                 raise ValueError("lane rank must be positive")
         if self.modality not in {"image", "table"}:
@@ -88,6 +89,7 @@ class RetrievalRequest:
     strategy: RetrievalStrategy = RetrievalStrategy.EXACT_VECTOR
     rerank: bool = False
     include_debug: bool = False
+    execution_profile: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         normalized = self.query.strip()
@@ -96,6 +98,10 @@ class RetrievalRequest:
         if not 1 <= self.top_k <= 100:
             raise ValueError("top_k must be between 1 and 100")
         object.__setattr__(self, "query", normalized)
+        if self.execution_profile is not None:
+            object.__setattr__(
+                self, "execution_profile", dict(self.execution_profile)
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,6 +147,21 @@ class RetrievalQueryPlan:
                     )
             elif self.candidate_count is not None:
                 raise ValueError("candidate_count requires reranking")
+        elif self.strategy is RetrievalStrategy.HYBRID:
+            if self.distance_metric != "cosine":
+                raise ValueError("hybrid dense companion uses cosine distance")
+            if self.ef_search is not None:
+                raise ValueError("hybrid v1 has no ANN parameters")
+            if self.iterative_scan is not IterativeScanMode.DISABLED:
+                raise ValueError("hybrid v1 has no iterative scan")
+            if (
+                not self.rerank
+                or self.candidate_count is None
+                or not self.top_k <= self.candidate_count <= 100
+            ):
+                raise ValueError(
+                    "hybrid v1 requires a bounded scored candidate set"
+                )
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,6 +192,8 @@ class VectorSearchHit:
     asset_height: int | None = None
     document_display_name: str | None = None
     document_original_filename: str | None = None
+    lexical_rank: int | None = None
+    lexical_score: float | None = None
 
     def __post_init__(self) -> None:
         if self.ordinal < 0:
@@ -190,6 +213,15 @@ class VectorSearchHit:
         object.__setattr__(self, "source_location", dict(self.source_location))
         object.__setattr__(self, "hierarchy", dict(self.hierarchy))
         object.__setattr__(self, "source_metadata", dict(self.source_metadata))
+        if self.lexical_rank is not None and self.lexical_rank < 1:
+            raise ValueError("lexical rank must be positive")
+        if self.lexical_score is not None and (
+            isinstance(self.lexical_score, bool)
+            or not isinstance(self.lexical_score, (int, float))
+            or not math.isfinite(self.lexical_score)
+            or self.lexical_score < 0.0
+        ):
+            raise ValueError("lexical FTS rank must be finite and non-negative")
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,6 +231,14 @@ class VectorSearchResult:
     embedding_space_id: UUID | None = None
     compatibility_fingerprint: str | None = None
     space_role: str = "text_retrieval"
+
+
+@dataclass(frozen=True, slots=True)
+class LexicalSearchResult:
+    resolved_active_revision_id: UUID
+    analyzer_version: str
+    manifest_target_count: int
+    hits: tuple[VectorSearchHit, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -224,6 +264,7 @@ class Evidence:
     evidence_group_key: str | None = None
     matched_representations: tuple[str, ...] = ("text",)
     text_space_rank: int | None = None
+    lexical_rank: int | None = None
     cross_modal_rank: int | None = None
     fusion_score: float | None = None
     related_visuals: tuple[RelatedVisualEvidence, ...] = ()
@@ -276,7 +317,10 @@ class RetrievalDebug:
     resolved_active_revision_id: UUID
     result_count: int
     text_candidate_count: int | None = None
+    lexical_candidate_count: int | None = None
     cross_modal_candidate_count: int | None = None
+    lexical_analyzer_version: str | None = None
+    lexical_manifest_target_count: int | None = None
     hydrated_relation_count: int | None = None
     evidence_group_count: int | None = None
 
@@ -285,7 +329,9 @@ class RetrievalDebug:
             raise ValueError("debug result_count must be within the plan limit")
         for value in (
             self.text_candidate_count,
+            self.lexical_candidate_count,
             self.cross_modal_candidate_count,
+            self.lexical_manifest_target_count,
             self.hydrated_relation_count,
             self.evidence_group_count,
         ):

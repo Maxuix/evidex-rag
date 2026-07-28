@@ -17,6 +17,7 @@ from rag_kb.adapters import (
     LangChainEmbeddingModelAdapter,
     LocalFileStore,
     LocalIndexAssetStore,
+    PgLexicalStore,
     PgVectorStore,
     TongyiVisionEmbeddingAdapter,
 )
@@ -290,6 +291,20 @@ def build_worker_dependencies(
         cross_modal_weight_micros=(
             resolved_settings.retrieval.cross_modal_weight_micros
         ),
+        lexical_store=PgLexicalStore(database.sessions),
+        hybrid_enabled=resolved_settings.retrieval.hybrid_enabled,
+        lexical_analyzer_version=(
+            resolved_settings.retrieval.lexical_analyzer_version
+        ),
+        lexical_query_version=resolved_settings.retrieval.lexical_query_version,
+        lexical_candidate_count=(
+            resolved_settings.retrieval.lexical_candidate_count
+        ),
+        dense_weight_micros=resolved_settings.retrieval.dense_weight_micros,
+        lexical_weight_micros=(
+            resolved_settings.retrieval.lexical_weight_micros
+        ),
+        min_rerank_score=resolved_settings.retrieval.min_rerank_score,
         relation_hydrator=CompositeEvidenceHydrationService(unit_of_work),
         deadline_seconds=resolved_settings.retrieval.deadline_seconds,
     )

@@ -26,7 +26,7 @@ ASSET_ID = UUID("01900000-0000-7000-8000-000000000909")
 
 
 class RetrievalTransportContractTests(unittest.TestCase):
-    def test_request_accepts_known_unsupported_capabilities_for_explicit_service_error(self) -> None:
+    def test_request_accepts_hybrid_strategy(self) -> None:
         request = RetrievalQueryRequest.model_validate(
             {
                 "knowledge_base_id": str(KB_ID),
@@ -87,6 +87,7 @@ class RetrievalTransportContractTests(unittest.TestCase):
             hierarchy={"section": "S1"},
             source_metadata={"filename": "guide.md"},
             score=0.75,
+            lexical_rank=2,
             related_visuals=(
                 RelatedVisualEvidence(
                     visual_unit_id=VISUAL_ID,
@@ -106,6 +107,7 @@ class RetrievalTransportContractTests(unittest.TestCase):
                     parent_chunk_id=CHUNK_ID,
                     source_location={"page": 2},
                     text_space_rank=1,
+                    lexical_rank=2,
                 ),
             ),
         )
@@ -120,7 +122,10 @@ class RetrievalTransportContractTests(unittest.TestCase):
                     REVISION_ID,
                     1,
                     text_candidate_count=3,
+                    lexical_candidate_count=4,
                     cross_modal_candidate_count=2,
+                    lexical_analyzer_version="lexical_simple_cjk_bigram_v1",
+                    lexical_manifest_target_count=1,
                     hydrated_relation_count=1,
                     evidence_group_count=1,
                 ),
@@ -139,9 +144,16 @@ class RetrievalTransportContractTests(unittest.TestCase):
         self.assertEqual(body["debug"]["query_plan"]["serving_status"], "serving")
         self.assertNotIn("query", body["debug"]["query_plan"])
         self.assertEqual(body["debug"]["hydrated_relation_count"], 1)
+        self.assertEqual(body["debug"]["lexical_candidate_count"], 4)
+        self.assertEqual(
+            body["debug"]["lexical_analyzer_version"],
+            "lexical_simple_cjk_bigram_v1",
+        )
+        self.assertEqual(body["evidence"][0]["lexical_rank"], 2)
         related = body["evidence"][0]["related_visuals"][0]
         self.assertEqual(related["visual_unit_id"], str(VISUAL_ID))
         self.assertEqual(related["asset"]["id"], str(ASSET_ID))
+        self.assertEqual(related["lexical_rank"], 2)
         self.assertNotIn("storage_uri", related["asset"])
 
 

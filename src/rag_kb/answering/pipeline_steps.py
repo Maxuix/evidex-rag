@@ -34,6 +34,7 @@ from rag_kb.domain import (
     EvidenceScoreKind,
     InsufficiencyPolicy,
 )
+from rag_kb.retrieval.eligibility import EvidenceEligibilityPolicy
 
 
 class CosineEvidenceAssessmentStep:
@@ -53,6 +54,11 @@ class CosineEvidenceAssessmentStep:
             raise ValueError(
                 "cross_modal_min_cosine_similarity must be between -1 and 1"
             )
+        self._policy = EvidenceEligibilityPolicy(
+            float(min_cosine_similarity),
+            float(min_rerank_score),
+            float(cross_modal_min_cosine_similarity),
+        )
         self._min_cosine_similarity = float(min_cosine_similarity)
         self._min_rerank_score = float(min_rerank_score)
         self._cross_modal_min_cosine_similarity = float(
@@ -65,7 +71,7 @@ class CosineEvidenceAssessmentStep:
         usable_citation_ids = tuple(
             prompt_item.citation_id
             for item, prompt_item in zip(pack.evidence, evidence.items, strict=True)
-            if self._usable(item)
+            if self._policy.usable(item)
         )
         if not usable_citation_ids:
             assessment = EvidenceAssessment(
@@ -97,33 +103,6 @@ class CosineEvidenceAssessmentStep:
             query_context=state.query_context,
             artifacts=state.artifacts,
         )
-
-    def _usable(self, item) -> bool:
-        if item.score is None:
-            return False
-        if item.score_kind is EvidenceScoreKind.RECIPROCAL_RANK_FUSION:
-            if item.vector_similarity is None:
-                return False
-            if item.text_space_rank is not None:
-                return item.vector_similarity >= self._min_cosine_similarity
-            return (
-                item.cross_modal_rank is not None
-                and item.vector_similarity
-                >= self._cross_modal_min_cosine_similarity
-            )
-        if item.score_kind is not EvidenceScoreKind.HYBRID_RERANK:
-            return item.score >= self._min_cosine_similarity
-        vector_similarity = item.vector_similarity
-        return (
-            vector_similarity is not None
-            and vector_similarity >= self._min_cosine_similarity
-            and item.score >= self._min_rerank_score
-            and (
-                item.lexical_coverage > 0.0
-                or item.score >= max(self._min_rerank_score + 0.10, 0.55)
-            )
-        )
-
 
 class AnswerGenerationStep:
     def __init__(self, model: ChatModelAdapter) -> None:

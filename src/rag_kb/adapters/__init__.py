@@ -22,6 +22,7 @@ from rag_kb.adapters.model_api import (
     TongyiVisionEmbeddingAdapter,
 )
 from rag_kb.adapters.vector_store import FixedPgVectorSpace, PgVectorStore, VectorStore
+from rag_kb.adapters.lexical_store import LexicalStore, PgLexicalStore
 
 __all__ = [
     "DocumentParser",
@@ -37,6 +38,8 @@ __all__ = [
     "LocalFileStore",
     "LocalIndexAssetStore",
     "PgVectorStore",
+    "LexicalStore",
+    "PgLexicalStore",
     "PublicHttpImageFetcher",
     "RemoteImageFetcher",
     "SourceFileStore",

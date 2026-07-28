@@ -258,9 +258,12 @@ export interface ChatRun {
   final_context_url: string;
   effective_answer_policy: EffectiveAnswerPolicy;
   retrieval: {
-    strategy: "exact_vector";
+    profile_version?: "exact_vector_v1" | "hybrid_fts_rrf_v1";
+    strategy: "exact_vector" | "hybrid";
     top_k: number;
     rerank: boolean;
+    lexical_analyzer_version?: string | null;
+    lexical_query_version?: string | null;
   };
   query_context: {
     strategy: "recent_completed_turns_v1";
@@ -314,7 +317,7 @@ export interface ChatRunCreate {
     insufficiency_policy: InsufficiencyPolicy;
   };
   retrieval: {
-    mode: "vector";
+    mode: "vector" | "hybrid";
     top_k: number;
     rerank?: boolean;
   };
@@ -340,7 +343,7 @@ export interface ChatRunFailedEvent {
 export interface RetrievalQueryPlan {
   workspace_id: UUID;
   knowledge_base_id: UUID;
-  strategy: "exact_vector";
+  strategy: "exact_vector" | "hybrid";
   top_k: number;
   revision_selector: "active";
   current_document_version_only: true;
@@ -375,6 +378,7 @@ export interface Evidence {
   evidence_group_key: string | null;
   matched_representations: string[];
   text_space_rank: number | null;
+  lexical_rank: number | null;
   cross_modal_rank: number | null;
   fusion_score: number | null;
   related_visuals: RelatedVisualEvidence[];
@@ -401,20 +405,24 @@ export interface RelatedVisualEvidence {
   modality: "image" | "table";
   source_location: JsonMap;
   text_space_rank: number | null;
+  lexical_rank: number | null;
   cross_modal_rank: number | null;
 }
 
 export interface EvidencePack {
   knowledge_base_id: UUID;
   index_revision_id: UUID;
-  strategy: "exact_vector";
+  strategy: "exact_vector" | "hybrid";
   evidence: Evidence[];
   debug: {
     query_plan: RetrievalQueryPlan;
     resolved_active_revision_id: UUID;
     result_count: number;
     text_candidate_count: number | null;
+    lexical_candidate_count: number | null;
     cross_modal_candidate_count: number | null;
+    lexical_analyzer_version: string | null;
+    lexical_manifest_target_count: number | null;
     hydrated_relation_count: number | null;
     evidence_group_count: number | null;
   } | null;

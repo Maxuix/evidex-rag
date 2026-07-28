@@ -626,6 +626,8 @@ class _Repository:
         self.manifest = None
         self.assets = ()
         self.relations = ()
+        self.lexical_rows = {}
+        self.lexical_manifest = None
         self.persisted_override = None
         self.chunk_only_batch_sizes = []
 
@@ -748,11 +750,32 @@ class _Repository:
             ] = vector
         return True
 
+    async def upsert_lexical_rows(self, command, rows):
+        del command
+        self._active()
+        for row in rows:
+            existing = self.lexical_rows.get(row.index_chunk_id)
+            if existing is not None and existing != row:
+                raise AssertionError("lexical row mismatch")
+            self.lexical_rows[row.index_chunk_id] = row
+        return True
+
+    async def complete_lexical_manifest(self, command, proposed):
+        del command
+        self._active()
+        if self.lexical_manifest is None:
+            self.lexical_manifest = proposed
+        if self.lexical_manifest != proposed:
+            raise AssertionError("lexical manifest mismatch")
+        return True
+
     async def complete(self, command, *, expected_chunks):
         del command
         self._active()
         if len(self.chunks) != expected_chunks:
             raise AssertionError("incomplete")
+        if self.lexical_manifest is None:
+            raise AssertionError("lexical manifest missing")
         if self.manifest is None:
             if len(self.vectors) != expected_chunks:
                 raise AssertionError("incomplete")

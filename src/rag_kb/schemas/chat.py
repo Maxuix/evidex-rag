@@ -93,7 +93,7 @@ class AnswerPolicyOverrides(PublicSchema):
 
 
 class ChatRetrievalRequest(PublicSchema):
-    mode: Literal["vector"] = "vector"
+    mode: Literal["vector", "hybrid"] = "vector"
     top_k: Annotated[int, Field(ge=1, le=100)] = 10
     rerank: bool | None = None
 
@@ -131,9 +131,25 @@ class ChatRunErrorResponse(PublicSchema):
 
 
 class ChatRunRetrievalResponse(PublicSchema):
-    strategy: Literal["exact_vector"]
+    profile_version: Literal["exact_vector_v1", "hybrid_fts_rrf_v1"] | None = None
+    strategy: Literal["exact_vector", "hybrid"]
     top_k: Annotated[int, Field(ge=1, le=100)]
     rerank: bool
+    dense_candidate_count: int | None = None
+    lexical_candidate_count: int | None = None
+    cross_modal_candidate_count: int | None = None
+    lexical_analyzer_version: str | None = None
+    lexical_query_version: str | None = None
+    rrf_k: int | None = None
+    dense_weight_micros: int | None = None
+    lexical_weight_micros: int | None = None
+    cross_modal_weight_micros: int | None = None
+    min_cosine_similarity: float | None = None
+    min_rerank_score: float | None = None
+    cross_modal_min_cosine_similarity: float | None = None
+    rerank_vector_weight: float | None = None
+    rerank_lexical_weight: float | None = None
+    mmr_lambda: float | None = None
 
 
 class ChatRunQueryContextResponse(PublicSchema):

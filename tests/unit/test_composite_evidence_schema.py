@@ -10,8 +10,10 @@ from rag_kb.db.models import Base
 
 class CompositeEvidenceSchemaTests(unittest.TestCase):
     def test_current_head_and_inventory_include_composite_relations(self) -> None:
-        self.assertEqual(EXPECTED_REVISION, "0012_citation_document_names")
+        self.assertEqual(EXPECTED_REVISION, "0013_fts_hybrid_retrieval")
         self.assertIn("index_chunk_asset_relation", EXPECTED_APPLICATION_TABLES)
+        self.assertIn("index_chunk_lexical", EXPECTED_APPLICATION_TABLES)
+        self.assertIn("index_lexical_manifest", EXPECTED_APPLICATION_TABLES)
         self.assertEqual(
             set(Base.metadata.tables),
             set(EXPECTED_APPLICATION_TABLES),

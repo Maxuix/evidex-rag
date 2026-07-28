@@ -57,6 +57,7 @@ from rag_kb.services.evaluation import EvaluationPersistenceService
 from rag_kb.services.files import FileReconciliationService, SourceFileService
 from rag_kb.services.indexing import IndexingJobService
 from rag_kb.services.maintenance import MaintenanceCleanupResult, MaintenanceCleanupService
+from rag_kb.services.lexical_backfill import LexicalBackfillService
 from rag_kb.services.markdown_media import MarkdownMediaNormalizer
 from rag_kb.services.admission import (
     FileAdmissionService,
@@ -106,6 +107,7 @@ __all__ = [
     "KnowledgeBaseService",
     "MaintenanceCleanupResult",
     "MaintenanceCleanupService",
+    "LexicalBackfillService",
     "MarkdownMediaNormalizer",
     "ParserLimits",
     "ParserExecutionError",

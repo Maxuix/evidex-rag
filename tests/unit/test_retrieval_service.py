@@ -8,7 +8,7 @@ from uuid import UUID
 
 from sqlalchemy.dialects import postgresql
 
-from rag_kb.adapters import FixedPgVectorSpace, PgVectorStore
+from rag_kb.adapters import FixedPgVectorSpace, PgLexicalStore, PgVectorStore
 from rag_kb.auth import (
     AccessDeniedError,
     AuthContext,
@@ -21,6 +21,7 @@ from rag_kb.domain import (
     ErrorCode,
     EvidenceScoreKind,
     IndexChunkAssetRelationSnapshot,
+    LexicalSearchResult,
     RetrievalExecutionError,
     RetrievalQueryPlan,
     RetrievalRequest,
@@ -76,6 +77,21 @@ class RetrievalContractTests(unittest.TestCase):
         self.assertIn("vector_record_768.embedding_space_id", cross_modal)
         self.assertNotIn("vector_record_1024.embedding <=>", cross_modal)
 
+    def test_lexical_statement_uses_gin_predicate_and_real_cosine(self) -> None:
+        statement = PgLexicalStore._statement()  # noqa: SLF001 - SQL contract
+        sql = str(statement.compile(dialect=postgresql.dialect()))
+
+        self.assertIn("AS MATERIALIZED", sql)
+        self.assertIn("lexical_tsv @@ to_tsquery('simple'", sql)
+        self.assertIn("ts_rank_cd(", sql)
+        self.assertIn("vector_record_1024", sql)
+        self.assertIn("vector.embedding <=>", sql)
+        self.assertIn("target.build_status = 'ready'", sql)
+        self.assertIn("target.serving_status = 'serving'", sql)
+        self.assertIn("doc.deleted_at IS NULL", sql)
+        self.assertIn("version.source_status = 'available'", sql)
+        self.assertNotIn("hnsw", sql.lower())
+
     def test_pgvector_adapter_rejects_non_exact_or_wrong_dimension(self) -> None:
         definition = replace(_embedding_space(), dimension=1024)
         store = PgVectorStore(None, FixedPgVectorSpace(definition))  # type: ignore[arg-type]
@@ -87,7 +103,7 @@ class RetrievalContractTests(unittest.TestCase):
 
         with self.assertRaises(RetrievalExecutionError) as capability:
             store._require_exact_plan(  # noqa: SLF001
-                replace(exact, strategy=RetrievalStrategy.HYBRID),
+                replace(exact, strategy=RetrievalStrategy.ANN_VECTOR),
                 tuple(0.0 for _ in range(1024)),
             )
         self.assertEqual(capability.exception.code, ErrorCode.CAPABILITY_NOT_ENABLED)
@@ -277,6 +293,139 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(failure.exception.code, ErrorCode.CAPABILITY_NOT_ENABLED)
             self.assertEqual(provider.queries, [])
             self.assertEqual(store.plans, [])
+
+    async def test_hybrid_admits_lexical_candidate_outside_dense_lane(self) -> None:
+        dense = replace(
+            _hit(CHUNK_1, distance=0.05),
+            text="general handbook introduction",
+        )
+        lexical = replace(
+            _hit(CHUNK_2, distance=0.20, ordinal=2),
+            text="policy deadline is Friday",
+            lexical_rank=1,
+            lexical_score=0.9,
+        )
+        vector_store = _HybridVectorStore(
+            VectorSearchResult(REVISION_ID, (dense,))
+        )
+        lexical_store = _LexicalStore(
+            LexicalSearchResult(
+                REVISION_ID,
+                analyzer_version="lexical_simple_cjk_bigram_v1",
+                manifest_target_count=1,
+                hits=(lexical,),
+            )
+        )
+        provider = _Provider()
+        service = RetrievalService(
+            SingleWorkspaceAccessPolicy(WORKSPACE),
+            provider,
+            vector_store,
+            lexical_store=lexical_store,
+            hybrid_enabled=True,
+        )
+
+        pack = await service.retrieve(
+            _context(),
+            RetrievalRequest(
+                KB_ID,
+                "policy deadline",
+                top_k=2,
+                strategy=RetrievalStrategy.HYBRID,
+                rerank=True,
+                include_debug=True,
+            ),
+        )
+
+        self.assertEqual(
+            {item.index_chunk_id for item in pack.evidence},
+            {CHUNK_1, CHUNK_2},
+        )
+        lexical_evidence = next(
+            item for item in pack.evidence if item.index_chunk_id == CHUNK_2
+        )
+        self.assertEqual(lexical_evidence.lexical_rank, 1)
+        self.assertIsNone(lexical_evidence.text_space_rank)
+        self.assertEqual(provider.queries, ["policy deadline"])
+        self.assertEqual(lexical_store.queries, ["policy deadline"])
+        self.assertEqual(lexical_store.embeddings, [(0.6, 0.8)])
+        assert pack.debug is not None
+        self.assertEqual(pack.debug.text_candidate_count, 1)
+        self.assertEqual(pack.debug.lexical_candidate_count, 1)
+        self.assertEqual(pack.debug.lexical_manifest_target_count, 1)
+
+    async def test_hybrid_rejects_low_cosine_lexical_candidate(self) -> None:
+        dense = replace(
+            _hit(CHUNK_1, distance=0.10),
+            text="policy deadline handbook",
+        )
+        lexical = replace(
+            _hit(CHUNK_2, distance=0.90, ordinal=2),
+            text="policy deadline is Friday",
+            lexical_rank=1,
+            lexical_score=0.9,
+        )
+        service = RetrievalService(
+            SingleWorkspaceAccessPolicy(WORKSPACE),
+            _Provider(),
+            _HybridVectorStore(VectorSearchResult(REVISION_ID, (dense,))),
+            lexical_store=_LexicalStore(
+                LexicalSearchResult(
+                    REVISION_ID,
+                    analyzer_version="lexical_simple_cjk_bigram_v1",
+                    manifest_target_count=1,
+                    hits=(lexical,),
+                )
+            ),
+            hybrid_enabled=True,
+        )
+
+        pack = await service.retrieve(
+            _context(),
+            RetrievalRequest(
+                KB_ID,
+                "policy deadline",
+                top_k=2,
+                strategy=RetrievalStrategy.HYBRID,
+                rerank=True,
+            ),
+        )
+
+        self.assertEqual(
+            [item.index_chunk_id for item in pack.evidence], [CHUNK_1]
+        )
+
+    async def test_hybrid_lane_failure_cancels_and_settles_dense_sibling(
+        self,
+    ) -> None:
+        vector_store = _CancellableHybridVectorStore()
+        service = RetrievalService(
+            SingleWorkspaceAccessPolicy(WORKSPACE),
+            _Provider(),
+            vector_store,
+            lexical_store=_FailingLexicalStore(),
+            hybrid_enabled=True,
+        )
+
+        with self.assertRaises(RetrievalExecutionError) as failure:
+            await asyncio.wait_for(
+                service.retrieve(
+                    _context(),
+                    RetrievalRequest(
+                        KB_ID,
+                        "query",
+                        strategy=RetrievalStrategy.HYBRID,
+                        rerank=True,
+                    ),
+                ),
+                timeout=1.0,
+            )
+
+        self.assertEqual(
+            failure.exception.code,
+            ErrorCode.INDEX_REVISION_INCOMPATIBLE,
+        )
+        self.assertTrue(vector_store.cancelled)
 
     async def test_workspace_and_debug_authorization_fail_closed(self) -> None:
         service = RetrievalService(
@@ -581,6 +730,53 @@ class _Store:
         self.plans.append(plan)
         self.embeddings.append(query_embedding)
         return self.result
+
+
+class _HybridVectorStore(_Store):
+    async def has_space_role(self, plan, role):
+        del plan, role
+        return False
+
+
+class _LexicalStore:
+    def __init__(self, result: LexicalSearchResult | None) -> None:
+        self.result = result
+        self.queries: list[str] = []
+        self.embeddings: list[tuple[float, ...]] = []
+
+    async def search(self, plan, query, query_embedding, **kwargs):
+        del plan, kwargs
+        self.queries.append(query)
+        self.embeddings.append(query_embedding)
+        return self.result
+
+
+class _FailingLexicalStore:
+    async def search(self, plan, query, query_embedding, **kwargs):
+        del plan, query, query_embedding, kwargs
+        await asyncio.sleep(0)
+        raise RetrievalExecutionError(
+            ErrorCode.INDEX_REVISION_INCOMPATIBLE,
+            diagnostic={"check": "lexical_manifest_coverage"},
+        )
+
+
+class _CancellableHybridVectorStore:
+    def __init__(self) -> None:
+        self.cancelled = False
+
+    async def has_space_role(self, plan, role):
+        del plan, role
+        return False
+
+    async def search(self, plan, query_embedding):
+        del plan, query_embedding
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
+        raise AssertionError("unreachable")
 
 
 class _ParallelGates:

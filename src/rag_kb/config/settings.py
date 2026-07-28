@@ -587,7 +587,20 @@ class RetrievalSettings(StrictSettingsModel):
     vector_weight: Annotated[float, Field(ge=0.0, le=1.0)] = 0.65
     lexical_weight: Annotated[float, Field(ge=0.0, le=1.0)] = 0.35
     mmr_lambda: Annotated[float, Field(gt=0.0, le=1.0)] = 0.75
-    hybrid_enabled: DisabledFlag = False
+    hybrid_enabled: bool = False
+    lexical_analyzer_version: Literal["lexical_simple_cjk_bigram_v1"] = (
+        "lexical_simple_cjk_bigram_v1"
+    )
+    lexical_query_version: Literal["lexical_or_query_v1"] = (
+        "lexical_or_query_v1"
+    )
+    lexical_candidate_count: Annotated[int, Field(ge=1, le=100)] = 40
+    dense_weight_micros: Annotated[
+        int, Field(ge=1, le=10_000_000)
+    ] = 1_000_000
+    lexical_weight_micros: Annotated[
+        int, Field(ge=1, le=10_000_000)
+    ] = 1_000_000
     rerank_enabled: bool = True
     cross_modal_candidate_count: Annotated[int, Field(ge=1, le=100)] = 20
     cross_modal_min_cosine_similarity: Annotated[
@@ -600,6 +613,10 @@ class RetrievalSettings(StrictSettingsModel):
     def require_rerank_weights_sum_to_one(self) -> Self:
         if abs(self.vector_weight + self.lexical_weight - 1.0) > 1e-9:
             raise ValueError("rerank weights must sum to one")
+        if self.lexical_candidate_count < self.top_k:
+            raise ValueError(
+                "lexical_candidate_count must not be smaller than top_k"
+            )
         return self
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 from uuid import UUID
 
@@ -22,9 +23,11 @@ from rag_kb.domain import (
     Page,
     ResourceNotFoundError,
     ResourceStateConflictError,
+    RetrievalStrategy,
     canonical_request_hash,
     resolve_p1_policy,
 )
+from rag_kb.retrieval.profile import RetrievalExecutionProfile
 from rag_kb.memory import (
     ConversationContextSelector,
     serialize_contextualized_query,
@@ -46,6 +49,11 @@ class ChatService:
         *,
         model_configuration: dict[str, Any],
         default_rerank: bool = False,
+        hybrid_enabled: bool = False,
+        retrieval_profile_factory: Callable[
+            [RetrievalStrategy, int, bool], RetrievalExecutionProfile
+        ]
+        | None = None,
         context_strategy: str = "recent_completed_turns_v1",
         context_max_turns: int = 6,
         context_max_tokens: int = 4000,
@@ -55,6 +63,8 @@ class ChatService:
         self._access_policy = access_policy
         self._model_configuration = dict(model_configuration)
         self._default_rerank = default_rerank
+        self._hybrid_enabled = hybrid_enabled
+        self._retrieval_profile_factory = retrieval_profile_factory
         if (
             context_strategy != "recent_completed_turns_v1"
             or context_max_turns != 6
@@ -178,8 +188,10 @@ class ChatService:
         rerank: bool | None = None,
     ) -> ChatRun:
         self._authorize(context)
-        if retrieval_mode != "vector":
-            raise ResourceStateConflictError("only vector retrieval is enabled")
+        if retrieval_mode not in {"vector", "hybrid"}:
+            raise ResourceStateConflictError("retrieval mode is unsupported")
+        if retrieval_mode == "hybrid" and not self._hybrid_enabled:
+            raise ResourceStateConflictError("hybrid retrieval is not enabled")
         normalized_message = message.strip()
         if not normalized_message:
             raise ValueError("message must contain non-whitespace characters")
@@ -201,11 +213,21 @@ class ChatService:
             "top_k": top_k,
             "rerank": resolved_rerank,
         }
-        retrieval_strategy = {
-            "strategy": "exact_vector",
-            "top_k": top_k,
-            "rerank": resolved_rerank,
-        }
+        strategy = (
+            RetrievalStrategy.HYBRID
+            if retrieval_mode == "hybrid"
+            else RetrievalStrategy.EXACT_VECTOR
+        )
+        if self._retrieval_profile_factory is None:
+            retrieval_strategy = {
+                "strategy": strategy.value,
+                "top_k": top_k,
+                "rerank": resolved_rerank,
+            }
+        else:
+            retrieval_strategy = self._retrieval_profile_factory(
+                strategy, top_k, resolved_rerank
+            ).as_dict()
         request_hash = canonical_request_hash(
             {
                 "session_id": str(session_id),

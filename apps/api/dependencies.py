@@ -13,6 +13,7 @@ from rag_kb.adapters import (
     LocalFileStore,
     LocalIndexAssetStore,
     PublicHttpImageFetcher,
+    PgLexicalStore,
     PgVectorStore,
     TongyiVisionEmbeddingAdapter,
 )
@@ -162,6 +163,48 @@ def build_api_dependencies(
         resolved_settings.file_store.staging_path,
         resolved_settings.file_store.final_path,
     )
+    retrieval_service = RetrievalService(
+        access_policy,
+        embedding_provider,
+        vector_store,
+        candidate_multiplier=resolved_settings.retrieval.candidate_multiplier,
+        max_candidate_count=resolved_settings.retrieval.max_candidate_count,
+        vector_weight=resolved_settings.retrieval.vector_weight,
+        lexical_weight=resolved_settings.retrieval.lexical_weight,
+        mmr_lambda=resolved_settings.retrieval.mmr_lambda,
+        multimodal_embedding_provider=multimodal_embedding_provider,
+        cross_modal_candidate_count=(
+            resolved_settings.retrieval.cross_modal_candidate_count
+        ),
+        cross_modal_min_cosine_similarity=(
+            resolved_settings.retrieval.cross_modal_min_cosine_similarity
+        ),
+        text_min_cosine_similarity=(
+            resolved_settings.retrieval.min_cosine_similarity
+        ),
+        rrf_k=resolved_settings.retrieval.rrf_k,
+        cross_modal_weight_micros=(
+            resolved_settings.retrieval.cross_modal_weight_micros
+        ),
+        lexical_store=PgLexicalStore(database.sessions),
+        hybrid_enabled=resolved_settings.retrieval.hybrid_enabled,
+        lexical_analyzer_version=(
+            resolved_settings.retrieval.lexical_analyzer_version
+        ),
+        lexical_query_version=(
+            resolved_settings.retrieval.lexical_query_version
+        ),
+        lexical_candidate_count=(
+            resolved_settings.retrieval.lexical_candidate_count
+        ),
+        dense_weight_micros=resolved_settings.retrieval.dense_weight_micros,
+        lexical_weight_micros=(
+            resolved_settings.retrieval.lexical_weight_micros
+        ),
+        min_rerank_score=resolved_settings.retrieval.min_rerank_score,
+        relation_hydrator=CompositeEvidenceHydrationService(unit_of_work),
+        deadline_seconds=resolved_settings.retrieval.deadline_seconds,
+    )
     chat_service = ChatService(
         unit_of_work,
         access_policy,
@@ -169,6 +212,14 @@ def build_api_dependencies(
             resolved_settings.model_provider.chat
         ),
         default_rerank=resolved_settings.retrieval.rerank_enabled,
+        hybrid_enabled=resolved_settings.retrieval.hybrid_enabled,
+        retrieval_profile_factory=lambda strategy, top_k, rerank: (
+            retrieval_service.execution_profile(
+                strategy=strategy,
+                top_k=top_k,
+                rerank=rerank,
+            )
+        ),
         context_strategy=resolved_settings.session_context.strategy,
         context_max_turns=resolved_settings.session_context.max_turns,
         context_max_tokens=(
@@ -231,32 +282,7 @@ def build_api_dependencies(
         embedding_provider=embedding_provider,
         multimodal_embedding_provider=multimodal_embedding_provider,
         vector_store=vector_store,
-        retrieval_service=RetrievalService(
-            access_policy,
-            embedding_provider,
-            vector_store,
-            candidate_multiplier=resolved_settings.retrieval.candidate_multiplier,
-            max_candidate_count=resolved_settings.retrieval.max_candidate_count,
-            vector_weight=resolved_settings.retrieval.vector_weight,
-            lexical_weight=resolved_settings.retrieval.lexical_weight,
-            mmr_lambda=resolved_settings.retrieval.mmr_lambda,
-            multimodal_embedding_provider=multimodal_embedding_provider,
-            cross_modal_candidate_count=(
-                resolved_settings.retrieval.cross_modal_candidate_count
-            ),
-            cross_modal_min_cosine_similarity=(
-                resolved_settings.retrieval.cross_modal_min_cosine_similarity
-            ),
-            text_min_cosine_similarity=(
-                resolved_settings.retrieval.min_cosine_similarity
-            ),
-            rrf_k=resolved_settings.retrieval.rrf_k,
-            cross_modal_weight_micros=(
-                resolved_settings.retrieval.cross_modal_weight_micros
-            ),
-            relation_hydrator=CompositeEvidenceHydrationService(unit_of_work),
-            deadline_seconds=resolved_settings.retrieval.deadline_seconds,
-        ),
+        retrieval_service=retrieval_service,
         chat_service=chat_service,
         chat_terminal_watcher=ChatTerminalWatcher(
             chat_service,

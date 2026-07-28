@@ -20,6 +20,7 @@ class FusedHit:
     group_key: str
     score: float
     text_rank: int | None
+    lexical_rank: int | None
     cross_modal_rank: int | None
     matched_representations: tuple[str, ...]
 
@@ -33,17 +34,36 @@ def reciprocal_rank_fusion(
     top_k: int,
     group_keys_by_chunk: Mapping[UUID, tuple[str, ...]] | None = None,
 ) -> tuple[FusedHit, ...]:
-    if rrf_k < 1 or cross_modal_weight_micros < 1 or top_k < 1:
+    return reciprocal_rank_fusion_lanes(
+        (
+            ("dense_text", text_hits, 1_000_000),
+            ("cross_modal", cross_modal_hits, cross_modal_weight_micros),
+        ),
+        rrf_k=rrf_k,
+        top_k=top_k,
+        group_keys_by_chunk=group_keys_by_chunk,
+    )
+
+
+def reciprocal_rank_fusion_lanes(
+    lanes: tuple[tuple[str, tuple[VectorSearchHit, ...], int], ...],
+    *,
+    rrf_k: int = 60,
+    top_k: int,
+    group_keys_by_chunk: Mapping[UUID, tuple[str, ...]] | None = None,
+) -> tuple[FusedHit, ...]:
+    supported_lanes = {"dense_text", "lexical", "cross_modal"}
+    if (
+        rrf_k < 1
+        or top_k < 1
+        or not lanes
+        or any(name not in supported_lanes or weight < 1 for name, _hits, weight in lanes)
+        or len({name for name, _hits, _weight in lanes}) != len(lanes)
+    ):
         raise ValueError("RRF settings must be positive")
     grouped: dict[EvidenceGroupIdentity, dict] = {}
-    for lane, hits, weight in (
-        ("text", text_hits, Decimal(1)),
-        (
-            "cross",
-            cross_modal_hits,
-            Decimal(cross_modal_weight_micros) / Decimal(1_000_000),
-        ),
-    ):
+    for lane, hits, weight_micros in lanes:
+        weight = Decimal(weight_micros) / Decimal(1_000_000)
         seen_groups: set[EvidenceGroupIdentity] = set()
         for rank, hit in enumerate(hits, start=1):
             groups = (
@@ -69,12 +89,18 @@ def reciprocal_rank_fusion(
                         "hit": hit,
                         "score": Decimal(0),
                         "text_rank": None,
+                        "lexical_rank": None,
                         "cross_rank": None,
                         "representations": set(),
                     },
                 )
                 entry["score"] += weight / Decimal(rrf_k + rank)
-                entry[f"{lane}_rank"] = rank
+                rank_key = {
+                    "dense_text": "text_rank",
+                    "lexical": "lexical_rank",
+                    "cross_modal": "cross_rank",
+                }[lane]
+                entry[rank_key] = rank
                 entry["representations"].add(hit.representation_kind)
                 current = entry["hit"]
                 if _preferred(hit, current):
@@ -83,7 +109,11 @@ def reciprocal_rank_fusion(
         grouped.values(),
         key=lambda item: (
             -item["score"],
-            min(item["text_rank"] or 2**31, item["cross_rank"] or 2**31),
+            min(
+                item["text_rank"] or 2**31,
+                item["lexical_rank"] or 2**31,
+                item["cross_rank"] or 2**31,
+            ),
             _modality_priority(item["hit"].modality),
             item["hit"].index_chunk_id.int,
         ),
@@ -94,6 +124,7 @@ def reciprocal_rank_fusion(
             group_key=item["group_key"],
             score=float(item["score"].quantize(Decimal("0.000000000001"), rounding=ROUND_HALF_EVEN)),
             text_rank=item["text_rank"],
+            lexical_rank=item["lexical_rank"],
             cross_modal_rank=item["cross_rank"],
             matched_representations=tuple(sorted(item["representations"])),
         )

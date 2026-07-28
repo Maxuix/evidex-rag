@@ -144,7 +144,8 @@ class PgVectorStore:
     ) -> None:
         configured = expected_space or self._vector_space.configured_space
         if (
-            plan.strategy is not RetrievalStrategy.EXACT_VECTOR
+            plan.strategy
+            not in {RetrievalStrategy.EXACT_VECTOR, RetrievalStrategy.HYBRID}
             or plan.distance_metric != "cosine"
             or plan.ef_search is not None
             or plan.iterative_scan.value != "disabled"

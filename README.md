@@ -1,7 +1,8 @@
 # Local Knowledge Base and RAG
 
-A local Docker Compose application for importing text documents, building a
-pgvector index, inspecting retrieval, and chatting with source citations.
+A local Docker Compose application for importing documents, building pgvector
+and versioned PostgreSQL FTS derived indexes, inspecting exact or hybrid
+retrieval, and chatting with source citations.
 
 ## Start
 
@@ -33,6 +34,11 @@ the retired backend keys. See the
 [local development guide](docs/release/local-development-guide.md) for the
 supported settings.
 
+Exact-vector retrieval remains the default. To evaluate the optional hybrid
+path, migrate first, run the lexical backfill, then explicitly set
+`RAG_KB__RETRIEVAL__HYBRID_ENABLED=true`; existing requests remain exact unless
+they select `strategy=hybrid` or Chat `retrieval.mode=hybrid`.
+
 ## Basic Check
 
 ```bash
@@ -48,6 +54,8 @@ compatibility, or release matrix is part of the normal workflow.
 ```bash
 docker compose --env-file .env.local ps
 docker compose --env-file .env.local logs --no-color api worker
+docker compose --env-file .env.local run --rm maintenance \
+  backfill-lexical-index
 docker compose --env-file .env.local down
 PYTHONPATH=src:. .venv/bin/python tools/reset_local.py \
   --env-file .env \

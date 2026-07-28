@@ -33,7 +33,10 @@ from rag_kb.domain import (
     ParserSource,
     VectorSearchHit,
 )
-from rag_kb.retrieval.fusion import reciprocal_rank_fusion
+from rag_kb.retrieval.fusion import (
+    reciprocal_rank_fusion,
+    reciprocal_rank_fusion_lanes,
+)
 from rag_kb.services import IndexAssetService
 
 
@@ -316,6 +319,37 @@ class MultimodalEmbeddingAdapterTests(unittest.IsolatedAsyncioTestCase):
 
 
 class RankFusionTests(unittest.TestCase):
+    def test_rrf_accumulates_dense_lexical_and_cross_modal_lanes(self) -> None:
+        group = "three-lane-group"
+        dense = _hit(uuid4(), "text", "text", group, 0.08, "narrative")
+        lexical = replace(dense, lexical_rank=1, lexical_score=0.8)
+        visual = _hit(
+            uuid4(), "native_image", "image", group, 0.04, ""
+        )
+
+        fused = reciprocal_rank_fusion_lanes(
+            (
+                ("dense_text", (dense,), 1_000_000),
+                ("lexical", (lexical,), 500_000),
+                ("cross_modal", (visual,), 2_000_000),
+            ),
+            rrf_k=60,
+            top_k=10,
+        )
+
+        self.assertEqual(len(fused), 1)
+        self.assertEqual(
+            (
+                fused[0].text_rank,
+                fused[0].lexical_rank,
+                fused[0].cross_modal_rank,
+            ),
+            (1, 1, 1),
+        )
+        self.assertTrue(
+            math.isclose(fused[0].score, 3.5 / 61, abs_tol=1e-12)
+        )
+
     def test_rrf_deduplicates_evidence_group_and_preserves_lane_diagnostics(self) -> None:
         group = "asset-group"
         text = _hit(uuid4(), "caption_text", "image", group, 0.08, "caption")

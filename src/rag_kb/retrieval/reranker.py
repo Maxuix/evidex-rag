@@ -72,28 +72,14 @@ def rerank_hits(
     if not 0.0 < mmr_lambda <= 1.0:
         raise ValueError("mmr_lambda must be between zero and one")
 
-    candidates = tuple(hits)
-    if not candidates:
+    scored = score_hits(
+        query,
+        hits,
+        vector_weight=vector_weight,
+        lexical_weight=lexical_weight,
+    )
+    if not scored:
         return ()
-    query_terms = _terms(query)
-    document_terms = tuple(_terms(hit.text) for hit in candidates)
-    document_frequency = Counter(
-        term for terms in document_terms for term in set(terms)
-    )
-    average_length = sum(len(terms) for terms in document_terms) / len(candidates)
-    scored = tuple(
-        _score(
-            hit,
-            terms,
-            query_terms,
-            document_frequency,
-            len(candidates),
-            average_length,
-            vector_weight,
-            lexical_weight,
-        )
-        for hit, terms in zip(candidates, document_terms, strict=True)
-    )
 
     remaining = list(scored)
     selected: list[RerankedHit] = []
@@ -114,6 +100,41 @@ def rerank_hits(
         selected.append(best)
         remaining.remove(best)
     return tuple(selected)
+
+
+def score_hits(
+    query: str,
+    hits: Iterable[VectorSearchHit],
+    *,
+    vector_weight: float = 0.65,
+    lexical_weight: float = 0.35,
+) -> tuple[RerankedHit, ...]:
+    """Score candidates in input order without truncation or diversity selection."""
+
+    if not math.isclose(vector_weight + lexical_weight, 1.0, abs_tol=1e-9):
+        raise ValueError("rerank weights must sum to one")
+    candidates = tuple(hits)
+    if not candidates:
+        return ()
+    query_terms = _terms(query)
+    document_terms = tuple(_terms(hit.text) for hit in candidates)
+    document_frequency = Counter(
+        term for terms in document_terms for term in set(terms)
+    )
+    average_length = sum(len(terms) for terms in document_terms) / len(candidates)
+    return tuple(
+        _score(
+            hit,
+            terms,
+            query_terms,
+            document_frequency,
+            len(candidates),
+            average_length,
+            vector_weight,
+            lexical_weight,
+        )
+        for hit, terms in zip(candidates, document_terms, strict=True)
+    )
 
 
 def _score(

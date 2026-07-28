@@ -510,10 +510,7 @@ class SettingsTests(unittest.TestCase):
                     build_settings(root, delivery_reliability={flag: True})
 
     def test_later_retrieval_features_cannot_be_enabled(self) -> None:
-        overrides = (
-            {"vector_store": {"hnsw_enabled": True}},
-            {"retrieval": {"hybrid_enabled": True}},
-        )
+        overrides = ({"vector_store": {"hnsw_enabled": True}},)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for override in overrides:
@@ -521,6 +518,17 @@ class SettingsTests(unittest.TestCase):
                     ValidationError
                 ):
                     build_settings(root, **override)
+
+    def test_hybrid_retrieval_is_explicitly_configurable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            settings = build_settings(
+                Path(directory), retrieval={"hybrid_enabled": True}
+            )
+        self.assertTrue(settings.retrieval.hybrid_enabled)
+        self.assertEqual(
+            settings.retrieval.lexical_analyzer_version,
+            "lexical_simple_cjk_bigram_v1",
+        )
 
     def test_reranking_can_be_disabled_as_a_runtime_rollback(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

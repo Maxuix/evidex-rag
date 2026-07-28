@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
@@ -15,12 +16,17 @@ from rag_kb.domain import (
     ConversationTurn,
     InsufficiencyPolicy,
     Page,
+    RetrievalStrategy,
     resolve_p1_policy,
 )
 from rag_kb.memory import hydrate_conversation_context
 from rag_kb.repositories.sqlalchemy_chat import SqlAlchemyChatRepository
 from rag_kb.schemas import ChatRunCreate
 from rag_kb.services import ChatService, chat_model_configuration
+from rag_kb.retrieval.profile import (
+    HYBRID_PROFILE_VERSION,
+    legacy_exact_profile,
+)
 
 
 class ChatCreationContractTests(unittest.TestCase):
@@ -179,6 +185,58 @@ class ChatCreationContractTests(unittest.TestCase):
 
 
 class ChatCreationServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_hybrid_run_freezes_complete_versioned_retrieval_profile(
+        self,
+    ) -> None:
+        workspace_id = uuid4()
+        kb_id = uuid4()
+        chat = _ChatRepository(kb_id=kb_id)
+
+        def profile_factory(strategy, top_k, rerank):
+            self.assertIs(strategy, RetrievalStrategy.HYBRID)
+            return replace(
+                legacy_exact_profile(top_k=top_k, rerank=rerank),
+                profile_version=HYBRID_PROFILE_VERSION,
+                strategy=RetrievalStrategy.HYBRID,
+                lexical_analyzer_version="lexical_simple_cjk_bigram_v1",
+                lexical_query_version="lexical_or_query_v1",
+                dense_candidate_count=17,
+                lexical_candidate_count=23,
+            )
+
+        service = ChatService(
+            _Factory(workspace_id, chat, kb_id),
+            SingleWorkspaceAccessPolicy(workspace_id),
+            model_configuration={"resolved_model": "fixed-model"},
+            hybrid_enabled=True,
+            retrieval_profile_factory=profile_factory,
+        )
+
+        created = await service.create_run(
+            AuthContext("principal", "client", workspace_id),
+            uuid4(),
+            session_id=uuid4(),
+            kb_id=kb_id,
+            message="查询 ABC-42",
+            answer_style=None,
+            insufficiency_policy=None,
+            retrieval_mode="hybrid",
+            top_k=4,
+            rerank=True,
+        )
+
+        snapshot = created["retrieval_strategy"]
+        self.assertEqual(snapshot["profile_version"], HYBRID_PROFILE_VERSION)
+        self.assertEqual(snapshot["strategy"], "hybrid")
+        self.assertEqual(snapshot["dense_candidate_count"], 17)
+        self.assertEqual(snapshot["lexical_candidate_count"], 23)
+        self.assertEqual(
+            snapshot["lexical_analyzer_version"],
+            "lexical_simple_cjk_bigram_v1",
+        )
+        self.assertIn("rrf_k", snapshot)
+        self.assertIn("min_cosine_similarity", snapshot)
+
     async def test_session_listing_filters_by_authorized_knowledge_base(self) -> None:
         workspace_id = uuid4()
         kb_id = uuid4()

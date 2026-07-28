@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+from uuid import UUID
 
 from apps.maintenance.dependencies import build_maintenance_dependencies
 
@@ -36,12 +37,53 @@ async def cleanup() -> dict[str, int]:
         await dependencies.close()
 
 
+async def backfill_lexical_index(
+    knowledge_base_id: UUID | None,
+) -> dict:
+    dependencies = build_maintenance_dependencies()
+    try:
+        results = await dependencies.lexical_backfill.run(
+            kb_id=knowledge_base_id
+        )
+        return {
+            "target_count": len(results),
+            "lexical_chunk_count": sum(
+                item.lexical_chunk_count for item in results
+            ),
+            "targets": [
+                {
+                    "indexed_document_version_id": str(
+                        item.indexed_document_version_id
+                    ),
+                    "lexical_chunk_count": item.lexical_chunk_count,
+                    "status": item.status,
+                    "error_code": item.error_code,
+                }
+                for item in results
+            ],
+        }
+    finally:
+        await dependencies.close()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=("cleanup",))
+    parser.add_argument(
+        "command", choices=("cleanup", "backfill-lexical-index")
+    )
+    parser.add_argument("--knowledge-base-id", type=UUID)
     arguments = parser.parse_args()
     if arguments.command == "cleanup":
         print(json.dumps(asyncio.run(cleanup()), separators=(",", ":")))
+    elif arguments.command == "backfill-lexical-index":
+        print(
+            json.dumps(
+                asyncio.run(
+                    backfill_lexical_index(arguments.knowledge_base_id)
+                ),
+                separators=(",", ":"),
+            )
+        )
     return 0
 
 

@@ -453,8 +453,11 @@
         "additionalProperties": false,
         "properties": {
           "mode": {
-            "const": "vector",
             "default": "vector",
+            "enum": [
+              "vector",
+              "hybrid"
+            ],
             "title": "Mode",
             "type": "string"
           },
@@ -903,12 +906,195 @@
       "ChatRunRetrievalResponse": {
         "additionalProperties": false,
         "properties": {
+          "cross_modal_candidate_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cross Modal Candidate Count"
+          },
+          "cross_modal_min_cosine_similarity": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cross Modal Min Cosine Similarity"
+          },
+          "cross_modal_weight_micros": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cross Modal Weight Micros"
+          },
+          "dense_candidate_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dense Candidate Count"
+          },
+          "dense_weight_micros": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dense Weight Micros"
+          },
+          "lexical_analyzer_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lexical Analyzer Version"
+          },
+          "lexical_candidate_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lexical Candidate Count"
+          },
+          "lexical_query_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lexical Query Version"
+          },
+          "lexical_weight_micros": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lexical Weight Micros"
+          },
+          "min_cosine_similarity": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Cosine Similarity"
+          },
+          "min_rerank_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Rerank Score"
+          },
+          "mmr_lambda": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mmr Lambda"
+          },
+          "profile_version": {
+            "anyOf": [
+              {
+                "enum": [
+                  "exact_vector_v1",
+                  "hybrid_fts_rrf_v1"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Version"
+          },
           "rerank": {
             "title": "Rerank",
             "type": "boolean"
           },
+          "rerank_lexical_weight": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rerank Lexical Weight"
+          },
+          "rerank_vector_weight": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rerank Vector Weight"
+          },
+          "rrf_k": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rrf K"
+          },
           "strategy": {
-            "const": "exact_vector",
+            "enum": [
+              "exact_vector",
+              "hybrid"
+            ],
             "title": "Strategy",
             "type": "string"
           },
@@ -2055,6 +2241,17 @@
             "title": "Lexical Coverage",
             "type": "number"
           },
+          "lexical_rank": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lexical Rank"
+          },
           "lexical_score": {
             "default": 0.0,
             "title": "Lexical Score",
@@ -2786,6 +2983,17 @@
             ],
             "title": "Figure Label"
           },
+          "lexical_rank": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lexical Rank"
+          },
           "modality": {
             "title": "Modality",
             "type": "string"
@@ -2884,6 +3092,39 @@
               }
             ],
             "title": "Hydrated Relation Count"
+          },
+          "lexical_analyzer_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lexical Analyzer Version"
+          },
+          "lexical_candidate_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lexical Candidate Count"
+          },
+          "lexical_manifest_target_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lexical Manifest Target Count"
           },
           "query_plan": {
             "$ref": "#/components/schemas/RetrievalQueryPlanResponse"
