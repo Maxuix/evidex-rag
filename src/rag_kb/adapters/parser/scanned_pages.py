@@ -2,8 +2,9 @@
 
 A converted ``DoclingDocument`` records no OCR provenance, so it cannot say
 whether a page's text came from a text layer or from recognition. This probe
-reads only the PDF page structure — never its content — to decide which
-surfaces need their rendered image as evidence.
+stops content-stream traversal at the first non-whitespace text fragment and
+then inspects page resources only when deciding whether an image surface is
+required as evidence.
 """
 
 from __future__ import annotations
@@ -17,6 +18,10 @@ from pypdf import PdfReader
 from rag_kb.domain import ErrorCode, ParserExecutionError, ParserSource
 
 
+class _TextLayerFound(BaseException):
+    """Stop pypdf content-stream traversal after the first visible text."""
+
+
 def scanned_surfaces(source: ParserSource) -> frozenset[int]:
     """Return the 1-based pages that carry an image and no text layer."""
 
@@ -27,7 +32,7 @@ def scanned_surfaces(source: ParserSource) -> frozenset[int]:
         return frozenset(
             number
             for number, page in enumerate(reader.pages, start=1)
-            if not (page.extract_text() or "").strip() and _has_image(page)
+            if not _has_text_layer(page) and _has_image(page)
         )
     except ParserExecutionError:
         raise
@@ -36,6 +41,18 @@ def scanned_surfaces(source: ParserSource) -> frozenset[int]:
             ErrorCode.PARSER_OUTPUT_INVALID,
             diagnostic={"check": "pdf_text_layer"},
         ) from error
+
+
+def _has_text_layer(page: Any) -> bool:
+    def stop_on_text(text: Any, *_: Any) -> None:
+        if isinstance(text, str) and text.strip():
+            raise _TextLayerFound
+
+    try:
+        extracted = page.extract_text(visitor_text=stop_on_text)
+    except _TextLayerFound:
+        return True
+    return bool((extracted or "").strip())
 
 
 def _has_image(page: Any) -> bool:

@@ -372,6 +372,63 @@ class IndexingPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(planner_thread), 1)
         self.assertNotEqual(planner_thread[0], loop_thread)
 
+    async def test_scanned_surface_probe_does_not_block_event_loop(self) -> None:
+        repository = _Repository(_target(multimodal=True))
+        factory = _Factory(repository)
+        text_provider = _Provider(factory)
+        visual_provider = _MultimodalProvider(factory)
+        global _CURRENT_FACTORY
+        _CURRENT_FACTORY = factory
+        pipeline = IndexingPipeline(
+            factory,
+            _FileStore(factory),
+            _MultimodalParser(factory),
+            text_provider,
+            FixedPgVectorSpace(_embedding()),
+            asset_store=_AssetStore(factory),
+            multimodal_embedding_provider=visual_provider,
+        )
+        command = IndexingCommand(
+            repository.target.job_id,
+            repository.target.indexed_document_version_id,
+        )
+        loop_thread = threading.get_ident()
+        probe_entered = threading.Event()
+        probe_release = threading.Event()
+        probe_thread: list[int] = []
+
+        def blocked_probe(source):
+            del source
+            probe_thread.append(threading.get_ident())
+            probe_entered.set()
+            if not probe_release.wait(timeout=2):
+                raise AssertionError("event loop did not release scanned-page probe")
+            return frozenset()
+
+        async def release_after_probe_starts() -> None:
+            while not probe_entered.is_set():
+                await asyncio.sleep(0)
+            probe_release.set()
+
+        release_task = asyncio.create_task(release_after_probe_starts())
+        try:
+            with patch.object(
+                pipeline_module,
+                "scanned_surfaces",
+                side_effect=blocked_probe,
+            ):
+                result = await pipeline.execute(command)
+            await release_task
+        finally:
+            probe_release.set()
+            if not release_task.done():
+                release_task.cancel()
+                await asyncio.gather(release_task, return_exceptions=True)
+
+        self.assertEqual(result.status, "ready")
+        self.assertEqual(len(probe_thread), 1)
+        self.assertNotEqual(probe_thread[0], loop_thread)
+
 
 class _Factory:
     def __init__(self, repository) -> None:

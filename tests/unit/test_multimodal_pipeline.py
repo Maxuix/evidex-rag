@@ -100,6 +100,36 @@ def _space() -> EmbeddingSpaceDefinition:
 
 
 class ScannedSurfaceTests(unittest.TestCase):
+    def test_text_layer_probe_stops_after_first_non_whitespace_fragment(self) -> None:
+        class TextPage:
+            def __init__(self) -> None:
+                self.visited: list[str] = []
+                self.swallowed_control_flow = False
+                self.reached_later_text = False
+
+            def extract_text(self, *, visitor_text) -> str:
+                visitor_text(" \n", None, None, None, None)
+                self.visited.append("whitespace")
+                try:
+                    visitor_text("native text", None, None, None, None)
+                except Exception:
+                    self.swallowed_control_flow = True
+                self.reached_later_text = True
+                visitor_text("later text", None, None, None, None)
+                return "native text later text"
+
+        page = TextPage()
+        with patch(
+            "rag_kb.adapters.parser.scanned_pages.PdfReader",
+            return_value=SimpleNamespace(pages=(page,)),
+        ):
+            result = scanned_surfaces(_pdf_source(b"synthetic"))
+
+        self.assertEqual(result, frozenset())
+        self.assertEqual(page.visited, ["whitespace"])
+        self.assertFalse(page.swallowed_control_flow)
+        self.assertFalse(page.reached_later_text)
+
     def test_raster_only_pdf_page_is_detected_without_provider_or_ocr(self) -> None:
         scanned = BytesIO()
         Image.new("RGB", (120, 80), "white").save(scanned, format="PDF")

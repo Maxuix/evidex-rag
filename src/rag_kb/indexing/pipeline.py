@@ -582,8 +582,13 @@ class IndexingPipeline:
         assert self._asset_store is not None
         cross_space_id = target.embedding_space_ids["cross_modal_retrieval"]
         await self._set_phase(command, IndexingPhase.ASSET_EXTRACTION)
-        assembly, extracted = self._composite_evidence(
-            target, source, document, assembled, surface_labels
+        assembly, extracted = await asyncio.to_thread(
+            self._composite_evidence,
+            target,
+            source,
+            document,
+            assembled,
+            surface_labels,
         )
         units = assembly.units
         relations = assembly.relations
