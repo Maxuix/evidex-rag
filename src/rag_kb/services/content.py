@@ -130,11 +130,7 @@ class KnowledgeBaseService:
         resolved_parsing = ParsingPreset(parsing_preset)
         resolved_profile = profile_for_preset(resolved_preset, resolved_parsing)
         if (
-            resolved_parsing
-            in {
-                ParsingPreset.MULTIMODAL_LOCAL_V1,
-                ParsingPreset.MULTIMODAL_LOCAL_V2,
-            }
+            resolved_parsing is ParsingPreset.MULTIMODAL_LOCAL_V2
             and self._cross_modal_embedding_space is None
         ):
             raise ResourceStateConflictError(
@@ -155,39 +151,12 @@ class KnowledgeBaseService:
                 "answer_policy_defaults": resolved_answer_defaults,
             }
         )
-        previous_request_hash = canonical_request_hash(
-            {
-                "name": name,
-                "chunking": {"preset": resolved_preset.value},
-                "retrieval_defaults": retrieval_defaults,
-                "answer_policy_defaults": resolved_answer_defaults,
-            }
-        )
-        legacy_request_hash = (
-            canonical_request_hash(
-                {
-                    "name": name,
-                    "retrieval_defaults": retrieval_defaults,
-                    "answer_policy_defaults": resolved_answer_defaults,
-                }
-            )
-            if (
-                resolved_parsing is ParsingPreset.TEXT_LOCAL_V1
-                and resolved_preset is ChunkingPreset.STRUCTURAL_BALANCED_V2
-            )
-            else None
-        )
-
         async def persist(uow: UnitOfWork) -> KnowledgeBase:
             _require_scope(uow, context)
             await uow.content_mutations.lock(scope)
             prior = await uow.content_mutations.get(scope)
             if prior is not None:
-                if prior.request_hash not in {
-                    request_hash,
-                    previous_request_hash,
-                    legacy_request_hash,
-                }:
+                if prior.request_hash != request_hash:
                     raise IdempotencyKeyReusedError(
                         "idempotency key was already used with a different request"
                     )
@@ -203,11 +172,7 @@ class KnowledgeBaseService:
                 embedding_space=self._embedding_space,
                 cross_modal_embedding_space=(
                     self._cross_modal_embedding_space
-                    if resolved_parsing
-                    in {
-                        ParsingPreset.MULTIMODAL_LOCAL_V1,
-                        ParsingPreset.MULTIMODAL_LOCAL_V2,
-                    }
+                    if resolved_parsing is ParsingPreset.MULTIMODAL_LOCAL_V2
                     else None
                 ),
                 index_profile=resolved_profile,

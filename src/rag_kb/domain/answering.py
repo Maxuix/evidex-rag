@@ -69,19 +69,23 @@ class PromptEvidence:
     index_chunk_id: UUID
     document_id: UUID
     document_version_id: UUID
+    document_display_name: str
+    document_original_filename: str
     excerpt: str
     source_location: Mapping[str, Any]
     score: float | None = None
     modality: str = "text"
     asset_snapshot: Mapping[str, Any] | None = None
     matched_representations: tuple[str, ...] = ("text",)
-    document_display_name: str | None = None
-    document_original_filename: str | None = None
 
     def __post_init__(self) -> None:
         if self.citation_id != f"cite_{self.rank}" or self.rank < 1:
             raise ValueError("prompt evidence citation identifier must match its rank")
-        if not self.excerpt:
+        if (
+            not self.excerpt
+            or not self.document_display_name.strip()
+            or not self.document_original_filename.strip()
+        ):
             raise ValueError("prompt evidence excerpt must not be empty")
         object.__setattr__(
             self, "source_location", MappingProxyType(dict(self.source_location))
@@ -285,17 +289,23 @@ class RenderedCitation:
     index_chunk_id: UUID
     document_id: UUID
     document_version_id: UUID
+    document_display_name: str
+    document_original_filename: str
     quoted_text: str
     source_location: Mapping[str, Any]
     score: float | None
     modality: str = "text"
     asset_snapshot: Mapping[str, Any] | None = None
     matched_representations: tuple[str, ...] = ("text",)
-    document_display_name: str | None = None
-    document_original_filename: str | None = None
 
     def __post_init__(self) -> None:
-        if self.ordinal < 0 or not self.citation_id or not self.quoted_text:
+        if (
+            self.ordinal < 0
+            or not self.citation_id
+            or not self.quoted_text
+            or not self.document_display_name.strip()
+            or not self.document_original_filename.strip()
+        ):
             raise ValueError("rendered citation identity is invalid")
         object.__setattr__(
             self, "source_location", MappingProxyType(dict(self.source_location))

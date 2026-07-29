@@ -10,13 +10,6 @@ from rag_kb.domain import ChatOutputSchema
 from rag_kb.memory.query import WireContextualQuery
 
 
-class LegacyWireContextualQuery(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    status: Literal["ready", "needs_clarification"]
-    standalone_query: str | None
-
-
 class WireAnswerClaim(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -34,6 +27,5 @@ class WireAnswer(BaseModel):
 
 OUTPUT_SCHEMAS: dict[ChatOutputSchema, type[BaseModel]] = {
     ChatOutputSchema.ANSWER_V1: WireAnswer,
-    ChatOutputSchema.CONTEXTUAL_QUERY_V1: LegacyWireContextualQuery,
     ChatOutputSchema.CONTEXTUAL_QUERY_V2: WireContextualQuery,
 }

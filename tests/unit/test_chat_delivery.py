@@ -6,6 +6,7 @@ from uuid import UUID
 
 from rag_kb.auth import AuthContext
 from rag_kb.domain import ChatRun
+from rag_kb.memory import empty_conversation_context, serialize_conversation_context
 from rag_kb.services import ChatSseConnectionLimiter, ChatTerminalWatcher
 
 
@@ -201,4 +202,7 @@ def _run(status: str) -> ChatRun:
         created_at=now,
         updated_at=now,
         completed_at=now if status == "completed" else None,
+        conversation_context=serialize_conversation_context(
+            empty_conversation_context()
+        ),
     )

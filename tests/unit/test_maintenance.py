@@ -17,7 +17,14 @@ from rag_kb.domain import (
     RetiredIndexTargetAssets,
 )
 from rag_kb.services.maintenance import MaintenanceCleanupService
-from tools.reset_local import CONFIRMATION, main, reset_command
+from tools.reset_local import (
+    CONFIRMATION,
+    VolumeTargets,
+    compose_down_command,
+    main,
+    resolve_volume_targets,
+    volume_remove_command,
+)
 
 
 _WORKSPACE_ID = UUID("01900000-0000-7000-8000-000000000601")
@@ -25,9 +32,12 @@ _NOW = datetime(2026, 7, 28, 12, 0, tzinfo=UTC)
 
 
 class LocalResetTests(unittest.TestCase):
-    def test_reset_command_is_project_scoped_and_removes_volumes(self) -> None:
+    def test_commands_are_project_scoped_and_preserve_model_cache(self) -> None:
         self.assertEqual(
-            reset_command(env_file="local.env", project_name="rag-kb-local"),
+            compose_down_command(
+                env_file="local.env",
+                project_name="rag-kb-local",
+            ),
             [
                 "docker",
                 "compose",
@@ -38,14 +48,35 @@ class LocalResetTests(unittest.TestCase):
                 "--project-name",
                 "rag-kb-local",
                 "down",
-                "--volumes",
                 "--remove-orphans",
+            ],
+        )
+        self.assertEqual(
+            volume_remove_command(
+                ("rag-kb-local_postgres-data", "rag-kb-local_source-data")
+            ),
+            [
+                "docker",
+                "volume",
+                "rm",
+                "rag-kb-local_postgres-data",
+                "rag-kb-local_source-data",
             ],
         )
 
     def test_wrong_confirmation_stops_before_external_action(self) -> None:
         with (
-            patch.object(sys, "argv", ["reset_local.py", "--confirm", "wrong"]),
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "reset_local.py",
+                    "--project-name",
+                    "rag-kb-local",
+                    "--confirm",
+                    "wrong",
+                ],
+            ),
             patch("tools.reset_local.load_settings") as load,
             patch("tools.reset_local.subprocess.run") as run,
             self.assertRaises(SystemExit),
@@ -62,15 +93,132 @@ class LocalResetTests(unittest.TestCase):
             patch.object(
                 sys,
                 "argv",
-                ["reset_local.py", "--confirm", CONFIRMATION],
+                [
+                    "reset_local.py",
+                    "--project-name",
+                    "rag-kb-local",
+                    "--confirm",
+                    CONFIRMATION,
+                ],
             ),
             patch("tools.reset_local.load_settings", return_value=settings),
+            patch(
+                "tools.reset_local.resolve_volume_targets",
+                side_effect=(
+                    VolumeTargets(
+                        project_name="rag-kb-local",
+                        remove=(
+                            "rag-kb-local_postgres-data",
+                            "rag-kb-local_source-data",
+                        ),
+                        preserve=("rag-kb-local_inference-model-cache",),
+                    ),
+                    VolumeTargets(
+                        project_name="rag-kb-local",
+                        remove=(),
+                        preserve=("rag-kb-local_inference-model-cache",),
+                    ),
+                ),
+            ),
             patch("tools.reset_local.subprocess.run") as run,
         ):
             self.assertEqual(main(), 0)
-        run.assert_called_once()
-        command = run.call_args.args[0]
-        self.assertEqual(command[-3:], ["down", "--volumes", "--remove-orphans"])
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(
+            run.call_args_list[0].args[0][-2:],
+            ["down", "--remove-orphans"],
+        )
+        self.assertEqual(
+            run.call_args_list[1].args[0],
+            [
+                "docker",
+                "volume",
+                "rm",
+                "rag-kb-local_postgres-data",
+                "rag-kb-local_source-data",
+            ],
+        )
+
+    def test_compose_and_application_environment_files_are_distinct(self) -> None:
+        settings = SimpleNamespace(
+            app=SimpleNamespace(deployment_profile=DeploymentProfile.DEVELOPMENT)
+        )
+        with (
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "reset_local.py",
+                    "--env-file",
+                    "compose.env",
+                    "--app-env-file",
+                    "application.env",
+                    "--project-name",
+                    "rag-kb-local",
+                    "--inspect-only",
+                    "--confirm",
+                    CONFIRMATION,
+                ],
+            ),
+            patch(
+                "tools.reset_local.load_settings",
+                return_value=settings,
+            ) as load,
+            patch(
+                "tools.reset_local.resolve_volume_targets",
+                return_value=VolumeTargets(
+                    project_name="rag-kb-local",
+                    remove=("rag-kb-local_postgres-data",),
+                    preserve=("rag-kb-local_inference-model-cache",),
+                ),
+            ),
+            patch("tools.reset_local.subprocess.run") as run,
+        ):
+            self.assertEqual(main(), 0)
+
+        load.assert_called_once_with(env_file="application.env")
+        run.assert_not_called()
+
+    def test_volume_resolution_uses_exact_compose_labels(self) -> None:
+        responses = (
+            SimpleNamespace(stdout="rag-kb-local_postgres-data\n"),
+            SimpleNamespace(stdout="rag-kb-local\tpostgres-data\n"),
+            SimpleNamespace(stdout="rag-kb-local_source-data\n"),
+            SimpleNamespace(stdout="rag-kb-local\tsource-data\n"),
+            SimpleNamespace(stdout="rag-kb-local_inference-model-cache\n"),
+            SimpleNamespace(stdout="rag-kb-local\tinference-model-cache\n"),
+        )
+        with patch(
+            "tools.reset_local.subprocess.run",
+            side_effect=responses,
+        ) as run:
+            targets = resolve_volume_targets("rag-kb-local")
+
+        self.assertEqual(
+            targets,
+            VolumeTargets(
+                project_name="rag-kb-local",
+                remove=(
+                    "rag-kb-local_postgres-data",
+                    "rag-kb-local_source-data",
+                ),
+                preserve=("rag-kb-local_inference-model-cache",),
+            ),
+        )
+        self.assertEqual(run.call_count, 6)
+        for volume_key, call in zip(
+            (
+                "postgres-data",
+                "source-data",
+                "inference-model-cache",
+            ),
+            run.call_args_list[::2],
+            strict=True,
+        ):
+            self.assertIn(
+                f"label=com.docker.compose.volume={volume_key}",
+                call.args[0],
+            )
 
 
 class MaintenanceCleanupServiceTests(unittest.IsolatedAsyncioTestCase):

@@ -164,7 +164,6 @@ from rag_kb.domain.indexing import (
 )
 from rag_kb.domain.memory import (
     CONTEXTUAL_QUERY_VERSION,
-    LEGACY_CONTEXTUAL_QUERY_VERSION,
     SESSION_CONTEXT_STRATEGY,
     SESSION_CONTEXT_VERSION,
     ContextualizedQuery,
@@ -250,7 +249,6 @@ __all__ = [
     "QueryContextStatus",
     "QueryRewriteSource",
     "CONTEXTUAL_QUERY_VERSION",
-    "LEGACY_CONTEXTUAL_QUERY_VERSION",
     "SESSION_CONTEXT_STRATEGY",
     "SESSION_CONTEXT_VERSION",
     "empty_context_snapshot",

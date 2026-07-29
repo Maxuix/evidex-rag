@@ -8,7 +8,6 @@ from uuid import UUID, uuid4
 from rag_kb.document_processing import (
     count_chunk_tokens,
     SEMANTIC_CHUNKING_CONFIG,
-    UNSTRUCTURED_CHUNKING_CONFIG,
     profile_fingerprint,
     profile_for_preset,
     public_descriptor,
@@ -52,24 +51,18 @@ class SemanticProfileTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             resolve(semantic.parser_config, semantic.chunking_config)
         self.assertEqual(SEMANTIC_CHUNKING_CONFIG["max_chunk_tokens"], 800)
-        self.assertNotIn("preset", UNSTRUCTURED_CHUNKING_CONFIG)
 
-    def test_retired_semantic_profile_is_described_but_never_executable(self) -> None:
-        legacy = {"profile": "unstructured_title_semantic_qwen_v1"}
+    def test_unknown_semantic_profile_is_rejected(self) -> None:
+        unknown = {"profile": "unknown_semantic_profile"}
 
-        self.assertEqual(
-            public_descriptor(legacy),
-            {
-                "preset": "legacy_incompatible",
-                "profile": "unstructured_title_semantic_qwen_v1",
-            },
-        )
+        with self.assertRaises(ValueError):
+            public_descriptor(unknown)
         with self.assertRaises(ValueError):
             resolve(
                 profile_for_preset(
                     ChunkingPreset.STRUCTURAL_BALANCED_V2
                 ).parser_config,
-                legacy,
+                unknown,
             )
 
 

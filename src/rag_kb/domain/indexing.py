@@ -15,7 +15,6 @@ from rag_kb.domain.errors import ErrorCode
 from rag_kb.domain.parsing import ContentModality
 
 
-CHUNK_ID_NAMESPACE = UUID("bfa48c2a-6d99-5b0c-94df-0f7bb462c704")
 VECTOR_ID_NAMESPACE = UUID("263db84c-f438-5bd1-b9ca-666752fc2e92")
 ASSET_ID_NAMESPACE = UUID("fef9ec6a-9ec5-58ac-9ceb-487db6cbeb79")
 RELATION_ID_NAMESPACE = UUID("a758db33-f59e-5ed5-a68b-8cd4e0fbbe55")
@@ -165,13 +164,17 @@ class IndexChunkWrite:
     source_location: dict[str, Any]
     hierarchy: dict[str, Any]
     source_metadata: dict[str, Any]
-    unit_key: str = ""
+    unit_key: str
     modality: ContentModality = ContentModality.TEXT
     index_asset_id: UUID | None = None
     evidence_group_key: str | None = None
     relations: dict[str, Any] | None = None
     embedding_text: str | None = None
     embedding_text_hash: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.unit_key.strip():
+            raise ValueError("index chunk unit key must not be empty")
 
 
 @dataclass(frozen=True, slots=True)
@@ -298,10 +301,39 @@ class IndexArtifactManifest:
     unit_count: int
     asset_count: int
     representation_count: int
+    relation_plan: tuple[dict[str, Any], ...]
+    relation_count: int
+    relation_manifest_hash: str
     manifest_hash: str
-    relation_plan: tuple[dict[str, Any], ...] | None = None
-    relation_count: int | None = None
-    relation_manifest_hash: str | None = None
+
+    def __post_init__(self) -> None:
+        if min(
+            self.unit_count,
+            self.asset_count,
+            self.representation_count,
+            self.relation_count,
+        ) < 0:
+            raise ValueError("artifact manifest counts must be non-negative")
+        if self.unit_count != len(self.unit_plan):
+            raise ValueError("artifact manifest unit count differs from its plan")
+        if self.representation_count != len(self.representation_matrix):
+            raise ValueError(
+                "artifact manifest representation count differs from its matrix"
+            )
+        if self.relation_count != len(self.relation_plan):
+            raise ValueError(
+                "artifact manifest relation count differs from its plan"
+            )
+        for value in (
+            self.source_checksum_sha256,
+            self.profile_fingerprint,
+            self.element_sequence_hash,
+            self.asset_manifest_hash,
+            self.relation_manifest_hash,
+            self.manifest_hash,
+        ):
+            if len(value) != 64:
+                raise ValueError("artifact manifest hash is invalid")
 
 
 @dataclass(frozen=True, slots=True)
@@ -398,17 +430,12 @@ class IndexingCancelled(RuntimeError):
 
 def stable_chunk_id(
     indexed_document_version_id: UUID,
-    ordinal: int,
     *,
-    profile_fingerprint: str | None = None,
-    unit_key: str | None = None,
+    profile_fingerprint: str,
+    unit_key: str,
 ) -> UUID:
-    if ordinal < 0:
-        raise ValueError("chunk ordinal must be non-negative")
-    if profile_fingerprint is None and unit_key is None:
-        return uuid5(CHUNK_ID_NAMESPACE, f"{indexed_document_version_id}:{ordinal}")
     if not profile_fingerprint or not unit_key:
-        raise ValueError("profile_fingerprint and unit_key must be supplied together")
+        raise ValueError("profile fingerprint and unit key must not be empty")
     return uuid5(indexed_document_version_id, f"{profile_fingerprint}:{unit_key}")
 
 

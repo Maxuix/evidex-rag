@@ -32,8 +32,6 @@ class ConfiguredCorsMiddleware:
                     "Content-Type",
                     "Idempotency-Key",
                     "X-Document-Metadata",
-                    "X-Document-Filename",
-                    "X-Document-Display-Name",
                 ],
                 max_age=600,
             )

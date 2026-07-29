@@ -80,6 +80,7 @@ from rag_kb.services import (
 )
 from rag_kb.schemas import CursorPayload, ErrorCode, PaginationQuery
 from rag_kb.retrieval import RetrievalExecutionError
+from rag_kb.retrieval.profile import exact_profile
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -1199,11 +1200,10 @@ class _FakeChatService:
         self.run = dataclass_replace(
             self.run,
             effective_policy=policy,
-            retrieval_strategy={
-                "strategy": "exact_vector",
-                "top_k": values["top_k"],
-                "rerank": False,
-            },
+            retrieval_strategy=exact_profile(
+                top_k=values["top_k"],
+                rerank=False,
+            ).as_dict(),
             conversation_context=serialize_conversation_context(snapshot),
             contextualized_query=serialize_contextualized_query(original),
         )
@@ -1456,7 +1456,7 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
             headers={
                 "idempotency-key": str(uuid4()),
                 "content-type": "text/plain",
-                "x-document-filename": "guide.txt",
+                "x-document-metadata": _encode_upload_metadata("guide.txt"),
             },
             raw_body=b"replacement",
         )
@@ -1474,6 +1474,7 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
             headers={
                 "idempotency-key": str(uuid4()),
                 "content-type": "text/markdown",
+                "x-document-filename": "retired.md",
             },
             raw_body=b"safe",
         )
@@ -1499,11 +1500,6 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
                 _encode_upload_metadata("guide.md", "x" * 256),
                 {},
                 None,
-            ),
-            (
-                _encode_upload_metadata("guide.md"),
-                {"x-document-filename": "guide.md"},
-                "upload_metadata_conflict",
             ),
         )
         for metadata, extra_headers, error_type in invalid_values:
@@ -1553,7 +1549,7 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
                     headers={
                         "idempotency-key": str(uuid4()),
                         "content-type": media_type,
-                        "x-document-filename": filename,
+                        "x-document-metadata": _encode_upload_metadata(filename),
                     },
                     raw_body=body,
                 )
@@ -1591,7 +1587,7 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
             headers={
                 "idempotency-key": str(uuid4()),
                 "content-type": "text/markdown",
-                "x-document-filename": "evidence.md",
+                "x-document-metadata": _encode_upload_metadata("evidence.md"),
             },
             raw_body=b"![x](https://x.co/a)",
         )
@@ -2119,11 +2115,7 @@ def _chat_run_value(session: ChatSession) -> ChatRun:
             "answer_task": "answer",
             "policy_version": "p1",
         },
-        retrieval_strategy={
-            "strategy": "exact_vector",
-            "top_k": 10,
-            "rerank": False,
-        },
+        retrieval_strategy=exact_profile(top_k=10, rerank=False).as_dict(),
         model_configuration={"configuration_fingerprint": "sha256:safe"},
         assistant_status="generating",
         assistant_content="",
@@ -2137,6 +2129,9 @@ def _chat_run_value(session: ChatSession) -> ChatRun:
         created_at=now,
         updated_at=now,
         completed_at=None,
+        conversation_context=serialize_conversation_context(
+            empty_conversation_context()
+        ),
     )
 
 

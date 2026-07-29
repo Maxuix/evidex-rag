@@ -10,7 +10,7 @@ from rag_kb.db.models import Base
 
 class CompositeEvidenceSchemaTests(unittest.TestCase):
     def test_current_head_and_inventory_include_composite_relations(self) -> None:
-        self.assertEqual(EXPECTED_REVISION, "0013_fts_hybrid_retrieval")
+        self.assertEqual(EXPECTED_REVISION, "0001_current_only_baseline")
         self.assertIn("index_chunk_asset_relation", EXPECTED_APPLICATION_TABLES)
         self.assertIn("index_chunk_lexical", EXPECTED_APPLICATION_TABLES)
         self.assertIn("index_lexical_manifest", EXPECTED_APPLICATION_TABLES)
@@ -19,15 +19,15 @@ class CompositeEvidenceSchemaTests(unittest.TestCase):
             set(EXPECTED_APPLICATION_TABLES),
         )
 
-    def test_v1_rows_can_keep_embedding_and_relation_manifest_fields_null(self) -> None:
+    def test_current_rows_require_complete_relation_manifest_facts(self) -> None:
         chunk = Base.metadata.tables["index_chunk"]
         manifest = Base.metadata.tables["index_artifact_manifest"]
 
         self.assertTrue(chunk.c.embedding_text.nullable)
         self.assertTrue(chunk.c.embedding_text_hash.nullable)
-        self.assertTrue(manifest.c.relation_plan.nullable)
-        self.assertTrue(manifest.c.relation_count.nullable)
-        self.assertTrue(manifest.c.relation_manifest_hash.nullable)
+        self.assertFalse(manifest.c.relation_plan.nullable)
+        self.assertFalse(manifest.c.relation_count.nullable)
+        self.assertFalse(manifest.c.relation_manifest_hash.nullable)
         self.assertIn(
             "ck_index_chunk_index_chunk_embedding_text_pair",
             {

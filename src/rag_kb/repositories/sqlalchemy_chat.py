@@ -21,8 +21,6 @@ from rag_kb.db.models import (
     Citation as CitationRow,
 )
 from rag_kb.domain import (
-    CONTEXTUAL_QUERY_VERSION,
-    LEGACY_CONTEXTUAL_QUERY_VERSION,
     ChatCitation,
     ChatExecutionContext,
     ChatFailureSettlementCommand,
@@ -486,8 +484,6 @@ class SqlAlchemyChatRepository:
         if result is None:
             return None
         run, user_message, assistant_message = result
-        if run.effective_policy is None:
-            return None
         try:
             conversation_context = hydrate_conversation_context(
                 run.conversation_context
@@ -605,11 +601,6 @@ class SqlAlchemyChatRepository:
                     ChatRunRow.kb_id == kb_id,
                     ChatRunRow.principal_id == principal_id,
                     ChatRunRow.status == ChatRunStatus.COMPLETED,
-                    or_(
-                        ChatRunRow.contextualized_query.is_(None),
-                        ChatRunRow.contextualized_query["status"].astext
-                        != "needs_clarification",
-                    ),
                     user.workspace_id == self._workspace_id,
                     user.session_id == session_id,
                     user.role == ChatMessageRole.USER,
@@ -666,15 +657,6 @@ class SqlAlchemyChatRepository:
             existing = hydrate_contextualized_query(row.contextualized_query)
         except (TypeError, ValueError):
             return None
-        if (
-            existing.version == LEGACY_CONTEXTUAL_QUERY_VERSION
-            and value.version == CONTEXTUAL_QUERY_VERSION
-            and existing.original_query == value.original_query
-            and existing.context_hash == value.context_hash
-        ):
-            row.contextualized_query = serialize_contextualized_query(value)
-            await self._session.flush()
-            return value
         return existing
 
     async def list_sessions(
@@ -1229,8 +1211,6 @@ def _run(
     assistant: ChatMessageRow,
     citations: tuple[ChatCitation, ...] = (),
 ) -> ChatRun:
-    if run.effective_policy is None:
-        raise RuntimeError("persisted ChatRun is missing its effective policy")
     if assistant.assistant_status is None:
         raise RuntimeError("persisted assistant message is missing its status")
     return ChatRun(

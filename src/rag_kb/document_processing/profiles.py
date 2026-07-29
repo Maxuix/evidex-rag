@@ -14,76 +14,11 @@ from rag_kb.domain import (
 )
 
 
-#: The one tokenizer every executable chunking profile is frozen to. Retired
-#: profiles below repeat these values literally because their persisted JSON is
-#: history and must never change.
+#: The one tokenizer every executable chunking profile is frozen to.
 CHUNK_TOKENIZER = {
     "tokenizer": "cl100k_base",
     "tokenizer_library": "tiktoken",
     "tokenizer_version": "0.13.0",
-}
-
-UNSTRUCTURED_PARSER_CONFIG = {
-    "profile": "unstructured_local_v1",
-    "integration": "langchain-unstructured",
-    "integration_version": "1.0.1",
-    "engine": "unstructured",
-    "engine_version": "0.24.1",
-    "partition_via_api": False,
-    "strategy": "fast",
-    "include_page_breaks": True,
-    "supported_extensions": [".txt", ".md", ".pdf", ".docx"],
-}
-
-LEGACY_MULTIMODAL_PARSER_CONFIG_V1 = {
-    "profile": "unstructured_multimodal_local_v1",
-    "integration": "unstructured",
-    "engine_version": "0.24.1",
-    "partition_via_api": False,
-    "pdf_strategy": "hi_res",
-    "infer_table_structure": True,
-    "extract_image_block_types": ["Image", "Table"],
-    "include_page_breaks": True,
-    "docx_picture_partitioner": "bounded_ooxml_relationship_v1",
-    "supported_extensions": [".txt", ".md", ".pdf", ".docx"],
-}
-
-MULTIMODAL_PARSER_CONFIG = {
-    **LEGACY_MULTIMODAL_PARSER_CONFIG_V1,
-    "profile": "unstructured_multimodal_local_v2",
-    "docx_picture_partitioner": "bounded_ooxml_relationship_v2",
-    "composite_assembly": "deterministic_chunk_asset_relations_v2",
-}
-
-MULTIMODAL_ENRICHMENT_CONFIG = {
-    "profile": "composite_visual_enrichment_v2",
-    "ocr": "local_unstructured_ocr_v1",
-    "author_caption": "bounded_author_caption_v2",
-    "figure_reference": "deterministic_figure_reference_v2",
-    "relation_builder": "deterministic_chunk_asset_relations_v2",
-    "visual_filter": "bounded_visual_disposition_v2",
-    "table_normalization": "bounded_table_text_html_v1",
-}
-
-MULTIMODAL_REPRESENTATION_CONFIG = {
-    "profile": "composite_multimodal_representations_v2",
-    "embedding": "tongyi_vision_flash_20260306_independent_768_v1",
-    "embedding_text": {
-        "profile": "composite_embedding_text_v2",
-        "sections": ["body", "figure_label", "author_caption", "ocr", "table"],
-        "separator": "\\n",
-        "unicode": "NFC",
-        "max_tokens": 1200,
-        "max_attachment_tokens": 256,
-    },
-    "text": {"required": ["text"]},
-    "image": {"required": ["native_image"], "optional": []},
-    "table": {"required": ["table_text"], "optional": ["table_image"]},
-    "relations": {
-        "profile": "deterministic_chunk_asset_relations_v2",
-        "max_per_chunk": 32,
-        "max_total": 50000,
-    },
 }
 
 _DOCLING_PARSER_BASE = {
@@ -131,16 +66,11 @@ DOCLING_TEXT_PARSER_CONFIG = {
 
 DOCLING_MULTIMODAL_PARSER_CONFIG = {
     **_DOCLING_PARSER_BASE,
-    "profile": "docling_multimodal_local_v1",
+    "profile": "docling_multimodal_local_v2",
     "generate_page_images": True,
     "generate_picture_images": True,
     "asset_mapping": "docling_picture_table_page_v1",
     "page_image_policy": "scanned_surface_v1",
-}
-
-DOCLING_MULTIMODAL_PARSER_CONFIG_V2 = {
-    **DOCLING_MULTIMODAL_PARSER_CONFIG,
-    "profile": "docling_multimodal_local_v2",
     "markdown_media": {
         "bundle_format": "markdown_bundle_v1",
         "normalizer": "markdown_media_snapshot_v1",
@@ -192,28 +122,7 @@ DOCLING_REPRESENTATION_CONFIG = {
     },
 }
 
-UNSTRUCTURED_CHUNKING_CONFIG = {
-    "profile": "unstructured_by_title_token_v2",
-    "strategy": "by_title",
-    "max_tokens": 800,
-    "new_after_n_tokens": 600,
-    "tokenizer": "cl100k_base",
-    "tokenizer_library": "tiktoken",
-    "tokenizer_version": "0.13.0",
-    "overlap": 100,
-    "overlap_unit": "tokens",
-    "overlap_all": False,
-    "combine_text_under_n_chars": 300,
-    "combine_text_under_n_chars_unit": "characters",
-    "multipage_sections": False,
-    "include_orig_elements": True,
-    "metadata_policy": "bounded_v2",
-}
-
-# The native Docling structural profile. Token thresholds and tokenizer stay
-# identical to the retired v2 profile so parity against the Unstructured chain
-# stays measurable; boundary sources, unknown-item policy and the provenance
-# projection are the new frozen facts.
+# The native Docling structural profile.
 STRUCTURAL_CHUNKING_CONFIG_V3 = {
     "profile": "structural_by_title_token_v3",
     "strategy": "docling_structural",
@@ -267,11 +176,6 @@ SEMANTIC_CHUNKING_CONFIG = {
     "metadata_policy": "bounded_v3",
 }
 
-# Read-only compatibility for local revisions created by the retired prototype.
-# Index execution deliberately does not resolve this profile.
-LEGACY_SEMANTIC_PROFILE = "unstructured_title_semantic_qwen_v1"
-
-
 def profile_for_preset(
     preset: ChunkingPreset | str,
     parsing_preset: ParsingPreset | str = ParsingPreset.TEXT_LOCAL_V1,
@@ -285,15 +189,12 @@ def profile_for_preset(
         else SEMANTIC_CHUNKING_CONFIG
     )
     parsing = ParsingPreset(parsing_preset)
-    multimodal = parsing in {
-        ParsingPreset.MULTIMODAL_LOCAL_V1,
-        ParsingPreset.MULTIMODAL_LOCAL_V2,
-    }
-    parser_config = DOCLING_TEXT_PARSER_CONFIG
-    if parsing is ParsingPreset.MULTIMODAL_LOCAL_V1:
-        parser_config = DOCLING_MULTIMODAL_PARSER_CONFIG
-    elif parsing is ParsingPreset.MULTIMODAL_LOCAL_V2:
-        parser_config = DOCLING_MULTIMODAL_PARSER_CONFIG_V2
+    multimodal = parsing is ParsingPreset.MULTIMODAL_LOCAL_V2
+    parser_config = (
+        DOCLING_MULTIMODAL_PARSER_CONFIG
+        if multimodal
+        else DOCLING_TEXT_PARSER_CONFIG
+    )
     return IndexProfileDefinition(
         parser_config=deepcopy(parser_config),
         chunking_config=deepcopy(chunking),
@@ -305,7 +206,7 @@ def profile_for_preset(
 
 
 def index_profile() -> IndexProfileDefinition:
-    """Compatibility alias for the default structural preset."""
+    """Return the default current structural profile."""
 
     return profile_for_preset(ChunkingPreset.STRUCTURAL_BALANCED_V2)
 
@@ -316,16 +217,12 @@ def resolve(
 ) -> ChunkingStrategyKind:
     """Fail closed unless the complete persisted profile exactly matches a preset.
 
-    Only native Docling profiles are executable. Revisions produced by the
-    retired Unstructured chain stay readable through the descriptor helpers, but
-    re-running or rebuilding one is a stable incompatibility rather than a
-    crash inside a parser that no longer matches the recorded profile.
+    Only the two current native Docling parser profiles are executable.
     """
 
     if parser_config not in (
         DOCLING_TEXT_PARSER_CONFIG,
         DOCLING_MULTIMODAL_PARSER_CONFIG,
-        DOCLING_MULTIMODAL_PARSER_CONFIG_V2,
     ):
         raise ValueError("unknown parser profile")
     if chunking_config == STRUCTURAL_CHUNKING_CONFIG_V3:
@@ -336,15 +233,9 @@ def resolve(
 
 
 def parsing_preset(parser_config: dict) -> ParsingPreset:
-    if parser_config in (DOCLING_TEXT_PARSER_CONFIG, UNSTRUCTURED_PARSER_CONFIG):
+    if parser_config == DOCLING_TEXT_PARSER_CONFIG:
         return ParsingPreset.TEXT_LOCAL_V1
-    if parser_config in (
-        DOCLING_MULTIMODAL_PARSER_CONFIG,
-        MULTIMODAL_PARSER_CONFIG,
-        LEGACY_MULTIMODAL_PARSER_CONFIG_V1,
-    ):
-        return ParsingPreset.MULTIMODAL_LOCAL_V1
-    if parser_config == DOCLING_MULTIMODAL_PARSER_CONFIG_V2:
+    if parser_config == DOCLING_MULTIMODAL_PARSER_CONFIG:
         return ParsingPreset.MULTIMODAL_LOCAL_V2
     raise ValueError("unknown parser profile")
 
@@ -355,21 +246,15 @@ def public_parsing_descriptor(parser_config: dict) -> dict[str, str]:
 
 
 def public_descriptor(chunking_config: dict) -> dict[str, str]:
-    for config in (STRUCTURAL_CHUNKING_CONFIG_V3, UNSTRUCTURED_CHUNKING_CONFIG):
-        if chunking_config == config:
-            return {
-                "preset": ChunkingPreset.STRUCTURAL_BALANCED_V2.value,
-                "profile": config["profile"],
-            }
+    if chunking_config == STRUCTURAL_CHUNKING_CONFIG_V3:
+        return {
+            "preset": ChunkingPreset.STRUCTURAL_BALANCED_V2.value,
+            "profile": STRUCTURAL_CHUNKING_CONFIG_V3["profile"],
+        }
     if chunking_config == SEMANTIC_CHUNKING_CONFIG:
         return {
             "preset": ChunkingPreset.SEMANTIC_BALANCED_V1.value,
             "profile": SEMANTIC_CHUNKING_CONFIG["profile"],
-        }
-    if chunking_config.get("profile") == LEGACY_SEMANTIC_PROFILE:
-        return {
-            "preset": "legacy_incompatible",
-            "profile": LEGACY_SEMANTIC_PROFILE,
         }
     raise ValueError("unknown chunking profile")
 

@@ -131,32 +131,30 @@ class ChatRunErrorResponse(PublicSchema):
 
 
 class ChatRunRetrievalResponse(PublicSchema):
-    profile_version: Literal["exact_vector_v1", "hybrid_fts_rrf_v1"] | None = None
+    profile_version: Literal["exact_vector_v1", "hybrid_fts_rrf_v1"]
     strategy: Literal["exact_vector", "hybrid"]
     top_k: Annotated[int, Field(ge=1, le=100)]
     rerank: bool
-    dense_candidate_count: int | None = None
-    lexical_candidate_count: int | None = None
-    cross_modal_candidate_count: int | None = None
-    lexical_analyzer_version: str | None = None
-    lexical_query_version: str | None = None
-    rrf_k: int | None = None
-    dense_weight_micros: int | None = None
-    lexical_weight_micros: int | None = None
-    cross_modal_weight_micros: int | None = None
-    min_cosine_similarity: float | None = None
-    min_rerank_score: float | None = None
-    cross_modal_min_cosine_similarity: float | None = None
-    rerank_vector_weight: float | None = None
-    rerank_lexical_weight: float | None = None
-    mmr_lambda: float | None = None
+    dense_candidate_count: int
+    lexical_candidate_count: int
+    cross_modal_candidate_count: int
+    lexical_analyzer_version: str | None
+    lexical_query_version: str | None
+    rrf_k: int
+    dense_weight_micros: int
+    lexical_weight_micros: int
+    cross_modal_weight_micros: int
+    min_cosine_similarity: float
+    min_rerank_score: float
+    cross_modal_min_cosine_similarity: float
+    rerank_vector_weight: float
+    rerank_lexical_weight: float
+    mmr_lambda: float
 
 
 class ChatRunQueryContextResponse(PublicSchema):
     strategy: Literal["recent_completed_turns_v1"]
-    status: Literal[
-        "pending", "original", "contextualized", "needs_clarification"
-    ]
+    status: Literal["pending", "original", "contextualized"]
     history_turn_count: Annotated[int, Field(ge=0, le=6)]
     history_token_count: Annotated[int, Field(ge=0, le=4000)]
     history_truncated: bool
@@ -182,8 +180,8 @@ class ChatCitationResponse(PublicSchema):
     index_chunk_id: UUID | None
     document_id: UUID
     document_version_id: UUID
-    document_display_name: str | None = None
-    document_original_filename: str | None = None
+    document_display_name: str
+    document_original_filename: str
     quoted_text: str
     source_location: dict[str, Any]
     score: float | None

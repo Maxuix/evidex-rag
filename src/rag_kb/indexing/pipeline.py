@@ -63,7 +63,6 @@ from rag_kb.domain import (
 from rag_kb.document_processing import (
     DOCLING_ENRICHMENT_CONFIG,
     DOCLING_MULTIMODAL_PARSER_CONFIG,
-    DOCLING_MULTIMODAL_PARSER_CONFIG_V2,
     DOCLING_REPRESENTATION_CONFIG,
     SEMANTIC_CHUNKING_CONFIG,
     count_chunk_tokens,
@@ -82,7 +81,6 @@ from rag_kb.document_processing.docling import (
     docling_unit_sequence_hash,
     extract_docling_assets,
     relate_assets_to_chunks,
-    text_only_document,
 )
 from rag_kb.document_processing.semantic_boundaries import (
     build_chunk_plan,
@@ -161,10 +159,7 @@ class IndexingPipeline:
                 content=content,
             )
             resolved_parsing = parsing_preset(target.parser_config)
-            multimodal = resolved_parsing in {
-                ParsingPreset.MULTIMODAL_LOCAL_V1,
-                ParsingPreset.MULTIMODAL_LOCAL_V2,
-            }
+            multimodal = resolved_parsing is ParsingPreset.MULTIMODAL_LOCAL_V2
             cross_space = (
                 self._require_multimodal_runtime(target) if multimodal else None
             )
@@ -177,98 +172,22 @@ class IndexingPipeline:
             chunks = await self._chunks(
                 command, target, document, strategy, labels
             )
-            if multimodal:
-                result = await self._execute_multimodal(
-                    command, target, source, document, chunks, cross_space, labels
-                )
-                promotion = await self._promotion.promote(_promotion_command(command))
-                return IndexingResult(
-                    command.job_id,
-                    command.indexed_document_version_id,
-                    "ready",
-                    result,
-                    serving_status=promotion.status.value,
-                )
-            try:
-                processed = text_only_document(chunks, profile=_profile(target))
-            except ParserExecutionError as error:
-                raise IndexingExecutionError(
-                    error.code,
-                    phase=IndexingPhase.PARSING,
-                    diagnostic=error.diagnostic,
-                ) from error
-
-            phase = IndexingPhase.EMBEDDING
-            await self._set_phase(command, phase)
-            persisted = await self._persisted_representations(command)
-            persisted_chunks = tuple(
-                draft
-                for draft in processed.chunks
-                if self._text_representation_identity(target, draft.ordinal)
-                in persisted
-            )
-            if persisted_chunks:
-                phase = IndexingPhase.PERSISTING
-                await self._revalidate_persisted_chunks(
-                    command, self._chunk_writes(target, persisted_chunks)
-                )
-                phase = IndexingPhase.EMBEDDING
-            missing_chunks = tuple(
-                draft
-                for draft in processed.chunks
-                if self._text_representation_identity(target, draft.ordinal)
-                not in persisted
-            )
-            batch_size = self._embedding_provider.max_batch_size
-            for offset in range(0, len(missing_chunks), batch_size):
-                drafts = missing_chunks[offset : offset + batch_size]
-                try:
-                    embedded = await self._embedding_provider.embed_documents(
-                        tuple(draft.text for draft in drafts)
-                    )
-                except IndexingExecutionError:
-                    raise
-                except Exception as error:
-                    raise IndexingExecutionError(
-                        ErrorCode.EMBEDDING_PROVIDER_UNAVAILABLE,
-                        phase=phase,
-                        diagnostic={"check": "provider_contract"},
-                    ) from error
-                if len(embedded.vectors) != len(drafts):
-                    raise IndexingExecutionError(
-                        ErrorCode.EMBEDDING_RESPONSE_INVALID,
-                        phase=phase,
-                        diagnostic={
-                            "check": "batch_count",
-                            "expected": len(drafts),
-                            "observed": len(embedded.vectors),
-                        },
-                    )
-                for vector in embedded.vectors:
-                    validate_embedding_vector(vector, target.embedding_space)
-                writes, vectors = self._writes(target, drafts, embedded.vectors)
-                phase = IndexingPhase.PERSISTING
-                await self._upsert(command, writes, vectors)
-                phase = IndexingPhase.EMBEDDING
-
-            phase = IndexingPhase.VALIDATING
-            await self._set_phase(command, phase)
-            await self._persist_lexical(
+            result = await self._execute_current(
                 command,
                 target,
-                self._chunk_writes(target, processed.chunks),
-                allowed_chunk_ids=frozenset(
-                    stable_chunk_id(target.indexed_document_version_id, item.ordinal)
-                    for item in processed.chunks
-                ),
+                source,
+                document,
+                chunks,
+                cross_space,
+                labels,
+                multimodal=multimodal,
             )
-            await self._complete(command, expected_chunks=len(processed.chunks))
             promotion = await self._promotion.promote(_promotion_command(command))
             return IndexingResult(
                 command.job_id,
                 command.indexed_document_version_id,
                 "ready",
-                len(processed.chunks),
+                result,
                 serving_status=promotion.status.value,
             )
         except IndexingCancelled:
@@ -399,10 +318,7 @@ class IndexingPipeline:
     ) -> ChunkingStrategyKind:
         try:
             strategy = resolve(target.parser_config, target.chunking_config)
-            if target.parser_config in (
-                DOCLING_MULTIMODAL_PARSER_CONFIG,
-                DOCLING_MULTIMODAL_PARSER_CONFIG_V2,
-            ) and (
+            if target.parser_config == DOCLING_MULTIMODAL_PARSER_CONFIG and (
                 target.enrichment_config != DOCLING_ENRICHMENT_CONFIG
                 or target.representation_config != DOCLING_REPRESENTATION_CONFIG
             ):
@@ -609,7 +525,7 @@ class IndexingPipeline:
         )
         return cross_space
 
-    async def _execute_multimodal(
+    async def _execute_current(
         self,
         command: IndexingCommand,
         target: IndexingTarget,
@@ -618,18 +534,49 @@ class IndexingPipeline:
         assembled: tuple[ChunkAssemblyDraft, ...],
         cross_space,
         surface_labels: Mapping[int, str],
+        *,
+        multimodal: bool,
     ) -> int:
-        assert self._asset_store is not None
-        cross_space_id = target.embedding_space_ids["cross_modal_retrieval"]
-        await self._set_phase(command, IndexingPhase.ASSET_EXTRACTION)
-        assembly, extracted = await asyncio.to_thread(
-            self._composite_evidence,
-            target,
-            source,
-            document,
-            assembled,
-            surface_labels,
+        cross_space_id = (
+            target.embedding_space_ids["cross_modal_retrieval"]
+            if multimodal
+            else None
         )
+        await self._set_phase(command, IndexingPhase.ASSET_EXTRACTION)
+        if multimodal:
+            assembly, extracted = await asyncio.to_thread(
+                self._composite_evidence,
+                target,
+                source,
+                document,
+                assembled,
+                surface_labels,
+            )
+        else:
+            try:
+                draft = await asyncio.to_thread(
+                    composite_evidence,
+                    document,
+                    assembled,
+                    (),
+                    (),
+                    profile=_profile(target),
+                    source_checksum_sha256=target.checksum_sha256,
+                    limits=self._parser_limits,
+                )
+                assembly = replace(
+                    draft,
+                    units=with_composite_embedding_text(
+                        draft.units, draft.relations
+                    ),
+                )
+                extracted = ()
+            except ParserExecutionError as error:
+                raise IndexingExecutionError(
+                    error.code,
+                    phase=IndexingPhase.ENRICHMENT,
+                    diagnostic=error.diagnostic,
+                ) from error
         units = assembly.units
         relations = assembly.relations
         if not units:
@@ -647,6 +594,8 @@ class IndexingPipeline:
             if asset.asset_key in referenced_asset_keys
         )
         asset_writes: list[IndexAssetWrite] = []
+        if assets:
+            assert self._asset_store is not None
         for asset in assets:
             identity = IndexAssetIdentity(
                 target.workspace_id,
@@ -740,7 +689,7 @@ class IndexingPipeline:
             )
 
         persisted = await self._persisted_representations(command)
-        await self._embed_multimodal_representations(
+        await self._embed_representations(
             command,
             target,
             assets,
@@ -858,7 +807,6 @@ class IndexingPipeline:
     def _unit_write(target, unit, fingerprint, asset_ids) -> IndexChunkWrite:
         unit_id = stable_chunk_id(
             target.indexed_document_version_id,
-            unit.ordinal,
             profile_fingerprint=fingerprint,
             unit_key=unit.unit_key,
         )
@@ -1007,7 +955,7 @@ class IndexingPipeline:
             **payload,
         )
 
-    async def _embed_multimodal_representations(
+    async def _embed_representations(
         self,
         command,
         target,
@@ -1098,14 +1046,16 @@ class IndexingPipeline:
                 )
             await self._upsert(command, tuple(batch_chunks), tuple(writes))
 
-        provider = self._multimodal_embedding_provider
-        assert provider is not None
         image_items = tuple(
             item
             for item in planned
             if item["space_role"] == "cross_modal_retrieval"
             and self._planned_representation_identity(item) not in persisted
         )
+        if not image_items:
+            return
+        provider = self._multimodal_embedding_provider
+        assert provider is not None
         for offset in range(0, len(image_items), provider.max_batch_size):
             batch = image_items[offset : offset + provider.max_batch_size]
             usable = tuple(
@@ -1202,18 +1152,6 @@ class IndexingPipeline:
             representation_kind,
         )
 
-    @staticmethod
-    def _text_representation_identity(
-        target, ordinal: int
-    ) -> RepresentationIdentity:
-        chunk_id = stable_chunk_id(target.indexed_document_version_id, ordinal)
-        return (
-            stable_vector_id(target.embedding_space_id, chunk_id),
-            chunk_id,
-            target.embedding_space_id,
-            "text",
-        )
-
     async def _revalidate_persisted_chunks(
         self,
         command: IndexingCommand,
@@ -1279,50 +1217,6 @@ class IndexingPipeline:
                     ) from error
                 vectors.append(vector)
         return tuple(vectors)
-
-    @staticmethod
-    def _chunk_writes(target, drafts) -> tuple[IndexChunkWrite, ...]:
-        chunks: list[IndexChunkWrite] = []
-        for draft in drafts:
-            chunk_id = stable_chunk_id(
-                target.indexed_document_version_id, draft.ordinal
-            )
-            chunks.append(
-                IndexChunkWrite(
-                    id=chunk_id,
-                    ordinal=draft.ordinal,
-                    content=draft.text,
-                    content_hash=draft.content_sha256,
-                    token_count=draft.token_count,
-                    source_location=dict(draft.source_location),
-                    hierarchy=dict(draft.hierarchy),
-                    source_metadata={
-                        "document_id": str(target.document_id),
-                        "document_version_id": str(target.document_version_id),
-                        "original_filename": target.original_filename,
-                        "media_type": target.media_type,
-                        "checksum_sha256": target.checksum_sha256,
-                        "processing": dict(draft.processing_metadata),
-                    },
-                )
-            )
-        return tuple(chunks)
-
-    @classmethod
-    def _writes(cls, target, drafts, embeddings):
-        chunks = cls._chunk_writes(target, drafts)
-        vectors: list[VectorRecordWrite] = []
-        for chunk, embedding in zip(chunks, embeddings, strict=True):
-            vectors.append(
-                VectorRecordWrite(
-                    id=stable_vector_id(target.embedding_space_id, chunk.id),
-                    index_chunk_id=chunk.id,
-                    embedding_space_id=target.embedding_space_id,
-                    embedding=embedding,
-                )
-            )
-        return chunks, tuple(vectors)
-
 
 def _requires_semantic_analysis(units: tuple[SemanticUnit, ...]) -> bool:
     return (

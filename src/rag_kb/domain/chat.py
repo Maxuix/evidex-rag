@@ -187,17 +187,22 @@ class ChatCitation:
     index_chunk_id: UUID | None
     document_id: UUID
     document_version_id: UUID
+    document_display_name: str
+    document_original_filename: str
     quoted_text: str
     source_location: dict[str, Any]
     score: float | None
     modality: str = "text"
     asset_snapshot: dict[str, Any] | None = None
     matched_representations: tuple[str, ...] = ("text",)
-    document_display_name: str | None = None
-    document_original_filename: str | None = None
 
     def __post_init__(self) -> None:
-        if self.ordinal < 0 or not self.quoted_text:
+        if (
+            self.ordinal < 0
+            or not self.quoted_text
+            or not self.document_display_name.strip()
+            or not self.document_original_filename.strip()
+        ):
             raise ValueError("chat citation snapshot is invalid")
 
     @property
@@ -236,6 +241,6 @@ class ChatRun:
     created_at: datetime
     updated_at: datetime
     completed_at: datetime | None
-    conversation_context: dict[str, Any] | None = None
+    conversation_context: dict[str, Any]
     contextualized_query: dict[str, Any] | None = None
     final_llm_context: dict[str, Any] | None = None

@@ -42,7 +42,6 @@ from rag_kb.schemas import (
     ErrorCode,
 )
 from rag_kb.memory import (
-    empty_conversation_context,
     hydrate_contextualized_query,
     hydrate_conversation_context,
 )
@@ -341,11 +340,7 @@ def _final_context_response(value: ChatRun) -> ChatRunFinalContextResponse:
 
 def _query_context_response(value: ChatRun) -> ChatRunQueryContextResponse:
     try:
-        snapshot = (
-            hydrate_conversation_context(value.conversation_context)
-            if value.conversation_context is not None
-            else empty_conversation_context()
-        )
+        snapshot = hydrate_conversation_context(value.conversation_context)
         artifact = (
             hydrate_contextualized_query(value.contextualized_query)
             if value.contextualized_query is not None

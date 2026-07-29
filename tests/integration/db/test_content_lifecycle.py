@@ -263,11 +263,18 @@ class ContentLifecycleTests(unittest.IsolatedAsyncioTestCase):
                     asset_manifest_hash,
                     unit_plan,
                     representation_matrix,
+                    relation_plan,
                     unit_count,
                     asset_count,
                     representation_count,
+                    relation_count,
+                    relation_manifest_hash,
                     manifest_hash
-                ) VALUES ($1, $2, $3, $4, $5, '[]'::jsonb, '[]'::jsonb, 2, 1, 3, $6)
+                ) VALUES (
+                    $1, $2, $3, $4, $5,
+                    '[]'::jsonb, '[]'::jsonb, '[]'::jsonb,
+                    2, 1, 3, 0, $6, $7
+                )
                 """,
                 activated.indexed_document_version_id,
                 activated.document.current_version.checksum_sha256,
@@ -275,6 +282,7 @@ class ContentLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 "2" * 64,
                 "3" * 64,
                 "4" * 64,
+                "5" * 64,
             )
         finally:
             await connection.close()

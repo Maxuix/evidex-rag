@@ -118,17 +118,30 @@ class RetrievalExecutionProfile:
     def from_snapshot(
         cls,
         value: Mapping[str, Any],
-        *,
-        legacy_defaults: "RetrievalExecutionProfile",
     ) -> "RetrievalExecutionProfile":
-        if set(value) == {"strategy", "top_k", "rerank"}:
-            if value["strategy"] != RetrievalStrategy.EXACT_VECTOR.value:
-                raise ValueError("legacy retrieval snapshot is not exact vector")
-            return replace_profile(
-                legacy_defaults,
-                top_k=int(value["top_k"]),
-                rerank=_require_bool(value["rerank"]),
-            )
+        expected_fields = {
+            "profile_version",
+            "strategy",
+            "top_k",
+            "rerank",
+            "dense_candidate_count",
+            "lexical_candidate_count",
+            "cross_modal_candidate_count",
+            "lexical_analyzer_version",
+            "lexical_query_version",
+            "rrf_k",
+            "dense_weight_micros",
+            "lexical_weight_micros",
+            "cross_modal_weight_micros",
+            "min_cosine_similarity",
+            "min_rerank_score",
+            "cross_modal_min_cosine_similarity",
+            "rerank_vector_weight",
+            "rerank_lexical_weight",
+            "mmr_lambda",
+        }
+        if set(value) != expected_fields:
+            raise ValueError("retrieval snapshot fields are invalid")
         return cls(
             profile_version=str(value["profile_version"]),
             strategy=RetrievalStrategy(value["strategy"]),
@@ -186,7 +199,7 @@ def replace_profile(
     )
 
 
-def legacy_exact_profile(
+def exact_profile(
     *, top_k: int = 10, rerank: bool = True
 ) -> RetrievalExecutionProfile:
     return RetrievalExecutionProfile(

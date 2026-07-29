@@ -68,7 +68,6 @@ from rag_kb.domain import (
     ReconciliationResult,
     ResourceStateConflictError,
     VectorRecordWrite,
-    stable_chunk_id,
 )
 from rag_kb.document_processing import profile_fingerprint
 from rag_kb.document_processing.lexical import (
@@ -1372,11 +1371,7 @@ class SqlAlchemyIndexingRepository:
                 unit_count=proposed.unit_count,
                 asset_count=proposed.asset_count,
                 representation_count=proposed.representation_count,
-                relation_plan=(
-                    list(proposed.relation_plan)
-                    if proposed.relation_plan is not None
-                    else None
-                ),
+                relation_plan=list(proposed.relation_plan),
                 relation_count=proposed.relation_count,
                 relation_manifest_hash=proposed.relation_manifest_hash,
                 manifest_hash=proposed.manifest_hash,
@@ -1691,7 +1686,7 @@ class SqlAlchemyIndexingRepository:
                 "kb_id": target.kb_id,
                 "indexed_document_version_id": target.id,
                 "ordinal": chunk.ordinal,
-                "unit_key": chunk.unit_key or f"legacy-text:{chunk.ordinal}",
+                "unit_key": chunk.unit_key,
                 "modality": chunk.modality.value,
                 "index_asset_id": chunk.index_asset_id,
                 "evidence_group_key": chunk.evidence_group_key,
@@ -1930,7 +1925,6 @@ class SqlAlchemyIndexingRepository:
         if row is None:
             return False
         job, target, version, revision, _embedding_row, knowledge_base = row
-        embedding = row[4]
         if job.status is JobStatus.COMPLETED and target.build_status is IndexBuildStatus.READY:
             return True
         if not _is_writable(job, target):
@@ -2001,17 +1995,7 @@ class SqlAlchemyIndexingRepository:
             )
         manifest_row = await self._session.get(IndexArtifactManifestRow, target.id)
         if manifest_row is None:
-            by_ordinal = {record.ordinal: record for record in chunk_records}
-            valid = (
-                len(by_ordinal) == expected_chunks
-                and tuple(sorted(by_ordinal)) == tuple(range(expected_chunks))
-                and all(
-                    record.chunk_id == stable_chunk_id(target.id, ordinal)
-                    and (embedding.id, "text", 1024)
-                    in vectors_by_chunk.get(str(record.chunk_id), [])
-                    for ordinal, record in by_ordinal.items()
-                )
-            )
+            valid = False
         else:
             manifest = _artifact_manifest(manifest_row)
             role_spaces, role_definitions = await self._space_roles(revision.id)
@@ -2055,37 +2039,32 @@ class SqlAlchemyIndexingRepository:
                 == tuple(range(expected_chunks))
                 and len(planned_units) == expected_chunks
             )
-            if manifest.relation_plan is not None:
-                planned_relations = {
-                    item.get("relation_id"): item
-                    for item in manifest.relation_plan
-                }
-                valid = valid and (
-                    manifest.relation_count == len(relation_rows)
-                    and manifest.relation_count == len(manifest.relation_plan)
-                    and len(planned_relations) == len(relation_rows)
-                    and all(
-                        (
-                            planned := planned_relations.get(str(record.id))
-                        )
-                        is not None
-                        and planned.get("chunk_id") == str(record.chunk_id)
-                        and planned.get("visual_unit_id")
-                        == str(record.visual_unit_id)
-                        and planned.get("asset_id") == str(record.asset_id)
-                        and planned.get("relation_type") == record.relation_type
-                        and planned.get("confidence_micros")
-                        == record.confidence_micros
-                        and planned.get("figure_label") == record.figure_label
-                        and planned.get("ordinal") == record.ordinal
-                        and planned.get("provenance") == record.provenance
-                        and planned.get("evidence_group_key")
-                        == record.evidence_group_key
-                        for record in relation_rows
-                    )
+            planned_relations = {
+                item.get("relation_id"): item
+                for item in manifest.relation_plan
+            }
+            valid = valid and (
+                manifest.relation_count == len(relation_rows)
+                and manifest.relation_count == len(manifest.relation_plan)
+                and len(planned_relations) == len(relation_rows)
+                and all(
+                    (planned := planned_relations.get(str(record.id)))
+                    is not None
+                    and planned.get("chunk_id") == str(record.chunk_id)
+                    and planned.get("visual_unit_id")
+                    == str(record.visual_unit_id)
+                    and planned.get("asset_id") == str(record.asset_id)
+                    and planned.get("relation_type") == record.relation_type
+                    and planned.get("confidence_micros")
+                    == record.confidence_micros
+                    and planned.get("figure_label") == record.figure_label
+                    and planned.get("ordinal") == record.ordinal
+                    and planned.get("provenance") == record.provenance
+                    and planned.get("evidence_group_key")
+                    == record.evidence_group_key
+                    for record in relation_rows
                 )
-            elif relation_rows:
-                valid = False
+            )
             dimension_by_space = {
                 role_spaces[role]: definition.dimension
                 for role, definition in role_definitions.items()
@@ -2352,11 +2331,7 @@ def _artifact_manifest(row: IndexArtifactManifestRow) -> IndexArtifactManifest:
             unit_count=row.unit_count,
             asset_count=row.asset_count,
             representation_count=row.representation_count,
-            relation_plan=(
-                tuple(dict(item) for item in row.relation_plan)
-                if row.relation_plan is not None
-                else None
-            ),
+            relation_plan=tuple(dict(item) for item in row.relation_plan),
             relation_count=row.relation_count,
             relation_manifest_hash=row.relation_manifest_hash,
             manifest_hash=row.manifest_hash,

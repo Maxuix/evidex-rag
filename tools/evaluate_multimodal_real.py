@@ -122,7 +122,7 @@ def _evaluate(
         headers={"Idempotency-Key": str(uuid4())},
         payload={
             "name": f"multimodal-real-eval-{uuid4().hex[:10]}",
-            "parsing": {"preset": "multimodal_local_v1"},
+            "parsing": {"preset": "multimodal_local_v2"},
             "chunking": {"preset": "structural_balanced_v2"},
         },
     )

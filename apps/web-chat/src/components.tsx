@@ -155,7 +155,6 @@ function EvidenceCard({
   const name = documentName(
     citation.document_display_name,
     citation.document_original_filename,
-    citation.document_id,
   );
   let imageUrl: string | null = null;
   try {

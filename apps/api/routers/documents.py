@@ -18,7 +18,7 @@ from apps.api.security import get_auth_context
 from apps.api.upload_metadata import resolve_upload_metadata
 from rag_kb.auth import AuthContext
 from rag_kb.domain import DocumentChunk, DocumentChunkAsset
-from rag_kb.document_processing import DOCLING_MULTIMODAL_PARSER_CONFIG_V2
+from rag_kb.document_processing import DOCLING_MULTIMODAL_PARSER_CONFIG
 from rag_kb.document_processing.markdown_bundle import (
     MARKDOWN_BUNDLE_EXTENSION,
     MARKDOWN_BUNDLE_MEDIA_TYPE,
@@ -72,22 +72,12 @@ async def upload_document(
     idempotency_key: RequiredIdempotencyKey,
     context: Annotated[AuthContext, Depends(get_auth_context)],
     encoded_metadata: Annotated[
-        str | None,
+        str,
         Header(alias="X-Document-Metadata", min_length=1, max_length=4096),
-    ] = None,
-    original_filename: Annotated[
-        str | None,
-        Header(alias="X-Document-Filename", min_length=1, max_length=255),
-    ] = None,
-    display_name: Annotated[
-        str | None,
-        Header(alias="X-Document-Display-Name", min_length=1, max_length=255),
-    ] = None,
+    ],
 ) -> DocumentUploadResponse:
     metadata = resolve_upload_metadata(
         encoded_metadata=encoded_metadata,
-        legacy_filename=original_filename,
-        legacy_display_name=display_name,
     )
     return await _accept_upload(
         request,
@@ -115,22 +105,12 @@ async def upload_document_version(
     idempotency_key: RequiredIdempotencyKey,
     context: Annotated[AuthContext, Depends(get_auth_context)],
     encoded_metadata: Annotated[
-        str | None,
+        str,
         Header(alias="X-Document-Metadata", min_length=1, max_length=4096),
-    ] = None,
-    original_filename: Annotated[
-        str | None,
-        Header(alias="X-Document-Filename", min_length=1, max_length=255),
-    ] = None,
-    display_name: Annotated[
-        str | None,
-        Header(alias="X-Document-Display-Name", min_length=1, max_length=255),
-    ] = None,
+    ],
 ) -> DocumentUploadResponse:
     metadata = resolve_upload_metadata(
         encoded_metadata=encoded_metadata,
-        legacy_filename=original_filename,
-        legacy_display_name=display_name,
     )
     document = await request.app.state.dependencies.document_service.get(
         context, document_id
@@ -418,7 +398,7 @@ async def _accept_upload(
         )
         markdown_v2 = (
             knowledge_base.parser_config
-            == DOCLING_MULTIMODAL_PARSER_CONFIG_V2
+            == DOCLING_MULTIMODAL_PARSER_CONFIG
         )
         async for block in request.stream():
             size += len(block)

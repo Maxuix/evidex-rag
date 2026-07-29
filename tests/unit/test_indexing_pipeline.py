@@ -19,7 +19,6 @@ from rag_kb.adapters import FixedPgVectorSpace
 from rag_kb.document_processing import (
     DOCLING_ENRICHMENT_CONFIG,
     DOCLING_REPRESENTATION_CONFIG,
-    LEGACY_MULTIMODAL_PARSER_CONFIG_V1,
     STRUCTURAL_CHUNKING_CONFIG_V3,
     count_chunk_tokens,
     index_profile,
@@ -79,26 +78,35 @@ class IndexingDomainTests(unittest.TestCase):
     def test_stable_chunk_and_vector_business_keys(self) -> None:
         target = uuid4()
         space = uuid4()
-        first = stable_chunk_id(target, 3)
-        self.assertEqual(first, stable_chunk_id(target, 3))
-        self.assertNotEqual(first, stable_chunk_id(target, 4))
+        first = stable_chunk_id(
+            target, profile_fingerprint="f" * 64, unit_key="unit-a"
+        )
+        self.assertEqual(
+            first,
+            stable_chunk_id(
+                target, profile_fingerprint="f" * 64, unit_key="unit-a"
+            ),
+        )
+        self.assertNotEqual(
+            first,
+            stable_chunk_id(
+                target, profile_fingerprint="f" * 64, unit_key="unit-b"
+            ),
+        )
         self.assertEqual(
             stable_vector_id(space, first), stable_vector_id(space, first)
         )
+        with self.assertRaises(ValueError):
+            stable_chunk_id(
+                target, profile_fingerprint="f" * 64, unit_key=""
+            )
 
-    def test_multimodal_v2_profile_removes_generated_caption_and_keeps_v1_readable(self) -> None:
-        profile = profile_for_preset(
-            ChunkingPreset.STRUCTURAL_BALANCED_V2, "multimodal_local_v1"
-        )
+    def test_current_multimodal_profile_removes_generated_caption(self) -> None:
         markdown_profile = profile_for_preset(
             ChunkingPreset.STRUCTURAL_BALANCED_V2,
             "multimodal_local_v2",
         )
 
-        self.assertEqual(
-            profile.parser_config["profile"],
-            "docling_multimodal_local_v1",
-        )
         self.assertNotIn("caption", DOCLING_ENRICHMENT_CONFIG)
         self.assertEqual(
             DOCLING_REPRESENTATION_CONFIG["image"]["optional"], []
@@ -123,13 +131,11 @@ class IndexingDomainTests(unittest.TestCase):
                 "docling_remote_fetch"
             ]
         )
-        self.assertEqual(
-            public_parsing_descriptor(LEGACY_MULTIMODAL_PARSER_CONFIG_V1),
-            {
-                "preset": "multimodal_local_v1",
-                "profile": "unstructured_multimodal_local_v1",
-            },
-        )
+        with self.assertRaises(ValueError):
+            profile_for_preset(
+                ChunkingPreset.STRUCTURAL_BALANCED_V2,
+                "multimodal_local_v1",
+            )
 
     def test_fixed_space_and_output_validation_fail_closed(self) -> None:
         expected = _embedding()
@@ -260,7 +266,7 @@ class IndexingPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(repository.chunks), 2)
         self.assertEqual(len(repository.vectors), 2)
         self.assertEqual(provider.calls, 1)
-        self.assertEqual(provider.inputs, [("Beta\n\nsecond",)])
+        self.assertEqual(provider.inputs, [("[body]\nBeta\n\nsecond",)])
 
     async def test_multimodal_retry_reuses_text_and_only_repurchases_missing_native_image(
         self,
@@ -312,7 +318,9 @@ class IndexingPipelineTests(unittest.IsolatedAsyncioTestCase):
     ) -> None:
         repository = _Repository(_target())
         first_chunk_id = stable_chunk_id(
-            repository.target.indexed_document_version_id, 0
+            repository.target.indexed_document_version_id,
+            profile_fingerprint="f" * 64,
+            unit_key="not-a-persisted-unit",
         )
         wrong_space = uuid4()
         repository.persisted_override = (
@@ -384,7 +392,7 @@ class IndexingPipelineTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             failure.exception.code,
-            ErrorCode.INDEX_PERSISTENCE_FAILED,
+            ErrorCode.INDEX_CHUNK_PLAN_MISMATCH,
         )
         self.assertEqual(provider.calls, 0)
 
@@ -777,28 +785,26 @@ class _Repository:
         if self.lexical_manifest is None:
             raise AssertionError("lexical manifest missing")
         if self.manifest is None:
-            if len(self.vectors) != expected_chunks:
-                raise AssertionError("incomplete")
-        else:
-            identities = {
-                (
-                    str(vector.index_chunk_id),
-                    str(vector.embedding_space_id),
-                    vector.representation_kind,
-                )
-                for vector in self.vectors.values()
-            }
-            if any(
-                item["required"]
-                and (
-                    item["unit_id"],
-                    item["space_id"],
-                    item["representation_kind"],
-                )
-                not in identities
-                for item in self.manifest.representation_matrix
-            ):
-                raise AssertionError("incomplete")
+            raise AssertionError("artifact manifest missing")
+        identities = {
+            (
+                str(vector.index_chunk_id),
+                str(vector.embedding_space_id),
+                vector.representation_kind,
+            )
+            for vector in self.vectors.values()
+        }
+        if any(
+            item["required"]
+            and (
+                item["unit_id"],
+                item["space_id"],
+                item["representation_kind"],
+            )
+            not in identities
+            for item in self.manifest.representation_matrix
+        ):
+            raise AssertionError("incomplete")
         self.status = "completed"
         return True
 
@@ -1043,11 +1049,8 @@ def _target(
 ):
     version = uuid4()
     target = uuid4()
-    parsing = (
-        "multimodal_local_v2"
-        if markdown_v2
-        else "multimodal_local_v1" if multimodal else "text_local_v1"
-    )
+    del markdown_v2
+    parsing = "multimodal_local_v2" if multimodal else "text_local_v1"
     profile = profile_for_preset(preset, parsing)
     cross_space_id = uuid4()
     return IndexingTarget(

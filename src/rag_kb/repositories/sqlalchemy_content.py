@@ -1334,7 +1334,7 @@ def _v2_manifest_counts(manifest) -> dict[str, int | None]:
         "native_image_representation_count": None,
         "table_representation_count": None,
     }
-    if manifest is None or manifest.relation_count is None:
+    if manifest is None:
         return empty
     units = tuple(manifest.unit_plan or ())
     representations = tuple(manifest.representation_matrix or ())

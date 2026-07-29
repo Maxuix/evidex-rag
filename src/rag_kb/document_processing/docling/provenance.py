@@ -46,11 +46,6 @@ _SURFACE_BY_MIMETYPE = {
 #: has to speak for it.
 _MAX_SURFACE_LABELS = 32
 
-#: Location keys written by retired Unstructured revisions. The migration-period
-#: reader accepts them so already indexed revisions keep answering.
-_LEGACY_ORDINAL_KEYS = ("page_number", "page_start", "page_end")
-
-
 @dataclass(frozen=True, slots=True)
 class ItemSurface:
     """One Docling provenance entry reduced to the facts the project persists."""
@@ -210,14 +205,18 @@ def chunk_assembly_key(
     *,
     profile: str,
     source_checksum_sha256: str,
+    assembly_ordinal: int,
     item_refs: Sequence[str],
     text: str,
 ) -> str:
-    """Derive a stable chunk identity from the complete reference sequence."""
+    """Derive a stable chunk identity from its ordered current assembly facts."""
 
+    if assembly_ordinal < 0:
+        raise ValueError("assembly ordinal must be non-negative")
     payload = {
         "profile": profile,
         "source_checksum": source_checksum_sha256,
+        "assembly_ordinal": assembly_ordinal,
         "item_refs": list(item_refs),
         "text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
     }
@@ -225,21 +224,14 @@ def chunk_assembly_key(
 
 
 def surface_ordinals(source_location: dict[str, Any]) -> frozenset[int]:
-    """Read surface ordinals from both the new view and retired revisions."""
+    """Read surface ordinals from the current provenance projection."""
 
     values = {
         ordinal
-        for key in (*_LEGACY_ORDINAL_KEYS, "surface_start", "surface_end")
+        for key in ("surface_start", "surface_end")
         if isinstance((ordinal := source_location.get(key)), int)
         and not isinstance(ordinal, bool)
     }
-    listed = source_location.get("page_numbers")
-    if isinstance(listed, list):
-        values.update(
-            ordinal
-            for ordinal in listed
-            if isinstance(ordinal, int) and not isinstance(ordinal, bool)
-        )
     return frozenset(values)
 
 

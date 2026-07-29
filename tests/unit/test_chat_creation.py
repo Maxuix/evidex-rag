@@ -25,7 +25,7 @@ from rag_kb.schemas import ChatRunCreate
 from rag_kb.services import ChatService, chat_model_configuration
 from rag_kb.retrieval.profile import (
     HYBRID_PROFILE_VERSION,
-    legacy_exact_profile,
+    exact_profile,
 )
 
 
@@ -195,7 +195,7 @@ class ChatCreationServiceTests(unittest.IsolatedAsyncioTestCase):
         def profile_factory(strategy, top_k, rerank):
             self.assertIs(strategy, RetrievalStrategy.HYBRID)
             return replace(
-                legacy_exact_profile(top_k=top_k, rerank=rerank),
+                exact_profile(top_k=top_k, rerank=rerank),
                 profile_version=HYBRID_PROFILE_VERSION,
                 strategy=RetrievalStrategy.HYBRID,
                 lexical_analyzer_version="lexical_simple_cjk_bigram_v1",
@@ -245,6 +245,7 @@ class ChatCreationServiceTests(unittest.IsolatedAsyncioTestCase):
             _Factory(workspace_id, chat, kb_id),
             SingleWorkspaceAccessPolicy(workspace_id),
             model_configuration={"resolved_model": "fixed-model"},
+            retrieval_profile_factory=_profile_factory,
         )
 
         result = await service.list_sessions(
@@ -271,6 +272,7 @@ class ChatCreationServiceTests(unittest.IsolatedAsyncioTestCase):
             _Factory(workspace_id, chat, kb_id),
             SingleWorkspaceAccessPolicy(workspace_id),
             model_configuration={"resolved_model": "fixed-model"},
+            retrieval_profile_factory=_profile_factory,
         )
 
         created = await service.create_run(
@@ -298,6 +300,7 @@ class ChatCreationServiceTests(unittest.IsolatedAsyncioTestCase):
             _Factory(workspace_id, chat, kb_id),
             SingleWorkspaceAccessPolicy(workspace_id),
             model_configuration={"resolved_model": "fixed-model"},
+            retrieval_profile_factory=_profile_factory,
         )
 
         with self.assertRaises(ChatSessionBusyError):
@@ -336,8 +339,6 @@ class ChatHistoryRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(turns, ())
         self.assertIn(".chat_run_id = chat_run.id", session.sql)
         self.assertNotIn("chat_run.assistant_message_id", session.sql)
-        self.assertIn("chat_run.contextualized_query IS NULL", session.sql)
-        self.assertIn("contextualized_query", session.sql)
         self.assertIn("status", session.sql)
 
 
@@ -388,6 +389,12 @@ class _CompileOnlySession:
     async def execute(self, statement):
         self.sql = str(statement.compile(dialect=postgresql.dialect()))
         return SimpleNamespace(all=lambda: [])
+
+
+def _profile_factory(strategy, top_k, rerank):
+    if strategy is not RetrievalStrategy.EXACT_VECTOR:
+        raise ValueError("test factory only supports exact retrieval")
+    return exact_profile(top_k=top_k, rerank=rerank)
 
 
 class _KnowledgeBases:

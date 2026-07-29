@@ -164,14 +164,14 @@ class AggregationContractTests(unittest.TestCase):
 
 
 class MigrationReaderContractTests(unittest.TestCase):
-    def test_retired_revision_location_keys_stay_readable(self) -> None:
-        self.assertEqual(surface_ordinals({"page_number": 4}), frozenset({4}))
-        self.assertEqual(
-            surface_ordinals({"page_numbers": [2, 3, 5]}), frozenset({2, 3, 5})
-        )
-        self.assertEqual(
-            surface_ordinals({"page_start": 1, "page_end": 3}), frozenset({1, 3})
-        )
+    def test_retired_revision_location_keys_are_not_interpreted(self) -> None:
+        for location in (
+            {"page_number": 4},
+            {"page_numbers": [2, 3, 5]},
+            {"page_start": 1, "page_end": 3},
+        ):
+            with self.subTest(location=location):
+                self.assertEqual(surface_ordinals(location), frozenset())
 
     def test_the_new_view_is_read_by_the_same_helper(self) -> None:
         self.assertEqual(

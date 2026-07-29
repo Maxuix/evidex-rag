@@ -11,7 +11,6 @@ from rag_kb.config import Settings, load_settings, validate_startup_environment
 from rag_kb.db import DatabaseProcess, DatabaseResources, create_database_resources
 from rag_kb.services import (
     FileReconciliationService,
-    LexicalBackfillService,
     MaintenanceCleanupService,
     build_content_services,
 )
@@ -24,7 +23,6 @@ class MaintenanceDependencies:
     database: DatabaseResources
     auth_provider: DevelopmentAuthProvider
     cleanup: MaintenanceCleanupService
-    lexical_backfill: LexicalBackfillService
 
     async def close(self) -> None:
         await self.database.close()
@@ -100,9 +98,5 @@ def build_maintenance_dependencies(
             retired_data_grace_seconds=maintenance.retired_data_grace_seconds,
             task_retention_seconds=maintenance.task_retention_seconds,
             asset_store=asset_store,
-        ),
-        lexical_backfill=LexicalBackfillService(
-            database.sessions,
-            identity.workspace_id,
         ),
     )

@@ -48,10 +48,7 @@ def build_docling_converter(
 ) -> DocumentConverter:
     """Build one local-only converter for a frozen parsing preset."""
 
-    multimodal = preset in {
-        ParsingPreset.MULTIMODAL_LOCAL_V1,
-        ParsingPreset.MULTIMODAL_LOCAL_V2,
-    }
+    multimodal = preset is ParsingPreset.MULTIMODAL_LOCAL_V2
     accelerator_options = AcceleratorOptions(
         num_threads=1,
         device=AcceleratorDevice.CPU,

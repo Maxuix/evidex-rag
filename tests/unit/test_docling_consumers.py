@@ -58,7 +58,7 @@ DOCX_MIMETYPE = (
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 )
 VERSION_ID = UUID("01900000-0000-7000-8000-0000000009a1")
-PROFILE = "docling_multimodal_local_v1:structural_by_title_token_v3"
+PROFILE = "docling_multimodal_local_v2:structural_by_title_token_v3"
 
 
 def prov(page: int, span: tuple[int, int] = (0, 10)) -> ProvenanceItem:
@@ -290,12 +290,14 @@ class StructuralAssemblyTests(unittest.TestCase):
         key = chunk_assembly_key(
             profile="structural_by_title_token_v3",
             source_checksum_sha256="a" * 64,
+            assembly_ordinal=0,
             item_refs=chunk.item_refs,
             text=chunk.text,
         )
         shortened = chunk_assembly_key(
             profile="structural_by_title_token_v3",
             source_checksum_sha256="a" * 64,
+            assembly_ordinal=0,
             item_refs=chunk.item_refs[:-1],
             text=chunk.text,
         )
@@ -306,6 +308,17 @@ class StructuralAssemblyTests(unittest.TestCase):
             chunk_assembly_key(
                 profile="structural_by_title_token_v3",
                 source_checksum_sha256="a" * 64,
+                assembly_ordinal=0,
+                item_refs=chunk.item_refs,
+                text=chunk.text,
+            ),
+        )
+        self.assertNotEqual(
+            key,
+            chunk_assembly_key(
+                profile="structural_by_title_token_v3",
+                source_checksum_sha256="a" * 64,
+                assembly_ordinal=1,
                 item_refs=chunk.item_refs,
                 text=chunk.text,
             ),

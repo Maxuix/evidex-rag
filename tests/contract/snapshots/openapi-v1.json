@@ -147,15 +147,8 @@
             ]
           },
           "document_display_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Document Display Name"
+            "title": "Document Display Name",
+            "type": "string"
           },
           "document_id": {
             "format": "uuid",
@@ -163,15 +156,8 @@
             "type": "string"
           },
           "document_original_filename": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Document Original Filename"
+            "title": "Document Original Filename",
+            "type": "string"
           },
           "document_version_id": {
             "format": "uuid",
@@ -236,6 +222,8 @@
           "index_chunk_id",
           "document_id",
           "document_version_id",
+          "document_display_name",
+          "document_original_filename",
           "quoted_text",
           "source_location",
           "score"
@@ -698,8 +686,7 @@
             "enum": [
               "pending",
               "original",
-              "contextualized",
-              "needs_clarification"
+              "contextualized"
             ],
             "title": "Status",
             "type": "string"
@@ -907,59 +894,24 @@
         "additionalProperties": false,
         "properties": {
           "cross_modal_candidate_count": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Cross Modal Candidate Count"
+            "title": "Cross Modal Candidate Count",
+            "type": "integer"
           },
           "cross_modal_min_cosine_similarity": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Cross Modal Min Cosine Similarity"
+            "title": "Cross Modal Min Cosine Similarity",
+            "type": "number"
           },
           "cross_modal_weight_micros": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Cross Modal Weight Micros"
+            "title": "Cross Modal Weight Micros",
+            "type": "integer"
           },
           "dense_candidate_count": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Dense Candidate Count"
+            "title": "Dense Candidate Count",
+            "type": "integer"
           },
           "dense_weight_micros": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Dense Weight Micros"
+            "title": "Dense Weight Micros",
+            "type": "integer"
           },
           "lexical_analyzer_version": {
             "anyOf": [
@@ -973,15 +925,8 @@
             "title": "Lexical Analyzer Version"
           },
           "lexical_candidate_count": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Lexical Candidate Count"
+            "title": "Lexical Candidate Count",
+            "type": "integer"
           },
           "lexical_query_version": {
             "anyOf": [
@@ -995,100 +940,44 @@
             "title": "Lexical Query Version"
           },
           "lexical_weight_micros": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Lexical Weight Micros"
+            "title": "Lexical Weight Micros",
+            "type": "integer"
           },
           "min_cosine_similarity": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Min Cosine Similarity"
+            "title": "Min Cosine Similarity",
+            "type": "number"
           },
           "min_rerank_score": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Min Rerank Score"
+            "title": "Min Rerank Score",
+            "type": "number"
           },
           "mmr_lambda": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Mmr Lambda"
+            "title": "Mmr Lambda",
+            "type": "number"
           },
           "profile_version": {
-            "anyOf": [
-              {
-                "enum": [
-                  "exact_vector_v1",
-                  "hybrid_fts_rrf_v1"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
+            "enum": [
+              "exact_vector_v1",
+              "hybrid_fts_rrf_v1"
             ],
-            "title": "Profile Version"
+            "title": "Profile Version",
+            "type": "string"
           },
           "rerank": {
             "title": "Rerank",
             "type": "boolean"
           },
           "rerank_lexical_weight": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Rerank Lexical Weight"
+            "title": "Rerank Lexical Weight",
+            "type": "number"
           },
           "rerank_vector_weight": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Rerank Vector Weight"
+            "title": "Rerank Vector Weight",
+            "type": "number"
           },
           "rrf_k": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Rrf K"
+            "title": "Rrf K",
+            "type": "integer"
           },
           "strategy": {
             "enum": [
@@ -1106,9 +995,25 @@
           }
         },
         "required": [
+          "profile_version",
           "strategy",
           "top_k",
-          "rerank"
+          "rerank",
+          "dense_candidate_count",
+          "lexical_candidate_count",
+          "cross_modal_candidate_count",
+          "lexical_analyzer_version",
+          "lexical_query_version",
+          "rrf_k",
+          "dense_weight_micros",
+          "lexical_weight_micros",
+          "cross_modal_weight_micros",
+          "min_cosine_similarity",
+          "min_rerank_score",
+          "cross_modal_min_cosine_similarity",
+          "rerank_vector_weight",
+          "rerank_lexical_weight",
+          "mmr_lambda"
         ],
         "title": "ChatRunRetrievalResponse",
         "type": "object"
@@ -2625,23 +2530,12 @@
         "additionalProperties": false,
         "properties": {
           "preset": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/ChunkingPreset"
-              },
-              {
-                "const": "legacy_incompatible",
-                "type": "string"
-              }
-            ],
-            "title": "Preset"
+            "$ref": "#/components/schemas/ChunkingPreset"
           },
           "profile": {
             "enum": [
               "structural_by_title_token_v3",
-              "unstructured_by_title_token_v2",
-              "semantic_breakpoint_v1",
-              "unstructured_title_semantic_qwen_v1"
+              "semantic_breakpoint_v1"
             ],
             "title": "Profile",
             "type": "string"
@@ -2747,11 +2641,7 @@
           "profile": {
             "enum": [
               "docling_text_local_v1",
-              "docling_multimodal_local_v1",
-              "docling_multimodal_local_v2",
-              "unstructured_local_v1",
-              "unstructured_multimodal_local_v1",
-              "unstructured_multimodal_local_v2"
+              "docling_multimodal_local_v2"
             ],
             "title": "Profile",
             "type": "string"
@@ -2881,7 +2771,6 @@
       "ParsingPreset": {
         "enum": [
           "text_local_v1",
-          "multimodal_local_v1",
           "multimodal_local_v2"
         ],
         "title": "ParsingPreset",
@@ -4173,55 +4062,12 @@
           {
             "in": "header",
             "name": "X-Document-Metadata",
-            "required": false,
+            "required": true,
             "schema": {
-              "anyOf": [
-                {
-                  "maxLength": 4096,
-                  "minLength": 1,
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "X-Document-Metadata"
-            }
-          },
-          {
-            "in": "header",
-            "name": "X-Document-Filename",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "maxLength": 255,
-                  "minLength": 1,
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "X-Document-Filename"
-            }
-          },
-          {
-            "in": "header",
-            "name": "X-Document-Display-Name",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "maxLength": 255,
-                  "minLength": 1,
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "X-Document-Display-Name"
+              "maxLength": 4096,
+              "minLength": 1,
+              "title": "X-Document-Metadata",
+              "type": "string"
             }
           }
         ],
@@ -4975,55 +4821,12 @@
           {
             "in": "header",
             "name": "X-Document-Metadata",
-            "required": false,
+            "required": true,
             "schema": {
-              "anyOf": [
-                {
-                  "maxLength": 4096,
-                  "minLength": 1,
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "X-Document-Metadata"
-            }
-          },
-          {
-            "in": "header",
-            "name": "X-Document-Filename",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "maxLength": 255,
-                  "minLength": 1,
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "X-Document-Filename"
-            }
-          },
-          {
-            "in": "header",
-            "name": "X-Document-Display-Name",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "maxLength": 255,
-                  "minLength": 1,
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "X-Document-Display-Name"
+              "maxLength": 4096,
+              "minLength": 1,
+              "title": "X-Document-Metadata",
+              "type": "string"
             }
           }
         ],

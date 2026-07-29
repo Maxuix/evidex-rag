@@ -12,7 +12,6 @@ from rag_kb.domain.answering import ChatModelCallRecord
 
 SESSION_CONTEXT_VERSION = "session_context_v1"
 SESSION_CONTEXT_STRATEGY = "recent_completed_turns_v1"
-LEGACY_CONTEXTUAL_QUERY_VERSION = "contextual_query_v1"
 CONTEXTUAL_QUERY_VERSION = "contextual_query_v2"
 
 
@@ -76,7 +75,6 @@ def empty_context_snapshot() -> ConversationContextSnapshot:
 class QueryContextStatus(StrEnum):
     ORIGINAL = "original"
     CONTEXTUALIZED = "contextualized"
-    NEEDS_CLARIFICATION = "needs_clarification"
 
 
 class QueryRewriteSource(StrEnum):
@@ -99,33 +97,19 @@ class ContextualizedQuery:
     rewrite_source: QueryRewriteSource | None = None
 
     def __post_init__(self) -> None:
-        if self.version not in {
-            LEGACY_CONTEXTUAL_QUERY_VERSION,
-            CONTEXTUAL_QUERY_VERSION,
-        }:
+        if self.version != CONTEXTUAL_QUERY_VERSION:
             raise ValueError("unsupported contextual query version")
         if not self.original_query.strip() or len(self.original_query) > 32768:
             raise ValueError("original query is invalid")
         if not self.context_hash.startswith("sha256:") or len(self.context_hash) != 71:
             raise ValueError("contextual query hash is invalid")
         if (
-            self.version == CONTEXTUAL_QUERY_VERSION
-            and self.status is QueryContextStatus.NEEDS_CLARIFICATION
-        ):
-            raise ValueError("v2 contextual queries cannot request clarification")
-        if self.status is QueryContextStatus.NEEDS_CLARIFICATION:
-            if self.standalone_query is not None:
-                raise ValueError("clarification query must not contain a standalone query")
-        elif (
             self.standalone_query is None
             or not self.standalone_query.strip()
             or len(self.standalone_query) > 32768
         ):
             raise ValueError("standalone query is invalid")
-        if self.version == LEGACY_CONTEXTUAL_QUERY_VERSION:
-            if self.rewrite_source is not None:
-                raise ValueError("legacy contextual query cannot contain rewrite source")
-        elif self.status is QueryContextStatus.ORIGINAL:
+        if self.status is QueryContextStatus.ORIGINAL:
             if self.rewrite_source is not QueryRewriteSource.ORIGINAL:
                 raise ValueError("original query requires original rewrite source")
         elif self.rewrite_source not in {
@@ -150,14 +134,13 @@ class ContextualizedQuery:
                 or self.origin_attempt < 1
             ):
                 raise ValueError("model-produced query artifact is incomplete")
-            if self.version == CONTEXTUAL_QUERY_VERSION:
-                allowed_calls = {
-                    QueryRewriteSource.MODEL: {1},
-                    QueryRewriteSource.REPAIR: {2},
-                    QueryRewriteSource.FALLBACK: {1, 2},
-                }[self.rewrite_source]
-                if len(self.model_calls) not in allowed_calls:
-                    raise ValueError("rewrite source does not match model call count")
+            allowed_calls = {
+                QueryRewriteSource.MODEL: {1},
+                QueryRewriteSource.REPAIR: {2},
+                QueryRewriteSource.FALLBACK: {1, 2},
+            }[self.rewrite_source]
+            if len(self.model_calls) not in allowed_calls:
+                raise ValueError("rewrite source does not match model call count")
         if self.created_at is not None and (
             self.created_at.tzinfo is None or self.created_at.utcoffset() is None
         ):

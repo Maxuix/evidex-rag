@@ -22,6 +22,7 @@ from rag_kb.domain import (
     QueryRewriteSource,
 )
 from rag_kb.services.chat_execution import ChatEvidenceRetriever
+from rag_kb.retrieval.profile import exact_profile
 
 
 def _context() -> ChatExecutionContext:
@@ -46,11 +47,7 @@ def _context() -> ChatExecutionContext:
         client_id="client",
         query="What is frozen?",
         effective_policy={"grounding_policy": "evidence_only"},
-        retrieval_strategy={
-            "strategy": "exact_vector",
-            "top_k": 3,
-            "rerank": False,
-        },
+        retrieval_strategy=exact_profile(top_k=3, rerank=False).as_dict(),
         model_configuration={"requested_model": "fixed"},
         attempt=1,
     )
@@ -132,6 +129,8 @@ class ChatExecutionServiceTests(unittest.IsolatedAsyncioTestCase):
             hierarchy={},
             source_metadata={},
             score=0.5,
+            document_display_name="Guide",
+            document_original_filename="guide.png",
             modality="image",
             matched_representations=("native_image",),
         )

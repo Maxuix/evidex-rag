@@ -52,8 +52,7 @@ class ChatService:
         hybrid_enabled: bool = False,
         retrieval_profile_factory: Callable[
             [RetrievalStrategy, int, bool], RetrievalExecutionProfile
-        ]
-        | None = None,
+        ],
         context_strategy: str = "recent_completed_turns_v1",
         context_max_turns: int = 6,
         context_max_tokens: int = 4000,
@@ -218,16 +217,9 @@ class ChatService:
             if retrieval_mode == "hybrid"
             else RetrievalStrategy.EXACT_VECTOR
         )
-        if self._retrieval_profile_factory is None:
-            retrieval_strategy = {
-                "strategy": strategy.value,
-                "top_k": top_k,
-                "rerank": resolved_rerank,
-            }
-        else:
-            retrieval_strategy = self._retrieval_profile_factory(
-                strategy, top_k, resolved_rerank
-            ).as_dict()
+        retrieval_strategy = self._retrieval_profile_factory(
+            strategy, top_k, resolved_rerank
+        ).as_dict()
         request_hash = canonical_request_hash(
             {
                 "session_id": str(session_id),

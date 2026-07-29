@@ -26,28 +26,11 @@ class UploadMetadata:
 
 def resolve_upload_metadata(
     *,
-    encoded_metadata: str | None,
-    legacy_filename: str | None,
-    legacy_display_name: str | None,
+    encoded_metadata: str,
 ) -> UploadMetadata:
-    """Accept exactly one version of the upload metadata transport."""
+    """Decode the one current upload metadata transport."""
 
-    if encoded_metadata is not None:
-        if legacy_filename is not None or legacy_display_name is not None:
-            _invalid_metadata(
-                "Encoded and legacy document metadata headers cannot be combined.",
-                error_type="upload_metadata_conflict",
-            )
-        return _decode_metadata(encoded_metadata)
-    if legacy_filename is None:
-        _invalid_metadata(
-            "X-Document-Metadata or X-Document-Filename is required.",
-            error_type="missing",
-        )
-    return UploadMetadata(
-        original_filename=legacy_filename,
-        display_name=legacy_display_name,
-    )
+    return _decode_metadata(encoded_metadata)
 
 
 def _decode_metadata(value: str) -> UploadMetadata:

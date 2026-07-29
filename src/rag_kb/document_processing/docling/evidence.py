@@ -115,6 +115,7 @@ def composite_evidence(
         key = chunk_assembly_key(
             profile=profile,
             source_checksum_sha256=source_checksum_sha256,
+            assembly_ordinal=index,
             item_refs=chunk.item_refs,
             text=chunk.text,
         )

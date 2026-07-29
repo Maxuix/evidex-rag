@@ -211,7 +211,6 @@ class RetrievalService:
         try:
             profile = RetrievalExecutionProfile.from_snapshot(
                 request.execution_profile,
-                legacy_defaults=self._exact_profile,
             )
         except (KeyError, TypeError, ValueError) as error:
             raise RetrievalExecutionError(

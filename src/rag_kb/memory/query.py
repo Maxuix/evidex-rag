@@ -11,7 +11,6 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from rag_kb.domain import (
     CONTEXTUAL_QUERY_VERSION,
-    LEGACY_CONTEXTUAL_QUERY_VERSION,
     ChatExecutionContext,
     ChatModelCallRecord,
     ChatModelExecutionError,
@@ -107,13 +106,7 @@ class SessionQueryContextualizer:
         persisted = context.contextualized_query
         if persisted is not None:
             _require_context_match(context, persisted)
-            if persisted.version == CONTEXTUAL_QUERY_VERSION:
-                return persisted
-            return await self._persist(
-                context,
-                _upgrade_legacy(context, persisted),
-                persisted.model_calls_for_attempt(context.attempt),
-            )
+            return persisted
         if not context.conversation_context.turns:
             value = ContextualizedQuery(
                 version=CONTEXTUAL_QUERY_VERSION,
@@ -227,7 +220,9 @@ def build_contextualization_repair_request(
 
 
 def serialize_contextualized_query(value: ContextualizedQuery) -> dict[str, Any]:
-    result = {
+    if value.rewrite_source is None:
+        raise ValueError("contextual query is missing rewrite source")
+    return {
         "version": value.version,
         "status": value.status.value,
         "original_query": value.original_query,
@@ -244,19 +239,14 @@ def serialize_contextualized_query(value: ContextualizedQuery) -> dict[str, Any]
         ],
         "created_at": value.created_at.isoformat() if value.created_at else None,
         "origin_attempt": value.origin_attempt,
+        "rewrite_source": value.rewrite_source.value,
     }
-    if value.version == CONTEXTUAL_QUERY_VERSION:
-        if value.rewrite_source is None:
-            raise ValueError("v2 contextual query is missing rewrite source")
-        result["rewrite_source"] = value.rewrite_source.value
-    return result
 
 
 def hydrate_contextualized_query(value: object) -> ContextualizedQuery:
     if not isinstance(value, dict):
         raise ValueError("contextualized query must be an object")
-    version = value.get("version")
-    common = {
+    expected = {
         "version",
         "status",
         "original_query",
@@ -265,16 +255,9 @@ def hydrate_contextualized_query(value: object) -> ContextualizedQuery:
         "model_calls",
         "created_at",
         "origin_attempt",
+        "rewrite_source",
     }
-    expected = (
-        common
-        if version == LEGACY_CONTEXTUAL_QUERY_VERSION
-        else common | {"rewrite_source"}
-    )
-    if version not in {
-        LEGACY_CONTEXTUAL_QUERY_VERSION,
-        CONTEXTUAL_QUERY_VERSION,
-    } or set(value) != expected:
+    if value.get("version") != CONTEXTUAL_QUERY_VERSION or set(value) != expected:
         raise ValueError("contextualized query shape is invalid")
     calls = _hydrate_calls(value["model_calls"])
     created = value["created_at"]
@@ -297,7 +280,7 @@ def hydrate_contextualized_query(value: object) -> ContextualizedQuery:
         raise ValueError("contextualized query rewrite source is invalid")
     try:
         result = ContextualizedQuery(
-            version=version,
+            version=CONTEXTUAL_QUERY_VERSION,
             status=QueryContextStatus(value["status"]),
             original_query=value["original_query"],
             standalone_query=value["standalone_query"],
@@ -411,46 +394,6 @@ def _fallback_artifact(
         created_at=created_at,
         origin_attempt=context.attempt,
         rewrite_source=QueryRewriteSource.FALLBACK,
-    )
-
-
-def _upgrade_legacy(
-    context: ChatExecutionContext,
-    value: ContextualizedQuery,
-) -> ContextualizedQuery:
-    if value.version != LEGACY_CONTEXTUAL_QUERY_VERSION:
-        raise ValueError("only legacy contextual queries can be upgraded")
-    if value.status is QueryContextStatus.ORIGINAL:
-        return ContextualizedQuery(
-            version=CONTEXTUAL_QUERY_VERSION,
-            status=QueryContextStatus.ORIGINAL,
-            original_query=value.original_query,
-            standalone_query=value.original_query,
-            context_hash=value.context_hash,
-            rewrite_source=QueryRewriteSource.ORIGINAL,
-        )
-    if value.status is QueryContextStatus.NEEDS_CLARIFICATION:
-        standalone_query = _fallback_query(context)
-        source = QueryRewriteSource.FALLBACK
-    else:
-        if value.standalone_query is None:
-            raise ValueError("legacy contextualized query is empty")
-        standalone_query = value.standalone_query
-        source = (
-            QueryRewriteSource.REPAIR
-            if len(value.model_calls) == 2
-            else QueryRewriteSource.MODEL
-        )
-    return ContextualizedQuery(
-        version=CONTEXTUAL_QUERY_VERSION,
-        status=QueryContextStatus.CONTEXTUALIZED,
-        original_query=value.original_query,
-        standalone_query=standalone_query,
-        context_hash=value.context_hash,
-        model_calls=value.model_calls,
-        created_at=value.created_at,
-        origin_attempt=value.origin_attempt,
-        rewrite_source=source,
     )
 
 

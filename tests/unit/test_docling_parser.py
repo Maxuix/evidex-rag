@@ -327,7 +327,7 @@ class DoclingConverterFactoryTests(unittest.TestCase):
                 limits=limits,
             )
             multimodal = build_docling_converter(
-                ParsingPreset.MULTIMODAL_LOCAL_V1,
+                ParsingPreset.MULTIMODAL_LOCAL_V2,
                 artifacts_path=root,
                 limits=limits,
             )
@@ -478,14 +478,14 @@ class DoclingParserTests(unittest.IsolatedAsyncioTestCase):
         await harness.parser.parse(source, preset=ParsingPreset.TEXT_LOCAL_V1)
         await harness.parser.parse(
             source,
-            preset=ParsingPreset.MULTIMODAL_LOCAL_V1,
+            preset=ParsingPreset.MULTIMODAL_LOCAL_V2,
         )
 
         self.assertEqual(
             harness.calls,
             [
                 ParsingPreset.TEXT_LOCAL_V1,
-                ParsingPreset.MULTIMODAL_LOCAL_V1,
+                ParsingPreset.MULTIMODAL_LOCAL_V2,
             ],
         )
         self.assertEqual(len(converter.calls), 3)
@@ -748,7 +748,7 @@ class DoclingParserTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(ParserExecutionError) as raised:
                 await image_harness.parser.parse(
                     ParserSource("guide.pdf", "application/pdf", b"%PDF"),
-                    preset=ParsingPreset.MULTIMODAL_LOCAL_V1,
+                    preset=ParsingPreset.MULTIMODAL_LOCAL_V2,
                 )
             self.assertEqual(
                 raised.exception.diagnostic["limit_name"],

@@ -6,7 +6,7 @@ import hashlib
 import unicodedata
 from dataclasses import replace
 
-from rag_kb.document_processing.profiles import MULTIMODAL_REPRESENTATION_CONFIG
+from rag_kb.document_processing.profiles import DOCLING_REPRESENTATION_CONFIG
 from rag_kb.document_processing.tokenization import count_chunk_tokens, split_by_tokens
 from rag_kb.domain import (
     ChunkAssetRelationDraft,
@@ -24,7 +24,7 @@ def with_composite_embedding_text(
 ) -> tuple[EvidenceUnitDraft, ...]:
     """Attach stable embedding text without changing display content or boundaries."""
 
-    config = MULTIMODAL_REPRESENTATION_CONFIG["embedding_text"]
+    config = DOCLING_REPRESENTATION_CONFIG["embedding_text"]
     maximum = int(config["max_tokens"])
     attachment_maximum = int(config["max_attachment_tokens"])
     by_key = {unit.unit_key: unit for unit in units}

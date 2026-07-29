@@ -690,10 +690,8 @@ class IndexArtifactManifest(Base):
             name="artifact_manifest_representation_matrix_array",
         ),
         CheckConstraint(
-            "(relation_plan IS NULL AND relation_count IS NULL AND relation_manifest_hash IS NULL) "
-            "OR (jsonb_typeof(relation_plan) = 'array' AND relation_count >= 0 "
-            "AND jsonb_array_length(relation_plan) = relation_count "
-            "AND relation_manifest_hash IS NOT NULL)",
+            "jsonb_typeof(relation_plan) = 'array' AND relation_count >= 0 "
+            "AND jsonb_array_length(relation_plan) = relation_count",
             name="artifact_manifest_relation_plan_consistent",
         ),
     )
@@ -710,9 +708,13 @@ class IndexArtifactManifest(Base):
     unit_count: Mapped[int] = mapped_column(Integer, nullable=False)
     asset_count: Mapped[int] = mapped_column(Integer, nullable=False)
     representation_count: Mapped[int] = mapped_column(Integer, nullable=False)
-    relation_plan: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB)
-    relation_count: Mapped[int | None] = mapped_column(Integer)
-    relation_manifest_hash: Mapped[str | None] = mapped_column(String(64))
+    relation_plan: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False
+    )
+    relation_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    relation_manifest_hash: Mapped[str] = mapped_column(
+        String(64), nullable=False
+    )
     manifest_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = created_timestamp()
 
@@ -760,6 +762,10 @@ class IndexChunk(Base):
         ),
         UniqueConstraint("kb_id", "id", name="uq_index_chunk_kb_id"),
         CheckConstraint("ordinal >= 0", name="index_chunk_ordinal_nonnegative"),
+        CheckConstraint(
+            "length(btrim(unit_key)) > 0",
+            name="index_chunk_unit_key_nonempty",
+        ),
         CheckConstraint("token_count >= 0", name="index_chunk_tokens_nonnegative"),
         CheckConstraint(
             "modality IN ('text', 'image', 'table')",
@@ -1175,7 +1181,7 @@ class ChatRun(Base):
     idempotency_key: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), nullable=False)
     request_hash: Mapped[str] = mapped_column(String(71), nullable=False)
     requested_policy: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
-    effective_policy: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    effective_policy: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     retrieval_strategy: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     model_configuration: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     conversation_context: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
@@ -1218,9 +1224,11 @@ class Citation(Base):
     document_version_id_snapshot: Mapped[UUID] = mapped_column(
         PostgreSQLUUID(as_uuid=True), nullable=False
     )
-    document_display_name_snapshot: Mapped[str | None] = mapped_column(String(512))
-    document_original_filename_snapshot: Mapped[str | None] = mapped_column(
-        String(1024)
+    document_display_name_snapshot: Mapped[str] = mapped_column(
+        String(512), nullable=False
+    )
+    document_original_filename_snapshot: Mapped[str] = mapped_column(
+        String(1024), nullable=False
     )
     quoted_text: Mapped[str] = mapped_column(Text, nullable=False)
     source_location: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)

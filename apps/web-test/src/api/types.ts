@@ -36,7 +36,6 @@ export type ChunkingPreset =
   | "semantic_balanced_v1";
 export type ParsingPreset =
   | "text_local_v1"
-  | "multimodal_local_v1"
   | "multimodal_local_v2";
 
 export interface KnowledgeBase {
@@ -49,19 +48,13 @@ export interface KnowledgeBase {
     preset: ParsingPreset;
     profile:
       | "docling_text_local_v1"
-      | "docling_multimodal_local_v1"
-      | "docling_multimodal_local_v2"
-      | "unstructured_local_v1"
-      | "unstructured_multimodal_local_v1"
-      | "unstructured_multimodal_local_v2";
+      | "docling_multimodal_local_v2";
   };
   chunking: {
-    preset: ChunkingPreset | "legacy_incompatible";
+    preset: ChunkingPreset;
     profile:
       | "structural_by_title_token_v3"
-      | "unstructured_by_title_token_v2"
-      | "semantic_breakpoint_v1"
-      | "unstructured_title_semantic_qwen_v1";
+      | "semantic_breakpoint_v1";
   };
   retrieval_defaults: {
     strategy: "exact_vector";
@@ -225,8 +218,8 @@ export interface ChatCitation {
   index_chunk_id: UUID | null;
   document_id: UUID;
   document_version_id: UUID;
-  document_display_name: string | null;
-  document_original_filename: string | null;
+  document_display_name: string;
+  document_original_filename: string;
   quoted_text: string;
   source_location: JsonMap;
   score: number | null;
@@ -258,16 +251,16 @@ export interface ChatRun {
   final_context_url: string;
   effective_answer_policy: EffectiveAnswerPolicy;
   retrieval: {
-    profile_version?: "exact_vector_v1" | "hybrid_fts_rrf_v1";
+    profile_version: "exact_vector_v1" | "hybrid_fts_rrf_v1";
     strategy: "exact_vector" | "hybrid";
     top_k: number;
     rerank: boolean;
-    lexical_analyzer_version?: string | null;
-    lexical_query_version?: string | null;
+    lexical_analyzer_version: string | null;
+    lexical_query_version: string | null;
   };
   query_context: {
     strategy: "recent_completed_turns_v1";
-    status: "pending" | "original" | "contextualized" | "needs_clarification";
+    status: "pending" | "original" | "contextualized";
     history_turn_count: number;
     history_token_count: number;
     history_truncated: boolean;

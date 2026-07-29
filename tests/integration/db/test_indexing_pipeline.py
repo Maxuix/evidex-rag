@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import os
 import tempfile
 import unittest
@@ -46,6 +47,7 @@ from rag_kb.domain import (
     VectorRecordWrite,
 )
 from rag_kb.indexing import CandidatePromotionService, IndexingPipeline
+from rag_kb.retrieval.profile import exact_profile
 from rag_kb.scheduling import (
     ChatRunScheduler,
     FairWorkerScheduler,
@@ -280,13 +282,13 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
             modality=ContentModality(row["modality"]),
             index_asset_id=row["index_asset_id"],
             evidence_group_key=row["evidence_group_key"],
-            relations=dict(row["relations"] or {}),
+            relations=json.loads(row["relations"] or "{}"),
             content=row["content"],
             content_hash=row["content_hash"],
             token_count=row["token_count"],
-            source_location=dict(row["source_location"]),
-            hierarchy=dict(row["hierarchy"]),
-            source_metadata=dict(row["source_metadata"]),
+            source_location=json.loads(row["source_location"]),
+            hierarchy=json.loads(row["hierarchy"]),
+            source_metadata=json.loads(row["source_metadata"]),
             embedding_text=row["embedding_text"],
             embedding_text_hash=row["embedding_text_hash"],
         )
@@ -650,6 +652,9 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 "configuration_fingerprint": "sha256:" + "c" * 64,
                 "capability_fingerprint": "sha256:" + "d" * 64,
             },
+            retrieval_profile_factory=lambda _strategy, top_k, rerank: (
+                exact_profile(top_k=top_k, rerank=rerank)
+            ),
         )
         session = await chat.create_session(self.context, kb_id=kb.id, title=None)
         run = await chat.create_run(

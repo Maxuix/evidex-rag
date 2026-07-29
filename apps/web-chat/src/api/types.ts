@@ -56,8 +56,8 @@ export interface ChatCitation {
   index_chunk_id: UUID | null;
   document_id: UUID;
   document_version_id: UUID;
-  document_display_name: string | null;
-  document_original_filename: string | null;
+  document_display_name: string;
+  document_original_filename: string;
   quoted_text: string;
   source_location: JsonMap;
   score: number | null;

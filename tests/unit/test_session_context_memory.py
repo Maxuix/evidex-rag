@@ -8,7 +8,6 @@ from uuid import uuid4
 
 from rag_kb.domain import (
     CONTEXTUAL_QUERY_VERSION,
-    LEGACY_CONTEXTUAL_QUERY_VERSION,
     ChatExecutionContext,
     ChatModelExecutionError,
     ChatModelRequest,
@@ -285,10 +284,9 @@ class QueryContextualizerTests(unittest.IsolatedAsyncioTestCase):
             captured.exception.model_calls[0].provider_request_id, "first-call"
         )
 
-    def test_legacy_clarification_round_trip_remains_readable(self) -> None:
-        created = datetime.now(UTC)
-        legacy = {
-            "version": LEGACY_CONTEXTUAL_QUERY_VERSION,
+    def test_retired_contextual_query_version_is_rejected(self) -> None:
+        retired = {
+            "version": "contextual_query_v1",
             "status": "needs_clarification",
             "original_query": "What about it?",
             "standalone_query": None,
@@ -301,48 +299,12 @@ class QueryContextualizerTests(unittest.IsolatedAsyncioTestCase):
                     "usage": {},
                 }
             ],
-            "created_at": created.isoformat(),
+            "created_at": datetime.now(UTC).isoformat(),
             "origin_attempt": 1,
         }
 
-        hydrated = hydrate_contextualized_query(legacy)
-
-        self.assertEqual(hydrated.version, LEGACY_CONTEXTUAL_QUERY_VERSION)
-        self.assertIs(hydrated.status, QueryContextStatus.NEEDS_CLARIFICATION)
-        self.assertIsNone(hydrated.rewrite_source)
-        self.assertEqual(serialize_contextualized_query(hydrated), legacy)
-
-    async def test_legacy_clarification_is_upgraded_to_fallback_without_model(self) -> None:
-        context = _context((_turn(1, content="AGENT SELF-EVOLUTION"),))
-        legacy = hydrate_contextualized_query(
-            {
-                "version": LEGACY_CONTEXTUAL_QUERY_VERSION,
-                "status": "needs_clarification",
-                "original_query": context.query,
-                "standalone_query": None,
-                "context_hash": context.conversation_context.content_hash,
-                "model_calls": [
-                    {
-                        "operation": "contextualize_query",
-                        "model": "fixed-model",
-                        "provider_request_id": "legacy-call",
-                        "usage": {},
-                    }
-                ],
-                "created_at": datetime.now(UTC).isoformat(),
-                "origin_attempt": 1,
-            }
-        )
-        model = _Model()
-
-        value = await SessionQueryContextualizer(
-            model, _Store()
-        ).contextualize(replace(context, contextualized_query=legacy))
-
-        self.assertEqual(value.version, CONTEXTUAL_QUERY_VERSION)
-        self.assertIs(value.rewrite_source, QueryRewriteSource.FALLBACK)
-        self.assertTrue(value.standalone_query)
-        self.assertEqual(model.requests, [])
+        with self.assertRaises(ValueError):
+            hydrate_contextualized_query(retired)
 
     async def test_stale_lease_cannot_commit_contextualization(self) -> None:
         class StaleStore:

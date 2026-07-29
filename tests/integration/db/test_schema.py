@@ -168,7 +168,7 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
                     "UPDATE alembic_version SET version_num = 'runtime-mutation'"
                 )
             revision = await runtime.fetchval("SELECT version_num FROM alembic_version")
-            self.assertEqual(revision, "0013_fts_hybrid_retrieval")
+            self.assertEqual(revision, "0001_current_only_baseline")
         finally:
             await runtime.close()
 

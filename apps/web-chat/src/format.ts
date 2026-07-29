@@ -31,26 +31,38 @@ export function sessionGroup(value: string): string {
 }
 
 export function documentName(
-  displayName: string | null,
-  originalFilename: string | null,
-  documentId: string,
+  displayName: string,
+  originalFilename: string,
 ): string {
-  return displayName?.trim()
-    || originalFilename?.trim()
-    || `文档 ${documentId.slice(0, 8)}`;
+  return displayName.trim() || originalFilename.trim();
 }
 
 export function formatSourceLocation(value: JsonMap): string {
-  const parts: string[] = [];
-  const page = firstScalar(value, ["page_number", "page", "page_index"]);
-  const section = firstScalar(value, ["section", "section_title", "title"]);
-  const paragraph = firstScalar(value, ["paragraph", "paragraph_number"]);
-  const table = firstScalar(value, ["table", "table_number"]);
-  if (page !== null) parts.push(`第 ${page} 页`);
-  if (section !== null) parts.push(String(section));
-  if (paragraph !== null) parts.push(`第 ${paragraph} 段`);
-  if (table !== null) parts.push(`表格 ${table}`);
-  return parts.length ? parts.join(" · ") : "位置未标注";
+  const type = typeof value.surface_type === "string"
+    ? value.surface_type
+    : "logical";
+  const start = finiteNumber(value.surface_start);
+  const end = finiteNumber(value.surface_end);
+  const labels = [
+    ...(typeof value.surface_label === "string" ? [value.surface_label] : []),
+    ...(Array.isArray(value.surface_labels)
+      ? value.surface_labels.filter((item): item is string => typeof item === "string")
+      : []),
+  ];
+  const typeLabel = {
+    page: "页",
+    slide: "幻灯片",
+    sheet: "工作表",
+    logical: "逻辑位置",
+  }[type] || type;
+  const range = start === null
+    ? null
+    : start === end || end === null
+      ? `${typeLabel} ${start}`
+      : `${typeLabel} ${start}–${end}`;
+  return [...new Set(labels.map((item) => item.trim()).filter(Boolean)), range]
+    .filter((item): item is string => Boolean(item))
+    .join(" · ") || "逻辑位置";
 }
 
 export function citationOrdinals(content: string): number[] {
@@ -61,15 +73,6 @@ export function citationOrdinals(content: string): number[] {
   return [...values].sort((left, right) => left - right);
 }
 
-function firstScalar(value: JsonMap, keys: string[]): string | number | null {
-  for (const key of keys) {
-    const candidate = value[key];
-    if (
-      (typeof candidate === "string" && candidate.trim())
-      || (typeof candidate === "number" && Number.isFinite(candidate))
-    ) {
-      return candidate;
-    }
-  }
-  return null;
+function finiteNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }

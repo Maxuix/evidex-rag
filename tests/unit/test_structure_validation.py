@@ -138,6 +138,8 @@ def _pack(context: ChatExecutionContext) -> EvidencePack:
                 hierarchy={},
                 source_metadata={"must_not_reach_prompt": True},
                 score=score,
+                document_display_name="Guide",
+                document_original_filename="guide.md",
             )
             for rank, (text, score) in enumerate(
                 (("Policy A applies.", 0.91), ("The deadline is Friday.", 0.83)),

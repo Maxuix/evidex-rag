@@ -37,7 +37,6 @@ class ChatPipelinePhase(StrEnum):
 
 class ChatOutputSchema(StrEnum):
     ANSWER_V1 = "answer_v1"
-    CONTEXTUAL_QUERY_V1 = "contextual_query_v1"
     CONTEXTUAL_QUERY_V2 = "contextual_query_v2"
 
 

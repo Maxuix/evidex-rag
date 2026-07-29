@@ -21,10 +21,7 @@ from rag_kb.domain import (
     ReconciliationResult,
 )
 from rag_kb.retrieval import RetrievalService
-from rag_kb.retrieval.profile import (
-    RetrievalExecutionProfile,
-    legacy_exact_profile,
-)
+from rag_kb.retrieval.profile import RetrievalExecutionProfile
 from rag_kb.uow import (
     UnitOfWork,
     UnitOfWorkFactory,
@@ -162,7 +159,6 @@ class ChatEvidenceRetriever:
                 query = query_context.standalone_query
             profile = RetrievalExecutionProfile.from_snapshot(
                 context.retrieval_strategy,
-                legacy_defaults=legacy_exact_profile(),
             )
             strategy = profile.strategy
             top_k = profile.top_k

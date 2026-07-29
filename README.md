@@ -35,9 +35,10 @@ the retired backend keys. See the
 supported settings.
 
 Exact-vector retrieval remains the default. To evaluate the optional hybrid
-path, migrate first, run the lexical backfill, then explicitly set
-`RAG_KB__RETRIEVAL__HYBRID_ENABLED=true`; existing requests remain exact unless
-they select `strategy=hybrid` or Chat `retrieval.mode=hybrid`.
+path, explicitly set `RAG_KB__RETRIEVAL__HYBRID_ENABLED=true`; normal indexing
+creates the required lexical rows and completeness manifest for every target.
+Existing requests remain exact unless they select `strategy=hybrid` or Chat
+`retrieval.mode=hybrid`.
 
 ## Basic Check
 
@@ -54,15 +55,17 @@ compatibility, or release matrix is part of the normal workflow.
 ```bash
 docker compose --env-file .env.local ps
 docker compose --env-file .env.local logs --no-color api worker
-docker compose --env-file .env.local run --rm maintenance \
-  backfill-lexical-index
 docker compose --env-file .env.local down
 PYTHONPATH=src:. .venv/bin/python tools/reset_local.py \
-  --env-file .env \
+  --env-file .env.local \
+  --project-name rag \
+  --inspect-only \
   --confirm DESTROY_RAG_KB_LOCAL_DATA
 ```
 
-The reset command permanently removes local application data.
+After inspecting the exact project-owned volumes, repeat the reset command
+without `--inspect-only`. It permanently removes the selected Compose project's
+PostgreSQL and source-data volumes while preserving its inference-model cache.
 
 See the [local development guide](docs/release/local-development-guide.md) for
 configuration, sample import, and troubleshooting.

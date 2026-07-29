@@ -129,6 +129,8 @@ def _pack(context: ChatExecutionContext, *texts: str) -> EvidencePack:
             hierarchy={},
             source_metadata={"classification": "internal"},
             score=0.9 - rank / 100,
+            document_display_name="Guide",
+            document_original_filename="guide.md",
         )
         for rank, text in enumerate(texts, start=1)
     )
