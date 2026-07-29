@@ -26,7 +26,7 @@ from rag_kb.domain import (
     QueryContextStatus,
     QueryRewriteSource,
 )
-from rag_kb.workflows import LangGraphRunner
+from rag_kb.workflows.langgraph_runner import LangGraphRunner
 from rag_kb.workflows.chat_graph import CHAT_GRAPH_NODES
 from tests.unit.test_answering import (
     _Model,

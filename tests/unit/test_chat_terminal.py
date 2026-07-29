@@ -31,7 +31,10 @@ from rag_kb.domain import (
     VisualEvidenceReason,
 )
 from rag_kb.repositories.sqlalchemy_chat import _serialized_validation
-from rag_kb.services import ChatFailureSettlementService, ChatResultPersistenceStep
+from rag_kb.services.chat_terminal import (
+    ChatFailureSettlementService,
+    ChatResultPersistenceStep,
+)
 
 
 class ChatTerminalServiceTests(unittest.IsolatedAsyncioTestCase):

@@ -22,7 +22,7 @@ from rag_kb.domain import (
 from rag_kb.memory import hydrate_conversation_context
 from rag_kb.repositories.sqlalchemy_chat import SqlAlchemyChatRepository
 from rag_kb.schemas import ChatRunCreate
-from rag_kb.services import ChatService, chat_model_configuration
+from rag_kb.services.chat import ChatService, chat_model_configuration
 from rag_kb.retrieval.profile import (
     HYBRID_PROFILE_VERSION,
     exact_profile,

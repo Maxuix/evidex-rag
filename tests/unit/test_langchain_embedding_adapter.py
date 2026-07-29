@@ -9,7 +9,9 @@ import httpx
 import openai
 from langchain_openai import OpenAIEmbeddings
 
-from rag_kb.adapters import LangChainEmbeddingModelAdapter
+from rag_kb.adapters.model_api.langchain_embeddings import (
+    LangChainEmbeddingModelAdapter,
+)
 from rag_kb.domain import (
     EmbeddingSpaceDefinition,
     ErrorCode,

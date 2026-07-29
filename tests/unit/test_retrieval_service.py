@@ -8,7 +8,8 @@ from uuid import UUID
 
 from sqlalchemy.dialects import postgresql
 
-from rag_kb.adapters import FixedPgVectorSpace, PgLexicalStore, PgVectorStore
+from rag_kb.adapters.lexical_store.postgres import PgLexicalStore
+from rag_kb.adapters.vector_store.pgvector import PgVectorStore
 from rag_kb.auth import (
     AccessDeniedError,
     AuthContext,
@@ -30,7 +31,7 @@ from rag_kb.domain import (
     VectorSearchResult,
 )
 from rag_kb.repositories.sqlalchemy_indexing import SqlAlchemyIndexingRepository
-from rag_kb.retrieval import RetrievalService
+from rag_kb.retrieval.service import RetrievalService
 from rag_kb.retrieval.reranker import rerank_hits
 
 
@@ -94,7 +95,7 @@ class RetrievalContractTests(unittest.TestCase):
 
     def test_pgvector_adapter_rejects_non_exact_or_wrong_dimension(self) -> None:
         definition = replace(_embedding_space(), dimension=1024)
-        store = PgVectorStore(None, FixedPgVectorSpace(definition))  # type: ignore[arg-type]
+        store = PgVectorStore(None, definition)  # type: ignore[arg-type]
         exact = _plan()
 
         with self.assertRaises(RetrievalExecutionError) as dimension:

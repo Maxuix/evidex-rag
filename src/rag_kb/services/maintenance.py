@@ -8,7 +8,7 @@ from uuid import UUID
 
 from rag_kb.auth import AuthContext
 from rag_kb.domain import FileReconciliationResult, IndexCleanupResult
-from rag_kb.adapters.file_store import IndexAssetStore
+from rag_kb.ports.files import IndexAssetStore
 from rag_kb.services.files import FileReconciliationService
 from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, UnitOfWorkPurpose, execute_in_transaction
 

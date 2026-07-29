@@ -69,7 +69,7 @@ from rag_kb.domain import (
     ResourceStateConflictError,
     VectorRecordWrite,
 )
-from rag_kb.document_processing import profile_fingerprint
+from rag_kb.document_processing.profiles import profile_fingerprint
 from rag_kb.document_processing.lexical import (
     LEXICAL_ANALYZER_VERSION,
     lexical_manifest_hash,

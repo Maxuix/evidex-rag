@@ -10,10 +10,10 @@ from uuid import UUID, uuid4
 
 import asyncpg
 
-from rag_kb.adapters import LocalFileStore
+from rag_kb.adapters.file_store.local import LocalFileStore
 from rag_kb.auth import AuthContext, SingleWorkspaceAccessPolicy
 from rag_kb.db import DatabaseProcess, create_database_resources
-from rag_kb.document_processing import index_profile
+from rag_kb.document_processing.profiles import index_profile
 from rag_kb.domain import (
     AdmissionLimits,
     DocumentSource,
@@ -22,8 +22,9 @@ from rag_kb.domain import (
     IdempotencyKeyReusedError,
     IndexProfileDefinition,
 )
-from rag_kb.services import FileAdmissionService, FileReconciliationService, SourceFileService
+from rag_kb.services.admission import FileAdmissionService
 from rag_kb.services.content import DocumentService, KnowledgeBaseService
+from rag_kb.services.files import FileReconciliationService, SourceFileService
 from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWorkFactory
 
 

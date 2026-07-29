@@ -12,7 +12,7 @@ import openai
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_openai import ChatOpenAI
 
-from rag_kb.adapters import LangChainChatModelAdapter
+from rag_kb.adapters.model_api.langchain_chat import LangChainChatModelAdapter
 from rag_kb.answering import WireAnswer
 from rag_kb.domain import (
     ChatModelExecutionError,

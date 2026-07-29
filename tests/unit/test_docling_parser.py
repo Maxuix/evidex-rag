@@ -10,10 +10,12 @@ import os
 from pathlib import Path
 import signal
 import struct
+import threading
 from types import SimpleNamespace
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 import warnings
 import zlib
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -39,17 +41,18 @@ from docling_core.types.doc import (
 )
 from PIL import Image
 
-from rag_kb.adapters.parser.docling import (
+from rag_kb.adapters.parser.docling.artifacts import (
     ArtifactManifestError,
-    DoclingParser,
-    build_docling_converter,
     verify_docling_artifacts,
 )
+from rag_kb.adapters.parser.docling.factory import build_docling_converter
 from rag_kb.adapters.parser.docling.parser import (
+    DoclingParser,
     _DoclingRuntime,
     _configure_pillow_resource_guard,
     _validate_source,
 )
+import rag_kb.adapters.parser.docling.parser as parser_module
 from rag_kb.domain import (
     ErrorCode,
     ParserExecutionError,
@@ -785,7 +788,51 @@ class DoclingParserTests(unittest.IsolatedAsyncioTestCase):
             preset=ParsingPreset.TEXT_LOCAL_V1,
         )
 
-        self.assertEqual(first.name, second.name)
+        self.assertEqual(first.document.name, second.document.name)
+
+    async def test_scanned_surface_probe_does_not_block_event_loop(self) -> None:
+        harness = _ProcessHarness(child_target=_echo_child, timeout=5.0)
+        self.addCleanup(harness.close)
+        source = ParserSource("guide.pdf", "application/pdf", b"%PDF-1.7")
+        loop_thread = threading.get_ident()
+        probe_entered = threading.Event()
+        probe_release = threading.Event()
+        probe_thread: list[int] = []
+
+        def blocked_probe(probe_source):
+            self.assertIs(probe_source, source)
+            probe_thread.append(threading.get_ident())
+            probe_entered.set()
+            if not probe_release.wait(timeout=2):
+                raise AssertionError("event loop did not release scanned-page probe")
+            return frozenset({1})
+
+        async def release_after_probe_starts() -> None:
+            while not probe_entered.is_set():
+                await asyncio.sleep(0)
+            probe_release.set()
+
+        release_task = asyncio.create_task(release_after_probe_starts())
+        try:
+            with patch.object(
+                parser_module,
+                "scanned_surfaces",
+                side_effect=blocked_probe,
+            ):
+                parsed = await harness.parser.parse(
+                    source,
+                    preset=ParsingPreset.MULTIMODAL_LOCAL_V2,
+                )
+            await release_task
+        finally:
+            probe_release.set()
+            if not release_task.done():
+                release_task.cancel()
+                await asyncio.gather(release_task, return_exceptions=True)
+
+        self.assertEqual(parsed.page_image_surfaces, frozenset({1}))
+        self.assertEqual(len(probe_thread), 1)
+        self.assertNotEqual(probe_thread[0], loop_thread)
 
     async def test_timeout_kills_child_and_next_conversion_uses_clean_process(
         self,
@@ -809,7 +856,7 @@ class DoclingParserTests(unittest.IsolatedAsyncioTestCase):
             source,
             preset=ParsingPreset.TEXT_LOCAL_V1,
         )
-        self.assertEqual(document.texts[0].text, "guide.html")
+        self.assertEqual(document.document.texts[0].text, "guide.html")
 
     async def test_cancellation_kills_child_and_next_conversion_recovers(self) -> None:
         harness = _ProcessHarness(child_target=_hang_once_child, timeout=10.0)
@@ -831,7 +878,7 @@ class DoclingParserTests(unittest.IsolatedAsyncioTestCase):
             source,
             preset=ParsingPreset.TEXT_LOCAL_V1,
         )
-        self.assertEqual(document.texts[0].text, "guide.csv")
+        self.assertEqual(document.document.texts[0].text, "guide.csv")
 
     async def test_abnormal_child_exit_is_redacted_and_recoverable(self) -> None:
         harness = _ProcessHarness(child_target=_crash_child, timeout=5.0)

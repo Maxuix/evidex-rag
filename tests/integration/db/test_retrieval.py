@@ -9,7 +9,8 @@ from uuid import UUID, uuid4
 import asyncpg
 from sqlalchemy import event
 
-from rag_kb.adapters import FixedPgVectorSpace, PgLexicalStore, PgVectorStore
+from rag_kb.adapters.lexical_store.postgres import PgLexicalStore
+from rag_kb.adapters.vector_store.pgvector import PgVectorStore
 from rag_kb.auth import AuthContext, SingleWorkspaceAccessPolicy
 from rag_kb.db import DatabaseProcess, create_database_resources
 from rag_kb.domain import (
@@ -25,8 +26,8 @@ from rag_kb.document_processing.lexical import (
     analyze_document,
     lexical_manifest_hash,
 )
-from rag_kb.retrieval import RetrievalService
-from rag_kb.services import CompositeEvidenceHydrationService
+from rag_kb.retrieval.service import RetrievalService
+from rag_kb.services.composite_evidence import CompositeEvidenceHydrationService
 from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWorkFactory
 
 
@@ -60,7 +61,7 @@ class ExactRetrievalDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.provider = _Provider(self.definition, _axis_vector(0))
         self.vector_store = PgVectorStore(
             self.database.sessions,
-            FixedPgVectorSpace(self.definition),
+            self.definition,
         )
         self.hydrator = CompositeEvidenceHydrationService(
             SqlAlchemyUnitOfWorkFactory(self.database.sessions, WORKSPACE)

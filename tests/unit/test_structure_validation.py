@@ -36,7 +36,7 @@ from rag_kb.domain import (
     EvidencePack,
     RetrievalStrategy,
 )
-from rag_kb.workflows import LangGraphRunner
+from rag_kb.workflows.langgraph_runner import LangGraphRunner
 
 
 class _Model:

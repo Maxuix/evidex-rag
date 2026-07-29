@@ -16,7 +16,10 @@ from docx import Document
 from PIL import Image
 from pypdf import PdfWriter
 
-from rag_kb.adapters import LocalIndexAssetStore, TongyiVisionEmbeddingAdapter
+from rag_kb.adapters.file_store.assets import LocalIndexAssetStore
+from rag_kb.adapters.model_api.multimodal_embeddings import (
+    TongyiVisionEmbeddingAdapter,
+)
 from apps.api.routers.assets import read_index_asset
 from rag_kb.auth import AuthContext, SingleWorkspaceAccessPolicy
 from rag_kb.adapters.parser.scanned_pages import scanned_surfaces
@@ -37,7 +40,7 @@ from rag_kb.retrieval.fusion import (
     reciprocal_rank_fusion,
     reciprocal_rank_fusion_lanes,
 )
-from rag_kb.services import IndexAssetService
+from rag_kb.services.assets import IndexAssetService
 
 
 WORKSPACE = UUID("01900000-0000-7000-8000-000000000901")

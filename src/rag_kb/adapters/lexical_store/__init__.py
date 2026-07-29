@@ -1,0 +1,1 @@
+"""PostgreSQL lexical retrieval implementation."""

@@ -8,7 +8,6 @@ from pgvector.sqlalchemy import Vector
 from sqlalchemy import Integer, and_, bindparam, select, true
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from rag_kb.adapters.vector_store.fixed_pgvector import FixedPgVectorSpace
 from rag_kb.db.models import (
     Document,
     DocumentSourceStatus,
@@ -43,10 +42,16 @@ class PgVectorStore:
     def __init__(
         self,
         sessions: async_sessionmaker[AsyncSession],
-        vector_space: FixedPgVectorSpace,
+        configured_space: EmbeddingSpaceDefinition,
     ) -> None:
+        _vector_model(configured_space.dimension)
+        if (
+            configured_space.distance_metric != "cosine"
+            or configured_space.vector_data_type != "float32"
+        ):
+            raise ValueError("configured embedding space is not an allowed fixed space")
         self._sessions = sessions
-        self._vector_space = vector_space
+        self._configured_space = configured_space
 
     async def has_space_role(
         self, plan: RetrievalQueryPlan, space_role: str
@@ -82,7 +87,7 @@ class PgVectorStore:
             query_embedding,
             space_role="text_retrieval",
             representation_kinds=("text", "caption_text", "ocr_text", "table_text"),
-            expected_space=self._vector_space.configured_space,
+            expected_space=self._configured_space,
         )
 
     async def search_space(
@@ -142,7 +147,7 @@ class PgVectorStore:
         query_embedding: tuple[float, ...],
         expected_space: EmbeddingSpaceDefinition | None = None,
     ) -> None:
-        configured = expected_space or self._vector_space.configured_space
+        configured = expected_space or self._configured_space
         if (
             plan.strategy
             not in {RetrievalStrategy.EXACT_VECTOR, RetrievalStrategy.HYBRID}

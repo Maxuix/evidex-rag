@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
-
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import bindparam, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -23,20 +21,6 @@ from rag_kb.domain import (
     RetrievalQueryPlan,
     VectorSearchHit,
 )
-
-
-@runtime_checkable
-class LexicalStore(Protocol):
-    async def search(
-        self,
-        plan: RetrievalQueryPlan,
-        query: str,
-        query_embedding: tuple[float, ...],
-        *,
-        analyzer_version: str,
-        query_version: str,
-        candidate_count: int,
-    ) -> LexicalSearchResult | None: ...
 
 
 class PgLexicalStore:

@@ -19,13 +19,10 @@ from rag_kb.domain import (
     ReconciliationResult,
     WorkLane,
 )
-from rag_kb.scheduling import (
-    ChatRunScheduler,
-    FairWorkerScheduler,
-    IndexingJobScheduler,
-    RetryPolicy,
-    WeightedLaneSelector,
-)
+from rag_kb.scheduling.chat import ChatRunScheduler
+from rag_kb.scheduling.fairness import WeightedLaneSelector
+from rag_kb.scheduling.indexing import IndexingJobScheduler, RetryPolicy
+from rag_kb.scheduling.worker import FairWorkerScheduler
 
 
 NOW = datetime(2026, 7, 14, 9, 0, tzinfo=UTC)

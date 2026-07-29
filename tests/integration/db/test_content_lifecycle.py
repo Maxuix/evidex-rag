@@ -9,7 +9,7 @@ import asyncpg
 
 from rag_kb.auth import AuthContext, SingleWorkspaceAccessPolicy
 from rag_kb.db import DatabaseProcess, create_database_resources
-from rag_kb.document_processing import index_profile
+from rag_kb.document_processing.profiles import index_profile
 from rag_kb.domain import (
     ChunkingPreset,
     DocumentSource,

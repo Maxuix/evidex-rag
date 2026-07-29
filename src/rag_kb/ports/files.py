@@ -1,4 +1,4 @@
-"""Application-facing source FileStore contract."""
+"""Application-facing file storage contracts."""
 
 from __future__ import annotations
 
@@ -57,7 +57,12 @@ class SourceFileStore(Protocol):
 
 @runtime_checkable
 class IndexAssetStore(Protocol):
-    async def put(self, identity: IndexAssetIdentity, content: bytes, checksum_sha256: str) -> None: ...
+    async def put(
+        self,
+        identity: IndexAssetIdentity,
+        content: bytes,
+        checksum_sha256: str,
+    ) -> None: ...
 
     async def read(self, identity: IndexAssetIdentity) -> bytes: ...
 

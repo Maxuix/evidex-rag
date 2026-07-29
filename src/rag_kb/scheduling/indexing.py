@@ -7,6 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 import logging
+from typing import TYPE_CHECKING
 
 from rag_kb.domain import (
     ErrorCode,
@@ -15,9 +16,11 @@ from rag_kb.domain import (
     IndexingLease,
     ReconciliationResult,
 )
-from rag_kb.indexing import IndexingPipeline
 from rag_kb.observability import get_logger, log_event
 from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, UnitOfWorkPurpose, execute_in_transaction
+
+if TYPE_CHECKING:
+    from rag_kb.indexing.pipeline import IndexingPipeline
 
 
 Clock = Callable[[], datetime]

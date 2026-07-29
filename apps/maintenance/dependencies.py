@@ -5,15 +5,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from rag_kb.adapters import LocalFileStore, LocalIndexAssetStore
+from rag_kb.adapters.file_store.assets import LocalIndexAssetStore
+from rag_kb.adapters.file_store.local import LocalFileStore
 from rag_kb.auth import DevelopmentAuthProvider, SingleWorkspaceAccessPolicy
 from rag_kb.config import Settings, load_settings, validate_startup_environment
 from rag_kb.db import DatabaseProcess, DatabaseResources, create_database_resources
-from rag_kb.services import (
-    FileReconciliationService,
-    MaintenanceCleanupService,
-    build_content_services,
-)
+from rag_kb.services.content import build_content_services
+from rag_kb.services.files import FileReconciliationService
+from rag_kb.services.maintenance import MaintenanceCleanupService
 from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWorkFactory
 
 

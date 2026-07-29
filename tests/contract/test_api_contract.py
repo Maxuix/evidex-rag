@@ -63,6 +63,7 @@ from rag_kb.domain import (
     ResourceNotFoundError,
     ResourceStateConflictError,
     RetrievalDebug,
+    RetrievalExecutionError,
     RetrievalQueryPlan,
     RetrievalStrategy,
     canonical_request_hash,
@@ -72,14 +73,15 @@ from rag_kb.memory import (
     serialize_contextualized_query,
     serialize_conversation_context,
 )
-from rag_kb.services import (
-    ChatSseConnectionLimiter,
-    ChatTerminalWatcher,
+from rag_kb.services.admission import (
     FileAdmissionService,
     SUPPORTED_UPLOAD_MEDIA_TYPES_BY_EXTENSION,
 )
+from rag_kb.services.chat_delivery import (
+    ChatSseConnectionLimiter,
+    ChatTerminalWatcher,
+)
 from rag_kb.schemas import CursorPayload, ErrorCode, PaginationQuery
-from rag_kb.retrieval import RetrievalExecutionError
 from rag_kb.retrieval.profile import exact_profile
 
 
@@ -923,7 +925,7 @@ class _FakeKnowledgeBaseService:
         answer_policy_defaults,
     ):
         del context, key
-        from rag_kb.document_processing import profile_for_preset
+        from rag_kb.document_processing.profiles import profile_for_preset
 
         self.value = dataclass_replace(
             self.value,

@@ -13,8 +13,8 @@ from zipfile import ZIP_STORED, ZipFile
 
 from PIL import Image
 
-from rag_kb.adapters import FetchedImage, PublicHttpImageFetcher
-from rag_kb.adapters.parser.docling import DoclingParser
+from rag_kb.adapters.markdown_media.http import PublicHttpImageFetcher
+from rag_kb.adapters.parser.docling.parser import DoclingParser
 from rag_kb.domain import ErrorCode, FileAdmissionError
 from rag_kb.domain import ParserLimits, ParserSource, ParsingPreset
 from rag_kb.document_processing.markdown_bundle import (
@@ -22,6 +22,7 @@ from rag_kb.document_processing.markdown_bundle import (
     read_normalized_markdown_bundle,
 )
 from rag_kb.document_processing.docling import extract_docling_assets
+from rag_kb.ports.markdown_media import FetchedImage
 from rag_kb.services.markdown_media import MarkdownMediaNormalizer
 
 
@@ -502,7 +503,7 @@ class MarkdownMediaNormalizerTests(unittest.IsolatedAsyncioTestCase):
                 artifact_manifest_path=manifest,
             )
             try:
-                document = await parser.parse(
+                parsed = await parser.parse(
                     ParserSource(
                         "evidence.md",
                         MARKDOWN_BUNDLE_MEDIA_TYPE,
@@ -510,6 +511,7 @@ class MarkdownMediaNormalizerTests(unittest.IsolatedAsyncioTestCase):
                     ),
                     preset=ParsingPreset.MULTIMODAL_LOCAL_V2,
                 )
+                document = parsed.document
             finally:
                 parser.close()
 

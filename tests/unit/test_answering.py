@@ -6,7 +6,10 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from rag_kb.answering import AnswerGenerationStep, CosineEvidenceAssessmentStep
+from rag_kb.answering.pipeline_steps import (
+    AnswerGenerationStep,
+    CosineEvidenceAssessmentStep,
+)
 from rag_kb.domain import (
     AnswerControlReason,
     AnswerDraftSource,
@@ -31,7 +34,7 @@ from rag_kb.domain import (
     RetrievalStrategy,
 )
 from rag_kb.memory import select_conversation_context
-from rag_kb.workflows import LangGraphRunner
+from rag_kb.workflows.langgraph_runner import LangGraphRunner
 
 
 class _Model:

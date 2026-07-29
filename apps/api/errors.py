@@ -11,8 +11,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException
 
 from rag_kb.auth import AccessDeniedError
-from rag_kb.observability import get_logger, log_event
-from rag_kb.services import (
+from rag_kb.domain import (
     AnswerPolicyNotSupportedError,
     ChatSessionBusyError,
     FileAdmissionError,
@@ -20,9 +19,10 @@ from rag_kb.services import (
     ResourceNameConflictError,
     ResourceNotFoundError,
     ResourceStateConflictError,
+    RetrievalExecutionError,
 )
+from rag_kb.observability import get_logger, log_event
 from rag_kb.schemas import ErrorCode, FieldViolation, ProblemDetails
-from rag_kb.retrieval import RetrievalExecutionError
 
 
 LOGGER = get_logger("rag_kb.api.errors")

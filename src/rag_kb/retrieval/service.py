@@ -9,10 +9,6 @@ import math
 from typing import Any, Protocol
 from uuid import UUID
 
-from rag_kb.adapters.model_api import EmbeddingModelAdapter
-from rag_kb.adapters.model_api import MultimodalEmbeddingAdapter
-from rag_kb.adapters.lexical_store import LexicalStore
-from rag_kb.adapters.vector_store import VectorStore
 from rag_kb.auth import AccessPolicy, AuthContext
 from rag_kb.domain import (
     ErrorCode,
@@ -40,6 +36,8 @@ from rag_kb.document_processing.lexical import (
     LEXICAL_ANALYZER_VERSION,
     LEXICAL_QUERY_VERSION,
 )
+from rag_kb.ports.model_api import EmbeddingModelAdapter, MultimodalEmbeddingAdapter
+from rag_kb.ports.retrieval import LexicalStore, VectorStore
 from rag_kb.retrieval.reranker import RerankedHit, rerank_hits, score_hits
 from rag_kb.retrieval.fusion import (
     reciprocal_rank_fusion,

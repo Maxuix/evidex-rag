@@ -7,7 +7,7 @@ from typing import Any
 from uuid import UUID
 
 from rag_kb.auth import AccessPolicy, AuthContext
-from rag_kb.document_processing import index_profile, profile_for_preset
+from rag_kb.document_processing.profiles import index_profile, profile_for_preset
 from rag_kb.domain import (
     AnswerPolicyDefaults,
     ChunkingPreset,

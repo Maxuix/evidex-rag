@@ -23,7 +23,6 @@ from marko.md_renderer import MarkdownRenderer
 from PIL import Image as PillowImage, ImageOps
 from PIL import UnidentifiedImageError
 
-from rag_kb.adapters.markdown_media import RemoteImageFetcher
 from rag_kb.domain import ErrorCode, FileAdmissionError
 from rag_kb.document_processing.markdown_bundle import (
     MARKDOWN_BUNDLE_ENTRYPOINT,
@@ -34,6 +33,7 @@ from rag_kb.document_processing.markdown_bundle import (
     read_markdown_bundle,
     safe_relative_path,
 )
+from rag_kb.ports.markdown_media import RemoteImageFetcher
 
 
 _MEDIA_DIRECTORY = ".rag-media"

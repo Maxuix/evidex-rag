@@ -12,7 +12,7 @@ import asyncpg
 
 from rag_kb.auth import AuthContext, SingleWorkspaceAccessPolicy
 from rag_kb.db import DatabaseProcess, create_database_resources
-from rag_kb.document_processing import index_profile
+from rag_kb.document_processing.profiles import index_profile
 from rag_kb.domain import (
     AnswerControlReason,
     AnswerDraftCandidate,
@@ -46,17 +46,20 @@ from rag_kb.domain import (
     RetrievalStrategy,
     ValidatedAnswer,
 )
-from rag_kb.services import (
+from rag_kb.services.chat import ChatService
+from rag_kb.services.chat_delivery import ChatTerminalWatcher
+from rag_kb.services.chat_execution import (
     ChatExecutionContextLoader,
+    ChatRunCoordinator,
+)
+from rag_kb.services.chat_terminal import (
     ChatFailureSettlementService,
     ChatResultPersistenceStep,
-    ChatRunCoordinator,
-    ChatService,
-    ChatTerminalWatcher,
-    KnowledgeBaseService,
 )
+from rag_kb.services.content import KnowledgeBaseService
 from rag_kb.retrieval.profile import exact_profile
-from rag_kb.scheduling import ChatRunScheduler, RetryPolicy
+from rag_kb.scheduling.chat import ChatRunScheduler
+from rag_kb.scheduling.indexing import RetryPolicy
 from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWorkFactory
 from rag_kb.uow import execute_in_transaction
 

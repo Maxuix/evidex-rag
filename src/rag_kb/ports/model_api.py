@@ -1,4 +1,4 @@
-"""Application-facing embedding provider contract."""
+"""Application-facing model provider contracts."""
 
 from __future__ import annotations
 
@@ -42,5 +42,6 @@ class MultimodalEmbeddingAdapter(Protocol):
     async def embed_texts(self, texts: tuple[str, ...]) -> EmbeddingBatch: ...
 
     async def embed_images(
-        self, images: tuple[ImageEmbeddingInput, ...]
+        self,
+        images: tuple[ImageEmbeddingInput, ...],
     ) -> EmbeddingBatch: ...

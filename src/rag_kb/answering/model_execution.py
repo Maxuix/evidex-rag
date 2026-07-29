@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from rag_kb.adapters.model_api import ChatModelAdapter
 from rag_kb.domain import (
     ChatExecutionContext,
     ChatModelCallRecord,
@@ -14,6 +13,7 @@ from rag_kb.domain import (
     ChatPipelinePhase,
     ErrorCode,
 )
+from rag_kb.ports.model_api import ChatModelAdapter
 
 
 async def complete_model(

@@ -5,13 +5,13 @@ from __future__ import annotations
 import hashlib
 from uuid import UUID
 
-from rag_kb.adapters.file_store import IndexAssetStore
 from rag_kb.auth import AccessPolicy, AuthContext
 from rag_kb.domain import (
     IndexAssetContent,
     ResourceNotFoundError,
     SourceFileIntegrityError,
 )
+from rag_kb.ports.files import IndexAssetStore
 from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, UnitOfWorkPurpose, execute_in_transaction
 
 

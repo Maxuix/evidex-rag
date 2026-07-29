@@ -16,12 +16,12 @@ from apps.api.openapi import problem_responses
 from apps.api.pagination import decode_cursor, encode_cursor
 from apps.api.security import get_auth_context
 from rag_kb.auth import AuthContext
-from rag_kb.services import (
+from rag_kb.domain import (
     ChatMessage,
     ChatRun,
     ChatSession,
-    ChatSseSubscription,
 )
+from rag_kb.services.chat_delivery import ChatSseSubscription
 from rag_kb.schemas import (
     ChatAnswerCompletedEvent,
     ChatCitationAssetResponse,

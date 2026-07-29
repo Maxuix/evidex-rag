@@ -7,7 +7,10 @@ from uuid import UUID
 from rag_kb.auth import AuthContext
 from rag_kb.domain import ChatRun
 from rag_kb.memory import empty_conversation_context, serialize_conversation_context
-from rag_kb.services import ChatSseConnectionLimiter, ChatTerminalWatcher
+from rag_kb.services.chat_delivery import (
+    ChatSseConnectionLimiter,
+    ChatTerminalWatcher,
+)
 
 
 RUN_ID = UUID("01900000-0000-7000-8000-000000000701")

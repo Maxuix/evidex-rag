@@ -34,6 +34,8 @@ from rag_kb.adapters.parser.docling.artifacts import (
     verify_docling_artifacts,
 )
 from rag_kb.adapters.parser.docling.factory import build_docling_converter
+from rag_kb.adapters.parser.ooxml_metadata import worksheet_labels
+from rag_kb.adapters.parser.scanned_pages import scanned_surfaces
 from rag_kb.domain import (
     ErrorCode,
     FileAdmissionError,
@@ -52,6 +54,7 @@ from rag_kb.document_processing.resource_preflight import (
     validate_csv_structure,
     validate_ooxml_images,
 )
+from rag_kb.ports.parsing import DocumentParseResult
 
 
 _OOXML_PREFIX = "application/vnd.openxmlformats-officedocument"
@@ -108,8 +111,8 @@ class DoclingParser:
         source: ParserSource,
         *,
         preset: ParsingPreset,
-    ) -> DoclingDocument:
-        """Convert one in-memory source exactly once and return its native model."""
+    ) -> DocumentParseResult:
+        """Convert once and return the native model with bounded source metadata."""
 
         try:
             resolved_preset = ParsingPreset(preset)
@@ -162,11 +165,22 @@ class DoclingParser:
                 ) from error
 
             try:
-                return _decode_response(response, self._limits)
+                document = _decode_response(response, self._limits)
             except ParserExecutionError as error:
                 if error.code is ErrorCode.PARSER_CRASHED:
                     await self._reset_child()
                 raise
+            labels = await asyncio.to_thread(worksheet_labels, source)
+            page_image_surfaces = (
+                await asyncio.to_thread(scanned_surfaces, source)
+                if resolved_preset is ParsingPreset.MULTIMODAL_LOCAL_V2
+                else frozenset()
+            )
+            return DocumentParseResult(
+                document=document,
+                surface_labels=tuple(labels.items()),
+                page_image_surfaces=page_image_surfaces,
+            )
 
     def close(self) -> None:
         """Stop accepting conversions and terminate the owned child process."""

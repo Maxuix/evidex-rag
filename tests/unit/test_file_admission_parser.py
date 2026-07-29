@@ -15,7 +15,7 @@ from rag_kb.domain import (
     ErrorCode,
     FileAdmissionError,
 )
-from rag_kb.services import FileAdmissionService
+from rag_kb.services.admission import FileAdmissionService
 from rag_kb.document_processing.markdown_bundle import (
     MARKDOWN_BUNDLE_MEDIA_TYPE,
 )

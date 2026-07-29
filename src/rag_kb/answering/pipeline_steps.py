@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 
-from rag_kb.adapters.model_api import ChatModelAdapter
 from rag_kb.answering.model_execution import (
     complete_model,
     model_call_record,
@@ -34,6 +33,7 @@ from rag_kb.domain import (
     EvidenceScoreKind,
     InsufficiencyPolicy,
 )
+from rag_kb.ports.model_api import ChatModelAdapter
 from rag_kb.retrieval.eligibility import EvidenceEligibilityPolicy
 
 

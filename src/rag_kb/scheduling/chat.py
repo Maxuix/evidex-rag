@@ -18,7 +18,7 @@ from rag_kb.domain import (
 )
 from rag_kb.observability import get_logger, log_event
 from rag_kb.scheduling.indexing import RetryPolicy
-from rag_kb.workflows import GraphRunner
+from rag_kb.workflows.contracts import GraphRunner
 
 
 Clock = Callable[[], datetime]

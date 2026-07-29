@@ -12,8 +12,8 @@ from pydantic import ValidationError
 
 from apps.api.dependencies import build_api_dependencies
 from apps.worker.dependencies import build_worker_dependencies
-from rag_kb.adapters import (
-    LangChainChatModelAdapter,
+from rag_kb.adapters.model_api.langchain_chat import LangChainChatModelAdapter
+from rag_kb.adapters.model_api.langchain_embeddings import (
     LangChainEmbeddingModelAdapter,
 )
 from rag_kb.config import StartupConfigurationError, validate_startup_environment
@@ -24,7 +24,7 @@ from rag_kb.config.settings import (
 )
 from rag_kb.db import DatabaseProcess
 from rag_kb.domain import WorkLane
-from rag_kb.workflows import LangGraphRunner
+from rag_kb.workflows.langgraph_runner import LangGraphRunner
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]

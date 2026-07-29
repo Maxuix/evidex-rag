@@ -1,4 +1,4 @@
-"""Remote media adapter contract."""
+"""Application-facing remote media contract."""
 
 from __future__ import annotations
 

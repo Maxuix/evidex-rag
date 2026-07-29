@@ -10,21 +10,12 @@ from collections.abc import Awaitable, Callable, Mapping
 from typing import TypeVar
 from uuid import UUID
 
-from rag_kb.adapters import (
-    DocumentParser,
-    EmbeddingModelAdapter,
-    FixedPgVectorSpace,
-    SourceFileStore,
-)
-from rag_kb.adapters.file_store import IndexAssetStore
-from rag_kb.adapters.model_api import MultimodalEmbeddingAdapter
-from rag_kb.adapters.parser.ooxml_metadata import worksheet_labels
-from rag_kb.adapters.parser.scanned_pages import scanned_surfaces
 from docling_core.types.doc import DoclingDocument
 
 from rag_kb.domain import (
     ChunkAssemblyDraft,
     ChunkingStrategyKind,
+    EmbeddingSpaceDefinition,
     ErrorCode,
     ContentModality,
     CompositeEvidenceDraft,
@@ -60,17 +51,17 @@ from rag_kb.domain import (
     stable_vector_id,
     validate_embedding_vector,
 )
-from rag_kb.document_processing import (
+from rag_kb.document_processing.composite_text import with_composite_embedding_text
+from rag_kb.document_processing.profiles import (
     DOCLING_ENRICHMENT_CONFIG,
     DOCLING_MULTIMODAL_PARSER_CONFIG,
     DOCLING_REPRESENTATION_CONFIG,
     SEMANTIC_CHUNKING_CONFIG,
-    count_chunk_tokens,
     profile_fingerprint,
     parsing_preset,
     resolve,
-    with_composite_embedding_text,
 )
+from rag_kb.document_processing.tokenization import count_chunk_tokens
 from rag_kb.document_processing.docling import (
     asset_manifest_hash,
     assemble_semantic_chunks,
@@ -92,6 +83,10 @@ from rag_kb.document_processing.lexical import (
     lexical_manifest_hash,
 )
 from rag_kb.indexing.promotion import CandidatePromotionService
+from rag_kb.indexing.embedding_spaces import require_compatible_embedding_spaces
+from rag_kb.ports.files import IndexAssetStore, SourceFileStore
+from rag_kb.ports.model_api import EmbeddingModelAdapter, MultimodalEmbeddingAdapter
+from rag_kb.ports.parsing import DocumentParseResult, DocumentParser
 from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, UnitOfWorkPurpose, execute_in_transaction
 
 
@@ -108,7 +103,7 @@ class IndexingPipeline:
         file_store: SourceFileStore,
         document_parser: DocumentParser,
         embedding_provider: EmbeddingModelAdapter,
-        vector_space: FixedPgVectorSpace,
+        embedding_space: EmbeddingSpaceDefinition,
         *,
         asset_store: IndexAssetStore | None = None,
         multimodal_embedding_provider: MultimodalEmbeddingAdapter | None = None,
@@ -118,7 +113,7 @@ class IndexingPipeline:
         self._file_store = file_store
         self._document_parser = document_parser
         self._embedding_provider = embedding_provider
-        self._vector_space = vector_space
+        self._embedding_space = embedding_space
         self._asset_store = asset_store
         self._multimodal_embedding_provider = multimodal_embedding_provider
         self._parser_limits = parser_limits or ParserLimits()
@@ -147,7 +142,8 @@ class IndexingPipeline:
                     serving_status=promotion.status.value,
                 )
             strategy = self._require_revision_profile(target)
-            self._vector_space.require_compatible(
+            require_compatible_embedding_spaces(
+                self._embedding_space,
                 target.embedding_space,
                 self._embedding_provider.embedding_space,
             )
@@ -163,23 +159,24 @@ class IndexingPipeline:
             cross_space = (
                 self._require_multimodal_runtime(target) if multimodal else None
             )
-            document = await self._parse(
+            parsed = await self._parse(
                 command,
                 source,
                 preset=resolved_parsing,
             )
-            labels = self._surface_labels(source)
+            document = parsed.document
+            labels = dict(parsed.surface_labels)
             chunks = await self._chunks(
                 command, target, document, strategy, labels
             )
             result = await self._execute_current(
                 command,
                 target,
-                source,
                 document,
                 chunks,
                 cross_space,
                 labels,
+                page_image_surfaces=parsed.page_image_surfaces,
                 multimodal=multimodal,
             )
             promotion = await self._promotion.promote(_promotion_command(command))
@@ -337,7 +334,7 @@ class IndexingPipeline:
         source: ParserSource,
         *,
         preset: ParsingPreset,
-    ) -> DoclingDocument:
+    ) -> DocumentParseResult:
         """Convert the source exactly once for the whole job."""
 
         await self._set_phase(command, IndexingPhase.PARSING)
@@ -356,18 +353,6 @@ class IndexingPipeline:
                 ErrorCode.PARSER_CRASHED,
                 phase=IndexingPhase.PARSING,
                 diagnostic={"check": "parser_contract"},
-            ) from error
-
-    def _surface_labels(self, source: ParserSource) -> dict[int, str]:
-        """Recover surface names Docling does not expose, such as sheet names."""
-
-        try:
-            return worksheet_labels(source)
-        except ParserExecutionError as error:
-            raise IndexingExecutionError(
-                error.code,
-                phase=IndexingPhase.PARSING,
-                diagnostic=error.diagnostic,
             ) from error
 
     async def _chunks(
@@ -520,8 +505,10 @@ class IndexingPipeline:
                 phase=IndexingPhase.SOURCE_READ,
                 diagnostic={"check": "cross_modal_space_role"},
             )
-        FixedPgVectorSpace(cross_space).require_compatible(
-            cross_space, self._multimodal_embedding_provider.embedding_space
+        require_compatible_embedding_spaces(
+            cross_space,
+            cross_space,
+            self._multimodal_embedding_provider.embedding_space,
         )
         return cross_space
 
@@ -529,12 +516,12 @@ class IndexingPipeline:
         self,
         command: IndexingCommand,
         target: IndexingTarget,
-        source: ParserSource,
         document: DoclingDocument,
         assembled: tuple[ChunkAssemblyDraft, ...],
         cross_space,
         surface_labels: Mapping[int, str],
         *,
+        page_image_surfaces: frozenset[int],
         multimodal: bool,
     ) -> int:
         cross_space_id = (
@@ -547,10 +534,10 @@ class IndexingPipeline:
             assembly, extracted = await asyncio.to_thread(
                 self._composite_evidence,
                 target,
-                source,
                 document,
                 assembled,
                 surface_labels,
+                page_image_surfaces,
             )
         else:
             try:
@@ -763,10 +750,10 @@ class IndexingPipeline:
     def _composite_evidence(
         self,
         target: IndexingTarget,
-        source: ParserSource,
         document: DoclingDocument,
         assembled: tuple[ChunkAssemblyDraft, ...],
         surface_labels: Mapping[int, str],
+        page_image_surfaces: frozenset[int],
     ) -> tuple[CompositeEvidenceDraft, tuple[ParsedAssetDraft, ...]]:
         """Derive assets, relations and evidence units from the one conversion."""
 
@@ -774,7 +761,7 @@ class IndexingPipeline:
             assets = extract_docling_assets(
                 document,
                 self._parser_limits,
-                page_image_surfaces=scanned_surfaces(source),
+                page_image_surfaces=page_image_surfaces,
                 surface_labels=surface_labels,
             )
             relations = relate_assets_to_chunks(

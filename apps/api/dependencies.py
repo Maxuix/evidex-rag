@@ -5,18 +5,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from rag_kb.auth import DevelopmentAuthProvider, SingleWorkspaceAccessPolicy
-from rag_kb.adapters import (
-    EmbeddingModelAdapter,
-    FixedPgVectorSpace,
+from rag_kb.adapters.file_store.assets import LocalIndexAssetStore
+from rag_kb.adapters.file_store.local import LocalFileStore
+from rag_kb.adapters.lexical_store.postgres import PgLexicalStore
+from rag_kb.adapters.markdown_media.http import PublicHttpImageFetcher
+from rag_kb.adapters.model_api.langchain_embeddings import (
     LangChainEmbeddingModelAdapter,
-    LocalFileStore,
-    LocalIndexAssetStore,
-    PublicHttpImageFetcher,
-    PgLexicalStore,
-    PgVectorStore,
+)
+from rag_kb.adapters.model_api.multimodal_embeddings import (
     TongyiVisionEmbeddingAdapter,
 )
+from rag_kb.adapters.vector_store.pgvector import PgVectorStore
+from rag_kb.auth import DevelopmentAuthProvider, SingleWorkspaceAccessPolicy
 from rag_kb.config import (
     Settings,
     StartupValidation,
@@ -30,24 +30,26 @@ from rag_kb.db import (
     create_database_resources,
     validate_runtime_readiness,
 )
-from rag_kb.services import (
-    AdmissionLimits,
+from rag_kb.domain import AdmissionLimits
+from rag_kb.ports.model_api import EmbeddingModelAdapter
+from rag_kb.retrieval.service import RetrievalService
+from rag_kb.services.admission import FileAdmissionService
+from rag_kb.services.assets import IndexAssetService
+from rag_kb.services.chat import ChatService, chat_model_configuration
+from rag_kb.services.chat_delivery import (
     ChatSseConnectionLimiter,
-    ChatService,
     ChatTerminalWatcher,
-    CompositeEvidenceHydrationService,
+)
+from rag_kb.services.composite_evidence import CompositeEvidenceHydrationService
+from rag_kb.services.content import (
     DocumentService,
-    FileAdmissionService,
-    IndexingJobService,
-    IndexAssetService,
     KnowledgeBaseService,
-    MarkdownMediaNormalizer,
-    SourceFileService,
     build_content_services,
-    chat_model_configuration,
     embedding_space_definition,
 )
-from rag_kb.retrieval import RetrievalService
+from rag_kb.services.files import SourceFileService
+from rag_kb.services.indexing import IndexingJobService
+from rag_kb.services.markdown_media import MarkdownMediaNormalizer
 from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWorkFactory
 
 
@@ -151,7 +153,7 @@ def build_api_dependencies(
         )
     vector_store = PgVectorStore(
         database.sessions,
-        FixedPgVectorSpace(embedding_space),
+        embedding_space,
     )
     content_services = build_content_services(
         unit_of_work,

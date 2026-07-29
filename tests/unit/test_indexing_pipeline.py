@@ -15,16 +15,15 @@ from docling_core.types.doc.common.reference import ImageRef
 from docling_core.types.doc.items.table.table_data import TableCell, TableData
 
 import rag_kb.indexing.pipeline as pipeline_module
-from rag_kb.adapters import FixedPgVectorSpace
-from rag_kb.document_processing import (
+from rag_kb.document_processing.profiles import (
     DOCLING_ENRICHMENT_CONFIG,
     DOCLING_REPRESENTATION_CONFIG,
     STRUCTURAL_CHUNKING_CONFIG_V3,
-    count_chunk_tokens,
     index_profile,
     public_parsing_descriptor,
     profile_for_preset,
 )
+from rag_kb.document_processing.tokenization import count_chunk_tokens
 from rag_kb.domain import (
     ChunkingPreset,
     ContentModality,
@@ -46,7 +45,9 @@ from rag_kb.domain import (
     stable_vector_id,
     validate_embedding_vector,
 )
-from rag_kb.indexing import IndexingPipeline
+from rag_kb.indexing.embedding_spaces import require_compatible_embedding_spaces
+from rag_kb.indexing.pipeline import IndexingPipeline
+from rag_kb.ports.parsing import DocumentParseResult
 
 
 WORKSPACE = UUID("01900000-0000-7000-8000-000000000401")
@@ -137,16 +138,14 @@ class IndexingDomainTests(unittest.TestCase):
                 "multimodal_local_v1",
             )
 
-    def test_fixed_space_and_output_validation_fail_closed(self) -> None:
+    def test_embedding_space_and_output_validation_fail_closed(self) -> None:
         expected = _embedding()
-        adapter = FixedPgVectorSpace(expected)
-        cross_modal = FixedPgVectorSpace(_multimodal_embedding())
-        self.assertEqual(adapter.physical_table, "vector_record_1024")
-        self.assertEqual(cross_modal.physical_table, "vector_record_768")
-        adapter.require_compatible(expected, expected)
+        require_compatible_embedding_spaces(expected, expected, expected)
         with self.assertRaises(IndexingExecutionError) as mismatch:
-            adapter.require_compatible(
-                expected, replace(expected, configuration_fingerprint="sha256:changed")
+            require_compatible_embedding_spaces(
+                expected,
+                expected,
+                replace(expected, configuration_fingerprint="sha256:changed"),
             )
         self.assertEqual(mismatch.exception.code, ErrorCode.EMBEDDING_SPACE_MISMATCH)
 
@@ -172,7 +171,7 @@ class IndexingPipelineTests(unittest.IsolatedAsyncioTestCase):
             _FileStore(factory),
             parser,
             text_provider,
-            FixedPgVectorSpace(_embedding()),
+            _embedding(),
             asset_store=asset_store,
             multimodal_embedding_provider=visual_provider,
         )
@@ -284,7 +283,7 @@ class IndexingPipelineTests(unittest.IsolatedAsyncioTestCase):
             _FileStore(factory),
             _MultimodalParser(factory, document=_table_and_picture_document()),
             text_provider,
-            FixedPgVectorSpace(_embedding()),
+            _embedding(),
             asset_store=_AssetStore(factory),
             multimodal_embedding_provider=visual_provider,
         )
@@ -447,7 +446,7 @@ class IndexingPipelineTests(unittest.IsolatedAsyncioTestCase):
             _FileStore(factory),
             _FailingParser(factory),
             _Provider(factory),
-            FixedPgVectorSpace(_embedding()),
+            _embedding(),
         )
         global _CURRENT_FACTORY
         _CURRENT_FACTORY = factory
@@ -534,64 +533,6 @@ class IndexingPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.status, "ready")
         self.assertEqual(len(planner_thread), 1)
         self.assertNotEqual(planner_thread[0], loop_thread)
-
-    async def test_scanned_surface_probe_does_not_block_event_loop(self) -> None:
-        repository = _Repository(_target(multimodal=True))
-        factory = _Factory(repository)
-        text_provider = _Provider(factory)
-        visual_provider = _MultimodalProvider(factory)
-        global _CURRENT_FACTORY
-        _CURRENT_FACTORY = factory
-        pipeline = IndexingPipeline(
-            factory,
-            _FileStore(factory),
-            _MultimodalParser(factory),
-            text_provider,
-            FixedPgVectorSpace(_embedding()),
-            asset_store=_AssetStore(factory),
-            multimodal_embedding_provider=visual_provider,
-        )
-        command = IndexingCommand(
-            repository.target.job_id,
-            repository.target.indexed_document_version_id,
-        )
-        loop_thread = threading.get_ident()
-        probe_entered = threading.Event()
-        probe_release = threading.Event()
-        probe_thread: list[int] = []
-
-        def blocked_probe(source):
-            del source
-            probe_thread.append(threading.get_ident())
-            probe_entered.set()
-            if not probe_release.wait(timeout=2):
-                raise AssertionError("event loop did not release scanned-page probe")
-            return frozenset()
-
-        async def release_after_probe_starts() -> None:
-            while not probe_entered.is_set():
-                await asyncio.sleep(0)
-            probe_release.set()
-
-        release_task = asyncio.create_task(release_after_probe_starts())
-        try:
-            with patch.object(
-                pipeline_module,
-                "scanned_surfaces",
-                side_effect=blocked_probe,
-            ):
-                result = await pipeline.execute(command)
-            await release_task
-        finally:
-            probe_release.set()
-            if not release_task.done():
-                release_task.cancel()
-                await asyncio.gather(release_task, return_exceptions=True)
-
-        self.assertEqual(result.status, "ready")
-        self.assertEqual(len(probe_thread), 1)
-        self.assertNotEqual(probe_thread[0], loop_thread)
-
 
 class _Factory:
     def __init__(self, repository) -> None:
@@ -857,7 +798,7 @@ class _Parser:
             raise AssertionError("parser ran inside transaction")
         del source, preset
         self.calls += 1
-        return self.document or _text_document()
+        return DocumentParseResult(self.document or _text_document())
 
 
 class _MultimodalParser:
@@ -873,7 +814,7 @@ class _MultimodalParser:
         del source
         self.calls += 1
         self.presets.append(preset)
-        return self.document or _visual_document()
+        return DocumentParseResult(self.document or _visual_document())
 
 
 class _SemanticParser:
@@ -886,7 +827,7 @@ class _SemanticParser:
             raise AssertionError("parser ran inside transaction")
         del source, preset
         self.calls += 1
-        return _analysis_document()
+        return DocumentParseResult(_analysis_document())
 
 
 def _document(name: str) -> DoclingDocument:
@@ -1037,7 +978,7 @@ def _pipeline(factory, provider, parser=None):
         _FileStore(factory),
         parser or _Parser(factory),
         provider,
-        FixedPgVectorSpace(_embedding()),
+        _embedding(),
     )
 
 

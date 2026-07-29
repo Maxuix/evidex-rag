@@ -19,13 +19,11 @@ from docling.datamodel.base_models import (
 )
 from docling.document_converter import DocumentConverter
 
-from rag_kb.adapters import (
-    FixedPgVectorSpace,
-    LocalFileStore,
-)
+from rag_kb.adapters.file_store.local import LocalFileStore
 from rag_kb.auth import AuthContext, SingleWorkspaceAccessPolicy
 from rag_kb.db import DatabaseProcess, create_database_resources
-from rag_kb.document_processing import count_chunk_tokens, index_profile
+from rag_kb.document_processing.profiles import index_profile
+from rag_kb.document_processing.tokenization import count_chunk_tokens
 from rag_kb.domain import (
     AnswerStyle,
     ChatPipelineExecutionError,
@@ -46,23 +44,22 @@ from rag_kb.domain import (
     ResourceStateConflictError,
     VectorRecordWrite,
 )
-from rag_kb.indexing import CandidatePromotionService, IndexingPipeline
+from rag_kb.indexing.pipeline import IndexingPipeline
+from rag_kb.indexing.promotion import CandidatePromotionService
+from rag_kb.ports.parsing import DocumentParseResult
 from rag_kb.retrieval.profile import exact_profile
-from rag_kb.scheduling import (
-    ChatRunScheduler,
-    FairWorkerScheduler,
-    IndexingJobScheduler,
-    RetryPolicy,
-    WeightedLaneSelector,
-)
-from rag_kb.services import (
+from rag_kb.scheduling.chat import ChatRunScheduler
+from rag_kb.scheduling.fairness import WeightedLaneSelector
+from rag_kb.scheduling.indexing import IndexingJobScheduler, RetryPolicy
+from rag_kb.scheduling.worker import FairWorkerScheduler
+from rag_kb.services.chat import ChatService
+from rag_kb.services.chat_execution import ChatRunCoordinator
+from rag_kb.services.chat_terminal import (
     ChatFailureSettlementService,
-    ChatRunCoordinator,
-    ChatService,
-    IndexingJobService,
-    SourceFileService,
 )
 from rag_kb.services.content import DocumentService, KnowledgeBaseService
+from rag_kb.services.files import SourceFileService
+from rag_kb.services.indexing import IndexingJobService
 from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWorkFactory
 from rag_kb.uow import UnitOfWorkPurpose, execute_in_transaction
 
@@ -1072,7 +1069,7 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.store,
             self.parser,
             provider,
-            FixedPgVectorSpace(_embedding()),
+            _embedding(),
         )
 
     def _scheduler_for(
@@ -1223,7 +1220,8 @@ class _MarkdownParser:
 
     async def parse(self, source, *, preset):
         del preset
-        return await asyncio.to_thread(self._convert, source)
+        document = await asyncio.to_thread(self._convert, source)
+        return DocumentParseResult(document)
 
     def _convert(self, source):
         result = self._converter.convert(

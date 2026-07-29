@@ -5,10 +5,9 @@ from __future__ import annotations
 import hashlib
 from datetime import UTC, datetime, timedelta
 from io import BytesIO
-from typing import BinaryIO
+from typing import TYPE_CHECKING, BinaryIO
 from uuid import UUID
 
-from rag_kb.adapters import SourceFileStore
 from rag_kb.auth import AuthContext
 from rag_kb.domain import (
     DocumentMutationResult,
@@ -22,13 +21,16 @@ from rag_kb.domain import (
     StagedSourceFile,
 )
 from rag_kb.document_processing.markdown_bundle import MARKDOWN_BUNDLE_MEDIA_TYPE
+from rag_kb.ports.files import SourceFileStore
 from rag_kb.services.content import (
     CREATE_DOCUMENT_ENDPOINT,
     CREATE_VERSION_ENDPOINT,
     DocumentService,
 )
-from rag_kb.services.markdown_media import MarkdownMediaNormalizer
 from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, UnitOfWorkPurpose, execute_in_transaction
+
+if TYPE_CHECKING:
+    from rag_kb.services.markdown_media import MarkdownMediaNormalizer
 
 
 class SourceFileService:

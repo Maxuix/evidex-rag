@@ -8,8 +8,8 @@ import socket
 import ssl
 from urllib.parse import quote, urljoin, urlsplit
 
-from rag_kb.adapters.markdown_media.contracts import FetchedImage
 from rag_kb.domain import ErrorCode, FileAdmissionError
+from rag_kb.ports.markdown_media import FetchedImage
 
 
 _MAX_REMOTE_URL_LENGTH = 2048

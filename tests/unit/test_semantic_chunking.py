@@ -5,15 +5,15 @@ from dataclasses import replace
 from unittest.mock import patch
 from uuid import UUID, uuid4
 
-from rag_kb.document_processing import (
-    count_chunk_tokens,
+from rag_kb.document_processing.profiles import (
     SEMANTIC_CHUNKING_CONFIG,
     profile_fingerprint,
     profile_for_preset,
     public_descriptor,
     resolve,
 )
-from rag_kb.document_processing import semantic_boundaries
+from rag_kb.document_processing.tokenization import count_chunk_tokens
+import rag_kb.document_processing.semantic_boundaries as semantic_boundaries
 from rag_kb.document_processing.semantic_boundaries import (
     build_chunk_plan,
     smoothed_distances,

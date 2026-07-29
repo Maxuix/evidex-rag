@@ -17,12 +17,18 @@ from apps.api.pagination import decode_cursor, encode_cursor
 from apps.api.security import get_auth_context
 from apps.api.upload_metadata import resolve_upload_metadata
 from rag_kb.auth import AuthContext
-from rag_kb.domain import DocumentChunk, DocumentChunkAsset
-from rag_kb.document_processing import DOCLING_MULTIMODAL_PARSER_CONFIG
+from rag_kb.domain import (
+    Document,
+    DocumentChunk,
+    DocumentChunkAsset,
+    DocumentMutationResult,
+    FileAdmissionError,
+)
 from rag_kb.document_processing.markdown_bundle import (
     MARKDOWN_BUNDLE_EXTENSION,
     MARKDOWN_BUNDLE_MEDIA_TYPE,
 )
+from rag_kb.document_processing.profiles import DOCLING_MULTIMODAL_PARSER_CONFIG
 from rag_kb.schemas import (
     CursorPayload,
     DocumentChunkAssetResponse,
@@ -38,12 +44,7 @@ from rag_kb.schemas import (
     DocumentVersionResponse,
     ErrorCode,
 )
-from rag_kb.services import (
-    Document,
-    DocumentMutationResult,
-    FileAdmissionError,
-    SUPPORTED_UPLOAD_MEDIA_TYPES_BY_EXTENSION,
-)
+from rag_kb.services.admission import SUPPORTED_UPLOAD_MEDIA_TYPES_BY_EXTENSION
 
 
 router = APIRouter(tags=["documents"])

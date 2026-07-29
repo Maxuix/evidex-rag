@@ -11,7 +11,7 @@ from uuid import UUID
 
 from PIL import Image
 
-from rag_kb.adapters import FetchedImage, LocalFileStore, SourceFileStore
+from rag_kb.adapters.file_store.local import LocalFileStore
 from rag_kb.auth import AuthContext
 from rag_kb.domain import (
     Document,
@@ -22,7 +22,9 @@ from rag_kb.domain import (
     SourceFileIntegrityError,
 )
 from rag_kb.document_processing.markdown_bundle import MARKDOWN_BUNDLE_MEDIA_TYPE
-from rag_kb.services import SourceFileService
+from rag_kb.ports.files import SourceFileStore
+from rag_kb.ports.markdown_media import FetchedImage
+from rag_kb.services.files import SourceFileService
 from rag_kb.services.markdown_media import MarkdownMediaNormalizer
 
 

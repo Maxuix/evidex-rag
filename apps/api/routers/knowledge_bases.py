@@ -14,7 +14,7 @@ from apps.api.openapi import problem_responses
 from apps.api.pagination import decode_cursor, encode_cursor
 from apps.api.security import get_auth_context
 from rag_kb.auth import AuthContext
-from rag_kb.services import KnowledgeBase
+from rag_kb.domain import KnowledgeBase
 from rag_kb.schemas import (
     CursorPayload,
     ErrorCode,
@@ -157,7 +157,7 @@ def _invalid_cursor(detail: str) -> None:
 
 
 def _response(value: KnowledgeBase) -> KnowledgeBaseResponse:
-    from rag_kb.document_processing import (
+    from rag_kb.document_processing.profiles import (
         public_descriptor,
         public_parsing_descriptor,
     )

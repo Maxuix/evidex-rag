@@ -8,20 +8,24 @@ from pathlib import Path
 import socket
 from uuid import uuid4
 
-from rag_kb.auth import DevelopmentAuthProvider, SingleWorkspaceAccessPolicy
-from rag_kb.adapters import (
-    ChatModelAdapter,
-    EmbeddingModelAdapter,
-    FixedPgVectorSpace,
-    LangChainChatModelAdapter,
+from rag_kb.adapters.file_store.assets import LocalIndexAssetStore
+from rag_kb.adapters.file_store.local import LocalFileStore
+from rag_kb.adapters.lexical_store.postgres import PgLexicalStore
+from rag_kb.adapters.model_api.langchain_chat import LangChainChatModelAdapter
+from rag_kb.adapters.model_api.langchain_embeddings import (
     LangChainEmbeddingModelAdapter,
-    LocalFileStore,
-    LocalIndexAssetStore,
-    PgLexicalStore,
-    PgVectorStore,
+)
+from rag_kb.adapters.model_api.multimodal_embeddings import (
     TongyiVisionEmbeddingAdapter,
 )
-from rag_kb.adapters.parser.docling import DoclingParser
+from rag_kb.adapters.parser.docling.parser import DoclingParser
+from rag_kb.adapters.vector_store.pgvector import PgVectorStore
+from rag_kb.answering.pipeline_steps import (
+    AnswerGenerationStep,
+    CosineEvidenceAssessmentStep,
+)
+from rag_kb.answering.structure_validator import AnswerStructureValidationStep
+from rag_kb.auth import DevelopmentAuthProvider, SingleWorkspaceAccessPolicy
 from rag_kb.config import (
     Settings,
     StartupValidation,
@@ -35,36 +39,36 @@ from rag_kb.db import (
     create_database_resources,
     validate_runtime_readiness,
 )
-from rag_kb.indexing import IndexingPipeline
-from rag_kb.scheduling import (
-    ChatRunScheduler,
-    FairWorkerScheduler,
-    IndexingJobScheduler,
-    RetryPolicy,
-    WeightedLaneSelector,
-)
-from rag_kb.services import (
-    AnswerGenerationStep,
-    AnswerStructureValidationStep,
+from rag_kb.domain import ParserLimits
+from rag_kb.indexing.pipeline import IndexingPipeline
+from rag_kb.memory import ConversationContextSelector, SessionQueryContextualizer
+from rag_kb.ports.model_api import ChatModelAdapter, EmbeddingModelAdapter
+from rag_kb.retrieval.service import RetrievalService
+from rag_kb.scheduling.chat import ChatRunScheduler
+from rag_kb.scheduling.fairness import WeightedLaneSelector
+from rag_kb.scheduling.indexing import IndexingJobScheduler, RetryPolicy
+from rag_kb.scheduling.worker import FairWorkerScheduler
+from rag_kb.services.assets import IndexAssetService
+from rag_kb.services.chat_execution import (
     ChatEvidenceRetriever,
     ChatContextualizedQueryStore,
     ChatExecutionContextLoader,
+    ChatRunCoordinator,
+)
+from rag_kb.services.chat_terminal import (
     ChatFailureSettlementService,
     ChatResultPersistenceStep,
-    ChatRunCoordinator,
-    CompositeEvidenceHydrationService,
-    CosineEvidenceAssessmentStep,
-    FileReconciliationService,
-    IndexAssetService,
-    ParserLimits,
-    RetrievalService,
-    VisualEvidencePreparationStep,
+)
+from rag_kb.services.chat_visuals import VisualEvidencePreparationStep
+from rag_kb.services.composite_evidence import CompositeEvidenceHydrationService
+from rag_kb.services.content import (
     build_content_services,
     embedding_space_definition,
 )
+from rag_kb.services.files import FileReconciliationService
 from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWorkFactory
-from rag_kb.workflows import GraphRunner, LangGraphRunner
-from rag_kb.memory import ConversationContextSelector, SessionQueryContextualizer
+from rag_kb.workflows.contracts import GraphRunner
+from rag_kb.workflows.langgraph_runner import LangGraphRunner
 
 
 @dataclass(frozen=True)
@@ -252,7 +256,7 @@ def build_worker_dependencies(
         file_store,
         document_parser,
         embedding_provider,
-        FixedPgVectorSpace(embedding_space),
+        embedding_space,
         asset_store=asset_store,
         multimodal_embedding_provider=multimodal_embedding_provider,
         parser_limits=parser_limits,
@@ -266,7 +270,7 @@ def build_worker_dependencies(
     )
     vector_store = PgVectorStore(
         database.sessions,
-        FixedPgVectorSpace(embedding_space),
+        embedding_space,
     )
     retrieval_service = RetrievalService(
         access_policy,

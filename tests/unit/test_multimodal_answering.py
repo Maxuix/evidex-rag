@@ -30,8 +30,9 @@ from rag_kb.domain import (
     RelatedVisualEvidence,
     VisualEvidenceReason,
 )
-from rag_kb.services import VisualEvidenceAdmissionPolicy, VisualEvidencePreparationStep
 from rag_kb.domain import ResourceNotFoundError
+from rag_kb.services.chat_visuals import VisualEvidencePreparationStep
+from rag_kb.services.visual_admission import VisualEvidenceAdmissionPolicy
 
 
 class _AssetReader:

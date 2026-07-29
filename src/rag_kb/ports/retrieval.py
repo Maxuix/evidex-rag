@@ -1,16 +1,23 @@
-"""Application-facing vector retrieval contract."""
+"""Application-facing lexical and vector retrieval contracts."""
 
 from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from rag_kb.domain import EmbeddingSpaceDefinition, RetrievalQueryPlan, VectorSearchResult
+from rag_kb.domain import (
+    EmbeddingSpaceDefinition,
+    LexicalSearchResult,
+    RetrievalQueryPlan,
+    VectorSearchResult,
+)
 
 
 @runtime_checkable
 class VectorStore(Protocol):
     async def has_space_role(
-        self, plan: RetrievalQueryPlan, space_role: str
+        self,
+        plan: RetrievalQueryPlan,
+        space_role: str,
     ) -> bool: ...
 
     async def search(
@@ -28,3 +35,17 @@ class VectorStore(Protocol):
         representation_kinds: tuple[str, ...],
         expected_space: EmbeddingSpaceDefinition,
     ) -> VectorSearchResult | None: ...
+
+
+@runtime_checkable
+class LexicalStore(Protocol):
+    async def search(
+        self,
+        plan: RetrievalQueryPlan,
+        query: str,
+        query_embedding: tuple[float, ...],
+        *,
+        analyzer_version: str,
+        query_version: str,
+        candidate_count: int,
+    ) -> LexicalSearchResult | None: ...
