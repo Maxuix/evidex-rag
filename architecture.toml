@@ -1,0 +1,112 @@
+# Current local Python dependency boundaries.
+#
+# Each boundary may import itself and the explicitly listed local boundaries.
+# Third-party infrastructure ownership and runtime import isolation are enforced
+# separately by tests/basic/test_architecture_boundaries.py.
+
+scan_roots = ["src", "apps"]
+
+[boundaries]
+"rag_kb.config" = []
+"rag_kb.schemas" = ["rag_kb.domain"]
+"rag_kb.domain" = []
+"rag_kb.auth" = []
+"rag_kb.ports" = ["rag_kb.domain"]
+"rag_kb.document_processing" = ["rag_kb.domain"]
+"rag_kb.memory" = ["rag_kb.domain"]
+"rag_kb.observability" = []
+"rag_kb.db" = []
+"rag_kb.repositories" = [
+  "rag_kb.domain",
+  "rag_kb.db",
+  "rag_kb.document_processing",
+  "rag_kb.memory",
+]
+"rag_kb.uow" = ["rag_kb.repositories"]
+"rag_kb.adapters" = [
+  "rag_kb.answering",
+  "rag_kb.db",
+  "rag_kb.document_processing",
+  "rag_kb.domain",
+  "rag_kb.ports",
+]
+"rag_kb.indexing" = [
+  "rag_kb.document_processing",
+  "rag_kb.domain",
+  "rag_kb.ports",
+  "rag_kb.uow",
+]
+"rag_kb.scheduling" = [
+  "rag_kb.domain",
+  "rag_kb.indexing",
+  "rag_kb.observability",
+  "rag_kb.uow",
+  "rag_kb.workflows",
+]
+"rag_kb.retrieval" = [
+  "rag_kb.auth",
+  "rag_kb.document_processing",
+  "rag_kb.domain",
+  "rag_kb.ports",
+]
+"rag_kb.answering" = [
+  "rag_kb.domain",
+  "rag_kb.memory",
+  "rag_kb.ports",
+  "rag_kb.retrieval",
+]
+"rag_kb.services" = [
+  "rag_kb.auth",
+  "rag_kb.document_processing",
+  "rag_kb.domain",
+  "rag_kb.memory",
+  "rag_kb.ports",
+  "rag_kb.retrieval",
+  "rag_kb.uow",
+]
+"rag_kb.workflows" = [
+  "rag_kb.domain",
+  "rag_kb.services",
+]
+"apps.api" = [
+  "rag_kb.adapters",
+  "rag_kb.auth",
+  "rag_kb.config",
+  "rag_kb.db",
+  "rag_kb.document_processing",
+  "rag_kb.domain",
+  "rag_kb.memory",
+  "rag_kb.observability",
+  "rag_kb.ports",
+  "rag_kb.retrieval",
+  "rag_kb.schemas",
+  "rag_kb.services",
+  "rag_kb.uow",
+]
+"apps.worker" = [
+  "rag_kb.adapters",
+  "rag_kb.answering",
+  "rag_kb.auth",
+  "rag_kb.config",
+  "rag_kb.db",
+  "rag_kb.domain",
+  "rag_kb.indexing",
+  "rag_kb.memory",
+  "rag_kb.observability",
+  "rag_kb.ports",
+  "rag_kb.retrieval",
+  "rag_kb.scheduling",
+  "rag_kb.services",
+  "rag_kb.uow",
+  "rag_kb.workflows",
+]
+"apps.maintenance" = [
+  "rag_kb.adapters",
+  "rag_kb.auth",
+  "rag_kb.config",
+  "rag_kb.db",
+  "rag_kb.services",
+  "rag_kb.uow",
+]
+"apps.web-chat" = []
+"apps.web-test" = []
