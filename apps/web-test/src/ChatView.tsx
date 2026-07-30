@@ -4,6 +4,8 @@ import { ApiClient, ApiClientError } from "./api/client";
 import type {
   AnswerStyle,
   ChatMessage,
+  ChatPreviewDeltaEvent,
+  ChatPreviewResetEvent,
   ChatRun,
   ChatRunCreate,
   ChatRunFinalContext,
@@ -34,6 +36,19 @@ interface RunLoadRequest {
 }
 
 type DeliveryMode = "idle" | "sse-connecting" | "sse" | "polling" | "terminal";
+
+interface PreviewDiagnostics {
+  runId: string | null;
+  attempt: number;
+  lastSeq: number;
+  content: string;
+  phase: "idle" | "streaming" | "verifying" | "discarded" | "replaced";
+  deltaEvents: number;
+  deltaBytes: number;
+  resetEvents: number;
+  gapDetected: boolean;
+  lastResetReason: ChatPreviewResetEvent["reason"] | null;
+}
 
 export function ChatView({
   client,
@@ -78,6 +93,9 @@ export function ChatView({
   const [runLoadRequest, setRunLoadRequest] = useState<RunLoadRequest | null>(null);
   const [deliveryMode, setDeliveryMode] = useState<DeliveryMode>("idle");
   const [deliveryError, setDeliveryError] = useState<unknown | null>(null);
+  const [preview, setPreview] = useState<PreviewDiagnostics>(
+    () => emptyPreviewDiagnostics(null),
+  );
   const forcePolling = useRef<(() => void) | null>(null);
   const selectedSessionIdRef = useRef("");
   const messageRequestGeneration = useRef(0);
@@ -196,6 +214,7 @@ export function ChatView({
     setMessages([]);
     setMessagesCursor(null);
     setRun(null);
+    setPreview(emptyPreviewDiagnostics(null));
     setRunLoadError(null);
     setDeliveryMode("idle");
     setAnswerStyle(knowledgeBase.answer_policy_defaults.answer_style);
@@ -232,9 +251,14 @@ export function ChatView({
   }, [loadMessages, selectedSessionId]);
 
   useEffect(() => {
+    setPreview(emptyPreviewDiagnostics(run?.run_id ?? null));
+  }, [run?.run_id]);
+
+  useEffect(() => {
     if (!run || runIsTerminal) {
       forcePolling.current = null;
       if (run && runIsTerminal) {
+        setPreview((current) => terminalPreviewDiagnostics(current, run.run_id));
         setDeliveryMode("terminal");
         const active = readActiveRun(knowledgeBase.id);
         if (active?.runId === run.run_id) storeActiveRun(null);
@@ -274,6 +298,7 @@ export function ChatView({
       pollingStarted = true;
       closeStream?.();
       closeStream = null;
+      setPreview((current) => discardPreviewDiagnostics(current, run.run_id));
       setDeliveryMode("polling");
       schedulePoll();
     };
@@ -281,6 +306,7 @@ export function ChatView({
     const settleFromStatus = async (statusUrl: string) => {
       closeStream?.();
       closeStream = null;
+      setPreview((current) => terminalPreviewDiagnostics(current, run.run_id));
       try {
         const next = await client.getChatRun(statusUrl);
         if (!cancelled) {
@@ -307,6 +333,27 @@ export function ChatView({
       },
       failed: (event) => {
         if (!cancelled) void settleFromStatus(event.status_url);
+      },
+      previewDelta: (event) => {
+        if (!cancelled) {
+          setPreview(
+            (current) => applyPreviewDeltaDiagnostics(current, run.run_id, event),
+          );
+        }
+      },
+      previewReset: (event) => {
+        if (!cancelled) {
+          setPreview(
+            (current) => applyPreviewResetDiagnostics(current, run.run_id, event),
+          );
+        }
+      },
+      previewInvalid: () => {
+        if (!cancelled) {
+          setPreview(
+            (current) => discardPreviewDiagnostics(current, run.run_id),
+          );
+        }
       },
       error: beginPolling,
     });
@@ -651,6 +698,37 @@ export function ChatView({
                 ["Updated", formatDate(run.updated_at)],
                 ["Completed", formatDate(run.completed_at)],
               ]} />
+              <section className="preview-diagnostics">
+                <div className="subheading-row">
+                  <div>
+                    <p className="eyebrow">Ephemeral delivery</p>
+                    <h3>Unvalidated answer preview</h3>
+                  </div>
+                  <span className={`preview-phase phase-${preview.phase}`}>
+                    {preview.phase}
+                  </span>
+                </div>
+                <KeyValueGrid values={[
+                  ["Attempt", preview.attempt || "none"],
+                  ["Last sequence", preview.lastSeq || "none"],
+                  ["Delta events", preview.deltaEvents],
+                  ["Preview bytes", preview.deltaBytes],
+                  ["Reset events", preview.resetEvents],
+                  ["Gap / invalid", preview.gapDetected ? "yes" : "no"],
+                  ["Last reset", preview.lastResetReason || "none"],
+                ]} />
+                {preview.content ? (
+                  <div className="diagnostic-preview-copy">{preview.content}</div>
+                ) : (
+                  <p className="context-disclosure">
+                    {preview.phase === "verifying"
+                      ? "Preview cleared while the server validates or repairs the final answer."
+                      : preview.phase === "replaced"
+                        ? "The authoritative terminal result replaced all preview content."
+                        : "No replayable preview content is available."}
+                  </p>
+                )}
+              </section>
               {!isTerminal(run) && deliveryMode !== "polling" ? (
                 <button
                   className="button text-button"
@@ -851,6 +929,133 @@ export function ChatView({
 
 function isTerminal(run: ChatRun): boolean {
   return run.status === "completed" || run.status === "failed" || run.status === "cancelled";
+}
+
+function emptyPreviewDiagnostics(runId: string | null): PreviewDiagnostics {
+  return {
+    runId,
+    attempt: 0,
+    lastSeq: 0,
+    content: "",
+    phase: "idle",
+    deltaEvents: 0,
+    deltaBytes: 0,
+    resetEvents: 0,
+    gapDetected: false,
+    lastResetReason: null,
+  };
+}
+
+function applyPreviewDeltaDiagnostics(
+  current: PreviewDiagnostics,
+  activeRunId: string,
+  event: ChatPreviewDeltaEvent,
+): PreviewDiagnostics {
+  if (event.run_id !== activeRunId) return current;
+  const base = current.runId === activeRunId
+    ? current
+    : emptyPreviewDiagnostics(activeRunId);
+  const received = {
+    ...base,
+    deltaEvents: base.deltaEvents + 1,
+    deltaBytes: base.deltaBytes + new TextEncoder().encode(event.delta).byteLength,
+  };
+  if (event.attempt < base.attempt) return received;
+  if (event.attempt > base.attempt) {
+    return event.seq === 1
+      ? {
+        ...received,
+        attempt: event.attempt,
+        lastSeq: 1,
+        content: event.delta,
+        phase: "streaming",
+      }
+      : discardPreviewDiagnostics(received, activeRunId, event.attempt);
+  }
+  if (base.phase === "discarded" || base.phase === "replaced") return received;
+  if (base.attempt === 0) {
+    return event.seq === 1
+      ? {
+        ...received,
+        attempt: event.attempt,
+        lastSeq: 1,
+        content: event.delta,
+        phase: "streaming",
+      }
+      : discardPreviewDiagnostics(received, activeRunId, event.attempt);
+  }
+  if (event.seq !== base.lastSeq + 1) {
+    return discardPreviewDiagnostics(received, activeRunId, event.attempt);
+  }
+  return {
+    ...received,
+    lastSeq: event.seq,
+    content: base.content + event.delta,
+    phase: "streaming",
+  };
+}
+
+function applyPreviewResetDiagnostics(
+  current: PreviewDiagnostics,
+  activeRunId: string,
+  event: ChatPreviewResetEvent,
+): PreviewDiagnostics {
+  if (event.run_id !== activeRunId) return current;
+  const base = current.runId === activeRunId
+    ? current
+    : emptyPreviewDiagnostics(activeRunId);
+  const received = {
+    ...base,
+    resetEvents: base.resetEvents + 1,
+    lastResetReason: event.reason,
+  };
+  if (event.attempt < base.attempt) return received;
+  if (
+    event.attempt === base.attempt
+    && (base.phase === "discarded" || base.phase === "replaced")
+  ) return received;
+  const expected = event.attempt > base.attempt
+    ? event.seq === 1
+    : event.seq === base.lastSeq + 1;
+  if (!expected) {
+    return discardPreviewDiagnostics(received, activeRunId, event.attempt);
+  }
+  return {
+    ...received,
+    attempt: event.attempt,
+    lastSeq: event.seq,
+    content: "",
+    phase: "verifying",
+  };
+}
+
+function discardPreviewDiagnostics(
+  current: PreviewDiagnostics,
+  runId: string,
+  attempt = current.attempt,
+): PreviewDiagnostics {
+  return {
+    ...current,
+    runId,
+    attempt,
+    content: "",
+    phase: "discarded",
+    gapDetected: true,
+  };
+}
+
+function terminalPreviewDiagnostics(
+  current: PreviewDiagnostics,
+  runId: string,
+): PreviewDiagnostics {
+  const base = current.runId === runId
+    ? current
+    : emptyPreviewDiagnostics(runId);
+  return {
+    ...base,
+    content: "",
+    phase: "replaced",
+  };
 }
 
 function mergeSessions(current: ChatSession[], incoming: ChatSession[]): ChatSession[] {

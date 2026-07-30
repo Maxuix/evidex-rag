@@ -1048,6 +1048,59 @@ textarea:hover {
   padding: 18px;
 }
 
+.preview-diagnostics {
+  margin-top: 18px;
+  padding: 16px;
+  border: 1px dashed #aebfca;
+  border-radius: 15px;
+  background: #f5f9fc;
+}
+
+.preview-diagnostics .key-value-grid {
+  margin-top: 12px;
+}
+
+.preview-phase {
+  display: inline-flex;
+  min-height: 25px;
+  padding: 4px 8px;
+  align-items: center;
+  color: var(--blue);
+  background: var(--blue-soft);
+  border: 1px solid #b7cad8;
+  border-radius: 999px;
+  font-size: 0.66rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.preview-phase.phase-discarded {
+  color: #8a4b16;
+  background: #fff4df;
+  border-color: #e8c992;
+}
+
+.preview-phase.phase-replaced {
+  color: #3e5548;
+  background: #e8f1eb;
+  border-color: #b9cebf;
+}
+
+.diagnostic-preview-copy {
+  margin-top: 14px;
+  padding: 14px;
+  color: #314654;
+  background: #ffffff;
+  border: 1px solid #d6e1e8;
+  border-radius: 12px;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 0.8rem;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .answer-copy {
   color: #26372f;
   font-family: Georgia, "Times New Roman", serif;

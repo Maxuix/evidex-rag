@@ -9,6 +9,8 @@ import {
 import { ApiClient, ApiClientError, loadRuntimeConfig } from "./api/client";
 import type {
   ChatMessage,
+  ChatPreviewDeltaEvent,
+  ChatPreviewResetEvent,
   ChatRun,
   ChatRunCreate,
   ChatSession,
@@ -44,6 +46,14 @@ interface EvidenceSelection {
   run: ChatRun | null;
   runId: string;
   ordinal: number;
+}
+
+interface ChatPreviewState {
+  runId: string | null;
+  attempt: number;
+  lastSeq: number;
+  content: string;
+  mode: "idle" | "streaming" | "verifying" | "discarded";
 }
 
 export function App() {
@@ -103,6 +113,9 @@ function KnowledgeChat({ client }: { client: ApiClient }) {
   const [submissionError, setSubmissionError] = useState<string | null>(null);
   const [currentRun, setCurrentRun] = useState<ChatRun | null>(null);
   const [deliveryMode, setDeliveryMode] = useState<"idle" | "sse" | "polling">("idle");
+  const [preview, setPreview] = useState<ChatPreviewState>(
+    () => emptyPreview(null),
+  );
 
   const [runCache, setRunCache] = useState<Record<string, ChatRun>>({});
   const [evidence, setEvidence] = useState<EvidenceSelection | null>(null);
@@ -245,12 +258,17 @@ function KnowledgeChat({ client }: { client: ApiClient }) {
   }, [client, currentRun, messages, messagesLoading, selectedSessionId]);
 
   useEffect(() => {
+    setPreview(emptyPreview(currentRun?.run_id ?? null));
+  }, [currentRun?.run_id]);
+
+  useEffect(() => {
     if (!currentRun) {
       setDeliveryMode("idle");
       return;
     }
     setRunCache((current) => ({ ...current, [currentRun.run_id]: currentRun }));
     if (isTerminal(currentRun)) {
+      setPreview(emptyPreview(currentRun.run_id));
       setDeliveryMode("idle");
       if (currentRun.session_id === selectedSessionId) {
         void loadMessages(currentRun.session_id);
@@ -279,12 +297,14 @@ function KnowledgeChat({ client }: { client: ApiClient }) {
       polling = true;
       closeStream?.();
       closeStream = null;
+      setPreview((current) => discardPreview(current, currentRun.run_id));
       setDeliveryMode("polling");
       void poll();
     };
     const settle = async (statusUrl: string) => {
       closeStream?.();
       closeStream = null;
+      setPreview(emptyPreview(currentRun.run_id));
       try {
         const next = await client.getChatRun(statusUrl);
         if (!cancelled) setCurrentRun(next);
@@ -296,6 +316,15 @@ function KnowledgeChat({ client }: { client: ApiClient }) {
       open: () => !cancelled && setDeliveryMode("sse"),
       completed: (event) => void settle(event.status_url),
       failed: (event) => void settle(event.status_url),
+      previewDelta: (event) => setPreview(
+        (current) => applyPreviewDelta(current, currentRun.run_id, event),
+      ),
+      previewReset: (event) => setPreview(
+        (current) => applyPreviewReset(current, currentRun.run_id, event),
+      ),
+      previewInvalid: () => setPreview(
+        (current) => discardPreview(current, currentRun.run_id),
+      ),
       error: beginPolling,
     });
     return () => {
@@ -622,6 +651,12 @@ function KnowledgeChat({ client }: { client: ApiClient }) {
                   key={message.id}
                   message={message}
                   run={message.run_id ? runCache[message.run_id] ?? null : null}
+                  preview={
+                    message.run_id
+                    && message.run_id === currentRun?.run_id
+                    ? preview
+                    : null
+                  }
                   onCitation={(ordinal, trigger) => {
                     if (message.run_id) {
                       void openEvidence(message.run_id, ordinal, trigger);
@@ -728,10 +763,12 @@ function KnowledgeChat({ client }: { client: ApiClient }) {
 function Message({
   message,
   run,
+  preview,
   onCitation,
 }: {
   message: ChatMessage;
   run: ChatRun | null;
+  preview: ChatPreviewState | null;
   onCitation: (ordinal: number, trigger: HTMLButtonElement) => void;
 }) {
   if (message.role === "user") {
@@ -748,7 +785,23 @@ function Message({
     <article className="message assistant-message">
       <div className="assistant-mark" aria-hidden="true">K</div>
       <div className="assistant-content">
-        {generating ? (
+        {generating && preview?.mode === "streaming" && preview.content ? (
+          <div className="answer-preview" aria-live="polite">
+            <div className="preview-label">
+              <span>未验证预览</span>
+              <span>最终回答可能调整</span>
+            </div>
+            <div className="preview-copy">
+              {preview.content}
+              <span className="preview-cursor" aria-hidden="true" />
+            </div>
+          </div>
+        ) : generating && preview?.mode === "verifying" ? (
+          <div className="thinking" aria-live="polite">
+            <span /><span /><span />
+            <strong>正在校验最终回答</strong>
+          </div>
+        ) : generating ? (
           <div className="thinking" aria-live="polite">
             <span /><span /><span />
             <strong>正在查找资料并整理回答</strong>
@@ -835,6 +888,100 @@ function mergeMessages(left: ChatMessage[], right: ChatMessage[]): ChatMessage[]
 
 function isTerminal(run: ChatRun): boolean {
   return ["completed", "failed", "cancelled"].includes(run.status);
+}
+
+function emptyPreview(runId: string | null): ChatPreviewState {
+  return {
+    runId,
+    attempt: 0,
+    lastSeq: 0,
+    content: "",
+    mode: "idle",
+  };
+}
+
+function applyPreviewDelta(
+  current: ChatPreviewState,
+  activeRunId: string,
+  event: ChatPreviewDeltaEvent,
+): ChatPreviewState {
+  if (event.run_id !== activeRunId) return current;
+  const base = current.runId === activeRunId
+    ? current
+    : emptyPreview(activeRunId);
+  if (event.attempt < base.attempt) return base;
+  if (event.attempt > base.attempt) {
+    return event.seq === 1
+      ? {
+        runId: activeRunId,
+        attempt: event.attempt,
+        lastSeq: 1,
+        content: event.delta,
+        mode: "streaming",
+      }
+      : discardPreview(base, activeRunId, event.attempt);
+  }
+  if (base.mode === "discarded") return base;
+  if (base.attempt === 0) {
+    return event.seq === 1
+      ? {
+        runId: activeRunId,
+        attempt: event.attempt,
+        lastSeq: 1,
+        content: event.delta,
+        mode: "streaming",
+      }
+      : discardPreview(base, activeRunId, event.attempt);
+  }
+  if (event.seq !== base.lastSeq + 1) {
+    return discardPreview(base, activeRunId, event.attempt);
+  }
+  return {
+    ...base,
+    lastSeq: event.seq,
+    content: base.content + event.delta,
+    mode: "streaming",
+  };
+}
+
+function applyPreviewReset(
+  current: ChatPreviewState,
+  activeRunId: string,
+  event: ChatPreviewResetEvent,
+): ChatPreviewState {
+  if (event.run_id !== activeRunId) return current;
+  const base = current.runId === activeRunId
+    ? current
+    : emptyPreview(activeRunId);
+  if (event.attempt < base.attempt) return base;
+  if (event.attempt === base.attempt && base.mode === "discarded") return base;
+  const expected = event.attempt > base.attempt
+    ? event.seq === 1
+    : event.seq === base.lastSeq + 1;
+  if (!expected) {
+    return discardPreview(base, activeRunId, event.attempt);
+  }
+  return {
+    runId: activeRunId,
+    attempt: event.attempt,
+    lastSeq: event.seq,
+    content: "",
+    mode: "verifying",
+  };
+}
+
+function discardPreview(
+  current: ChatPreviewState,
+  runId: string,
+  attempt = current.attempt,
+): ChatPreviewState {
+  return {
+    runId,
+    attempt,
+    lastSeq: current.lastSeq,
+    content: "",
+    mode: "discarded",
+  };
 }
 
 function errorMessage(error: unknown): string {

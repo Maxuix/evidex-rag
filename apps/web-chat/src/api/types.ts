@@ -111,6 +111,20 @@ export interface ChatTerminalEvent {
   status_url: string;
 }
 
+export interface ChatPreviewDeltaEvent {
+  run_id: UUID;
+  attempt: number;
+  seq: number;
+  delta: string;
+}
+
+export interface ChatPreviewResetEvent {
+  run_id: UUID;
+  attempt: number;
+  seq: number;
+  reason: "generation_failed" | "validation_repair" | "preview_invalid";
+}
+
 export interface ApiProblem {
   code?: string;
   title?: string;

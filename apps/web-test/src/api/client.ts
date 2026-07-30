@@ -1,6 +1,8 @@
 import type {
   ChatAnswerCompletedEvent,
   ChatMessage,
+  ChatPreviewDeltaEvent,
+  ChatPreviewResetEvent,
   ChatRun,
   ChatRunCreate,
   ChatRunFinalContext,
@@ -262,6 +264,9 @@ export class ApiClient {
     handlers: {
       completed: (event: ChatAnswerCompletedEvent) => void;
       failed: (event: ChatRunFailedEvent) => void;
+      previewDelta: (event: ChatPreviewDeltaEvent) => void;
+      previewReset: (event: ChatPreviewResetEvent) => void;
+      previewInvalid: () => void;
       error: () => void;
       open?: () => void;
     },
@@ -277,13 +282,31 @@ export class ApiClient {
       if (value) handlers.failed(value);
       else handlers.error();
     };
+    const previewDelta = (event: Event) => {
+      const value = parsePreviewDelta(event);
+      if (value) handlers.previewDelta(value);
+      else handlers.previewInvalid();
+    };
+    const previewReset = (event: Event) => {
+      const value = parsePreviewReset(event);
+      if (value) handlers.previewReset(value);
+      else handlers.previewInvalid();
+    };
+    const open = () => handlers.open?.();
+    const error = () => handlers.error();
     source.addEventListener("answer.completed", completed);
     source.addEventListener("run.failed", failed);
-    source.addEventListener("open", () => handlers.open?.());
-    source.addEventListener("error", handlers.error);
+    source.addEventListener("answer.preview.delta", previewDelta);
+    source.addEventListener("answer.preview.reset", previewReset);
+    source.addEventListener("open", open);
+    source.addEventListener("error", error);
     return () => {
       source.removeEventListener("answer.completed", completed);
       source.removeEventListener("run.failed", failed);
+      source.removeEventListener("answer.preview.delta", previewDelta);
+      source.removeEventListener("answer.preview.reset", previewReset);
+      source.removeEventListener("open", open);
+      source.removeEventListener("error", error);
       source.close();
     };
   }
@@ -459,6 +482,70 @@ function parseSseData<T>(event: Event, expectedEvent: string): T | null {
   } catch {
     return null;
   }
+}
+
+function parsePreviewDelta(event: Event): ChatPreviewDeltaEvent | null {
+  const value = parseSseObject(event, "answer.preview.delta");
+  if (
+    !value
+    || !hasExactKeys(value, ["run_id", "attempt", "seq", "delta"])
+    || typeof value.run_id !== "string"
+    || !isPositiveInteger(value.attempt)
+    || !isPositiveInteger(value.seq)
+    || typeof value.delta !== "string"
+    || value.delta.length === 0
+  ) return null;
+  return value as unknown as ChatPreviewDeltaEvent;
+}
+
+function parsePreviewReset(event: Event): ChatPreviewResetEvent | null {
+  const value = parseSseObject(event, "answer.preview.reset");
+  const reasons = new Set([
+    "generation_failed",
+    "validation_repair",
+    "preview_invalid",
+  ]);
+  if (
+    !value
+    || !hasExactKeys(value, ["run_id", "attempt", "seq", "reason"])
+    || typeof value.run_id !== "string"
+    || !isPositiveInteger(value.attempt)
+    || !isPositiveInteger(value.seq)
+    || typeof value.reason !== "string"
+    || !reasons.has(value.reason)
+  ) return null;
+  return value as unknown as ChatPreviewResetEvent;
+}
+
+function parseSseObject(
+  event: Event,
+  expectedEvent: string,
+): Record<string, unknown> | null {
+  if (
+    !(event instanceof MessageEvent)
+    || event.type !== expectedEvent
+    || typeof event.data !== "string"
+  ) return null;
+  try {
+    const value: unknown = JSON.parse(event.data);
+    return isObject(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function hasExactKeys(
+  value: Record<string, unknown>,
+  keys: string[],
+): boolean {
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  return actual.length === expected.length
+    && actual.every((key, index) => key === expected[index]);
+}
+
+function isPositiveInteger(value: unknown): value is number {
+  return Number.isInteger(value) && Number(value) >= 1;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
