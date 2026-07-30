@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import unittest
 from dataclasses import replace
@@ -286,6 +287,36 @@ class AnswerPolicyRoutingTests(unittest.IsolatedAsyncioTestCase):
             ).run(state)
 
         self.assertEqual(raised.exception.code, ErrorCode.CHAT_PROVIDER_UNAVAILABLE)
+        self.assertEqual(sink.events[-1][0], "reset")
+        self.assertEqual(
+            sink.events[-1][1][2],  # type: ignore[index]
+            ChatPreviewResetReason.GENERATION_FAILED,
+        )
+
+    async def test_streaming_generation_cancellation_resets_preview(self) -> None:
+        context = _context()
+        pack = _pack(context, "complete evidence")
+        model = _StreamingModel()
+        sink = _PreviewSink()
+        state = await CosineEvidenceAssessmentStep(0.6).run(
+            ChatPipelineState(context=context, evidence_pack=pack)
+        )
+
+        async def cancel_after_delta(request, *, on_content_delta):
+            del request
+            await on_content_delta(
+                '{"outcome":"answered","claims":[{"text":"Preview"}]'
+            )
+            raise asyncio.CancelledError
+
+        model.complete_streaming = cancel_after_delta  # type: ignore[method-assign]
+
+        with self.assertRaises(asyncio.CancelledError):
+            await AnswerGenerationStep(
+                model,  # type: ignore[arg-type]
+                preview_sink=sink,
+            ).run(state)
+
         self.assertEqual(sink.events[-1][0], "reset")
         self.assertEqual(
             sink.events[-1][1][2],  # type: ignore[index]

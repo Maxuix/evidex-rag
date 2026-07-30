@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 from rag_kb.answering.model_execution import (
@@ -39,6 +40,7 @@ from rag_kb.domain import (
     EvidenceEnvelope,
     EvidencePack,
     EvidenceScoreKind,
+    ErrorCode,
     InsufficiencyPolicy,
 )
 from rag_kb.ports.chat_preview import ChatPreviewSink
@@ -185,6 +187,14 @@ class AnswerGenerationStep:
                         phase=ChatPipelinePhase.GENERATE_OR_REFUSE,
                         on_content_delta=on_content_delta,
                     )
+                except asyncio.CancelledError:
+                    await emit_preview_reset_safely(
+                        self._preview_sink,
+                        run_id=context.run_id,
+                        attempt=context.attempt,
+                        reason=ChatPreviewResetReason.GENERATION_FAILED,
+                    )
+                    raise
                 except ChatPipelineExecutionError:
                     await emit_preview_reset_safely(
                         self._preview_sink,

@@ -81,7 +81,11 @@ class PartialAnswerPreviewProjector:
         text = self._claim_text(claims)
         if text is None or not text.startswith(self._published):
             return self._invalidate()
-        if len(text.encode("utf-8")) > self._max_visible_bytes:
+        try:
+            visible_bytes = len(text.encode("utf-8"))
+        except UnicodeEncodeError:
+            return self._invalidate()
+        if visible_bytes > self._max_visible_bytes:
             return self._invalidate()
         delta = text[len(self._published) :]
         if not delta:

@@ -90,6 +90,19 @@ class ChatPreviewProjectionTests(unittest.TestCase):
         self.assertEqual(first.delta, "abc")
         self.assertTrue(invalid.invalidated)
 
+    def test_invalid_unicode_surrogate_disables_preview_without_escaping(self) -> None:
+        projector = PartialAnswerPreviewProjector(max_visible_bytes=1024)
+        projector.feed(
+            '{"outcome":"answered","claims":[{"text":"visible"}]'
+        )
+
+        invalid = projector.feed(
+            '{"outcome":"answered","claims":[{"text":"visible\\ud800"}]'
+        )
+
+        self.assertTrue(invalid.invalidated)
+        self.assertTrue(projector.disabled)
+
 
 class _FailingSink:
     enabled = True
