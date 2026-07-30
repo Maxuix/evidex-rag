@@ -5,7 +5,10 @@ from __future__ import annotations
 from typing import Protocol, runtime_checkable
 from uuid import UUID
 
-from rag_kb.domain.chat_preview import ChatPreviewResetReason
+from rag_kb.domain.chat_preview import (
+    ChatPreviewEvent,
+    ChatPreviewResetReason,
+)
 
 
 @runtime_checkable
@@ -28,3 +31,17 @@ class ChatPreviewSink(Protocol):
         attempt: int,
         reason: ChatPreviewResetReason,
     ) -> None: ...
+
+
+@runtime_checkable
+class ChatPreviewSubscription(Protocol):
+    async def next_event(self) -> ChatPreviewEvent: ...
+
+    def discard_pending(self) -> None: ...
+
+    async def close(self) -> None: ...
+
+
+@runtime_checkable
+class ChatPreviewBroker(Protocol):
+    async def subscribe(self, run_id: UUID) -> ChatPreviewSubscription: ...

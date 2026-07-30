@@ -18,12 +18,16 @@ from apps.api.security import get_auth_context
 from rag_kb.auth import AuthContext
 from rag_kb.domain import (
     ChatMessage,
+    ChatPreviewDelta,
+    ChatPreviewReset,
     ChatRun,
     ChatSession,
 )
 from rag_kb.services.chat_delivery import ChatSseSubscription
 from rag_kb.schemas import (
     ChatAnswerCompletedEvent,
+    ChatAnswerPreviewEvent,
+    ChatAnswerPreviewResetEvent,
     ChatCitationAssetResponse,
     ChatCitationResponse,
     ChatRunFinalContextResponse,
@@ -198,7 +202,7 @@ async def _prepare_chat_sse_subscription(
             code=ErrorCode.REQUEST_VALIDATION_FAILED,
             status=400,
             title="Event replay is not supported",
-            detail="Last-Event-ID is not accepted by the P1A terminal stream.",
+            detail="Last-Event-ID is not accepted by this non-replayable stream.",
         )
     chat = request.app.state.dependencies.chat_service
     value = await chat.get_run(context, run_id)
@@ -212,10 +216,28 @@ async def _prepare_chat_sse_subscription(
             detail="Use the authoritative ChatRun status URL and retry later.",
             retryable=True,
         )
+    preview = None
+    broker = request.app.state.dependencies.chat_preview_broker
+    if (
+        broker is not None
+        and value.status not in {"completed", "failed", "cancelled"}
+    ):
+        try:
+            preview = await broker.subscribe(run_id)
+        except Exception:
+            preview = None
     try:
-        yield ChatSseSubscription(context=context, run=value)
+        yield ChatSseSubscription(
+            context=context,
+            run=value,
+            preview=preview,
+        )
     finally:
-        await limiter.release(context.principal_id, run_id)
+        try:
+            if preview is not None:
+                await preview.close()
+        finally:
+            await limiter.release(context.principal_id, run_id)
 
 
 @router.get(
@@ -229,14 +251,35 @@ async def stream_chat_run_events(
         ChatSseSubscription, Depends(_prepare_chat_sse_subscription)
     ],
 ) -> AsyncIterator[ServerSentEvent]:
-    watcher = request.app.state.dependencies.chat_terminal_watcher
+    watcher = request.app.state.dependencies.chat_event_watcher
     async for value in watcher.watch(
         subscription.context,
         subscription.run.id,
         initial=subscription.run,
         disconnected=request.is_disconnected,
+        preview=subscription.preview,
     ):
-        if value.status == "completed":
+        if isinstance(value, ChatPreviewDelta):
+            yield ServerSentEvent(
+                event="answer.preview.delta",
+                data=ChatAnswerPreviewEvent(
+                    run_id=value.run_id,
+                    attempt=value.attempt,
+                    seq=value.seq,
+                    delta=value.delta,
+                ),
+            )
+        elif isinstance(value, ChatPreviewReset):
+            yield ServerSentEvent(
+                event="answer.preview.reset",
+                data=ChatAnswerPreviewResetEvent(
+                    run_id=value.run_id,
+                    attempt=value.attempt,
+                    seq=value.seq,
+                    reason=value.reason.value,
+                ),
+            )
+        elif value.status == "completed":
             if not value.assistant_content:
                 raise RuntimeError("completed ChatRun is missing its answer")
             yield ServerSentEvent(

@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import unittest
 from datetime import UTC, datetime
 from uuid import UUID
 
 from rag_kb.auth import AuthContext
-from rag_kb.domain import ChatRun
+from rag_kb.domain import ChatPreviewDelta, ChatRun
 from rag_kb.memory import empty_conversation_context, serialize_conversation_context
 from rag_kb.services.chat_delivery import (
+    ChatEventWatcher,
     ChatSseConnectionLimiter,
     ChatTerminalWatcher,
 )
@@ -116,6 +118,70 @@ class ChatTerminalWatcherTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(clock.sleeps, [1, 1])
 
 
+class ChatEventWatcherTests(unittest.IsolatedAsyncioTestCase):
+    async def test_preview_arrives_before_terminal_and_terminal_is_last(self) -> None:
+        terminal = _ControlledTerminalWatcher(_run("completed"))
+        preview = _PreviewSubscription()
+        watcher = ChatEventWatcher(terminal)  # type: ignore[arg-type]
+        collected = asyncio.create_task(
+            _collect_events(
+                watcher,
+                initial=_run("running"),
+                preview=preview,
+            )
+        )
+        event = ChatPreviewDelta(RUN_ID, 1, 1, "draft")
+
+        await preview.queue.put(event)
+        await preview.delivered.wait()
+        await asyncio.sleep(0)
+        terminal.ready.set()
+        results = await collected
+
+        self.assertEqual(results, [event, terminal.result])
+        self.assertTrue(preview.discarded)
+
+    async def test_immediate_terminal_discards_pending_preview(self) -> None:
+        preview = _PreviewSubscription()
+        await preview.queue.put(ChatPreviewDelta(RUN_ID, 1, 1, "stale"))
+        watcher = ChatEventWatcher(
+            ChatTerminalWatcher(
+                _Chat(),  # type: ignore[arg-type]
+                poll_interval_seconds=1,
+                jitter_ratio=0,
+                max_duration_seconds=1,
+            )
+        )
+
+        results = await _collect_events(
+            watcher,
+            initial=_run("completed"),
+            preview=preview,
+        )
+
+        self.assertEqual(results, [_run("completed")])
+        self.assertTrue(preview.discarded)
+        self.assertTrue(preview.queue.empty())
+
+    async def test_preview_failure_degrades_to_terminal_only(self) -> None:
+        terminal = _ControlledTerminalWatcher(_run("failed"))
+        preview = _FailedPreviewSubscription()
+        watcher = ChatEventWatcher(terminal)  # type: ignore[arg-type]
+        collected = asyncio.create_task(
+            _collect_events(
+                watcher,
+                initial=_run("running"),
+                preview=preview,
+            )
+        )
+
+        await asyncio.sleep(0)
+        terminal.ready.set()
+        results = await collected
+
+        self.assertEqual(results, [terminal.result])
+
+
 class ChatSseConnectionLimiterTests(unittest.IsolatedAsyncioTestCase):
     async def test_limit_is_atomic_per_principal_and_run_and_releases(self) -> None:
         limiter = ChatSseConnectionLimiter(2)
@@ -158,6 +224,60 @@ class _Clock:
     async def sleep(self, delay: float) -> None:
         self.sleeps.append(delay)
         self.value += delay
+
+
+class _ControlledTerminalWatcher:
+    def __init__(self, result: ChatRun) -> None:
+        self.result = result
+        self.ready = asyncio.Event()
+
+    async def watch(self, *args, **kwargs):
+        del args, kwargs
+        await self.ready.wait()
+        yield self.result
+
+
+class _PreviewSubscription:
+    def __init__(self) -> None:
+        self.queue: asyncio.Queue[ChatPreviewDelta] = asyncio.Queue()
+        self.discarded = False
+        self.delivered = asyncio.Event()
+
+    async def next_event(self) -> ChatPreviewDelta:
+        event = await self.queue.get()
+        self.delivered.set()
+        return event
+
+    def discard_pending(self) -> None:
+        self.discarded = True
+        while not self.queue.empty():
+            self.queue.get_nowait()
+
+    async def close(self) -> None:
+        pass
+
+
+class _FailedPreviewSubscription(_PreviewSubscription):
+    async def next_event(self) -> ChatPreviewDelta:
+        raise RuntimeError("preview unavailable")
+
+
+async def _collect_events(
+    watcher: ChatEventWatcher,
+    *,
+    initial: ChatRun,
+    preview,
+) -> list[object]:
+    return [
+        event
+        async for event in watcher.watch(
+            CONTEXT,
+            RUN_ID,
+            initial=initial,
+            disconnected=_connected,
+            preview=preview,
+        )
+    ]
 
 
 async def _record_sleep(values: list[float], delay: float) -> None:

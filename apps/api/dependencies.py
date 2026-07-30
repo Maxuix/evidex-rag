@@ -38,6 +38,7 @@ from rag_kb.services.admission import FileAdmissionService
 from rag_kb.services.assets import IndexAssetService
 from rag_kb.services.chat import ChatService, chat_model_configuration
 from rag_kb.services.chat_delivery import (
+    ChatEventWatcher,
     ChatSseConnectionLimiter,
     ChatTerminalWatcher,
 )
@@ -78,6 +79,7 @@ class ApiDependencies:
     retrieval_service: RetrievalService
     chat_service: ChatService
     chat_terminal_watcher: ChatTerminalWatcher
+    chat_event_watcher: ChatEventWatcher
     chat_sse_connection_limiter: ChatSseConnectionLimiter
     chat_preview_broker: PgNotifyPreviewBroker | None
 
@@ -245,6 +247,14 @@ def build_api_dependencies(
         if chat_delivery.preview_enabled
         else None
     )
+    chat_terminal_watcher = ChatTerminalWatcher(
+        chat_service,
+        poll_interval_seconds=chat_delivery.poll_interval_seconds,
+        jitter_ratio=chat_delivery.jitter_ratio,
+        max_duration_seconds=(
+            chat_delivery.max_connection_duration_seconds
+        ),
+    )
     return ApiDependencies(
         settings=resolved_settings,
         startup=startup,
@@ -301,14 +311,8 @@ def build_api_dependencies(
         vector_store=vector_store,
         retrieval_service=retrieval_service,
         chat_service=chat_service,
-        chat_terminal_watcher=ChatTerminalWatcher(
-            chat_service,
-            poll_interval_seconds=chat_delivery.poll_interval_seconds,
-            jitter_ratio=chat_delivery.jitter_ratio,
-            max_duration_seconds=(
-                chat_delivery.max_connection_duration_seconds
-            ),
-        ),
+        chat_terminal_watcher=chat_terminal_watcher,
+        chat_event_watcher=ChatEventWatcher(chat_terminal_watcher),
         chat_sse_connection_limiter=ChatSseConnectionLimiter(
             chat_delivery.max_connections_per_principal_run
         ),

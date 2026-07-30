@@ -10,7 +10,8 @@ import time
 from uuid import UUID
 
 from rag_kb.auth import AuthContext
-from rag_kb.domain import ChatRun
+from rag_kb.domain import ChatPreviewEvent, ChatRun
+from rag_kb.ports.chat_preview import ChatPreviewSubscription
 from rag_kb.services.chat import ChatService
 
 
@@ -77,6 +78,78 @@ class ChatTerminalWatcher:
             current = await self._chat.get_run(context, run_id)
 
 
+class ChatEventWatcher:
+    """Merge ephemeral preview events with one authoritative terminal fact."""
+
+    def __init__(self, terminal: ChatTerminalWatcher) -> None:
+        self._terminal = terminal
+
+    async def watch(
+        self,
+        context: AuthContext,
+        run_id: UUID,
+        *,
+        initial: ChatRun,
+        disconnected: DisconnectCheck,
+        preview: ChatPreviewSubscription | None,
+    ) -> AsyncIterator[ChatPreviewEvent | ChatRun]:
+        terminal_iterator = self._terminal.watch(
+            context,
+            run_id,
+            initial=initial,
+            disconnected=disconnected,
+        )
+        terminal_task = asyncio.create_task(
+            anext(terminal_iterator, None),
+            name="chat-terminal-watch",
+        )
+        preview_task = (
+            asyncio.create_task(
+                preview.next_event(),
+                name="chat-preview-watch",
+            )
+            if preview is not None
+            else None
+        )
+        try:
+            while True:
+                pending = (
+                    (terminal_task, preview_task)
+                    if preview_task is not None
+                    else (terminal_task,)
+                )
+                done, _ = await asyncio.wait(
+                    pending,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if terminal_task in done:
+                    terminal = terminal_task.result()
+                    if terminal is not None:
+                        if preview is not None:
+                            preview.discard_pending()
+                        yield terminal
+                    return
+                assert preview_task is not None
+                try:
+                    event = preview_task.result()
+                except Exception:
+                    preview_task = None
+                    continue
+                yield event
+                preview_task = asyncio.create_task(
+                    preview.next_event(),  # type: ignore[union-attr]
+                    name="chat-preview-watch",
+                )
+        finally:
+            terminal_task.cancel()
+            tasks = [terminal_task]
+            if preview_task is not None:
+                preview_task.cancel()
+                tasks.append(preview_task)
+            await asyncio.gather(*tasks, return_exceptions=True)
+            await terminal_iterator.aclose()
+
+
 class ChatSseConnectionLimiter:
     """Process-local P1A limit for one principal and ChatRun pair."""
 
@@ -116,3 +189,4 @@ class ChatSseConnectionLimiter:
 class ChatSseSubscription:
     context: AuthContext
     run: ChatRun
+    preview: ChatPreviewSubscription | None = None

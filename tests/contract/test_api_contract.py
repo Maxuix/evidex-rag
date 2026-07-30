@@ -38,6 +38,9 @@ from rag_kb.domain import (
     AnswerStyle,
     ChatCitation,
     ChatMessage,
+    ChatPreviewDelta,
+    ChatPreviewReset,
+    ChatPreviewResetReason,
     ChatRun,
     ChatSession,
     ChatSessionBusyError,
@@ -78,6 +81,7 @@ from rag_kb.services.admission import (
     SUPPORTED_UPLOAD_MEDIA_TYPES_BY_EXTENSION,
 )
 from rag_kb.services.chat_delivery import (
+    ChatEventWatcher,
     ChatSseConnectionLimiter,
     ChatTerminalWatcher,
 )
@@ -268,6 +272,36 @@ class StubRetrievalService:
                 else None
             ),
         )
+
+
+class _PreviewSubscription:
+    def __init__(self, *events: object) -> None:
+        self.events: asyncio.Queue[object] = asyncio.Queue()
+        for event in events:
+            self.events.put_nowait(event)
+        self.closed = False
+        self.discarded = False
+
+    async def next_event(self):
+        return await self.events.get()
+
+    def discard_pending(self) -> None:
+        self.discarded = True
+        while not self.events.empty():
+            self.events.get_nowait()
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class _PreviewBroker:
+    def __init__(self, subscription: _PreviewSubscription) -> None:
+        self.subscription = subscription
+        self.run_ids: list[UUID] = []
+
+    async def subscribe(self, run_id: UUID) -> _PreviewSubscription:
+        self.run_ids.append(run_id)
+        return self.subscription
 
 
 @dataclass
@@ -1237,6 +1271,10 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
             jitter_ratio=0,
             max_duration_seconds=0.01,
         )
+        self.dependencies.chat_event_watcher = ChatEventWatcher(
+            self.dependencies.chat_terminal_watcher
+        )
+        self.dependencies.chat_preview_broker = None
         self.dependencies.chat_sse_connection_limiter = (
             ChatSseConnectionLimiter(2)
         )
@@ -1923,6 +1961,64 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(event["effective_answer_policy"], chat.run.effective_policy)
         self.assertEqual(status_response.json()["citations"], event["citations"])
+        self.assertEqual(
+            await self.dependencies.chat_sse_connection_limiter.active(
+                "development-principal", chat.run.id
+            ),
+            0,
+        )
+
+    async def test_sse_delivers_ephemeral_preview_and_reset_before_terminal(
+        self,
+    ) -> None:
+        chat = self.dependencies.chat_service
+        subscription = _PreviewSubscription(
+            ChatPreviewDelta(chat.run.id, 1, 1, "未验证片段"),
+            ChatPreviewReset(
+                chat.run.id,
+                1,
+                2,
+                ChatPreviewResetReason.VALIDATION_REPAIR,
+            ),
+        )
+        broker = _PreviewBroker(subscription)
+        self.dependencies.chat_preview_broker = broker
+
+        streamed = await request(
+            self.app,
+            "GET",
+            f"{API_PREFIX}/chat/runs/{chat.run.id}/events",
+            disconnect_immediately=False,
+        )
+
+        self.assertEqual(streamed.status, 200)
+        self.assertIn(b"event: answer.preview.delta", streamed.body)
+        self.assertIn(b"event: answer.preview.reset", streamed.body)
+        self.assertNotIn(b"event: answer.completed", streamed.body)
+        data = [
+            json.loads(line.removeprefix(b"data: "))
+            for line in streamed.body.splitlines()
+            if line.startswith(b"data: ")
+        ]
+        self.assertEqual(
+            data,
+            [
+                {
+                    "run_id": str(chat.run.id),
+                    "attempt": 1,
+                    "seq": 1,
+                    "delta": "未验证片段",
+                },
+                {
+                    "run_id": str(chat.run.id),
+                    "attempt": 1,
+                    "seq": 2,
+                    "reason": "validation_repair",
+                },
+            ],
+        )
+        self.assertEqual(broker.run_ids, [chat.run.id])
+        self.assertTrue(subscription.closed)
         self.assertEqual(
             await self.dependencies.chat_sse_connection_limiter.active(
                 "development-principal", chat.run.id
