@@ -34,6 +34,13 @@ the retired backend keys. See the
 [local development guide](docs/release/local-development-guide.md) for the
 supported settings.
 
+Chat answer preview is disabled by default. Setting
+`RAG_KB__CHAT_DELIVERY__PREVIEW_ENABLED=true` enables an ephemeral,
+unvalidated plain-text preview before the authoritative terminal answer. It is
+not replayed or persisted, may be lost, and uses one additional PostgreSQL
+connection in each of the API and Worker processes. The UI always labels it as
+unvalidated and replaces it with the committed answer.
+
 Exact-vector retrieval remains the default. To evaluate the optional hybrid
 path, explicitly set `RAG_KB__RETRIEVAL__HYBRID_ENABLED=true`; normal indexing
 creates the required lexical rows and completeness manifest for every target.
