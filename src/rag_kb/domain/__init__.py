@@ -90,6 +90,13 @@ from rag_kb.domain.chat_pipeline import (
     ChatPipelineState,
     ChatRunLease,
 )
+from rag_kb.domain.chat_preview import (
+    CHAT_PREVIEW_VERSION,
+    ChatPreviewDelta,
+    ChatPreviewEvent,
+    ChatPreviewReset,
+    ChatPreviewResetReason,
+)
 from rag_kb.domain.chat_terminal import (
     ChatFailureSettlementCommand,
     ChatTerminalSuccessCommand,
@@ -243,6 +250,11 @@ __all__ = [
     "ChatPipelinePhase",
     "ChatPipelineState",
     "ChatRunLease",
+    "CHAT_PREVIEW_VERSION",
+    "ChatPreviewDelta",
+    "ChatPreviewEvent",
+    "ChatPreviewReset",
+    "ChatPreviewResetReason",
     "ContextualizedQuery",
     "ConversationContextSnapshot",
     "ConversationTurn",

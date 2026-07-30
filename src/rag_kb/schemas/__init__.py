@@ -11,6 +11,8 @@ from rag_kb.schemas.common import (
 from rag_kb.schemas.chat import (
     AnswerPolicyOverrides,
     ChatAnswerCompletedEvent,
+    ChatAnswerPreviewEvent,
+    ChatAnswerPreviewResetEvent,
     ChatCitationAssetResponse,
     ChatCitationResponse,
     ChatFinalContextAssetResponse,
@@ -69,6 +71,8 @@ from rag_kb.schemas.retrieval import (
 __all__ = [
     "AnswerPolicyOverrides",
     "ChatAnswerCompletedEvent",
+    "ChatAnswerPreviewEvent",
+    "ChatAnswerPreviewResetEvent",
     "ChatCitationAssetResponse",
     "ChatCitationResponse",
     "ChatFinalContextAssetResponse",

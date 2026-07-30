@@ -148,6 +148,10 @@ class SettingsTests(unittest.TestCase):
             settings.chat_delivery.max_connections_per_principal_run,
             2,
         )
+        self.assertFalse(settings.chat_delivery.preview_enabled)
+        self.assertEqual(settings.chat_delivery.preview_flush_interval_ms, 250)
+        self.assertEqual(settings.chat_delivery.preview_max_total_bytes, 65_536)
+        self.assertEqual(settings.chat_delivery.preview_queue_size, 64)
         self.assertEqual(settings.maintenance.batch_size, 100)
         self.assertEqual(settings.maintenance.task_retention_seconds, 604_800)
         self.assertEqual(settings.model_provider.chat.temperature, 0.1)
@@ -210,6 +214,12 @@ class SettingsTests(unittest.TestCase):
                 {"jitter_ratio": 0.6},
                 {"max_connection_duration_seconds": 0},
                 {"max_connections_per_principal_run": 0},
+                {"preview_flush_interval_ms": 99},
+                {"preview_flush_interval_ms": 2001},
+                {"preview_max_total_bytes": 4095},
+                {"preview_max_total_bytes": 262_145},
+                {"preview_queue_size": 7},
+                {"preview_queue_size": 257},
             ):
                 with self.subTest(chat_delivery=chat_delivery):
                     with self.assertRaises(ValidationError):

@@ -263,3 +263,21 @@ class ChatRunFailedEvent(PublicSchema):
     error: ChatRunErrorResponse
     effective_answer_policy: EffectiveAnswerPolicyResponse
     status_url: str
+
+
+class ChatAnswerPreviewEvent(PublicSchema):
+    run_id: UUID
+    attempt: Annotated[int, Field(ge=1)]
+    seq: Annotated[int, Field(ge=1)]
+    delta: Annotated[str, Field(min_length=1)]
+
+
+class ChatAnswerPreviewResetEvent(PublicSchema):
+    run_id: UUID
+    attempt: Annotated[int, Field(ge=1)]
+    seq: Annotated[int, Field(ge=1)]
+    reason: Literal[
+        "generation_failed",
+        "validation_repair",
+        "preview_invalid",
+    ]
