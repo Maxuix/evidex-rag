@@ -362,6 +362,7 @@ class SettingsTests(unittest.TestCase):
             settings.model_provider.embedding.model,
             "qwen3.7-text-embedding",
         )
+        self.assertTrue(settings.chat_delivery.preview_enabled)
         assert settings.model_provider.multimodal_embedding is not None
         self.assertEqual(
             settings.model_provider.multimodal_embedding.model,
