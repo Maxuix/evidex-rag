@@ -7,6 +7,7 @@ from pathlib import Path
 
 from rag_kb.adapters.file_store.assets import LocalIndexAssetStore
 from rag_kb.adapters.file_store.local import LocalFileStore
+from rag_kb.adapters.chat_preview.pg_notify import PgNotifyPreviewBroker
 from rag_kb.adapters.lexical_store.postgres import PgLexicalStore
 from rag_kb.adapters.markdown_media.http import PublicHttpImageFetcher
 from rag_kb.adapters.model_api.langchain_embeddings import (
@@ -78,16 +79,22 @@ class ApiDependencies:
     chat_service: ChatService
     chat_terminal_watcher: ChatTerminalWatcher
     chat_sse_connection_limiter: ChatSseConnectionLimiter
+    chat_preview_broker: PgNotifyPreviewBroker | None
 
     async def close(self) -> None:
         """Release process-owned database resources during API shutdown."""
 
+        if self.chat_preview_broker is not None:
+            await self.chat_preview_broker.close()
         await self.database.close()
 
     async def start(self) -> RuntimeReadiness:
         """Fail startup when the migration-created runtime is incompatible."""
 
-        return await self.check_readiness()
+        readiness = await self.check_readiness()
+        if self.chat_preview_broker is not None:
+            await self.chat_preview_broker.start()
+        return readiness
 
     async def check_readiness(self) -> RuntimeReadiness:
         return await validate_runtime_readiness(self.database.engine)
@@ -230,6 +237,14 @@ def build_api_dependencies(
         context_tokenizer=resolved_settings.session_context.tokenizer,
     )
     chat_delivery = resolved_settings.chat_delivery
+    chat_preview_broker = (
+        PgNotifyPreviewBroker(
+            database_settings.runtime_dsn.get_secret_value(),
+            subscriber_queue_size=chat_delivery.preview_queue_size,
+        )
+        if chat_delivery.preview_enabled
+        else None
+    )
     return ApiDependencies(
         settings=resolved_settings,
         startup=startup,
@@ -297,4 +312,5 @@ def build_api_dependencies(
         chat_sse_connection_limiter=ChatSseConnectionLimiter(
             chat_delivery.max_connections_per_principal_run
         ),
+        chat_preview_broker=chat_preview_broker,
     )

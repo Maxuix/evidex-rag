@@ -1,0 +1,1 @@
+"""Chat preview infrastructure adapters."""

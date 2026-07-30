@@ -678,6 +678,18 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def require_worker_scheduling_budget(self) -> Self:
+        dedicated_preview_connections = (
+            2 if self.chat_delivery.preview_enabled else 0
+        )
+        if (
+            self.database.configured_pool_capacity
+            + dedicated_preview_connections
+            > self.database.application_connection_budget
+        ):
+            raise ValueError(
+                "configured pools and Chat preview connections exceed the "
+                "application connection budget"
+            )
         api_capacity = self.database.api_pool_size + self.database.api_max_overflow
         if api_capacity < self.database.required_api_connections:
             raise ValueError(

@@ -12,6 +12,10 @@ from pydantic import ValidationError
 
 from apps.api.dependencies import build_api_dependencies
 from apps.worker.dependencies import build_worker_dependencies
+from rag_kb.adapters.chat_preview.pg_notify import (
+    PgNotifyPreviewBroker,
+    PgNotifyPreviewSink,
+)
 from rag_kb.adapters.model_api.langchain_chat import LangChainChatModelAdapter
 from rag_kb.adapters.model_api.langchain_embeddings import (
     LangChainEmbeddingModelAdapter,
@@ -224,6 +228,27 @@ class SettingsTests(unittest.TestCase):
                 with self.subTest(chat_delivery=chat_delivery):
                     with self.assertRaises(ValidationError):
                         build_settings(root, chat_delivery=chat_delivery)
+
+    def test_preview_dedicated_connections_must_fit_database_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            payload = valid_payload(root)
+            database = copy.deepcopy(payload["database"])
+            assert isinstance(database, dict)
+            database["server_connection_limit"] = 33
+            database["reserved_connections"] = 10
+            with self.assertRaisesRegex(
+                ValidationError,
+                "Chat preview connections exceed",
+            ):
+                Settings(
+                    _env_file=None,
+                    **{
+                        **payload,
+                        "database": database,
+                        "chat_delivery": {"preview_enabled": True},
+                    },
+                )
 
     def test_worker_lane_heartbeat_and_deadline_budget_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -642,6 +667,39 @@ class SettingsTests(unittest.TestCase):
 
 
 class StartupValidationTests(unittest.TestCase):
+    def test_preview_enabled_composition_uses_dedicated_transport(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "staging").mkdir()
+            (root / "final").mkdir()
+            settings = build_settings(
+                root,
+                chat_delivery={"preview_enabled": True},
+            )
+
+            api = build_api_dependencies(settings)
+            worker = build_worker_dependencies(settings)
+            try:
+                self.assertIsInstance(
+                    api.chat_preview_broker,
+                    PgNotifyPreviewBroker,
+                )
+                self.assertIsInstance(
+                    worker.chat_preview_sink,
+                    PgNotifyPreviewSink,
+                )
+                self.assertIs(
+                    worker.answer_generator._preview_sink,
+                    worker.chat_preview_sink,
+                )
+                self.assertIs(
+                    worker.structure_validator._preview_sink,
+                    worker.chat_preview_sink,
+                )
+            finally:
+                asyncio.run(api.close())
+                asyncio.run(worker.close())
+
     def test_worker_composes_only_the_active_ai_paths(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

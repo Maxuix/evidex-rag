@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from rag_kb.adapters.file_store.assets import LocalIndexAssetStore
 from rag_kb.adapters.file_store.local import LocalFileStore
+from rag_kb.adapters.chat_preview.pg_notify import PgNotifyPreviewSink
 from rag_kb.adapters.lexical_store.postgres import PgLexicalStore
 from rag_kb.adapters.model_api.langchain_chat import LangChainChatModelAdapter
 from rag_kb.adapters.model_api.langchain_embeddings import (
@@ -105,6 +106,7 @@ class WorkerDependencies:
     indexing_scheduler: IndexingJobScheduler
     lane_selector: WeightedLaneSelector
     worker_scheduler: FairWorkerScheduler
+    chat_preview_sink: PgNotifyPreviewSink | None
 
     async def close(self) -> None:
         """Release process-owned resources during Worker shutdown."""
@@ -112,12 +114,17 @@ class WorkerDependencies:
         # The parser owns a killable conversion child; reap it before the
         # database goes away so no conversion outlives its job.
         self.document_parser.close()
+        if self.chat_preview_sink is not None:
+            await self.chat_preview_sink.close()
         await self.database.close()
 
     async def start(self) -> RuntimeReadiness:
         """Fail startup when the migration-created runtime is incompatible."""
 
-        return await self.check_readiness()
+        readiness = await self.check_readiness()
+        if self.chat_preview_sink is not None:
+            await self.chat_preview_sink.start()
+        return readiness
 
     async def check_readiness(self) -> RuntimeReadiness:
         return await validate_runtime_readiness(self.database.engine)
@@ -329,8 +336,25 @@ def build_worker_dependencies(
         max_total_bytes=chat_settings.max_visual_total_bytes,
         max_pixels=chat_settings.max_visual_pixels,
     )
-    answer_generator = AnswerGenerationStep(chat_model_adapter)
-    structure_validator = AnswerStructureValidationStep(chat_model_adapter)
+    chat_delivery = resolved_settings.chat_delivery
+    chat_preview_sink = (
+        PgNotifyPreviewSink(
+            database_settings.runtime_dsn.get_secret_value(),
+            flush_interval_ms=chat_delivery.preview_flush_interval_ms,
+            max_total_bytes=chat_delivery.preview_max_total_bytes,
+        )
+        if chat_delivery.preview_enabled
+        else None
+    )
+    answer_generator = AnswerGenerationStep(
+        chat_model_adapter,
+        preview_sink=chat_preview_sink,
+        preview_max_visible_bytes=chat_delivery.preview_max_total_bytes,
+    )
+    structure_validator = AnswerStructureValidationStep(
+        chat_model_adapter,
+        preview_sink=chat_preview_sink,
+    )
     result_persister = ChatResultPersistenceStep(unit_of_work)
     failure_settler = ChatFailureSettlementService(
         unit_of_work,
@@ -442,6 +466,7 @@ def build_worker_dependencies(
         indexing_scheduler=indexing_scheduler,
         lane_selector=lane_selector,
         worker_scheduler=worker_scheduler,
+        chat_preview_sink=chat_preview_sink,
     )
 
 
