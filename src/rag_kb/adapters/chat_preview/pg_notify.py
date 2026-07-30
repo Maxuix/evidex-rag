@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 import json
@@ -25,9 +26,11 @@ from rag_kb.observability import get_logger, log_event
 CHAT_PREVIEW_CHANNEL = "rag_kb_chat_preview_v1"
 MAX_NOTIFY_PAYLOAD_BYTES = 4_000
 _MAX_ATTEMPT_STATES = 1_024
+_MAX_STOPPED_ATTEMPTS = 1_024
 _RECONNECT_DELAYS_SECONDS = (0.25, 1.0, 2.0, 5.0)
 _LOGGER = get_logger("rag_kb.chat_preview.pg_notify")
 _Connect = Callable[..., Awaitable[Any]]
+_Sleep = Callable[[float], Awaitable[None]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,7 +81,7 @@ class PgNotifyPreviewSink:
         self._forced_resets: dict[
             tuple[UUID, int], ChatPreviewResetReason
         ] = {}
-        self._stopped_keys: set[tuple[UUID, int]] = set()
+        self._stopped_keys: OrderedDict[tuple[UUID, int], None] = OrderedDict()
         self._worker_task: asyncio.Task[None] | None = None
         self._connection: Any | None = None
         self._connection_lock = asyncio.Lock()
@@ -123,7 +126,7 @@ class PgNotifyPreviewSink:
             self._commands.put_nowait(_DeltaCommand(run_id, attempt, delta))
         except asyncio.QueueFull:
             self._forced_resets[key] = ChatPreviewResetReason.PREVIEW_INVALID
-            self._stopped_keys.add(key)
+            self._mark_stopped(key)
 
     async def emit_reset(
         self,
@@ -135,7 +138,7 @@ class PgNotifyPreviewSink:
         if self._closed:
             return
         key = (run_id, attempt)
-        self._stopped_keys.add(key)
+        self._mark_stopped(key)
         self._ensure_worker()
         try:
             self._commands.put_nowait(_ResetCommand(run_id, attempt, reason))
@@ -190,7 +193,7 @@ class PgNotifyPreviewSink:
         available = self._max_total_bytes - state.total_bytes
         accepted = _utf8_prefix(command.delta, available)
         if not accepted:
-            self._stopped_keys.add(key)
+            self._mark_stopped(key)
             return
         accepted_bytes = len(accepted.encode("utf-8"))
         state.buffer += accepted
@@ -198,7 +201,7 @@ class PgNotifyPreviewSink:
         if state.flush_at is None:
             state.flush_at = now + self._flush_interval_seconds
         if accepted != command.delta or state.total_bytes >= self._max_total_bytes:
-            self._stopped_keys.add(key)
+            self._mark_stopped(key)
         if not _delta_payload_fits(
             command.run_id,
             command.attempt,
@@ -327,6 +330,12 @@ class PgNotifyPreviewSink:
             error_type=type(error).__name__,
         )
 
+    def _mark_stopped(self, key: tuple[UUID, int]) -> None:
+        self._stopped_keys.pop(key, None)
+        self._stopped_keys[key] = None
+        if len(self._stopped_keys) > _MAX_STOPPED_ATTEMPTS:
+            self._stopped_keys.popitem(last=False)
+
 
 class PgNotifyPreviewSubscription:
     """One bounded in-memory run subscription owned by an API request."""
@@ -371,12 +380,14 @@ class PgNotifyPreviewBroker:
         *,
         subscriber_queue_size: int,
         connect: _Connect = asyncpg.connect,
+        sleep: _Sleep = asyncio.sleep,
     ) -> None:
         if subscriber_queue_size < 1:
             raise ValueError("preview subscriber queue size must be positive")
         self._dsn = _asyncpg_dsn(sqlalchemy_dsn)
         self._subscriber_queue_size = subscriber_queue_size
         self._connect = connect
+        self._sleep = sleep
         self._connection: Any | None = None
         self._connection_lock = asyncio.Lock()
         self._subscribers: dict[
@@ -512,12 +523,17 @@ class PgNotifyPreviewBroker:
             )
 
     async def _reconnect(self) -> None:
-        for delay in _RECONNECT_DELAYS_SECONDS:
-            await asyncio.sleep(delay)
+        attempt = 0
+        while not self._closed:
+            delay = _RECONNECT_DELAYS_SECONDS[
+                min(attempt, len(_RECONNECT_DELAYS_SECONDS) - 1)
+            ]
+            await self._sleep(delay)
             if self._closed:
                 return
             if await self._connect_listener():
                 return
+            attempt += 1
 
     def _report_unavailable(self, error: Exception) -> None:
         if self._reported_unavailable:

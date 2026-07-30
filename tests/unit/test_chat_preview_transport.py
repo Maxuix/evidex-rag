@@ -10,6 +10,7 @@ from rag_kb.adapters.chat_preview.pg_notify import (
     MAX_NOTIFY_PAYLOAD_BYTES,
     PgNotifyPreviewBroker,
     PgNotifyPreviewSink,
+    _MAX_STOPPED_ATTEMPTS,
     parse_preview_payload,
     serialize_preview_delta_payloads,
     serialize_preview_event,
@@ -72,6 +73,25 @@ class _Connector:
         if not self.connections:
             raise AssertionError("unexpected connection")
         return self.connections.pop(0)
+
+
+class _RecoveringConnector:
+    def __init__(self, connection: _Connection, *, failures: int) -> None:
+        self.connection = connection
+        self.failures = failures
+        self.calls = 0
+
+    async def __call__(self, dsn: str, **kwargs: object) -> _Connection:
+        del dsn, kwargs
+        self.calls += 1
+        if self.calls <= self.failures:
+            raise OSError("database unavailable")
+        return self.connection
+
+
+async def _yield_without_delay(delay: float) -> None:
+    del delay
+    await asyncio.sleep(0)
 
 
 class ChatPreviewPayloadTests(unittest.TestCase):
@@ -214,6 +234,47 @@ class ChatPreviewTransportTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await sink.close()
 
+    async def test_sink_bounds_stopped_attempt_tombstones(self) -> None:
+        sink = PgNotifyPreviewSink(
+            _DSN,
+            flush_interval_ms=10,
+            max_total_bytes=1024,
+            command_queue_size=_MAX_STOPPED_ATTEMPTS + 2,
+            connect=_Connector(error=OSError("database unavailable")),
+        )
+        run_ids = tuple(uuid4() for _ in range(_MAX_STOPPED_ATTEMPTS + 1))
+        try:
+            for run_id in run_ids:
+                await sink.emit_reset(
+                    run_id=run_id,
+                    attempt=1,
+                    reason=ChatPreviewResetReason.GENERATION_FAILED,
+                )
+
+            self.assertEqual(
+                len(sink._stopped_keys),  # type: ignore[attr-defined]
+                _MAX_STOPPED_ATTEMPTS,
+            )
+            self.assertNotIn(
+                (run_ids[0], 1),
+                sink._stopped_keys,  # type: ignore[attr-defined]
+            )
+            self.assertIn(
+                (run_ids[-1], 1),
+                sink._stopped_keys,  # type: ignore[attr-defined]
+            )
+            await sink.emit_reset(
+                run_id=run_ids[-1],
+                attempt=1,
+                reason=ChatPreviewResetReason.GENERATION_FAILED,
+            )
+            self.assertEqual(
+                len(sink._stopped_keys),  # type: ignore[attr-defined]
+                _MAX_STOPPED_ATTEMPTS,
+            )
+        finally:
+            await sink.close()
+
     async def test_broker_fans_out_by_run_and_drops_queue_overflow(self) -> None:
         connection = _Connection()
         broker = PgNotifyPreviewBroker(
@@ -256,6 +317,29 @@ class ChatPreviewTransportTests(unittest.IsolatedAsyncioTestCase):
             await broker.close()
 
         self.assertTrue(connection.closed)
+
+    async def test_broker_keeps_reconnecting_after_initial_backoff_window(
+        self,
+    ) -> None:
+        connection = _Connection()
+        connector = _RecoveringConnector(connection, failures=5)
+        broker = PgNotifyPreviewBroker(
+            _DSN,
+            subscriber_queue_size=2,
+            connect=connector,
+            sleep=_yield_without_delay,
+        )
+        try:
+            self.assertFalse(await broker.start())
+            for _ in range(20):
+                if CHAT_PREVIEW_CHANNEL in connection.listeners:
+                    break
+                await asyncio.sleep(0)
+
+            self.assertIn(CHAT_PREVIEW_CHANNEL, connection.listeners)
+            self.assertEqual(connector.calls, 6)
+        finally:
+            await broker.close()
 
     async def test_broker_drops_malformed_payload_and_unregisters(self) -> None:
         connection = _Connection()
