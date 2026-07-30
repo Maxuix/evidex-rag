@@ -28,6 +28,7 @@ from rag_kb.domain import (
     ChatPipelineExecutionError,
     ChatPipelinePhase,
     ChatPipelineState,
+    ChatPreviewResetReason,
     ChatRunLease,
     ErrorCode,
     Evidence,
@@ -49,6 +50,19 @@ class _Model:
         if not self.responses:
             raise AssertionError("unexpected model call")
         return self.responses.pop(0)
+
+
+class _PreviewSink:
+    enabled = True
+
+    def __init__(self) -> None:
+        self.resets: list[tuple[object, int, ChatPreviewResetReason]] = []
+
+    async def emit_delta(self, *, run_id, attempt: int, delta: str) -> None:
+        del run_id, attempt, delta
+
+    async def emit_reset(self, *, run_id, attempt: int, reason) -> None:
+        self.resets.append((run_id, attempt, reason))
 
 
 class _Loader:
@@ -533,6 +547,22 @@ class StructureValidationTests(unittest.IsolatedAsyncioTestCase):
                 )
                 self.assertTrue(result.answering.validation.repair_succeeded)
                 self.assertFalse(result.answering.validation.safe_fallback)
+
+    async def test_repair_resets_unvalidated_preview_before_model_call(self) -> None:
+        sink = _PreviewSink()
+        result = await AnswerStructureValidationStep(
+            _Model(_response(_answered())),
+            preview_sink=sink,
+        ).run(_state("not-json"))
+
+        assert result.answering is not None
+        assert result.answering.validation is not None
+        self.assertTrue(result.answering.validation.repair_succeeded)
+        self.assertEqual(len(sink.resets), 1)
+        self.assertEqual(
+            sink.resets[0][2],
+            ChatPreviewResetReason.VALIDATION_REPAIR,
+        )
 
     async def test_partial_cannot_hide_assessed_missing_aspects(self) -> None:
         repaired = json.dumps(

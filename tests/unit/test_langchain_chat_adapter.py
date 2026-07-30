@@ -9,7 +9,7 @@ from uuid import uuid4
 
 import httpx
 import openai
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 from langchain_openai import ChatOpenAI
 
 from rag_kb.adapters.model_api.langchain_chat import LangChainChatModelAdapter
@@ -35,6 +35,21 @@ class _FakeChatModel:
         if self.error is not None:
             raise self.error
         return self.response
+
+
+class _FakeStreamingChatModel:
+    def __init__(self, *chunks: AIMessageChunk) -> None:
+        self.chunks = chunks
+        self.calls: list[tuple[list[object], dict[str, object]]] = []
+
+    async def astream(
+        self,
+        messages: list[object],
+        **kwargs: object,
+    ):
+        self.calls.append((messages, kwargs))
+        for chunk in self.chunks:
+            yield chunk
 
 
 def _request(content: str = "hello") -> ChatModelRequest:
@@ -161,6 +176,108 @@ class LangChainChatAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             response.content,
             '{"claims":[],"missing_aspects":[],"outcome":"answered"}',
+        )
+
+    async def test_streaming_aggregates_chunks_and_canonicalizes_schema(self) -> None:
+        model = _FakeStreamingChatModel(
+            AIMessageChunk(
+                content='{"outcome":"answered","claims":[{"text":"Hel',
+                response_metadata={"model_name": "resolved-model"},
+            ),
+            AIMessageChunk(
+                content=(
+                    'lo","citation_ids":["cite_1"]}],"missing_aspects":[]}'
+                ),
+                response_metadata={
+                    "finish_reason": "stop",
+                    "headers": {"x-request-id": "stream-request"},
+                },
+                usage_metadata={
+                    "input_tokens": 3,
+                    "output_tokens": 2,
+                    "total_tokens": 5,
+                },
+            ),
+        )
+        deltas: list[str] = []
+
+        async def collect_delta(delta: str) -> None:
+            deltas.append(delta)
+
+        response = await _adapter(model).complete_streaming(
+            ChatModelRequest(
+                (ChatModelMessage("user", "answer"),),
+                output_schema=ChatOutputSchema.ANSWER_V1,
+            ),
+            on_content_delta=collect_delta,
+        )
+
+        self.assertEqual(
+            response.content,
+            '{"claims":[{"citation_ids":["cite_1"],"text":"Hello"}],'
+            '"missing_aspects":[],"outcome":"answered"}',
+        )
+        self.assertEqual(response.model, "resolved-model")
+        self.assertEqual(response.provider_request_id, "stream-request")
+        self.assertEqual(response.usage["total_tokens"], 5)
+        self.assertEqual(
+            deltas,
+            [
+                '{"outcome":"answered","claims":[{"text":"Hel',
+                'lo","citation_ids":["cite_1"]}],"missing_aspects":[]}',
+            ],
+        )
+        self.assertEqual(model.calls[0][1], {"stream_usage": True})
+
+    async def test_streaming_invalid_schema_remains_available_for_repair(self) -> None:
+        model = _FakeStreamingChatModel(
+            AIMessageChunk(
+                content="not-json",
+                response_metadata={
+                    "model_name": "resolved-model",
+                    "finish_reason": "stop",
+                },
+            )
+        )
+
+        response = await _adapter(model).complete_streaming(
+            ChatModelRequest(
+                (ChatModelMessage("user", "answer"),),
+                output_schema=ChatOutputSchema.ANSWER_V1,
+            ),
+            on_content_delta=_ignore_delta,
+        )
+
+        self.assertEqual(response.content, "not-json")
+
+    async def test_streaming_callback_failure_does_not_change_completion(self) -> None:
+        model = _FakeStreamingChatModel(
+            AIMessageChunk(
+                content="{}",
+                response_metadata={
+                    "model_name": "resolved-model",
+                    "finish_reason": "stop",
+                },
+            )
+        )
+
+        response = await _adapter(model).complete_streaming(
+            _request(),
+            on_content_delta=_fail_delta,
+        )
+
+        self.assertEqual(response.content, "{}")
+
+    async def test_empty_stream_fails_closed(self) -> None:
+        with self.assertRaises(ChatModelExecutionError) as raised:
+            await _adapter(_FakeStreamingChatModel()).complete_streaming(
+                _request(),
+                on_content_delta=_ignore_delta,
+            )
+
+        self.assertEqual(
+            raised.exception.diagnostic,
+            {"check": "stream_empty"},
         )
 
     async def test_visual_content_maps_to_labeled_data_url_blocks(self) -> None:
@@ -611,6 +728,14 @@ class LangChainChatAdapterTests(unittest.IsolatedAsyncioTestCase):
             response_error.exception.diagnostic,
             {"check": "response_content_size"},
         )
+
+async def _ignore_delta(delta: str) -> None:
+    del delta
+
+
+async def _fail_delta(delta: str) -> None:
+    del delta
+    raise RuntimeError("preview is unavailable")
 
 
 if __name__ == "__main__":

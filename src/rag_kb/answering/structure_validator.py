@@ -12,6 +12,10 @@ from rag_kb.answering.model_execution import (
     model_call_record,
     require_frozen_model,
 )
+from rag_kb.answering.preview import (
+    NoOpChatPreviewSink,
+    emit_preview_reset_safely,
+)
 from rag_kb.answering.prompt_builder import (
     allowed_answer_outcomes,
     build_repair_request,
@@ -31,6 +35,7 @@ from rag_kb.domain import (
     ChatPipelineExecutionError,
     ChatPipelinePhase,
     ChatPipelineState,
+    ChatPreviewResetReason,
     ErrorCode,
     EvidenceAssessment,
     EvidenceCoverage,
@@ -40,14 +45,21 @@ from rag_kb.domain import (
     RenderedCitation,
     ValidatedAnswer,
 )
+from rag_kb.ports.chat_preview import ChatPreviewSink
 from rag_kb.ports.model_api import ChatModelAdapter
 
 
 class AnswerStructureValidationStep:
     """Allow only validated structure to cross the user-visible boundary."""
 
-    def __init__(self, model: ChatModelAdapter) -> None:
+    def __init__(
+        self,
+        model: ChatModelAdapter,
+        *,
+        preview_sink: ChatPreviewSink | None = None,
+    ) -> None:
         self._model = model
+        self._preview_sink = preview_sink or NoOpChatPreviewSink()
 
     async def run(self, state: ChatPipelineState) -> ChatPipelineState:
         context = state.context
@@ -81,6 +93,12 @@ class AnswerStructureValidationStep:
                 safe_fallback=True,
             )
         else:
+            await emit_preview_reset_safely(
+                self._preview_sink,
+                run_id=context.run_id,
+                attempt=context.attempt,
+                reason=ChatPreviewResetReason.VALIDATION_REPAIR,
+            )
             request = build_repair_request(
                 context,
                 answering.evidence,

@@ -6,8 +6,15 @@ import json
 
 from rag_kb.answering.model_execution import (
     complete_model,
+    complete_model_streaming,
     model_call_record,
     require_frozen_model,
+)
+from rag_kb.answering.preview import (
+    NoOpChatPreviewSink,
+    PartialAnswerPreviewProjector,
+    emit_preview_delta_safely,
+    emit_preview_reset_safely,
 )
 from rag_kb.answering.prompt_builder import (
     build_evidence_envelope,
@@ -26,6 +33,7 @@ from rag_kb.domain import (
     ChatPipelineExecutionError,
     ChatPipelinePhase,
     ChatPipelineState,
+    ChatPreviewResetReason,
     EvidenceAssessment,
     EvidenceCoverage,
     EvidenceEnvelope,
@@ -33,6 +41,7 @@ from rag_kb.domain import (
     EvidenceScoreKind,
     InsufficiencyPolicy,
 )
+from rag_kb.ports.chat_preview import ChatPreviewSink
 from rag_kb.ports.model_api import ChatModelAdapter
 from rag_kb.retrieval.eligibility import EvidenceEligibilityPolicy
 
@@ -105,8 +114,16 @@ class CosineEvidenceAssessmentStep:
         )
 
 class AnswerGenerationStep:
-    def __init__(self, model: ChatModelAdapter) -> None:
+    def __init__(
+        self,
+        model: ChatModelAdapter,
+        *,
+        preview_sink: ChatPreviewSink | None = None,
+        preview_max_visible_bytes: int = 64 * 1024,
+    ) -> None:
         self._model = model
+        self._preview_sink = preview_sink or NoOpChatPreviewSink()
+        self._preview_max_visible_bytes = preview_max_visible_bytes
 
     async def run(self, state: ChatPipelineState) -> ChatPipelineState:
         context, pack = _require_inputs(
@@ -131,17 +148,69 @@ class AnswerGenerationStep:
                 expected_outcome=route,
                 visual_content=answering.visual_content,
             )
-            response = await complete_model(
-                self._model,
-                request,
-                phase=ChatPipelinePhase.GENERATE_OR_REFUSE,
-            )
+            if self._preview_sink.enabled:
+                projector = PartialAnswerPreviewProjector(
+                    max_visible_bytes=self._preview_max_visible_bytes
+                )
+                accumulated = ""
+                preview_active = True
+
+                async def on_content_delta(delta: str) -> None:
+                    nonlocal accumulated, preview_active
+                    if not preview_active:
+                        return
+                    accumulated += delta
+                    projection = projector.feed(accumulated)
+                    if projection.delta is not None:
+                        await emit_preview_delta_safely(
+                            self._preview_sink,
+                            run_id=context.run_id,
+                            attempt=context.attempt,
+                            delta=projection.delta,
+                        )
+                    elif projection.invalidated:
+                        await emit_preview_reset_safely(
+                            self._preview_sink,
+                            run_id=context.run_id,
+                            attempt=context.attempt,
+                            reason=ChatPreviewResetReason.PREVIEW_INVALID,
+                        )
+                        preview_active = False
+                        accumulated = ""
+
+                try:
+                    response = await complete_model_streaming(
+                        self._model,
+                        request,
+                        phase=ChatPipelinePhase.GENERATE_OR_REFUSE,
+                        on_content_delta=on_content_delta,
+                    )
+                except ChatPipelineExecutionError:
+                    await emit_preview_reset_safely(
+                        self._preview_sink,
+                        run_id=context.run_id,
+                        attempt=context.attempt,
+                        reason=ChatPreviewResetReason.GENERATION_FAILED,
+                    )
+                    raise
+            else:
+                response = await complete_model(
+                    self._model,
+                    request,
+                    phase=ChatPipelinePhase.GENERATE_OR_REFUSE,
+                )
             call = model_call_record(ChatModelOperation.GENERATE_ANSWER, response)
             try:
                 require_frozen_model(
                     context, response, phase=ChatPipelinePhase.GENERATE_OR_REFUSE
                 )
             except ChatPipelineExecutionError as error:
+                await emit_preview_reset_safely(
+                    self._preview_sink,
+                    run_id=context.run_id,
+                    attempt=context.attempt,
+                    reason=ChatPreviewResetReason.GENERATION_FAILED,
+                )
                 raise error.retain_model_calls(answering.model_calls + (call,))
             draft = AnswerDraftCandidate(
                 raw_json=response.content,

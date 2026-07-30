@@ -14,6 +14,7 @@ from rag_kb.domain import (
     ErrorCode,
 )
 from rag_kb.ports.model_api import ChatModelAdapter
+from rag_kb.ports.model_api import ChatModelContentDeltaHandler
 
 
 async def complete_model(
@@ -24,6 +25,26 @@ async def complete_model(
 ) -> ChatModelResponse:
     try:
         return await model.complete(request)
+    except ChatModelExecutionError as error:
+        raise ChatPipelineExecutionError(
+            error.code,
+            phase=phase,
+            diagnostic=error.diagnostic,
+        ) from error
+
+
+async def complete_model_streaming(
+    model: ChatModelAdapter,
+    request: ChatModelRequest,
+    *,
+    phase: ChatPipelinePhase,
+    on_content_delta: ChatModelContentDeltaHandler,
+) -> ChatModelResponse:
+    try:
+        return await model.complete_streaming(
+            request,
+            on_content_delta=on_content_delta,
+        )
     except ChatModelExecutionError as error:
         raise ChatPipelineExecutionError(
             error.code,

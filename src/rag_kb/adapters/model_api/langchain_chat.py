@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from dataclasses import replace
 import json
 from typing import Any
@@ -23,6 +24,7 @@ from rag_kb.domain import (
     ChatModelResponse,
     ErrorCode,
 )
+from rag_kb.ports.model_api import ChatModelContentDeltaHandler
 
 
 _MAX_REQUEST_CONTENT_BYTES = 1024 * 1024
@@ -91,6 +93,32 @@ class LangChainChatModelAdapter:
         )
 
     async def complete(self, request: ChatModelRequest) -> ChatModelResponse:
+        self._validate_request(request)
+        response = await self._execute(
+            lambda: self._invoke(
+                request,
+                to_langchain_messages(request.messages),
+            )
+        )
+        return _validated_response(response)
+
+    async def complete_streaming(
+        self,
+        request: ChatModelRequest,
+        *,
+        on_content_delta: ChatModelContentDeltaHandler,
+    ) -> ChatModelResponse:
+        self._validate_request(request)
+        response = await self._execute(
+            lambda: self._stream(
+                request,
+                to_langchain_messages(request.messages),
+                on_content_delta,
+            )
+        )
+        return _validated_response(response)
+
+    def _validate_request(self, request: ChatModelRequest) -> None:
         if _request_content_bytes(request) > _MAX_REQUEST_CONTENT_BYTES:
             raise ChatModelExecutionError(
                 ErrorCode.CHAT_RESPONSE_INVALID,
@@ -114,20 +142,22 @@ class LangChainChatModelAdapter:
                 ErrorCode.CHAT_RESPONSE_INVALID,
                 diagnostic={"check": "request_visual_size"},
             )
+
+    async def _execute(
+        self,
+        operation: Callable[[], Awaitable[Any]],
+    ) -> Any:
         async with self._semaphore:
             try:
                 async with asyncio.timeout(self._timeout_seconds):
-                    response = await self._invoke(
-                        request,
-                        to_langchain_messages(request.messages),
-                    )
+                    return await operation()
             except TimeoutError as error:
                 raise ChatModelExecutionError(
                     ErrorCode.CHAT_PROVIDER_UNAVAILABLE,
                     diagnostic={"check": "total_timeout"},
                 ) from error
             except openai.LengthFinishReasonError as error:
-                response = _truncated_response(error)
+                return _truncated_response(error)
             except openai.APIStatusError as error:
                 status = error.status_code
                 raise ChatModelExecutionError(
@@ -147,18 +177,6 @@ class LangChainChatModelAdapter:
                     ErrorCode.CHAT_PROVIDER_UNAVAILABLE,
                     diagnostic={"check": "provider_sdk"},
                 ) from error
-
-        mapped = (
-            response
-            if isinstance(response, ChatModelResponse)
-            else from_langchain_message(response)
-        )
-        if len(mapped.content.encode("utf-8")) > _MAX_RESPONSE_CONTENT_BYTES:
-            raise ChatModelExecutionError(
-                ErrorCode.CHAT_RESPONSE_INVALID,
-                diagnostic={"check": "response_content_size"},
-            )
-        return mapped
 
     async def _invoke(self, request: ChatModelRequest, messages: list[Any]) -> Any:
         if request.output_schema is None:
@@ -190,6 +208,61 @@ class LangChainChatModelAdapter:
             self._structured_models[cache_key] = runnable
         result = await runnable.ainvoke(messages)
         return _structured_message(result, schema)
+
+    async def _stream(
+        self,
+        request: ChatModelRequest,
+        messages: list[Any],
+        on_content_delta: ChatModelContentDeltaHandler,
+    ) -> ChatModelResponse:
+        schema = None
+        if request.output_schema is not None:
+            schema = OUTPUT_SCHEMAS.get(request.output_schema)
+            if schema is None:
+                raise ChatModelExecutionError(
+                    ErrorCode.CHAT_RESPONSE_INVALID,
+                    diagnostic={"check": "output_schema"},
+                )
+        model = (
+            _model_with_output_limit(self._model, request.max_output_tokens)
+            if request.max_output_tokens is not None
+            else self._model
+        )
+        combined = None
+        content_bytes = 0
+        async for chunk in model.astream(messages, stream_usage=True):
+            combined = chunk if combined is None else combined + chunk
+            content = chunk.content
+            if isinstance(content, str) and content:
+                content_bytes += len(content.encode("utf-8"))
+                if content_bytes > _MAX_RESPONSE_CONTENT_BYTES:
+                    raise ChatModelExecutionError(
+                        ErrorCode.CHAT_RESPONSE_INVALID,
+                        diagnostic={"check": "response_content_size"},
+                    )
+                try:
+                    await on_content_delta(content)
+                except Exception:
+                    pass
+        if combined is None:
+            raise ChatModelExecutionError(
+                ErrorCode.CHAT_RESPONSE_INVALID,
+                diagnostic={"check": "stream_empty"},
+            )
+        mapped = from_langchain_message(combined)
+        if schema is None:
+            return mapped
+        try:
+            parsed = schema.model_validate_json(mapped.content)
+        except ValueError:
+            return mapped
+        canonical = json.dumps(
+            parsed.model_dump(mode="json"),
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        return replace(mapped, content=canonical)
 
 
 def _model_with_output_limit(model: Any, max_tokens: int) -> Any:
@@ -232,6 +305,20 @@ def _request_content_bytes(request: ChatModelRequest) -> int:
         len(message.role.encode("utf-8")) + len(message.content.encode("utf-8"))
         for message in request.messages
     )
+
+
+def _validated_response(response: Any) -> ChatModelResponse:
+    mapped = (
+        response
+        if isinstance(response, ChatModelResponse)
+        else from_langchain_message(response)
+    )
+    if len(mapped.content.encode("utf-8")) > _MAX_RESPONSE_CONTENT_BYTES:
+        raise ChatModelExecutionError(
+            ErrorCode.CHAT_RESPONSE_INVALID,
+            diagnostic={"check": "response_content_size"},
+        )
+    return mapped
 
 
 def _structured_message(value: object, schema: type[BaseModel]) -> ChatModelResponse:

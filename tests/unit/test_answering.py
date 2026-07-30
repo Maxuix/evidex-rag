@@ -17,17 +17,21 @@ from rag_kb.domain import (
     ChatExecutionCommand,
     ChatExecutionContext,
     ChatModelCallRecord,
+    ChatModelExecutionError,
     ChatModelOperation,
     ChatModelRequest,
     ChatModelResponse,
     ChatOutputSchema,
+    ChatPipelineExecutionError,
     ChatPipelineState,
+    ChatPreviewResetReason,
     ChatRunLease,
     ContextualizedQuery,
     ConversationTurn,
     Evidence,
     EvidenceCoverage,
     EvidencePack,
+    ErrorCode,
     EvidenceScoreKind,
     QueryContextStatus,
     QueryRewriteSource,
@@ -47,6 +51,53 @@ class _Model:
         if not self.responses:
             raise AssertionError("unexpected model call")
         return self.responses.pop(0)
+
+
+class _StreamingModel:
+    def __init__(
+        self,
+        response: ChatModelResponse | None = None,
+        *,
+        error: ChatModelExecutionError | None = None,
+    ) -> None:
+        self.response = response
+        self.error = error
+        self.requests: list[ChatModelRequest] = []
+
+    async def complete(self, request: ChatModelRequest) -> ChatModelResponse:
+        del request
+        raise AssertionError("preview-enabled generation must stream")
+
+    async def complete_streaming(
+        self,
+        request: ChatModelRequest,
+        *,
+        on_content_delta,
+    ) -> ChatModelResponse:
+        self.requests.append(request)
+        await on_content_delta(
+            '{"outcome":"answered","claims":[{"text":"Hel'
+        )
+        await on_content_delta(
+            'lo","citation_ids":["cite_1"]}],"missing_aspects":[]}'
+        )
+        if self.error is not None:
+            raise self.error
+        assert self.response is not None
+        return self.response
+
+
+class _PreviewSink:
+    enabled = True
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, object]] = []
+
+    async def emit_delta(self, *, run_id, attempt: int, delta: str) -> None:
+        self.events.append(("delta", (run_id, attempt, delta)))
+
+    async def emit_reset(self, *, run_id, attempt: int, reason) -> None:
+        self.events.append(("reset", (run_id, attempt, reason)))
 
 
 class _Loader:
@@ -181,6 +232,66 @@ async def _assess_and_generate(
 
 
 class AnswerPolicyRoutingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_preview_enabled_generation_streams_monotonic_claim_text(
+        self,
+    ) -> None:
+        context = _context()
+        pack = _pack(context, "complete evidence")
+        model = _StreamingModel(
+            _response(
+                '{"outcome":"answered","claims":[{"text":"Hello",'
+                '"citation_ids":["cite_1"]}],"missing_aspects":[]}'
+            )
+        )
+        sink = _PreviewSink()
+        state = await CosineEvidenceAssessmentStep(0.6).run(
+            ChatPipelineState(context=context, evidence_pack=pack)
+        )
+
+        result = await AnswerGenerationStep(
+            model,  # type: ignore[arg-type]
+            preview_sink=sink,
+        ).run(state)
+
+        assert result.answering is not None
+        assert result.answering.draft is not None
+        self.assertEqual(
+            result.answering.draft.raw_json,
+            model.response.content,  # type: ignore[union-attr]
+        )
+        self.assertEqual(
+            [event[1][2] for event in sink.events],  # type: ignore[index]
+            ["Hel", "lo"],
+        )
+        self.assertTrue(all(event[0] == "delta" for event in sink.events))
+
+    async def test_streaming_generation_failure_resets_preview(self) -> None:
+        context = _context()
+        pack = _pack(context, "complete evidence")
+        model = _StreamingModel(
+            error=ChatModelExecutionError(
+                ErrorCode.CHAT_PROVIDER_UNAVAILABLE,
+                diagnostic={"check": "transport"},
+            )
+        )
+        sink = _PreviewSink()
+        state = await CosineEvidenceAssessmentStep(0.6).run(
+            ChatPipelineState(context=context, evidence_pack=pack)
+        )
+
+        with self.assertRaises(ChatPipelineExecutionError) as raised:
+            await AnswerGenerationStep(
+                model,  # type: ignore[arg-type]
+                preview_sink=sink,
+            ).run(state)
+
+        self.assertEqual(raised.exception.code, ErrorCode.CHAT_PROVIDER_UNAVAILABLE)
+        self.assertEqual(sink.events[-1][0], "reset")
+        self.assertEqual(
+            sink.events[-1][1][2],  # type: ignore[index]
+            ChatPreviewResetReason.GENERATION_FAILED,
+        )
+
     async def test_generation_receives_native_history_and_current_message(self) -> None:
         turn = ConversationTurn(
             user_message_id=uuid4(),
