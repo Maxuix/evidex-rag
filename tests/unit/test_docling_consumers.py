@@ -43,9 +43,11 @@ from rag_kb.document_processing.docling.assets import (
 )
 from rag_kb.document_processing.docling.figures import normalize_figure_labels
 from rag_kb.document_processing.semantic_boundaries import build_chunk_plan
+from rag_kb.document_processing.profiles import profile_fingerprint, profile_for_preset
 from rag_kb.domain import (
     ChunkAssetRelationProvenance,
     ChunkAssetRelationType,
+    ChunkingPreset,
     ContentModality,
     ErrorCode,
     ParserExecutionError,
@@ -401,6 +403,45 @@ class SemanticUnitTests(unittest.TestCase):
         self.assertEqual(
             sorted({reference for chunk in chunks for reference in chunk.item_refs}),
             sorted({reference for unit in units for reference in unit.item_refs}),
+        )
+
+    def test_title_dense_sections_converge_through_v2_planner_and_assembler(self) -> None:
+        document = DoclingDocument(name="title-dense")
+        document.origin = DocumentOrigin(
+            mimetype=DOCX_MIMETYPE, binary_hash=19, filename="title-dense.docx"
+        )
+        for index in range(4):
+            document.add_heading(text=f"Heading {index}", level=1)
+            document.add_text(
+                label=DocItemLabel.TEXT,
+                text=f"Short enterprise sentence {index}.",
+            )
+
+        units = docling_semantic_units(document)
+        self.assertEqual(len(units), 4)
+        self.assertTrue(all(unit.token_count < 220 for unit in units))
+        profile = profile_for_preset(ChunkingPreset.SEMANTIC_BALANCED_V1)
+        plan = build_chunk_plan(
+            indexed_document_version_id=VERSION_ID,
+            source_checksum_sha256="d" * 64,
+            profile_fingerprint=profile_fingerprint(
+                profile.parser_config, profile.chunking_config
+            ),
+            units=units,
+            vectors=tuple(
+                (1.0, 0.0) if index % 2 == 0 else (0.0, 1.0)
+                for index in range(len(units))
+            ),
+            sequence_hash=docling_unit_sequence_hash(units),
+        )
+        chunks = assemble_semantic_chunks(document, units, plan)
+
+        self.assertEqual(plan.chunk_count, 1)
+        self.assertEqual(len(chunks), 1)
+        self.assertLessEqual(chunks[0].token_count, 800)
+        self.assertEqual(
+            set(chunks[0].item_refs),
+            {reference for unit in units for reference in unit.item_refs},
         )
 
     def test_repeated_unit_projection_hashes_identically(self) -> None:

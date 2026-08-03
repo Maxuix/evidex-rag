@@ -144,7 +144,7 @@ class SqlAlchemyKnowledgeBaseRepository:
                 retrieval_weight_micros=1_000_000,
             )
         )
-        if index_profile.chunking_config.get("profile") == "semantic_breakpoint_v1":
+        if index_profile.chunking_config.get("profile") == "semantic_breakpoint_v2":
             self._session.add(
                 IndexRevisionEmbeddingSpaceRow(
                     workspace_id=self._workspace_id,

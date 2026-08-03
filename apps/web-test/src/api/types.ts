@@ -54,7 +54,7 @@ export interface KnowledgeBase {
     preset: ChunkingPreset;
     profile:
       | "structural_by_title_token_v3"
-      | "semantic_breakpoint_v1";
+      | "semantic_breakpoint_v2";
   };
   retrieval_defaults: {
     strategy: "exact_vector";

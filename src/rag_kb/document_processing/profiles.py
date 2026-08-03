@@ -149,7 +149,7 @@ STRUCTURAL_CHUNKING_CONFIG_V3 = {
 }
 
 SEMANTIC_CHUNKING_CONFIG = {
-    "profile": "semantic_breakpoint_v1",
+    "profile": "semantic_breakpoint_v2",
     "preset": "semantic_balanced_v1",
     "strategy": "semantic_breakpoint",
     "analysis_embedding": "index_embedding_space",
@@ -166,7 +166,8 @@ SEMANTIC_CHUNKING_CONFIG = {
     "distance_quantization": 1000000,
     "semantic_threshold": "median_plus_mad_v1",
     "semantic_mad_multiplier_micros": 1000000,
-    "selector": "constrained_dp_v1",
+    "selector": "constrained_dp_section_merge_v2",
+    "section_boundary_policy": "merge_under_min_adjacent_v1",
     "size_penalty_weight_micros": 150000,
     "preserve_page_boundaries": True,
     "preserve_table_boundaries": True,

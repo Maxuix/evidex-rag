@@ -145,7 +145,85 @@ def _select_all_regions(
             reason = ChunkBoundaryReason(units[index].hard_boundary_before)
             boundaries.append(ChunkBoundary(index - 1, reason))
         start = index
-    return tuple(boundaries)
+    return _merge_small_section_chunks(units, tuple(boundaries))
+
+
+def _merge_small_section_chunks(
+    units: tuple[SemanticUnit, ...],
+    boundaries: tuple[ChunkBoundary, ...],
+) -> tuple[ChunkBoundary, ...]:
+    """Remove only mergeable SECTION cuts around sub-minimum spans.
+
+    The planner has already selected all semantic and hard-boundary cuts.  This
+    pass works on those immutable spans, preferring the following span and then
+    the preceding span for a small span.  Boundary objects that are retained
+    are returned unchanged; only SECTION objects between successfully merged
+    spans are dropped.
+    """
+
+    if not boundaries:
+        return boundaries
+
+    # A boundary after ordinal ``n`` separates [start, n + 1) from the next
+    # span.  Preserve the original boundary objects so score/reason identity
+    # remains part of the plan hash.
+    spans: list[list[int]] = []
+    start = 0
+    for boundary in boundaries:
+        end = boundary.after_unit_ordinal + 1
+        spans.append([start, end])
+        start = end
+    spans.append([start, len(units)])
+    retained = list(boundaries)
+    token_cache: dict[tuple[int, int], int] = {}
+
+    def span_tokens(start_unit: int, end_unit: int) -> int:
+        key = (start_unit, end_unit)
+        if key not in token_cache:
+            token_cache[key] = count_chunk_tokens(_joined(units, start_unit, end_unit))
+        return token_cache[key]
+
+    minimum = _config_int("min_chunk_tokens")
+    maximum = _config_int("max_chunk_tokens")
+    index = 0
+    while index < len(spans):
+        current_start, current_end = spans[index]
+        if span_tokens(current_start, current_end) >= minimum:
+            index += 1
+            continue
+
+        # Next-first is the deterministic tie-break.  A section boundary is
+        # the only removable cut; all other reasons remain hard boundaries.
+        if (
+            index < len(retained)
+            and retained[index].reason is ChunkBoundaryReason.SECTION
+        ):
+            next_end = spans[index + 1][1]
+            if span_tokens(current_start, next_end) <= maximum:
+                spans[index][1] = next_end
+                spans.pop(index + 1)
+                retained.pop(index)
+                # Re-check the merged span for a chain or tail merge.
+                continue
+
+        if (
+            index > 0
+            and retained[index - 1].reason is ChunkBoundaryReason.SECTION
+        ):
+            previous_start = spans[index - 1][0]
+            if span_tokens(previous_start, current_end) <= maximum:
+                spans[index - 1][1] = current_end
+                spans.pop(index)
+                retained.pop(index - 1)
+                index -= 1
+                # Re-check the merged span against its next neighbour.
+                continue
+
+        # No legal SECTION merge at this position.  Advancing guarantees
+        # termination even when every neighbour is a hard or oversized cut.
+        index += 1
+
+    return tuple(retained)
 
 
 def _select_region(

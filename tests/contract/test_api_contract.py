@@ -1351,7 +1351,7 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
             semantic.json()["chunking"],
             {
                 "preset": "semantic_balanced_v1",
-                "profile": "semantic_breakpoint_v1",
+                "profile": "semantic_breakpoint_v2",
             },
         )
 
