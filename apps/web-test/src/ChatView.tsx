@@ -12,6 +12,7 @@ import type {
   ChatSession,
   InsufficiencyPolicy,
   KnowledgeBase,
+  RetrievalCapabilities,
 } from "./api/types";
 import {
   AssetPreview,
@@ -53,11 +54,17 @@ interface PreviewDiagnostics {
 export function ChatView({
   client,
   knowledgeBase,
+  retrievalCapabilities,
+  retrievalCapabilitiesLoading,
+  retrievalCapabilitiesError,
   onOpenCitationDocument,
   onMutationPendingChange,
 }: {
   client: ApiClient;
   knowledgeBase: KnowledgeBase;
+  retrievalCapabilities: RetrievalCapabilities | null;
+  retrievalCapabilitiesLoading: boolean;
+  retrievalCapabilitiesError: unknown | null;
   onOpenCitationDocument: (documentId: string, versionId: string) => void;
   onMutationPendingChange: (pending: boolean) => void;
 }) {
@@ -82,6 +89,7 @@ export function ChatView({
     knowledgeBase.answer_policy_defaults.insufficiency_policy,
   );
   const [topK, setTopK] = useState(knowledgeBase.retrieval_defaults.top_k);
+  const [retrievalMode, setRetrievalMode] = useState<"vector" | "hybrid">("vector");
   const [submitting, setSubmitting] = useState(false);
   const [pendingSubmission, setPendingSubmission] = useState<PendingRunSubmission | null>(null);
   const [submissionError, setSubmissionError] = useState<unknown | null>(null);
@@ -107,6 +115,9 @@ export function ChatView({
     (run !== null && !runIsTerminal && run.session_id === selectedSessionId)
     || messages.some((item) => item.assistant_status === "generating")
   );
+  const hybridEnabled = retrievalCapabilities?.modes.some(
+    (item) => item.mode === "hybrid" && item.enabled,
+  ) ?? false;
 
   useEffect(() => {
     onMutationPendingChange(mutationPending);
@@ -220,6 +231,7 @@ export function ChatView({
     setAnswerStyle(knowledgeBase.answer_policy_defaults.answer_style);
     setInsufficiencyPolicy(knowledgeBase.answer_policy_defaults.insufficiency_policy);
     setTopK(knowledgeBase.retrieval_defaults.top_k);
+    setRetrievalMode("vector");
     void loadSessions();
 
     const active = readActiveRun(knowledgeBase.id);
@@ -228,6 +240,10 @@ export function ChatView({
       void loadRun({ runId: active.runId, clearStoredOnNotFound: true });
     }
   }, [knowledgeBase, loadRun, loadSessions]);
+
+  useEffect(() => {
+    if (!hybridEnabled && retrievalMode === "hybrid") setRetrievalMode("vector");
+  }, [hybridEnabled, retrievalMode]);
 
   useEffect(() => {
     setFinalContext(null);
@@ -402,7 +418,7 @@ export function ChatView({
           answer_style: answerStyle,
           insufficiency_policy: insufficiencyPolicy,
         },
-        retrieval: { mode: "vector", top_k: topK, rerank: true },
+        retrieval: { mode: retrievalMode, top_k: topK, rerank: true },
       },
     };
     setPendingSubmission(pending);
@@ -439,6 +455,15 @@ export function ChatView({
 
   const openRunFromHistory = async (runId: string) => {
     await loadRun({ runId, clearStoredOnNotFound: false });
+  };
+
+  const changeRetrievalMode = (next: "vector" | "hybrid") => {
+    if (next === "hybrid" && !hybridEnabled) return;
+    if (pendingSubmission) {
+      setPendingSubmission(null);
+      setSubmissionError(null);
+    }
+    setRetrievalMode(next);
   };
 
   const loadFinalContext = async () => {
@@ -625,6 +650,31 @@ export function ChatView({
                 disabled={mutationPending || sessionBusy}
               />
             </label>
+            <label>
+              Retrieval mode
+              <select
+                value={retrievalMode}
+                onChange={(event) => changeRetrievalMode(
+                  event.target.value as "vector" | "hybrid",
+                )}
+                disabled={submitting || sessionBusy}
+                aria-describedby="retrieval-mode-help"
+              >
+                <option value="vector">Exact vector</option>
+                <option value="hybrid" disabled={!hybridEnabled}>
+                  Hybrid (keyword + semantic)
+                </option>
+              </select>
+              <span id="retrieval-mode-help" className="field-hint">
+                {retrievalCapabilitiesLoading
+                  ? "Capability status is loading; exact vector remains available."
+                  : retrievalCapabilitiesError || !retrievalCapabilities
+                    ? "Capability status is unavailable; hybrid is disabled."
+                    : hybridEnabled
+                      ? "Combines keywords and semantic search; it may be slower."
+                      : "Hybrid is not enabled for this API process."}
+              </span>
+            </label>
             <div className="form-actions">
               <button
                 className="button primary"
@@ -748,6 +798,32 @@ export function ChatView({
                   ["Style", run.effective_answer_policy.answer_style],
                   ["Insufficiency", run.effective_answer_policy.insufficiency_policy],
                   ["Citations", run.effective_answer_policy.citation_granularity],
+                ]} />
+              </div>
+              <div className="policy-card">
+                <div>
+                  <p className="eyebrow">Persisted retrieval snapshot</p>
+                  <strong>{run.retrieval.strategy}</strong>
+                </div>
+                <KeyValueGrid values={[
+                  ["Profile", run.retrieval.profile_version],
+                  ["Top K", run.retrieval.top_k],
+                  ["Rerank", run.retrieval.rerank ? "enabled" : "disabled"],
+                  ["Dense candidates", run.retrieval.dense_candidate_count],
+                  ["Lexical candidates", run.retrieval.lexical_candidate_count],
+                  ["Cross-modal candidates", run.retrieval.cross_modal_candidate_count],
+                  ["Lexical analyzer", run.retrieval.lexical_analyzer_version],
+                  ["Lexical query", run.retrieval.lexical_query_version],
+                  ["RRF K", run.retrieval.rrf_k],
+                  ["Dense weight micros", run.retrieval.dense_weight_micros],
+                  ["Lexical weight micros", run.retrieval.lexical_weight_micros],
+                  ["Cross-modal weight micros", run.retrieval.cross_modal_weight_micros],
+                  ["Min cosine", run.retrieval.min_cosine_similarity],
+                  ["Min rerank", run.retrieval.min_rerank_score],
+                  ["Cross-modal min cosine", run.retrieval.cross_modal_min_cosine_similarity],
+                  ["Vector rerank weight", run.retrieval.rerank_vector_weight],
+                  ["Lexical rerank weight", run.retrieval.rerank_lexical_weight],
+                  ["MMR lambda", run.retrieval.mmr_lambda],
                 ]} />
               </div>
               <div className="policy-card">

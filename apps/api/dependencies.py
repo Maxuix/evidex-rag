@@ -223,7 +223,7 @@ def build_api_dependencies(
             resolved_settings.model_provider.chat
         ),
         default_rerank=resolved_settings.retrieval.rerank_enabled,
-        hybrid_enabled=resolved_settings.retrieval.hybrid_enabled,
+        hybrid_enabled=retrieval_service.hybrid_request_enabled(),
         retrieval_profile_factory=lambda strategy, top_k, rerank: (
             retrieval_service.execution_profile(
                 strategy=strategy,

@@ -15,6 +15,7 @@ import type {
   ChatRunCreate,
   ChatSession,
   KnowledgeBase,
+  RetrievalCapabilities,
 } from "./api/types";
 import {
   AnswerText,
@@ -59,12 +60,35 @@ interface ChatPreviewState {
 export function App() {
   const [client, setClient] = useState<ApiClient | null>(null);
   const [startupError, setStartupError] = useState<string | null>(null);
+  const [retrievalCapabilities, setRetrievalCapabilities] =
+    useState<RetrievalCapabilities | null>(null);
+  const [retrievalCapabilitiesLoading, setRetrievalCapabilitiesLoading] =
+    useState(false);
+  const [retrievalCapabilitiesError, setRetrievalCapabilitiesError] =
+    useState<unknown | null>(null);
 
   useEffect(() => {
     void loadRuntimeConfig()
       .then((config) => setClient(new ApiClient(config)))
       .catch((error) => setStartupError(errorMessage(error)));
   }, []);
+
+  useEffect(() => {
+    if (!client) return;
+    let cancelled = false;
+    setRetrievalCapabilitiesLoading(true);
+    setRetrievalCapabilitiesError(null);
+    void client.getRetrievalCapabilities().then((value) => {
+      if (!cancelled) setRetrievalCapabilities(value);
+    }).catch((error) => {
+      if (!cancelled) setRetrievalCapabilitiesError(error);
+    }).finally(() => {
+      if (!cancelled) setRetrievalCapabilitiesLoading(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [client]);
 
   if (startupError) {
     return (
@@ -84,10 +108,27 @@ export function App() {
       </main>
     );
   }
-  return <KnowledgeChat client={client} />;
+  return (
+    <KnowledgeChat
+      client={client}
+      retrievalCapabilities={retrievalCapabilities}
+      retrievalCapabilitiesLoading={retrievalCapabilitiesLoading}
+      retrievalCapabilitiesError={retrievalCapabilitiesError}
+    />
+  );
 }
 
-function KnowledgeChat({ client }: { client: ApiClient }) {
+function KnowledgeChat({
+  client,
+  retrievalCapabilities,
+  retrievalCapabilitiesLoading,
+  retrievalCapabilitiesError,
+}: {
+  client: ApiClient;
+  retrievalCapabilities: RetrievalCapabilities | null;
+  retrievalCapabilitiesLoading: boolean;
+  retrievalCapabilitiesError: unknown | null;
+}) {
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
   const [knowledgeBaseCursor, setKnowledgeBaseCursor] = useState<string | null>(null);
   const [selectedKnowledgeBaseId, setSelectedKnowledgeBaseId] = useState(
@@ -108,6 +149,7 @@ function KnowledgeChat({ client }: { client: ApiClient }) {
   const [messagesError, setMessagesError] = useState<string | null>(null);
 
   const [draft, setDraft] = useState("");
+  const [retrievalMode, setRetrievalMode] = useState<"vector" | "hybrid">("vector");
   const [submitting, setSubmitting] = useState(false);
   const [pendingRun, setPendingRun] = useState<PendingRun | null>(null);
   const [submissionError, setSubmissionError] = useState<string | null>(null);
@@ -141,6 +183,9 @@ function KnowledgeChat({ client }: { client: ApiClient }) {
     && currentRun.session_id === selectedSessionId
     && !isTerminal(currentRun),
   ) || messages.some((item) => item.assistant_status === "generating");
+  const hybridEnabled = retrievalCapabilities?.modes.some(
+    (item) => item.mode === "hybrid" && item.enabled,
+  ) ?? false;
 
   const loadKnowledgeBases = useCallback(async (cursor?: string) => {
     setKnowledgeBasesLoading(true);
@@ -219,6 +264,7 @@ function KnowledgeChat({ client }: { client: ApiClient }) {
 
   useEffect(() => {
     storeKnowledgeBaseId(selectedKnowledgeBaseId || null);
+    setRetrievalMode("vector");
     setSessions([]);
     setSelectedSessionId(null);
     setMessages([]);
@@ -229,6 +275,10 @@ function KnowledgeChat({ client }: { client: ApiClient }) {
       void loadSessions(selectedKnowledgeBaseId);
     }
   }, [loadSessions, selectedKnowledgeBaseId]);
+
+  useEffect(() => {
+    if (!hybridEnabled && retrievalMode === "hybrid") setRetrievalMode("vector");
+  }, [hybridEnabled, retrievalMode]);
 
   useEffect(() => {
     messageGeneration.current += 1;
@@ -342,11 +392,16 @@ function KnowledgeChat({ client }: { client: ApiClient }) {
   }, [draft]);
 
   const chooseKnowledgeBase = (value: string) => {
+    if (value === selectedKnowledgeBaseId) return;
     if (draft.trim() && value !== selectedKnowledgeBaseId) {
       const discard = window.confirm("切换知识库会清除当前未发送的问题，是否继续？");
       if (!discard) return;
       setDraft("");
     }
+    // A failed request is frozen to its original KB and idempotency key. Do
+    // not leave that retryable payload attached to the newly selected KB.
+    setPendingRun(null);
+    setSubmissionError(null);
     setSelectedKnowledgeBaseId(value);
     setMobileSidebarOpen(false);
   };
@@ -396,7 +451,7 @@ function KnowledgeChat({ client }: { client: ApiClient }) {
             ),
           },
           retrieval: {
-            mode: "vector",
+            mode: retrievalMode,
             top_k: selectedKnowledgeBase.retrieval_defaults.top_k,
             rerank: true,
           },
@@ -430,6 +485,15 @@ function KnowledgeChat({ client }: { client: ApiClient }) {
     } finally {
       setSubmitting(false);
     }
+  };
+
+  const changeRetrievalMode = (next: "vector" | "hybrid") => {
+    if (next === "hybrid" && !hybridEnabled) return;
+    if (pendingRun) {
+      setPendingRun(null);
+      setSubmissionError(null);
+    }
+    setRetrievalMode(next);
   };
 
   const openEvidence = async (
@@ -694,6 +758,31 @@ function KnowledgeChat({ client }: { client: ApiClient }) {
             </div>
           ) : null}
           <div className="composer">
+            <label className="retrieval-mode-control">
+              <span>检索模式</span>
+              <select
+                value={retrievalMode}
+                onChange={(event) => changeRetrievalMode(
+                  event.target.value as "vector" | "hybrid",
+                )}
+                disabled={submitting || sessionBusy}
+                aria-describedby="web-chat-retrieval-mode-help"
+              >
+                <option value="vector">精确向量</option>
+                <option value="hybrid" disabled={!hybridEnabled}>
+                  混合（关键词 + 语义）
+                </option>
+              </select>
+              <small id="web-chat-retrieval-mode-help">
+                {retrievalCapabilitiesLoading
+                  ? "能力状态加载中，已保持精确检索。"
+                  : retrievalCapabilitiesError || !retrievalCapabilities
+                    ? "能力状态不可用，混合模式已禁用。"
+                    : hybridEnabled
+                      ? "结合关键词与语义，可能更慢。"
+                      : "当前 API 未启用混合模式。"}
+              </small>
+            </label>
             <textarea
               ref={textareaRef}
               value={draft}

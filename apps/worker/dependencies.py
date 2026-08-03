@@ -303,6 +303,10 @@ def build_worker_dependencies(
             resolved_settings.retrieval.cross_modal_weight_micros
         ),
         lexical_store=PgLexicalStore(database.sessions),
+        # This is the raw process setting; RetrievalService's request gate
+        # always combines it with lexical adapter availability through
+        # hybrid_request_enabled(). Worker ChatEvidenceRetriever therefore
+        # shares the same effective predicate as API retrieval.
         hybrid_enabled=resolved_settings.retrieval.hybrid_enabled,
         lexical_analyzer_version=(
             resolved_settings.retrieval.lexical_analyzer_version

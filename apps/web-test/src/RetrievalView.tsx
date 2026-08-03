@@ -1,7 +1,12 @@
 import { useEffect, useState } from "react";
 
 import { ApiClient, ApiClientError } from "./api/client";
-import type { EvidencePack, KnowledgeBase, RelatedVisualEvidence } from "./api/types";
+import type {
+  EvidencePack,
+  KnowledgeBase,
+  RelatedVisualEvidence,
+  RetrievalCapabilities,
+} from "./api/types";
 import {
   AssetPreview,
   EmptyState,
@@ -15,10 +20,16 @@ import {
 export function RetrievalView({
   client,
   knowledgeBase,
+  retrievalCapabilities,
+  retrievalCapabilitiesLoading,
+  retrievalCapabilitiesError,
   onOpenDocument,
 }: {
   client: ApiClient;
   knowledgeBase: KnowledgeBase;
+  retrievalCapabilities: RetrievalCapabilities | null;
+  retrievalCapabilitiesLoading: boolean;
+  retrievalCapabilitiesError: unknown | null;
   onOpenDocument: (documentId: string, versionId: string) => void;
 }) {
   const [query, setQuery] = useState("");
@@ -27,6 +38,13 @@ export function RetrievalView({
   const [result, setResult] = useState<EvidencePack | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<unknown | null>(null);
+  const hybridEnabled = retrievalCapabilities?.modes.some(
+    (item) => item.mode === "hybrid" && item.enabled,
+  ) ?? false;
+
+  useEffect(() => {
+    if (!hybridEnabled && strategy === "hybrid") setStrategy("exact_vector");
+  }, [hybridEnabled, strategy]);
 
   useEffect(() => {
     setQuery("");
@@ -39,6 +57,7 @@ export function RetrievalView({
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!query.trim()) return;
+    if (strategy === "hybrid" && !hybridEnabled) return;
     setLoading(true);
     setError(null);
     try {
@@ -101,8 +120,19 @@ export function RetrievalView({
               onChange={(event) => setStrategy(event.target.value as "exact_vector" | "hybrid")}
             >
               <option value="exact_vector">Exact vector</option>
-              <option value="hybrid">Hybrid FTS + dense</option>
+              <option value="hybrid" disabled={!hybridEnabled}>
+                Hybrid FTS + dense{hybridEnabled ? "" : " (disabled)"}
+              </option>
             </select>
+            <span className="field-hint">
+              {retrievalCapabilitiesLoading
+                ? "Capability status is loading; exact vector remains available."
+                : retrievalCapabilitiesError || !retrievalCapabilities
+                  ? "Capability status is unavailable; hybrid is disabled."
+                  : hybridEnabled
+                    ? "Hybrid combines keywords and semantic search and may be slower."
+                    : "Hybrid is not enabled for this API process."}
+            </span>
           </label>
           <div className="locked-settings" aria-label="Locked retrieval settings">
             <div><span>Strategy</span><strong>{strategy}</strong></div>

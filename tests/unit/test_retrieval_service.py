@@ -160,6 +160,42 @@ class RelationHydrationRepositoryQueryTests(unittest.IsolatedAsyncioTestCase):
 
 
 class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
+    def test_capability_snapshot_is_pure_and_deterministic(self) -> None:
+        service = RetrievalService(
+            SingleWorkspaceAccessPolicy(WORKSPACE),
+            _Provider(),
+            _Store(VectorSearchResult(REVISION_ID)),
+            hybrid_enabled=True,
+        )
+        snapshot = service.capabilities_snapshot()
+        self.assertEqual(snapshot.default_mode, "vector")
+        self.assertEqual(
+            [(item.mode, item.strategy, item.profile_version, item.enabled) for item in snapshot.modes],
+            [
+                ("vector", "exact_vector", "exact_vector_v1", True),
+                ("hybrid", "hybrid", "hybrid_fts_rrf_v1", False),
+            ],
+        )
+        self.assertFalse(service.hybrid_request_enabled())
+
+        lexical = _LexicalStore(
+            LexicalSearchResult(
+                REVISION_ID,
+                analyzer_version="lexical_simple_cjk_bigram_v1",
+                manifest_target_count=1,
+                hits=(),
+            )
+        )
+        enabled = RetrievalService(
+            SingleWorkspaceAccessPolicy(WORKSPACE),
+            _Provider(),
+            _Store(VectorSearchResult(REVISION_ID)),
+            lexical_store=lexical,
+            hybrid_enabled=True,
+        )
+        self.assertTrue(enabled.hybrid_request_enabled())
+        self.assertTrue(enabled.capabilities_snapshot().modes[1].enabled)
+
     def test_reranker_fuses_query_terms_and_removes_duplicate_chunks(self) -> None:
         generic = replace(
             _hit(CHUNK_1, distance=0.05, ordinal=1),

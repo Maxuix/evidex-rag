@@ -9,7 +9,11 @@ from rag_kb.domain import (
     RetrievalRequest,
     RetrievalStrategy,
 )
-from rag_kb.retrieval.service import RetrievalService
+from rag_kb.retrieval.service import (
+    RetrievalCapabilitiesSnapshot,
+    RetrievalCapability,
+    RetrievalService,
+)
 from rag_kb.retrieval.reranker import RerankedHit, rerank_hits
 
 __all__ = [
@@ -19,6 +23,8 @@ __all__ = [
     "RetrievalExecutionError",
     "RetrievalQueryPlan",
     "RetrievalRequest",
+    "RetrievalCapabilitiesSnapshot",
+    "RetrievalCapability",
     "RetrievalService",
     "RetrievalStrategy",
     "RerankedHit",

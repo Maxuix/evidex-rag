@@ -71,6 +71,40 @@ export interface ChatRunError {
   retryable: boolean;
 }
 
+export interface ChatRunRetrieval {
+  profile_version: "exact_vector_v1" | "hybrid_fts_rrf_v1";
+  strategy: "exact_vector" | "hybrid";
+  top_k: number;
+  rerank: boolean;
+  dense_candidate_count: number;
+  lexical_candidate_count: number;
+  cross_modal_candidate_count: number;
+  lexical_analyzer_version: string | null;
+  lexical_query_version: string | null;
+  rrf_k: number;
+  dense_weight_micros: number;
+  lexical_weight_micros: number;
+  cross_modal_weight_micros: number;
+  min_cosine_similarity: number;
+  min_rerank_score: number;
+  cross_modal_min_cosine_similarity: number;
+  rerank_vector_weight: number;
+  rerank_lexical_weight: number;
+  mmr_lambda: number;
+}
+
+export interface RetrievalCapability {
+  mode: "vector" | "hybrid";
+  strategy: "exact_vector" | "hybrid";
+  profile_version: "exact_vector_v1" | "hybrid_fts_rrf_v1";
+  enabled: boolean;
+}
+
+export interface RetrievalCapabilities {
+  default_mode: "vector";
+  modes: RetrievalCapability[];
+}
+
 export interface ChatRun {
   run_id: UUID;
   knowledge_base_id: UUID;
@@ -85,6 +119,7 @@ export interface ChatRun {
     answer_style: "concise" | "summary";
     insufficiency_policy: "refuse" | "partial_answer";
   };
+  retrieval: ChatRunRetrieval;
   error: ChatRunError | null;
   created_at: IsoDate;
   updated_at: IsoDate;
@@ -100,7 +135,7 @@ export interface ChatRunCreate {
     insufficiency_policy: "refuse" | "partial_answer";
   };
   retrieval: {
-    mode: "vector";
+    mode: "vector" | "hybrid";
     top_k: number;
     rerank: boolean;
   };

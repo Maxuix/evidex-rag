@@ -20,6 +20,7 @@ import type {
   Page,
   ProblemDetails,
   RuntimeConfig,
+  RetrievalCapabilities,
   UUID,
 } from "./types";
 
@@ -110,6 +111,10 @@ export class ApiClient {
       sort: "name",
       cursor,
     }));
+  }
+
+  getRetrievalCapabilities(): Promise<RetrievalCapabilities> {
+    return this.request("/retrieval/capabilities");
   }
 
   createKnowledgeBase(

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from pydantic import ConfigDict, Field, field_validator
@@ -36,6 +36,18 @@ class RetrievalQueryRequest(RetrievalPublicSchema):
         if not normalized:
             raise ValueError("query must contain non-whitespace characters")
         return normalized
+
+
+class RetrievalCapabilityResponse(RetrievalPublicSchema):
+    mode: Literal["vector", "hybrid"]
+    strategy: Literal["exact_vector", "hybrid"]
+    profile_version: Literal["exact_vector_v1", "hybrid_fts_rrf_v1"]
+    enabled: bool
+
+
+class RetrievalCapabilitiesResponse(RetrievalPublicSchema):
+    default_mode: Literal["vector"]
+    modes: tuple[RetrievalCapabilityResponse, ...]
 
 
 class RetrievalQueryPlanResponse(RetrievalPublicSchema):

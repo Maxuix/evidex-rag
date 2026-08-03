@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Iterable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 import math
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 from uuid import UUID
 
 from rag_kb.auth import AccessPolicy, AuthContext
@@ -61,6 +61,29 @@ class CompositeEvidenceHydrator(Protocol):
         chunk_ids: tuple[UUID, ...],
         asset_ids: tuple[UUID, ...],
     ) -> tuple[IndexChunkAssetRelationSnapshot, ...]: ...
+
+
+RetrievalMode = Literal["vector", "hybrid"]
+RetrievalCapabilityStrategy = Literal["exact_vector", "hybrid"]
+RetrievalCapabilityProfile = Literal["exact_vector_v1", "hybrid_fts_rrf_v1"]
+
+
+@dataclass(frozen=True, slots=True)
+class RetrievalCapability:
+    """A process-wide request-mode capability, independent of KB readiness."""
+
+    mode: RetrievalMode
+    strategy: RetrievalCapabilityStrategy
+    profile_version: RetrievalCapabilityProfile
+    enabled: bool
+
+
+@dataclass(frozen=True, slots=True)
+class RetrievalCapabilitiesSnapshot:
+    """Stable capability snapshot exposed by the retrieval composition root."""
+
+    default_mode: Literal["vector"]
+    modes: tuple[RetrievalCapability, ...]
 
 
 class RetrievalService:
@@ -164,6 +187,37 @@ class RetrievalService:
             lexical_analyzer_version=lexical_analyzer_version,
             lexical_query_version=lexical_query_version,
             **common_profile,
+        )
+
+    def hybrid_request_enabled(self) -> bool:
+        """Return whether this process can accept a hybrid request mode.
+
+        This is deliberately a pure capability predicate.  It does not inspect
+        a knowledge base, serving target, lexical manifest, unit of work, or
+        any external provider.
+        """
+
+        return self._hybrid_enabled and self._lexical_store is not None
+
+    def capabilities_snapshot(self) -> RetrievalCapabilitiesSnapshot:
+        """Return the deterministic process-wide request capability snapshot."""
+
+        return RetrievalCapabilitiesSnapshot(
+            default_mode="vector",
+            modes=(
+                RetrievalCapability(
+                    mode="vector",
+                    strategy="exact_vector",
+                    profile_version="exact_vector_v1",
+                    enabled=True,
+                ),
+                RetrievalCapability(
+                    mode="hybrid",
+                    strategy="hybrid",
+                    profile_version="hybrid_fts_rrf_v1",
+                    enabled=self.hybrid_request_enabled(),
+                ),
+            ),
         )
 
     def execution_profile(
@@ -960,7 +1014,7 @@ class RetrievalService:
 
     def _require_enabled(self, request: RetrievalRequest) -> None:
         if request.strategy is RetrievalStrategy.HYBRID:
-            if not self._hybrid_enabled or self._lexical_store is None:
+            if not self.hybrid_request_enabled():
                 raise RetrievalExecutionError(
                     ErrorCode.CAPABILITY_NOT_ENABLED,
                     diagnostic={"capability": request.strategy.value},

@@ -758,6 +758,14 @@ class StartupValidationTests(unittest.TestCase):
             self.assertIsNot(worker.unit_of_work(), worker.unit_of_work())
             self.assertIs(api.chat_terminal_watcher._chat, api.chat_service)
             self.assertEqual(api.chat_sse_connection_limiter._maximum, 2)
+            self.assertEqual(
+                api.chat_service._hybrid_enabled,
+                api.retrieval_service.hybrid_request_enabled(),
+            )
+            self.assertEqual(
+                worker.retrieval_service.hybrid_request_enabled(),
+                settings.retrieval.hybrid_enabled,
+            )
             api_context = api.auth_provider.get_context()
             worker_context = worker.auth_provider.get_context()
             self.assertEqual(api_context, worker_context)

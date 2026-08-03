@@ -2946,6 +2946,70 @@
         "title": "RelatedVisualEvidenceResponse",
         "type": "object"
       },
+      "RetrievalCapabilitiesResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "default_mode": {
+            "const": "vector",
+            "title": "Default Mode",
+            "type": "string"
+          },
+          "modes": {
+            "items": {
+              "$ref": "#/components/schemas/RetrievalCapabilityResponse"
+            },
+            "title": "Modes",
+            "type": "array"
+          }
+        },
+        "required": [
+          "default_mode",
+          "modes"
+        ],
+        "title": "RetrievalCapabilitiesResponse",
+        "type": "object"
+      },
+      "RetrievalCapabilityResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "mode": {
+            "enum": [
+              "vector",
+              "hybrid"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "profile_version": {
+            "enum": [
+              "exact_vector_v1",
+              "hybrid_fts_rrf_v1"
+            ],
+            "title": "Profile Version",
+            "type": "string"
+          },
+          "strategy": {
+            "enum": [
+              "exact_vector",
+              "hybrid"
+            ],
+            "title": "Strategy",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode",
+          "strategy",
+          "profile_version",
+          "enabled"
+        ],
+        "title": "RetrievalCapabilityResponse",
+        "type": "object"
+      },
       "RetrievalDebugResponse": {
         "additionalProperties": false,
         "properties": {
@@ -4954,6 +5018,47 @@
         "summary": "Upload Document",
         "tags": [
           "documents"
+        ]
+      }
+    },
+    "/api/v1/retrieval/capabilities": {
+      "get": {
+        "operationId": "retrieval_capabilities_api_v1_retrieval_capabilities_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RetrievalCapabilitiesResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Access denied"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Internal server error"
+          }
+        },
+        "summary": "Retrieval Capabilities",
+        "tags": [
+          "retrieval"
         ]
       }
     },

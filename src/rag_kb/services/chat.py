@@ -14,9 +14,11 @@ from rag_kb.domain import (
     ChatSession,
     ChatSessionBusyError,
     ContextualizedQuery,
+    ErrorCode,
     QueryContextStatus,
     QueryRewriteSource,
     CONTEXTUAL_QUERY_VERSION,
+    RetrievalExecutionError,
     IdempotencyKeyReusedError,
     IdempotencyScope,
     InsufficiencyPolicy,
@@ -190,7 +192,10 @@ class ChatService:
         if retrieval_mode not in {"vector", "hybrid"}:
             raise ResourceStateConflictError("retrieval mode is unsupported")
         if retrieval_mode == "hybrid" and not self._hybrid_enabled:
-            raise ResourceStateConflictError("hybrid retrieval is not enabled")
+            raise RetrievalExecutionError(
+                ErrorCode.CAPABILITY_NOT_ENABLED,
+                diagnostic={"capability": "hybrid"},
+            )
         normalized_message = message.strip()
         if not normalized_message:
             raise ValueError("message must contain non-whitespace characters")

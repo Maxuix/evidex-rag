@@ -4,7 +4,12 @@ import { ChatView } from "./ChatView";
 import { DocumentsView } from "./DocumentsView";
 import { RetrievalView } from "./RetrievalView";
 import { ApiClient, loadRuntimeConfig } from "./api/client";
-import type { ChunkingPreset, KnowledgeBase, ParsingPreset } from "./api/types";
+import type {
+  ChunkingPreset,
+  KnowledgeBase,
+  ParsingPreset,
+  RetrievalCapabilities,
+} from "./api/types";
 import {
   EmptyState,
   KnowledgeBaseSelector,
@@ -21,12 +26,35 @@ type ViewName = "documents" | "chat" | "retrieval";
 export function App() {
   const [client, setClient] = useState<ApiClient | null>(null);
   const [configurationError, setConfigurationError] = useState<unknown | null>(null);
+  const [retrievalCapabilities, setRetrievalCapabilities] =
+    useState<RetrievalCapabilities | null>(null);
+  const [retrievalCapabilitiesLoading, setRetrievalCapabilitiesLoading] =
+    useState(false);
+  const [retrievalCapabilitiesError, setRetrievalCapabilitiesError] =
+    useState<unknown | null>(null);
 
   useEffect(() => {
     void loadRuntimeConfig().then((config) => {
       setClient(new ApiClient(config));
     }).catch(setConfigurationError);
   }, []);
+
+  useEffect(() => {
+    if (!client) return;
+    let cancelled = false;
+    setRetrievalCapabilitiesLoading(true);
+    setRetrievalCapabilitiesError(null);
+    void client.getRetrievalCapabilities().then((value) => {
+      if (!cancelled) setRetrievalCapabilities(value);
+    }).catch((error) => {
+      if (!cancelled) setRetrievalCapabilitiesError(error);
+    }).finally(() => {
+      if (!cancelled) setRetrievalCapabilitiesLoading(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [client]);
 
   if (configurationError) {
     return (
@@ -46,10 +74,27 @@ export function App() {
       </main>
     );
   }
-  return <ObservationApp client={client} />;
+  return (
+    <ObservationApp
+      client={client}
+      retrievalCapabilities={retrievalCapabilities}
+      retrievalCapabilitiesLoading={retrievalCapabilitiesLoading}
+      retrievalCapabilitiesError={retrievalCapabilitiesError}
+    />
+  );
 }
 
-export function ObservationApp({ client }: { client: ApiClient }) {
+export function ObservationApp({
+  client,
+  retrievalCapabilities,
+  retrievalCapabilitiesLoading,
+  retrievalCapabilitiesError,
+}: {
+  client: ApiClient;
+  retrievalCapabilities: RetrievalCapabilities | null;
+  retrievalCapabilitiesLoading: boolean;
+  retrievalCapabilitiesError: unknown | null;
+}) {
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(
     () => readSelectedKnowledgeBaseId(),
@@ -278,6 +323,14 @@ export function ObservationApp({ client }: { client: ApiClient }) {
         </div>
       ) : null}
 
+      {retrievalCapabilitiesLoading || retrievalCapabilitiesError ? (
+        <div className="page-notice" role="status">
+          {retrievalCapabilitiesLoading
+            ? "Retrieval capability status is loading; hybrid remains disabled."
+            : "Retrieval capability status is unavailable; exact vector remains available and hybrid is disabled."}
+        </div>
+      ) : null}
+
       <nav className="view-tabs" aria-label="Observation views">
         {([
           ["documents", "Documents", "Upload and index"],
@@ -357,6 +410,9 @@ export function ObservationApp({ client }: { client: ApiClient }) {
                 key={selectedKnowledgeBase.id}
                 client={client}
                 knowledgeBase={selectedKnowledgeBase}
+                retrievalCapabilities={retrievalCapabilities}
+                retrievalCapabilitiesLoading={retrievalCapabilitiesLoading}
+                retrievalCapabilitiesError={retrievalCapabilitiesError}
                 onOpenCitationDocument={openDocument}
                 onMutationPendingChange={handleMutationPendingChange}
               />
@@ -366,6 +422,9 @@ export function ObservationApp({ client }: { client: ApiClient }) {
                 key={selectedKnowledgeBase.id}
                 client={client}
                 knowledgeBase={selectedKnowledgeBase}
+                retrievalCapabilities={retrievalCapabilities}
+                retrievalCapabilitiesLoading={retrievalCapabilitiesLoading}
+                retrievalCapabilitiesError={retrievalCapabilitiesError}
                 onOpenDocument={openDocument}
               />
             ) : null}

@@ -5,6 +5,7 @@ import type {
   ChatPreviewResetEvent,
   ChatRun,
   ChatRunCreate,
+  RetrievalCapabilities,
   ChatSession,
   ChatTerminalEvent,
   KnowledgeBase,
@@ -70,6 +71,10 @@ export class ApiClient {
       sort: "name",
       cursor,
     }));
+  }
+
+  getRetrievalCapabilities(): Promise<RetrievalCapabilities> {
+    return this.request("/retrieval/capabilities");
   }
 
   listChatSessions(

@@ -679,6 +679,37 @@ textarea:focus-visible {
   color: #8a8a8a;
 }
 
+.retrieval-mode-control {
+  display: grid;
+  min-width: 132px;
+  max-width: 180px;
+  flex: 0 1 170px;
+  align-self: stretch;
+  align-content: center;
+  gap: 2px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.2;
+}
+
+.retrieval-mode-control select {
+  min-width: 0;
+  height: 28px;
+  padding: 0 6px;
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 11px;
+}
+
+.retrieval-mode-control small {
+  overflow: hidden;
+  color: var(--faint);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .send-button {
   display: grid;
   width: 40px;
@@ -1128,6 +1159,11 @@ textarea:focus-visible {
     border-radius: 17px;
   }
 
+  .retrieval-mode-control {
+    min-width: 118px;
+    flex-basis: 150px;
+  }
+
   .drawer-backdrop {
     background: rgb(0 0 0 / 24%);
   }
@@ -1149,6 +1185,34 @@ textarea:focus-visible {
 
   @keyframes sheet-in {
     from { opacity: 0; transform: translateY(24px); }
+  }
+}
+
+@media (max-width: 480px) {
+  .composer {
+    flex-wrap: wrap;
+    align-items: center;
+    padding-left: 12px;
+  }
+
+  .composer textarea {
+    order: 1;
+    flex: 1 1 calc(100% - 52px);
+  }
+
+  .retrieval-mode-control {
+    order: 3;
+    min-width: 0;
+    max-width: none;
+    flex: 1 1 100%;
+  }
+
+  .retrieval-mode-control small {
+    white-space: normal;
+  }
+
+  .send-button {
+    order: 2;
   }
 }
 

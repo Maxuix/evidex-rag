@@ -230,6 +230,25 @@ class StubRetrievalService:
         self.requests = []
         self.failure: RetrievalExecutionError | None = None
 
+    def capabilities_snapshot(self):
+        return SimpleNamespace(
+            default_mode="vector",
+            modes=(
+                SimpleNamespace(
+                    mode="vector",
+                    strategy="exact_vector",
+                    profile_version="exact_vector_v1",
+                    enabled=True,
+                ),
+                SimpleNamespace(
+                    mode="hybrid",
+                    strategy="hybrid",
+                    profile_version="hybrid_fts_rrf_v1",
+                    enabled=False,
+                ),
+            ),
+        )
+
     async def retrieve(self, context, retrieval_request):
         self.requests.append((context, retrieval_request))
         if self.failure is not None:
@@ -783,6 +802,7 @@ class CommonContractTests(unittest.TestCase):
                 "/api/v1/indexing-jobs/{job_id}/retry",
                 "/api/v1/index-assets/{asset_id}/content",
                 "/api/v1/retrieval/query",
+                "/api/v1/retrieval/capabilities",
                 "/api/v1/chat/sessions",
                 "/api/v1/chat/sessions/{session_id}/messages",
                 "/api/v1/chat/runs",
@@ -872,6 +892,35 @@ class RetrievalApiContractTests(unittest.IsolatedAsyncioTestCase):
         _, retrieval_request = self.service.requests[0]
         self.assertEqual(retrieval_request.query, "查询 ABC-42")
         self.assertEqual(retrieval_request.top_k, 5)
+
+    async def test_capabilities_are_strict_process_snapshot_without_uow(self) -> None:
+        response = await request(
+            self.app,
+            "GET",
+            f"{API_PREFIX}/retrieval/capabilities",
+        )
+        self.assertEqual(response.status, 200)
+        self.assertEqual(
+            response.json(),
+            {
+                "default_mode": "vector",
+                "modes": [
+                    {
+                        "mode": "vector",
+                        "strategy": "exact_vector",
+                        "profile_version": "exact_vector_v1",
+                        "enabled": True,
+                    },
+                    {
+                        "mode": "hybrid",
+                        "strategy": "hybrid",
+                        "profile_version": "hybrid_fts_rrf_v1",
+                        "enabled": False,
+                    },
+                ],
+            },
+        )
+        self.assertEqual(self.service.requests, [])
 
     async def test_client_cannot_inject_mandatory_filters(self) -> None:
         forbidden_fields = (
@@ -1205,6 +1254,11 @@ class _FakeChatService:
     async def create_run(self, context, key, **values):
         del context
         self.create_run_calls.append({"key": key, **values})
+        if values["retrieval_mode"] == "hybrid":
+            raise RetrievalExecutionError(
+                ErrorCode.CAPABILITY_NOT_ENABLED,
+                diagnostic={"capability": "hybrid"},
+            )
         if key == UUID("00000000-0000-0000-0000-000000000099"):
             raise IdempotencyKeyReusedError("internal chat hash detail")
         if key == UUID("00000000-0000-0000-0000-000000000098"):
@@ -1713,6 +1767,21 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(missing_key.status, 422)
         self.assertEqual(missing_key.json()["code"], "INVALID_IDEMPOTENCY_KEY")
 
+        disabled_hybrid = await request(
+            self.app,
+            "POST",
+            f"{API_PREFIX}/chat/runs",
+            headers={"idempotency-key": str(uuid4())},
+            json_body={
+                **_chat_run_request(chat.session.id),
+                "retrieval": {"mode": "hybrid", "top_k": 10, "rerank": True},
+            },
+        )
+        self.assertEqual(disabled_hybrid.status, 409)
+        self.assertEqual(disabled_hybrid.json()["code"], "CAPABILITY_NOT_ENABLED")
+        self.assertFalse(disabled_hybrid.json()["retryable"])
+        self.assertNotIn("hybrid", disabled_hybrid.body.decode())
+
         key = uuid4()
         created = await request(
             self.app,
@@ -1757,8 +1826,8 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
                 "policy_version": "p1",
             },
         )
-        self.assertEqual(chat.create_run_calls[0]["key"], key)
-        self.assertEqual(chat.create_run_calls[0]["message"], "查询 RUN-ORD-14")
+        self.assertEqual(chat.create_run_calls[-1]["key"], key)
+        self.assertEqual(chat.create_run_calls[-1]["message"], "查询 RUN-ORD-14")
 
         status_response = await request(
             self.app, "GET", f"{API_PREFIX}/chat/runs/{chat.run.id}"

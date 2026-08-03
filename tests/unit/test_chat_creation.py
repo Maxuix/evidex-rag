@@ -14,9 +14,11 @@ from rag_kb.domain import (
     AnswerStyle,
     ChatSessionBusyError,
     ConversationTurn,
+    ErrorCode,
     InsufficiencyPolicy,
     Page,
     RetrievalStrategy,
+    RetrievalExecutionError,
     resolve_p1_policy,
 )
 from rag_kb.memory import hydrate_conversation_context
@@ -185,6 +187,31 @@ class ChatCreationContractTests(unittest.TestCase):
 
 
 class ChatCreationServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_disabled_hybrid_run_uses_capability_error(self) -> None:
+        workspace_id = uuid4()
+        kb_id = uuid4()
+        chat = _ChatRepository(kb_id=kb_id)
+        service = ChatService(
+            _Factory(workspace_id, chat, kb_id),
+            SingleWorkspaceAccessPolicy(workspace_id),
+            model_configuration={"resolved_model": "fixed-model"},
+            retrieval_profile_factory=_profile_factory,
+        )
+
+        with self.assertRaises(RetrievalExecutionError) as failure:
+            await service.create_run(
+                AuthContext("principal", "client", workspace_id),
+                uuid4(),
+                session_id=uuid4(),
+                kb_id=kb_id,
+                message="query",
+                answer_style=None,
+                insufficiency_policy=None,
+                retrieval_mode="hybrid",
+                top_k=5,
+            )
+        self.assertEqual(failure.exception.code, ErrorCode.CAPABILITY_NOT_ENABLED)
+
     async def test_hybrid_run_freezes_complete_versioned_retrieval_profile(
         self,
     ) -> None:
