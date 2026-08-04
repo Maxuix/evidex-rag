@@ -72,6 +72,7 @@ class ChatTerminalServiceTests(unittest.IsolatedAsyncioTestCase):
         command = repository.success
         self.assertEqual(command.retrieval_diagnostics["text_candidate_count"], 3)
         facts = _serialized_validation(command)
+        self.assertEqual(facts["control_reason"], "no_usable_evidence")
         self.assertEqual(facts["visual_evidence"]["rejected_count"], 1)
         self.assertEqual(
             facts["visual_evidence"]["rejection_counts"],
@@ -326,6 +327,7 @@ def _completed_state(observed: datetime) -> ChatPipelineState:
             outcome=AnswerOutcome.REFUSED,
             content="无法基于当前证据回答。",
             citations=(),
+            control_reason=AnswerControlReason.NO_USABLE_EVIDENCE,
         ),
         validation=AnswerValidationRecord(initial_issues=()),
     )

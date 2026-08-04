@@ -1055,6 +1055,11 @@ def _serialized_validation(command: ChatTerminalSuccessCommand) -> dict[str, Any
         "result": "completed",
         "phase": "persist_result",
         "outcome": command.rendered.outcome.value,
+        "control_reason": (
+            command.rendered.control_reason.value
+            if command.rendered.control_reason is not None
+            else None
+        ),
         "citation_ids": [item.citation_id for item in command.rendered.citations],
         "validation": {
             "initial_issues": [item.value for item in validation.initial_issues],

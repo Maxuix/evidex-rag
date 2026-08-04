@@ -524,7 +524,15 @@ class AnswerPolicyRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(generation_payload["required_outcome"], "answered")
         self.assertEqual(
             generation_payload["allowed_outcomes"],
-            ["answered", "partial", "acknowledged"],
+            ["answered", "partial", "refused", "acknowledged"],
+        )
+        self.assertEqual(
+            generation_payload["citation_policy"],
+            {
+                "required": True,
+                "granularity": "claim_level",
+                "applies_to": "substantive_claims_only",
+            },
         )
         self.assertEqual(
             generation_payload["insufficiency_policy"], "partial_answer"

@@ -323,6 +323,7 @@ class RenderedAnswer:
     outcome: AnswerOutcome
     content: str
     citations: tuple[RenderedCitation, ...]
+    control_reason: AnswerControlReason | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -341,6 +342,8 @@ class RenderedAnswer:
             AnswerOutcome.ACKNOWLEDGED,
         } and self.citations:
             raise ValueError("non-substantive results cannot contain citations")
+        if self.outcome is not AnswerOutcome.REFUSED and self.control_reason is not None:
+            raise ValueError("only refusals can carry a control reason")
         if self.outcome in {
             AnswerOutcome.ANSWERED,
             AnswerOutcome.PARTIAL,
@@ -431,10 +434,13 @@ class ChatAnsweringState:
             and (
                 self.validated.source is not AnswerDraftSource.DETERMINISTIC
                 or self.validated.control_reason
-                is not AnswerControlReason.STRUCTURE_VALIDATION_FAILED
+                not in {
+                    AnswerControlReason.INSUFFICIENT_EVIDENCE,
+                    AnswerControlReason.STRUCTURE_VALIDATION_FAILED,
+                }
             )
         ):
-            raise ValueError("safe fallback must use the validation refusal")
+            raise ValueError("safe fallback must use a deterministic refusal")
         if (
             self.validation is not None
             and self.validation.repair_succeeded

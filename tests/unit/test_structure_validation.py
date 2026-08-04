@@ -279,6 +279,85 @@ class StructureValidationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.answering.rendered.citations, ())
         self.assertIn("insufficient", result.answering.rendered.content)
 
+    async def test_partial_policy_accepts_model_refusal_without_citation(
+        self,
+    ) -> None:
+        raw = json.dumps(
+            {"outcome": "refused", "claims": [], "missing_aspects": []}
+        )
+
+        result = await AnswerStructureValidationStep(_Model()).run(
+            _state(raw, insufficiency="partial_answer")
+        )
+
+        assert result.answering is not None
+        assert result.answering.validated is not None
+        assert result.answering.rendered is not None
+        assert result.answering.validation is not None
+        self.assertEqual(result.answering.validated.outcome, AnswerOutcome.REFUSED)
+        self.assertEqual(
+            result.answering.validated.control_reason,
+            AnswerControlReason.INSUFFICIENT_EVIDENCE,
+        )
+        self.assertEqual(result.answering.rendered.citations, ())
+        self.assertIn("insufficient", result.answering.rendered.content)
+        self.assertFalse(result.answering.validation.repair_attempted)
+
+    async def test_refusal_uses_current_message_language_without_citation(self) -> None:
+        raw = json.dumps(
+            {"outcome": "refused", "claims": [], "missing_aspects": []}
+        )
+
+        result = await AnswerStructureValidationStep(_Model()).run(
+            _state(raw, query="这个问题在当前知识库中有足够证据吗？")
+        )
+
+        assert result.answering is not None
+        assert result.answering.rendered is not None
+        self.assertEqual(
+            result.answering.rendered.content,
+            "当前知识库没有足够证据回答这个问题。",
+        )
+        self.assertEqual(result.answering.rendered.citations, ())
+
+    async def test_citation_free_substantive_draft_fails_closed_as_insufficient(
+        self,
+    ) -> None:
+        raw = json.dumps(
+            {
+                "outcome": "partial",
+                "claims": [
+                    {
+                        "text": "The supplied material does not establish the answer.",
+                        "citation_ids": [],
+                    }
+                ],
+                "missing_aspects": ["the requested answer"],
+            }
+        )
+        model = _Model()
+
+        result = await AnswerStructureValidationStep(model).run(_state(raw))
+
+        assert result.answering is not None
+        assert result.answering.validated is not None
+        assert result.answering.rendered is not None
+        assert result.answering.validation is not None
+        self.assertEqual(result.answering.validated.outcome, AnswerOutcome.REFUSED)
+        self.assertEqual(
+            result.answering.validated.control_reason,
+            AnswerControlReason.INSUFFICIENT_EVIDENCE,
+        )
+        self.assertEqual(result.answering.rendered.citations, ())
+        self.assertIn("insufficient", result.answering.rendered.content)
+        self.assertNotIn("structurally valid", result.answering.rendered.content)
+        self.assertIn(
+            AnswerValidationIssue.CITATIONS_REQUIRED,
+            result.answering.validation.initial_issues,
+        )
+        self.assertFalse(result.answering.validation.repair_attempted)
+        self.assertTrue(result.answering.validation.safe_fallback)
+
     async def test_partial_outcome_is_rejected_under_refuse_policy(self) -> None:
         partial = json.dumps(
             {
@@ -487,26 +566,6 @@ class StructureValidationTests(unittest.IsolatedAsyncioTestCase):
             (
                 json.dumps(
                     {
-                        "outcome": "refused",
-                        "claims": [],
-                        "missing_aspects": [],
-                    }
-                ),
-                AnswerValidationIssue.OUTCOME_MISMATCH,
-            ),
-            (
-                json.dumps(
-                    {
-                        "outcome": "answered",
-                        "claims": [{"text": "Policy A.", "citation_ids": []}],
-                        "missing_aspects": [],
-                    }
-                ),
-                AnswerValidationIssue.CITATIONS_REQUIRED,
-            ),
-            (
-                json.dumps(
-                    {
                         "outcome": "answered",
                         "claims": [
                             {"text": "Policy A.", "citation_ids": ["cite_999"]}
@@ -652,6 +711,8 @@ class StructureValidationTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(result.answering.rendered.citations, ())
         self.assertNotIn("must never be rendered", result.answering.rendered.content)
+        self.assertNotIn("structurally valid", result.answering.rendered.content)
+        self.assertIn("could not be generated", result.answering.rendered.content)
         self.assertTrue(result.answering.validation.repair_attempted)
         self.assertFalse(result.answering.validation.repair_succeeded)
         self.assertTrue(result.answering.validation.safe_fallback)

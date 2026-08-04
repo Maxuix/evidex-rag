@@ -86,8 +86,30 @@ class AnswerStructureValidationStep:
         artifacts = state.artifacts
         if validated is not None and rendered is not None:
             record = AnswerValidationRecord(initial_issues=())
+        elif (
+            answering.draft.source is AnswerDraftSource.PROVIDER
+            and _is_uncited_substantive_draft(answering.draft.raw_json)
+        ):
+            await emit_preview_reset_safely(
+                self._preview_sink,
+                run_id=context.run_id,
+                attempt=context.attempt,
+                reason=ChatPreviewResetReason.VALIDATION_REPAIR,
+            )
+            validated, rendered = _safe_validation_refusal(
+                answering.evidence,
+                reason=AnswerControlReason.INSUFFICIENT_EVIDENCE,
+                current_query=context.query,
+            )
+            record = AnswerValidationRecord(
+                initial_issues=initial_issues,
+                safe_fallback=True,
+            )
         elif answering.draft.source is AnswerDraftSource.DETERMINISTIC:
-            validated, rendered = _safe_validation_refusal(answering.evidence)
+            validated, rendered = _safe_validation_refusal(
+                answering.evidence,
+                current_query=context.query,
+            )
             record = AnswerValidationRecord(
                 initial_issues=initial_issues,
                 safe_fallback=True,
@@ -145,7 +167,10 @@ class AnswerStructureValidationStep:
                     repair_succeeded=True,
                 )
             else:
-                validated, rendered = _safe_validation_refusal(answering.evidence)
+                validated, rendered = _safe_validation_refusal(
+                    answering.evidence,
+                    current_query=context.query,
+                )
                 record = AnswerValidationRecord(
                     initial_issues=initial_issues,
                     repair_issues=repair_issues,
@@ -309,26 +334,16 @@ def render_validated_answer(
 ) -> RenderedAnswer:
     if answer.outcome is AnswerOutcome.REFUSED:
         reason = answer.control_reason
-        messages = {
-            AnswerControlReason.INSUFFICIENT_EVIDENCE: (
-                "The available evidence is insufficient to answer reliably."
-            ),
-            AnswerControlReason.NO_USABLE_EVIDENCE: (
-                "No usable evidence is available to answer this question."
-            ),
-            AnswerControlReason.AMBIGUOUS_QUESTION: (
-                "The question is ambiguous. Please clarify it and try again."
-            ),
-            AnswerControlReason.STRUCTURE_VALIDATION_FAILED: (
-                "A structurally valid evidence-grounded answer could not be produced."
-            ),
-        }
-        if reason not in messages:
+        if reason is None:
+            raise ValueError("refusal control reason is not renderable")
+        content = _refusal_messages(current_query).get(reason)
+        if content is None:
             raise ValueError("refusal control reason is not renderable")
         return RenderedAnswer(
             outcome=answer.outcome,
-            content=messages[reason],
+            content=content,
             citations=(),
+            control_reason=reason,
         )
 
     if answer.outcome is AnswerOutcome.ACKNOWLEDGED:
@@ -394,6 +409,40 @@ def render_validated_answer(
     )
 
 
+def _refusal_messages(
+    current_query: str | None,
+) -> dict[AnswerControlReason, str]:
+    if current_query is not None and _contains_cjk(current_query):
+        return {
+            AnswerControlReason.INSUFFICIENT_EVIDENCE: (
+                "当前知识库没有足够证据回答这个问题。"
+            ),
+            AnswerControlReason.NO_USABLE_EVIDENCE: (
+                "当前知识库没有可用证据回答这个问题。"
+            ),
+            AnswerControlReason.AMBIGUOUS_QUESTION: (
+                "问题不够明确，请补充说明后再试。"
+            ),
+            AnswerControlReason.STRUCTURE_VALIDATION_FAILED: (
+                "暂时无法生成可靠回答，请重试。"
+            ),
+        }
+    return {
+        AnswerControlReason.INSUFFICIENT_EVIDENCE: (
+            "The available evidence is insufficient to answer reliably."
+        ),
+        AnswerControlReason.NO_USABLE_EVIDENCE: (
+            "No usable evidence is available to answer this question."
+        ),
+        AnswerControlReason.AMBIGUOUS_QUESTION: (
+            "The question is ambiguous. Please clarify it and try again."
+        ),
+        AnswerControlReason.STRUCTURE_VALIDATION_FAILED: (
+            "A reliable answer could not be generated. Please try again."
+        ),
+    }
+
+
 def _contains_cjk(value: str) -> bool:
     return any("\u4e00" <= character <= "\u9fff" for character in value)
 
@@ -404,15 +453,41 @@ def _display_aspect(value: str) -> str:
 
 def _safe_validation_refusal(
     evidence: EvidenceEnvelope,
+    *,
+    reason: AnswerControlReason = AnswerControlReason.STRUCTURE_VALIDATION_FAILED,
+    current_query: str | None = None,
 ) -> tuple[ValidatedAnswer, RenderedAnswer]:
     validated = ValidatedAnswer(
         outcome=AnswerOutcome.REFUSED,
         claims=(),
         missing_aspects=(),
         source=AnswerDraftSource.DETERMINISTIC,
-        control_reason=AnswerControlReason.STRUCTURE_VALIDATION_FAILED,
+        control_reason=reason,
     )
-    return validated, render_validated_answer(validated, evidence)
+    return validated, render_validated_answer(
+        validated,
+        evidence,
+        current_query=current_query,
+    )
+
+
+def _is_uncited_substantive_draft(raw_json: str) -> bool:
+    """Convert a citation-free substantive draft into a safe evidence refusal.
+
+    A provider that has no citation for any claim has not produced an admissible
+    factual answer. Mixed cited/uncited claims remain a normal validation/repair
+    failure so supported content is never silently discarded.
+    """
+
+    try:
+        parsed = WireAnswer.model_validate(json.loads(raw_json), strict=True)
+    except (json.JSONDecodeError, ValidationError):
+        return False
+    return (
+        bool(parsed.claims)
+        and parsed.outcome in {"answered", "partial"}
+        and all(not claim.citation_ids for claim in parsed.claims)
+    )
 
 
 def _context_error(check: str) -> ChatPipelineExecutionError:

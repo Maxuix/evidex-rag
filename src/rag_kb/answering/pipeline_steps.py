@@ -92,6 +92,9 @@ class CosineEvidenceAssessmentStep:
                 missing_aspects=(),
             )
         else:
+            # Numeric admission only makes evidence eligible for the answer
+            # model. The model must still return ``refused`` when no requested
+            # fact is directly supported; this is not semantic sufficiency.
             assessment = EvidenceAssessment(
                 coverage=EvidenceCoverage.SUFFICIENT,
                 usable_citation_ids=usable_citation_ids,
