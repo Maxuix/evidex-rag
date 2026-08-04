@@ -1364,7 +1364,7 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
             created.json()["chunking"],
             {
                 "preset": "structural_balanced_v2",
-                "profile": "structural_by_title_token_v3",
+                "profile": "structural_by_title_token_v4",
             },
         )
         self.assertEqual(
@@ -1405,7 +1405,7 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
             semantic.json()["chunking"],
             {
                 "preset": "semantic_balanced_v1",
-                "profile": "semantic_breakpoint_v2",
+                "profile": "semantic_breakpoint_v3",
             },
         )
 

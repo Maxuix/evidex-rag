@@ -3,12 +3,20 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 import unicodedata
 
 from docling_core.types.doc import DoclingDocument, DocItemLabel
-from docling_core.types.doc.document import DocItem, PictureItem, TableItem
+from docling_core.types.doc.document import (
+    DocItem,
+    GroupItem,
+    GroupLabel,
+    InlineGroup,
+    PictureItem,
+    TableItem,
+)
 
 from rag_kb.domain import ErrorCode, ParserExecutionError, ParserLimits
 
@@ -69,6 +77,33 @@ TEXT_KINDS = frozenset(
     }
 )
 
+_WRAPPER_KINDS = frozenset(
+    {ItemKind.TITLE, ItemKind.SECTION_HEADER, ItemKind.LIST_ITEM}
+)
+_TRANSPARENT_GROUP_LABELS = frozenset(
+    {GroupLabel.INLINE, GroupLabel.LIST, GroupLabel.ORDERED_LIST}
+)
+_INLINE_TEXT_KINDS = frozenset(
+    {ItemKind.TEXT, ItemKind.CODE, ItemKind.FORMULA}
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ChunkingItem:
+    """One transient logical atom consumed only while chunking.
+
+    ``refs`` and ``items`` always contain ordered DocItem leaves. Group refs and
+    empty wrapper refs never cross the persistence boundary.
+    """
+
+    kind: ItemKind
+    text: str
+    refs: tuple[str, ...]
+    items: tuple[DocItem, ...]
+    header_depth: int | None
+    semantic_container: str | None
+    inline: bool = False
+
 
 def classify_item(item: DocItem) -> ItemKind:
     """Map a Docling label onto the frozen traversal policy."""
@@ -94,6 +129,105 @@ def iterate_body_items(document: DoclingDocument) -> Iterator[tuple[DocItem, int
         if classify_item(item) is ItemKind.FURNITURE:
             continue
         yield item, level
+
+
+def iterate_chunking_items(document: DoclingDocument) -> Iterator[ChunkingItem]:
+    """Yield the internal-only logical projection used by both chunkers.
+
+    Raw traversal remains unchanged for asset and relation consumers. This
+    projection folds only the observed empty wrapper + InlineGroup shape and
+    direct-body InlineGroups; every other group shape retains raw item order.
+    """
+
+    raw = tuple(item for item, _level in iterate_body_items(document))
+    raw_refs = tuple(item_ref(item) for item in raw)
+    raw_positions = {reference: index for index, reference in enumerate(raw_refs)}
+    if len(raw_positions) != len(raw_refs):
+        raise _invalid_projection("duplicate_docitem_ref")
+
+    emissions: dict[str, ChunkingItem] = {}
+    consumed: set[str] = set()
+    claimed_groups: set[str] = set()
+
+    for wrapper in raw:
+        wrapper_kind = classify_item(wrapper)
+        if (
+            wrapper_kind not in _WRAPPER_KINDS
+            or item_text(wrapper, document)
+            or len(getattr(wrapper, "children", ()) or ()) != 1
+        ):
+            continue
+        group = _resolve_child(document, wrapper.children[0])
+        if not isinstance(group, InlineGroup):
+            continue
+        if parent_ref(group) != item_ref(wrapper):
+            raise _invalid_projection("inline_wrapper_parent")
+        projection = _inline_projection(
+            document,
+            group,
+            kind=wrapper_kind,
+            header_depth=(
+                _header_depth(wrapper)
+                if wrapper_kind in {ItemKind.TITLE, ItemKind.SECTION_HEADER}
+                else None
+            ),
+            semantic_container=_semantic_container(document, wrapper),
+        )
+        _claim_projection(
+            projection,
+            emission_ref=item_ref(wrapper),
+            raw_positions=raw_positions,
+            emissions=emissions,
+            consumed=consumed,
+            claimed_groups=claimed_groups,
+            group_ref=item_ref(group),
+        )
+
+    for group in getattr(document, "groups", ()) or ():
+        if (
+            not isinstance(group, InlineGroup)
+            or parent_ref(group) != "#/body"
+            or not (getattr(group, "children", ()) or ())
+        ):
+            continue
+        projection = _inline_projection(
+            document,
+            group,
+            kind=ItemKind.TEXT,
+            header_depth=None,
+            semantic_container=None,
+        )
+        _claim_projection(
+            projection,
+            emission_ref=projection.refs[0],
+            raw_positions=raw_positions,
+            emissions=emissions,
+            consumed=consumed,
+            claimed_groups=claimed_groups,
+            group_ref=item_ref(group),
+        )
+
+    for item in raw:
+        reference = item_ref(item)
+        projection = emissions.get(reference)
+        if projection is not None:
+            yield projection
+            continue
+        if reference in consumed:
+            continue
+        yield ChunkingItem(
+            kind=classify_item(item),
+            text=item_text(item, document),
+            refs=(reference,),
+            items=(item,),
+            header_depth=(
+                _header_depth(item)
+                if classify_item(item) in {ItemKind.TITLE, ItemKind.SECTION_HEADER}
+                else None
+            ),
+            semantic_container=_semantic_container(document, item),
+            inline=_has_inline_ancestor(document, item),
+        )
 
 
 def item_text(item: DocItem, document: DoclingDocument) -> str:
@@ -163,16 +297,19 @@ def section_paths(
 
     paths: dict[str, tuple[dict[str, Any], ...]] = {}
     stack: list[tuple[int, dict[str, Any]]] = []
-    for item, _level in iterate_body_items(document):
-        kind = classify_item(item)
+    for item in iterate_chunking_items(document):
+        kind = item.kind
         if kind in {ItemKind.TITLE, ItemKind.SECTION_HEADER}:
-            depth = 0 if kind is ItemKind.TITLE else _header_depth(item)
+            depth = 0 if kind is ItemKind.TITLE else (item.header_depth or 1)
             while stack and stack[-1][0] >= depth:
                 stack.pop()
-            text = item_text(item, document)
-            if text:
-                stack.append((depth, {"depth": depth, "text": text[:_MAX_TITLE_CHARS]}))
-        paths[item_ref(item)] = tuple(entry for _depth, entry in stack[-_MAX_TITLES:])
+            if item.text:
+                stack.append(
+                    (depth, {"depth": depth, "text": item.text[:_MAX_TITLE_CHARS]})
+                )
+        path = tuple(entry for _depth, entry in stack[-_MAX_TITLES:])
+        for reference in item.refs:
+            paths[reference] = path
     return paths
 
 
@@ -209,7 +346,7 @@ def _header_depth(item: DocItem) -> int:
     return min(level, _MAX_TITLE_DEPTH)
 
 
-def item_ref(item: DocItem) -> str:
+def item_ref(item: DocItem | GroupItem) -> str:
     """Return the Docling self reference used as the only item identity."""
 
     reference = getattr(item, "self_ref", "")
@@ -221,7 +358,7 @@ def item_ref(item: DocItem) -> str:
     return reference
 
 
-def parent_ref(item: DocItem) -> str | None:
+def parent_ref(item: DocItem | GroupItem) -> str | None:
     parent = getattr(item, "parent", None)
     reference = getattr(parent, "cref", None)
     return reference if isinstance(reference, str) and reference else None
@@ -240,3 +377,179 @@ def canonical_text(value: str) -> str:
     return unicodedata.normalize(
         "NFC", value.replace("\r\n", "\n").replace("\r", "\n")
     ).strip()
+
+
+def _inline_projection(
+    document: DoclingDocument,
+    group: InlineGroup,
+    *,
+    kind: ItemKind,
+    header_depth: int | None,
+    semantic_container: str | None,
+) -> ChunkingItem:
+    leaves = _inline_leaves(document, group, seen_groups=set(), seen_items=set())
+    if not leaves:
+        raise _invalid_projection("inline_group_empty")
+    texts = tuple(item_text(item, document) for item in leaves)
+    text = canonical_text(" ".join(value for value in texts if value))
+    if not text:
+        raise _invalid_projection("inline_group_text")
+    surfaces = {
+        page
+        for item in leaves
+        for entry in getattr(item, "prov", ()) or ()
+        if isinstance((page := getattr(entry, "page_no", None)), int)
+        and not isinstance(page, bool)
+    }
+    if len(surfaces) > 1:
+        raise _invalid_projection("inline_group_cross_surface")
+    return ChunkingItem(
+        kind=kind,
+        text=text,
+        refs=tuple(item_ref(item) for item in leaves),
+        items=leaves,
+        header_depth=header_depth,
+        semantic_container=semantic_container,
+        inline=True,
+    )
+
+
+def _inline_leaves(
+    document: DoclingDocument,
+    group: InlineGroup,
+    *,
+    seen_groups: set[str],
+    seen_items: set[str],
+) -> tuple[DocItem, ...]:
+    group_reference = item_ref(group)
+    if group_reference in seen_groups:
+        raise _invalid_projection("inline_group_cycle")
+    seen_groups.add(group_reference)
+    leaves: list[DocItem] = []
+    for child_ref in getattr(group, "children", ()) or ():
+        child = _resolve_child(document, child_ref)
+        if parent_ref(child) != group_reference:
+            raise _invalid_projection("inline_child_parent")
+        if isinstance(child, InlineGroup):
+            leaves.extend(
+                _inline_leaves(
+                    document,
+                    child,
+                    seen_groups=seen_groups,
+                    seen_items=seen_items,
+                )
+            )
+            continue
+        if isinstance(child, GroupItem) or not isinstance(child, DocItem):
+            raise _invalid_projection("inline_child_type")
+        if classify_item(child) not in _INLINE_TEXT_KINDS:
+            raise _invalid_projection("inline_child_role")
+        reference = item_ref(child)
+        if reference in seen_items or (getattr(child, "children", ()) or ()):
+            raise _invalid_projection("inline_child_leaf")
+        seen_items.add(reference)
+        leaves.append(child)
+    seen_groups.remove(group_reference)
+    return tuple(leaves)
+
+
+def _resolve_child(document: DoclingDocument, reference: Any) -> Any:
+    cref = getattr(reference, "cref", None)
+    if not isinstance(cref, str) or not cref:
+        raise _invalid_projection("inline_child_ref")
+    try:
+        return reference.resolve(document)
+    except ParserExecutionError:
+        raise
+    except Exception as error:
+        raise _invalid_projection("inline_child_resolve") from error
+
+
+def _claim_projection(
+    projection: ChunkingItem,
+    *,
+    emission_ref: str,
+    raw_positions: dict[str, int],
+    emissions: dict[str, ChunkingItem],
+    consumed: set[str],
+    claimed_groups: set[str],
+    group_ref: str,
+) -> None:
+    if group_ref in claimed_groups or emission_ref in emissions:
+        raise _invalid_projection("inline_group_duplicate")
+    if emission_ref not in raw_positions or any(
+        reference not in raw_positions for reference in projection.refs
+    ):
+        raise _invalid_projection("inline_group_reading_order")
+    positions = tuple(raw_positions[reference] for reference in projection.refs)
+    if positions != tuple(sorted(positions)) or len(set(positions)) != len(positions):
+        raise _invalid_projection("inline_group_reading_order")
+    overlap = consumed.intersection(projection.refs)
+    if overlap:
+        raise _invalid_projection("inline_group_duplicate")
+    claimed_groups.add(group_ref)
+    emissions[emission_ref] = projection
+    consumed.update(projection.refs)
+    if emission_ref not in projection.refs:
+        consumed.add(emission_ref)
+
+
+def _semantic_container(document: DoclingDocument, item: DocItem) -> str | None:
+    current: DocItem | GroupItem = item
+    seen: set[str] = set()
+    while (reference := parent_ref(current)) is not None:
+        if reference in {"#/body", "#/furniture"}:
+            return None
+        if reference in seen:
+            raise _invalid_projection("semantic_container_cycle")
+        seen.add(reference)
+        parent = _resolve_reference(document, reference)
+        if isinstance(parent, GroupItem):
+            if getattr(parent, "label", None) in _TRANSPARENT_GROUP_LABELS:
+                current = parent
+                continue
+            return item_ref(parent)
+        if isinstance(parent, DocItem):
+            parent_kind = classify_item(parent)
+            if parent_kind in _WRAPPER_KINDS and not item_text(parent, document):
+                current = parent
+                continue
+            return item_ref(parent)
+        raise _invalid_projection("semantic_container_type")
+    return None
+
+
+def _has_inline_ancestor(document: DoclingDocument, item: DocItem) -> bool:
+    current: DocItem | GroupItem = item
+    seen: set[str] = set()
+    while (reference := parent_ref(current)) is not None:
+        if reference in {"#/body", "#/furniture"}:
+            return False
+        if reference in seen:
+            raise _invalid_projection("semantic_container_cycle")
+        seen.add(reference)
+        parent = _resolve_reference(document, reference)
+        if isinstance(parent, InlineGroup):
+            return True
+        if not isinstance(parent, (DocItem, GroupItem)):
+            return False
+        current = parent
+    return False
+
+
+def _resolve_reference(document: DoclingDocument, reference: str) -> Any:
+    try:
+        from docling_core.types.doc.common.reference import RefItem
+
+        return RefItem(cref=reference).resolve(document)
+    except ParserExecutionError:
+        raise
+    except Exception as error:
+        raise _invalid_projection("docling_parent_resolve") from error
+
+
+def _invalid_projection(check: str) -> ParserExecutionError:
+    return ParserExecutionError(
+        ErrorCode.PARSER_OUTPUT_INVALID,
+        diagnostic={"check": check},
+    )

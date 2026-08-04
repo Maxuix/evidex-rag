@@ -110,6 +110,39 @@ class ContentLifecycleTests(unittest.IsolatedAsyncioTestCase):
             await connection.close()
         self.assertEqual(tuple(counts), (1, 1, 1, 1))
 
+    async def test_semantic_create_registers_required_analysis_on_text_space(
+        self,
+    ) -> None:
+        knowledge_base = await self.knowledge_bases.create(
+            self.context,
+            uuid4(),
+            name="semantic-roles",
+            chunking_preset=ChunkingPreset.SEMANTIC_BALANCED_V1,
+            retrieval_defaults={"strategy": "exact_vector", "top_k": 10},
+        )
+
+        connection = await asyncpg.connect(MIGRATION_DSN)
+        try:
+            rows = await connection.fetch(
+                """
+                SELECT role, embedding_space_id, required
+                FROM index_revision_embedding_space
+                WHERE index_revision_id = $1
+                ORDER BY role
+                """,
+                knowledge_base.active_index_revision_id,
+            )
+        finally:
+            await connection.close()
+
+        self.assertEqual(
+            [(row["role"], row["required"]) for row in rows],
+            [("semantic_analysis", True), ("text_retrieval", True)],
+        )
+        self.assertEqual({row["embedding_space_id"] for row in rows}, {
+            knowledge_base.embedding_space_id
+        })
+
     async def test_version_activation_is_atomic_immutable_and_soft_delete_is_idempotent(self) -> None:
         kb = await self._create_kb()
         create_key = uuid4()

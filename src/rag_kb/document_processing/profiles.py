@@ -123,9 +123,10 @@ DOCLING_REPRESENTATION_CONFIG = {
 }
 
 # The native Docling structural profile.
-STRUCTURAL_CHUNKING_CONFIG_V3 = {
-    "profile": "structural_by_title_token_v3",
+STRUCTURAL_CHUNKING_CONFIG_V4 = {
+    "profile": "structural_by_title_token_v4",
     "strategy": "docling_structural",
+    "consumer_projection": "docling_inline_group_atoms_v1",
     "max_tokens": 800,
     "new_after_n_tokens": 600,
     **CHUNK_TOKENIZER,
@@ -149,10 +150,12 @@ STRUCTURAL_CHUNKING_CONFIG_V3 = {
 }
 
 SEMANTIC_CHUNKING_CONFIG = {
-    "profile": "semantic_breakpoint_v2",
+    "profile": "semantic_breakpoint_v3",
     "preset": "semantic_balanced_v1",
     "strategy": "semantic_breakpoint",
+    "consumer_projection": "docling_effective_role_container_v1",
     "analysis_embedding": "index_embedding_space",
+    "required_embedding_roles": ["semantic_analysis"],
     **CHUNK_TOKENIZER,
     "analysis_unit_target_tokens": 80,
     "analysis_unit_max_tokens": 160,
@@ -185,7 +188,7 @@ def profile_for_preset(
 
     resolved = ChunkingPreset(preset)
     chunking = (
-        STRUCTURAL_CHUNKING_CONFIG_V3
+        STRUCTURAL_CHUNKING_CONFIG_V4
         if resolved is ChunkingPreset.STRUCTURAL_BALANCED_V2
         else SEMANTIC_CHUNKING_CONFIG
     )
@@ -226,7 +229,7 @@ def resolve(
         DOCLING_MULTIMODAL_PARSER_CONFIG,
     ):
         raise ValueError("unknown parser profile")
-    if chunking_config == STRUCTURAL_CHUNKING_CONFIG_V3:
+    if chunking_config == STRUCTURAL_CHUNKING_CONFIG_V4:
         return ChunkingStrategyKind.STRUCTURAL
     if chunking_config == SEMANTIC_CHUNKING_CONFIG:
         return ChunkingStrategyKind.SEMANTIC
@@ -247,10 +250,10 @@ def public_parsing_descriptor(parser_config: dict) -> dict[str, str]:
 
 
 def public_descriptor(chunking_config: dict) -> dict[str, str]:
-    if chunking_config == STRUCTURAL_CHUNKING_CONFIG_V3:
+    if chunking_config == STRUCTURAL_CHUNKING_CONFIG_V4:
         return {
             "preset": ChunkingPreset.STRUCTURAL_BALANCED_V2.value,
-            "profile": STRUCTURAL_CHUNKING_CONFIG_V3["profile"],
+            "profile": STRUCTURAL_CHUNKING_CONFIG_V4["profile"],
         }
     if chunking_config == SEMANTIC_CHUNKING_CONFIG:
         return {

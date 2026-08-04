@@ -15,22 +15,17 @@ import re
 from typing import Any
 
 from docling_core.types.doc import DoclingDocument
-from docling_core.types.doc.document import DocItem
-
 from rag_kb.document_processing.docling.provenance import (
     item_surfaces,
     project_source_location,
     surface_kind,
 )
 from rag_kb.document_processing.docling.traversal import (
+    ChunkingItem,
     ItemKind,
     canonical_text,
-    classify_item,
     common_hierarchy,
-    item_ref,
-    item_text,
-    iterate_body_items,
-    parent_ref,
+    iterate_chunking_items,
     section_paths,
 )
 from rag_kb.document_processing.profiles import SEMANTIC_CHUNKING_CONFIG
@@ -77,49 +72,54 @@ def docling_semantic_units(
     resolved = limits or ParserLimits()
     kind = surface_kind(document)
     fragments: list[_Fragment] = []
-    pending_titles: list[tuple[str, str]] = []
+    pending_titles: list[tuple[tuple[str, ...], str]] = []
     pending_context: list[str] = []
     previous_surface: int | None = None
-    previous_parent: str | None = None
+    previous_container: str | None = None
     previous_kind: ItemKind | None = None
+    has_previous_content = False
 
-    for item, _level in iterate_body_items(document):
-        item_kind = classify_item(item)
+    for item in iterate_chunking_items(document):
+        item_kind = _effective_kind(item)
         if item_kind in {ItemKind.PICTURE, ItemKind.CAPTION}:
             # Visual and caption items never spend an analysis unit's token
             # budget, but their references stay attached to the neighbouring
             # unit so relation building can still see them.
-            pending_context.append(item_ref(item))
+            pending_context.extend(item.refs)
             continue
         if item_kind in {ItemKind.TITLE, ItemKind.SECTION_HEADER}:
-            heading = item_text(item, document)
-            if heading:
-                pending_titles.append((item_ref(item), heading))
+            if item.text:
+                pending_titles.append((item.refs, item.text))
             continue
-        text = item_text(item, document)
+        text = item.text
         if not text:
             continue
 
         surface = _surface_ordinal(item, kind)
-        parent = parent_ref(item)
+        container = item.semantic_container
         boundary = _boundary(
             item_kind=item_kind,
             previous_kind=previous_kind,
             surface=surface,
             previous_surface=previous_surface,
-            parent=parent,
-            previous_parent=previous_parent,
+            container=container,
+            previous_container=previous_container,
             has_pending_titles=bool(pending_titles),
+            has_previous_content=has_previous_content,
         )
 
         refs = (
             *pending_context,
-            *(reference for reference, _title in pending_titles),
-            item_ref(item),
+            *(
+                reference
+                for references, _title in pending_titles
+                for reference in references
+            ),
+            *item.refs,
         )
         pending_context.clear()
         if pending_titles:
-            text = "\n".join((*(title for _ref, title in pending_titles), text))
+            text = "\n".join((*(title for _refs, title in pending_titles), text))
             pending_titles.clear()
 
         pieces = (
@@ -148,8 +148,9 @@ def docling_semantic_units(
             )
         if surface is not None:
             previous_surface = surface
-        previous_parent = parent
+        previous_container = container
         previous_kind = item_kind
+        has_previous_content = True
 
     if not fragments:
         raise ParserExecutionError(
@@ -260,9 +261,10 @@ def _boundary(
     previous_kind: ItemKind | None,
     surface: int | None,
     previous_surface: int | None,
-    parent: str | None,
-    previous_parent: str | None,
+    container: str | None,
+    previous_container: str | None,
     has_pending_titles: bool,
+    has_previous_content: bool,
 ) -> str | None:
     if (
         previous_surface is not None
@@ -276,7 +278,7 @@ def _boundary(
         return _BOUNDARY_BLOCK
     if has_pending_titles:
         return _BOUNDARY_SECTION
-    if previous_parent is not None and parent is not None and parent != previous_parent:
+    if has_previous_content and container != previous_container:
         return _BOUNDARY_SECTION
     return None
 
@@ -400,9 +402,19 @@ def _require_limits(units: tuple[SemanticUnit, ...]) -> None:
         )
 
 
-def _surface_ordinal(item: DocItem, kind: str) -> int | None:
-    surfaces = item_surfaces(item, kind=kind)
+def _surface_ordinal(item: ChunkingItem, kind: str) -> int | None:
+    surfaces = tuple(
+        surface
+        for source in item.items
+        for surface in item_surfaces(source, kind=kind)
+    )
     return min(surface.ordinal for surface in surfaces) if surfaces else None
+
+
+def _effective_kind(item: ChunkingItem) -> ItemKind:
+    if item.inline and item.kind in _BLOCK_KINDS:
+        return ItemKind.TEXT
+    return item.kind
 
 
 def _max_unit_tokens() -> int:

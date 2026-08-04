@@ -49,7 +49,7 @@ class SemanticProfileTests(unittest.TestCase):
             "structural_balanced_v2",
         )
         self.assertEqual(
-            semantic.chunking_config["profile"], "semantic_breakpoint_v2"
+            semantic.chunking_config["profile"], "semantic_breakpoint_v3"
         )
         self.assertEqual(
             semantic.chunking_config["selector"],
@@ -76,6 +76,22 @@ class SemanticProfileTests(unittest.TestCase):
                 ).parser_config,
                 unknown,
             )
+
+    def test_previous_complete_profile_names_fail_closed(self) -> None:
+        structural = profile_for_preset(ChunkingPreset.STRUCTURAL_BALANCED_V2)
+        old_structural = deepcopy(structural.chunking_config)
+        old_structural["profile"] = "structural_by_title_token_v3"
+        old_structural.pop("consumer_projection")
+        semantic = profile_for_preset(ChunkingPreset.SEMANTIC_BALANCED_V1)
+        old_semantic = deepcopy(semantic.chunking_config)
+        old_semantic["profile"] = "semantic_breakpoint_v2"
+        old_semantic.pop("consumer_projection")
+        old_semantic.pop("required_embedding_roles")
+
+        with self.assertRaises(ValueError):
+            resolve(structural.parser_config, old_structural)
+        with self.assertRaises(ValueError):
+            resolve(semantic.parser_config, old_semantic)
 
 
 class SemanticBoundaryTests(unittest.TestCase):
@@ -106,7 +122,7 @@ class SemanticBoundaryTests(unittest.TestCase):
         self.assertTrue(boundaries)
         self.assertEqual(full_region_calls, 1)
 
-    def test_planner_optimization_has_stable_v2_plan_identity(self) -> None:
+    def test_planner_optimization_has_stable_v3_plan_identity(self) -> None:
         units = tuple(
             _unit(index, ("alpha " if index < 4 else "beta ") * 120)
             for index in range(8)
@@ -144,7 +160,7 @@ class SemanticBoundaryTests(unittest.TestCase):
         )
         self.assertEqual(
             plan.plan_hash,
-            "26ff4e19d42223ebe7ff2c2cf4b5a2652082348b002967a08dc86d5d7a72ad67",
+            "96d40decea1c0ad6b2d8600bd18f704fd2c51434a967d51e2506432b727cb180",
         )
 
     def test_no_section_boundaries_are_unchanged_but_profile_hash_changes(self) -> None:

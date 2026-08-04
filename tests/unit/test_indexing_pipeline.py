@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 import hashlib
 import threading
 import unittest
@@ -18,7 +19,7 @@ import rag_kb.indexing.pipeline as pipeline_module
 from rag_kb.document_processing.profiles import (
     DOCLING_ENRICHMENT_CONFIG,
     DOCLING_REPRESENTATION_CONFIG,
-    STRUCTURAL_CHUNKING_CONFIG_V3,
+    STRUCTURAL_CHUNKING_CONFIG_V4,
     index_profile,
     public_parsing_descriptor,
     profile_for_preset,
@@ -29,6 +30,7 @@ from rag_kb.domain import (
     ContentModality,
     EmbeddingBatch,
     EmbeddingSpaceDefinition,
+    EmbeddingSpaceRole,
     ErrorCode,
     IndexingCommand,
     IndexingExecutionError,
@@ -60,7 +62,7 @@ class IndexingDomainTests(unittest.TestCase):
 
         self.assertEqual(
             profile.chunking_config["profile"],
-            "structural_by_title_token_v3",
+            "structural_by_title_token_v4",
         )
         self.assertEqual(
             (
@@ -73,8 +75,8 @@ class IndexingDomainTests(unittest.TestCase):
         self.assertEqual(
             profile.parser_config["profile"], "docling_text_local_v1"
         )
-        self.assertNotIn("max_characters", STRUCTURAL_CHUNKING_CONFIG_V3)
-        self.assertNotIn("new_after_n_chars", STRUCTURAL_CHUNKING_CONFIG_V3)
+        self.assertNotIn("max_characters", STRUCTURAL_CHUNKING_CONFIG_V4)
+        self.assertNotIn("new_after_n_chars", STRUCTURAL_CHUNKING_CONFIG_V4)
 
     def test_stable_chunk_and_vector_business_keys(self) -> None:
         target = uuid4()
@@ -425,7 +427,8 @@ class IndexingPipelineTests(unittest.IsolatedAsyncioTestCase):
         repository.chunks = {0: object(), 1: object()}
         factory = _Factory(repository)
         provider = _Provider(factory)
-        pipeline = _pipeline(factory, provider)
+        parser = _Parser(factory)
+        pipeline = _pipeline(factory, provider, parser)
         command = IndexingCommand(
             repository.target.job_id,
             repository.target.indexed_document_version_id,
@@ -437,6 +440,91 @@ class IndexingPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.serving_status, "serving")
         self.assertEqual(repository.serving, "serving")
         self.assertEqual(provider.calls, 0)
+        self.assertEqual(parser.calls, 0)
+
+    async def test_completed_replay_rejects_old_structural_profile(self) -> None:
+        target = _target()
+        chunking_config = deepcopy(target.chunking_config)
+        chunking_config["profile"] = "structural_by_title_token_v3"
+        chunking_config.pop("consumer_projection")
+
+        await self._assert_invalid_completed_replay(
+            replace(target, chunking_config=chunking_config),
+            expected_check="parser_chunking_profile",
+        )
+
+    async def test_completed_replay_rejects_old_semantic_profile(self) -> None:
+        target = _target(ChunkingPreset.SEMANTIC_BALANCED_V1)
+        chunking_config = deepcopy(target.chunking_config)
+        chunking_config["profile"] = "semantic_breakpoint_v2"
+        chunking_config.pop("consumer_projection")
+        chunking_config.pop("required_embedding_roles")
+
+        await self._assert_invalid_completed_replay(
+            replace(target, chunking_config=chunking_config),
+            expected_check="parser_chunking_profile",
+        )
+
+    async def test_completed_replay_rejects_missing_or_non_required_semantic_role(
+        self,
+    ) -> None:
+        target = _target(ChunkingPreset.SEMANTIC_BALANCED_V1)
+        role = EmbeddingSpaceRole.SEMANTIC_ANALYSIS.value
+
+        await self._assert_invalid_completed_replay(
+            replace(
+                target,
+                embedding_space_ids={
+                    key: value
+                    for key, value in target.embedding_space_ids.items()
+                    if key != role
+                },
+                embedding_spaces={
+                    key: value
+                    for key, value in target.embedding_spaces.items()
+                    if key != role
+                },
+            ),
+            expected_check="semantic_analysis_space_role",
+        )
+
+    async def test_completed_replay_rejects_wrong_semantic_role_space(self) -> None:
+        target = _target(ChunkingPreset.SEMANTIC_BALANCED_V1)
+        role = EmbeddingSpaceRole.SEMANTIC_ANALYSIS.value
+
+        await self._assert_invalid_completed_replay(
+            replace(
+                target,
+                embedding_space_ids={**target.embedding_space_ids, role: uuid4()},
+            ),
+            expected_check="semantic_analysis_space_role",
+        )
+
+    async def _assert_invalid_completed_replay(
+        self,
+        target: IndexingTarget,
+        *,
+        expected_check: str,
+    ) -> None:
+        repository = _Repository(target)
+        repository.status = "completed"
+        repository.chunks = {0: object()}
+        factory = _Factory(repository)
+        provider = _Provider(factory)
+        parser = _Parser(factory)
+        pipeline = _pipeline(factory, provider, parser)
+        command = IndexingCommand(target.job_id, target.indexed_document_version_id)
+
+        with self.assertRaises(IndexingExecutionError) as failure:
+            await pipeline.execute(command)
+
+        self.assertEqual(
+            failure.exception.code, ErrorCode.INDEX_REVISION_INCOMPATIBLE
+        )
+        self.assertEqual(failure.exception.diagnostic, {"check": expected_check})
+        self.assertEqual(repository.serving, "candidate")
+        self.assertEqual(provider.calls, 0)
+        self.assertEqual(parser.calls, 0)
 
     async def test_parser_failure_persists_parser_phase_and_stable_code(self) -> None:
         repository = _Repository(_target())
@@ -487,6 +575,74 @@ class IndexingPipelineTests(unittest.IsolatedAsyncioTestCase):
             [repository.chunks[index].ordinal for index in repository.chunks],
             list(range(result.chunk_count)),
         )
+
+    async def test_semantic_strategy_requires_analysis_role_on_primary_text_space(
+        self,
+    ) -> None:
+        target = _target(ChunkingPreset.SEMANTIC_BALANCED_V1)
+        analysis_role = EmbeddingSpaceRole.SEMANTIC_ANALYSIS.value
+        repository = _Repository(
+            replace(
+                target,
+                embedding_space_ids={
+                    role: space_id
+                    for role, space_id in target.embedding_space_ids.items()
+                    if role != analysis_role
+                },
+                embedding_spaces={
+                    role: space
+                    for role, space in target.embedding_spaces.items()
+                    if role != analysis_role
+                },
+            )
+        )
+        factory = _Factory(repository)
+        provider = _Provider(factory)
+        pipeline = _pipeline(factory, provider, _SemanticParser(factory))
+        command = IndexingCommand(
+            repository.target.job_id,
+            repository.target.indexed_document_version_id,
+        )
+
+        with self.assertRaises(IndexingExecutionError) as failure:
+            await pipeline.execute(command)
+
+        self.assertEqual(
+            failure.exception.code, ErrorCode.INDEX_REVISION_INCOMPATIBLE
+        )
+        self.assertEqual(
+            failure.exception.diagnostic,
+            {"check": "semantic_analysis_space_role"},
+        )
+        self.assertEqual(provider.calls, 0)
+
+    async def test_semantic_analysis_role_rejects_a_different_space(self) -> None:
+        target = _target(ChunkingPreset.SEMANTIC_BALANCED_V1)
+        analysis_role = EmbeddingSpaceRole.SEMANTIC_ANALYSIS.value
+        repository = _Repository(
+            replace(
+                target,
+                embedding_space_ids={
+                    **target.embedding_space_ids,
+                    analysis_role: uuid4(),
+                },
+            )
+        )
+        factory = _Factory(repository)
+        provider = _Provider(factory)
+        pipeline = _pipeline(factory, provider, _SemanticParser(factory))
+        command = IndexingCommand(
+            repository.target.job_id,
+            repository.target.indexed_document_version_id,
+        )
+
+        with self.assertRaises(IndexingExecutionError) as failure:
+            await pipeline.execute(command)
+
+        self.assertEqual(
+            failure.exception.code, ErrorCode.INDEX_REVISION_INCOMPATIBLE
+        )
+        self.assertEqual(provider.calls, 0)
 
     async def test_semantic_planning_does_not_block_event_loop(self) -> None:
         repository = _Repository(_target(ChunkingPreset.SEMANTIC_BALANCED_V1))
@@ -993,7 +1149,22 @@ def _target(
     del markdown_v2
     parsing = "multimodal_local_v2" if multimodal else "text_local_v1"
     profile = profile_for_preset(preset, parsing)
+    text_space_id = uuid4()
     cross_space_id = uuid4()
+    space_ids = {
+        EmbeddingSpaceRole.TEXT_RETRIEVAL.value: text_space_id,
+    }
+    spaces = {
+        EmbeddingSpaceRole.TEXT_RETRIEVAL.value: _embedding(),
+    }
+    if preset is ChunkingPreset.SEMANTIC_BALANCED_V1:
+        space_ids[EmbeddingSpaceRole.SEMANTIC_ANALYSIS.value] = text_space_id
+        spaces[EmbeddingSpaceRole.SEMANTIC_ANALYSIS.value] = _embedding()
+    if multimodal:
+        space_ids[EmbeddingSpaceRole.CROSS_MODAL_RETRIEVAL.value] = cross_space_id
+        spaces[EmbeddingSpaceRole.CROSS_MODAL_RETRIEVAL.value] = (
+            _multimodal_embedding()
+        )
     return IndexingTarget(
         job_id=uuid4(),
         indexed_document_version_id=target,
@@ -1002,7 +1173,7 @@ def _target(
         document_id=uuid4(),
         document_version_id=version,
         index_revision_id=uuid4(),
-        embedding_space_id=uuid4(),
+        embedding_space_id=text_space_id,
         source_change_seq=1,
         storage_uri=f"local-source://{WORKSPACE}/{'a' * 64}",
         checksum_sha256=hashlib.sha256(CONTENT).hexdigest(),
@@ -1014,14 +1185,8 @@ def _target(
         embedding_space=_embedding(),
         enrichment_config=profile.enrichment_config,
         representation_config=profile.representation_config,
-        embedding_space_ids=(
-            {"cross_modal_retrieval": cross_space_id} if multimodal else {}
-        ),
-        embedding_spaces=(
-            {"cross_modal_retrieval": _multimodal_embedding()}
-            if multimodal
-            else {}
-        ),
+        embedding_space_ids=space_ids,
+        embedding_spaces=spaces,
     )
 
 

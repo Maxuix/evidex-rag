@@ -1,7 +1,7 @@
 """Structural chunk assembly read directly from a ``DoclingDocument``.
 
 Boundaries come from Docling's own headings, tables and surfaces; the frozen
-``structural_by_title_token_v3`` profile only adds the token budget. No parser
+``structural_by_title_token_v4`` profile only adds the token budget. No parser
 or loader produces chunks any more.
 """
 
@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from docling_core.types.doc import DoclingDocument
-from docling_core.types.doc.document import DocItem, TableItem
+from docling_core.types.doc.document import TableItem
 
 from rag_kb.document_processing.docling.provenance import (
     item_surfaces,
@@ -20,16 +20,14 @@ from rag_kb.document_processing.docling.provenance import (
     surface_kind,
 )
 from rag_kb.document_processing.docling.traversal import (
+    ChunkingItem,
     ItemKind,
-    classify_item,
     common_hierarchy,
-    item_ref,
-    item_text,
-    iterate_body_items,
+    iterate_chunking_items,
     section_paths,
     table_html,
 )
-from rag_kb.document_processing.profiles import STRUCTURAL_CHUNKING_CONFIG_V3
+from rag_kb.document_processing.profiles import STRUCTURAL_CHUNKING_CONFIG_V4
 from rag_kb.document_processing.tokenization import count_chunk_tokens, split_by_tokens
 from rag_kb.domain import (
     ChunkAssemblyDraft,
@@ -48,7 +46,7 @@ class _Entry:
     relation builder can see that the visual sits inside this chunk's span.
     """
 
-    ref: str
+    refs: tuple[str, ...]
     text: str
     heading: bool = False
 
@@ -99,20 +97,19 @@ def assemble_structural(
                 surface_labels,
             )
 
-    for item, _level in iterate_body_items(document):
-        item_kind = classify_item(item)
+    for item in iterate_chunking_items(document):
+        item_kind = item.kind
         ordinal = _surface_ordinal(item, kind)
         if ordinal is not None and surface is not None and ordinal != surface:
-            # The v3 profile keeps sections inside one surface so a citation
+            # The v4 profile keeps sections inside one surface so a citation
             # never claims a page the chunk only partially covers.
             flush()
         if ordinal is not None:
             surface = ordinal
         if item_kind in {ItemKind.TITLE, ItemKind.SECTION_HEADER}:
             flush()
-            text = item_text(item, document)
-            if text:
-                region.append(_Entry(item_ref(item), text, heading=True))
+            if item.text:
+                region.append(_Entry(item.refs, item.text, heading=True))
             continue
         if item_kind is ItemKind.TABLE:
             flush()
@@ -128,12 +125,11 @@ def assemble_structural(
             # A picture never becomes an empty chunk and an author caption never
             # becomes a context-free one; both stay reachable through the
             # reference they leave in the surrounding chunk.
-            region.append(_Entry(item_ref(item), ""))
+            region.append(_Entry(item.refs, ""))
             continue
-        text = item_text(item, document)
-        if not text:
+        if not item.text:
             continue
-        region.append(_Entry(item_ref(item), text))
+        region.append(_Entry(item.refs, item.text))
     flush()
     if headings:
         # Trailing headings introduced nothing; they are still document content.
@@ -156,25 +152,26 @@ def _append_table(
     document: DoclingDocument,
     paths: dict[str, tuple[dict[str, Any], ...]],
     drafts: list[ChunkAssemblyDraft],
-    item: DocItem,
+    item: ChunkingItem,
     headings: list[_Entry],
     limits: ParserLimits,
     surface_labels: Mapping[int, str] | None,
 ) -> list[_Entry]:
     """Emit a table as its own chunks; return the headings still unattached."""
 
-    if not isinstance(item, TableItem):
+    if len(item.items) != 1 or not isinstance(item.items[0], TableItem):
         raise ParserExecutionError(
             ErrorCode.PARSER_OUTPUT_INVALID,
             diagnostic={"check": "docling_table_item"},
         )
-    text = item_text(item, document)
+    table = item.items[0]
+    text = item.text
     # Structural HTML is not persisted, but an oversized table is still a
     # bounded-resource failure rather than a silently text-only table.
-    table_html(item, document, limits)
+    table_html(table, document, limits)
     if not text:
         return headings
-    reference = item_ref(item)
+    references = item.refs
     prefix = [entry.text for entry in headings if entry.text]
     parts = _table_parts(text)
     attached = bool(prefix) and count_chunk_tokens(
@@ -189,7 +186,14 @@ def _append_table(
                     "\n\n".join((*prefix, part)),
                     tuple(
                         dict.fromkeys(
-                            (*(entry.ref for entry in headings), reference)
+                            (
+                                *(
+                                    reference
+                                    for entry in headings
+                                    for reference in entry.refs
+                                ),
+                                *references,
+                            )
                         )
                     ),
                     limits,
@@ -198,7 +202,7 @@ def _append_table(
             )
             continue
         drafts.append(
-            _draft(document, paths, part, (reference,), limits, surface_labels)
+            _draft(document, paths, part, references, limits, surface_labels)
         )
     return [] if attached else headings
 
@@ -242,7 +246,11 @@ def _region_parts(
     def flush() -> None:
         nonlocal current, current_tokens, carried
         texts = [entry.text for entry in current if entry.text]
-        refs = tuple(dict.fromkeys((*carried, *(entry.ref for entry in current))))
+        refs = tuple(
+            dict.fromkeys(
+                (*carried, *(reference for entry in current for reference in entry.refs))
+            )
+        )
         current = []
         current_tokens = 0
         if not texts:
@@ -265,9 +273,9 @@ def _region_parts(
             )
             for index, piece in enumerate(pieces):
                 refs = (
-                    tuple(dict.fromkeys((*carried, entry.ref)))
+                    tuple(dict.fromkeys((*carried, *entry.refs)))
                     if index == 0
-                    else (entry.ref,)
+                    else entry.refs
                 )
                 parts.append((piece, refs))
             if pieces:
@@ -319,8 +327,12 @@ def _table_parts(text: str) -> tuple[str, ...]:
     return tuple(part for part in parts if part.strip())
 
 
-def _surface_ordinal(item: DocItem, kind: str) -> int | None:
-    surfaces = item_surfaces(item, kind=kind)
+def _surface_ordinal(item: ChunkingItem, kind: str) -> int | None:
+    surfaces = tuple(
+        surface
+        for source in item.items
+        for surface in item_surfaces(source, kind=kind)
+    )
     return min(surface.ordinal for surface in surfaces) if surfaces else None
 
 
@@ -335,7 +347,7 @@ def _require_chunk_limit(
 
 
 def _config_int(name: str) -> int:
-    value = STRUCTURAL_CHUNKING_CONFIG_V3[name]
+    value = STRUCTURAL_CHUNKING_CONFIG_V4[name]
     if isinstance(value, bool) or not isinstance(value, int):
         raise TypeError(f"{name} must be an integer")
     return value

@@ -206,6 +206,42 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
             (1, result.chunk_count, result.chunk_count),
         )
 
+    async def test_semantic_pipeline_rejects_non_required_analysis_binding(
+        self,
+    ) -> None:
+        kb = await self._create_kb(ChunkingPreset.SEMANTIC_BALANCED_V1)
+        uploaded = await self._upload(
+            kb.id,
+            "semantic-role.txt",
+            "text/plain",
+            b"Semantic role gate evidence.",
+        )
+        connection = await asyncpg.connect(MIGRATION_DSN)
+        try:
+            await connection.execute(
+                """
+                UPDATE index_revision_embedding_space
+                   SET required = false
+                 WHERE index_revision_id = $1
+                   AND role = 'semantic_analysis'
+                """,
+                kb.active_index_revision_id,
+            )
+        finally:
+            await connection.close()
+
+        with self.assertRaises(IndexingExecutionError) as failure:
+            await self._pipeline(_Provider()).execute(_command(uploaded))
+
+        self.assertEqual(
+            failure.exception.code,
+            ErrorCode.INDEX_REVISION_INCOMPATIBLE,
+        )
+        self.assertEqual(
+            failure.exception.diagnostic,
+            {"check": "semantic_analysis_space_role"},
+        )
+
     async def test_partial_provider_failure_is_durable_and_replay_converges(self) -> None:
         kb = await self._create_kb()
         uploaded = await self._upload(

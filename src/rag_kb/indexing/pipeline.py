@@ -16,6 +16,7 @@ from rag_kb.domain import (
     ChunkAssemblyDraft,
     ChunkingStrategyKind,
     EmbeddingSpaceDefinition,
+    EmbeddingSpaceRole,
     ErrorCode,
     ContentModality,
     CompositeEvidenceDraft,
@@ -128,7 +129,10 @@ class IndexingPipeline:
                     ErrorCode.INDEX_TARGET_INVALID,
                     phase=phase,
                     diagnostic={"check": "job_target_mapping"},
-            )
+                )
+            strategy = self._require_revision_profile(target)
+            if strategy is ChunkingStrategyKind.SEMANTIC:
+                self._require_semantic_space_role(target)
             if target.already_complete:
                 promotion = await self._promotion.promote(
                     _promotion_command(command)
@@ -141,7 +145,6 @@ class IndexingPipeline:
                     replayed=True,
                     serving_status=promotion.status.value,
                 )
-            strategy = self._require_revision_profile(target)
             require_compatible_embedding_spaces(
                 self._embedding_space,
                 target.embedding_space,
@@ -511,6 +514,25 @@ class IndexingPipeline:
             self._multimodal_embedding_provider.embedding_space,
         )
         return cross_space
+
+    @staticmethod
+    def _require_semantic_space_role(target: IndexingTarget) -> None:
+        """Require semantic analysis to use the revision's primary text space."""
+
+        text_role = EmbeddingSpaceRole.TEXT_RETRIEVAL.value
+        analysis_role = EmbeddingSpaceRole.SEMANTIC_ANALYSIS.value
+        if (
+            target.embedding_space_ids.get(text_role) != target.embedding_space_id
+            or target.embedding_space_ids.get(analysis_role)
+            != target.embedding_space_id
+            or target.embedding_spaces.get(text_role) != target.embedding_space
+            or target.embedding_spaces.get(analysis_role) != target.embedding_space
+        ):
+            raise IndexingExecutionError(
+                ErrorCode.INDEX_REVISION_INCOMPATIBLE,
+                phase=IndexingPhase.SOURCE_READ,
+                diagnostic={"check": "semantic_analysis_space_role"},
+            )
 
     async def _execute_current(
         self,

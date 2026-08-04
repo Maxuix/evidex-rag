@@ -2,15 +2,19 @@ from __future__ import annotations
 
 import hashlib
 import unittest
+from io import BytesIO
 from typing import Any
 from uuid import UUID
 
 from PIL import Image
+from docling.datamodel.base_models import ConversionStatus, DocumentStream, InputFormat
+from docling.document_converter import DocumentConverter
 from docling_core.types.doc import (
     BoundingBox,
     CoordOrigin,
     DocItemLabel,
     DoclingDocument,
+    GroupLabel,
     ProvenanceItem,
     Size,
 )
@@ -42,6 +46,7 @@ from rag_kb.document_processing.docling.assets import (
     ASSET_KIND_TABLE_IMAGE,
 )
 from rag_kb.document_processing.docling.figures import normalize_figure_labels
+from rag_kb.document_processing.docling.traversal import iterate_chunking_items
 from rag_kb.document_processing.semantic_boundaries import build_chunk_plan
 from rag_kb.document_processing.profiles import profile_fingerprint, profile_for_preset
 from rag_kb.domain import (
@@ -60,7 +65,7 @@ DOCX_MIMETYPE = (
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 )
 VERSION_ID = UUID("01900000-0000-7000-8000-0000000009a1")
-PROFILE = "docling_multimodal_local_v2:structural_by_title_token_v3"
+PROFILE = "docling_multimodal_local_v2:structural_by_title_token_v4"
 
 
 def prov(page: int, span: tuple[int, int] = (0, 10)) -> ProvenanceItem:
@@ -141,6 +146,16 @@ def logical_document() -> DoclingDocument:
     return document
 
 
+def markdown_document(source: str) -> DoclingDocument:
+    result = DocumentConverter(allowed_formats=[InputFormat.MD]).convert(
+        DocumentStream(name="synthetic.md", stream=BytesIO(source.encode("utf-8"))),
+        raises_on_error=False,
+    )
+    if result.status is not ConversionStatus.SUCCESS:
+        raise AssertionError(f"synthetic Markdown conversion failed: {result.status}")
+    return result.document
+
+
 class TraversalTests(unittest.TestCase):
     def test_traversal_skips_furniture_and_classifies_every_kind(self) -> None:
         document = paginated_document()
@@ -210,6 +225,105 @@ class TraversalTests(unittest.TestCase):
 
 
 class StructuralAssemblyTests(unittest.TestCase):
+    def test_real_markdown_rich_heading_and_list_are_logical_atoms(self) -> None:
+        long_prefix = " ".join(["alpha"] * 610)
+        document = markdown_document(
+            "#### 第 1 步：定义 `TinyFishWebTool`\n\n"
+            f"- {long_prefix} **RichTail**\n"
+        )
+
+        projection = tuple(iterate_chunking_items(document))
+        chunks = assemble_structural(document)
+
+        self.assertEqual(
+            [item.kind for item in projection],
+            [ItemKind.SECTION_HEADER, ItemKind.LIST_ITEM],
+        )
+        self.assertEqual(projection[0].text, "第 1 步：定义 TinyFishWebTool")
+        self.assertTrue(projection[1].text.endswith("RichTail"))
+        self.assertEqual(len(chunks), 1)
+        self.assertLessEqual(chunks[0].token_count, 800)
+        self.assertEqual(
+            chunks[0].hierarchy,
+            {"titles": [{"depth": 3, "text": "第 1 步：定义 TinyFishWebTool"}]},
+        )
+        self.assertTrue(all("#/groups/" not in ref for ref in chunks[0].item_refs))
+
+    def test_invalid_target_inline_group_fails_closed(self) -> None:
+        document = markdown_document("ordinary **bold** and `code` tail\n")
+        document.groups[0].children.append(document.groups[0].children[0])
+
+        with self.assertRaises(ParserExecutionError) as raised:
+            assemble_structural(document)
+
+        self.assertEqual(raised.exception.code, ErrorCode.PARSER_OUTPUT_INVALID)
+
+    def test_inline_groups_reject_every_non_inline_leaf_role(self) -> None:
+        for wrapped in (False, True):
+            for role in (
+                "table",
+                "picture",
+                "caption",
+                "furniture",
+                "title",
+                "section_header",
+                "list_item",
+            ):
+                with self.subTest(wrapped=wrapped, role=role):
+                    document = DoclingDocument(name="invalid-inline-role")
+                    wrapper = (
+                        document.add_heading(text="", level=1) if wrapped else None
+                    )
+                    group = document.add_group(
+                        label=GroupLabel.INLINE, parent=wrapper
+                    )
+                    if role == "table":
+                        document.add_table(
+                            data=table_data((("header",), ("value",))),
+                            parent=group,
+                        )
+                    elif role == "picture":
+                        document.add_picture(parent=group)
+                    elif role == "title":
+                        document.add_title(text="Nested title", parent=group)
+                    elif role == "section_header":
+                        document.add_heading(
+                            text="Nested section", level=2, parent=group
+                        )
+                    elif role == "list_item":
+                        list_group = document.add_group(
+                            label=GroupLabel.LIST, parent=group
+                        )
+                        document.add_list_item(
+                            text="Nested list", parent=list_group
+                        )
+                    else:
+                        label = (
+                            DocItemLabel.CAPTION
+                            if role == "caption"
+                            else DocItemLabel.PAGE_HEADER
+                        )
+                        document.add_text(
+                            label=label, text=f"Nested {role}", parent=group
+                        )
+
+                    with self.assertRaises(ParserExecutionError) as raised:
+                        assemble_structural(document)
+
+                    self.assertEqual(
+                        raised.exception.code, ErrorCode.PARSER_OUTPUT_INVALID
+                    )
+                    self.assertEqual(
+                        raised.exception.diagnostic,
+                        {
+                            "check": (
+                                "inline_child_type"
+                                if role == "list_item"
+                                else "inline_child_role"
+                            )
+                        },
+                    )
+
     def test_headings_join_the_content_they_introduce(self) -> None:
         chunks = assemble_structural(paginated_document())
 
@@ -290,14 +404,14 @@ class StructuralAssemblyTests(unittest.TestCase):
     def test_chunk_identity_uses_the_complete_reference_sequence(self) -> None:
         chunk = assemble_structural(paginated_document())[0]
         key = chunk_assembly_key(
-            profile="structural_by_title_token_v3",
+            profile="structural_by_title_token_v4",
             source_checksum_sha256="a" * 64,
             assembly_ordinal=0,
             item_refs=chunk.item_refs,
             text=chunk.text,
         )
         shortened = chunk_assembly_key(
-            profile="structural_by_title_token_v3",
+            profile="structural_by_title_token_v4",
             source_checksum_sha256="a" * 64,
             assembly_ordinal=0,
             item_refs=chunk.item_refs[:-1],
@@ -308,7 +422,7 @@ class StructuralAssemblyTests(unittest.TestCase):
         self.assertEqual(
             key,
             chunk_assembly_key(
-                profile="structural_by_title_token_v3",
+                profile="structural_by_title_token_v4",
                 source_checksum_sha256="a" * 64,
                 assembly_ordinal=0,
                 item_refs=chunk.item_refs,
@@ -318,7 +432,7 @@ class StructuralAssemblyTests(unittest.TestCase):
         self.assertNotEqual(
             key,
             chunk_assembly_key(
-                profile="structural_by_title_token_v3",
+                profile="structural_by_title_token_v4",
                 source_checksum_sha256="a" * 64,
                 assembly_ordinal=1,
                 item_refs=chunk.item_refs,
@@ -328,6 +442,81 @@ class StructuralAssemblyTests(unittest.TestCase):
 
 
 class SemanticUnitTests(unittest.TestCase):
+    def test_real_container_transitions_create_only_real_section_boundaries(
+        self,
+    ) -> None:
+        body_to_section = DoclingDocument(name="body-to-section")
+        body_to_section.add_text(label=DocItemLabel.TEXT, text="Body prose.")
+        section = body_to_section.add_group(label=GroupLabel.SECTION)
+        body_to_section.add_text(
+            label=DocItemLabel.TEXT, text="Section prose.", parent=section
+        )
+
+        section_to_body = DoclingDocument(name="section-to-body")
+        section = section_to_body.add_group(label=GroupLabel.SECTION)
+        section_to_body.add_text(
+            label=DocItemLabel.TEXT, text="Section prose.", parent=section
+        )
+        section_to_body.add_text(label=DocItemLabel.TEXT, text="Body prose.")
+
+        transparent_to_body = DoclingDocument(name="transparent-to-body")
+        transparent = transparent_to_body.add_group(label=GroupLabel.LIST)
+        transparent_to_body.add_text(
+            label=DocItemLabel.TEXT, text="Transparent prose.", parent=transparent
+        )
+        transparent_to_body.add_text(label=DocItemLabel.TEXT, text="Body prose.")
+
+        for name, document in (
+            ("body-to-section", body_to_section),
+            ("section-to-body", section_to_body),
+        ):
+            with self.subTest(name=name):
+                units = docling_semantic_units(document)
+                self.assertEqual(
+                    [unit.hard_boundary_before for unit in units],
+                    [None, "section"],
+                )
+
+        transparent_units = docling_semantic_units(transparent_to_body)
+        self.assertNotIn(
+            "section",
+            [unit.hard_boundary_before for unit in transparent_units],
+        )
+
+    def test_real_markdown_inline_roles_do_not_create_fake_boundaries(self) -> None:
+        document = markdown_document(
+            "#### Define `RichHeading`\n\n"
+            "ordinary **bold** and `inline_code` tail\n\n"
+            "- list **value** with `list_code` tail\n\n"
+            "```python\nprint(1)\n```\n\n"
+            "Trailing prose.\n\n"
+            "| h1 | h2 |\n| --- | --- |\n| a | b |\n"
+        )
+        inline_code_refs = {
+            item.self_ref
+            for item, _level in document.iterate_items()
+            if classify_item(item) is ItemKind.CODE
+            and getattr(getattr(item, "parent", None), "cref", "").startswith(
+                "#/groups/"
+            )
+        }
+
+        units = docling_semantic_units(document)
+        inline_boundaries = {
+            unit.hard_boundary_before
+            for unit in units
+            if inline_code_refs.intersection(unit.item_refs)
+        }
+
+        self.assertNotIn("block", inline_boundaries)
+        self.assertEqual(
+            [unit.hard_boundary_before for unit in units].count("block"), 2
+        )
+        self.assertIn("table", [unit.hard_boundary_before for unit in units])
+        self.assertTrue(
+            all("#/groups/" not in ref for unit in units for ref in unit.item_refs)
+        )
+
     def test_boundaries_come_from_surface_table_and_section(self) -> None:
         units = docling_semantic_units(paginated_document())
         reasons = [unit.hard_boundary_before for unit in units]

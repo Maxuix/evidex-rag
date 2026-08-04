@@ -49,6 +49,7 @@ from rag_kb.domain import (
     DocumentMutationResult,
     DocumentSource,
     DocumentVersion,
+    EmbeddingSpaceRole,
     EmbeddingSpaceDefinition,
     IdempotencyScope,
     IndexProfileDefinition,
@@ -138,18 +139,21 @@ class SqlAlchemyKnowledgeBaseRepository:
             IndexRevisionEmbeddingSpaceRow(
                 workspace_id=self._workspace_id,
                 index_revision_id=revision.id,
-                role="text_retrieval",
+                role=EmbeddingSpaceRole.TEXT_RETRIEVAL.value,
                 embedding_space_id=embedding.id,
                 required=True,
                 retrieval_weight_micros=1_000_000,
             )
         )
-        if index_profile.chunking_config.get("profile") == "semantic_breakpoint_v2":
+        required_roles = index_profile.chunking_config.get(
+            "required_embedding_roles", ()
+        )
+        if EmbeddingSpaceRole.SEMANTIC_ANALYSIS.value in required_roles:
             self._session.add(
                 IndexRevisionEmbeddingSpaceRow(
                     workspace_id=self._workspace_id,
                     index_revision_id=revision.id,
-                    role="semantic_analysis",
+                    role=EmbeddingSpaceRole.SEMANTIC_ANALYSIS.value,
                     embedding_space_id=embedding.id,
                     required=True,
                 )
@@ -159,7 +163,7 @@ class SqlAlchemyKnowledgeBaseRepository:
                 IndexRevisionEmbeddingSpaceRow(
                     workspace_id=self._workspace_id,
                     index_revision_id=revision.id,
-                    role="cross_modal_retrieval",
+                    role=EmbeddingSpaceRole.CROSS_MODAL_RETRIEVAL.value,
                     embedding_space_id=cross_modal_embedding.id,
                     required=True,
                     retrieval_weight_micros=1_000_000,

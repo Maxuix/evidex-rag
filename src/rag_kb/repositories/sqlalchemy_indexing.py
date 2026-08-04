@@ -1225,6 +1225,7 @@ class SqlAlchemyIndexingRepository:
                 .where(
                     IndexRevisionEmbeddingSpaceRow.workspace_id == self._workspace_id,
                     IndexRevisionEmbeddingSpaceRow.index_revision_id == revision_id,
+                    IndexRevisionEmbeddingSpaceRow.required.is_(True),
                 )
             )
         ).all()
