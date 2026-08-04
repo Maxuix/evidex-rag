@@ -542,6 +542,68 @@ textarea:hover {
   padding-top: 2px;
 }
 
+.upload-selection,
+.upload-progress {
+  margin-top: 18px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 14px 16px;
+  background: var(--paper-soft);
+}
+
+.upload-progress-heading,
+.upload-item-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.upload-progress-heading h3 {
+  margin-bottom: 0;
+  font-size: 1rem;
+}
+
+.upload-progress-bar {
+  display: block;
+  width: 100%;
+  height: 10px;
+  margin-top: 14px;
+  accent-color: var(--forest);
+}
+
+.upload-items {
+  display: grid;
+  gap: 8px;
+  margin: 14px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.upload-item {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  padding: 11px 12px;
+  background: var(--paper);
+}
+
+.upload-item-name {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.upload-item-name strong,
+.upload-item > strong {
+  overflow-wrap: anywhere;
+  font-size: 0.82rem;
+}
+
+.upload-item .notice {
+  margin-top: 12px;
+}
+
 .segmented-field {
   display: flex;
   gap: 9px;
@@ -858,6 +920,8 @@ textarea:hover {
 .status-running,
 .status-processing,
 .status-candidate,
+.status-pending,
+.status-uploading,
 .status-queued {
   border-color: #e7ce9c;
   background: var(--amber-soft);

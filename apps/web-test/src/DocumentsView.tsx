@@ -29,11 +29,15 @@ import {
   inspectMarkdownFolder,
 } from "./markdownBundle";
 
-interface PendingUpload {
+type UploadItemStatus = "pending" | "uploading" | "queued" | "failed";
+
+interface UploadItem {
   file: File;
   displayName: string;
   documentId: string | null;
   idempotencyKey: string;
+  status: UploadItemStatus;
+  error: unknown | null;
 }
 
 interface JobObservation {
@@ -63,13 +67,13 @@ export function DocumentsView({
   const [uploadMode, setUploadMode] = useState<"new" | "version">("new");
   const [versionDocumentId, setVersionDocumentId] = useState("");
   const [file, setFile] = useState<File | null>(null);
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [sourceMode, setSourceMode] = useState<"file" | "markdown-folder">("file");
   const [folderFiles, setFolderFiles] = useState<File[]>([]);
   const [markdownEntrypoints, setMarkdownEntrypoints] = useState<string[]>([]);
   const [markdownEntrypoint, setMarkdownEntrypoint] = useState("");
   const [displayName, setDisplayName] = useState("");
-  const [uploading, setUploading] = useState(false);
-  const [pendingUpload, setPendingUpload] = useState<PendingUpload | null>(null);
+  const [uploadItems, setUploadItems] = useState<UploadItem[]>([]);
   const [uploadError, setUploadError] = useState<unknown | null>(null);
   const [retryingJobId, setRetryingJobId] = useState<string | null>(null);
   const [pendingRetry, setPendingRetry] = useState<{
@@ -81,7 +85,12 @@ export function DocumentsView({
   const [focusError, setFocusError] = useState<unknown | null>(null);
   const [inspectedDocumentId, setInspectedDocumentId] = useState<string | null>(null);
   const pollGeneration = useRef(0);
-  const mutationPending = pendingUpload !== null || pendingRetry !== null;
+  const uploading = uploadItems.some((item) => item.status === "uploading");
+  const mutationPending = uploadItems.some((item) =>
+    item.status === "pending"
+    || item.status === "uploading"
+    || item.status === "failed"
+  ) || pendingRetry !== null;
   const markdownMediaEnabled =
     knowledgeBase.parsing.preset === "multimodal_local_v2";
 
@@ -110,13 +119,14 @@ export function DocumentsView({
     setDocuments([]);
     setNextCursor(null);
     setFile(null);
+    setSelectedFiles([]);
     setSourceMode("file");
     setFolderFiles([]);
     setMarkdownEntrypoints([]);
     setMarkdownEntrypoint("");
     setDisplayName("");
+    setUploadItems([]);
     setUploadError(null);
-    setPendingUpload(null);
     setVersionDocumentId("");
     setInspectedDocumentId(null);
     setTrackedJobs(readTrackedJobs(knowledgeBase.id));
@@ -184,53 +194,127 @@ export function DocumentsView({
   const activeJobCount = useMemo(() => Object.values(jobs).filter(({ value }) =>
     value?.status === "queued" || value?.status === "running"
   ).length, [jobs]);
+  const batchSelection = uploadMode === "new"
+    && sourceMode === "file"
+    && selectedFiles.length > 1;
+  const queuedUploadCount = uploadItems.filter((item) => item.status === "queued").length;
+  const failedUploadCount = uploadItems.filter((item) => item.status === "failed").length;
+  const hasUploadFile = sourceMode === "markdown-folder"
+    ? file !== null
+    : selectedFiles.length > 0;
 
-  const submitUpload = async (event: React.FormEvent) => {
-    event.preventDefault();
-    if (loading || mutationPending || !file) return;
-    const pending: PendingUpload = {
-      file,
-      displayName: displayName.trim() || file.name,
-      documentId: uploadMode === "version" ? versionDocumentId : null,
-      idempotencyKey: crypto.randomUUID(),
-    };
-    setPendingUpload(pending);
-    await performUpload(pending);
+  const resetUploadInputs = () => {
+    setFile(null);
+    setSelectedFiles([]);
+    setDisplayName("");
+    setUploadError(null);
+    const input = document.getElementById("document-file") as HTMLInputElement | null;
+    if (input) input.value = "";
+    const folderInput = document.getElementById(
+      "markdown-folder",
+    ) as HTMLInputElement | null;
+    if (folderInput) folderInput.value = "";
   };
 
-  const performUpload = async (pending: PendingUpload) => {
-    setUploading(true);
-    setUploadError(null);
+  const updateUploadItem = (
+    idempotencyKey: string,
+    update: Partial<UploadItem>,
+  ) => {
+    setUploadItems((current) => current.map((item) =>
+      item.idempotencyKey === idempotencyKey ? { ...item, ...update } : item
+    ));
+  };
+
+  const submitUploadItem = async (item: UploadItem): Promise<boolean> => {
+    updateUploadItem(item.idempotencyKey, { status: "uploading", error: null });
     try {
-      const result = pending.documentId
+      const result = item.documentId
         ? await client.uploadDocumentVersion(
-            pending.documentId,
-            pending.file,
-            pending.displayName,
-            pending.idempotencyKey,
+            item.documentId,
+            item.file,
+            item.displayName,
+            item.idempotencyKey,
           )
         : await client.uploadDocument(
             knowledgeBase.id,
-            pending.file,
-            pending.displayName,
-            pending.idempotencyKey,
+            item.file,
+            item.displayName,
+            item.idempotencyKey,
           );
       rememberUpload(result);
       setDocuments((current) => mergeDocuments(current, [result.document]));
-      setFile(null);
-      setDisplayName("");
-      setPendingUpload(null);
-      setUploadError(null);
-      const input = document.getElementById("document-file") as HTMLInputElement | null;
-      if (input) input.value = "";
-      const folderInput = document.getElementById(
-        "markdown-folder",
-      ) as HTMLInputElement | null;
-      if (folderInput) folderInput.value = "";
+      updateUploadItem(item.idempotencyKey, { status: "queued", error: null });
+      return true;
     } catch (error) {
-      setUploadError(error);
-    } finally {
-      setUploading(false);
+      updateUploadItem(item.idempotencyKey, { status: "failed", error });
+      return false;
+    }
+  };
+
+  const processUploadBatch = async (items: UploadItem[]) => {
+    let allQueued = true;
+    for (const item of items) {
+      const succeeded = await submitUploadItem(item);
+      if (!succeeded) allQueued = false;
+    }
+    if (allQueued) {
+      setUploadItems([]);
+      resetUploadInputs();
+    }
+  };
+
+  const submitUpload = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const selected = sourceMode === "markdown-folder"
+      ? (file ? [file] : [])
+      : selectedFiles;
+    const uploadFiles = uploadMode === "version" ? selected.slice(0, 1) : selected;
+    if (loading || mutationPending || uploadFiles.length === 0) return;
+    const batchMode = uploadMode === "new"
+      && sourceMode === "file"
+      && uploadFiles.length > 1;
+    const items: UploadItem[] = uploadFiles.map((selectedFile) => ({
+      file: selectedFile,
+      displayName: batchMode
+        ? selectedFile.name
+        : displayName.trim() || selectedFile.name,
+      documentId: uploadMode === "version" ? versionDocumentId : null,
+      idempotencyKey: crypto.randomUUID(),
+      status: "pending",
+      error: null,
+    }));
+    setUploadItems(items);
+    await processUploadBatch(items);
+  };
+
+  const retryUploadItem = async (item: UploadItem) => {
+    if (loading || uploadItems.some((candidate) =>
+      candidate.status === "pending" || candidate.status === "uploading"
+    )) return;
+    const succeeded = await submitUploadItem(item);
+    if (!succeeded) return;
+    const allQueued = uploadItems.every((candidate) =>
+      candidate.idempotencyKey === item.idempotencyKey
+      || candidate.status === "queued"
+    );
+    if (allQueued) {
+      setUploadItems([]);
+      resetUploadInputs();
+    }
+  };
+
+  const discardUploadItem = (idempotencyKey: string) => {
+    if (uploadItems.some((item) =>
+      item.status === "pending" || item.status === "uploading"
+    )) return;
+    const target = uploadItems.find((item) => item.idempotencyKey === idempotencyKey);
+    if (!target || target.status !== "failed") return;
+    const remaining = uploadItems.filter((item) => item.idempotencyKey !== idempotencyKey);
+    if (remaining.length === 0 || remaining.every((item) => item.status === "queued")) {
+      setUploadItems([]);
+      resetUploadInputs();
+    } else {
+      setUploadItems(remaining);
     }
   };
 
@@ -396,7 +480,12 @@ export function DocumentsView({
                 type="radio"
                 name="upload-mode"
                 checked={uploadMode === "version"}
-                onChange={() => setUploadMode("version")}
+                onChange={() => {
+                  setUploadMode("version");
+                  const first = selectedFiles[0] ?? null;
+                  setSelectedFiles(first ? [first] : []);
+                  if (first && !displayName) setDisplayName(first.name);
+                }}
                 disabled={loading || documents.length === 0 || mutationPending}
               />
               New version
@@ -413,6 +502,8 @@ export function DocumentsView({
                   onChange={() => {
                     setSourceMode("file");
                     setFile(null);
+                    setSelectedFiles([]);
+                    setUploadError(null);
                   }}
                   disabled={loading || mutationPending}
                 />
@@ -426,6 +517,8 @@ export function DocumentsView({
                   onChange={() => {
                     setSourceMode("markdown-folder");
                     setFile(null);
+                    setSelectedFiles([]);
+                    setUploadError(null);
                   }}
                   disabled={loading || mutationPending}
                 />
@@ -496,13 +589,20 @@ export function DocumentsView({
               <input
                 id="document-file"
                 type="file"
+                multiple={uploadMode === "new" && sourceMode === "file"}
                 accept=".txt,.md,.mdz,.html,.csv,.pdf,.docx,.pptx,.xlsx"
                 required
                 disabled={loading || mutationPending}
                 onChange={(event) => {
-                  const selected = event.target.files?.[0] ?? null;
-                  setFile(selected);
-                  if (selected && !displayName) setDisplayName(selected.name);
+                  const selected = Array.from(event.target.files ?? []);
+                  setFile(null);
+                  setSelectedFiles(selected);
+                  setUploadError(null);
+                  if (selected.length > 1) {
+                    setDisplayName("");
+                  } else if (selected[0] && !displayName) {
+                    setDisplayName(selected[0].name);
+                  }
                 }}
               />
               <span className="field-hint">
@@ -520,8 +620,13 @@ export function DocumentsView({
               onChange={(event) => setDisplayName(event.target.value)}
               maxLength={255}
               placeholder="quarterly-notes.md"
-              disabled={loading || mutationPending}
+              disabled={loading || mutationPending || batchSelection}
             />
+            {batchSelection ? (
+              <span className="field-hint">
+                Each selected file uses its original filename.
+              </span>
+            ) : null}
           </label>
           <div className="form-actions">
             <button
@@ -531,7 +636,7 @@ export function DocumentsView({
                 uploading
                 || loading
                 || mutationPending
-                || !file
+                || !hasUploadFile
                 || (uploadMode === "version" && !versionDocumentId)
               }
             >
@@ -539,16 +644,82 @@ export function DocumentsView({
             </button>
           </div>
         </form>
+        {batchSelection && uploadItems.length === 0 ? (
+          <section className="upload-selection" aria-live="polite">
+            <div className="upload-progress-heading">
+              <div>
+                <p className="eyebrow">Batch selection</p>
+                <h3>{selectedFiles.length} files selected</h3>
+              </div>
+              <span className="count-label">Ready to upload</span>
+            </div>
+            <ul className="upload-items">
+              {selectedFiles.map((selectedFile, index) => (
+                <li
+                  className="upload-item"
+                  key={`${selectedFile.name}-${selectedFile.lastModified}-${index}`}
+                >
+                  <strong>{selectedFile.name}</strong>
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
+        {uploadItems.length > 0 ? (
+          <section
+            className="upload-progress"
+            aria-label="Batch upload progress"
+            aria-live="polite"
+            aria-busy={uploading}
+          >
+            <div className="upload-progress-heading">
+              <div>
+                <p className="eyebrow">Batch upload</p>
+                <h3>{queuedUploadCount} of {uploadItems.length} queued</h3>
+              </div>
+              <span className="count-label">
+                {failedUploadCount ? `${failedUploadCount} failed` : "Indexing remains asynchronous"}
+              </span>
+            </div>
+            <progress
+              className="upload-progress-bar"
+              value={queuedUploadCount}
+              max={uploadItems.length}
+              aria-label={`${queuedUploadCount} of ${uploadItems.length} uploads queued`}
+            />
+            <p className="field-hint">
+              Queued means the upload was accepted; indexing status is tracked below.
+            </p>
+            <ul className="upload-items">
+              {uploadItems.map((item) => (
+                <li className="upload-item" key={item.idempotencyKey}>
+                  <div className="upload-item-heading">
+                    <div className="upload-item-name">
+                      <strong>{item.file.name}</strong>
+                      {item.displayName !== item.file.name ? (
+                        <span className="field-hint">Display name: {item.displayName}</span>
+                      ) : null}
+                    </div>
+                    <StatusBadge value={item.status} />
+                  </div>
+                  {item.status === "failed" && item.error ? (
+                    <ProblemNotice
+                      error={item.error}
+                      title={`Upload failed for ${item.file.name}`}
+                      onRetry={() => void retryUploadItem(item)}
+                      onDiscard={() => discardUploadItem(item.idempotencyKey)}
+                      discardLabel="Discard file"
+                    />
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
         {uploadError ? (
           <ProblemNotice
             error={uploadError}
-            title="Upload was not confirmed"
-            onRetry={pendingUpload ? () => void performUpload(pendingUpload) : undefined}
-            onDiscard={pendingUpload ? () => {
-              setPendingUpload(null);
-              setUploadError(null);
-            } : undefined}
-            discardLabel="Discard and edit"
+            title="Upload selection was not confirmed"
           />
         ) : null}
       </section>
