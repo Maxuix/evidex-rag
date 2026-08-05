@@ -49,8 +49,6 @@ from rag_kb.domain import (
     IndexArtifactManifest,
     IndexAssetWrite,
     IndexAssetSnapshot,
-    ChunkBoundary,
-    ChunkBoundaryReason,
     IndexCleanupResult,
     IndexingCancelled,
     IndexingCommand,
@@ -63,7 +61,6 @@ from rag_kb.domain import (
     PromotionReason,
     PromotionResult,
     PromotionStatus,
-    PersistedVectorRepresentation,
     RetiredIndexTargetAssets,
     ReconciliationResult,
     ResourceStateConflictError,
@@ -1175,6 +1172,7 @@ class SqlAlchemyIndexingRepository:
                 IndexingPhase.SOURCE_READ,
                 "active_revision",
             )
+        await self._discard_partial_build(target.id)
         target.build_status = IndexBuildStatus.PROCESSING
         target.error_code = None
         target.error_detail = None
@@ -1184,6 +1182,33 @@ class SqlAlchemyIndexingRepository:
         job.error_detail = None
         await self._session.flush()
         return _target(row, space_roles=await self._space_roles(revision.id))
+
+    async def _discard_partial_build(self, target_id: UUID) -> None:
+        """Start a failed candidate retry from one empty derived-data set."""
+
+        chunk_ids = select(IndexChunkRow.id).where(
+            IndexChunkRow.indexed_document_version_id == target_id
+        )
+        for vector_model in (VectorRecordRow, VectorRecord768Row):
+            await self._session.execute(
+                delete(vector_model).where(
+                    vector_model.index_chunk_id.in_(chunk_ids)
+                )
+            )
+        for model in (
+            IndexChunkAssetRelationRow,
+            IndexChunkLexicalRow,
+            IndexLexicalManifestRow,
+            IndexChunkRow,
+            IndexAssetRow,
+            IndexArtifactManifestRow,
+            IndexChunkPlanRow,
+        ):
+            await self._session.execute(
+                delete(model).where(
+                    model.indexed_document_version_id == target_id
+                )
+            )
 
     async def _space_roles(
         self, revision_id: UUID
@@ -1213,40 +1238,11 @@ class SqlAlchemyIndexingRepository:
         }
         return ids, definitions
 
-    async def get_chunk_plan(
-        self,
-        command: IndexingCommand,
-    ) -> IndexChunkPlan | None:
-        self._ensure_active()
-        row = (
-            await self._session.execute(
-                select(IndexChunkPlanRow)
-                .join(
-                    IndexedDocumentVersionRow,
-                    IndexedDocumentVersionRow.id
-                    == IndexChunkPlanRow.indexed_document_version_id,
-                )
-                .join(
-                    IndexingJobRow,
-                    IndexingJobRow.indexed_document_version_id
-                    == IndexedDocumentVersionRow.id,
-                )
-                .where(
-                    IndexedDocumentVersionRow.workspace_id == self._workspace_id,
-                    IndexingJobRow.workspace_id == self._workspace_id,
-                    IndexingJobRow.id == command.job_id,
-                    IndexedDocumentVersionRow.id
-                    == command.indexed_document_version_id,
-                )
-            )
-        ).scalar_one_or_none()
-        return _chunk_plan(row) if row is not None else None
-
-    async def create_or_get_chunk_plan(
+    async def save_chunk_plan(
         self,
         command: IndexingCommand,
         proposed: IndexChunkPlan,
-    ) -> IndexChunkPlan:
+    ) -> bool:
         self._ensure_active()
         row = await self._load(command, lock=True)
         if row is None:
@@ -1260,9 +1256,8 @@ class SqlAlchemyIndexingRepository:
                 IndexingPhase.SEMANTIC_ANALYSIS,
                 "chunk_plan_target",
             )
-        await self._session.execute(
-            pg_insert(IndexChunkPlanRow)
-            .values(
+        self._session.add(
+            IndexChunkPlanRow(
                 indexed_document_version_id=proposed.indexed_document_version_id,
                 source_checksum_sha256=proposed.source_checksum_sha256,
                 profile_fingerprint=proposed.profile_fingerprint,
@@ -1279,54 +1274,13 @@ class SqlAlchemyIndexingRepository:
                 ],
                 plan_hash=proposed.plan_hash,
             )
-            .on_conflict_do_nothing(
-                index_elements=["indexed_document_version_id"]
-            )
         )
-        winner_row = await self._session.get(
-            IndexChunkPlanRow, proposed.indexed_document_version_id
-        )
-        assert winner_row is not None
-        winner = _chunk_plan(winner_row)
-        if winner != proposed:
-            raise _execution_error(
-                ErrorCode.INDEX_CHUNK_PLAN_MISMATCH,
-                IndexingPhase.SEMANTIC_ANALYSIS,
-                "chunk_plan_cas",
-            )
-        return winner
+        await self._session.flush()
+        return True
 
-    async def get_artifact_manifest(
-        self, command: IndexingCommand
-    ) -> IndexArtifactManifest | None:
-        self._ensure_active()
-        row = (
-            await self._session.execute(
-                select(IndexArtifactManifestRow)
-                .join(
-                    IndexedDocumentVersionRow,
-                    IndexedDocumentVersionRow.id
-                    == IndexArtifactManifestRow.indexed_document_version_id,
-                )
-                .join(
-                    IndexingJobRow,
-                    IndexingJobRow.indexed_document_version_id
-                    == IndexedDocumentVersionRow.id,
-                )
-                .where(
-                    IndexedDocumentVersionRow.workspace_id == self._workspace_id,
-                    IndexingJobRow.workspace_id == self._workspace_id,
-                    IndexingJobRow.id == command.job_id,
-                    IndexedDocumentVersionRow.id
-                    == command.indexed_document_version_id,
-                )
-            )
-        ).scalar_one_or_none()
-        return _artifact_manifest(row) if row is not None else None
-
-    async def create_or_get_artifact_manifest(
+    async def save_artifact_manifest(
         self, command: IndexingCommand, proposed: IndexArtifactManifest
-    ) -> IndexArtifactManifest:
+    ) -> bool:
         self._ensure_active()
         row = await self._load(command, lock=True)
         if row is None or not _is_writable(row[0], row[1]):
@@ -1337,9 +1291,8 @@ class SqlAlchemyIndexingRepository:
                 IndexingPhase.PERSISTING,
                 "artifact_manifest_target",
             )
-        await self._session.execute(
-            pg_insert(IndexArtifactManifestRow)
-            .values(
+        self._session.add(
+            IndexArtifactManifestRow(
                 indexed_document_version_id=proposed.indexed_document_version_id,
                 source_checksum_sha256=proposed.source_checksum_sha256,
                 profile_fingerprint=proposed.profile_fingerprint,
@@ -1355,129 +1308,9 @@ class SqlAlchemyIndexingRepository:
                 relation_manifest_hash=proposed.relation_manifest_hash,
                 manifest_hash=proposed.manifest_hash,
             )
-            .on_conflict_do_nothing(index_elements=["indexed_document_version_id"])
         )
-        winner_row = await self._session.get(
-            IndexArtifactManifestRow, proposed.indexed_document_version_id
-        )
-        assert winner_row is not None
-        winner = _artifact_manifest(winner_row)
-        if winner != proposed:
-            raise _execution_error(
-                ErrorCode.INDEX_CHUNK_PLAN_MISMATCH,
-                IndexingPhase.PERSISTING,
-                "artifact_manifest_cas",
-            )
-        return winner
-
-    async def list_persisted_representations(
-        self, command: IndexingCommand, *, limit: int
-    ) -> tuple[PersistedVectorRepresentation, ...]:
-        self._ensure_active()
-        if limit <= 0:
-            raise _execution_error(
-                ErrorCode.INDEX_PERSISTENCE_FAILED,
-                IndexingPhase.PERSISTING,
-                "persisted_representation_limit",
-            )
-
-        def branch(vector_model, physical_dimension: int):
-            return (
-                select(
-                    vector_model.id.label("id"),
-                    vector_model.index_chunk_id.label("index_chunk_id"),
-                    vector_model.embedding_space_id.label("embedding_space_id"),
-                    vector_model.representation_kind.label("representation_kind"),
-                )
-                .join(
-                    IndexChunkRow,
-                    and_(
-                        IndexChunkRow.id == vector_model.index_chunk_id,
-                        IndexChunkRow.workspace_id == vector_model.workspace_id,
-                        IndexChunkRow.kb_id == vector_model.kb_id,
-                    ),
-                )
-                .join(
-                    EmbeddingSpaceRow,
-                    and_(
-                        EmbeddingSpaceRow.id
-                        == vector_model.embedding_space_id,
-                        EmbeddingSpaceRow.workspace_id
-                        == vector_model.workspace_id,
-                    ),
-                )
-                .join(
-                    IndexedDocumentVersionRow,
-                    and_(
-                        IndexedDocumentVersionRow.id
-                        == IndexChunkRow.indexed_document_version_id,
-                        IndexedDocumentVersionRow.workspace_id
-                        == IndexChunkRow.workspace_id,
-                        IndexedDocumentVersionRow.kb_id == IndexChunkRow.kb_id,
-                    ),
-                )
-                .join(
-                    IndexingJobRow,
-                    and_(
-                        IndexingJobRow.indexed_document_version_id
-                        == IndexedDocumentVersionRow.id,
-                        IndexingJobRow.workspace_id
-                        == IndexedDocumentVersionRow.workspace_id,
-                        IndexingJobRow.kb_id == IndexedDocumentVersionRow.kb_id,
-                    ),
-                )
-                .where(
-                    vector_model.workspace_id == self._workspace_id,
-                    IndexChunkRow.workspace_id == self._workspace_id,
-                    IndexedDocumentVersionRow.workspace_id == self._workspace_id,
-                    IndexingJobRow.workspace_id == self._workspace_id,
-                    IndexingJobRow.id == command.job_id,
-                    IndexedDocumentVersionRow.id
-                    == command.indexed_document_version_id,
-                    EmbeddingSpaceRow.dimension == physical_dimension,
-                    exists(
-                        select(literal(1)).where(
-                            IndexRevisionEmbeddingSpaceRow.workspace_id
-                            == self._workspace_id,
-                            IndexRevisionEmbeddingSpaceRow.index_revision_id
-                            == IndexedDocumentVersionRow.index_revision_id,
-                            IndexRevisionEmbeddingSpaceRow.embedding_space_id
-                            == vector_model.embedding_space_id,
-                        )
-                    ),
-                )
-            )
-
-        representations = branch(VectorRecordRow, 1024).union_all(
-            branch(VectorRecord768Row, 768)
-        ).subquery()
-        rows = (
-            await self._session.execute(
-                select(representations)
-                .order_by(
-                    representations.c.index_chunk_id,
-                    representations.c.embedding_space_id,
-                    representations.c.representation_kind,
-                    representations.c.id,
-                )
-                .limit(limit + 1)
-            )
-        ).all()
-        if len(rows) > limit:
-            raise _execution_error(
-                ErrorCode.INDEX_PERSISTENCE_FAILED,
-                IndexingPhase.PERSISTING,
-                "persisted_representation_limit",
-            )
-        return tuple(
-            PersistedVectorRepresentation(
-                id=row.id,
-                index_chunk_id=row.index_chunk_id,
-                embedding_space_id=row.embedding_space_id,
-                representation_kind=row.representation_kind,
-            )
-            for row in rows
-        )
+        await self._session.flush()
+        return True
 
     async def upsert_assets(
         self, command: IndexingCommand, assets: tuple[IndexAssetWrite, ...]
@@ -2265,34 +2098,6 @@ def _target(
         embedding_space_ids=space_ids,
         embedding_spaces=spaces,
     )
-
-
-def _chunk_plan(row: IndexChunkPlanRow) -> IndexChunkPlan:
-    try:
-        boundaries = tuple(
-            ChunkBoundary(
-                after_unit_ordinal=item["after_unit_ordinal"],
-                reason=ChunkBoundaryReason(item["reason"]),
-                score_micros=item.get("score_micros"),
-            )
-            for item in row.boundaries
-        )
-        return IndexChunkPlan(
-            indexed_document_version_id=row.indexed_document_version_id,
-            source_checksum_sha256=row.source_checksum_sha256,
-            profile_fingerprint=row.profile_fingerprint,
-            unit_sequence_hash=row.unit_sequence_hash,
-            unit_count=row.unit_count,
-            chunk_count=row.chunk_count,
-            boundaries=boundaries,
-            plan_hash=row.plan_hash,
-        )
-    except (KeyError, TypeError, ValueError) as error:
-        raise _execution_error(
-            ErrorCode.INDEX_CHUNK_PLAN_MISMATCH,
-            IndexingPhase.SEMANTIC_ANALYSIS,
-            "chunk_plan_shape",
-        ) from error
 
 
 def _artifact_manifest(row: IndexArtifactManifestRow) -> IndexArtifactManifest:

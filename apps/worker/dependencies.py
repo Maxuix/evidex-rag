@@ -36,9 +36,8 @@ from rag_kb.config import (
 from rag_kb.db import (
     DatabaseProcess,
     DatabaseResources,
-    RuntimeReadiness,
+    check_database_ready,
     create_database_resources,
-    validate_runtime_readiness,
 )
 from rag_kb.domain import ParserLimits
 from rag_kb.indexing.pipeline import IndexingPipeline
@@ -114,16 +113,15 @@ class WorkerDependencies:
             await self.chat_preview_sink.close()
         await self.database.close()
 
-    async def start(self) -> RuntimeReadiness:
-        """Fail startup when the migration-created runtime is incompatible."""
+    async def start(self) -> None:
+        """Fail startup when the local database is unavailable or stale."""
 
-        readiness = await self.check_readiness()
+        await self.check_readiness()
         if self.chat_preview_sink is not None:
             await self.chat_preview_sink.start()
-        return readiness
 
-    async def check_readiness(self) -> RuntimeReadiness:
-        return await validate_runtime_readiness(self.database.engine)
+    async def check_readiness(self) -> None:
+        await check_database_ready(self.database.engine)
 
 
 def build_worker_dependencies(

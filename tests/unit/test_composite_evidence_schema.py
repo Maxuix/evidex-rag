@@ -4,20 +4,17 @@ import unittest
 
 from sqlalchemy import CheckConstraint, ForeignKeyConstraint, UniqueConstraint
 
-from rag_kb.db.compatibility import EXPECTED_APPLICATION_TABLES, EXPECTED_REVISION
 from rag_kb.db.models import Base
+from rag_kb.db.readiness import EXPECTED_REVISION
 
 
 class CompositeEvidenceSchemaTests(unittest.TestCase):
     def test_current_head_and_inventory_include_composite_relations(self) -> None:
         self.assertEqual(EXPECTED_REVISION, "0001_current_only_baseline")
-        self.assertIn("index_chunk_asset_relation", EXPECTED_APPLICATION_TABLES)
-        self.assertIn("index_chunk_lexical", EXPECTED_APPLICATION_TABLES)
-        self.assertIn("index_lexical_manifest", EXPECTED_APPLICATION_TABLES)
-        self.assertEqual(
-            set(Base.metadata.tables),
-            set(EXPECTED_APPLICATION_TABLES),
-        )
+        self.assertIn("index_chunk_asset_relation", Base.metadata.tables)
+        self.assertIn("index_chunk_lexical", Base.metadata.tables)
+        self.assertIn("index_lexical_manifest", Base.metadata.tables)
+        self.assertEqual(len(Base.metadata.tables), 25)
 
     def test_current_rows_require_complete_relation_manifest_facts(self) -> None:
         chunk = Base.metadata.tables["index_chunk"]

@@ -27,9 +27,8 @@ from rag_kb.config import (
 from rag_kb.db import (
     DatabaseProcess,
     DatabaseResources,
-    RuntimeReadiness,
+    check_database_ready,
     create_database_resources,
-    validate_runtime_readiness,
 )
 from rag_kb.domain import AdmissionLimits
 from rag_kb.ports.model_api import EmbeddingModelAdapter
@@ -90,16 +89,15 @@ class ApiDependencies:
             await self.chat_preview_broker.close()
         await self.database.close()
 
-    async def start(self) -> RuntimeReadiness:
-        """Fail startup when the migration-created runtime is incompatible."""
+    async def start(self) -> None:
+        """Fail startup when the local database is unavailable or stale."""
 
-        readiness = await self.check_readiness()
+        await self.check_readiness()
         if self.chat_preview_broker is not None:
             await self.chat_preview_broker.start()
-        return readiness
 
-    async def check_readiness(self) -> RuntimeReadiness:
-        return await validate_runtime_readiness(self.database.engine)
+    async def check_readiness(self) -> None:
+        await check_database_ready(self.database.engine)
 
 
 def build_api_dependencies(

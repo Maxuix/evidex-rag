@@ -1,12 +1,7 @@
-"""Persistence models, migrations, and read-only database validation."""
+"""Persistence models, migrations, and database resources."""
 
-from rag_kb.db.compatibility import (
-    DatabaseCompatibility,
-    DatabaseCompatibilityError,
-    validate_database_compatibility,
-)
 from rag_kb.db.models import Base
-from rag_kb.db.readiness import RuntimeReadiness, validate_runtime_readiness
+from rag_kb.db.readiness import DatabaseReadinessError, check_database_ready
 from rag_kb.db.session import (
     DatabaseProcess,
     DatabaseResources,
@@ -15,12 +10,9 @@ from rag_kb.db.session import (
 
 __all__ = [
     "Base",
-    "DatabaseCompatibility",
-    "DatabaseCompatibilityError",
     "DatabaseProcess",
+    "DatabaseReadinessError",
     "DatabaseResources",
-    "RuntimeReadiness",
+    "check_database_ready",
     "create_database_resources",
-    "validate_database_compatibility",
-    "validate_runtime_readiness",
 ]

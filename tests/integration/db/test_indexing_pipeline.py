@@ -158,7 +158,7 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state["chunks"], state["vectors"])
         self.assertTrue(state["dimensions_valid"])
 
-    async def test_semantic_plan_is_persisted_and_reused_after_final_failure(
+    async def test_semantic_retry_replaces_plan_and_repeats_analysis(
         self,
     ) -> None:
         kb = await self._create_kb(ChunkingPreset.SEMANTIC_BALANCED_V1)
@@ -182,7 +182,7 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
         result = await pipeline.execute(_command(uploaded))
         self.assertEqual(result.status, "ready")
-        self.assertEqual(provider.analysis_calls, analysis_calls)
+        self.assertGreater(provider.analysis_calls, analysis_calls)
         connection = await asyncpg.connect(MIGRATION_DSN)
         try:
             facts = await connection.fetchrow(
@@ -241,7 +241,7 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
             {"check": "semantic_analysis_space_role"},
         )
 
-    async def test_partial_provider_failure_is_durable_and_replay_converges(self) -> None:
+    async def test_partial_provider_failure_rebuilds_candidate_on_retry(self) -> None:
         kb = await self._create_kb()
         uploaded = await self._upload(
             kb.id, "large.txt", "text/plain", b"word " * 1000
@@ -262,7 +262,7 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
         provider.calls = 0
         completed = await pipeline.execute(_command(uploaded))
         self.assertEqual((completed.status, completed.chunk_count), ("ready", 2))
-        self.assertEqual(provider.calls, 1)
+        self.assertEqual(provider.calls, 2)
         replayed = await self._target_state(uploaded.indexed_document_version_id)
         self.assertEqual(
             tuple(replayed),
@@ -1075,7 +1075,7 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
             ("failed", "candidate", "failed", "embedding", "EMBEDDING_SPACE_MISMATCH", 0, 0),
         )
 
-    async def test_conflicting_stable_key_records_persistence_failure(self) -> None:
+    async def test_retry_discards_conflicting_partial_chunk_and_rebuilds(self) -> None:
         kb = await self._create_kb()
         uploaded = await self._upload(kb.id, "guide.txt", "text/plain", b"safe")
         connection = await asyncpg.connect(MIGRATION_DSN)
@@ -1100,13 +1100,12 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await connection.close()
 
-        with self.assertRaises(IndexingExecutionError) as failure:
-            await self._pipeline(_Provider()).execute(_command(uploaded))
-        self.assertEqual(failure.exception.code, ErrorCode.INDEX_PERSISTENCE_FAILED)
+        completed = await self._pipeline(_Provider()).execute(_command(uploaded))
+        self.assertEqual((completed.status, completed.chunk_count), ("ready", 1))
         state = await self._target_state(uploaded.indexed_document_version_id)
         self.assertEqual(
             tuple(state),
-            ("failed", "candidate", "failed", "persisting", "INDEX_PERSISTENCE_FAILED", 1, 0),
+            ("ready", "serving", "completed", "completed", None, 1, 1),
         )
 
     async def test_missing_source_records_source_phase_without_partial_content(self) -> None:

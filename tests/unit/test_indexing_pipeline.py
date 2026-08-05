@@ -41,7 +41,6 @@ from rag_kb.domain import (
     PromotionStatus,
     ParserExecutionError,
     ParsingPreset,
-    PersistedVectorRepresentation,
     SourceFileIdentity,
     stable_chunk_id,
     stable_vector_id,
@@ -54,6 +53,14 @@ from rag_kb.ports.parsing import DocumentParseResult
 
 WORKSPACE = UUID("01900000-0000-7000-8000-000000000401")
 CONTENT = b"first\n\nsecond"
+
+
+class _WordEncoding:
+    def encode(self, text: str) -> list[str]:
+        return text.split()
+
+    def decode(self, tokens: list[str]) -> str:
+        return " ".join(tokens)
 
 
 class IndexingDomainTests(unittest.TestCase):
@@ -158,6 +165,14 @@ class IndexingDomainTests(unittest.TestCase):
             self.assertEqual(response.exception.code, ErrorCode.EMBEDDING_RESPONSE_INVALID)
 
 class IndexingPipelineTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        tokenizer = patch(
+            "rag_kb.document_processing.tokenization._encoding",
+            return_value=_WordEncoding(),
+        )
+        tokenizer.start()
+        self.addCleanup(tokenizer.stop)
+
     async def test_markdown_v2_reuses_multimodal_assets_and_both_spaces(self) -> None:
         repository = _Repository(_target(multimodal=True, markdown_v2=True))
         factory = _Factory(repository)
@@ -244,7 +259,7 @@ class IndexingPipelineTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(repository.serving, "serving")
 
-    async def test_partial_embedding_failure_stays_non_serving_and_replay_converges(self) -> None:
+    async def test_partial_embedding_failure_retries_from_an_empty_candidate(self) -> None:
         repository = _Repository(_target())
         factory = _Factory(repository)
         provider = _Provider(factory, fail_call=2)
@@ -266,10 +281,13 @@ class IndexingPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.serving_status, "serving")
         self.assertEqual(len(repository.chunks), 2)
         self.assertEqual(len(repository.vectors), 2)
-        self.assertEqual(provider.calls, 1)
-        self.assertEqual(provider.inputs, [("[body]\nBeta\n\nsecond",)])
+        self.assertEqual(provider.calls, 2)
+        self.assertEqual(
+            provider.inputs,
+            [("[body]\nAlpha\n\nfirst",), ("[body]\nBeta\n\nsecond",)],
+        )
 
-    async def test_multimodal_retry_reuses_text_and_only_repurchases_missing_native_image(
+    async def test_multimodal_retry_rebuilds_text_and_image_representations(
         self,
     ) -> None:
         repository = _Repository(_target(multimodal=True))
@@ -310,61 +328,11 @@ class IndexingPipelineTests(unittest.IsolatedAsyncioTestCase):
         result = await pipeline.execute(command)
 
         self.assertEqual(result.status, "ready")
-        self.assertEqual(text_provider.calls, 0)
-        self.assertEqual(visual_provider.image_calls, 1)
+        self.assertEqual(text_provider.calls, 1)
+        self.assertEqual(visual_provider.image_calls, 2)
         self.assertEqual(len(repository.vectors), 3)
 
-    async def test_persisted_representation_rejects_wrong_target_space_and_kind(
-        self,
-    ) -> None:
-        repository = _Repository(_target())
-        first_chunk_id = stable_chunk_id(
-            repository.target.indexed_document_version_id,
-            profile_fingerprint="f" * 64,
-            unit_key="not-a-persisted-unit",
-        )
-        wrong_space = uuid4()
-        repository.persisted_override = (
-            PersistedVectorRepresentation(
-                id=stable_vector_id(
-                    repository.target.embedding_space_id, first_chunk_id
-                ),
-                index_chunk_id=first_chunk_id,
-                embedding_space_id=wrong_space,
-                representation_kind="text",
-            ),
-            PersistedVectorRepresentation(
-                id=stable_vector_id(
-                    repository.target.embedding_space_id, first_chunk_id
-                ),
-                index_chunk_id=uuid4(),
-                embedding_space_id=repository.target.embedding_space_id,
-                representation_kind="text",
-            ),
-            PersistedVectorRepresentation(
-                id=stable_vector_id(
-                    repository.target.embedding_space_id, first_chunk_id
-                ),
-                index_chunk_id=first_chunk_id,
-                embedding_space_id=repository.target.embedding_space_id,
-                representation_kind="native_image",
-            ),
-        )
-        factory = _Factory(repository)
-        provider = _Provider(factory)
-        pipeline = _pipeline(factory, provider)
-
-        result = await pipeline.execute(
-            IndexingCommand(
-                repository.target.job_id,
-                repository.target.indexed_document_version_id,
-            )
-        )
-
-        self.assertEqual(result.status, "ready")
-        self.assertEqual(provider.calls, 2)
-
-    async def test_reused_representation_still_enforces_stable_chunk_cas(
+    async def test_retry_discards_the_previous_attempt_manifest(
         self,
     ) -> None:
         repository = _Repository(_target())
@@ -388,16 +356,18 @@ class IndexingPipelineTests(unittest.IsolatedAsyncioTestCase):
         provider.fail_call = None
         provider.calls = 0
 
-        with self.assertRaises(IndexingExecutionError) as failure:
-            await pipeline.execute(command)
+        result = await pipeline.execute(command)
 
-        self.assertEqual(
-            failure.exception.code,
-            ErrorCode.INDEX_CHUNK_PLAN_MISMATCH,
+        self.assertEqual(result.status, "ready")
+        self.assertEqual(provider.calls, 2)
+        self.assertTrue(
+            any(
+                "changed" in chunk.content
+                for chunk in repository.chunks.values()
+            )
         )
-        self.assertEqual(provider.calls, 0)
 
-    async def test_reused_chunk_cas_is_split_into_safe_batches(self) -> None:
+    async def test_retry_rebuilds_all_embedding_batches(self) -> None:
         repository = _Repository(_target())
         factory = _Factory(repository)
         provider = _Provider(factory, fail_call=3)
@@ -414,12 +384,11 @@ class IndexingPipelineTests(unittest.IsolatedAsyncioTestCase):
 
         provider.fail_call = None
         provider.calls = 0
-        repository.chunk_only_batch_sizes = []
         result = await pipeline.execute(command)
 
         self.assertEqual(result.status, "ready")
-        self.assertEqual(repository.chunk_only_batch_sizes, [2, 2])
-        self.assertEqual(provider.calls, 1)
+        self.assertEqual(provider.calls, 3)
+        self.assertEqual(len(repository.vectors), 5)
 
     async def test_completed_replay_compensates_interrupted_promotion(self) -> None:
         repository = _Repository(_target())
@@ -549,7 +518,7 @@ class IndexingPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(repository.failure[0:2], ("parsing", "PARSER_CRASHED"))
         self.assertEqual(repository.serving, "candidate")
 
-    async def test_semantic_retry_reuses_plan_without_analysis_embedding(self) -> None:
+    async def test_semantic_retry_rebuilds_plan_and_analysis(self) -> None:
         repository = _Repository(_target(ChunkingPreset.SEMANTIC_BALANCED_V1))
         factory = _Factory(repository)
         provider = _Provider(factory, fail_call=8)
@@ -570,7 +539,7 @@ class IndexingPipelineTests(unittest.IsolatedAsyncioTestCase):
         result = await pipeline.execute(command)
 
         self.assertEqual(result.status, "ready")
-        self.assertEqual(provider.calls, result.chunk_count)
+        self.assertGreater(provider.calls, result.chunk_count)
         self.assertEqual(
             [repository.chunks[index].ordinal for index in repository.chunks],
             list(range(result.chunk_count)),
@@ -733,8 +702,6 @@ class _Repository:
         self.relations = ()
         self.lexical_rows = {}
         self.lexical_manifest = None
-        self.persisted_override = None
-        self.chunk_only_batch_sizes = []
 
     async def prepare(self, command):
         self._active()
@@ -742,6 +709,14 @@ class _Repository:
             return None
         if self.status == "completed":
             return replace(self.target, already_complete=True)
+        self.chunks.clear()
+        self.vectors.clear()
+        self.plan = None
+        self.manifest = None
+        self.assets = ()
+        self.relations = ()
+        self.lexical_rows.clear()
+        self.lexical_manifest = None
         self.status = "running"
         self.failure = None
         return self.target
@@ -785,19 +760,11 @@ class _Repository:
         self._active()
         return self.status == "running"
 
-    async def get_chunk_plan(self, command):
+    async def save_chunk_plan(self, command, proposed):
         del command
         self._active()
-        return self.plan
-
-    async def create_or_get_chunk_plan(self, command, proposed):
-        del command
-        self._active()
-        if self.plan is None:
-            self.plan = proposed
-        if self.plan != proposed:
-            raise AssertionError("chunk plan mismatch")
-        return self.plan
+        self.plan = proposed
+        return True
 
     async def upsert_assets(self, command, assets):
         del command
@@ -811,30 +778,15 @@ class _Repository:
         self.relations = relations
         return True
 
-    async def create_or_get_artifact_manifest(self, command, proposed):
+    async def save_artifact_manifest(self, command, proposed):
         del command
         self._active()
-        if self.manifest is None:
-            self.manifest = proposed
-        return self.manifest
-
-    async def list_persisted_representations(self, command, *, limit):
-        del command
-        self._active()
-        records = (
-            self.persisted_override
-            if self.persisted_override is not None
-            else tuple(self.vectors.values())
-        )
-        if len(records) > limit:
-            raise AssertionError("persisted representation limit exceeded")
-        return records
+        self.manifest = proposed
+        return True
 
     async def upsert_batch(self, command, chunks, vectors):
         del command
         self._active()
-        if chunks and not vectors:
-            self.chunk_only_batch_sizes.append(len(chunks))
         for chunk in chunks:
             existing = self.chunks.get(chunk.ordinal)
             if existing is not None and existing.content_hash != chunk.content_hash:

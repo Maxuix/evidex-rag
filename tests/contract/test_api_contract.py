@@ -210,16 +210,12 @@ class StubApiDependencies:
         self.closed = False
         self.started = False
 
-    async def start(self) -> SimpleNamespace:
+    async def start(self) -> None:
         self.started = True
-        return await self.check_readiness()
+        await self.check_readiness()
 
-    async def check_readiness(self) -> SimpleNamespace:
-        return SimpleNamespace(
-            database="ready",
-            queue="ready",
-            queue_backend="postgresql",
-        )
+    async def check_readiness(self) -> None:
+        return None
 
     async def close(self) -> None:
         self.closed = True
@@ -515,11 +511,7 @@ class ApiContractTests(unittest.IsolatedAsyncioTestCase):
             ready.json(),
             {
                 "status": "ready",
-                "components": {
-                    "database": "ready",
-                    "queue": "ready",
-                    "queue_backend": "postgresql",
-                },
+                "components": {"database": "ready"},
             },
         )
 
@@ -534,10 +526,7 @@ class ApiContractTests(unittest.IsolatedAsyncioTestCase):
             response.json(),
             {
                 "status": "not_ready",
-                "components": {
-                    "database": "unavailable",
-                    "queue": "unavailable",
-                },
+                "components": {"database": "unavailable"},
             },
         )
         self.assertNotIn("database-password", response.body.decode("utf-8"))

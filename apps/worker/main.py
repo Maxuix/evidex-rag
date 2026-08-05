@@ -46,7 +46,6 @@ async def check_runtime() -> None:
             "runtime_check_passed",
             process="worker",
             database="ready",
-            queue="ready",
         )
     finally:
         await dependencies.close()
@@ -73,7 +72,6 @@ async def serve() -> None:
             process="worker",
             component="foundation_runtime",
             database="ready",
-            queue="ready",
         )
         background = {
             "file_reconciliation_janitor": _run_janitor(
@@ -306,8 +304,7 @@ def main() -> int:
         "--check",
         action="store_true",
         help=(
-            "validate Worker heartbeat, storage, database, migration, "
-            "pgvector, and queue access"
+            "validate Worker heartbeat, storage, database, and migration"
         ),
     )
     arguments = parser.parse_args()

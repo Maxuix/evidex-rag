@@ -8,11 +8,7 @@ from uuid import UUID
 import asyncpg
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from rag_kb.db.compatibility import (
-    EXPECTED_APPLICATION_TABLES,
-    validate_database_compatibility,
-)
-from rag_kb.db.readiness import validate_runtime_readiness
+from rag_kb.db.readiness import check_database_ready
 
 
 MIGRATION_DSN = os.environ.get("RAG_KB_TEST_MIGRATION_DSN")
@@ -135,23 +131,12 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
         )
         return document_id, versions
 
-    async def test_runtime_role_is_dml_only_and_compatibility_is_read_only(self) -> None:
+    async def test_runtime_role_is_dml_only_and_readiness_is_read_only(self) -> None:
         engine = create_async_engine(RUNTIME_SQLALCHEMY_DSN)
         try:
-            async with engine.connect() as connection:
-                report = await validate_database_compatibility(connection)
-            readiness = await validate_runtime_readiness(engine)
+            await check_database_ready(engine)
         finally:
             await engine.dispose()
-
-        self.assertEqual(
-            report.application_table_count, len(EXPECTED_APPLICATION_TABLES)
-        )
-        self.assertEqual(report.vector_type, "vector(1024)")
-        self.assertEqual(report.cross_modal_vector_type, "vector(768)")
-        self.assertEqual(readiness.database, "ready")
-        self.assertEqual(readiness.queue, "ready")
-        self.assertEqual(readiness.queue_backend, "postgresql")
 
         runtime = await asyncpg.connect(RUNTIME_DSN)
         try:

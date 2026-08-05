@@ -1,42 +1,25 @@
-"""Read-only runtime readiness checks for PostgreSQL-backed P1A services."""
+"""Minimal database readiness check for the local runtime."""
 
 from __future__ import annotations
-
-from dataclasses import dataclass
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from rag_kb.db.compatibility import (
-    DatabaseCompatibility,
-    validate_database_compatibility,
-)
+EXPECTED_REVISION = "0001_current_only_baseline"
 
 
-QUEUE_PROBES = (
-    text("SELECT 1 FROM chat_run LIMIT 0"),
-    text("SELECT 1 FROM indexing_job LIMIT 0"),
-)
+class DatabaseReadinessError(RuntimeError):
+    """The local database is not at the schema expected by this checkout."""
 
 
-@dataclass(frozen=True, slots=True)
-class RuntimeReadiness:
-    database: str
-    queue: str
-    queue_backend: str
-    compatibility: DatabaseCompatibility
-
-
-async def validate_runtime_readiness(engine: AsyncEngine) -> RuntimeReadiness:
-    """Validate schema and PostgreSQL queue access without writes or repair."""
+async def check_database_ready(engine: AsyncEngine) -> None:
+    """Confirm connectivity and the current-only Alembic head."""
 
     async with engine.connect() as connection:
-        compatibility = await validate_database_compatibility(connection)
-        for probe in QUEUE_PROBES:
-            await connection.execute(probe)
-    return RuntimeReadiness(
-        database="ready",
-        queue="ready",
-        queue_backend="postgresql",
-        compatibility=compatibility,
-    )
+        revision = await connection.scalar(
+            text("SELECT version_num FROM alembic_version")
+        )
+    if revision != EXPECTED_REVISION:
+        raise DatabaseReadinessError(
+            f"expected migration {EXPECTED_REVISION}, found {revision}"
+        )

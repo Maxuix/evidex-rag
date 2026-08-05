@@ -24,7 +24,6 @@ from rag_kb.domain import (
     IndexingTarget,
     PromotionCommand,
     PromotionResult,
-    PersistedVectorRepresentation,
     RetiredIndexTargetAssets,
     ReconciliationResult,
     VectorRecordWrite,
@@ -107,27 +106,15 @@ class IndexingRepository(Protocol):
 
     async def prepare(self, command: IndexingCommand) -> IndexingTarget | None: ...
 
-    async def get_chunk_plan(
-        self, command: IndexingCommand
-    ) -> IndexChunkPlan | None: ...
-
-    async def create_or_get_chunk_plan(
+    async def save_chunk_plan(
         self,
         command: IndexingCommand,
         proposed: IndexChunkPlan,
-    ) -> IndexChunkPlan: ...
+    ) -> bool: ...
 
-    async def get_artifact_manifest(
-        self, command: IndexingCommand
-    ) -> IndexArtifactManifest | None: ...
-
-    async def create_or_get_artifact_manifest(
+    async def save_artifact_manifest(
         self, command: IndexingCommand, proposed: IndexArtifactManifest
-    ) -> IndexArtifactManifest: ...
-
-    async def list_persisted_representations(
-        self, command: IndexingCommand, *, limit: int
-    ) -> tuple[PersistedVectorRepresentation, ...]: ...
+    ) -> bool: ...
 
     async def upsert_assets(
         self, command: IndexingCommand, assets: tuple[IndexAssetWrite, ...]

@@ -14,25 +14,18 @@ def install_health_routes(app: FastAPI) -> None:
     @app.get("/health/ready", include_in_schema=False)
     async def ready(request: Request) -> JSONResponse:
         try:
-            readiness = await request.app.state.dependencies.check_readiness()
+            await request.app.state.dependencies.check_readiness()
         except Exception:
             return JSONResponse(
                 {
                     "status": "not_ready",
-                    "components": {
-                        "database": "unavailable",
-                        "queue": "unavailable",
-                    },
+                    "components": {"database": "unavailable"},
                 },
                 status_code=503,
             )
         return JSONResponse(
             {
                 "status": "ready",
-                "components": {
-                    "database": readiness.database,
-                    "queue": readiness.queue,
-                    "queue_backend": readiness.queue_backend,
-                },
+                "components": {"database": "ready"},
             }
         )

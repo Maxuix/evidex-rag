@@ -40,7 +40,6 @@ from rag_kb.domain import (
     ParserLimits,
     ParserSource,
     ParsingPreset,
-    PersistedVectorRepresentation,
     PromotionCommand,
     SemanticUnit,
     SourceFileMissingError,
@@ -92,8 +91,6 @@ from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, UnitOfWorkPurpose, execute
 
 
 ResultT = TypeVar("ResultT")
-RepresentationIdentity = tuple[UUID, UUID, UUID, str]
-_CHUNK_CAS_BATCH_SIZE = 500
 _LEXICAL_CAS_BATCH_SIZE = 250
 
 
@@ -411,22 +408,6 @@ class IndexingPipeline:
             "source_checksum_sha256": target.checksum_sha256,
             "profile_fingerprint": fingerprint,
         }
-        existing = await self._transaction(
-            lambda uow: uow.indexing.get_chunk_plan(command)
-        )
-        if existing is not None:
-            await asyncio.to_thread(
-                validate_plan,
-                existing, **plan_facts, units=units, sequence_hash=sequence_hash
-            )
-            return await asyncio.to_thread(
-                self._assemble_semantic,
-                document,
-                units,
-                existing,
-                surface_labels,
-            )
-
         requires_analysis = await asyncio.to_thread(
             _requires_semantic_analysis,
             units,
@@ -443,12 +424,14 @@ class IndexingPipeline:
             vectors=vectors,
             sequence_hash=sequence_hash,
         )
-        winner = await self._transaction(
-            lambda uow: uow.indexing.create_or_get_chunk_plan(command, proposed)
+        changed = await self._transaction(
+            lambda uow: uow.indexing.save_chunk_plan(command, proposed)
         )
+        if not changed:
+            raise IndexingCancelled
         await asyncio.to_thread(
             validate_plan,
-            winner,
+            proposed,
             **plan_facts,
             units=units,
             sequence_hash=sequence_hash,
@@ -457,7 +440,7 @@ class IndexingPipeline:
             self._assemble_semantic,
             document,
             units,
-            winner,
+            proposed,
             surface_labels,
         )
 
@@ -685,19 +668,12 @@ class IndexingPipeline:
             relation_writes,
             fingerprint,
         )
-        winner = await self._transaction(
-            lambda uow: uow.indexing.create_or_get_artifact_manifest(
-                command, proposed
-            )
+        changed = await self._transaction(
+            lambda uow: uow.indexing.save_artifact_manifest(command, proposed)
         )
-        if winner != proposed:
-            raise IndexingExecutionError(
-                ErrorCode.INDEX_CHUNK_PLAN_MISMATCH,
-                phase=IndexingPhase.PERSISTING,
-                diagnostic={"check": "artifact_manifest_reuse"},
-            )
+        if not changed:
+            raise IndexingCancelled
 
-        persisted = await self._persisted_representations(command)
         await self._embed_representations(
             command,
             target,
@@ -706,7 +682,6 @@ class IndexingPipeline:
             chunks,
             planned,
             cross_space,
-            persisted,
         )
         changed = await self._transaction(
             lambda uow: uow.indexing.upsert_relations(command, relation_writes)
@@ -973,28 +948,14 @@ class IndexingPipeline:
         chunks,
         planned,
         cross_space,
-        persisted: frozenset[RepresentationIdentity],
     ) -> None:
         assets = {item.asset_key: item for item in extracted}
         units_by_id = {str(chunk.id): unit for chunk, unit in zip(chunks, units, strict=True)}
         chunks_by_id = {str(chunk.id): chunk for chunk in chunks}
-        persisted_chunk_ids = {
-            item["unit_id"]
-            for item in planned
-            if self._planned_representation_identity(item) in persisted
-        }
-        if persisted_chunk_ids:
-            await self._revalidate_persisted_chunks(
-                command,
-                tuple(
-                    chunk for chunk in chunks if str(chunk.id) in persisted_chunk_ids
-                ),
-            )
         text_items = tuple(
             item
             for item in planned
             if item["space_role"] == "text_retrieval"
-            and self._planned_representation_identity(item) not in persisted
         )
         text_batch_size = self._embedding_provider.max_batch_size
         for offset in range(0, len(text_items), text_batch_size):
@@ -1059,7 +1020,6 @@ class IndexingPipeline:
             item
             for item in planned
             if item["space_role"] == "cross_modal_retrieval"
-            and self._planned_representation_identity(item) not in persisted
         )
         if not image_items:
             return
@@ -1122,63 +1082,6 @@ class IndexingPipeline:
                     )
                 )
             await self._upsert(command, tuple(batch_chunks), tuple(writes))
-
-    async def _persisted_representations(
-        self, command: IndexingCommand
-    ) -> frozenset[RepresentationIdentity]:
-        records = await self._transaction(
-            lambda uow: uow.indexing.list_persisted_representations(
-                command,
-                limit=self._parser_limits.max_representations,
-            )
-        )
-        return frozenset(self._representation_identity(record) for record in records)
-
-    @staticmethod
-    def _representation_identity(
-        record: PersistedVectorRepresentation | VectorRecordWrite,
-    ) -> RepresentationIdentity:
-        return (
-            record.id,
-            record.index_chunk_id,
-            record.embedding_space_id,
-            record.representation_kind,
-        )
-
-    @staticmethod
-    def _planned_representation_identity(item) -> RepresentationIdentity:
-        chunk_id = UUID(item["unit_id"])
-        embedding_space_id = UUID(item["space_id"])
-        representation_kind = item["representation_kind"]
-        return (
-            stable_vector_id(
-                embedding_space_id,
-                chunk_id,
-                representation_kind,
-            ),
-            chunk_id,
-            embedding_space_id,
-            representation_kind,
-        )
-
-    async def _revalidate_persisted_chunks(
-        self,
-        command: IndexingCommand,
-        chunks: tuple[IndexChunkWrite, ...],
-    ) -> None:
-        batch_size = max(
-            1,
-            min(
-                self._embedding_provider.max_batch_size,
-                _CHUNK_CAS_BATCH_SIZE,
-            ),
-        )
-        for offset in range(0, len(chunks), batch_size):
-            await self._upsert(
-                command,
-                chunks[offset : offset + batch_size],
-                (),
-            )
 
     async def _embed_analysis_units(
         self,
