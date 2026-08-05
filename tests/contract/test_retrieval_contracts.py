@@ -40,6 +40,19 @@ class RetrievalTransportContractTests(unittest.TestCase):
         self.assertEqual(request.query, "混合检索 ABC-42")
         self.assertIs(request.strategy, RetrievalStrategy.HYBRID)
 
+    def test_request_rejects_unimplemented_strategies(self) -> None:
+        for strategy in ("ann_vector", "lexical"):
+            with self.subTest(strategy=strategy), self.assertRaises(
+                ValidationError
+            ):
+                RetrievalQueryRequest.model_validate(
+                    {
+                        "knowledge_base_id": str(KB_ID),
+                        "query": "query",
+                        "strategy": strategy,
+                    }
+                )
+
     def test_request_rejects_client_owned_scope_and_serving_filters(self) -> None:
         forbidden_fields = (
             "workspace_id",
@@ -138,10 +151,18 @@ class RetrievalTransportContractTests(unittest.TestCase):
             body["evidence"][0]["document_version_id"],
             "01900000-0000-7000-8000-000000000907",
         )
-        self.assertEqual(body["debug"]["query_plan"]["revision_selector"], "active")
-        self.assertTrue(body["debug"]["query_plan"]["current_document_version_only"])
-        self.assertEqual(body["debug"]["query_plan"]["build_status"], "ready")
-        self.assertEqual(body["debug"]["query_plan"]["serving_status"], "serving")
+        self.assertEqual(
+            set(body["debug"]["query_plan"]),
+            {
+                "workspace_id",
+                "knowledge_base_id",
+                "strategy",
+                "top_k",
+                "distance_metric",
+                "candidate_count",
+                "rerank",
+            },
+        )
         self.assertNotIn("query", body["debug"]["query_plan"])
         self.assertEqual(body["debug"]["hydrated_relation_count"], 1)
         self.assertEqual(body["debug"]["lexical_candidate_count"], 4)

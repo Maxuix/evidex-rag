@@ -10,9 +10,7 @@ from pydantic import ConfigDict, Field, field_validator
 from rag_kb.domain import (
     EvidencePack,
     EvidenceScoreKind,
-    IterativeScanMode,
     RetrievalStrategy,
-    RevisionSelector,
 )
 from rag_kb.schemas.common import PublicSchema
 
@@ -55,14 +53,8 @@ class RetrievalQueryPlanResponse(RetrievalPublicSchema):
     knowledge_base_id: UUID
     strategy: RetrievalStrategy
     top_k: int
-    revision_selector: RevisionSelector
-    current_document_version_only: bool
-    build_status: str
-    serving_status: str
     distance_metric: str
     candidate_count: int | None
-    ef_search: int | None
-    iterative_scan: IterativeScanMode
     rerank: bool
 
 

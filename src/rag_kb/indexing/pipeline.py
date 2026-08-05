@@ -142,6 +142,7 @@ class IndexingPipeline:
                     replayed=True,
                     serving_status=promotion.status.value,
                 )
+            await self._discard_partial_assets(command, target)
             require_compatible_embedding_spaces(
                 self._embedding_space,
                 target.embedding_space,
@@ -209,6 +210,30 @@ class IndexingPipeline:
 
     async def _prepare(self, command: IndexingCommand) -> IndexingTarget | None:
         return await self._transaction(lambda uow: uow.indexing.prepare(command))
+
+    async def _discard_partial_assets(
+        self,
+        command: IndexingCommand,
+        target: IndexingTarget,
+    ) -> None:
+        if self._asset_store is None:
+            return
+        try:
+            await self._asset_store.discard_target(
+                target.workspace_id,
+                target.indexed_document_version_id,
+            )
+        except (FileStoreError, OSError) as error:
+            raise IndexingExecutionError(
+                ErrorCode.INDEX_PERSISTENCE_FAILED,
+                phase=IndexingPhase.SOURCE_READ,
+                diagnostic={"operation": "discard_partial_assets"},
+            ) from error
+        changed = await self._transaction(
+            lambda uow: uow.indexing.discard_partial_assets(command)
+        )
+        if not changed:
+            raise IndexingCancelled
 
     async def _set_phase(self, command: IndexingCommand, phase: IndexingPhase) -> None:
         changed = await self._transaction(

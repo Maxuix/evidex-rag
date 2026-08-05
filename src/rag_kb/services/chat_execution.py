@@ -21,7 +21,7 @@ from rag_kb.domain import (
     ReconciliationResult,
 )
 from rag_kb.retrieval import RetrievalService
-from rag_kb.retrieval.profile import RetrievalExecutionProfile
+from rag_kb.retrieval.profile import parse_retrieval_snapshot
 from rag_kb.uow import (
     UnitOfWork,
     UnitOfWorkFactory,
@@ -144,12 +144,9 @@ class ChatEvidenceRetriever:
                 raise ValueError
             else:
                 query = query_context.standalone_query
-            profile = RetrievalExecutionProfile.from_snapshot(
+            strategy, top_k, rerank = parse_retrieval_snapshot(
                 context.retrieval_strategy,
             )
-            strategy = profile.strategy
-            top_k = profile.top_k
-            rerank = profile.rerank
             request = RetrievalRequest(
                 knowledge_base_id=context.knowledge_base_id,
                 query=query,
@@ -157,7 +154,6 @@ class ChatEvidenceRetriever:
                 strategy=strategy,
                 rerank=rerank,
                 include_debug=True,
-                execution_profile=profile.as_dict(),
             )
         except (KeyError, TypeError, ValueError) as error:
             raise ChatPipelineExecutionError(

@@ -344,7 +344,10 @@ def _run_response(value: ChatRun) -> ChatRunResponse:
         events_url=f"{_status_url(value.id)}/events",
         final_context_url=f"{_status_url(value.id)}/final-context",
         effective_answer_policy=_policy_response(value),
-        retrieval=dict(value.retrieval_strategy),
+        retrieval={
+            key: value.retrieval_strategy[key]
+            for key in ("profile_version", "strategy", "top_k", "rerank")
+        },
         query_context=_query_context_response(value),
         attempt=value.attempt,
         error=_run_error(value),

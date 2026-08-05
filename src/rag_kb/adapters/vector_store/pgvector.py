@@ -152,8 +152,6 @@ class PgVectorStore:
             plan.strategy
             not in {RetrievalStrategy.EXACT_VECTOR, RetrievalStrategy.HYBRID}
             or plan.distance_metric != "cosine"
-            or plan.ef_search is not None
-            or plan.iterative_scan.value != "disabled"
         ):
             raise RetrievalExecutionError(
                 ErrorCode.CAPABILITY_NOT_ENABLED,

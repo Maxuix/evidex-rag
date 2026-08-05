@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import io
 import os
 import tempfile
@@ -11,18 +12,21 @@ from uuid import UUID
 
 from PIL import Image
 
+from rag_kb.adapters.file_store.assets import LocalIndexAssetStore
 from rag_kb.adapters.file_store.local import LocalFileStore
 from rag_kb.auth import AuthContext
 from rag_kb.domain import (
     Document,
     DocumentMutationResult,
     FileLocation,
+    IndexAssetIdentity,
     InvalidStorageIdentityError,
     SourceFileDigest,
     SourceFileIntegrityError,
+    SourceFileMissingError,
 )
 from rag_kb.document_processing.markdown_bundle import MARKDOWN_BUNDLE_MEDIA_TYPE
-from rag_kb.ports.files import SourceFileStore
+from rag_kb.ports.files import IndexAssetStore, SourceFileStore
 from rag_kb.ports.markdown_media import FetchedImage
 from rag_kb.services.files import SourceFileService
 from rag_kb.services.markdown_media import MarkdownMediaNormalizer
@@ -100,6 +104,47 @@ class LocalFileStoreTests(unittest.TestCase):
                 self.store.parse_uri("file:///tmp/not-allowed")
             with self.assertRaises(InvalidStorageIdentityError):
                 self.store.parse_uri(f"local-source://{WORKSPACE}/../escape")
+
+        asyncio.run(scenario())
+
+
+class LocalIndexAssetStoreTests(unittest.TestCase):
+    def test_discard_target_removes_only_the_selected_candidate(self) -> None:
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                staging = root / "asset-staging"
+                final = root / "asset-final"
+                staging.mkdir()
+                final.mkdir()
+                store = LocalIndexAssetStore(staging, final)
+                self.assertIsInstance(store, IndexAssetStore)
+                discarded_target = UUID(
+                    "01900000-0000-7000-8000-000000000041"
+                )
+                retained_target = UUID(
+                    "01900000-0000-7000-8000-000000000042"
+                )
+                content = b"derived asset"
+                checksum = hashlib.sha256(content).hexdigest()
+                discarded = IndexAssetIdentity(
+                    WORKSPACE,
+                    discarded_target,
+                    checksum,
+                )
+                retained = IndexAssetIdentity(
+                    WORKSPACE,
+                    retained_target,
+                    checksum,
+                )
+                await store.put(discarded, content, checksum)
+                await store.put(retained, content, checksum)
+
+                await store.discard_target(WORKSPACE, discarded_target)
+
+                with self.assertRaises(SourceFileMissingError):
+                    await store.read(discarded)
+                self.assertEqual(await store.read(retained), content)
 
         asyncio.run(scenario())
 

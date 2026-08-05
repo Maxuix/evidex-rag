@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import os
 import re
+import shutil
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -37,6 +38,17 @@ class LocalIndexAssetStore:
 
     async def delete(self, identity: IndexAssetIdentity) -> None:
         await asyncio.to_thread(self._delete, identity)
+
+    async def discard_target(
+        self,
+        workspace_id: UUID,
+        indexed_document_version_id: UUID,
+    ) -> None:
+        await asyncio.to_thread(
+            self._discard_target,
+            workspace_id,
+            indexed_document_version_id,
+        )
 
     @staticmethod
     def parse_uri(storage_uri: str) -> IndexAssetIdentity:
@@ -84,6 +96,27 @@ class LocalIndexAssetStore:
     def _delete(self, identity: IndexAssetIdentity) -> None:
         self._path(self._staging, identity).unlink(missing_ok=True)
         self._path(self._final, identity).unlink(missing_ok=True)
+
+    def _discard_target(
+        self,
+        workspace_id: UUID,
+        indexed_document_version_id: UUID,
+    ) -> None:
+        for root in (self._staging, self._final):
+            candidate = (
+                root / str(workspace_id) / str(indexed_document_version_id)
+            )
+            target = candidate.resolve(strict=False)
+            if (
+                target != candidate
+                or not target.is_relative_to(root)
+                or target == root
+            ):
+                raise InvalidStorageIdentityError(
+                    "index asset target escaped configured root"
+                )
+            if target.exists():
+                shutil.rmtree(target)
 
     @staticmethod
     def _path(root: Path, identity: IndexAssetIdentity, *, create_parent: bool = False) -> Path:

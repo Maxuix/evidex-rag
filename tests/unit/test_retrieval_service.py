@@ -93,7 +93,7 @@ class RetrievalContractTests(unittest.TestCase):
         self.assertIn("version.source_status = 'available'", sql)
         self.assertNotIn("hnsw", sql.lower())
 
-    def test_pgvector_adapter_rejects_non_exact_or_wrong_dimension(self) -> None:
+    def test_pgvector_adapter_rejects_wrong_dimension(self) -> None:
         definition = replace(_embedding_space(), dimension=1024)
         store = PgVectorStore(None, definition)  # type: ignore[arg-type]
         exact = _plan()
@@ -102,23 +102,11 @@ class RetrievalContractTests(unittest.TestCase):
             store._require_exact_plan(exact, (1.0, 0.0))  # noqa: SLF001
         self.assertEqual(dimension.exception.code, ErrorCode.EMBEDDING_RESPONSE_INVALID)
 
-        with self.assertRaises(RetrievalExecutionError) as capability:
-            store._require_exact_plan(  # noqa: SLF001
-                replace(exact, strategy=RetrievalStrategy.ANN_VECTOR),
-                tuple(0.0 for _ in range(1024)),
-            )
-        self.assertEqual(capability.exception.code, ErrorCode.CAPABILITY_NOT_ENABLED)
-
-    def test_query_plan_rejects_relaxed_server_owned_filters(self) -> None:
+    def test_query_plan_contains_only_executable_controls(self) -> None:
         plan = _plan()
         relaxed = (
-            {"revision_selector": "retired"},
-            {"current_document_version_only": False},
-            {"build_status": "processing"},
-            {"serving_status": "candidate"},
             {"distance_metric": "inner_product"},
             {"candidate_count": 50},
-            {"ef_search": 100},
         )
 
         for changes in relaxed:
@@ -248,12 +236,8 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(store.embeddings, [(0.6, 0.8)])
         plan = store.plans[0]
         self.assertEqual((plan.workspace_id, plan.knowledge_base_id), (WORKSPACE, KB_ID))
-        self.assertEqual(plan.revision_selector.value, "active")
-        self.assertTrue(plan.current_document_version_only)
-        self.assertEqual((plan.build_status, plan.serving_status), ("ready", "serving"))
         self.assertEqual((plan.strategy.value, plan.distance_metric), ("exact_vector", "cosine"))
         self.assertIsNone(plan.candidate_count)
-        self.assertIsNone(plan.ef_search)
         self.assertEqual([item.index_chunk_id for item in pack.evidence], [CHUNK_1, CHUNK_2])
         self.assertEqual([item.rank for item in pack.evidence], [1, 2])
         self.assertAlmostEqual(pack.evidence[0].score, 0.8)
@@ -314,7 +298,6 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(pack.evidence, ())
         self.assertIsNone(pack.debug)
         self.assertEqual(store.plans[0].top_k, 10)
-        self.assertEqual(store.plans[0].build_status, "ready")
 
     async def test_unsupported_strategy_and_rerank_fail_before_external_io(self) -> None:
         for request in (

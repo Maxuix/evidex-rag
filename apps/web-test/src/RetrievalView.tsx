@@ -161,20 +161,13 @@ export function RetrievalView({
             <div className="panel-heading split-heading">
               <div>
                 <p className="eyebrow">Resolved query plan</p>
-                <h2>Mandatory serving filters</h2>
-              </div>
-              <div className="badge-row">
-                <StatusBadge value={result.debug!.query_plan.build_status} />
-                <StatusBadge value={result.debug!.query_plan.serving_status} />
+                <h2>Effective retrieval request</h2>
               </div>
             </div>
             <KeyValueGrid values={[
               ["Strategy", result.debug!.query_plan.strategy],
               ["Top K", result.debug!.query_plan.top_k],
-              ["Revision selector", result.debug!.query_plan.revision_selector],
-              ["Current version only", result.debug!.query_plan.current_document_version_only],
               ["Distance", result.debug!.query_plan.distance_metric],
-              ["Iterative scan", result.debug!.query_plan.iterative_scan],
               ["Rerank", result.debug!.query_plan.rerank],
               ["Result count", result.debug!.result_count],
               ["Text candidates", result.debug!.text_candidate_count],

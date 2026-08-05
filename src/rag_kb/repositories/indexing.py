@@ -106,6 +106,8 @@ class IndexingRepository(Protocol):
 
     async def prepare(self, command: IndexingCommand) -> IndexingTarget | None: ...
 
+    async def discard_partial_assets(self, command: IndexingCommand) -> bool: ...
+
     async def save_chunk_plan(
         self,
         command: IndexingCommand,

@@ -212,7 +212,7 @@ class ChatCreationServiceTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(failure.exception.code, ErrorCode.CAPABILITY_NOT_ENABLED)
 
-    async def test_hybrid_run_freezes_complete_versioned_retrieval_profile(
+    async def test_hybrid_run_freezes_only_the_selected_retrieval_preset(
         self,
     ) -> None:
         workspace_id = uuid4()
@@ -229,6 +229,9 @@ class ChatCreationServiceTests(unittest.IsolatedAsyncioTestCase):
                 lexical_query_version="lexical_or_query_v1",
                 dense_candidate_count=17,
                 lexical_candidate_count=23,
+                dense_weight_micros=1_000_000,
+                lexical_weight_micros=1_000_000,
+                min_rerank_score=0.45,
             )
 
         service = ChatService(
@@ -253,16 +256,15 @@ class ChatCreationServiceTests(unittest.IsolatedAsyncioTestCase):
         )
 
         snapshot = created["retrieval_strategy"]
-        self.assertEqual(snapshot["profile_version"], HYBRID_PROFILE_VERSION)
-        self.assertEqual(snapshot["strategy"], "hybrid")
-        self.assertEqual(snapshot["dense_candidate_count"], 17)
-        self.assertEqual(snapshot["lexical_candidate_count"], 23)
         self.assertEqual(
-            snapshot["lexical_analyzer_version"],
-            "lexical_simple_cjk_bigram_v1",
+            snapshot,
+            {
+                "profile_version": HYBRID_PROFILE_VERSION,
+                "strategy": "hybrid",
+                "top_k": 4,
+                "rerank": True,
+            },
         )
-        self.assertIn("rrf_k", snapshot)
-        self.assertIn("min_cosine_similarity", snapshot)
 
     async def test_session_listing_filters_by_authorized_knowledge_base(self) -> None:
         workspace_id = uuid4()

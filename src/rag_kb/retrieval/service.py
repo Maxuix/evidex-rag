@@ -251,35 +251,6 @@ class RetrievalService:
             ),
         )
 
-    def _execution_profile(
-        self, request: RetrievalRequest
-    ) -> RetrievalExecutionProfile:
-        if request.execution_profile is None:
-            return self.execution_profile(
-                strategy=request.strategy,
-                top_k=request.top_k,
-                rerank=request.rerank,
-            )
-        try:
-            profile = RetrievalExecutionProfile.from_snapshot(
-                request.execution_profile,
-            )
-        except (KeyError, TypeError, ValueError) as error:
-            raise RetrievalExecutionError(
-                ErrorCode.INDEX_REVISION_INCOMPATIBLE,
-                diagnostic={"check": "retrieval_execution_profile"},
-            ) from error
-        if (
-            profile.strategy is not request.strategy
-            or profile.top_k != request.top_k
-            or profile.rerank is not request.rerank
-        ):
-            raise RetrievalExecutionError(
-                ErrorCode.INDEX_REVISION_INCOMPATIBLE,
-                diagnostic={"check": "retrieval_profile_request"},
-            )
-        return profile
-
     async def retrieve(
         self,
         context: AuthContext,
@@ -306,7 +277,11 @@ class RetrievalService:
         self._require_enabled(request)
         if request.include_debug:
             self._access_policy.authorize_retrieval_debug(context)
-        profile = self._execution_profile(request)
+        profile = self.execution_profile(
+            strategy=request.strategy,
+            top_k=request.top_k,
+            rerank=request.rerank,
+        )
         if request.strategy is RetrievalStrategy.HYBRID:
             return await self._retrieve_hybrid(context, request, profile)
 
@@ -1165,8 +1140,8 @@ class RetrievalService:
                 hit.workspace_id != plan.workspace_id
                 or hit.knowledge_base_id != plan.knowledge_base_id
                 or hit.index_revision_id != result.resolved_active_revision_id
-                or hit.build_status != plan.build_status
-                or hit.serving_status != plan.serving_status
+                or hit.build_status != "ready"
+                or hit.serving_status != "serving"
                 or not hit.is_current_serving_version
             ):
                 raise RetrievalExecutionError(
@@ -1214,8 +1189,8 @@ class RetrievalService:
                 or hit.knowledge_base_id != plan.knowledge_base_id
                 or hit.index_revision_id
                 != lexical_result.resolved_active_revision_id
-                or hit.build_status != plan.build_status
-                or hit.serving_status != plan.serving_status
+                or hit.build_status != "ready"
+                or hit.serving_status != "serving"
                 or not hit.is_current_serving_version
                 or hit.lexical_rank is None
             ):

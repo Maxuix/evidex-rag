@@ -4,35 +4,34 @@ import unittest
 
 from rag_kb.retrieval.profile import (
     HYBRID_PROFILE_VERSION,
-    RetrievalExecutionProfile,
     exact_profile,
+    parse_retrieval_snapshot,
 )
 
 
 class RetrievalExecutionProfileTests(unittest.TestCase):
     def test_incomplete_three_field_snapshot_is_rejected(self) -> None:
         with self.assertRaises(ValueError):
-            RetrievalExecutionProfile.from_snapshot(
+            parse_retrieval_snapshot(
                 {"strategy": "exact_vector", "top_k": 7, "rerank": False},
             )
 
-    def test_hybrid_snapshot_round_trips_all_frozen_values(self) -> None:
-        baseline = exact_profile(top_k=6)
+    def test_snapshot_contains_only_the_selected_preset(self) -> None:
         snapshot = {
-            **baseline.as_dict(),
             "profile_version": HYBRID_PROFILE_VERSION,
             "strategy": "hybrid",
-            "lexical_analyzer_version": "lexical_simple_cjk_bigram_v1",
-            "lexical_query_version": "lexical_or_query_v1",
-            "dense_candidate_count": 24,
-            "lexical_candidate_count": 31,
-            "dense_weight_micros": 900_000,
-            "lexical_weight_micros": 1_100_000,
+            "top_k": 6,
+            "rerank": True,
         }
 
-        profile = RetrievalExecutionProfile.from_snapshot(snapshot)
+        strategy, top_k, rerank = parse_retrieval_snapshot(snapshot)
 
-        self.assertEqual(profile.as_dict(), snapshot)
+        self.assertEqual(strategy.value, "hybrid")
+        self.assertEqual((top_k, rerank), (6, True))
+        self.assertEqual(
+            set(exact_profile(top_k=6).as_dict()),
+            {"profile_version", "strategy", "top_k", "rerank"},
+        )
 
     def test_unknown_or_incomplete_hybrid_snapshot_fails_closed(self) -> None:
         baseline = exact_profile().as_dict()
@@ -42,12 +41,13 @@ class RetrievalExecutionProfileTests(unittest.TestCase):
                 **baseline,
                 "profile_version": HYBRID_PROFILE_VERSION,
                 "strategy": "hybrid",
-                "lexical_analyzer_version": "unknown",
-                "lexical_query_version": "lexical_or_query_v1",
+                "dense_candidate_count": 20,
             },
+            {**baseline, "top_k": True},
+            {**baseline, "rerank": 1},
             {"profile_version": HYBRID_PROFILE_VERSION},
         ):
             with self.subTest(snapshot=snapshot), self.assertRaises(
                 (KeyError, ValueError)
             ):
-                RetrievalExecutionProfile.from_snapshot(snapshot)
+                parse_retrieval_snapshot(snapshot)

@@ -876,7 +876,7 @@ class RetrievalApiContractTests(unittest.IsolatedAsyncioTestCase):
         body = response.json()
         self.assertEqual(body["knowledge_base_id"], str(kb_id))
         self.assertEqual(body["evidence"][0]["text"], "safe evidence")
-        self.assertEqual(body["debug"]["query_plan"]["revision_selector"], "active")
+        self.assertEqual(body["debug"]["query_plan"]["strategy"], "exact_vector")
         self.assertNotIn("query", body["debug"]["query_plan"])
         _, retrieval_request = self.service.requests[0]
         self.assertEqual(retrieval_request.query, "查询 ABC-42")

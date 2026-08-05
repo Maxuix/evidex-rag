@@ -893,68 +893,6 @@
       "ChatRunRetrievalResponse": {
         "additionalProperties": false,
         "properties": {
-          "cross_modal_candidate_count": {
-            "title": "Cross Modal Candidate Count",
-            "type": "integer"
-          },
-          "cross_modal_min_cosine_similarity": {
-            "title": "Cross Modal Min Cosine Similarity",
-            "type": "number"
-          },
-          "cross_modal_weight_micros": {
-            "title": "Cross Modal Weight Micros",
-            "type": "integer"
-          },
-          "dense_candidate_count": {
-            "title": "Dense Candidate Count",
-            "type": "integer"
-          },
-          "dense_weight_micros": {
-            "title": "Dense Weight Micros",
-            "type": "integer"
-          },
-          "lexical_analyzer_version": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Lexical Analyzer Version"
-          },
-          "lexical_candidate_count": {
-            "title": "Lexical Candidate Count",
-            "type": "integer"
-          },
-          "lexical_query_version": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Lexical Query Version"
-          },
-          "lexical_weight_micros": {
-            "title": "Lexical Weight Micros",
-            "type": "integer"
-          },
-          "min_cosine_similarity": {
-            "title": "Min Cosine Similarity",
-            "type": "number"
-          },
-          "min_rerank_score": {
-            "title": "Min Rerank Score",
-            "type": "number"
-          },
-          "mmr_lambda": {
-            "title": "Mmr Lambda",
-            "type": "number"
-          },
           "profile_version": {
             "enum": [
               "exact_vector_v1",
@@ -966,18 +904,6 @@
           "rerank": {
             "title": "Rerank",
             "type": "boolean"
-          },
-          "rerank_lexical_weight": {
-            "title": "Rerank Lexical Weight",
-            "type": "number"
-          },
-          "rerank_vector_weight": {
-            "title": "Rerank Vector Weight",
-            "type": "number"
-          },
-          "rrf_k": {
-            "title": "Rrf K",
-            "type": "integer"
           },
           "strategy": {
             "enum": [
@@ -998,22 +924,7 @@
           "profile_version",
           "strategy",
           "top_k",
-          "rerank",
-          "dense_candidate_count",
-          "lexical_candidate_count",
-          "cross_modal_candidate_count",
-          "lexical_analyzer_version",
-          "lexical_query_version",
-          "rrf_k",
-          "dense_weight_micros",
-          "lexical_weight_micros",
-          "cross_modal_weight_micros",
-          "min_cosine_similarity",
-          "min_rerank_score",
-          "cross_modal_min_cosine_similarity",
-          "rerank_vector_weight",
-          "rerank_lexical_weight",
-          "mmr_lambda"
+          "rerank"
         ],
         "title": "ChatRunRetrievalResponse",
         "type": "object"
@@ -2493,13 +2404,6 @@
         "title": "InsufficiencyPolicy",
         "type": "string"
       },
-      "IterativeScanMode": {
-        "enum": [
-          "disabled"
-        ],
-        "title": "IterativeScanMode",
-        "type": "string"
-      },
       "KnowledgeBaseAnswerPolicyDefaults": {
         "additionalProperties": false,
         "properties": {
@@ -3139,10 +3043,6 @@
       "RetrievalQueryPlanResponse": {
         "additionalProperties": false,
         "properties": {
-          "build_status": {
-            "title": "Build Status",
-            "type": "string"
-          },
           "candidate_count": {
             "anyOf": [
               {
@@ -3154,27 +3054,9 @@
             ],
             "title": "Candidate Count"
           },
-          "current_document_version_only": {
-            "title": "Current Document Version Only",
-            "type": "boolean"
-          },
           "distance_metric": {
             "title": "Distance Metric",
             "type": "string"
-          },
-          "ef_search": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Ef Search"
-          },
-          "iterative_scan": {
-            "$ref": "#/components/schemas/IterativeScanMode"
           },
           "knowledge_base_id": {
             "format": "uuid",
@@ -3184,13 +3066,6 @@
           "rerank": {
             "title": "Rerank",
             "type": "boolean"
-          },
-          "revision_selector": {
-            "$ref": "#/components/schemas/RevisionSelector"
-          },
-          "serving_status": {
-            "title": "Serving Status",
-            "type": "string"
           },
           "strategy": {
             "$ref": "#/components/schemas/RetrievalStrategy"
@@ -3210,14 +3085,8 @@
           "knowledge_base_id",
           "strategy",
           "top_k",
-          "revision_selector",
-          "current_document_version_only",
-          "build_status",
-          "serving_status",
           "distance_metric",
           "candidate_count",
-          "ef_search",
-          "iterative_scan",
           "rerank"
         ],
         "title": "RetrievalQueryPlanResponse",
@@ -3268,18 +3137,9 @@
       "RetrievalStrategy": {
         "enum": [
           "exact_vector",
-          "ann_vector",
-          "lexical",
           "hybrid"
         ],
         "title": "RetrievalStrategy",
-        "type": "string"
-      },
-      "RevisionSelector": {
-        "enum": [
-          "active"
-        ],
-        "title": "RevisionSelector",
         "type": "string"
       },
       "ValidationError": {

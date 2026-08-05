@@ -25,17 +25,7 @@ def evidence_group_identity(
 
 class RetrievalStrategy(StrEnum):
     EXACT_VECTOR = "exact_vector"
-    ANN_VECTOR = "ann_vector"
-    LEXICAL = "lexical"
     HYBRID = "hybrid"
-
-
-class RevisionSelector(StrEnum):
-    ACTIVE = "active"
-
-
-class IterativeScanMode(StrEnum):
-    DISABLED = "disabled"
 
 
 class EvidenceScoreKind(StrEnum):
@@ -89,7 +79,6 @@ class RetrievalRequest:
     strategy: RetrievalStrategy = RetrievalStrategy.EXACT_VECTOR
     rerank: bool = False
     include_debug: bool = False
-    execution_profile: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         normalized = self.query.strip()
@@ -98,10 +87,6 @@ class RetrievalRequest:
         if not 1 <= self.top_k <= 100:
             raise ValueError("top_k must be between 1 and 100")
         object.__setattr__(self, "query", normalized)
-        if self.execution_profile is not None:
-            object.__setattr__(
-                self, "execution_profile", dict(self.execution_profile)
-            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,32 +95,16 @@ class RetrievalQueryPlan:
     knowledge_base_id: UUID
     strategy: RetrievalStrategy
     top_k: int
-    revision_selector: RevisionSelector = RevisionSelector.ACTIVE
-    current_document_version_only: bool = True
-    build_status: str = "ready"
-    serving_status: str = "serving"
     distance_metric: str = "cosine"
     candidate_count: int | None = None
-    ef_search: int | None = None
-    iterative_scan: IterativeScanMode = IterativeScanMode.DISABLED
     rerank: bool = False
 
     def __post_init__(self) -> None:
         if not 1 <= self.top_k <= 100:
             raise ValueError("top_k must be between 1 and 100")
-        if self.revision_selector is not RevisionSelector.ACTIVE:
-            raise ValueError("the active revision selector is mandatory")
-        if not self.current_document_version_only:
-            raise ValueError("the current retrievable version filter is mandatory")
-        if self.build_status != "ready" or self.serving_status != "serving":
-            raise ValueError("ready + serving filters are mandatory")
         if self.strategy is RetrievalStrategy.EXACT_VECTOR:
             if self.distance_metric != "cosine":
                 raise ValueError("exact-vector retrieval uses cosine distance")
-            if self.ef_search is not None:
-                raise ValueError("exact-vector retrieval has no ANN parameters")
-            if self.iterative_scan is not IterativeScanMode.DISABLED:
-                raise ValueError("exact-vector retrieval has no iterative scan")
             if self.rerank:
                 candidate_count = self.candidate_count
                 if candidate_count is None:
@@ -150,10 +119,6 @@ class RetrievalQueryPlan:
         elif self.strategy is RetrievalStrategy.HYBRID:
             if self.distance_metric != "cosine":
                 raise ValueError("hybrid dense companion uses cosine distance")
-            if self.ef_search is not None:
-                raise ValueError("hybrid v1 has no ANN parameters")
-            if self.iterative_scan is not IterativeScanMode.DISABLED:
-                raise ValueError("hybrid v1 has no iterative scan")
             if (
                 not self.rerank
                 or self.candidate_count is None

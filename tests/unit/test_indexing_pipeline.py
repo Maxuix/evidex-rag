@@ -296,6 +296,7 @@ class IndexingPipelineTests(unittest.IsolatedAsyncioTestCase):
         text_provider.max_batch_size = 10
         visual_provider = _MultimodalProvider(factory, fail_call=2)
         visual_provider.max_batch_size = 1
+        asset_store = _AssetStore(factory)
         global _CURRENT_FACTORY
         _CURRENT_FACTORY = factory
         pipeline = IndexingPipeline(
@@ -304,7 +305,7 @@ class IndexingPipelineTests(unittest.IsolatedAsyncioTestCase):
             _MultimodalParser(factory, document=_table_and_picture_document()),
             text_provider,
             _embedding(),
-            asset_store=_AssetStore(factory),
+            asset_store=asset_store,
             multimodal_embedding_provider=visual_provider,
         )
         command = IndexingCommand(
@@ -331,6 +332,18 @@ class IndexingPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(text_provider.calls, 1)
         self.assertEqual(visual_provider.image_calls, 2)
         self.assertEqual(len(repository.vectors), 3)
+        self.assertEqual(repository.asset_discard_calls, 2)
+        self.assertEqual(
+            asset_store.discards,
+            [
+                (WORKSPACE, repository.target.indexed_document_version_id),
+                (WORKSPACE, repository.target.indexed_document_version_id),
+            ],
+        )
+        self.assertEqual(
+            asset_store.assets_visible_during_discard,
+            [False, True],
+        )
 
     async def test_retry_discards_the_previous_attempt_manifest(
         self,
@@ -702,6 +715,7 @@ class _Repository:
         self.relations = ()
         self.lexical_rows = {}
         self.lexical_manifest = None
+        self.asset_discard_calls = 0
 
     async def prepare(self, command):
         self._active()
@@ -713,13 +727,19 @@ class _Repository:
         self.vectors.clear()
         self.plan = None
         self.manifest = None
-        self.assets = ()
         self.relations = ()
         self.lexical_rows.clear()
         self.lexical_manifest = None
         self.status = "running"
         self.failure = None
         return self.target
+
+    async def discard_partial_assets(self, command):
+        del command
+        self._active()
+        self.asset_discard_calls += 1
+        self.assets = ()
+        return True
 
     async def promote(self, command):
         self._active()
@@ -1057,11 +1077,21 @@ class _AssetStore:
     def __init__(self, factory) -> None:
         self.factory = factory
         self.writes = []
+        self.discards = []
+        self.assets_visible_during_discard = []
 
     async def put(self, identity, content, checksum):
         if self.factory.active:
             raise AssertionError("asset I/O ran inside transaction")
         self.writes.append((identity, content, checksum))
+
+    async def discard_target(self, workspace_id, indexed_document_version_id):
+        if self.factory.active:
+            raise AssertionError("asset I/O ran inside transaction")
+        self.assets_visible_during_discard.append(
+            bool(self.factory.repository.assets)
+        )
+        self.discards.append((workspace_id, indexed_document_version_id))
 
 
 class _FailingParser:

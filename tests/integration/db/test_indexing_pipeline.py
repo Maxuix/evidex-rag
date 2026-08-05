@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import io
 import json
 import os
@@ -19,6 +20,7 @@ from docling.datamodel.base_models import (
 )
 from docling.document_converter import DocumentConverter
 
+from rag_kb.adapters.file_store.assets import LocalIndexAssetStore
 from rag_kb.adapters.file_store.local import LocalFileStore
 from rag_kb.auth import AuthContext, SingleWorkspaceAccessPolicy
 from rag_kb.db import DatabaseProcess, create_database_resources
@@ -33,6 +35,7 @@ from rag_kb.domain import (
     EmbeddingBatch,
     EmbeddingSpaceDefinition,
     ErrorCode,
+    IndexAssetIdentity,
     IndexChunkWrite,
     IndexingCommand,
     IndexingExecutionError,
@@ -42,6 +45,7 @@ from rag_kb.domain import (
     PromotionCommand,
     PromotionReason,
     ResourceStateConflictError,
+    SourceFileMissingError,
     VectorRecordWrite,
 )
 from rag_kb.indexing.pipeline import IndexingPipeline
@@ -99,7 +103,13 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.root = Path(self.temporary.name)
         (self.root / "staging").mkdir()
         (self.root / "final").mkdir()
+        (self.root / "asset-staging").mkdir()
+        (self.root / "asset-final").mkdir()
         self.store = LocalFileStore(self.root / "staging", self.root / "final")
+        self.asset_store = LocalIndexAssetStore(
+            self.root / "asset-staging",
+            self.root / "asset-final",
+        )
         self.parser = _MarkdownParser()
 
     async def asyncTearDown(self) -> None:
@@ -1078,6 +1088,18 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def test_retry_discards_conflicting_partial_chunk_and_rebuilds(self) -> None:
         kb = await self._create_kb()
         uploaded = await self._upload(kb.id, "guide.txt", "text/plain", b"safe")
+        asset_content = b"partial derived asset"
+        asset_key = hashlib.sha256(asset_content).hexdigest()
+        asset_identity = IndexAssetIdentity(
+            WORKSPACE,
+            uploaded.indexed_document_version_id,
+            asset_key,
+        )
+        await self.asset_store.put(
+            asset_identity,
+            asset_content,
+            asset_key,
+        )
         connection = await asyncpg.connect(MIGRATION_DSN)
         try:
             await connection.execute(
@@ -1097,11 +1119,50 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 uploaded.indexed_document_version_id,
                 "0" * 64,
             )
+            await connection.execute(
+                """
+                INSERT INTO index_asset(
+                    id, workspace_id, kb_id, document_id,
+                    document_version_id, indexed_document_version_id,
+                    asset_key, kind, storage_uri, media_type,
+                    checksum_sha256, width, height, source_location,
+                    processing_metadata
+                )
+                SELECT $1, target.workspace_id, target.kb_id,
+                       target.document_id, target.document_version_id,
+                       target.id, $2, 'picture', $3, 'image/png',
+                       $2, NULL, NULL, '{}', '{}'
+                  FROM indexed_document_version target
+                 WHERE target.id = $4
+                """,
+                uuid4(),
+                asset_key,
+                asset_identity.storage_uri,
+                uploaded.indexed_document_version_id,
+            )
         finally:
             await connection.close()
 
-        completed = await self._pipeline(_Provider()).execute(_command(uploaded))
+        completed = await self._pipeline(
+            _Provider(),
+            asset_store=self.asset_store,
+        ).execute(_command(uploaded))
         self.assertEqual((completed.status, completed.chunk_count), ("ready", 1))
+        with self.assertRaises(SourceFileMissingError):
+            await self.asset_store.read(asset_identity)
+        connection = await asyncpg.connect(MIGRATION_DSN)
+        try:
+            remaining_assets = await connection.fetchval(
+                """
+                SELECT count(*)
+                  FROM index_asset
+                 WHERE indexed_document_version_id = $1
+                """,
+                uploaded.indexed_document_version_id,
+            )
+        finally:
+            await connection.close()
+        self.assertEqual(remaining_assets, 0)
         state = await self._target_state(uploaded.indexed_document_version_id)
         self.assertEqual(
             tuple(state),
@@ -1123,13 +1184,19 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
             ("failed", "candidate", "failed", "source_read", "SOURCE_FILE_MISSING", 0, 0),
         )
 
-    def _pipeline(self, provider) -> IndexingPipeline:
+    def _pipeline(
+        self,
+        provider,
+        *,
+        asset_store=None,
+    ) -> IndexingPipeline:
         return IndexingPipeline(
             self.factory,
             self.store,
             self.parser,
             provider,
             _embedding(),
+            asset_store=asset_store,
         )
 
     def _scheduler_for(

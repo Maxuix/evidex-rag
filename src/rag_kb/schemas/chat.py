@@ -135,21 +135,6 @@ class ChatRunRetrievalResponse(PublicSchema):
     strategy: Literal["exact_vector", "hybrid"]
     top_k: Annotated[int, Field(ge=1, le=100)]
     rerank: bool
-    dense_candidate_count: int
-    lexical_candidate_count: int
-    cross_modal_candidate_count: int
-    lexical_analyzer_version: str | None
-    lexical_query_version: str | None
-    rrf_k: int
-    dense_weight_micros: int
-    lexical_weight_micros: int
-    cross_modal_weight_micros: int
-    min_cosine_similarity: float
-    min_rerank_score: float
-    cross_modal_min_cosine_similarity: float
-    rerank_vector_weight: float
-    rerank_lexical_weight: float
-    mmr_lambda: float
 
 
 class ChatRunQueryContextResponse(PublicSchema):

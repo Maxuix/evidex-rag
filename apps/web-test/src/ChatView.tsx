@@ -809,21 +809,6 @@ export function ChatView({
                   ["Profile", run.retrieval.profile_version],
                   ["Top K", run.retrieval.top_k],
                   ["Rerank", run.retrieval.rerank ? "enabled" : "disabled"],
-                  ["Dense candidates", run.retrieval.dense_candidate_count],
-                  ["Lexical candidates", run.retrieval.lexical_candidate_count],
-                  ["Cross-modal candidates", run.retrieval.cross_modal_candidate_count],
-                  ["Lexical analyzer", run.retrieval.lexical_analyzer_version],
-                  ["Lexical query", run.retrieval.lexical_query_version],
-                  ["RRF K", run.retrieval.rrf_k],
-                  ["Dense weight micros", run.retrieval.dense_weight_micros],
-                  ["Lexical weight micros", run.retrieval.lexical_weight_micros],
-                  ["Cross-modal weight micros", run.retrieval.cross_modal_weight_micros],
-                  ["Min cosine", run.retrieval.min_cosine_similarity],
-                  ["Min rerank", run.retrieval.min_rerank_score],
-                  ["Cross-modal min cosine", run.retrieval.cross_modal_min_cosine_similarity],
-                  ["Vector rerank weight", run.retrieval.rerank_vector_weight],
-                  ["Lexical rerank weight", run.retrieval.rerank_lexical_weight],
-                  ["MMR lambda", run.retrieval.mmr_lambda],
                 ]} />
               </div>
               <div className="policy-card">

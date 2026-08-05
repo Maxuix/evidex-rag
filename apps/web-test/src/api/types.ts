@@ -218,21 +218,6 @@ export interface ChatRunRetrieval {
   strategy: "exact_vector" | "hybrid";
   top_k: number;
   rerank: boolean;
-  dense_candidate_count: number;
-  lexical_candidate_count: number;
-  cross_modal_candidate_count: number;
-  lexical_analyzer_version: string | null;
-  lexical_query_version: string | null;
-  rrf_k: number;
-  dense_weight_micros: number;
-  lexical_weight_micros: number;
-  cross_modal_weight_micros: number;
-  min_cosine_similarity: number;
-  min_rerank_score: number;
-  cross_modal_min_cosine_similarity: number;
-  rerank_vector_weight: number;
-  rerank_lexical_weight: number;
-  mmr_lambda: number;
 }
 
 export interface RetrievalCapability {
@@ -379,14 +364,8 @@ export interface RetrievalQueryPlan {
   knowledge_base_id: UUID;
   strategy: "exact_vector" | "hybrid";
   top_k: number;
-  revision_selector: "active";
-  current_document_version_only: true;
-  build_status: "ready";
-  serving_status: "serving";
   distance_metric: "cosine";
   candidate_count: number | null;
-  ef_search: number | null;
-  iterative_scan: "disabled";
   rerank: boolean;
 }
 

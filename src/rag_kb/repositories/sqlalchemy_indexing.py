@@ -1183,8 +1183,26 @@ class SqlAlchemyIndexingRepository:
         await self._session.flush()
         return _target(row, space_roles=await self._space_roles(revision.id))
 
+    async def discard_partial_assets(self, command: IndexingCommand) -> bool:
+        """Forget candidate asset rows after their local files are removed."""
+
+        self._ensure_active()
+        row = await self._load(command, lock=True)
+        if row is None:
+            return False
+        job, target, _version, _revision, _embedding, _knowledge_base = row
+        if not _is_writable(job, target):
+            return False
+        await self._session.execute(
+            delete(IndexAssetRow).where(
+                IndexAssetRow.indexed_document_version_id == target.id
+            )
+        )
+        await self._session.flush()
+        return True
+
     async def _discard_partial_build(self, target_id: UUID) -> None:
-        """Start a failed candidate retry from one empty derived-data set."""
+        """Discard derived rows while retaining assets until file cleanup."""
 
         chunk_ids = select(IndexChunkRow.id).where(
             IndexChunkRow.indexed_document_version_id == target_id
@@ -1200,7 +1218,6 @@ class SqlAlchemyIndexingRepository:
             IndexChunkLexicalRow,
             IndexLexicalManifestRow,
             IndexChunkRow,
-            IndexAssetRow,
             IndexArtifactManifestRow,
             IndexChunkPlanRow,
         ):

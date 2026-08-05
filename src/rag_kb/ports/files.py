@@ -68,4 +68,10 @@ class IndexAssetStore(Protocol):
 
     async def delete(self, identity: IndexAssetIdentity) -> None: ...
 
+    async def discard_target(
+        self,
+        workspace_id: UUID,
+        indexed_document_version_id: UUID,
+    ) -> None: ...
+
     def parse_uri(self, storage_uri: str) -> IndexAssetIdentity: ...
