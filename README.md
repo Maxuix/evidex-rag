@@ -80,11 +80,11 @@ configuration, sample import, and troubleshooting.
 
 ## Project Documentation
 
-- [Current complete architecture](docs/Enterprise-knowledge-base-design.md)
+- [Current architecture and local-first boundaries](docs/Enterprise-knowledge-base-design.md)
 - [Current execution tracker](docs/implementation-plans/EXECUTION-TRACKER.md)
 - [Implementation-plan workflow and template](docs/implementation-plans/README.md)
 
-The architecture document records current implementation facts, the tracker
-records the active plan and phase, and a dated implementation plan must be
-created before each new work item. Keep all three synchronized with changes in
-the same work.
+The architecture document is a high-level map of the current implementation.
+The tracker and a short dated plan are used only for active multi-stage, risky,
+schema-changing, or destructive work; focused changes can proceed without that
+process overhead. See `AGENTS.md` for the local-first maintenance rules.
