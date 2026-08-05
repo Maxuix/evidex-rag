@@ -40,19 +40,6 @@ class ChatRunCoordinator:
     def __init__(self, unit_of_work: UnitOfWorkFactory) -> None:
         self._unit_of_work = unit_of_work
 
-    async def oldest_claimable_at(
-        self, *, observed_at: datetime, max_attempts: int
-    ) -> datetime | None:
-        async def load(uow: UnitOfWork) -> datetime | None:
-            return await uow.chat.oldest_claimable_at(
-                observed_at=observed_at,
-                max_attempts=max_attempts,
-            )
-
-        return await execute_in_transaction(
-            self._unit_of_work, load, purpose=UnitOfWorkPurpose.POLL
-        )
-
     async def claim(
         self, *, worker_id: str, observed_at: datetime, max_attempts: int
     ) -> ChatRunLease | None:

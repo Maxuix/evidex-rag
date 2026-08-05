@@ -6,7 +6,6 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 from uuid import uuid4
 
-import rag_kb.scheduling.worker as worker_scheduling
 from rag_kb.domain import (
     ChatPipelineExecutionError,
     ChatPipelinePhase,
@@ -17,51 +16,16 @@ from rag_kb.domain import (
     IndexingPhase,
     IndexingResult,
     ReconciliationResult,
-    WorkLane,
 )
 from rag_kb.scheduling.chat import ChatRunScheduler
-from rag_kb.scheduling.fairness import WeightedLaneSelector
 from rag_kb.scheduling.indexing import IndexingJobScheduler, RetryPolicy
-from rag_kb.scheduling.worker import FairWorkerScheduler
+from rag_kb.scheduling.worker import consume_lane, reconcile_lanes
 
 
 NOW = datetime(2026, 7, 14, 9, 0, tzinfo=UTC)
 
 
 class SchedulingPolicyTests(unittest.TestCase):
-    def test_weighted_selection_and_aging_preserve_both_lanes(self) -> None:
-        selector = WeightedLaneSelector(
-            chat_weight=3,
-            indexing_weight=1,
-            aging_seconds=30,
-        )
-        available = {WorkLane.CHAT, WorkLane.INDEXING}
-        recent = {
-            WorkLane.CHAT: NOW,
-            WorkLane.INDEXING: NOW,
-        }
-
-        selected = tuple(
-            selector.choose(
-                available,
-                oldest_queued_at=recent,
-                observed_at=NOW,
-            )
-            for _ in range(8)
-        )
-
-        self.assertEqual(selected.count(WorkLane.CHAT), 6)
-        self.assertEqual(selected.count(WorkLane.INDEXING), 2)
-        aged = selector.choose(
-            available,
-            oldest_queued_at={
-                WorkLane.CHAT: NOW,
-                WorkLane.INDEXING: NOW - timedelta(seconds=31),
-            },
-            observed_at=NOW,
-        )
-        self.assertEqual(aged, WorkLane.INDEXING)
-
     def test_retry_policy_is_exponential_and_capped(self) -> None:
         policy = RetryPolicy(5, 2, 5)
         self.assertEqual(policy.retry_at(1, NOW), NOW + timedelta(seconds=2))
@@ -262,49 +226,60 @@ class ChatSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("chat-content-must-not-leak", repr(logged.mock_calls))
 
 
-class FairWorkerSchedulerTests(unittest.IsolatedAsyncioTestCase):
-    async def test_reserved_lane_capacity_starts_chat_under_indexing_load(self) -> None:
+class WorkerConsumerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_independent_consumers_start_both_lanes(self) -> None:
+        stopped = asyncio.Event()
         release = asyncio.Event()
-        chat = _Lane(WorkLane.CHAT, ["chat-1", "chat-2"], release)
-        indexing = _Lane(
-            WorkLane.INDEXING,
-            ["index-1", "index-2", "index-3"],
-            release,
-        )
-        scheduler = FairWorkerScheduler(
-            chat,
-            indexing,
-            WeightedLaneSelector(
-                chat_weight=3,
-                indexing_weight=1,
-                aging_seconds=30,
+        chat = _Lane(["chat-1"], release)
+        indexing = _Lane(["index-1"], release)
+        tasks = (
+            asyncio.create_task(
+                consume_lane(
+                    "chat",
+                    chat,
+                    stopped,
+                    poll_interval_seconds=0.01,
+                )
             ),
-            chat_concurrency=1,
-            indexing_concurrency=1,
-            poll_interval_seconds=0.01,
-            clock=lambda: NOW,
+            asyncio.create_task(
+                consume_lane(
+                    "indexing",
+                    indexing,
+                    stopped,
+                    poll_interval_seconds=0.01,
+                )
+            ),
         )
-        active = {}
-
-        await scheduler._dispatch(active, asyncio.Event())  # noqa: SLF001
-        await asyncio.sleep(0)
-
-        self.assertEqual(set(active.values()), {WorkLane.CHAT, WorkLane.INDEXING})
-        self.assertEqual(chat.claimed, ["chat-1"])
-        self.assertEqual(indexing.claimed, ["index-1"])
-        release.set()
-        await asyncio.gather(*active)
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(
+                    chat.claimed_event.wait(),
+                    indexing.claimed_event.wait(),
+                ),
+                timeout=1,
+            )
+            self.assertEqual(chat.claimed, ["chat-1"])
+            self.assertEqual(indexing.claimed, ["index-1"])
+            self.assertEqual(chat.reconciliations, 0)
+            self.assertEqual(indexing.reconciliations, 0)
+        finally:
+            stopped.set()
+            release.set()
+            await asyncio.gather(*tasks)
 
     async def test_reconciliation_exception_emits_content_safe_event(self) -> None:
         stopped = asyncio.Event()
         release = asyncio.Event()
-        chat = _Lane(WorkLane.CHAT, [], release)
+        chat = _Lane([], release)
         chat.reconciliation_error = RuntimeError("query-must-not-leak")
         chat.stop_after_reconciliation = stopped
-        scheduler = _fair_scheduler(chat, _Lane(WorkLane.INDEXING, [], release))
 
         with patch("rag_kb.scheduling.worker.log_event") as logged:
-            await scheduler.run(stopped)
+            await reconcile_lanes(
+                {"chat": chat, "indexing": _Lane([], release)},
+                stopped,
+                interval_seconds=0.01,
+            )
 
         self.assertEqual(
             logged.call_args.args[1],
@@ -314,50 +289,44 @@ class FairWorkerSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(logged.call_args.kwargs["error_type"], "RuntimeError")
         self.assertNotIn("query-must-not-leak", repr(logged.mock_calls))
 
-    async def test_probe_and_claim_exceptions_emit_stable_events(self) -> None:
+    async def test_claim_exception_emits_stable_event(self) -> None:
+        stopped = asyncio.Event()
         release = asyncio.Event()
-        probe_lane = _Lane(WorkLane.CHAT, [], release)
-        probe_lane.probe_error = RuntimeError("probe-content-must-not-leak")
-        probe_scheduler = _fair_scheduler(
-            probe_lane,
-            _Lane(WorkLane.INDEXING, [], release),
-        )
-        claim_lane = _Lane(WorkLane.CHAT, ["chat-1"], release)
+        claim_lane = _Lane(["chat-1"], release)
         claim_lane.claim_error = RuntimeError("claim-content-must-not-leak")
-        claim_scheduler = _fair_scheduler(
-            claim_lane,
-            _Lane(WorkLane.INDEXING, [], release),
-        )
+        claim_lane.stop_after_claim = stopped
 
         with patch("rag_kb.scheduling.worker.log_event") as logged:
-            await probe_scheduler._dispatch({}, asyncio.Event())  # noqa: SLF001
-            await claim_scheduler._dispatch({}, asyncio.Event())  # noqa: SLF001
+            await consume_lane(
+                "chat",
+                claim_lane,
+                stopped,
+                poll_interval_seconds=0.01,
+            )
 
         events = [call.args[1] for call in logged.call_args_list]
-        self.assertEqual(
-            events,
-            ["worker_lane_probe_failed", "worker_claim_failed"],
-        )
+        self.assertEqual(events, ["worker_claim_failed"])
         self.assertNotIn("must-not-leak", repr(logged.mock_calls))
-        for call in logged.call_args_list:
-            self.assertEqual(call.kwargs["lane"], "chat")
-            self.assertEqual(call.kwargs["error_type"], "RuntimeError")
+        self.assertEqual(logged.call_args.kwargs["lane"], "chat")
+        self.assertEqual(logged.call_args.kwargs["error_type"], "RuntimeError")
 
-    async def test_completed_execution_exception_emits_stable_event(self) -> None:
-        async def fail_execution() -> None:
-            raise RuntimeError("pipeline-content-must-not-leak")
-
-        task = asyncio.create_task(fail_execution())
-        active = {task: WorkLane.INDEXING}
-        await asyncio.sleep(0)
+    async def test_execution_exception_emits_stable_event(self) -> None:
+        stopped = asyncio.Event()
+        lane = _Lane(["index-1"], asyncio.Event())
+        lane.execution_error = RuntimeError("pipeline-content-must-not-leak")
+        lane.stop_after_execution = stopped
 
         with patch("rag_kb.scheduling.worker.log_event") as logged:
-            await worker_scheduling._reap(active)  # noqa: SLF001
+            await consume_lane(
+                "indexing",
+                lane,
+                stopped,
+                poll_interval_seconds=0.01,
+            )
 
-        self.assertEqual(active, {})
         self.assertEqual(
             logged.call_args.args[1],
-            "worker_execution_task_failed",
+            "worker_execution_failed",
         )
         self.assertEqual(logged.call_args.kwargs["lane"], "indexing")
         self.assertEqual(logged.call_args.kwargs["error_type"], "RuntimeError")
@@ -453,10 +422,6 @@ class _ChatCoordinator:
         self.reconciliation = values
         return ReconciliationResult(1, 0)
 
-    async def oldest_claimable_at(self, **values):
-        del values
-        return NOW
-
     async def claim(self, **values):
         del values
         return _chat_lease()
@@ -487,31 +452,33 @@ class _ChatSettler:
 
 
 class _Lane:
-    def __init__(self, lane, leases, release) -> None:
-        self.lane = lane
+    def __init__(self, leases, release) -> None:
         self.leases = list(leases)
         self.release = release
         self.claimed = []
-        self.probe_error = None
+        self.claimed_event = asyncio.Event()
         self.claim_error = None
         self.reconciliation_error = None
         self.stop_after_reconciliation = None
-
-    async def oldest_claimable_at(self):
-        if self.probe_error is not None:
-            raise self.probe_error
-        return NOW if self.leases else None
+        self.stop_after_claim = None
+        self.execution_error = None
+        self.stop_after_execution = None
+        self.reconciliations = 0
 
     async def claim_once(self):
+        if self.stop_after_claim is not None:
+            self.stop_after_claim.set()
         if self.claim_error is not None:
             raise self.claim_error
         if not self.leases:
             return None
         lease = self.leases.pop(0)
         self.claimed.append(lease)
+        self.claimed_event.set()
         return lease
 
     async def reconcile_once(self):
+        self.reconciliations += 1
         if self.stop_after_reconciliation is not None:
             self.stop_after_reconciliation.set()
         if self.reconciliation_error is not None:
@@ -520,6 +487,10 @@ class _Lane:
 
     async def execute(self, lease, stopped):
         del lease, stopped
+        if self.stop_after_execution is not None:
+            self.stop_after_execution.set()
+        if self.execution_error is not None:
+            raise self.execution_error
         await self.release.wait()
 
 
@@ -531,29 +502,11 @@ def _chat_lease():
     return ChatRunLease(uuid4(), uuid4(), "worker-a", 1, NOW)
 
 
-def _fair_scheduler(chat, indexing):
-    return FairWorkerScheduler(
-        chat,
-        indexing,
-        WeightedLaneSelector(
-            chat_weight=3,
-            indexing_weight=1,
-            aging_seconds=30,
-        ),
-        chat_concurrency=1,
-        indexing_concurrency=1,
-        poll_interval_seconds=0.01,
-        clock=lambda: NOW,
-    )
-
-
 def _scheduler(factory, pipeline, *, deadline):
     return IndexingJobScheduler(
         factory,
         pipeline,
         worker_id="worker-a",
-        concurrency=1,
-        poll_interval_seconds=0.01,
         heartbeat_interval_seconds=0.005,
         stale_after_seconds=1,
         deadline_seconds=deadline,

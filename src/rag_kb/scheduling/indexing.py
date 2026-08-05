@@ -58,8 +58,6 @@ class IndexingJobScheduler:
         pipeline: IndexingPipeline,
         *,
         worker_id: str,
-        concurrency: int,
-        poll_interval_seconds: float,
         heartbeat_interval_seconds: float,
         stale_after_seconds: float,
         deadline_seconds: float,
@@ -69,8 +67,6 @@ class IndexingJobScheduler:
     ) -> None:
         if (
             not worker_id
-            or concurrency <= 0
-            or poll_interval_seconds <= 0
             or heartbeat_interval_seconds <= 0
             or stale_after_seconds <= heartbeat_interval_seconds
             or deadline_seconds <= 0
@@ -80,8 +76,6 @@ class IndexingJobScheduler:
         self._unit_of_work = unit_of_work
         self._pipeline = pipeline
         self._worker_id = worker_id
-        self._concurrency = concurrency
-        self._poll_interval_seconds = poll_interval_seconds
         self._heartbeat_interval_seconds = heartbeat_interval_seconds
         self._stale_after_seconds = stale_after_seconds
         self._deadline_seconds = deadline_seconds
@@ -89,60 +83,12 @@ class IndexingJobScheduler:
         self._reconciliation_batch_size = reconciliation_batch_size
         self._clock = clock or (lambda: datetime.now(UTC))
 
-    async def oldest_claimable_at(self) -> datetime | None:
-        observed_at = self._clock()
-        return await execute_in_transaction(
-            self._unit_of_work,
-            lambda uow: uow.indexing.oldest_claimable_at(
-                observed_at=observed_at,
-                max_attempts=self._retry.max_attempts,
-            ),
-            purpose=UnitOfWorkPurpose.POLL,
-        )
-
     async def execute(
         self,
         lease: IndexingLease,
         stopped: asyncio.Event,
     ) -> None:
         await self._execute(lease, stopped)
-
-    async def run(self, stopped: asyncio.Event) -> None:
-        active: set[asyncio.Task[None]] = set()
-        try:
-            while not stopped.is_set():
-                finished = {task for task in active if task.done()}
-                if finished:
-                    await asyncio.gather(*finished, return_exceptions=True)
-                    active -= finished
-                try:
-                    await self.reconcile_once()
-                except Exception:
-                    await _wait_for_activity(
-                        stopped,
-                        active,
-                        timeout=self._poll_interval_seconds,
-                    )
-                    continue
-                while len(active) < self._concurrency and not stopped.is_set():
-                    try:
-                        lease = await self.claim_once()
-                    except Exception:
-                        break
-                    if lease is None:
-                        break
-                    active.add(asyncio.create_task(self._execute(lease, stopped)))
-                await _wait_for_activity(
-                    stopped,
-                    active,
-                    timeout=self._poll_interval_seconds,
-                )
-        finally:
-            if active:
-                _done, pending = await asyncio.wait(active, timeout=5)
-                for task in pending:
-                    task.cancel()
-                await asyncio.gather(*active, return_exceptions=True)
 
     async def claim_once(self) -> IndexingLease | None:
         observed_at = self._clock()
@@ -373,24 +319,6 @@ def _safe_detail(detail: dict, *, attempt: int) -> dict:
         **{key: value for key, value in detail.items() if key in allowed},
         "attempt": attempt,
     }
-
-
-async def _wait_for_activity(
-    stopped: asyncio.Event,
-    active: set[asyncio.Task[None]],
-    *,
-    timeout: float,
-) -> None:
-    stop_task = asyncio.create_task(stopped.wait())
-    try:
-        await asyncio.wait(
-            (*active, stop_task),
-            timeout=timeout,
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-    finally:
-        stop_task.cancel()
-        await asyncio.gather(stop_task, return_exceptions=True)
 
 
 async def _cancel(task: asyncio.Task) -> None:

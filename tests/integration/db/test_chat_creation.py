@@ -711,7 +711,6 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
             reconciliation_batch_size=10,
         )
 
-        self.assertIsNotNone(await scheduler.oldest_claimable_at())
         lease = await scheduler.claim_once()
         self.assertIsNotNone(lease)
         await scheduler.execute(lease, asyncio.Event())
@@ -1081,9 +1080,6 @@ class _CountingCoordinator:
     def __init__(self, coordinator) -> None:
         self.coordinator = coordinator
         self.heartbeats = 0
-
-    async def oldest_claimable_at(self, **values):
-        return await self.coordinator.oldest_claimable_at(**values)
 
     async def claim(self, **values):
         return await self.coordinator.claim(**values)

@@ -49,10 +49,6 @@ class IndexingRepository(Protocol):
         limit: int = 500,
     ) -> tuple[IndexChunkAssetRelationSnapshot, ...]: ...
 
-    async def oldest_claimable_at(
-        self, *, observed_at: datetime, max_attempts: int
-    ) -> datetime | None: ...
-
     async def get_job(self, job_id: UUID) -> IndexingJobSnapshot | None: ...
 
     async def retry_failed(

@@ -26,8 +26,6 @@ LOGGER = get_logger("rag_kb.scheduling.chat")
 
 
 class ChatCoordinator(Protocol):
-    async def oldest_claimable_at(self, **values: Any) -> datetime | None: ...
-
     async def claim(self, **values: Any) -> ChatRunLease | None: ...
 
     async def heartbeat(self, lease: ChatRunLease, **values: Any) -> bool: ...
@@ -73,12 +71,6 @@ class ChatRunScheduler:
         self._retry = retry_policy
         self._reconciliation_batch_size = reconciliation_batch_size
         self._clock = clock or (lambda: datetime.now(UTC))
-
-    async def oldest_claimable_at(self) -> datetime | None:
-        return await self._coordinator.oldest_claimable_at(
-            observed_at=self._clock(),
-            max_attempts=self._retry.max_attempts,
-        )
 
     async def claim_once(self) -> ChatRunLease | None:
         return await self._coordinator.claim(

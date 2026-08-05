@@ -282,12 +282,6 @@ class DatabaseSettings(StrictSettingsModel):
 class JobPollerSettings(StrictSettingsModel):
     backend: Literal["postgresql"] = "postgresql"
     poll_interval_seconds: PositiveFloat = 1.0
-    chat_concurrency: PositiveInt = 1
-    indexing_concurrency: PositiveInt = 1
-    chat_weight: PositiveInt = 3
-    indexing_weight: PositiveInt = 1
-    aging_seconds: PositiveFloat = 30.0
-    chat_start_target_seconds: PositiveFloat = 2.0
     heartbeat_interval_seconds: PositiveFloat = 10.0
     stale_after_seconds: PositiveFloat = 120.0
     max_attempts: PositiveInt = 3
@@ -299,10 +293,6 @@ class JobPollerSettings(StrictSettingsModel):
 
     @model_validator(mode="after")
     def require_safe_stale_timeout(self) -> Self:
-        if self.chat_start_target_seconds < self.poll_interval_seconds:
-            raise ValueError(
-                "chat_start_target_seconds must cover at least one poll interval"
-            )
         if self.stale_after_seconds <= self.heartbeat_interval_seconds:
             raise ValueError(
                 "stale_after_seconds must be greater than heartbeat_interval_seconds"
@@ -320,11 +310,6 @@ class JobPollerSettings(StrictSettingsModel):
                 "chat_deadline_seconds must exceed heartbeat_interval_seconds"
             )
         return self
-
-    @property
-    def required_worker_connections(self) -> int:
-        lane_capacity = self.chat_concurrency + self.indexing_concurrency
-        return lane_capacity * 2 + 3
 
 
 class ChatDeliverySettings(StrictSettingsModel):
@@ -677,7 +662,7 @@ class Settings(BaseSettings):
     )
 
     @model_validator(mode="after")
-    def require_worker_scheduling_budget(self) -> Self:
+    def require_runtime_budgets(self) -> Self:
         dedicated_preview_connections = (
             2 if self.chat_delivery.preview_enabled else 0
         )
@@ -694,14 +679,6 @@ class Settings(BaseSettings):
         if api_capacity < self.database.required_api_connections:
             raise ValueError(
                 "API database pool cannot cover requests, SSE reads, and safety margin"
-            )
-        worker_capacity = (
-            self.database.worker_pool_size + self.database.worker_max_overflow
-        )
-        if worker_capacity < self.job_poller.required_worker_connections:
-            raise ValueError(
-                "Worker database pool cannot cover lanes, heartbeats, polling, "
-                "reconciliation, and safety margin"
             )
         operation_timeouts = [
             self.model_provider.chat.timeout_seconds,

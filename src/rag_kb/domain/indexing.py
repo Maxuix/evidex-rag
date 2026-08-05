@@ -51,11 +51,6 @@ class PromotionReason(StrEnum):
     REVISION_INACTIVE = "revision_inactive"
 
 
-class WorkLane(StrEnum):
-    CHAT = "chat"
-    INDEXING = "indexing"
-
-
 @dataclass(frozen=True, slots=True)
 class IndexingCommand:
     job_id: UUID

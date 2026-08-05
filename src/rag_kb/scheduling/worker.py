@@ -1,25 +1,20 @@
-"""Fair single-process dispatch across reserved chat and indexing lanes."""
+"""Simple single-process consumers for chat and indexing work."""
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
-from datetime import UTC, datetime
+from collections.abc import Mapping
 import logging
 from typing import Any, Protocol
 
-from rag_kb.domain import WorkLane
 from rag_kb.observability import get_logger, log_event
-from rag_kb.scheduling.fairness import WeightedLaneSelector
 
 
-Clock = Callable[[], datetime]
+DEFAULT_RECONCILIATION_INTERVAL_SECONDS = 30.0
 LOGGER = get_logger("rag_kb.scheduling.worker")
 
 
 class LaneScheduler(Protocol):
-    async def oldest_claimable_at(self) -> datetime | None: ...
-
     async def claim_once(self) -> Any | None: ...
 
     async def reconcile_once(self) -> Any: ...
@@ -27,201 +22,75 @@ class LaneScheduler(Protocol):
     async def execute(self, lease: Any, stopped: asyncio.Event) -> None: ...
 
 
-class FairWorkerScheduler:
-    """Own lane capacity and dispatch durable work through weighted aging."""
+async def consume_lane(
+    lane: str,
+    scheduler: LaneScheduler,
+    stopped: asyncio.Event,
+    *,
+    poll_interval_seconds: float,
+) -> None:
+    """Claim and execute one job at a time for an independently reserved lane."""
 
-    def __init__(
-        self,
-        chat: LaneScheduler,
-        indexing: LaneScheduler,
-        selector: WeightedLaneSelector,
-        *,
-        chat_concurrency: int,
-        indexing_concurrency: int,
-        poll_interval_seconds: float,
-        clock: Clock | None = None,
-    ) -> None:
-        if (
-            chat_concurrency <= 0
-            or indexing_concurrency <= 0
-            or poll_interval_seconds <= 0
-        ):
-            raise ValueError("worker lane limits are invalid")
-        self._schedulers = {
-            WorkLane.CHAT: chat,
-            WorkLane.INDEXING: indexing,
-        }
-        self._selector = selector
-        self._capacity = {
-            WorkLane.CHAT: chat_concurrency,
-            WorkLane.INDEXING: indexing_concurrency,
-        }
-        self._semaphores = {
-            lane: asyncio.BoundedSemaphore(capacity)
-            for lane, capacity in self._capacity.items()
-        }
-        self._poll_interval_seconds = poll_interval_seconds
-        self._clock = clock or (lambda: datetime.now(UTC))
-
-    async def run(self, stopped: asyncio.Event) -> None:
-        active: dict[asyncio.Task[None], WorkLane] = {}
+    if not lane.strip() or poll_interval_seconds <= 0:
+        raise ValueError("lane and poll interval must be valid")
+    while not stopped.is_set():
         try:
-            while not stopped.is_set():
-                await _reap(active)
-                lanes = tuple(self._schedulers)
-                reconciliation_results = await asyncio.gather(
-                    *(
-                        self._schedulers[lane].reconcile_once()
-                        for lane in lanes
-                    ),
-                    return_exceptions=True,
-                )
-                for lane, result in zip(
-                    lanes,
-                    reconciliation_results,
-                    strict=True,
-                ):
-                    if isinstance(result, Exception):
-                        _log_failure(
-                            "worker_reconciliation_failed",
-                            lane,
-                            result,
-                        )
-                await self._dispatch(active, stopped)
-                await _wait_for_activity(
-                    stopped,
-                    set(active),
-                    timeout=self._poll_interval_seconds,
-                )
-        finally:
-            if active:
-                _done, pending = await asyncio.wait(set(active), timeout=5)
-                for task in pending:
-                    task.cancel()
-                await asyncio.gather(*active, return_exceptions=True)
-                await _reap(active)
-
-    async def _dispatch(
-        self,
-        active: dict[asyncio.Task[None], WorkLane],
-        stopped: asyncio.Event,
-    ) -> None:
-        unavailable: set[WorkLane] = set()
-        while not stopped.is_set():
-            candidates = {
-                lane
-                for lane, capacity in self._capacity.items()
-                if lane not in unavailable
-                and sum(item == lane for item in active.values()) < capacity
-            }
-            if not candidates:
-                return
-            oldest_values = await asyncio.gather(
-                *(self._schedulers[lane].oldest_claimable_at() for lane in candidates),
-                return_exceptions=True,
-            )
-            oldest = dict(zip(candidates, oldest_values, strict=True))
-            for lane, value in oldest.items():
-                if isinstance(value, Exception):
-                    _log_failure(
-                        "worker_lane_probe_failed",
-                        lane,
-                        value,
-                    )
-            available = {
-                lane
-                for lane, value in oldest.items()
-                if isinstance(value, datetime)
-            }
-            if not available:
-                return
-            observed_at = self._clock()
-            lane = self._selector.choose(
-                available,
-                oldest_queued_at={
-                    item: (
-                        oldest[item]
-                        if isinstance(oldest.get(item), datetime)
-                        else None
-                    )
-                    for item in WorkLane
-                },
-                observed_at=observed_at,
-            )
-            if lane is None:
-                return
-            semaphore = self._semaphores[lane]
-            await semaphore.acquire()
-            try:
-                lease = await self._schedulers[lane].claim_once()
-            except Exception as error:
-                semaphore.release()
-                _log_failure("worker_claim_failed", lane, error)
-                unavailable.add(lane)
-                continue
-            if lease is None:
-                semaphore.release()
-                unavailable.add(lane)
-                continue
-            task = asyncio.create_task(
-                self._run_one(lane, lease, stopped, semaphore)
-            )
-            active[task] = lane
-
-    async def _run_one(
-        self,
-        lane: WorkLane,
-        lease: Any,
-        stopped: asyncio.Event,
-        semaphore: asyncio.BoundedSemaphore,
-    ) -> None:
-        try:
-            await self._schedulers[lane].execute(lease, stopped)
-        finally:
-            semaphore.release()
-
-
-async def _reap(active: dict[asyncio.Task[None], WorkLane]) -> None:
-    finished = {task for task in active if task.done()}
-    if not finished:
-        return
-    for task in finished:
-        try:
-            task.result()
+            lease = await scheduler.claim_once()
         except asyncio.CancelledError:
-            pass
+            raise
         except Exception as error:
-            _log_failure(
-                "worker_execution_task_failed",
-                active[task],
-                error,
-            )
-        del active[task]
+            _log_failure("worker_claim_failed", lane, error)
+            await _wait_or_stop(stopped, poll_interval_seconds)
+            continue
+        if lease is None:
+            await _wait_or_stop(stopped, poll_interval_seconds)
+            continue
+        try:
+            await scheduler.execute(lease, stopped)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            _log_failure("worker_execution_failed", lane, error)
 
 
-def _log_failure(event: str, lane: WorkLane, error: Exception) -> None:
+async def reconcile_lanes(
+    schedulers: Mapping[str, LaneScheduler],
+    stopped: asyncio.Event,
+    *,
+    interval_seconds: float = DEFAULT_RECONCILIATION_INTERVAL_SECONDS,
+) -> None:
+    """Recover stale work at a cadence independent from ordinary polling."""
+
+    if not schedulers or any(not lane.strip() for lane in schedulers):
+        raise ValueError("at least one named lane is required")
+    if interval_seconds <= 0:
+        raise ValueError("reconciliation interval must be positive")
+    lanes = tuple(schedulers)
+    while not stopped.is_set():
+        results = await asyncio.gather(
+            *(schedulers[lane].reconcile_once() for lane in lanes),
+            return_exceptions=True,
+        )
+        for lane, result in zip(lanes, results, strict=True):
+            if isinstance(result, asyncio.CancelledError):
+                raise result
+            if isinstance(result, Exception):
+                _log_failure("worker_reconciliation_failed", lane, result)
+        await _wait_or_stop(stopped, interval_seconds)
+
+
+async def _wait_or_stop(stopped: asyncio.Event, timeout: float) -> None:
+    try:
+        await asyncio.wait_for(stopped.wait(), timeout=timeout)
+    except TimeoutError:
+        pass
+
+
+def _log_failure(event: str, lane: str, error: Exception) -> None:
     log_event(
         LOGGER,
         event,
         level=logging.ERROR,
-        lane=lane.value,
+        lane=lane,
         error_type=type(error).__name__,
     )
-
-
-async def _wait_for_activity(
-    stopped: asyncio.Event,
-    active: set[asyncio.Task[None]],
-    *,
-    timeout: float,
-) -> None:
-    stop_task = asyncio.create_task(stopped.wait())
-    try:
-        await asyncio.wait(
-            (*active, stop_task),
-            timeout=timeout,
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-    finally:
-        stop_task.cancel()
-        await asyncio.gather(stop_task, return_exceptions=True)

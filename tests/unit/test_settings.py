@@ -27,7 +27,6 @@ from rag_kb.config.settings import (
     load_settings,
 )
 from rag_kb.db import DatabaseProcess
-from rag_kb.domain import WorkLane
 from rag_kb.workflows.langgraph_runner import LangGraphRunner
 
 
@@ -125,10 +124,8 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.parser.max_extracted_characters, 5_000_000)
         self.assertEqual(settings.parser.max_metadata_bytes, 65_536)
         self.assertEqual(settings.parser.max_total_image_pixels, 80_000_000)
-        self.assertEqual(settings.job_poller.required_worker_connections, 7)
         self.assertEqual(settings.job_poller.indexing_deadline_seconds, 900)
         self.assertEqual(settings.job_poller.chat_deadline_seconds, 120)
-        self.assertEqual(settings.job_poller.chat_start_target_seconds, 2.0)
         self.assertEqual(settings.database.required_api_connections, 3)
         self.assertEqual(settings.database.api_statement_timeout_ms, 30_000)
         self.assertEqual(settings.database.worker_statement_timeout_ms, 60_000)
@@ -250,7 +247,27 @@ class SettingsTests(unittest.TestCase):
                     },
                 )
 
-    def test_worker_lane_heartbeat_and_deadline_budget_fail_closed(self) -> None:
+    def test_removed_lane_tuning_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            payload = valid_payload(Path(directory))
+            for field in (
+                "chat_concurrency",
+                "indexing_concurrency",
+                "chat_weight",
+                "indexing_weight",
+                "aging_seconds",
+                "chat_start_target_seconds",
+            ):
+                with self.subTest(field=field), self.assertRaises(ValidationError):
+                    Settings(
+                        _env_file=None,
+                        **{
+                            **payload,
+                            "job_poller": {field: 1},
+                        },
+                    )
+
+    def test_worker_heartbeat_retry_and_deadline_budget_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             payload = valid_payload(root)
@@ -259,26 +276,7 @@ class SettingsTests(unittest.TestCase):
                     _env_file=None,
                     **{
                         **payload,
-                        "job_poller": {"indexing_concurrency": 10},
-                    },
-                )
-            with self.assertRaises(ValidationError):
-                Settings(
-                    _env_file=None,
-                    **{
-                        **payload,
                         "job_poller": {"stale_after_seconds": 20},
-                    },
-                )
-            with self.assertRaises(ValidationError):
-                Settings(
-                    _env_file=None,
-                    **{
-                        **payload,
-                        "job_poller": {
-                            "poll_interval_seconds": 2,
-                            "chat_start_target_seconds": 1,
-                        },
                     },
                 )
             with self.assertRaises(ValidationError):
@@ -824,10 +822,8 @@ class StartupValidationTests(unittest.TestCase):
                 LangChainEmbeddingModelAdapter,
             )
             self.assertIs(
-                worker.worker_scheduler._schedulers[
-                    WorkLane.CHAT
-                ],
-                worker.chat_scheduler,
+                worker.indexing_scheduler._pipeline,
+                worker.indexing_pipeline,
             )
             self.assertEqual(
                 api.access_policy.metadata_filter(api_context).workspace_id,

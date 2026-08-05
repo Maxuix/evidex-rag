@@ -25,10 +25,6 @@ from rag_kb.domain import (
 
 @runtime_checkable
 class ChatRepository(Protocol):
-    async def oldest_claimable_at(
-        self, *, observed_at: datetime, max_attempts: int
-    ) -> datetime | None: ...
-
     async def reconcile_stale_runs(
         self,
         *,

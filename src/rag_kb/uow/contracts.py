@@ -22,7 +22,6 @@ from rag_kb.repositories import (
 class UnitOfWorkPurpose(StrEnum):
     REQUEST = "request"
     COMMAND = "command"
-    POLL = "poll"
     CLAIM = "claim"
     HEARTBEAT = "heartbeat"
     RECONCILIATION = "reconciliation"

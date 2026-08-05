@@ -46,9 +46,7 @@ from rag_kb.memory import ConversationContextSelector, SessionQueryContextualize
 from rag_kb.ports.model_api import ChatModelAdapter, EmbeddingModelAdapter
 from rag_kb.retrieval.service import RetrievalService
 from rag_kb.scheduling.chat import ChatRunScheduler
-from rag_kb.scheduling.fairness import WeightedLaneSelector
 from rag_kb.scheduling.indexing import IndexingJobScheduler, RetryPolicy
-from rag_kb.scheduling.worker import FairWorkerScheduler
 from rag_kb.services.assets import IndexAssetService
 from rag_kb.services.chat_execution import (
     ChatEvidenceRetriever,
@@ -104,8 +102,6 @@ class WorkerDependencies:
     chat_scheduler: ChatRunScheduler
     indexing_pipeline: IndexingPipeline
     indexing_scheduler: IndexingJobScheduler
-    lane_selector: WeightedLaneSelector
-    worker_scheduler: FairWorkerScheduler
     chat_preview_sink: PgNotifyPreviewSink | None
 
     async def close(self) -> None:
@@ -403,26 +399,11 @@ def build_worker_dependencies(
         unit_of_work,
         indexing_pipeline,
         worker_id=resolved_worker_id,
-        concurrency=poller.indexing_concurrency,
-        poll_interval_seconds=poller.poll_interval_seconds,
         heartbeat_interval_seconds=poller.heartbeat_interval_seconds,
         stale_after_seconds=poller.stale_after_seconds,
         deadline_seconds=poller.indexing_deadline_seconds,
         retry_policy=retry_policy,
         reconciliation_batch_size=poller.reconciliation_batch_size,
-    )
-    lane_selector = WeightedLaneSelector(
-        chat_weight=poller.chat_weight,
-        indexing_weight=poller.indexing_weight,
-        aging_seconds=poller.aging_seconds,
-    )
-    worker_scheduler = FairWorkerScheduler(
-        chat_scheduler,
-        indexing_scheduler,
-        lane_selector,
-        chat_concurrency=poller.chat_concurrency,
-        indexing_concurrency=poller.indexing_concurrency,
-        poll_interval_seconds=poller.poll_interval_seconds,
     )
     return WorkerDependencies(
         settings=resolved_settings,
@@ -468,8 +449,6 @@ def build_worker_dependencies(
         chat_scheduler=chat_scheduler,
         indexing_pipeline=indexing_pipeline,
         indexing_scheduler=indexing_scheduler,
-        lane_selector=lane_selector,
-        worker_scheduler=worker_scheduler,
         chat_preview_sink=chat_preview_sink,
     )
 

@@ -14,6 +14,7 @@ from typing import Any
 
 from rag_kb.config import load_settings
 from rag_kb.observability import configure_logging, get_logger, log_event
+from rag_kb.scheduling.worker import consume_lane, reconcile_lanes
 
 
 LOGGER = get_logger("rag_kb.worker.runtime")
@@ -80,7 +81,25 @@ async def serve() -> None:
                 stopped,
                 settings.file_store.reconciliation_interval_seconds,
             ),
-            "worker_scheduler": dependencies.worker_scheduler.run(stopped),
+            "chat_consumer": consume_lane(
+                "chat",
+                dependencies.chat_scheduler,
+                stopped,
+                poll_interval_seconds=settings.job_poller.poll_interval_seconds,
+            ),
+            "indexing_consumer": consume_lane(
+                "indexing",
+                dependencies.indexing_scheduler,
+                stopped,
+                poll_interval_seconds=settings.job_poller.poll_interval_seconds,
+            ),
+            "stale_work_reconciler": reconcile_lanes(
+                {
+                    "chat": dependencies.chat_scheduler,
+                    "indexing": dependencies.indexing_scheduler,
+                },
+                stopped,
+            ),
             "worker_liveness_heartbeat": _run_liveness_heartbeat(
                 heartbeat_path,
                 stopped,
@@ -89,7 +108,7 @@ async def serve() -> None:
         }
         log_event(
             LOGGER,
-            "worker_scheduler_started",
+            "worker_consumers_started",
             process="worker",
             queue_backend="postgresql",
             lane="chat,indexing",
@@ -97,7 +116,7 @@ async def serve() -> None:
         await _supervise_background_tasks(background, stopped)
         log_event(
             LOGGER,
-            "worker_scheduler_stopped",
+            "worker_consumers_stopped",
             process="worker",
             lane="chat,indexing",
         )

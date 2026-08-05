@@ -49,9 +49,8 @@ from rag_kb.indexing.promotion import CandidatePromotionService
 from rag_kb.ports.parsing import DocumentParseResult
 from rag_kb.retrieval.profile import exact_profile
 from rag_kb.scheduling.chat import ChatRunScheduler
-from rag_kb.scheduling.fairness import WeightedLaneSelector
 from rag_kb.scheduling.indexing import IndexingJobScheduler, RetryPolicy
-from rag_kb.scheduling.worker import FairWorkerScheduler
+from rag_kb.scheduling.worker import consume_lane
 from rag_kb.services.chat import ChatService
 from rag_kb.services.chat_execution import ChatRunCoordinator
 from rag_kb.services.chat_terminal import (
@@ -636,8 +635,22 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
         second = self._scheduler_for(pipeline, worker_id="worker-b")
         stopped = asyncio.Event()
         tasks = (
-            asyncio.create_task(first.run(stopped)),
-            asyncio.create_task(second.run(stopped)),
+            asyncio.create_task(
+                consume_lane(
+                    "indexing",
+                    first,
+                    stopped,
+                    poll_interval_seconds=0.01,
+                )
+            ),
+            asyncio.create_task(
+                consume_lane(
+                    "indexing",
+                    second,
+                    stopped,
+                    poll_interval_seconds=0.01,
+                )
+            ),
         )
         try:
             for _ in range(1000):
@@ -659,7 +672,7 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(claim["claimed_by"])
         self.assertEqual(provider.calls, 1)
 
-    async def test_fair_worker_starts_chat_under_indexing_load_without_starvation(
+    async def test_independent_lanes_advance_chat_and_indexing_together(
         self,
     ) -> None:
         kb = await self._create_kb()
@@ -722,21 +735,26 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
             retry_policy=retry,
             reconciliation_batch_size=10,
         )
-        fair = FairWorkerScheduler(
-            chat_scheduler,
-            indexing,
-            WeightedLaneSelector(
-                chat_weight=3,
-                indexing_weight=1,
-                aging_seconds=0.05,
-            ),
-            chat_concurrency=1,
-            indexing_concurrency=1,
-            poll_interval_seconds=0.01,
-        )
         stopped = asyncio.Event()
         started = asyncio.get_running_loop().time()
-        task = asyncio.create_task(fair.run(stopped))
+        tasks = (
+            asyncio.create_task(
+                consume_lane(
+                    "chat",
+                    chat_scheduler,
+                    stopped,
+                    poll_interval_seconds=0.01,
+                )
+            ),
+            asyncio.create_task(
+                consume_lane(
+                    "indexing",
+                    indexing,
+                    stopped,
+                    poll_interval_seconds=0.01,
+                )
+            ),
+        )
         try:
             for _ in range(400):
                 state = await chat.get_run(self.context, run.id)
@@ -744,10 +762,10 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
                     break
                 await asyncio.sleep(0.01)
             else:
-                self.fail("fair worker did not advance both lanes")
+                self.fail("independent consumers did not advance both lanes")
         finally:
             stopped.set()
-            await task
+            await asyncio.gather(*tasks)
 
         elapsed = asyncio.get_running_loop().time() - started
         self.assertLess(elapsed, 2.0)
@@ -771,7 +789,14 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
             worker_id="worker-a",
         )
         stopped = asyncio.Event()
-        task = asyncio.create_task(scheduler.run(stopped))
+        task = asyncio.create_task(
+            consume_lane(
+                "indexing",
+                scheduler,
+                stopped,
+                poll_interval_seconds=0.01,
+            )
+        )
         try:
             for _ in range(500):
                 state = await self._target_state(
@@ -1121,8 +1146,6 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.factory,
             pipeline,
             worker_id=worker_id,
-            concurrency=1,
-            poll_interval_seconds=0.01,
             heartbeat_interval_seconds=0.02,
             stale_after_seconds=stale_after,
             deadline_seconds=10,

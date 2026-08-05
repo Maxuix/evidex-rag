@@ -374,28 +374,6 @@ class SqlAlchemyIndexingRepository:
             ) in rows
         )
 
-    async def oldest_claimable_at(
-        self, *, observed_at: datetime, max_attempts: int
-    ) -> datetime | None:
-        self._ensure_active()
-        if max_attempts < 1:
-            raise ValueError("max_attempts must be positive")
-        return await self._session.scalar(
-            select(IndexingJobRow.created_at)
-            .join(
-                IndexedDocumentVersionRow,
-                IndexedDocumentVersionRow.id
-                == IndexingJobRow.indexed_document_version_id,
-            )
-            .where(
-                IndexingJobRow.workspace_id == self._workspace_id,
-                IndexedDocumentVersionRow.workspace_id == self._workspace_id,
-                *_claimable_job(observed_at, max_attempts),
-            )
-            .order_by(IndexingJobRow.created_at, IndexingJobRow.id)
-            .limit(1)
-        )
-
     async def get_job(self, job_id: UUID) -> IndexingJobSnapshot | None:
         self._ensure_active()
         row = await self._job_row(job_id)

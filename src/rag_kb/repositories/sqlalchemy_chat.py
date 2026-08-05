@@ -55,25 +55,6 @@ class SqlAlchemyChatRepository:
         self._workspace_id = workspace_id
         self._ensure_active = ensure_active
 
-    async def oldest_claimable_at(
-        self, *, observed_at: datetime, max_attempts: int
-    ) -> datetime | None:
-        self._ensure_active()
-        if max_attempts < 1:
-            raise ValueError("max_attempts must be positive")
-        return await self._session.scalar(
-            select(ChatRunRow.created_at)
-            .where(
-                *_claimable_run(
-                    observed_at,
-                    max_attempts,
-                    self._workspace_id,
-                )
-            )
-            .order_by(ChatRunRow.created_at, ChatRunRow.id)
-            .limit(1)
-        )
-
     async def claim_run(
         self, *, worker_id: str, observed_at: datetime, max_attempts: int
     ) -> ChatRunLease | None:
