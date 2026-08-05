@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import ipaddress
 from pathlib import Path
-from typing import Annotated, Literal, Self
+from typing import Annotated, ClassVar, Literal, Self
 from urllib.parse import urlsplit
 from uuid import UUID
 
 from pydantic import (
     AnyHttpUrl,
     BaseModel,
-    BeforeValidator,
     ConfigDict,
     Field,
     IPvAnyAddress,
@@ -47,88 +46,6 @@ def embedding_retry_budget_seconds(
     )
 
 
-def parse_environment_boolean(value: object) -> object:
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized in {"1", "true", "yes", "on"}:
-            return True
-        if normalized in {"0", "false", "no", "off"}:
-            return False
-    return value
-
-
-def parse_environment_integer(value: object) -> object:
-    if isinstance(value, str):
-        try:
-            return int(value)
-        except ValueError:
-            return value
-    return value
-
-
-EnabledFlag = Annotated[Literal[True], BeforeValidator(parse_environment_boolean)]
-DisabledFlag = Annotated[Literal[False], BeforeValidator(parse_environment_boolean)]
-FixedDimension = Annotated[Literal[1024], BeforeValidator(parse_environment_integer)]
-FixedCrossModalDimension = Annotated[
-    Literal[768], BeforeValidator(parse_environment_integer)
-]
-FixedBatchSize = Annotated[Literal[10], BeforeValidator(parse_environment_integer)]
-FixedMaxUploadBytes = Annotated[
-    Literal[10_485_760], BeforeValidator(parse_environment_integer)
-]
-FixedMaxMarkdownBundleBytes = Annotated[
-    Literal[20_971_520], BeforeValidator(parse_environment_integer)
-]
-FixedMaxLines = Annotated[Literal[200_000], BeforeValidator(parse_environment_integer)]
-FixedMaxCsvColumns = Annotated[
-    Literal[1_024], BeforeValidator(parse_environment_integer)
-]
-FixedMaxCsvCells = Annotated[
-    Literal[200_000], BeforeValidator(parse_environment_integer)
-]
-FixedMaxArchiveEntries = Annotated[
-    Literal[10_000], BeforeValidator(parse_environment_integer)
-]
-FixedMaxExpandedBytes = Annotated[
-    Literal[104_857_600], BeforeValidator(parse_environment_integer)
-]
-FixedMaxChunks = Annotated[Literal[20_000], BeforeValidator(parse_environment_integer)]
-FixedMaxExtractedCharacters = Annotated[
-    Literal[5_000_000], BeforeValidator(parse_environment_integer)
-]
-FixedMaxMetadataBytes = Annotated[
-    Literal[65_536], BeforeValidator(parse_environment_integer)
-]
-FixedMaxDoclingPages = Annotated[
-    Literal[500], BeforeValidator(parse_environment_integer)
-]
-FixedDoclingTimeoutSeconds = Annotated[
-    Literal[600], BeforeValidator(parse_environment_integer)
-]
-FixedMaxDoclingItems = Annotated[
-    Literal[20_000], BeforeValidator(parse_environment_integer)
-]
-FixedMaxTotalImagePixels = Annotated[
-    Literal[80_000_000], BeforeValidator(parse_environment_integer)
-]
-FixedContextTurns = Annotated[Literal[6], BeforeValidator(parse_environment_integer)]
-FixedContextTokens = Annotated[
-    Literal[4000], BeforeValidator(parse_environment_integer)
-]
-FixedVisualImageCount = Annotated[
-    Literal[2], BeforeValidator(parse_environment_integer)
-]
-FixedVisualImageBytes = Annotated[
-    Literal[5_242_880], BeforeValidator(parse_environment_integer)
-]
-FixedVisualTotalBytes = Annotated[
-    Literal[12_582_912], BeforeValidator(parse_environment_integer)
-]
-FixedVisualPixels = Annotated[
-    Literal[16_000_000], BeforeValidator(parse_environment_integer)
-]
-
-
 class StrictSettingsModel(BaseModel):
     """Shared strict and immutable behavior for nested settings groups."""
 
@@ -136,22 +53,18 @@ class StrictSettingsModel(BaseModel):
 
 
 class AppSettings(StrictSettingsModel):
-    deployment_profile: DeploymentProfile = DeploymentProfile.DEVELOPMENT
+    deployment_profile: ClassVar[DeploymentProfile] = DeploymentProfile.DEVELOPMENT
     bind_host: IPvAnyAddress = IPvAnyAddress("127.0.0.1")
     api_port: Annotated[int, Field(ge=1, le=65535)] = 8000
-    api_prefix: Literal["/api/v1"] = "/api/v1"
 
     @model_validator(mode="after")
-    def require_local_development(self) -> Self:
-        if self.deployment_profile is not DeploymentProfile.DEVELOPMENT:
-            raise ValueError("only DEPLOYMENT_PROFILE=development is enabled")
+    def require_loopback_bind_host(self) -> Self:
         if not self.bind_host.is_loopback:
             raise ValueError("development bind_host must be a loopback address")
         return self
 
 
 class IdentitySettings(StrictSettingsModel):
-    provider: Literal["development_fixed"] = "development_fixed"
     principal_id: Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")] = (
         "development-principal"
     )
@@ -170,7 +83,6 @@ class IdentitySettings(StrictSettingsModel):
 
 class SecuritySettings(StrictSettingsModel):
     allowed_cors_origins: tuple[str, ...] = ("http://127.0.0.1:3000",)
-    cors_allow_credentials: DisabledFlag = False
 
     @field_validator("allowed_cors_origins")
     @classmethod
@@ -207,8 +119,8 @@ class SecuritySettings(StrictSettingsModel):
 class DatabaseSettings(StrictSettingsModel):
     runtime_dsn: SecretStr
     migration_dsn: SecretStr
-    runtime_role: Literal["rag_kb_runtime"] = "rag_kb_runtime"
-    migration_role: Literal["rag_kb_migration"] = "rag_kb_migration"
+    runtime_role: ClassVar[str] = "rag_kb_runtime"
+    migration_role: ClassVar[str] = "rag_kb_migration"
     server_connection_limit: PositiveInt = 50
     reserved_connections: NonNegativeInt = 10
     api_pool_size: PositiveInt = 5
@@ -280,7 +192,6 @@ class DatabaseSettings(StrictSettingsModel):
 
 
 class JobPollerSettings(StrictSettingsModel):
-    backend: Literal["postgresql"] = "postgresql"
     poll_interval_seconds: PositiveFloat = 1.0
     heartbeat_interval_seconds: PositiveFloat = 10.0
     stale_after_seconds: PositiveFloat = 120.0
@@ -325,19 +236,7 @@ class ChatDeliverySettings(StrictSettingsModel):
     preview_queue_size: Annotated[int, Field(ge=8, le=256)] = 64
 
 
-class SessionContextSettings(StrictSettingsModel):
-    strategy: Literal["recent_completed_turns_v1"] = "recent_completed_turns_v1"
-    max_turns: FixedContextTurns = 6
-    max_context_tokens: FixedContextTokens = 4000
-    tokenizer: Literal["cl100k_base"] = "cl100k_base"
-    query_schema: Literal["contextual_query_v2"] = "contextual_query_v2"
-    configuration_fingerprint: Literal[
-        "sha256:7de39f7456bdf97eb6c41deab2b916d4f77c072d175faf546f297137763a1d20"
-    ] = "sha256:7de39f7456bdf97eb6c41deab2b916d4f77c072d175faf546f297137763a1d20"
-
-
 class FileStoreSettings(StrictSettingsModel):
-    backend: Literal["local"] = "local"
     root_path: Path = Path("/var/lib/rag-kb/sources")
     staging_path: Path = Path("/var/lib/rag-kb/sources/staging")
     final_path: Path = Path("/var/lib/rag-kb/sources/final")
@@ -408,55 +307,16 @@ class MaintenanceSettings(StrictSettingsModel):
         return self
 
 
-class FileAdmissionSettings(StrictSettingsModel):
-    max_bytes: FixedMaxUploadBytes = 10_485_760
-    max_markdown_bundle_bytes: FixedMaxMarkdownBundleBytes = 20_971_520
-    max_lines: FixedMaxLines = 200_000
-    max_archive_entries: FixedMaxArchiveEntries = 10_000
-    max_expanded_bytes: FixedMaxExpandedBytes = 104_857_600
-
-
 class ParserSettings(StrictSettingsModel):
-    profile: Literal["docling_text_local_v1"] = "docling_text_local_v1"
     docling_artifacts_path: Path = Path("/opt/rag-kb/docling-artifacts")
     docling_artifact_manifest_path: Path = Path(
         "/app/config/docling-artifacts-v1.json"
     )
-    max_file_size: FixedMaxUploadBytes = 10_485_760
-    max_markdown_bundle_size: FixedMaxMarkdownBundleBytes = 20_971_520
-    max_num_pages: FixedMaxDoclingPages = 500
-    document_timeout_seconds: FixedDoclingTimeoutSeconds = 600
-    max_csv_columns: FixedMaxCsvColumns = 1_024
-    max_csv_cells: FixedMaxCsvCells = 200_000
-    max_docling_items: FixedMaxDoclingItems = 20_000
-    max_chunks: FixedMaxChunks = 20_000
-    max_extracted_characters: FixedMaxExtractedCharacters = 5_000_000
-    max_metadata_bytes: FixedMaxMetadataBytes = 65_536
-    max_assets: Annotated[int, Field(ge=1, le=10_000)] = 1_000
-    max_total_asset_bytes: Annotated[int, Field(ge=1, le=1_073_741_824)] = 104_857_600
-    max_image_pixels: Annotated[int, Field(ge=1, le=100_000_000)] = 40_000_000
-    max_total_image_pixels: FixedMaxTotalImagePixels = 80_000_000
-    max_image_width: Annotated[int, Field(ge=1, le=32_768)] = 16_384
-    max_image_height: Annotated[int, Field(ge=1, le=32_768)] = 16_384
-    max_ocr_characters: Annotated[int, Field(ge=1, le=10_000_000)] = 2_000_000
-    max_ocr_tokens: Annotated[int, Field(ge=1, le=1_000_000)] = 500_000
-    max_caption_tokens: Annotated[int, Field(ge=1, le=4_096)] = 512
-    max_table_html_bytes: Annotated[int, Field(ge=1, le=10_485_760)] = 1_048_576
-    max_units: Annotated[int, Field(ge=1, le=100_000)] = 20_000
-    max_representations: Annotated[int, Field(ge=1, le=300_000)] = 60_000
-
-
-class VectorStoreSettings(StrictSettingsModel):
-    backend: Literal["pgvector"] = "pgvector"
-    exact_search: EnabledFlag = True
-    hnsw_enabled: DisabledFlag = False
 
 
 class ProviderSettings(StrictSettingsModel):
     base_url: AnyHttpUrl
     api_key: SecretStr
-    logical_endpoint_identity: str
-    model: str
     timeout_seconds: PositiveFloat = 30.0
     max_retries: NonNegativeInt = 2
     max_concurrency: PositiveInt = 2
@@ -470,107 +330,86 @@ class ProviderSettings(StrictSettingsModel):
 
 
 class ChatProviderSettings(ProviderSettings):
-    logical_endpoint_identity: Literal[
-        "alibaba-model-studio-beijing-chat"
-    ] = (
-        "alibaba-model-studio-beijing-chat"
-    )
-    provider_identity: Literal["alibaba-cloud-model-studio-qwen"] = (
-        "alibaba-cloud-model-studio-qwen"
-    )
-    model: Literal["qwen3.7-plus"] = "qwen3.7-plus"
-    resolved_model: Literal["qwen3.7-plus"] = "qwen3.7-plus"
-    model_version: Literal["qwen3.7-plus"] = "qwen3.7-plus"
+    logical_endpoint_identity: ClassVar[str] = "alibaba-model-studio-beijing-chat"
+    provider_identity: ClassVar[str] = "alibaba-cloud-model-studio-qwen"
+    model: ClassVar[str] = "qwen3.7-plus"
+    resolved_model: ClassVar[str] = "qwen3.7-plus"
+    model_version: ClassVar[str] = "qwen3.7-plus"
     temperature: Annotated[float, Field(ge=0.0, le=2.0)] = 0.1
     max_tokens: PositiveInt = 2048
-    structured_output_mode: Literal["json_object"] = "json_object"
-    thinking_enabled: DisabledFlag = False
-    vision_enabled: EnabledFlag = True
-    max_visual_images: FixedVisualImageCount = 2
-    max_visual_image_bytes: FixedVisualImageBytes = 5_242_880
-    max_visual_total_bytes: FixedVisualTotalBytes = 12_582_912
-    max_visual_pixels: FixedVisualPixels = 16_000_000
-    visual_media_profile: Literal["jpeg_png_webp_v1"] = "jpeg_png_webp_v1"
-    configuration_fingerprint: Literal[
+    structured_output_mode: ClassVar[str] = "json_object"
+    thinking_enabled: ClassVar[bool] = False
+    vision_enabled: ClassVar[bool] = True
+    max_visual_images: ClassVar[int] = 2
+    max_visual_image_bytes: ClassVar[int] = 5_242_880
+    max_visual_total_bytes: ClassVar[int] = 12_582_912
+    max_visual_pixels: ClassVar[int] = 16_000_000
+    visual_media_profile: ClassVar[str] = "jpeg_png_webp_v1"
+    configuration_fingerprint: ClassVar[str] = (
         "sha256:85b03b3eececbb2fda11cadf77040999028b09e335b8ef5684c34a34601a71d2"
-    ] = "sha256:85b03b3eececbb2fda11cadf77040999028b09e335b8ef5684c34a34601a71d2"
-    capability_fingerprint: Literal[
+    )
+    capability_fingerprint: ClassVar[str] = (
         "sha256:c24fb9b08baf600afc8f4610f88412ca5c7a2979890647e1512e7cedb8066279"
-    ] = "sha256:c24fb9b08baf600afc8f4610f88412ca5c7a2979890647e1512e7cedb8066279"
+    )
 
 
 class EmbeddingProviderSettings(ProviderSettings):
-    logical_endpoint_identity: Literal[
+    logical_endpoint_identity: ClassVar[str] = (
         "alibaba-model-studio-beijing-embedding"
-    ] = "alibaba-model-studio-beijing-embedding"
-    provider_identity: Literal["alibaba-cloud-model-studio-qwen"] = (
-        "alibaba-cloud-model-studio-qwen"
     )
-    model: Literal["qwen3.7-text-embedding"] = "qwen3.7-text-embedding"
-    resolved_model: Literal["qwen3.7-text-embedding"] = (
-        "qwen3.7-text-embedding"
-    )
-    model_version: Literal["qwen3.7-text-embedding"] = "qwen3.7-text-embedding"
-    dimension: FixedDimension = 1024
-    metric: Literal["cosine"] = "cosine"
-    vector_data_type: Literal["float32"] = "float32"
-    normalization: Literal["l2"] = "l2"
-    max_batch_size: FixedBatchSize = 10
-    configuration_fingerprint: Literal[
+    provider_identity: ClassVar[str] = "alibaba-cloud-model-studio-qwen"
+    model: ClassVar[str] = "qwen3.7-text-embedding"
+    resolved_model: ClassVar[str] = "qwen3.7-text-embedding"
+    model_version: ClassVar[str] = "qwen3.7-text-embedding"
+    dimension: ClassVar[int] = 1024
+    metric: ClassVar[str] = "cosine"
+    vector_data_type: ClassVar[str] = "float32"
+    normalization: ClassVar[str] = "l2"
+    max_batch_size: ClassVar[int] = 10
+    configuration_fingerprint: ClassVar[str] = (
         "sha256:5f774411565f9aaef04c7a9762bf6e245589cff064c396a8c5b38eb9098ac18f"
-    ] = "sha256:5f774411565f9aaef04c7a9762bf6e245589cff064c396a8c5b38eb9098ac18f"
-    compatibility_fingerprint: Literal[
+    )
+    compatibility_fingerprint: ClassVar[str] = (
         "sha256:398af80b01c3e440c0edf5871de60f80fdab255f453bfa6c685c65e2f9be61c7"
-    ] = "sha256:398af80b01c3e440c0edf5871de60f80fdab255f453bfa6c685c65e2f9be61c7"
+    )
 
 
 class MultimodalEmbeddingProviderSettings(ProviderSettings):
-    provider_identity: Literal["alibaba-cloud-model-studio-qwen"] = (
-        "alibaba-cloud-model-studio-qwen"
-    )
-    logical_endpoint_identity: Literal[
+    provider_identity: ClassVar[str] = "alibaba-cloud-model-studio-qwen"
+    logical_endpoint_identity: ClassVar[str] = (
         "alibaba-model-studio-beijing-multimodal-embedding"
-    ] = "alibaba-model-studio-beijing-multimodal-embedding"
-    model: Literal["tongyi-embedding-vision-flash-2026-03-06"] = (
-        "tongyi-embedding-vision-flash-2026-03-06"
     )
-    resolved_model: Literal["tongyi-embedding-vision-flash-2026-03-06"] = (
-        "tongyi-embedding-vision-flash-2026-03-06"
-    )
-    model_version: Literal["tongyi-embedding-vision-flash-2026-03-06"] = (
-        "tongyi-embedding-vision-flash-2026-03-06"
-    )
-    dimension: FixedCrossModalDimension = 768
-    metric: Literal["cosine"] = "cosine"
-    vector_data_type: Literal["float32"] = "float32"
-    normalization: Literal["l2"] = "l2"
+    model: ClassVar[str] = "tongyi-embedding-vision-flash-2026-03-06"
+    resolved_model: ClassVar[str] = "tongyi-embedding-vision-flash-2026-03-06"
+    model_version: ClassVar[str] = "tongyi-embedding-vision-flash-2026-03-06"
+    dimension: ClassVar[int] = 768
+    metric: ClassVar[str] = "cosine"
+    vector_data_type: ClassVar[str] = "float32"
+    normalization: ClassVar[str] = "l2"
     max_batch_size: Annotated[int, Field(ge=1, le=20)] = 20
-    text_query_template: Literal["query: {text}"] = "query: {text}"
-    image_resize_policy: Literal["provider_res_level_1_no_crop_v1"] = (
+    text_query_template: ClassVar[str] = "query: {text}"
+    image_resize_policy: ClassVar[str] = (
         "provider_res_level_1_no_crop_v1"
     )
-    color_space: Literal["RGB"] = "RGB"
-    configuration_fingerprint: Literal[
+    color_space: ClassVar[str] = "RGB"
+    configuration_fingerprint: ClassVar[str] = (
         "sha256:a3c9bcf7f049967db37f8bb59bb16504a0f371a14d0adfc793338d0eeecd856b"
-    ] = "sha256:a3c9bcf7f049967db37f8bb59bb16504a0f371a14d0adfc793338d0eeecd856b"
-    compatibility_fingerprint: Literal[
+    )
+    compatibility_fingerprint: ClassVar[str] = (
         "sha256:953af16a5423f52cfdb65efb499a7181212be4760636f9a4ef428a959d9d9da2"
-    ] = "sha256:953af16a5423f52cfdb65efb499a7181212be4760636f9a4ef428a959d9d9da2"
+    )
 
 
 class ModelProviderSettings(StrictSettingsModel):
     chat: ChatProviderSettings
     embedding: EmbeddingProviderSettings
     multimodal_embedding: MultimodalEmbeddingProviderSettings | None = None
-    rerank_enabled: DisabledFlag = False
 
 
 class RetrievalSettings(StrictSettingsModel):
-    strategy: Literal["exact_vector"] = "exact_vector"
     deadline_seconds: Annotated[
         float, Field(gt=0, allow_inf_nan=False)
     ] = 240.0
-    top_k: Annotated[int, Field(ge=1, le=100)] = 10
     min_cosine_similarity: Annotated[float, Field(ge=-1.0, le=1.0)] = 0.35
     min_rerank_score: Annotated[float, Field(ge=0.0, le=1.0)] = 0.45
     candidate_multiplier: Annotated[int, Field(ge=2, le=8)] = 4
@@ -579,10 +418,10 @@ class RetrievalSettings(StrictSettingsModel):
     lexical_weight: Annotated[float, Field(ge=0.0, le=1.0)] = 0.35
     mmr_lambda: Annotated[float, Field(gt=0.0, le=1.0)] = 0.75
     hybrid_enabled: bool = False
-    lexical_analyzer_version: Literal["lexical_simple_cjk_bigram_v1"] = (
+    lexical_analyzer_version: ClassVar[str] = (
         "lexical_simple_cjk_bigram_v1"
     )
-    lexical_query_version: Literal["lexical_or_query_v1"] = (
+    lexical_query_version: ClassVar[str] = (
         "lexical_or_query_v1"
     )
     lexical_candidate_count: Annotated[int, Field(ge=1, le=100)] = 40
@@ -604,29 +443,15 @@ class RetrievalSettings(StrictSettingsModel):
     def require_rerank_weights_sum_to_one(self) -> Self:
         if abs(self.vector_weight + self.lexical_weight - 1.0) > 1e-9:
             raise ValueError("rerank weights must sum to one")
-        if self.lexical_candidate_count < self.top_k:
-            raise ValueError(
-                "lexical_candidate_count must not be smaller than top_k"
-            )
         return self
-
-
-class DeliveryReliabilitySettings(StrictSettingsModel):
-    second_queue_enabled: DisabledFlag = False
-    retained_event_replay_enabled: DisabledFlag = False
-    multi_runner_recovery_enabled: DisabledFlag = False
-    outbox_delivery_enabled: DisabledFlag = False
 
 
 class ObservabilitySettings(StrictSettingsModel):
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
-    log_format: Literal["json"] = "json"
-    include_content: DisabledFlag = False
-    tracing_enabled: bool = False
 
 
 class Settings(BaseSettings):
-    """Complete P0/P1A process settings loaded from environment or `.env`."""
+    """Supported local process settings loaded from environment or `.env`."""
 
     model_config = SettingsConfigDict(
         env_prefix="RAG_KB__",
@@ -644,19 +469,11 @@ class Settings(BaseSettings):
     database: DatabaseSettings
     job_poller: JobPollerSettings = Field(default_factory=JobPollerSettings)
     chat_delivery: ChatDeliverySettings = Field(default_factory=ChatDeliverySettings)
-    session_context: SessionContextSettings = Field(
-        default_factory=SessionContextSettings
-    )
     file_store: FileStoreSettings = Field(default_factory=FileStoreSettings)
     maintenance: MaintenanceSettings = Field(default_factory=MaintenanceSettings)
-    file_admission: FileAdmissionSettings = Field(default_factory=FileAdmissionSettings)
     parser: ParserSettings = Field(default_factory=ParserSettings)
-    vector_store: VectorStoreSettings = Field(default_factory=VectorStoreSettings)
     model_provider: ModelProviderSettings
     retrieval: RetrievalSettings = Field(default_factory=RetrievalSettings)
-    delivery_reliability: DeliveryReliabilitySettings = Field(
-        default_factory=DeliveryReliabilitySettings
-    )
     observability: ObservabilitySettings = Field(
         default_factory=ObservabilitySettings
     )

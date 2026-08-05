@@ -103,15 +103,6 @@ from rag_kb.domain.chat_terminal import (
     ChatTerminalWriteStatus,
 )
 from rag_kb.domain.errors import ErrorCode
-from rag_kb.domain.evaluation import (
-    EvaluationCaseDefinition,
-    EvaluationCaseResult,
-    EvaluationConflictError,
-    EvaluationDatasetDefinition,
-    EvaluationRunDefinition,
-    EvaluationRunSnapshot,
-    EvaluationRunState,
-)
 from rag_kb.domain.files import (
     FileLocation,
     FileReconciliationResult,
@@ -386,13 +377,6 @@ __all__ = [
     "ValidatedAnswer",
     "VisualEvidenceDecision",
     "VisualEvidenceReason",
-    "EvaluationCaseDefinition",
-    "EvaluationCaseResult",
-    "EvaluationConflictError",
-    "EvaluationDatasetDefinition",
-    "EvaluationRunDefinition",
-    "EvaluationRunSnapshot",
-    "EvaluationRunState",
     "canonical_request_hash",
     "evidence_group_identity",
     "resolve_p1_policy",

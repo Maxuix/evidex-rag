@@ -68,7 +68,7 @@ def build_settings(root: Path, **overrides: object) -> Settings:
 
 
 class SettingsTests(unittest.TestCase):
-    def test_valid_settings_use_frozen_p1a_contracts(self) -> None:
+    def test_valid_settings_use_the_active_local_surface(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             settings = build_settings(Path(directory))
 
@@ -82,48 +82,18 @@ class SettingsTests(unittest.TestCase):
             "qwen3.7-text-embedding",
         )
         self.assertEqual(settings.model_provider.embedding.metric, "cosine")
-        self.assertTrue(settings.vector_store.exact_search)
-        self.assertFalse(settings.vector_store.hnsw_enabled)
         self.assertEqual(settings.retrieval.min_cosine_similarity, 0.35)
         self.assertEqual(settings.retrieval.min_rerank_score, 0.45)
         self.assertTrue(settings.retrieval.rerank_enabled)
-        self.assertEqual(settings.identity.provider, "development_fixed")
         self.assertEqual(settings.identity.workspace_id.version, 7)
         self.assertEqual(
             settings.security.allowed_cors_origins,
             ("http://127.0.0.1:3000",),
         )
-        self.assertFalse(settings.security.cors_allow_credentials)
-        self.assertEqual(settings.file_admission.max_bytes, 10 * 1024 * 1024)
-        self.assertEqual(
-            settings.file_admission.max_markdown_bundle_bytes,
-            20 * 1024 * 1024,
-        )
-        self.assertEqual(settings.file_admission.max_lines, 200_000)
-        self.assertEqual(settings.file_admission.max_archive_entries, 10_000)
-        self.assertEqual(
-            settings.file_admission.max_expanded_bytes,
-            100 * 1024 * 1024,
-        )
-        self.assertEqual(settings.parser.profile, "docling_text_local_v1")
         self.assertEqual(
             settings.parser.docling_artifacts_path,
             Path("/opt/rag-kb/docling-artifacts"),
         )
-        self.assertEqual(settings.parser.max_file_size, 10_485_760)
-        self.assertEqual(
-            settings.parser.max_markdown_bundle_size,
-            20_971_520,
-        )
-        self.assertEqual(settings.parser.max_num_pages, 500)
-        self.assertEqual(settings.parser.document_timeout_seconds, 600)
-        self.assertEqual(settings.parser.max_csv_columns, 1_024)
-        self.assertEqual(settings.parser.max_csv_cells, 200_000)
-        self.assertEqual(settings.parser.max_docling_items, 20_000)
-        self.assertEqual(settings.parser.max_chunks, 20_000)
-        self.assertEqual(settings.parser.max_extracted_characters, 5_000_000)
-        self.assertEqual(settings.parser.max_metadata_bytes, 65_536)
-        self.assertEqual(settings.parser.max_total_image_pixels, 80_000_000)
         self.assertEqual(settings.job_poller.indexing_deadline_seconds, 900)
         self.assertEqual(settings.job_poller.chat_deadline_seconds, 120)
         self.assertEqual(settings.database.required_api_connections, 3)
@@ -157,45 +127,30 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.maintenance.task_retention_seconds, 604_800)
         self.assertEqual(settings.model_provider.chat.temperature, 0.1)
         self.assertEqual(settings.model_provider.chat.max_tokens, 2048)
-        self.assertEqual(settings.session_context.max_turns, 6)
-        self.assertEqual(settings.session_context.max_context_tokens, 4000)
-        self.assertEqual(settings.session_context.tokenizer, "cl100k_base")
-        self.assertEqual(
-            settings.session_context.query_schema, "contextual_query_v2"
+
+        self.assertNotIn("session_context", Settings.model_fields)
+        self.assertNotIn("file_admission", Settings.model_fields)
+        self.assertNotIn("vector_store", Settings.model_fields)
+        self.assertNotIn("delivery_reliability", Settings.model_fields)
+        self.assertNotIn(
+            "model",
+            type(settings.model_provider.embedding).model_fields,
         )
 
-    def test_session_context_policy_is_fixed(self) -> None:
+    def test_removed_configuration_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            for override in (
-                {"max_turns": 7},
-                {"max_context_tokens": 5000},
-                {"tokenizer": "provider_tokenizer"},
-                {"strategy": "summarized"},
-                {"query_schema": "contextual_query_v1"},
+            for group, override in (
+                ("session_context", {"max_turns": 7}),
+                ("file_admission", {"max_bytes": 1}),
+                ("parser", {"max_file_size": 1}),
+                ("vector_store", {"hnsw_enabled": True}),
+                ("delivery_reliability", {"outbox_delivery_enabled": True}),
             ):
-                with self.subTest(override=override), self.assertRaises(
+                with self.subTest(group=group), self.assertRaises(
                     ValidationError
                 ):
-                    build_settings(root, session_context=override)
-
-    def test_docling_conversion_limits_are_fixed(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            for override in (
-                {"max_file_size": 1},
-                {"max_markdown_bundle_size": 1},
-                {"max_num_pages": 501},
-                {"document_timeout_seconds": 601},
-                {"max_csv_columns": 1_025},
-                {"max_csv_cells": 200_001},
-                {"max_docling_items": 20_001},
-                {"max_total_image_pixels": 80_000_001},
-            ):
-                with self.subTest(override=override), self.assertRaises(
-                    ValidationError
-                ):
-                    build_settings(root, parser=override)
+                    build_settings(root, **{group: override})
 
     def test_maintenance_retention_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -529,29 +484,6 @@ class SettingsTests(unittest.TestCase):
                     _env_file=None,
                     **{**payload, "model_provider": providers},
                 )
-
-    def test_p1b_capabilities_cannot_be_enabled(self) -> None:
-        flags = (
-            "second_queue_enabled",
-            "retained_event_replay_enabled",
-            "multi_runner_recovery_enabled",
-            "outbox_delivery_enabled",
-        )
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            for flag in flags:
-                with self.subTest(flag=flag), self.assertRaises(ValidationError):
-                    build_settings(root, delivery_reliability={flag: True})
-
-    def test_later_retrieval_features_cannot_be_enabled(self) -> None:
-        overrides = ({"vector_store": {"hnsw_enabled": True}},)
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            for override in overrides:
-                with self.subTest(override=override), self.assertRaises(
-                    ValidationError
-                ):
-                    build_settings(root, **override)
 
     def test_hybrid_retrieval_is_explicitly_configurable(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

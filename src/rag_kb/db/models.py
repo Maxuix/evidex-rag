@@ -103,13 +103,6 @@ class AssistantMessageStatus(StrEnum):
     FAILED = "failed"
 
 
-class EvalRunStatus(StrEnum):
-    QUEUED = "queued"
-    RUNNING = "running"
-    COMPLETED = "completed"
-    FAILED = "failed"
-
-
 def enum_type(enum_class: type[StrEnum], name: str) -> Enum:
     return Enum(
         enum_class,
@@ -1240,86 +1233,4 @@ class Citation(Base):
         JSONB, nullable=False, server_default=text("'[]'::jsonb")
     )
     score: Mapped[float | None] = mapped_column(Float)
-    created_at: Mapped[datetime] = created_timestamp()
-
-
-class EvalDataset(Base):
-    __tablename__ = "eval_dataset"
-    __table_args__ = (
-        UniqueConstraint("workspace_id", "name", "version"),
-    )
-
-    id: Mapped[UUID] = uuid_primary_key()
-    workspace_id: Mapped[UUID] = mapped_column(
-        ForeignKey("workspace.id", ondelete="RESTRICT"), nullable=False, index=True
-    )
-    name: Mapped[str] = mapped_column(String(255), nullable=False)
-    version: Mapped[str] = mapped_column(String(64), nullable=False)
-    manifest_hash: Mapped[str] = mapped_column(String(64), nullable=False)
-    dataset_metadata: Mapped[dict[str, Any]] = mapped_column(
-        JSONB, nullable=False, server_default=text("'{}'::jsonb")
-    )
-    created_at: Mapped[datetime] = created_timestamp()
-
-
-class EvalCase(Base):
-    __tablename__ = "eval_case"
-    __table_args__ = (UniqueConstraint("dataset_id", "case_key"),)
-
-    id: Mapped[UUID] = uuid_primary_key()
-    dataset_id: Mapped[UUID] = mapped_column(
-        ForeignKey("eval_dataset.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    case_key: Mapped[str] = mapped_column(String(255), nullable=False)
-    question: Mapped[str] = mapped_column(Text, nullable=False)
-    expected: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
-    tags: Mapped[list[str]] = mapped_column(
-        JSONB, nullable=False, server_default=text("'[]'::jsonb")
-    )
-    created_at: Mapped[datetime] = created_timestamp()
-
-
-class EvalRun(Base):
-    __tablename__ = "eval_run"
-
-    id: Mapped[UUID] = uuid_primary_key()
-    workspace_id: Mapped[UUID] = mapped_column(
-        ForeignKey("workspace.id", ondelete="RESTRICT"), nullable=False, index=True
-    )
-    kb_id: Mapped[UUID] = mapped_column(
-        ForeignKey("knowledge_base.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    dataset_id: Mapped[UUID] = mapped_column(
-        ForeignKey("eval_dataset.id", ondelete="RESTRICT"), nullable=False
-    )
-    index_revision_id: Mapped[UUID] = mapped_column(
-        ForeignKey("index_revision.id", ondelete="RESTRICT"), nullable=False
-    )
-    status: Mapped[EvalRunStatus] = mapped_column(
-        enum_type(EvalRunStatus, "eval_run_status"), nullable=False
-    )
-    run_config: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
-    error_code: Mapped[str | None] = mapped_column(String(128))
-    error_detail: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
-    created_at: Mapped[datetime] = created_timestamp()
-    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-
-
-class EvalResult(Base):
-    __tablename__ = "eval_result"
-    __table_args__ = (UniqueConstraint("eval_run_id", "eval_case_id"),)
-
-    id: Mapped[UUID] = uuid_primary_key()
-    eval_run_id: Mapped[UUID] = mapped_column(
-        ForeignKey("eval_run.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    eval_case_id: Mapped[UUID] = mapped_column(
-        ForeignKey("eval_case.id", ondelete="CASCADE"), nullable=False
-    )
-    generated_answer: Mapped[str | None] = mapped_column(Text)
-    evidence: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
-    metrics: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
-    error_code: Mapped[str | None] = mapped_column(String(128))
-    error_detail: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     created_at: Mapped[datetime] = created_timestamp()

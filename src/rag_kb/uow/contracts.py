@@ -11,7 +11,6 @@ from rag_kb.repositories import (
     ChatRepository,
     ContentMutationRepository,
     DocumentRepository,
-    EvaluationRepository,
     FileConsistencyRepository,
     IndexingRepository,
     KnowledgeBaseRepository,
@@ -68,9 +67,6 @@ class UnitOfWork(Protocol):
 
     @property
     def indexing(self) -> IndexingRepository: ...
-
-    @property
-    def evaluations(self) -> EvaluationRepository: ...
 
     async def __aenter__(self) -> UnitOfWork: ...
 

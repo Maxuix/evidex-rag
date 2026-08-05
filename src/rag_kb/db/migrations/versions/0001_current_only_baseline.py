@@ -52,19 +52,6 @@ def upgrade() -> None:
     sa.UniqueConstraint('workspace_id', 'id', name='uq_embedding_space_workspace_id')
     )
     op.create_index(op.f('ix_embedding_space_workspace_id'), 'embedding_space', ['workspace_id'], unique=False)
-    op.create_table('eval_dataset',
-    sa.Column('id', sa.UUID(), server_default=sa.text('uuidv7()'), nullable=False),
-    sa.Column('workspace_id', sa.UUID(), nullable=False),
-    sa.Column('name', sa.String(length=255), nullable=False),
-    sa.Column('version', sa.String(length=64), nullable=False),
-    sa.Column('manifest_hash', sa.String(length=64), nullable=False),
-    sa.Column('dataset_metadata', postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'{}'::jsonb"), nullable=False),
-    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
-    sa.ForeignKeyConstraint(['workspace_id'], ['workspace.id'], name=op.f('fk_eval_dataset_workspace_id_workspace'), ondelete='RESTRICT'),
-    sa.PrimaryKeyConstraint('id', name=op.f('pk_eval_dataset')),
-    sa.UniqueConstraint('workspace_id', 'name', 'version', name=op.f('uq_eval_dataset_workspace_id_name_version'))
-    )
-    op.create_index(op.f('ix_eval_dataset_workspace_id'), 'eval_dataset', ['workspace_id'], unique=False)
     op.create_table('knowledge_base',
     sa.Column('id', sa.UUID(), server_default=sa.text('uuidv7()'), nullable=False),
     sa.Column('workspace_id', sa.UUID(), nullable=False),
@@ -111,19 +98,6 @@ def upgrade() -> None:
     )
     op.create_index(op.f('ix_document_kb_id'), 'document', ['kb_id'], unique=False)
     op.create_index(op.f('ix_document_workspace_id'), 'document', ['workspace_id'], unique=False)
-    op.create_table('eval_case',
-    sa.Column('id', sa.UUID(), server_default=sa.text('uuidv7()'), nullable=False),
-    sa.Column('dataset_id', sa.UUID(), nullable=False),
-    sa.Column('case_key', sa.String(length=255), nullable=False),
-    sa.Column('question', sa.Text(), nullable=False),
-    sa.Column('expected', postgresql.JSONB(astext_type=sa.Text()), nullable=False),
-    sa.Column('tags', postgresql.JSONB(astext_type=sa.Text()), server_default=sa.text("'[]'::jsonb"), nullable=False),
-    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
-    sa.ForeignKeyConstraint(['dataset_id'], ['eval_dataset.id'], name=op.f('fk_eval_case_dataset_id_eval_dataset'), ondelete='CASCADE'),
-    sa.PrimaryKeyConstraint('id', name=op.f('pk_eval_case')),
-    sa.UniqueConstraint('dataset_id', 'case_key', name=op.f('uq_eval_case_dataset_id_case_key'))
-    )
-    op.create_index(op.f('ix_eval_case_dataset_id'), 'eval_case', ['dataset_id'], unique=False)
     op.create_table('index_revision',
     sa.Column('id', sa.UUID(), server_default=sa.text('uuidv7()'), nullable=False),
     sa.Column('workspace_id', sa.UUID(), nullable=False),
@@ -191,27 +165,6 @@ def upgrade() -> None:
     )
     op.create_index(op.f('ix_document_version_kb_id'), 'document_version', ['kb_id'], unique=False)
     op.create_index(op.f('ix_document_version_workspace_id'), 'document_version', ['workspace_id'], unique=False)
-    op.create_table('eval_run',
-    sa.Column('id', sa.UUID(), server_default=sa.text('uuidv7()'), nullable=False),
-    sa.Column('workspace_id', sa.UUID(), nullable=False),
-    sa.Column('kb_id', sa.UUID(), nullable=False),
-    sa.Column('dataset_id', sa.UUID(), nullable=False),
-    sa.Column('index_revision_id', sa.UUID(), nullable=False),
-    sa.Column('status', sa.Enum('queued', 'running', 'completed', 'failed', name='eval_run_status'), nullable=False),
-    sa.Column('run_config', postgresql.JSONB(astext_type=sa.Text()), nullable=False),
-    sa.Column('error_code', sa.String(length=128), nullable=True),
-    sa.Column('error_detail', postgresql.JSONB(astext_type=sa.Text()), nullable=True),
-    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
-    sa.Column('started_at', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('completed_at', sa.DateTime(timezone=True), nullable=True),
-    sa.ForeignKeyConstraint(['dataset_id'], ['eval_dataset.id'], name=op.f('fk_eval_run_dataset_id_eval_dataset'), ondelete='RESTRICT'),
-    sa.ForeignKeyConstraint(['index_revision_id'], ['index_revision.id'], name=op.f('fk_eval_run_index_revision_id_index_revision'), ondelete='RESTRICT'),
-    sa.ForeignKeyConstraint(['kb_id'], ['knowledge_base.id'], name=op.f('fk_eval_run_kb_id_knowledge_base'), ondelete='CASCADE'),
-    sa.ForeignKeyConstraint(['workspace_id'], ['workspace.id'], name=op.f('fk_eval_run_workspace_id_workspace'), ondelete='RESTRICT'),
-    sa.PrimaryKeyConstraint('id', name=op.f('pk_eval_run'))
-    )
-    op.create_index(op.f('ix_eval_run_kb_id'), 'eval_run', ['kb_id'], unique=False)
-    op.create_index(op.f('ix_eval_run_workspace_id'), 'eval_run', ['workspace_id'], unique=False)
     op.create_table('chat_run',
     sa.Column('id', sa.UUID(), server_default=sa.text('uuidv7()'), nullable=False),
     sa.Column('workspace_id', sa.UUID(), nullable=False),
@@ -256,22 +209,6 @@ def upgrade() -> None:
     op.create_index('ix_chat_run_claim', 'chat_run', ['status', 'next_attempt_at', 'created_at'], unique=False)
     op.create_index(op.f('ix_chat_run_kb_id'), 'chat_run', ['kb_id'], unique=False)
     op.create_index('uq_chat_run_session_nonterminal', 'chat_run', ['session_id'], unique=True, postgresql_where=sa.text("status IN ('queued', 'running')"))
-    op.create_table('eval_result',
-    sa.Column('id', sa.UUID(), server_default=sa.text('uuidv7()'), nullable=False),
-    sa.Column('eval_run_id', sa.UUID(), nullable=False),
-    sa.Column('eval_case_id', sa.UUID(), nullable=False),
-    sa.Column('generated_answer', sa.Text(), nullable=True),
-    sa.Column('evidence', postgresql.JSONB(astext_type=sa.Text()), nullable=True),
-    sa.Column('metrics', postgresql.JSONB(astext_type=sa.Text()), nullable=False),
-    sa.Column('error_code', sa.String(length=128), nullable=True),
-    sa.Column('error_detail', postgresql.JSONB(astext_type=sa.Text()), nullable=True),
-    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
-    sa.ForeignKeyConstraint(['eval_case_id'], ['eval_case.id'], name=op.f('fk_eval_result_eval_case_id_eval_case'), ondelete='CASCADE'),
-    sa.ForeignKeyConstraint(['eval_run_id'], ['eval_run.id'], name=op.f('fk_eval_result_eval_run_id_eval_run'), ondelete='CASCADE'),
-    sa.PrimaryKeyConstraint('id', name=op.f('pk_eval_result')),
-    sa.UniqueConstraint('eval_run_id', 'eval_case_id', name=op.f('uq_eval_result_eval_run_id_eval_case_id'))
-    )
-    op.create_index(op.f('ix_eval_result_eval_run_id'), 'eval_result', ['eval_run_id'], unique=False)
     op.create_table('indexed_document_version',
     sa.Column('id', sa.UUID(), server_default=sa.text('uuidv7()'), nullable=False),
     sa.Column('workspace_id', sa.UUID(), nullable=False),
@@ -884,15 +821,10 @@ def downgrade() -> None:
     op.drop_index(op.f('ix_indexed_document_version_workspace_id'), table_name='indexed_document_version')
     op.drop_index(op.f('ix_indexed_document_version_kb_id'), table_name='indexed_document_version')
     op.drop_table('indexed_document_version')
-    op.drop_index(op.f('ix_eval_result_eval_run_id'), table_name='eval_result')
-    op.drop_table('eval_result')
     op.drop_index(op.f('ix_chat_run_kb_id'), table_name='chat_run')
     op.drop_index('uq_chat_run_session_nonterminal', table_name='chat_run', postgresql_where=sa.text("status IN ('queued', 'running')"))
     op.drop_index('ix_chat_run_claim', table_name='chat_run')
     op.drop_table('chat_run')
-    op.drop_index(op.f('ix_eval_run_workspace_id'), table_name='eval_run')
-    op.drop_index(op.f('ix_eval_run_kb_id'), table_name='eval_run')
-    op.drop_table('eval_run')
     op.drop_index(op.f('ix_document_version_workspace_id'), table_name='document_version')
     op.drop_index(op.f('ix_document_version_kb_id'), table_name='document_version')
     op.drop_table('document_version')
@@ -905,21 +837,16 @@ def downgrade() -> None:
     op.drop_index(op.f('ix_index_revision_embedding_space_workspace_id'), table_name='index_revision_embedding_space')
     op.drop_table('index_revision_embedding_space')
     op.drop_table('index_revision')
-    op.drop_index(op.f('ix_eval_case_dataset_id'), table_name='eval_case')
-    op.drop_table('eval_case')
     op.drop_index(op.f('ix_document_workspace_id'), table_name='document')
     op.drop_index(op.f('ix_document_kb_id'), table_name='document')
     op.drop_table('document')
     op.drop_table('chat_session')
     op.drop_index(op.f('ix_knowledge_base_workspace_id'), table_name='knowledge_base')
     op.drop_table('knowledge_base')
-    op.drop_index(op.f('ix_eval_dataset_workspace_id'), table_name='eval_dataset')
-    op.drop_table('eval_dataset')
     op.drop_index(op.f('ix_embedding_space_workspace_id'), table_name='embedding_space')
     op.drop_table('embedding_space')
     op.drop_table('workspace')
     for enum_name in (
-        'eval_run_status',
         'chat_run_status',
         'assistant_message_status',
         'chat_message_role',

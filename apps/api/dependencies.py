@@ -231,12 +231,6 @@ def build_api_dependencies(
                 rerank=rerank,
             )
         ),
-        context_strategy=resolved_settings.session_context.strategy,
-        context_max_turns=resolved_settings.session_context.max_turns,
-        context_max_tokens=(
-            resolved_settings.session_context.max_context_tokens
-        ),
-        context_tokenizer=resolved_settings.session_context.tokenizer,
     )
     chat_delivery = resolved_settings.chat_delivery
     chat_preview_broker = (
@@ -281,30 +275,7 @@ def build_api_dependencies(
             file_store,
             MarkdownMediaNormalizer(PublicHttpImageFetcher()),
         ),
-        file_admission_service=FileAdmissionService(
-            AdmissionLimits(
-                max_bytes=resolved_settings.file_admission.max_bytes,
-                max_markdown_bundle_bytes=(
-                    resolved_settings.file_admission.max_markdown_bundle_bytes
-                ),
-                max_lines=resolved_settings.file_admission.max_lines,
-                max_csv_columns=resolved_settings.parser.max_csv_columns,
-                max_csv_cells=resolved_settings.parser.max_csv_cells,
-                max_archive_entries=(
-                    resolved_settings.file_admission.max_archive_entries
-                ),
-                max_expanded_bytes=(
-                    resolved_settings.file_admission.max_expanded_bytes
-                ),
-                max_assets=resolved_settings.parser.max_assets,
-                max_image_width=resolved_settings.parser.max_image_width,
-                max_image_height=resolved_settings.parser.max_image_height,
-                max_image_pixels=resolved_settings.parser.max_image_pixels,
-                max_total_image_pixels=(
-                    resolved_settings.parser.max_total_image_pixels
-                ),
-            )
-        ),
+        file_admission_service=FileAdmissionService(AdmissionLimits()),
         indexing_job_service=IndexingJobService(unit_of_work, access_policy),
         embedding_provider=embedding_provider,
         multimodal_embedding_provider=multimodal_embedding_provider,

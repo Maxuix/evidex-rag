@@ -164,38 +164,7 @@ def build_worker_dependencies(
         resolved_settings.file_store.staging_path,
         resolved_settings.file_store.final_path,
     )
-    parser_limits = ParserLimits(
-        max_file_size=resolved_settings.parser.max_file_size,
-        max_markdown_bundle_size=(
-            resolved_settings.parser.max_markdown_bundle_size
-        ),
-        max_num_pages=resolved_settings.parser.max_num_pages,
-        document_timeout_seconds=(
-            resolved_settings.parser.document_timeout_seconds
-        ),
-        max_csv_columns=resolved_settings.parser.max_csv_columns,
-        max_csv_cells=resolved_settings.parser.max_csv_cells,
-        max_docling_items=resolved_settings.parser.max_docling_items,
-        max_chunks=resolved_settings.parser.max_chunks,
-        max_extracted_characters=(
-            resolved_settings.parser.max_extracted_characters
-        ),
-        max_metadata_bytes=resolved_settings.parser.max_metadata_bytes,
-        max_assets=resolved_settings.parser.max_assets,
-        max_total_asset_bytes=resolved_settings.parser.max_total_asset_bytes,
-        max_image_pixels=resolved_settings.parser.max_image_pixels,
-        max_total_image_pixels=(
-            resolved_settings.parser.max_total_image_pixels
-        ),
-        max_image_width=resolved_settings.parser.max_image_width,
-        max_image_height=resolved_settings.parser.max_image_height,
-        max_ocr_characters=resolved_settings.parser.max_ocr_characters,
-        max_ocr_tokens=resolved_settings.parser.max_ocr_tokens,
-        max_caption_tokens=resolved_settings.parser.max_caption_tokens,
-        max_table_html_bytes=resolved_settings.parser.max_table_html_bytes,
-        max_units=resolved_settings.parser.max_units,
-        max_representations=resolved_settings.parser.max_representations,
-    )
+    parser_limits = ParserLimits()
     document_parser = DoclingParser(
         parser_limits,
         artifacts_path=resolved_settings.parser.docling_artifacts_path,
@@ -368,11 +337,7 @@ def build_worker_dependencies(
         chat_model_adapter,
         ChatContextualizedQueryStore(unit_of_work),
     )
-    session_context_selector = ConversationContextSelector(
-        max_turns=resolved_settings.session_context.max_turns,
-        token_budget=resolved_settings.session_context.max_context_tokens,
-        tokenizer=resolved_settings.session_context.tokenizer,
-    )
+    session_context_selector = ConversationContextSelector()
     evidence_retriever = ChatEvidenceRetriever(retrieval_service)
     chat_runner = LangGraphRunner(
         context_loader,

@@ -161,7 +161,7 @@ class StartLocalScriptTests(unittest.TestCase):
         log = directory / "docker.log"
         state_file = directory / ".env.local"
         app_env = directory / ".env"
-        app_env.write_text("RAG_KB__APP__DEPLOYMENT_PROFILE=development\n")
+        app_env.write_text("RAG_KB__APP__BIND_HOST=127.0.0.1\n")
         docker = fake_bin / "docker"
         docker.write_text(
             textwrap.dedent(
