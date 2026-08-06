@@ -147,6 +147,13 @@ class StartLocalScriptTests(unittest.TestCase):
         ]
         self.assertIn("${RAG_KB_FRONTEND_PORT:-3000}", origins)
         self.assertIn("${RAG_KB_DIAGNOSTIC_FRONTEND_PORT:-3001}", origins)
+        self.assertIn("http://localhost:${RAG_KB_FRONTEND_PORT:-3000}", origins)
+        self.assertIn(
+            "http://localhost:${RAG_KB_DIAGNOSTIC_FRONTEND_PORT:-3001}",
+            origins,
+        )
+        self.assertIn("http://127.0.0.1:5173", origins)
+        self.assertIn("http://localhost:5173", origins)
 
     def _run(
         self,
