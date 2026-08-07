@@ -24,6 +24,7 @@ from rag_kb.schemas import (
     KnowledgeBasePage,
     KnowledgeBaseParsingResponse,
     KnowledgeBaseResponse,
+    KnowledgeBaseEmbeddingResponse,
     KnowledgeBaseUpdate,
     RetrievalDefaults,
 )
@@ -53,6 +54,11 @@ async def create_knowledge_base(
         chunking_preset=payload.chunking.preset,
         retrieval_defaults=payload.retrieval_defaults.model_dump(mode="json"),
         answer_policy_defaults=payload.answer_policy_defaults.model_dump(mode="json"),
+        embedding_selection=(
+            payload.embedding.model_dump(mode="json")
+            if payload.embedding is not None
+            else None
+        ),
     )
     return _response(created)
 
@@ -162,12 +168,36 @@ def _response(value: KnowledgeBase) -> KnowledgeBaseResponse:
         public_parsing_descriptor,
     )
 
+    assert value.embedding is not None
     return KnowledgeBaseResponse(
         id=value.id,
         name=value.name,
         source_change_seq=value.source_change_seq,
         active_index_revision_id=value.active_index_revision_id,
         embedding_space_id=value.embedding_space_id,
+        embedding=KnowledgeBaseEmbeddingResponse.model_validate(
+            {
+                "strategy": value.embedding.strategy,
+                "text": {
+                    "embedding_space_id": value.embedding.text.embedding_space_id,
+                    "profile_revision_id": value.embedding.text.profile_revision_id,
+                    "dimension": value.embedding.text.dimension,
+                },
+                "cross_modal": (
+                    {
+                        "embedding_space_id": (
+                            value.embedding.cross_modal.embedding_space_id
+                        ),
+                        "profile_revision_id": (
+                            value.embedding.cross_modal.profile_revision_id
+                        ),
+                        "dimension": value.embedding.cross_modal.dimension,
+                    }
+                    if value.embedding.cross_modal is not None
+                    else None
+                ),
+            }
+        ),
         parsing=KnowledgeBaseParsingResponse.model_validate(
             public_parsing_descriptor(value.parser_config)
         ),

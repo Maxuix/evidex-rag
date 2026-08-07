@@ -138,12 +138,24 @@ class IndexingPipeline:
                     diagnostic={"check": "job_target_mapping"},
                 )
             strategy = self._require_revision_profile(target)
-            embedding_provider = (
-                await self._embedding_model_resolver(target.embedding_space)
-                if self._embedding_model_resolver is not None
-                and target.embedding_space.model_profile_revision_id is not None
-                else self._embedding_provider
+            cross_space = None
+            cross_provider = None
+            unified = (
+                target.embedding_space_ids.get("cross_modal_retrieval")
+                == target.embedding_space_id
             )
+            if unified:
+                cross_space, cross_provider = await self._require_multimodal_runtime(
+                    target
+                )
+                embedding_provider = cross_provider
+            else:
+                embedding_provider = (
+                    await self._embedding_model_resolver(target.embedding_space)
+                    if self._embedding_model_resolver is not None
+                    and target.embedding_space.model_profile_revision_id is not None
+                    else self._embedding_provider
+                )
             if strategy is ChunkingStrategyKind.SEMANTIC:
                 self._require_semantic_space_role(target)
             if target.already_complete:
@@ -177,9 +189,7 @@ class IndexingPipeline:
             )
             resolved_parsing = parsing_preset(target.parser_config)
             multimodal = resolved_parsing is ParsingPreset.MULTIMODAL_LOCAL_V2
-            cross_space = None
-            cross_provider = None
-            if multimodal:
+            if multimodal and cross_provider is None:
                 cross_space, cross_provider = await self._require_multimodal_runtime(
                     target
                 )
@@ -1080,6 +1090,7 @@ class IndexingPipeline:
                         ),
                         index_chunk_id=chunk.id,
                         embedding_space_id=target.embedding_space_id,
+                        embedding_dimension=target.embedding_space.dimension,
                         embedding=vector,
                         representation_kind=item["representation_kind"],
                     )
@@ -1147,6 +1158,7 @@ class IndexingPipeline:
                         ),
                         index_chunk_id=chunk.id,
                         embedding_space_id=cross_space_id,
+                        embedding_dimension=cross_space.dimension,
                         embedding=vector,
                         representation_kind=item["representation_kind"],
                     )

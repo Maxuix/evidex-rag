@@ -251,7 +251,16 @@ def _profile_response(value: ModelProfileBundle) -> ModelProfileResponse:
     parameters = (
         ChatModelParameters.model_validate(revision.configuration)
         if profile.kind.value == "chat"
-        else EmbeddingModelParameters.model_validate(revision.configuration)
+        else EmbeddingModelParameters.model_validate(
+            {
+                "type": "embedding",
+                "dimension": revision.configuration.get("dimension", "auto"),
+                "max_batch_size": revision.configuration.get("max_batch_size", 10),
+                "shared_text_image_space_confirmed": revision.configuration.get(
+                    "shared_text_image_space_confirmed", False
+                ),
+            }
+        )
     )
     return ModelProfileResponse(
         id=profile.id,
@@ -270,6 +279,11 @@ def _profile_response(value: ModelProfileBundle) -> ModelProfileResponse:
         configuration_fingerprint=revision.configuration_fingerprint,
         capability_fingerprint=revision.capability_fingerprint,
         compatibility_fingerprint=revision.compatibility_fingerprint,
+        embedding_validation=(
+            revision.validation_snapshot.as_dict()
+            if revision.validation_snapshot is not None
+            else None
+        ),
         created_at=profile.created_at,
         updated_at=profile.updated_at,
     )

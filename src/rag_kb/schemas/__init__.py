@@ -58,6 +58,7 @@ from rag_kb.schemas.indexing import IndexingErrorResponse, IndexingJobResponse
 from rag_kb.schemas.knowledge_bases import (
     KnowledgeBaseAnswerPolicyDefaults,
     KnowledgeBaseCreate,
+    KnowledgeBaseEmbeddingResponse,
     KnowledgeBaseChunking,
     KnowledgeBaseChunkingResponse,
     KnowledgeBaseParsing,
@@ -70,6 +71,7 @@ from rag_kb.schemas.knowledge_bases import (
 from rag_kb.schemas.model_settings import (
     ChatModelParameters,
     EmbeddingModelParameters,
+    EmbeddingValidationResponse,
     ModelCatalogResponse,
     ModelProfileCreate,
     ModelProfileResponse,
@@ -141,8 +143,10 @@ __all__ = [
     "IndexingJobResponse",
     "ErrorCode",
     "EffectiveAnswerPolicyResponse",
+    "EmbeddingValidationResponse",
     "FieldViolation",
     "KnowledgeBaseCreate",
+    "KnowledgeBaseEmbeddingResponse",
     "KnowledgeBaseChunking",
     "KnowledgeBaseChunkingResponse",
     "KnowledgeBaseParsing",

@@ -50,7 +50,12 @@ class _FakeEmbeddings:
         return self.query
 
 
-def _space(*, dimension: int = 2) -> EmbeddingSpaceDefinition:
+def _space(
+    *,
+    dimension: int = 2,
+    normalization: str = "l2",
+    dimension_request_mode: str = "explicit",
+) -> EmbeddingSpaceDefinition:
     return EmbeddingSpaceDefinition(
         provider_identity="alibaba-cloud-model-studio-qwen",
         endpoint_identity="alibaba-model-studio-beijing-embedding",
@@ -61,10 +66,11 @@ def _space(*, dimension: int = 2) -> EmbeddingSpaceDefinition:
         dimension=dimension,
         distance_metric="cosine",
         vector_data_type="float32",
-        normalization="l2",
+        normalization=normalization,
         configuration_fingerprint="sha256:configuration",
         tokenizer_fingerprint=None,
         compatibility_fingerprint="sha256:compatibility",
+        dimension_request_mode=dimension_request_mode,
     )
 
 
@@ -128,6 +134,26 @@ class LangChainEmbeddingAdapterTests(unittest.IsolatedAsyncioTestCase):
         zero_retry_arguments = constructor.call_args_list[1].kwargs
         self.assertEqual(zero_retry_arguments["timeout"], 30)
         self.assertEqual(zero_retry_arguments["max_retries"], 0)
+
+    def test_constructor_omits_dimension_for_fixed_provider_default(self) -> None:
+        with patch(
+            "rag_kb.adapters.model_api.langchain_embeddings.OpenAIEmbeddings",
+            return_value=_FakeEmbeddings(),
+        ) as constructor:
+            LangChainEmbeddingModelAdapter(
+                base_url="https://provider.invalid/v1",
+                api_key="secret",
+                embedding_space=_space(
+                    dimension=724,
+                    dimension_request_mode="omitted",
+                ),
+                max_batch_size=10,
+                timeout_seconds=30,
+                max_retries=0,
+                max_concurrency=1,
+            )
+
+        self.assertNotIn("dimensions", constructor.call_args.kwargs)
 
     async def test_documents_and_query_use_distinct_langchain_async_methods(self) -> None:
         model = _FakeEmbeddings(
@@ -252,6 +278,25 @@ class LangChainEmbeddingAdapterTests(unittest.IsolatedAsyncioTestCase):
                 raised.exception.diagnostic["check"],
                 expected_check,
             )
+
+    async def test_client_l2_normalizes_document_and_query_vectors(self) -> None:
+        model = _FakeEmbeddings(documents=[[3.0, 4.0]], query=[0.0, 5.0])
+        adapter = LangChainEmbeddingModelAdapter(
+            base_url="https://provider.invalid/v1",
+            api_key="secret",
+            embedding_space=_space(normalization="client_l2_v1"),
+            max_batch_size=10,
+            timeout_seconds=1,
+            max_retries=0,
+            max_concurrency=1,
+            embedding_model=model,
+        )
+
+        documents = await adapter.embed_documents(("document",))
+        query = await adapter.embed_query("query")
+
+        self.assertEqual(documents.vectors, ((0.6, 0.8),))
+        self.assertEqual(query, (0.0, 1.0))
 
     async def test_timeout_and_status_errors_are_stable_and_content_safe(self) -> None:
         with (

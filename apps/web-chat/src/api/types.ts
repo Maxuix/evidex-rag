@@ -267,11 +267,33 @@ export interface ChatModelParameters {
 
 export interface EmbeddingModelParameters {
   type: "embedding";
-  dimension: 768 | 1024;
+  dimension: "auto" | number;
   max_batch_size: number;
+  shared_text_image_space_confirmed: boolean;
+}
+
+export interface EmbeddingValidationSnapshot {
+  schema_version: "embedding_validation_v1";
+  provider_supported_dimensions: number[] | null;
+  verified_dimensions: number[];
+  provider_default_dimension: number | null;
+  recommended_dimension: number | null;
+  selected_dimension: number;
+  selection_source:
+    | "provider_recommended"
+    | "provider_default"
+    | "automatic_1024"
+    | "automatic_above_1024"
+    | "automatic_below_1024"
+    | "provider_observed_default"
+    | "user_probe"
+    | "legacy_explicit";
+  dimension_request_mode: "explicit" | "omitted";
+  input_capabilities: Array<"text_document" | "text_query" | "image">;
+  shared_text_image_space_confirmed: boolean;
   distance_metric: "cosine";
   vector_data_type: "float32";
-  normalization: "l2";
+  normalization: "l2" | "client_l2_v1";
 }
 
 export interface ModelProfile {
@@ -291,6 +313,7 @@ export interface ModelProfile {
   configuration_fingerprint: string;
   capability_fingerprint: string;
   compatibility_fingerprint: string | null;
+  embedding_validation: EmbeddingValidationSnapshot | null;
   created_at: IsoDate;
   updated_at: IsoDate;
 }

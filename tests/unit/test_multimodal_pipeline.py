@@ -87,21 +87,27 @@ class _RawMetadata:
         return dict(self._value)
 
 
-def _space() -> EmbeddingSpaceDefinition:
+def _space(
+    *,
+    dimension: int = 768,
+    normalization: str = "l2",
+    dimension_request_mode: str = "explicit",
+) -> EmbeddingSpaceDefinition:
     return EmbeddingSpaceDefinition(
         provider_identity="alibaba-cloud-model-studio-qwen",
         requested_model="tongyi-embedding-vision-flash-2026-03-06",
         resolved_model="tongyi-embedding-vision-flash-2026-03-06",
         model_version="tongyi-embedding-vision-flash-2026-03-06",
-        dimension=768,
+        dimension=dimension,
         distance_metric="cosine",
         vector_data_type="float32",
-        normalization="l2",
+        normalization=normalization,
         endpoint_identity="alibaba-model-studio-beijing-multimodal-embedding",
         deployment_revision=None,
         configuration_fingerprint="sha256:test-configuration",
         tokenizer_fingerprint=None,
         compatibility_fingerprint="sha256:test-multimodal",
+        dimension_request_mode=dimension_request_mode,
     )
 
 
@@ -284,19 +290,71 @@ class MultimodalEmbeddingAdapterTests(unittest.IsolatedAsyncioTestCase):
                 max_concurrency=1,
                 client=client,
             )
-            text = await adapter.embed_texts(("diagram",))
+            document = await adapter.embed_documents(("diagram",))
+            query = await adapter.embed_query("diagram")
             image = await adapter.embed_images(
                 (ImageEmbeddingInput(_png(), "image/png", hashlib.sha256(_png()).hexdigest()),)
             )
 
-        self.assertEqual(text.vectors[0][0], 1.0)
+        self.assertEqual(document.vectors[0][0], 1.0)
+        self.assertEqual(query[0], 1.0)
         self.assertEqual(image.vectors[0][0], 1.0)
-        self.assertEqual(requests[0]["input"]["contents"], [{"text": "query: diagram"}])
+        self.assertEqual(requests[0]["input"]["contents"], [{"text": "diagram"}])
+        self.assertEqual(requests[1]["input"]["contents"], [{"text": "query: diagram"}])
         self.assertEqual(
             requests[0]["parameters"],
             {"dimension": 768, "output_type": "dense", "res_level": 1},
         )
-        self.assertTrue(requests[1]["input"]["contents"][0]["image"].startswith("data:image/png;base64,"))
+        self.assertTrue(requests[2]["input"]["contents"][0]["image"].startswith("data:image/png;base64,"))
+
+    async def test_omitted_dimension_and_client_normalization_apply_to_all_inputs(self) -> None:
+        requests: list[dict] = []
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            payload = __import__("json").loads(request.content)
+            requests.append(payload)
+            count = len(payload["input"]["contents"])
+            return httpx.Response(
+                200,
+                json={
+                    "output": {
+                        "embeddings": [
+                            {
+                                "index": index,
+                                "embedding": [3.0, 4.0] + [0.0] * 62,
+                            }
+                            for index in range(count)
+                        ]
+                    }
+                },
+            )
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            adapter = TongyiVisionEmbeddingAdapter(
+                endpoint="https://provider.invalid/embeddings",
+                api_key="test-only",
+                embedding_space=_space(
+                    dimension=64,
+                    normalization="client_l2_v1",
+                    dimension_request_mode="omitted",
+                ),
+                max_batch_size=20,
+                timeout_seconds=2,
+                max_retries=0,
+                max_concurrency=1,
+                client=client,
+            )
+            document = await adapter.embed_documents(("document",))
+            query = await adapter.embed_query("query")
+            image = await adapter.embed_images(
+                (ImageEmbeddingInput(_png(), "image/png", hashlib.sha256(_png()).hexdigest()),)
+            )
+
+        self.assertEqual(document.vectors[0][:2], (0.6, 0.8))
+        self.assertEqual(query[:2], (0.6, 0.8))
+        self.assertEqual(image.vectors[0][:2], (0.6, 0.8))
+        self.assertEqual(len(query), 64)
+        self.assertTrue(all("dimension" not in item["parameters"] for item in requests))
 
     async def test_non_normalized_provider_vector_is_rejected(self) -> None:
         async def handler(_: httpx.Request) -> httpx.Response:

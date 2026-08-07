@@ -193,6 +193,7 @@ class VectorRecordWrite:
     id: UUID
     index_chunk_id: UUID
     embedding_space_id: UUID
+    embedding_dimension: int
     embedding: tuple[float, ...]
     representation_kind: str = "text"
 
@@ -487,7 +488,7 @@ def validate_embedding_vector(
             phase=IndexingPhase.EMBEDDING,
             diagnostic={"check": "finite_float32"},
         )
-    if definition.normalization == "l2":
+    if definition.normalization in {"l2", "client_l2_v1"}:
         norm = math.sqrt(sum(float(value) * float(value) for value in vector))
         if abs(norm - 1.0) > normalization_tolerance:
             raise IndexingExecutionError(
@@ -498,3 +499,65 @@ def validate_embedding_vector(
                     "tolerance": normalization_tolerance,
                 },
             )
+
+
+def normalize_embedding_vector(
+    value: object,
+    definition: EmbeddingSpaceDefinition,
+    *,
+    normalization_tolerance: float = 0.001,
+    minimum_norm: float = 1e-12,
+) -> tuple[float, ...]:
+    if not isinstance(value, (list, tuple)) or not all(
+        not isinstance(item, bool) and isinstance(item, (int, float))
+        for item in value
+    ):
+        raise IndexingExecutionError(
+            ErrorCode.EMBEDDING_RESPONSE_INVALID,
+            phase=IndexingPhase.EMBEDDING,
+            diagnostic={"check": "numeric_sequence"},
+        )
+    vector = tuple(float(item) for item in value)
+    if len(vector) != definition.dimension:
+        raise IndexingExecutionError(
+            ErrorCode.EMBEDDING_RESPONSE_INVALID,
+            phase=IndexingPhase.EMBEDDING,
+            diagnostic={
+                "check": "dimension",
+                "expected": definition.dimension,
+                "observed": len(vector),
+            },
+        )
+    if not all(math.isfinite(item) and abs(item) <= 3.4028235e38 for item in vector):
+        raise IndexingExecutionError(
+            ErrorCode.EMBEDDING_RESPONSE_INVALID,
+            phase=IndexingPhase.EMBEDDING,
+            diagnostic={"check": "finite_float32"},
+        )
+    norm = math.sqrt(sum(item * item for item in vector))
+    if not math.isfinite(norm) or norm <= minimum_norm:
+        raise IndexingExecutionError(
+            ErrorCode.EMBEDDING_RESPONSE_INVALID,
+            phase=IndexingPhase.EMBEDDING,
+            diagnostic={"check": "nonzero_norm"},
+        )
+    if definition.normalization == "client_l2_v1":
+        normalized = tuple(item / norm for item in vector)
+        validate_embedding_vector(
+            normalized,
+            definition,
+            normalization_tolerance=normalization_tolerance,
+        )
+        return normalized
+    if definition.normalization == "l2":
+        validate_embedding_vector(
+            vector,
+            definition,
+            normalization_tolerance=normalization_tolerance,
+        )
+        return vector
+    raise IndexingExecutionError(
+        ErrorCode.EMBEDDING_RESPONSE_INVALID,
+        phase=IndexingPhase.EMBEDDING,
+        diagnostic={"check": "normalization_policy"},
+    )

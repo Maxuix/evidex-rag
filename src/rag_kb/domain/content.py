@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import StrEnum
 from typing import Any, Generic, TypeVar
 from uuid import UUID
 
@@ -35,6 +36,24 @@ class EmbeddingSpaceDefinition:
     tokenizer_fingerprint: str | None
     compatibility_fingerprint: str
     model_profile_revision_id: UUID | None = None
+    dimension_request_mode: str = "explicit"
+
+
+class EmbeddingExecutionMode(StrEnum):
+    TEXT_ONLY = "text_only"
+    DUAL_SPACE_MULTIMODAL = "dual_space_multimodal"
+    UNIFIED_MULTIMODAL = "unified_multimodal"
+
+
+def derive_embedding_execution_mode(
+    text_space_id: UUID,
+    cross_modal_space_id: UUID | None,
+) -> EmbeddingExecutionMode:
+    if cross_modal_space_id is None:
+        return EmbeddingExecutionMode.TEXT_ONLY
+    if cross_modal_space_id == text_space_id:
+        return EmbeddingExecutionMode.UNIFIED_MULTIMODAL
+    return EmbeddingExecutionMode.DUAL_SPACE_MULTIMODAL
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +79,21 @@ class KnowledgeBase:
     created_at: datetime
     updated_at: datetime
     parser_config: dict[str, Any] = field(default_factory=dict)
+    embedding: KnowledgeBaseEmbeddingSummary | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class EmbeddingRoleSummary:
+    embedding_space_id: UUID
+    profile_revision_id: UUID | None
+    dimension: int
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeBaseEmbeddingSummary:
+    strategy: str
+    text: EmbeddingRoleSummary
+    cross_modal: EmbeddingRoleSummary | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import math
 from collections.abc import Awaitable, Callable
 
 from langchain_core.embeddings import Embeddings
@@ -16,6 +15,9 @@ from rag_kb.domain import (
     ErrorCode,
     IndexingExecutionError,
     IndexingPhase,
+    MAX_EMBEDDING_DIMENSION,
+    MIN_EMBEDDING_DIMENSION,
+    normalize_embedding_vector,
 )
 
 
@@ -53,16 +55,22 @@ class LangChainEmbeddingModelAdapter:
             + _TIMEOUT_SCHEDULING_MARGIN_SECONDS
         )
         self._semaphore = asyncio.Semaphore(max_concurrency)
+        model_arguments: dict[str, object] = {
+            "model": embedding_space.requested_model,
+            "api_key": api_key,
+            "base_url": base_url,
+            "timeout": timeout_seconds,
+            "max_retries": max_retries,
+            "chunk_size": max_batch_size,
+            "check_embedding_ctx_length": False,
+            "model_kwargs": {"encoding_format": "float"},
+        }
+        if embedding_space.dimension_request_mode == "explicit":
+            model_arguments["dimensions"] = embedding_space.dimension
+        elif embedding_space.dimension_request_mode != "omitted":
+            raise ValueError("unsupported embedding dimension request mode")
         self._model = embedding_model or OpenAIEmbeddings(
-            model=embedding_space.requested_model,
-            dimensions=embedding_space.dimension,
-            api_key=api_key,
-            base_url=base_url,
-            timeout=timeout_seconds,
-            max_retries=max_retries,
-            chunk_size=max_batch_size,
-            check_embedding_ctx_length=False,
-            model_kwargs={"encoding_format": "float"},
+            **model_arguments,
         )
 
     @property
@@ -147,25 +155,84 @@ def _numeric_vector(
     dimension: int,
     normalization: str,
 ) -> tuple[float, ...]:
-    if not isinstance(value, (list, tuple)) or not all(
-        not isinstance(item, bool) and isinstance(item, (int, float))
-        for item in value
-    ):
-        raise _invalid_response(check)
-    vector = tuple(float(item) for item in value)
-    if len(vector) != dimension:
-        raise _invalid_response(
-            f"{check}_dimension",
-            expected=dimension,
-            observed=len(vector),
-        )
-    if not all(math.isfinite(item) for item in vector):
-        raise _invalid_response(f"{check}_finite")
-    if normalization == "l2":
-        norm = math.sqrt(sum(item * item for item in vector))
-        if abs(norm - 1.0) > 0.001:
-            raise _invalid_response(f"{check}_normalization")
-    return vector
+    definition = EmbeddingSpaceDefinition(
+        provider_identity="validation",
+        endpoint_identity="validation",
+        requested_model="validation",
+        resolved_model="validation",
+        model_version="validation",
+        deployment_revision=None,
+        dimension=dimension,
+        distance_metric="cosine",
+        vector_data_type="float32",
+        normalization=normalization,
+        configuration_fingerprint="validation",
+        tokenizer_fingerprint=None,
+        compatibility_fingerprint="validation",
+    )
+    try:
+        return normalize_embedding_vector(value, definition)
+    except IndexingExecutionError as error:
+        diagnostic = dict(error.diagnostic)
+        suffix = {
+            "numeric_sequence": "",
+            "dimension": "dimension",
+            "finite_float32": "finite",
+            "l2_normalization": "normalization",
+            "nonzero_norm": "normalization",
+        }.get(str(diagnostic.get("check")), "invalid")
+        diagnostic["check"] = f"{check}_{suffix}" if suffix else check
+        raise IndexingExecutionError(
+            ErrorCode.EMBEDDING_RESPONSE_INVALID,
+            phase=IndexingPhase.EMBEDDING,
+            diagnostic=diagnostic,
+        ) from error
+
+
+async def probe_openai_embedding_dimension(
+    *,
+    base_url: str,
+    api_key: str,
+    model: str,
+    requested_dimension: int | None,
+    timeout_seconds: float,
+    max_retries: int,
+) -> int:
+    arguments: dict[str, object] = {
+        "model": model,
+        "api_key": api_key,
+        "base_url": base_url,
+        "timeout": timeout_seconds,
+        "max_retries": max_retries,
+        "check_embedding_ctx_length": False,
+        "model_kwargs": {"encoding_format": "float"},
+    }
+    if requested_dimension is not None:
+        arguments["dimensions"] = requested_dimension
+    adapter = OpenAIEmbeddings(**arguments)
+    value = await adapter.aembed_query("model validation")
+    if not isinstance(value, (list, tuple)):
+        raise ValueError("embedding response is not a vector")
+    dimension = len(value)
+    if not MIN_EMBEDDING_DIMENSION <= dimension <= MAX_EMBEDDING_DIMENSION:
+        raise ValueError("embedding dimension is outside the supported range")
+    probe_definition = EmbeddingSpaceDefinition(
+        provider_identity="validation",
+        endpoint_identity="validation",
+        requested_model=model,
+        resolved_model=model,
+        model_version=model,
+        deployment_revision=None,
+        dimension=dimension,
+        distance_metric="cosine",
+        vector_data_type="float32",
+        normalization="client_l2_v1",
+        configuration_fingerprint="validation",
+        tokenizer_fingerprint=None,
+        compatibility_fingerprint="validation",
+    )
+    normalize_embedding_vector(value, probe_definition)
+    return dimension
 
 
 def _provider_unavailable(diagnostic: dict[str, object]) -> IndexingExecutionError:

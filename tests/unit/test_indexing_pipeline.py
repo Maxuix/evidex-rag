@@ -230,6 +230,42 @@ class IndexingPipelineTests(unittest.IsolatedAsyncioTestCase):
             {ContentModality.TEXT, ContentModality.IMAGE},
         )
 
+    async def test_unified_multimodal_uses_one_provider_and_one_space(self) -> None:
+        repository = _Repository(_target(multimodal=True, unified=True))
+        factory = _Factory(repository)
+        unified_provider = _MultimodalProvider(factory)
+        unified_provider.embedding_space = repository.target.embedding_space
+        asset_store = _AssetStore(factory)
+        global _CURRENT_FACTORY
+        _CURRENT_FACTORY = factory
+        pipeline = IndexingPipeline(
+            factory,
+            _FileStore(factory),
+            _MultimodalParser(factory),
+            _Provider(factory),
+            _embedding(),
+            asset_store=asset_store,
+            multimodal_embedding_provider=unified_provider,
+        )
+        command = IndexingCommand(
+            repository.target.job_id,
+            repository.target.indexed_document_version_id,
+        )
+
+        result = await pipeline.execute(command)
+
+        self.assertEqual(result.status, "ready")
+        self.assertEqual(unified_provider.text_calls, 1)
+        self.assertEqual(unified_provider.image_calls, 1)
+        self.assertEqual(
+            {item.embedding_space_id for item in repository.vectors.values()},
+            {repository.target.embedding_space_id},
+        )
+        self.assertEqual(
+            {item.representation_kind for item in repository.vectors.values()},
+            {"text", "native_image"},
+        )
+
     async def test_external_operations_hold_no_transaction_and_replay_is_idempotent(self) -> None:
         repository = _Repository(_target())
         factory = _Factory(repository)
@@ -1058,7 +1094,16 @@ class _MultimodalProvider:
         self.embedding_space = _multimodal_embedding()
         self.max_batch_size = 20
         self.image_calls = 0
+        self.text_calls = 0
+        self.text_inputs = []
         self.fail_call = fail_call
+
+    async def embed_documents(self, texts):
+        if self.factory.active:
+            raise AssertionError("provider ran inside transaction")
+        self.text_calls += 1
+        self.text_inputs.append(texts)
+        return EmbeddingBatch(tuple(_multimodal_vector() for _ in texts))
 
     async def embed_images(self, images):
         if self.factory.active:
@@ -1125,6 +1170,7 @@ def _target(
     *,
     multimodal: bool = False,
     markdown_v2: bool = False,
+    unified: bool = False,
 ):
     version = uuid4()
     target = uuid4()
@@ -1132,20 +1178,25 @@ def _target(
     parsing = "multimodal_local_v2" if multimodal else "text_local_v1"
     profile = profile_for_preset(preset, parsing)
     text_space_id = uuid4()
-    cross_space_id = uuid4()
+    cross_space_id = text_space_id if unified else uuid4()
+    text_space = (
+        replace(_multimodal_embedding(), model_profile_revision_id=uuid4())
+        if unified
+        else _embedding()
+    )
     space_ids = {
         EmbeddingSpaceRole.TEXT_RETRIEVAL.value: text_space_id,
     }
     spaces = {
-        EmbeddingSpaceRole.TEXT_RETRIEVAL.value: _embedding(),
+        EmbeddingSpaceRole.TEXT_RETRIEVAL.value: text_space,
     }
     if preset is ChunkingPreset.SEMANTIC_BALANCED_V1:
         space_ids[EmbeddingSpaceRole.SEMANTIC_ANALYSIS.value] = text_space_id
-        spaces[EmbeddingSpaceRole.SEMANTIC_ANALYSIS.value] = _embedding()
+        spaces[EmbeddingSpaceRole.SEMANTIC_ANALYSIS.value] = text_space
     if multimodal:
         space_ids[EmbeddingSpaceRole.CROSS_MODAL_RETRIEVAL.value] = cross_space_id
         spaces[EmbeddingSpaceRole.CROSS_MODAL_RETRIEVAL.value] = (
-            _multimodal_embedding()
+            text_space if unified else _multimodal_embedding()
         )
     return IndexingTarget(
         job_id=uuid4(),
@@ -1164,7 +1215,7 @@ def _target(
         media_type="text/plain",
         parser_config=profile.parser_config,
         chunking_config=profile.chunking_config,
-        embedding_space=_embedding(),
+        embedding_space=text_space,
         enrichment_config=profile.enrichment_config,
         representation_config=profile.representation_config,
         embedding_space_ids=space_ids,

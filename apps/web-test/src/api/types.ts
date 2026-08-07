@@ -38,12 +38,68 @@ export type ParsingPreset =
   | "text_local_v1"
   | "multimodal_local_v2";
 
+export interface EmbeddingValidationSnapshot {
+  selected_dimension: number;
+  dimension_request_mode: "explicit" | "omitted";
+  input_capabilities: Array<"text_document" | "text_query" | "image">;
+  shared_text_image_space_confirmed: boolean;
+  normalization: "l2" | "client_l2_v1";
+}
+
+export interface ModelProfileSummary {
+  id: UUID;
+  revision_id: UUID;
+  revision: number;
+  name: string;
+  kind: "chat" | "text_embedding" | "multimodal_embedding";
+  model: string;
+  enabled: boolean;
+  validation_status: "unverified" | "valid" | "invalid";
+  embedding_validation: EmbeddingValidationSnapshot | null;
+}
+
+export interface ModelSettingsSummary {
+  profiles: ModelProfileSummary[];
+  selection: {
+    text_embedding_profile_revision_id: UUID | null;
+    multimodal_embedding_profile_revision_id: UUID | null;
+  };
+}
+
+export type KnowledgeBaseEmbeddingSelection =
+  | {
+    strategy: "text_only";
+    text_profile_revision_id?: UUID | null;
+  }
+  | {
+    strategy: "dual_space";
+    text_profile_revision_id?: UUID | null;
+    multimodal_profile_revision_id?: UUID | null;
+  }
+  | {
+    strategy: "unified_multimodal";
+    profile_revision_id?: UUID | null;
+  };
+
 export interface KnowledgeBase {
   id: UUID;
   name: string;
   source_change_seq: number;
   active_index_revision_id: UUID;
   embedding_space_id: UUID;
+  embedding: {
+    strategy: "text_only" | "dual_space" | "unified_multimodal";
+    text: {
+      embedding_space_id: UUID;
+      profile_revision_id: UUID | null;
+      dimension: number;
+    };
+    cross_modal: {
+      embedding_space_id: UUID;
+      profile_revision_id: UUID | null;
+      dimension: number;
+    } | null;
+  };
   parsing: {
     preset: ParsingPreset;
     profile:

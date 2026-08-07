@@ -10,11 +10,11 @@ from rag_kb.db.readiness import EXPECTED_REVISION
 
 class CompositeEvidenceSchemaTests(unittest.TestCase):
     def test_current_head_and_inventory_include_composite_relations(self) -> None:
-        self.assertEqual(EXPECTED_REVISION, "0003_model_settings")
+        self.assertEqual(EXPECTED_REVISION, "0004_flexible_embedding_spaces")
         self.assertIn("index_chunk_asset_relation", Base.metadata.tables)
         self.assertIn("index_chunk_lexical", Base.metadata.tables)
         self.assertIn("index_lexical_manifest", Base.metadata.tables)
-        self.assertEqual(len(Base.metadata.tables), 30)
+        self.assertEqual(len(Base.metadata.tables), 29)
         self.assertIn("model_provider", Base.metadata.tables)
         self.assertIn("model_profile_revision", Base.metadata.tables)
         self.assertIn("model_selection", Base.metadata.tables)

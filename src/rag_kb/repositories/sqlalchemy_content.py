@@ -34,7 +34,6 @@ from rag_kb.db.models import (
     SourceChangeKind,
     SourceFileCleanup as SourceFileCleanupRow,
     VectorRecord as VectorRecordRow,
-    VectorRecord768 as VectorRecord768Row,
     Workspace as WorkspaceRow,
 )
 from rag_kb.domain import (
@@ -51,9 +50,11 @@ from rag_kb.domain import (
     DocumentVersion,
     EmbeddingSpaceRole,
     EmbeddingSpaceDefinition,
+    EmbeddingRoleSummary,
     IdempotencyScope,
     IndexProfileDefinition,
     KnowledgeBase,
+    KnowledgeBaseEmbeddingSummary,
     Page,
     PendingFileMutation,
     ResourceNameConflictError,
@@ -175,7 +176,11 @@ class SqlAlchemyKnowledgeBaseRepository:
         kb.updated_at = now
         await self._session.flush()
         return _knowledge_base(
-            kb, embedding.id, revision.parser_config, revision.chunking_config
+            kb,
+            embedding.id,
+            revision.parser_config,
+            revision.chunking_config,
+            _embedding_summary_from_spaces(embedding, cross_modal_embedding),
         )
 
     async def _find_or_create_embedding(
@@ -233,7 +238,10 @@ class SqlAlchemyKnowledgeBaseRepository:
                 )
             )
         ).one_or_none()
-        return _knowledge_base(row[0], row[1], row[2], row[3]) if row is not None else None
+        if row is None:
+            return None
+        summary = await self._embedding_summary(row[0].active_index_revision_id)
+        return _knowledge_base(row[0], row[1], row[2], row[3], summary)
 
     async def list(
         self,
@@ -268,7 +276,19 @@ class SqlAlchemyKnowledgeBaseRepository:
         rows = (await self._session.execute(statement.order_by(ordering, id_ordering).limit(limit + 1))).all()
         has_more = len(rows) > limit
         rows = rows[:limit]
-        items = tuple(_knowledge_base(row[0], row[1], row[2], row[3]) for row in rows)
+        summaries = await self._embedding_summaries(
+            tuple(row[0].active_index_revision_id for row in rows)
+        )
+        items = tuple(
+            _knowledge_base(
+                row[0],
+                row[1],
+                row[2],
+                row[3],
+                summaries[row[0].active_index_revision_id],
+            )
+            for row in rows
+        )
         next_values = _cursor_values(items[-1], field) if has_more and items else None
         return Page(items=items, next_values=next_values)
 
@@ -321,8 +341,64 @@ class SqlAlchemyKnowledgeBaseRepository:
         ).one_or_none()
         assert revision_facts is not None
         return _knowledge_base(
-            kb, revision_facts[0], revision_facts[1], revision_facts[2]
+            kb,
+            revision_facts[0],
+            revision_facts[1],
+            revision_facts[2],
+            await self._embedding_summary(kb.active_index_revision_id),
         )
+
+    async def _embedding_summary(
+        self, revision_id: UUID | None
+    ) -> KnowledgeBaseEmbeddingSummary:
+        assert revision_id is not None
+        return (await self._embedding_summaries((revision_id,)))[revision_id]
+
+    async def _embedding_summaries(
+        self, revision_ids: tuple[UUID, ...]
+    ) -> dict[UUID, KnowledgeBaseEmbeddingSummary]:
+        if not revision_ids:
+            return {}
+        rows = (
+            await self._session.execute(
+                select(IndexRevisionEmbeddingSpaceRow, EmbeddingSpaceRow)
+                .join(
+                    EmbeddingSpaceRow,
+                    and_(
+                        EmbeddingSpaceRow.workspace_id
+                        == IndexRevisionEmbeddingSpaceRow.workspace_id,
+                        EmbeddingSpaceRow.id
+                        == IndexRevisionEmbeddingSpaceRow.embedding_space_id,
+                    ),
+                )
+                .where(
+                    IndexRevisionEmbeddingSpaceRow.workspace_id
+                    == self._workspace_id,
+                    IndexRevisionEmbeddingSpaceRow.index_revision_id.in_(revision_ids),
+                    IndexRevisionEmbeddingSpaceRow.role.in_(
+                        (
+                            EmbeddingSpaceRole.TEXT_RETRIEVAL.value,
+                            EmbeddingSpaceRole.CROSS_MODAL_RETRIEVAL.value,
+                        )
+                    ),
+                )
+            )
+        ).all()
+        spaces_by_revision: dict[UUID, dict[str, EmbeddingSpaceRow]] = {}
+        for binding, space in rows:
+            spaces_by_revision.setdefault(binding.index_revision_id, {})[
+                binding.role
+            ] = space
+        summaries: dict[UUID, KnowledgeBaseEmbeddingSummary] = {}
+        for revision_id in revision_ids:
+            by_role = spaces_by_revision.get(revision_id, {})
+            text_space = by_role.get(EmbeddingSpaceRole.TEXT_RETRIEVAL.value)
+            assert text_space is not None
+            summaries[revision_id] = _embedding_summary_from_spaces(
+                text_space,
+                by_role.get(EmbeddingSpaceRole.CROSS_MODAL_RETRIEVAL.value),
+            )
+        return summaries
 
 
 class SqlAlchemyDocumentRepository:
@@ -496,17 +572,19 @@ class SqlAlchemyDocumentRepository:
         chunk_ids = tuple(item.id for item in rows)
         representations: dict[UUID, set[str]] = {item.id: set() for item in rows}
         if chunk_ids:
-            for vector_model in (VectorRecordRow, VectorRecord768Row):
-                vector_rows = (
-                    await self._session.execute(
-                        select(vector_model.index_chunk_id, vector_model.representation_kind).where(
-                            vector_model.workspace_id == self._workspace_id,
-                            vector_model.index_chunk_id.in_(chunk_ids),
-                        )
+            vector_rows = (
+                await self._session.execute(
+                    select(
+                        VectorRecordRow.index_chunk_id,
+                        VectorRecordRow.representation_kind,
+                    ).where(
+                        VectorRecordRow.workspace_id == self._workspace_id,
+                        VectorRecordRow.index_chunk_id.in_(chunk_ids),
                     )
-                ).all()
-                for chunk_id, representation_kind in vector_rows:
-                    representations[chunk_id].add(representation_kind)
+                )
+            ).all()
+            for chunk_id, representation_kind in vector_rows:
+                representations[chunk_id].add(representation_kind)
 
         relation_rows = ()
         if chunk_ids:
@@ -1296,6 +1374,7 @@ def _knowledge_base(
     embedding_space_id: UUID,
     parser_config: dict[str, Any],
     chunking_config: dict[str, Any],
+    embedding: KnowledgeBaseEmbeddingSummary,
 ) -> KnowledgeBase:
     assert row.active_index_revision_id is not None
     assert row.provisioned_at is not None
@@ -1313,6 +1392,38 @@ def _knowledge_base(
         provisioned_at=row.provisioned_at,
         created_at=row.created_at,
         updated_at=row.updated_at,
+        embedding=embedding,
+    )
+
+
+def _embedding_summary_from_spaces(
+    text_space: EmbeddingSpaceRow,
+    cross_modal_space: EmbeddingSpaceRow | None,
+) -> KnowledgeBaseEmbeddingSummary:
+    text = EmbeddingRoleSummary(
+        embedding_space_id=text_space.id,
+        profile_revision_id=text_space.model_profile_revision_id,
+        dimension=text_space.dimension,
+    )
+    cross_modal = (
+        EmbeddingRoleSummary(
+            embedding_space_id=cross_modal_space.id,
+            profile_revision_id=cross_modal_space.model_profile_revision_id,
+            dimension=cross_modal_space.dimension,
+        )
+        if cross_modal_space is not None
+        else None
+    )
+    if cross_modal is None:
+        strategy = "text_only"
+    elif cross_modal.embedding_space_id == text.embedding_space_id:
+        strategy = "unified_multimodal"
+    else:
+        strategy = "dual_space"
+    return KnowledgeBaseEmbeddingSummary(
+        strategy=strategy,
+        text=text,
+        cross_modal=cross_modal,
     )
 
 

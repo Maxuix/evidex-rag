@@ -13,6 +13,7 @@ from rag_kb.adapters.lexical_store.postgres import PgLexicalStore
 from rag_kb.adapters.markdown_media.http import PublicHttpImageFetcher
 from rag_kb.adapters.model_api.langchain_embeddings import (
     LangChainEmbeddingModelAdapter,
+    probe_openai_embedding_dimension,
 )
 from rag_kb.adapters.model_api.langchain_chat import LangChainChatModelAdapter
 from rag_kb.adapters.model_api.model_catalog import (
@@ -20,6 +21,7 @@ from rag_kb.adapters.model_api.model_catalog import (
 )
 from rag_kb.adapters.model_api.multimodal_embeddings import (
     TongyiVisionEmbeddingAdapter,
+    probe_tongyi_embedding_dimension,
 )
 from rag_kb.adapters.model_api.unconfigured import UnconfiguredEmbeddingModelAdapter
 from rag_kb.adapters.model_secrets.local import LocalModelSecretStore
@@ -42,6 +44,10 @@ from rag_kb.domain import (
     ChatModelMessage,
     ChatModelRequest,
     EmbeddingSpaceDefinition,
+    EmbeddingDimensionRequestMode,
+    EmbeddingDimensionSelectionSource,
+    EmbeddingInputCapability,
+    EmbeddingValidationSnapshot,
     ModelKind,
     ModelProfileBundle,
     ModelValidationStatus,
@@ -67,7 +73,10 @@ from rag_kb.services.content import (
 from rag_kb.services.files import SourceFileService
 from rag_kb.services.indexing import IndexingJobService
 from rag_kb.services.markdown_media import MarkdownMediaNormalizer
-from rag_kb.services.model_settings import ModelSettingsService
+from rag_kb.services.model_settings import (
+    ModelProfileValidationError,
+    ModelSettingsService,
+)
 from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWorkFactory
 from rag_kb.uow import UnitOfWork, UnitOfWorkPurpose, execute_in_transaction
 
@@ -346,7 +355,7 @@ def build_api_dependencies(
 async def _validate_model_profile(
     bundle: ModelProfileBundle,
     api_key: str,
-) -> None:
+) -> EmbeddingValidationSnapshot | None:
     provider = bundle.provider_revision
     revision = bundle.current_revision
     parameters = dict(revision.configuration)
@@ -373,45 +382,63 @@ async def _validate_model_profile(
                 max_output_tokens=16,
             )
         )
-        return
+        return None
 
-    embedding_space = EmbeddingSpaceDefinition(
-        provider_identity=bundle.provider.name,
-        endpoint_identity=provider.configuration_fingerprint,
-        requested_model=revision.model,
-        resolved_model=revision.model,
-        model_version=revision.model,
-        deployment_revision=None,
-        dimension=parameters["dimension"],
-        distance_metric=parameters["distance_metric"],
-        vector_data_type=parameters["vector_data_type"],
-        normalization=parameters["normalization"],
-        configuration_fingerprint=revision.configuration_fingerprint,
-        tokenizer_fingerprint=None,
-        compatibility_fingerprint=revision.compatibility_fingerprint or "",
+    configured_dimension = parameters.get("dimension", "auto")
+    requested_dimension = (
+        configured_dimension if isinstance(configured_dimension, int) else None
     )
     if bundle.profile.kind is ModelKind.TEXT_EMBEDDING:
-        adapter = LangChainEmbeddingModelAdapter(
+        actual_dimension = await probe_openai_embedding_dimension(
             base_url=provider.base_url,
             api_key=api_key,
-            embedding_space=embedding_space,
-            max_batch_size=parameters["max_batch_size"],
+            model=revision.model,
+            requested_dimension=requested_dimension,
             timeout_seconds=provider.timeout_seconds,
             max_retries=provider.max_retries,
-            max_concurrency=provider.max_concurrency,
         )
-        await adapter.embed_query("model validation")
-        return
-    adapter = TongyiVisionEmbeddingAdapter(
-        endpoint=provider.base_url,
-        api_key=api_key,
-        embedding_space=embedding_space,
-        max_batch_size=parameters["max_batch_size"],
-        timeout_seconds=provider.timeout_seconds,
-        max_retries=provider.max_retries,
-        max_concurrency=provider.max_concurrency,
+        capabilities = (
+            EmbeddingInputCapability.TEXT_DOCUMENT,
+            EmbeddingInputCapability.TEXT_QUERY,
+        )
+    else:
+        actual_dimension = await probe_tongyi_embedding_dimension(
+            endpoint=provider.base_url,
+            api_key=api_key,
+            model=revision.model,
+            requested_dimension=requested_dimension,
+            timeout_seconds=provider.timeout_seconds,
+            max_retries=provider.max_retries,
+        )
+        capabilities = (
+            EmbeddingInputCapability.TEXT_DOCUMENT,
+            EmbeddingInputCapability.TEXT_QUERY,
+            EmbeddingInputCapability.IMAGE,
+        )
+    if requested_dimension is not None and actual_dimension != requested_dimension:
+        raise ModelProfileValidationError("embedding_dimension_mismatch")
+    automatic = requested_dimension is None
+    return EmbeddingValidationSnapshot(
+        provider_supported_dimensions=None,
+        verified_dimensions=(actual_dimension,),
+        provider_default_dimension=actual_dimension if automatic else None,
+        recommended_dimension=None,
+        selected_dimension=actual_dimension,
+        selection_source=(
+            EmbeddingDimensionSelectionSource.PROVIDER_OBSERVED_DEFAULT
+            if automatic
+            else EmbeddingDimensionSelectionSource.USER_PROBE
+        ),
+        dimension_request_mode=(
+            EmbeddingDimensionRequestMode.OMITTED
+            if automatic
+            else EmbeddingDimensionRequestMode.EXPLICIT
+        ),
+        input_capabilities=capabilities,
+        shared_text_image_space_confirmed=bool(
+            parameters.get("shared_text_image_space_confirmed", False)
+        ),
     )
-    await adapter.embed_texts(("model validation",))
 
 
 async def _embedding_bundle(unit_of_work, space, kind):

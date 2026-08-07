@@ -120,6 +120,8 @@ async def _selected_embedding_space(
     uow: UnitOfWork,
     kind: ModelKind,
     fallback: EmbeddingSpaceDefinition | None,
+    revision_id: UUID | None = None,
+    require_unified: bool = False,
 ) -> EmbeddingSpaceDefinition:
     repository = getattr(uow, "model_settings", None)
     if repository is None:
@@ -127,7 +129,7 @@ async def _selected_embedding_space(
             raise ResourceStateConflictError("an embedding model must be selected")
         return fallback
     selection = await repository.get_selection()
-    revision_id = (
+    revision_id = revision_id or (
         selection.text_embedding_profile_revision_id
         if kind is ModelKind.TEXT_EMBEDDING
         else selection.multimodal_embedding_profile_revision_id
@@ -147,9 +149,18 @@ async def _selected_embedding_space(
     ):
         raise ResourceStateConflictError("the selected embedding model is unavailable")
     revision = bundle.current_revision
-    parameters = revision.configuration
-    if revision.compatibility_fingerprint is None:
+    snapshot = revision.validation_snapshot
+    if revision.compatibility_fingerprint is None or snapshot is None:
         raise ResourceStateConflictError("embedding compatibility is missing")
+    if require_unified and (
+        bundle.profile.kind is not ModelKind.MULTIMODAL_EMBEDDING
+        or not snapshot.shared_text_image_space_confirmed
+        or {"text_document", "text_query", "image"}
+        - {value.value for value in snapshot.input_capabilities}
+    ):
+        raise ResourceStateConflictError(
+            "the selected multimodal model is not eligible for a unified space"
+        )
     return EmbeddingSpaceDefinition(
         provider_identity=bundle.provider.name,
         endpoint_identity=bundle.provider_revision.configuration_fingerprint,
@@ -157,14 +168,15 @@ async def _selected_embedding_space(
         resolved_model=revision.model,
         model_version=revision.model,
         deployment_revision=None,
-        dimension=parameters["dimension"],
-        distance_metric=parameters["distance_metric"],
-        vector_data_type=parameters["vector_data_type"],
-        normalization=parameters["normalization"],
+        dimension=snapshot.selected_dimension,
+        distance_metric=snapshot.distance_metric,
+        vector_data_type=snapshot.vector_data_type,
+        normalization=snapshot.normalization,
         configuration_fingerprint=revision.configuration_fingerprint,
         tokenizer_fingerprint=None,
         compatibility_fingerprint=revision.compatibility_fingerprint,
         model_profile_revision_id=revision.id,
+        dimension_request_mode=snapshot.dimension_request_mode.value,
     )
 
 
@@ -196,6 +208,7 @@ class KnowledgeBaseService:
         chunking_preset: ChunkingPreset | str = ChunkingPreset.STRUCTURAL_BALANCED_V2,
         retrieval_defaults: dict[str, Any],
         answer_policy_defaults: dict[str, Any] | None = None,
+        embedding_selection: dict[str, Any] | None = None,
     ) -> KnowledgeBase:
         self._authorize(context)
         resolved_answer_defaults = (
@@ -219,6 +232,11 @@ class KnowledgeBaseService:
                 "chunking": {"preset": resolved_preset.value},
                 "retrieval_defaults": retrieval_defaults,
                 "answer_policy_defaults": resolved_answer_defaults,
+                "embedding": (
+                    embedding_selection
+                    if embedding_selection is not None
+                    else {"strategy": "default_for_parsing"}
+                ),
             }
         )
         async def persist(uow: UnitOfWork) -> KnowledgeBase:
@@ -235,17 +253,53 @@ class KnowledgeBaseService:
                 if existing is None:
                     raise ResourceNotFoundError("idempotent knowledge base is unavailable")
                 return existing
-            embedding_space = await _selected_embedding_space(
-                uow,
-                ModelKind.TEXT_EMBEDDING,
-                self._embedding_space,
+            strategy = (
+                embedding_selection.get("strategy")
+                if embedding_selection is not None
+                else (
+                    "text_only"
+                    if resolved_parsing is ParsingPreset.TEXT_LOCAL_V1
+                    else "dual_space"
+                )
             )
-            cross_modal_embedding_space = None
-            if resolved_parsing is ParsingPreset.MULTIMODAL_LOCAL_V2:
+            if resolved_parsing is ParsingPreset.TEXT_LOCAL_V1 and strategy != "text_only":
+                raise ResourceStateConflictError(
+                    "text parsing requires text-only embedding"
+                )
+            if resolved_parsing is ParsingPreset.MULTIMODAL_LOCAL_V2 and strategy == "text_only":
+                raise ResourceStateConflictError(
+                    "multimodal parsing requires dual or unified embedding"
+                )
+            if strategy == "unified_multimodal":
+                unified = await _selected_embedding_space(
+                    uow,
+                    ModelKind.MULTIMODAL_EMBEDDING,
+                    self._cross_modal_embedding_space,
+                    revision_id=(embedding_selection or {}).get(
+                        "profile_revision_id"
+                    ),
+                    require_unified=True,
+                )
+                embedding_space = unified
+                cross_modal_embedding_space = unified
+            else:
+                embedding_space = await _selected_embedding_space(
+                    uow,
+                    ModelKind.TEXT_EMBEDDING,
+                    self._embedding_space,
+                    revision_id=(embedding_selection or {}).get(
+                        "text_profile_revision_id"
+                    ),
+                )
+                cross_modal_embedding_space = None
+            if strategy == "dual_space":
                 cross_modal_embedding_space = await _selected_embedding_space(
                     uow,
                     ModelKind.MULTIMODAL_EMBEDDING,
                     self._cross_modal_embedding_space,
+                    revision_id=(embedding_selection or {}).get(
+                        "multimodal_profile_revision_id"
+                    ),
                 )
             created = await uow.knowledge_bases.create(
                 name=name,

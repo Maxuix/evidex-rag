@@ -11,6 +11,12 @@ from uuid import UUID
 
 from rag_kb.auth import AccessPolicy, AuthContext
 from rag_kb.domain import (
+    EmbeddingDimensionRequestMode,
+    EmbeddingDimensionSelectionSource,
+    EmbeddingInputCapability,
+    EmbeddingValidationSnapshot,
+    MAX_EMBEDDING_DIMENSION,
+    MIN_EMBEDDING_DIMENSION,
     ModelKind,
     ModelProfileBundle,
     ModelProviderBundle,
@@ -24,7 +30,9 @@ from rag_kb.ports.model_secrets import ModelSecretStore
 from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, UnitOfWorkPurpose, execute_in_transaction
 
 
-ModelProfileValidator = Callable[[ModelProfileBundle, str], Awaitable[None]]
+ModelProfileValidator = Callable[
+    [ModelProfileBundle, str], Awaitable[EmbeddingValidationSnapshot | None]
+]
 ModelProviderCatalog = Callable[
     [ModelProviderBundle, str], Awaitable[tuple[str, ...]]
 ]
@@ -413,17 +421,57 @@ class ModelSettingsService:
             load,
             purpose=UnitOfWorkPurpose.REQUEST,
         )
+        snapshot: EmbeddingValidationSnapshot | None = None
         try:
             api_key = await asyncio.to_thread(
                 self._secret_store.read,
                 bundle.provider_revision.secret_reference,
             )
-            await self._profile_validator(bundle, api_key)
+            snapshot = await self._profile_validator(bundle, api_key)
+            if bundle.profile.kind is ModelKind.CHAT and snapshot is not None:
+                raise ModelProfileValidationError("provider_validation_failed")
+            if bundle.profile.kind is not ModelKind.CHAT and snapshot is None:
+                raise ModelProfileValidationError("embedding_response_invalid")
             status = ModelValidationStatus.VALID
             error_code = None
-        except Exception:
+        except ModelProfileValidationError as error:
+            if (
+                bundle.current_revision.validation_status
+                is ModelValidationStatus.VALID
+            ):
+                raise ResourceStateConflictError(
+                    "validated model revision was preserved after revalidation conflict"
+                ) from error
+            status = ModelValidationStatus.INVALID
+            error_code = error.error_code
+        except Exception as error:
+            if (
+                bundle.current_revision.validation_status
+                is ModelValidationStatus.VALID
+            ):
+                raise ResourceStateConflictError(
+                    "validated model revision was preserved after revalidation failure"
+                ) from error
             status = ModelValidationStatus.INVALID
             error_code = "provider_validation_failed"
+
+        capability_fingerprint: str | None = None
+        compatibility_fingerprint: str | None = None
+        if snapshot is not None:
+            capability_fingerprint = embedding_capability_fingerprint(snapshot)
+            compatibility_fingerprint = embedding_compatibility_fingerprint(
+                bundle, snapshot
+            )
+            frozen = bundle.current_revision
+            if frozen.validation_status is ModelValidationStatus.VALID:
+                if (
+                    frozen.validation_snapshot != snapshot
+                    or frozen.capability_fingerprint != capability_fingerprint
+                    or frozen.compatibility_fingerprint != compatibility_fingerprint
+                ):
+                    raise ResourceStateConflictError(
+                        "model validation facts changed; create a new revision"
+                    )
 
         async def persist(uow: UnitOfWork) -> ModelProfileBundle:
             _require_scope(uow, context)
@@ -431,6 +479,9 @@ class ModelSettingsService:
                 bundle.current_revision.id,
                 status=status,
                 error_code=error_code,
+                validation_snapshot=snapshot,
+                capability_fingerprint=capability_fingerprint,
+                compatibility_fingerprint=compatibility_fingerprint,
             )
             if updated is None:
                 raise ResourceNotFoundError("model profile revision was not found")
@@ -474,31 +525,74 @@ def model_fingerprints(
     capability_fingerprint = _fingerprint(
         {
             "kind": kind.value,
+            "validation": "unverified" if kind is not ModelKind.CHAT else None,
             "structured_output_mode": configuration.get("structured_output_mode"),
             "vision_enabled": configuration.get("vision_enabled", False),
             "reasoning": configuration.get("reasoning_effort", "off") != "off",
             "sampling_top_k": configuration.get("sampling_top_k") is not None,
         }
     )
-    compatibility_fingerprint = None
-    if kind is not ModelKind.CHAT:
-        compatibility_fingerprint = _fingerprint(
-            {
-                "kind": kind.value,
-                "model": model,
-                "dimension": configuration["dimension"],
-                "distance_metric": configuration["distance_metric"],
-                "vector_data_type": configuration["vector_data_type"],
-                "normalization": configuration["normalization"],
-                "provider_configuration_fingerprint": (
-                    provider_configuration_fingerprint
-                ),
-            }
-        )
     return (
         configuration_fingerprint,
         capability_fingerprint,
-        compatibility_fingerprint,
+        None,
+    )
+
+
+class ModelProfileValidationError(RuntimeError):
+    def __init__(self, error_code: str) -> None:
+        super().__init__(error_code)
+        self.error_code = error_code
+
+
+def embedding_capability_fingerprint(
+    snapshot: EmbeddingValidationSnapshot,
+) -> str:
+    return _fingerprint(
+        {
+            "schema": snapshot.schema_version,
+            "provider_supported_dimensions": snapshot.provider_supported_dimensions,
+            "verified_dimensions": snapshot.verified_dimensions,
+            "selected_dimension": snapshot.selected_dimension,
+            "input_capabilities": snapshot.input_capabilities,
+            "shared_text_image_space_confirmed": (
+                snapshot.shared_text_image_space_confirmed
+            ),
+        }
+    )
+
+
+def embedding_compatibility_fingerprint(
+    bundle: ModelProfileBundle,
+    snapshot: EmbeddingValidationSnapshot,
+) -> str:
+    image_preprocessing_version = (
+        "tongyi_data_url_res1_v1"
+        if EmbeddingInputCapability.IMAGE in snapshot.input_capabilities
+        else None
+    )
+    return _fingerprint(
+        {
+            "fingerprint_schema": "embedding_space_v2",
+            "model_profile_revision_id": str(bundle.current_revision.id),
+            "provider_revision_id": str(bundle.provider_revision.id),
+            "provider_protocol": bundle.provider_revision.protocol.value,
+            "semantic_endpoint_identity": bundle.provider_revision.base_url,
+            "profile_kind": bundle.profile.kind.value,
+            "model": bundle.current_revision.model,
+            "selected_dimension": snapshot.selected_dimension,
+            "dimension_request_mode": snapshot.dimension_request_mode.value,
+            "distance_metric": snapshot.distance_metric,
+            "vector_data_type": snapshot.vector_data_type,
+            "normalization": snapshot.normalization,
+            "text_document_transformation_version": "document_text_v1",
+            "text_query_transformation_version": (
+                "tongyi_query_prefix_v1"
+                if bundle.profile.kind is ModelKind.MULTIMODAL_EMBEDDING
+                else "query_text_v1"
+            ),
+            "image_preprocessing_version": image_preprocessing_version,
+        }
     )
 
 
@@ -517,10 +611,11 @@ def _normalize_url(value: str) -> str:
 
 
 def _require_protocol(protocol: ModelProviderProtocol, kind: ModelKind) -> None:
-    if (
-        protocol is ModelProviderProtocol.TONGYI_MULTIMODAL
-        and kind is not ModelKind.MULTIMODAL_EMBEDDING
-    ):
+    if kind is ModelKind.MULTIMODAL_EMBEDDING:
+        compatible = protocol is ModelProviderProtocol.TONGYI_MULTIMODAL
+    else:
+        compatible = protocol is ModelProviderProtocol.OPENAI_COMPATIBLE
+    if not compatible:
         raise ResourceStateConflictError("provider protocol does not support model kind")
 
 
@@ -530,6 +625,26 @@ def _require_parameters(kind: ModelKind, parameters: dict[str, Any]) -> None:
         raise ResourceStateConflictError("chat model parameters are required")
     if kind is not ModelKind.CHAT and parameter_type != "embedding":
         raise ResourceStateConflictError("embedding model parameters are required")
+    if kind is ModelKind.CHAT:
+        return
+    dimension = parameters.get("dimension", "auto")
+    if dimension != "auto" and (
+        isinstance(dimension, bool)
+        or not isinstance(dimension, int)
+        or not MIN_EMBEDDING_DIMENSION
+        <= dimension
+        <= MAX_EMBEDDING_DIMENSION
+    ):
+        raise ResourceStateConflictError(
+            "embedding dimension must be auto or an integer between 64 and 4096"
+        )
+    if (
+        kind is ModelKind.TEXT_EMBEDDING
+        and parameters.get("shared_text_image_space_confirmed") is True
+    ):
+        raise ResourceStateConflictError(
+            "text embedding models cannot confirm a shared image space"
+        )
 
 
 def _require_scope(uow: UnitOfWork, context: AuthContext) -> None:

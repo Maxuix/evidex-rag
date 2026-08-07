@@ -10,7 +10,12 @@ from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
 from rag_kb.db import DatabaseProcess, create_database_resources
-from rag_kb.domain import Workspace
+from rag_kb.domain import (
+    ModelKind,
+    ModelProviderProtocol,
+    ModelValidationStatus,
+    Workspace,
+)
 from rag_kb.uow import (
     TransactionMode,
     UnitOfWorkConcurrencyError,
@@ -103,6 +108,69 @@ class AsyncDataAccessTests(unittest.IsolatedAsyncioTestCase):
         async with self.factory() as unit_of_work:
             self.assertIsNone(await unit_of_work.workspaces.get())
             await unit_of_work.rollback()
+
+    async def test_unverified_model_revision_persists_null_validation_snapshot(
+        self,
+    ) -> None:
+        async with self.factory() as unit_of_work:
+            await unit_of_work.workspaces.add("model-settings-workspace")
+            provider = await unit_of_work.model_settings.create_provider(
+                name="Embedding provider",
+                protocol=ModelProviderProtocol.OPENAI_COMPATIBLE,
+                base_url="https://provider.invalid/v1",
+                secret_reference="test-secret-reference",
+                timeout_seconds=30,
+                max_retries=0,
+                max_concurrency=1,
+                configuration_fingerprint="sha256:provider",
+            )
+            profile = await unit_of_work.model_settings.create_profile(
+                provider=provider,
+                name="Embedding model",
+                kind=ModelKind.TEXT_EMBEDDING,
+                model="embedding-model",
+                configuration={
+                    "type": "embedding",
+                    "dimension": 1024,
+                    "max_batch_size": 10,
+                },
+                configuration_fingerprint="sha256:profile-1",
+                capability_fingerprint="sha256:capability-1",
+                compatibility_fingerprint=None,
+                validation_status=ModelValidationStatus.UNVERIFIED,
+            )
+            updated = await unit_of_work.model_settings.update_profile(
+                profile.profile.id,
+                provider=provider,
+                name=profile.profile.name,
+                enabled=True,
+                model=profile.current_revision.model,
+                configuration={
+                    "type": "embedding",
+                    "dimension": "auto",
+                    "max_batch_size": 10,
+                },
+                configuration_fingerprint="sha256:profile-2",
+                capability_fingerprint="sha256:capability-2",
+                compatibility_fingerprint=None,
+                validation_status=ModelValidationStatus.UNVERIFIED,
+            )
+            assert updated is not None
+            await unit_of_work.commit()
+
+        async with self.database.sessions() as session:
+            snapshot_is_null = await session.scalar(
+                text(
+                    "SELECT validation_snapshot IS NULL "
+                    "FROM model_profile_revision WHERE id = :revision_id"
+                ),
+                {"revision_id": updated.current_revision.id},
+            )
+            await session.rollback()
+
+        self.assertEqual(updated.current_revision.revision, 2)
+        self.assertIsNone(updated.current_revision.validation_snapshot)
+        self.assertTrue(snapshot_is_null)
 
     async def test_unit_of_work_cannot_cross_asyncio_task_boundary(self) -> None:
         async with self.factory(

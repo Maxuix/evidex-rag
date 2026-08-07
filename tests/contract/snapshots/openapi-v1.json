@@ -4669,6 +4669,43 @@
         ],
         "title": "DocumentVersionResponse"
       },
+      "DualSpaceEmbeddingSelection": {
+        "properties": {
+          "strategy": {
+            "type": "string",
+            "const": "dual_space",
+            "title": "Strategy",
+            "default": "dual_space"
+          },
+          "text_profile_revision_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text Profile Revision Id"
+          },
+          "multimodal_profile_revision_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Multimodal Profile Revision Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "DualSpaceEmbeddingSelection"
+      },
       "EffectiveAnswerPolicyResponse": {
         "properties": {
           "grounding_policy": {
@@ -4716,6 +4753,37 @@
         ],
         "title": "EffectiveAnswerPolicyResponse"
       },
+      "EmbeddingDimensionRequestMode": {
+        "type": "string",
+        "enum": [
+          "explicit",
+          "omitted"
+        ],
+        "title": "EmbeddingDimensionRequestMode"
+      },
+      "EmbeddingDimensionSelectionSource": {
+        "type": "string",
+        "enum": [
+          "provider_recommended",
+          "provider_default",
+          "automatic_1024",
+          "automatic_above_1024",
+          "automatic_below_1024",
+          "provider_observed_default",
+          "user_probe",
+          "legacy_explicit"
+        ],
+        "title": "EmbeddingDimensionSelectionSource"
+      },
+      "EmbeddingInputCapability": {
+        "type": "string",
+        "enum": [
+          "text_document",
+          "text_query",
+          "image"
+        ],
+        "title": "EmbeddingInputCapability"
+      },
       "EmbeddingModelParameters": {
         "properties": {
           "type": {
@@ -4725,12 +4793,19 @@
             "default": "embedding"
           },
           "dimension": {
-            "type": "integer",
-            "enum": [
-              768,
-              1024
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "auto"
+              },
+              {
+                "type": "integer",
+                "maximum": 4096.0,
+                "minimum": 64.0
+              }
             ],
-            "title": "Dimension"
+            "title": "Dimension",
+            "default": "auto"
           },
           "max_batch_size": {
             "type": "integer",
@@ -4739,31 +4814,126 @@
             "title": "Max Batch Size",
             "default": 10
           },
+          "shared_text_image_space_confirmed": {
+            "type": "boolean",
+            "title": "Shared Text Image Space Confirmed",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "EmbeddingModelParameters"
+      },
+      "EmbeddingValidationResponse": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "embedding_validation_v1",
+            "title": "Schema Version"
+          },
+          "provider_supported_dimensions": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Supported Dimensions"
+          },
+          "verified_dimensions": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Verified Dimensions"
+          },
+          "provider_default_dimension": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Default Dimension"
+          },
+          "recommended_dimension": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recommended Dimension"
+          },
+          "selected_dimension": {
+            "type": "integer",
+            "maximum": 4096.0,
+            "minimum": 64.0,
+            "title": "Selected Dimension"
+          },
+          "selection_source": {
+            "$ref": "#/components/schemas/EmbeddingDimensionSelectionSource"
+          },
+          "dimension_request_mode": {
+            "$ref": "#/components/schemas/EmbeddingDimensionRequestMode"
+          },
+          "input_capabilities": {
+            "items": {
+              "$ref": "#/components/schemas/EmbeddingInputCapability"
+            },
+            "type": "array",
+            "title": "Input Capabilities"
+          },
+          "shared_text_image_space_confirmed": {
+            "type": "boolean",
+            "title": "Shared Text Image Space Confirmed"
+          },
           "distance_metric": {
             "type": "string",
             "const": "cosine",
-            "title": "Distance Metric",
-            "default": "cosine"
+            "title": "Distance Metric"
           },
           "vector_data_type": {
             "type": "string",
             "const": "float32",
-            "title": "Vector Data Type",
-            "default": "float32"
+            "title": "Vector Data Type"
           },
           "normalization": {
             "type": "string",
-            "const": "l2",
-            "title": "Normalization",
-            "default": "l2"
+            "enum": [
+              "l2",
+              "client_l2_v1"
+            ],
+            "title": "Normalization"
           }
         },
         "additionalProperties": false,
         "type": "object",
         "required": [
-          "dimension"
+          "schema_version",
+          "provider_supported_dimensions",
+          "verified_dimensions",
+          "provider_default_dimension",
+          "recommended_dimension",
+          "selected_dimension",
+          "selection_source",
+          "dimension_request_mode",
+          "input_capabilities",
+          "shared_text_image_space_confirmed",
+          "distance_metric",
+          "vector_data_type",
+          "normalization"
         ],
-        "title": "EmbeddingModelParameters"
+        "title": "EmbeddingValidationResponse"
       },
       "ErrorCode": {
         "type": "string",
@@ -5437,6 +5607,35 @@
               "answer_style": "concise",
               "insufficiency_policy": "refuse"
             }
+          },
+          "embedding": {
+            "anyOf": [
+              {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/TextOnlyEmbeddingSelection"
+                  },
+                  {
+                    "$ref": "#/components/schemas/DualSpaceEmbeddingSelection"
+                  },
+                  {
+                    "$ref": "#/components/schemas/UnifiedMultimodalEmbeddingSelection"
+                  }
+                ],
+                "discriminator": {
+                  "propertyName": "strategy",
+                  "mapping": {
+                    "dual_space": "#/components/schemas/DualSpaceEmbeddingSelection",
+                    "text_only": "#/components/schemas/TextOnlyEmbeddingSelection",
+                    "unified_multimodal": "#/components/schemas/UnifiedMultimodalEmbeddingSelection"
+                  }
+                }
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Embedding"
           }
         },
         "additionalProperties": false,
@@ -5445,6 +5644,72 @@
           "name"
         ],
         "title": "KnowledgeBaseCreate"
+      },
+      "KnowledgeBaseEmbeddingResponse": {
+        "properties": {
+          "strategy": {
+            "type": "string",
+            "enum": [
+              "text_only",
+              "dual_space",
+              "unified_multimodal"
+            ],
+            "title": "Strategy"
+          },
+          "text": {
+            "$ref": "#/components/schemas/KnowledgeBaseEmbeddingRoleResponse"
+          },
+          "cross_modal": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/KnowledgeBaseEmbeddingRoleResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "strategy",
+          "text"
+        ],
+        "title": "KnowledgeBaseEmbeddingResponse"
+      },
+      "KnowledgeBaseEmbeddingRoleResponse": {
+        "properties": {
+          "embedding_space_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Embedding Space Id"
+          },
+          "profile_revision_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Revision Id"
+          },
+          "dimension": {
+            "type": "integer",
+            "title": "Dimension"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "embedding_space_id",
+          "profile_revision_id",
+          "dimension"
+        ],
+        "title": "KnowledgeBaseEmbeddingRoleResponse"
       },
       "KnowledgeBasePage": {
         "properties": {
@@ -5534,6 +5799,9 @@
             "format": "uuid",
             "title": "Embedding Space Id"
           },
+          "embedding": {
+            "$ref": "#/components/schemas/KnowledgeBaseEmbeddingResponse"
+          },
           "parsing": {
             "$ref": "#/components/schemas/KnowledgeBaseParsingResponse"
           },
@@ -5574,6 +5842,7 @@
           "source_change_seq",
           "active_index_revision_id",
           "embedding_space_id",
+          "embedding",
           "parsing",
           "chunking",
           "retrieval_defaults",
@@ -5790,6 +6059,16 @@
               }
             ],
             "title": "Compatibility Fingerprint"
+          },
+          "embedding_validation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EmbeddingValidationResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "created_at": {
             "type": "string",
@@ -6761,6 +7040,56 @@
           "hybrid"
         ],
         "title": "RetrievalStrategy"
+      },
+      "TextOnlyEmbeddingSelection": {
+        "properties": {
+          "strategy": {
+            "type": "string",
+            "const": "text_only",
+            "title": "Strategy",
+            "default": "text_only"
+          },
+          "text_profile_revision_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text Profile Revision Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "TextOnlyEmbeddingSelection"
+      },
+      "UnifiedMultimodalEmbeddingSelection": {
+        "properties": {
+          "strategy": {
+            "type": "string",
+            "const": "unified_multimodal",
+            "title": "Strategy",
+            "default": "unified_multimodal"
+          },
+          "profile_revision_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Revision Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "UnifiedMultimodalEmbeddingSelection"
       },
       "ValidationError": {
         "properties": {

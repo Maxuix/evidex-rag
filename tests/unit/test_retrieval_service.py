@@ -59,14 +59,15 @@ class RetrievalContractTests(unittest.TestCase):
         sql = str(statement.compile(dialect=postgresql.dialect()))
 
         self.assertIn("LEFT OUTER JOIN LATERAL", sql)
-        self.assertIn("vector_record_1024.embedding <=>", sql)
+        self.assertIn("vector_record.embedding <=>", sql)
         self.assertIn("knowledge_base.active_index_revision_id", sql)
         self.assertIn("indexed_document_version.build_status", sql)
         self.assertIn("indexed_document_version.serving_status", sql)
         self.assertNotIn("document.current_version_id", sql)
         self.assertIn("document.deleted_at IS NULL", sql)
         self.assertIn("document_version.source_status", sql)
-        self.assertIn("vector_record_1024.embedding_space_id", sql)
+        self.assertIn("vector_record.embedding_space_id", sql)
+        self.assertIn("vector_record.embedding_dimension", sql)
         self.assertIn("ORDER BY cosine_distance ASC, index_chunk.id ASC", sql)
         self.assertIn("LIMIT %(top_k)s", sql)
         self.assertNotIn("hnsw", sql.lower())
@@ -74,9 +75,9 @@ class RetrievalContractTests(unittest.TestCase):
         cross_modal = str(
             PgVectorStore._statement(768).compile(dialect=postgresql.dialect())
         )
-        self.assertIn("vector_record_768.embedding <=>", cross_modal)
-        self.assertIn("vector_record_768.embedding_space_id", cross_modal)
-        self.assertNotIn("vector_record_1024.embedding <=>", cross_modal)
+        self.assertIn("vector_record.embedding <=>", cross_modal)
+        self.assertIn("vector_record.embedding_space_id", cross_modal)
+        self.assertIn("vector_record.embedding_dimension", cross_modal)
 
     def test_lexical_statement_uses_gin_predicate_and_real_cosine(self) -> None:
         statement = PgLexicalStore._statement()  # noqa: SLF001 - SQL contract
@@ -85,8 +86,9 @@ class RetrievalContractTests(unittest.TestCase):
         self.assertIn("AS MATERIALIZED", sql)
         self.assertIn("lexical_tsv @@ to_tsquery('simple'", sql)
         self.assertIn("ts_rank_cd(", sql)
-        self.assertIn("vector_record_1024", sql)
+        self.assertIn("vector_record", sql)
         self.assertIn("vector.embedding <=>", sql)
+        self.assertIn("vector.embedding_dimension =", sql)
         self.assertIn("target.build_status = 'ready'", sql)
         self.assertIn("target.serving_status = 'serving'", sql)
         self.assertIn("doc.deleted_at IS NULL", sql)
@@ -605,6 +607,74 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
         assert pack.debug is not None
         self.assertEqual(pack.debug.hydrated_relation_count, 2)
 
+    async def test_unified_exact_reuses_one_query_vector_for_both_lanes(self) -> None:
+        gates = _ParallelGates()
+        provider = _UnifiedProvider()
+        store = _MultimodalStore(
+            VectorSearchResult(REVISION_ID),
+            VectorSearchResult(
+                REVISION_ID,
+                space_role="cross_modal_retrieval",
+            ),
+            gates,
+        )
+        service = RetrievalService(
+            SingleWorkspaceAccessPolicy(WORKSPACE),
+            provider,
+            store,
+            multimodal_embedding_provider=provider,
+        )
+
+        await service.retrieve(
+            _context(), RetrievalRequest(KB_ID, "unified query")
+        )
+
+        self.assertEqual(provider.queries, ["unified query"])
+        self.assertEqual(store.text_embeddings, [(0.6, 0.8)])
+        self.assertEqual(store.cross_embeddings, [(0.6, 0.8)])
+
+    async def test_unified_hybrid_reuses_one_vector_across_three_lanes(self) -> None:
+        gates = _ParallelGates()
+        provider = _UnifiedProvider()
+        store = _MultimodalStore(
+            VectorSearchResult(REVISION_ID),
+            VectorSearchResult(
+                REVISION_ID,
+                space_role="cross_modal_retrieval",
+            ),
+            gates,
+        )
+        lexical = _LexicalStore(
+            LexicalSearchResult(
+                REVISION_ID,
+                analyzer_version="lexical_simple_cjk_bigram_v1",
+                manifest_target_count=0,
+            )
+        )
+        service = RetrievalService(
+            SingleWorkspaceAccessPolicy(WORKSPACE),
+            provider,
+            store,
+            multimodal_embedding_provider=provider,
+            lexical_store=lexical,
+            hybrid_enabled=True,
+        )
+
+        await service.retrieve(
+            _context(),
+            RetrievalRequest(
+                KB_ID,
+                "unified hybrid",
+                strategy=RetrievalStrategy.HYBRID,
+                rerank=True,
+            ),
+        )
+
+        self.assertEqual(provider.queries, ["unified hybrid"])
+        self.assertEqual(store.text_embeddings, [(0.6, 0.8)])
+        self.assertEqual(store.cross_embeddings, [(0.6, 0.8)])
+        self.assertEqual(lexical.embeddings, [(0.6, 0.8)])
+
     async def test_native_image_hit_reverse_expands_to_parent_text(self) -> None:
         gates = _ParallelGates()
         visual_hit = replace(
@@ -833,24 +903,44 @@ class _ParallelMultimodalProvider:
         return EmbeddingBatch(((0.6, 0.8),))
 
 
+class _UnifiedProvider:
+    max_batch_size = 10
+
+    def __init__(self) -> None:
+        revision_id = UUID("01900000-0000-7000-8000-000000000899")
+        self.embedding_space = replace(
+            _embedding_space(),
+            model_profile_revision_id=revision_id,
+        )
+        self.queries: list[str] = []
+
+    async def embed_query(self, text: str) -> tuple[float, ...]:
+        self.queries.append(text)
+        return (0.6, 0.8)
+
+
 class _MultimodalStore:
     def __init__(self, text_result, cross_result, gates: _ParallelGates) -> None:
         self.text_result = text_result
         self.cross_result = cross_result
         self._gates = gates
+        self.text_embeddings: list[tuple[float, ...]] = []
+        self.cross_embeddings: list[tuple[float, ...]] = []
 
     async def has_space_role(self, plan, role):
         del plan, role
         return True
 
     async def search(self, plan, query_embedding):
-        del plan, query_embedding
+        del plan
+        self.text_embeddings.append(query_embedding)
         self._gates.text_search_started.set()
         await self._gates.image_search_started.wait()
         return self.text_result
 
     async def search_space(self, plan, query_embedding, **kwargs):
-        del plan, query_embedding, kwargs
+        del plan, kwargs
+        self.cross_embeddings.append(query_embedding)
         self._gates.image_search_started.set()
         await self._gates.text_search_started.wait()
         return self.cross_result

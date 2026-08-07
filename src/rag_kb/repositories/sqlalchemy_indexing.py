@@ -33,9 +33,9 @@ from rag_kb.db.models import (
     IndexServingStatus,
     JobStatus,
     KnowledgeBase as KnowledgeBaseRow,
+    ModelProfileRevision as ModelProfileRevisionRow,
     SourceChange as SourceChangeRow,
     VectorRecord as VectorRecordRow,
-    VectorRecord768 as VectorRecord768Row,
 )
 from rag_kb.domain import (
     EmbeddingSpaceDefinition,
@@ -554,18 +554,17 @@ class SqlAlchemyIndexingRepository:
                 or 0
             )
         if chunk_ids:
-            for vector_model in (VectorRecordRow, VectorRecord768Row):
-                vectors_deleted += int(
-                    (
-                        await self._session.execute(
-                            delete(vector_model).where(
-                                vector_model.workspace_id == self._workspace_id,
-                                vector_model.index_chunk_id.in_(chunk_ids),
-                            )
+            vectors_deleted = int(
+                (
+                    await self._session.execute(
+                        delete(VectorRecordRow).where(
+                            VectorRecordRow.workspace_id == self._workspace_id,
+                            VectorRecordRow.index_chunk_id.in_(chunk_ids),
                         )
-                    ).rowcount
-                    or 0
-                )
+                    )
+                ).rowcount
+                or 0
+            )
             chunks_deleted = int(
                 (
                     await self._session.execute(
@@ -1207,12 +1206,11 @@ class SqlAlchemyIndexingRepository:
         chunk_ids = select(IndexChunkRow.id).where(
             IndexChunkRow.indexed_document_version_id == target_id
         )
-        for vector_model in (VectorRecordRow, VectorRecord768Row):
-            await self._session.execute(
-                delete(vector_model).where(
-                    vector_model.index_chunk_id.in_(chunk_ids)
-                )
+        await self._session.execute(
+            delete(VectorRecordRow).where(
+                VectorRecordRow.index_chunk_id.in_(chunk_ids)
             )
+        )
         for model in (
             IndexChunkAssetRelationRow,
             IndexChunkLexicalRow,
@@ -1232,7 +1230,11 @@ class SqlAlchemyIndexingRepository:
     ) -> tuple[dict[str, UUID], dict[str, EmbeddingSpaceDefinition]]:
         rows = (
             await self._session.execute(
-                select(IndexRevisionEmbeddingSpaceRow, EmbeddingSpaceRow)
+                select(
+                    IndexRevisionEmbeddingSpaceRow,
+                    EmbeddingSpaceRow,
+                    ModelProfileRevisionRow.validation_snapshot,
+                )
                 .join(
                     EmbeddingSpaceRow,
                     and_(
@@ -1242,6 +1244,11 @@ class SqlAlchemyIndexingRepository:
                         == IndexRevisionEmbeddingSpaceRow.workspace_id,
                     ),
                 )
+                .outerjoin(
+                    ModelProfileRevisionRow,
+                    ModelProfileRevisionRow.id
+                    == EmbeddingSpaceRow.model_profile_revision_id,
+                )
                 .where(
                     IndexRevisionEmbeddingSpaceRow.workspace_id == self._workspace_id,
                     IndexRevisionEmbeddingSpaceRow.index_revision_id == revision_id,
@@ -1249,9 +1256,10 @@ class SqlAlchemyIndexingRepository:
                 )
             )
         ).all()
-        ids = {binding.role: embedding.id for binding, embedding in rows}
+        ids = {binding.role: embedding.id for binding, embedding, _ in rows}
         definitions = {
-            binding.role: _embedding(embedding) for binding, embedding in rows
+            binding.role: _embedding(embedding, snapshot)
+            for binding, embedding, snapshot in rows
         }
         return ids, definitions
 
@@ -1574,21 +1582,23 @@ class SqlAlchemyIndexingRepository:
                 "kb_id": target.kb_id,
                 "index_chunk_id": vector.index_chunk_id,
                 "embedding_space_id": vector.embedding_space_id,
+                "embedding_dimension": vector.embedding_dimension,
                 "representation_kind": vector.representation_kind,
                 "embedding": list(vector.embedding),
             }
             for vector in vectors
         ]
         if vector_values:
-            dimensions = {len(vector.embedding) for vector in vectors}
-            if len(dimensions) != 1:
+            if any(
+                len(vector.embedding) != vector.embedding_dimension
+                for vector in vectors
+            ):
                 raise _execution_error(
                     ErrorCode.INDEX_PERSISTENCE_FAILED,
                     IndexingPhase.PERSISTING,
-                    "homogeneous_vector_dimension",
+                    "vector_dimension",
                 )
-            vector_model = _vector_model(dimensions.pop())
-            vector_insert = pg_insert(vector_model).values(vector_values)
+            vector_insert = pg_insert(VectorRecordRow).values(vector_values)
             stored_vectors = (
                 await self._session.execute(
                     vector_insert.on_conflict_do_update(
@@ -1598,8 +1608,8 @@ class SqlAlchemyIndexingRepository:
                             "representation_kind",
                         ],
                         set_={"embedding": vector_insert.excluded.embedding},
-                        where=vector_model.id == vector_insert.excluded.id,
-                    ).returning(vector_model.id, vector_model.index_chunk_id)
+                        where=VectorRecordRow.id == vector_insert.excluded.id,
+                    ).returning(VectorRecordRow.id, VectorRecordRow.index_chunk_id)
                 )
             ).all()
             expected_vector_ids = {vector.id for vector in vectors}
@@ -1786,31 +1796,22 @@ class SqlAlchemyIndexingRepository:
                 .order_by(IndexChunkRow.ordinal)
             )
         ).all()
-        vector_records: list[Any] = []
-        for vector_model, physical_dimension in (
-            (VectorRecordRow, 1024),
-            (VectorRecord768Row, 768),
-        ):
-            vector_records.extend(
-                (
-                    await self._session.execute(
-                        select(
-                            vector_model.index_chunk_id.label("chunk_id"),
-                            vector_model.id.label("vector_id"),
-                            vector_model.embedding_space_id,
-                            vector_model.representation_kind,
-                            literal(physical_dimension).label("physical_dimension"),
-                        )
-                        .join(
-                            IndexChunkRow,
-                            IndexChunkRow.id == vector_model.index_chunk_id,
-                        )
-                        .where(
-                            IndexChunkRow.indexed_document_version_id == target.id
-                        )
-                    )
-                ).all()
+        vector_records = (
+            await self._session.execute(
+                select(
+                    VectorRecordRow.index_chunk_id.label("chunk_id"),
+                    VectorRecordRow.id.label("vector_id"),
+                    VectorRecordRow.embedding_space_id,
+                    VectorRecordRow.representation_kind,
+                    VectorRecordRow.embedding_dimension.label("physical_dimension"),
+                )
+                .join(
+                    IndexChunkRow,
+                    IndexChunkRow.id == VectorRecordRow.index_chunk_id,
+                )
+                .where(IndexChunkRow.indexed_document_version_id == target.id)
             )
+        ).all()
         vectors_by_chunk: dict[str, list[tuple[UUID, str, int]]] = {
             str(record.chunk_id): [] for record in chunk_records
         }
@@ -2091,6 +2092,7 @@ def _target(
         {"text_retrieval": embedding.id},
         {"text_retrieval": _embedding(embedding)},
     )
+    primary_space = spaces.get("text_retrieval", _embedding(embedding))
     return IndexingTarget(
         job_id=job.id,
         indexed_document_version_id=target.id,
@@ -2108,7 +2110,7 @@ def _target(
         media_type=version.media_type,
         parser_config=dict(revision.parser_config),
         chunking_config=dict(revision.chunking_config),
-        embedding_space=_embedding(embedding),
+        embedding_space=primary_space,
         already_complete=already_complete,
         enrichment_config=dict(revision.enrichment_config),
         representation_config=dict(revision.representation_config),
@@ -2145,7 +2147,10 @@ def _artifact_manifest(row: IndexArtifactManifestRow) -> IndexArtifactManifest:
         ) from error
 
 
-def _embedding(row: EmbeddingSpaceRow) -> EmbeddingSpaceDefinition:
+def _embedding(
+    row: EmbeddingSpaceRow,
+    validation_snapshot: dict[str, Any] | None = None,
+) -> EmbeddingSpaceDefinition:
     return EmbeddingSpaceDefinition(
         provider_identity=row.provider_identity,
         endpoint_identity=row.endpoint_identity,
@@ -2161,6 +2166,11 @@ def _embedding(row: EmbeddingSpaceRow) -> EmbeddingSpaceDefinition:
         tokenizer_fingerprint=row.tokenizer_fingerprint,
         compatibility_fingerprint=row.compatibility_fingerprint,
         model_profile_revision_id=row.model_profile_revision_id,
+        dimension_request_mode=(
+            str(validation_snapshot.get("dimension_request_mode", "explicit"))
+            if validation_snapshot is not None
+            else "explicit"
+        ),
     )
 
 
@@ -2224,18 +2234,6 @@ def _claimable_job(
         ),
         IndexedDocumentVersionRow.serving_status
         == IndexServingStatus.CANDIDATE,
-    )
-
-
-def _vector_model(dimension: int):
-    if dimension == 768:
-        return VectorRecord768Row
-    if dimension == 1024:
-        return VectorRecordRow
-    raise _execution_error(
-        ErrorCode.INDEX_PERSISTENCE_FAILED,
-        IndexingPhase.PERSISTING,
-        "supported_vector_dimension",
     )
 
 

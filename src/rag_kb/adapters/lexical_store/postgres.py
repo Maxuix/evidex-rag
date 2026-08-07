@@ -118,8 +118,9 @@ class PgLexicalStore:
                         analyzer_version=analyzer_version,
                         manifest_target_count=len(target_ids),
                     )
+                dimension = len(query_embedding)
                 statement = self._statement().bindparams(
-                    bindparam("query_embedding", type_=Vector(1024))
+                    bindparam("query_embedding", type_=Vector(dimension))
                 )
                 rows = (
                     await session.execute(
@@ -132,6 +133,7 @@ class PgLexicalStore:
                             "analyzer_version": analyzer_version,
                             "tsquery": tsquery,
                             "query_embedding": list(query_embedding),
+                            "embedding_dimension": dimension,
                             "candidate_count": candidate_count,
                         },
                     )
@@ -274,10 +276,11 @@ class PgLexicalStore:
                 ON binding.index_revision_id = target.index_revision_id
                 AND binding.workspace_id = target.workspace_id
                 AND binding.role = 'text_retrieval'
-              JOIN vector_record_1024 vector ON vector.index_chunk_id = chunk.id
+              JOIN vector_record vector ON vector.index_chunk_id = chunk.id
                 AND vector.kb_id = chunk.kb_id
                 AND vector.workspace_id = chunk.workspace_id
                 AND vector.embedding_space_id = binding.embedding_space_id
+                AND vector.embedding_dimension = :embedding_dimension
                 AND vector.representation_kind IN
                     ('text', 'caption_text', 'ocr_text', 'table_text')
               LEFT JOIN index_asset asset ON asset.id = chunk.index_asset_id

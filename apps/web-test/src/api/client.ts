@@ -15,6 +15,8 @@ import type {
   EvidencePack,
   IndexingJob,
   KnowledgeBase,
+  KnowledgeBaseEmbeddingSelection,
+  ModelSettingsSummary,
   ParsingPreset,
   ChunkingPreset,
   Page,
@@ -117,10 +119,15 @@ export class ApiClient {
     return this.request("/retrieval/capabilities");
   }
 
+  getModelSettings(): Promise<ModelSettingsSummary> {
+    return this.request("/model-settings");
+  }
+
   createKnowledgeBase(
     name: string,
     preset: ChunkingPreset,
     parsingPreset: ParsingPreset,
+    embedding: KnowledgeBaseEmbeddingSelection,
     idempotencyKey: UUID,
   ): Promise<KnowledgeBase> {
     return this.request("/knowledge-bases", {
@@ -130,6 +137,7 @@ export class ApiClient {
         name,
         parsing: { preset: parsingPreset },
         chunking: { preset },
+        embedding,
       }),
     });
   }

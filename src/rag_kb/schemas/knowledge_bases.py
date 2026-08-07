@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated, Literal, Self
+from typing import Annotated, Literal, Self, Union
 from uuid import UUID
 
 from pydantic import Field, field_validator, model_validator
@@ -55,6 +55,44 @@ class KnowledgeBaseChunkingResponse(PublicSchema):
     ]
 
 
+class TextOnlyEmbeddingSelection(PublicSchema):
+    strategy: Literal["text_only"] = "text_only"
+    text_profile_revision_id: UUID | None = None
+
+
+class DualSpaceEmbeddingSelection(PublicSchema):
+    strategy: Literal["dual_space"] = "dual_space"
+    text_profile_revision_id: UUID | None = None
+    multimodal_profile_revision_id: UUID | None = None
+
+
+class UnifiedMultimodalEmbeddingSelection(PublicSchema):
+    strategy: Literal["unified_multimodal"] = "unified_multimodal"
+    profile_revision_id: UUID | None = None
+
+
+KnowledgeBaseEmbeddingSelection = Annotated[
+    Union[
+        TextOnlyEmbeddingSelection,
+        DualSpaceEmbeddingSelection,
+        UnifiedMultimodalEmbeddingSelection,
+    ],
+    Field(discriminator="strategy"),
+]
+
+
+class KnowledgeBaseEmbeddingRoleResponse(PublicSchema):
+    embedding_space_id: UUID
+    profile_revision_id: UUID | None
+    dimension: int
+
+
+class KnowledgeBaseEmbeddingResponse(PublicSchema):
+    strategy: Literal["text_only", "dual_space", "unified_multimodal"]
+    text: KnowledgeBaseEmbeddingRoleResponse
+    cross_modal: KnowledgeBaseEmbeddingRoleResponse | None = None
+
+
 class KnowledgeBaseCreate(PublicSchema):
     name: KnowledgeBaseName
     parsing: KnowledgeBaseParsing = KnowledgeBaseParsing()
@@ -63,6 +101,18 @@ class KnowledgeBaseCreate(PublicSchema):
     answer_policy_defaults: KnowledgeBaseAnswerPolicyDefaults = (
         KnowledgeBaseAnswerPolicyDefaults()
     )
+    embedding: KnowledgeBaseEmbeddingSelection | None = None
+
+    @model_validator(mode="after")
+    def require_compatible_embedding_strategy(self) -> Self:
+        if self.embedding is None:
+            return self
+        if self.parsing.preset is ParsingPreset.TEXT_LOCAL_V1:
+            if self.embedding.strategy != "text_only":
+                raise ValueError("text parsing requires text_only embedding")
+        elif self.embedding.strategy == "text_only":
+            raise ValueError("multimodal parsing requires dual or unified embedding")
+        return self
 
     @field_validator("name")
     @classmethod
@@ -105,6 +155,7 @@ class KnowledgeBaseResponse(PublicSchema):
     source_change_seq: int
     active_index_revision_id: UUID
     embedding_space_id: UUID
+    embedding: KnowledgeBaseEmbeddingResponse
     parsing: KnowledgeBaseParsingResponse
     chunking: KnowledgeBaseChunkingResponse
     retrieval_defaults: RetrievalDefaults

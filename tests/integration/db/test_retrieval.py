@@ -913,10 +913,11 @@ class ExactRetrievalDatabaseTests(unittest.IsolatedAsyncioTestCase):
         )
         await connection.execute(
             """
-            INSERT INTO vector_record_1024 (
+            INSERT INTO vector_record (
                 workspace_id, kb_id, index_chunk_id,
-                embedding_space_id, embedding
-            ) VALUES ($1, $2, $3, $4, $5::vector)
+                embedding_space_id, embedding_dimension,
+                representation_kind, embedding
+            ) VALUES ($1, $2, $3, $4, 1024, 'text', $5::vector)
             """,
             foundation.workspace_id,
             foundation.kb_id,

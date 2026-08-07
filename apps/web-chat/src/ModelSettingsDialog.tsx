@@ -365,10 +365,15 @@ function ModelPanel({
             </div>
             <span>{kindLabel(profile.kind)} · {profile.model}</span>
             <small>{parameterSummary(profile)}</small>
+            {profile.embedding_validation ? (
+              <EmbeddingValidationFacts value={profile.embedding_validation} />
+            ) : profile.validation_error_code ? (
+              <small>{validationErrorHint(profile.validation_error_code)}</small>
+            ) : null}
             <small>修订 {profile.revision}{profile.enabled ? "" : " · 已停用"}</small>
             <div className="settings-card-actions">
               <button type="button" disabled={disabled} onClick={() => onEdit(profile)}>修改</button>
-              <button type="button" disabled={disabled || !profile.enabled} onClick={() => onValidate(profile.id)}>验证连接</button>
+              <button type="button" disabled={disabled || !profile.enabled} onClick={() => onValidate(profile.id)}>检测并验证</button>
             </div>
           </article>
         ))}
@@ -474,6 +479,12 @@ function ProfileForm({
   const models = catalogs[providerId] ?? [];
   const chatParameters = initial?.parameters.type === "chat" ? initial.parameters : CHAT_DEFAULTS;
   const embeddingParameters = initial?.parameters.type === "embedding" ? initial.parameters : null;
+  const [dimensionMode, setDimensionMode] = useState<"auto" | "manual">(
+    embeddingParameters?.dimension === "auto" || !embeddingParameters
+      ? "auto"
+      : "manual",
+  );
+  const knownDimensions = initial?.embedding_validation?.provider_supported_dimensions ?? [];
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -489,11 +500,13 @@ function ProfileForm({
       vision_enabled: data.get("vision_enabled") === "on",
     } : {
       type: "embedding",
-      dimension: kind === "text_embedding" ? 1024 : 768,
+      dimension: dimensionMode === "auto"
+        ? "auto"
+        : Number(data.get("dimension")),
       max_batch_size: Number(data.get("max_batch_size")),
-      distance_metric: "cosine",
-      vector_data_type: "float32",
-      normalization: "l2",
+      shared_text_image_space_confirmed:
+        kind === "multimodal_embedding"
+        && data.get("shared_text_image_space_confirmed") === "on",
     };
     const model = String(data.get("model"));
     const displayName = String(data.get("name")).trim();
@@ -515,7 +528,7 @@ function ProfileForm({
           <label className="settings-field"><span>类型</span><select value={kind} onChange={(event) => {
             setKind(event.target.value as ModelKind);
             setProviderId("");
-          }}><option value="text_embedding">文本 Embedding（1024 维）</option><option value="multimodal_embedding">多模态 Embedding（768 维）</option></select></label>
+          }}><option value="text_embedding">文本 Embedding</option><option value="multimodal_embedding">多模态 Embedding</option></select></label>
         ) : <div className="settings-form-kind">{kindLabel(kind)}</div>}
         <div className="settings-field-row two-columns">
           <label className="settings-field"><span>提供商</span><select required name="provider_id" value={providerId} onChange={(event) => {
@@ -545,7 +558,58 @@ function ProfileForm({
             <label className="settings-field"><span>结构化输出</span><select name="structured_output_mode" defaultValue={chatParameters.structured_output_mode}><option value="json_object">JSON Object</option><option value="json_schema">JSON Schema</option></select></label>
           </div>
           <label className="settings-check"><input name="vision_enabled" type="checkbox" defaultChecked={chatParameters.vision_enabled} />允许视觉输入</label>
-        </> : <label className="settings-field"><span>最大批量</span><input required name="max_batch_size" type="number" min="1" max="100" defaultValue={embeddingParameters?.max_batch_size ?? 10} /></label>}
+        </> : <>
+          <div className="settings-field-row two-columns">
+            <label className="settings-field">
+              <span>维度</span>
+              <select value={dimensionMode} onChange={(event) => setDimensionMode(event.target.value as "auto" | "manual")}>
+                <option value="auto">自动检测</option>
+                <option value="manual">手动候选并验证</option>
+              </select>
+            </label>
+            {dimensionMode === "manual" ? (
+              <label className="settings-field">
+                <span>候选维度（64–4096）</span>
+                <input
+                  required
+                  name="dimension"
+                  type="number"
+                  min="64"
+                  max="4096"
+                  list={`embedding-dimensions-${initial?.id ?? "new"}`}
+                  defaultValue={
+                    typeof embeddingParameters?.dimension === "number"
+                      ? embeddingParameters.dimension
+                      : ""
+                  }
+                />
+                <datalist id={`embedding-dimensions-${initial?.id ?? "new"}`}>
+                  {knownDimensions.map((dimension) => <option key={dimension} value={dimension} />)}
+                </datalist>
+              </label>
+            ) : null}
+          </div>
+          <label className="settings-field"><span>最大批量</span><input required name="max_batch_size" type="number" min="1" max="100" defaultValue={embeddingParameters?.max_batch_size ?? 10} /></label>
+          {kind === "multimodal_embedding" ? (
+            <label className="settings-check">
+              <input
+                name="shared_text_image_space_confirmed"
+                type="checkbox"
+                defaultChecked={embeddingParameters?.shared_text_image_space_confirmed ?? false}
+              />
+              我确认该模型的文档文本、查询文本和图片输出属于同一语义空间
+            </label>
+          ) : null}
+          <small className="model-catalog-note">
+            {knownDimensions.length
+              ? `提供商已知候选：${knownDimensions.join("、")}。手动选择后仍需重新检测。`
+              : "提供商未公布完整维度列表；可继续手动输入候选并检测。"}
+          </small>
+          <small className="model-catalog-note">
+            固定契约：cosine · float32 · 新空间使用 client_l2_v1。检测可能产生一次模型调用。
+          </small>
+          {initial ? <small className="model-catalog-note">修改维度会创建新的模型修订，已有知识库不会自动切换。</small> : null}
+        </>}
         {initial ? <label className="settings-check"><input name="enabled" type="checkbox" defaultChecked={initial.enabled} />启用此模型</label> : null}
         <div className="settings-form-actions">
           <button className="primary-button" type="submit" disabled={disabled || !providers.length}>{initial ? "保存修改" : "保存模型"}</button>
@@ -575,8 +639,47 @@ function validationLabel(status: string): string {
 
 function parameterSummary(profile: ModelProfile): string {
   const value = profile.parameters;
-  if (value.type === "embedding") return `${value.dimension} 维 · 批量 ${value.max_batch_size}`;
+  if (value.type === "embedding") return `${value.dimension === "auto" ? "自动维度" : `${value.dimension} 维`} · 批量 ${value.max_batch_size}`;
   return `温度 ${value.temperature} · Top P ${value.top_p ?? "关闭"} · Top K ${value.sampling_top_k ?? "关闭"} · 输出 ${value.max_output_tokens}`;
+}
+
+function EmbeddingValidationFacts({ value }: { value: NonNullable<ModelProfile["embedding_validation"]> }) {
+  const supported = value.provider_supported_dimensions;
+  return (
+    <div className="model-validation-facts">
+      <small>
+        已选择 {value.selected_dimension} 维 · {selectionSourceLabel(value.selection_source)} ·
+        {value.dimension_request_mode === "explicit" ? " 显式发送维度" : " 省略维度参数"}
+      </small>
+      <small>
+        Provider 默认 {value.provider_default_dimension ?? "未声明"} ·
+        已验证 {value.verified_dimensions.join("、")} ·
+        已知候选 {supported?.join("、") || "未公布完整列表"}
+      </small>
+      <small>{value.distance_metric} · {value.vector_data_type} · {value.normalization}</small>
+    </div>
+  );
+}
+
+function selectionSourceLabel(source: NonNullable<ModelProfile["embedding_validation"]>["selection_source"]): string {
+  const labels: Record<typeof source, string> = {
+    provider_recommended: "Provider 推荐",
+    provider_default: "Provider 默认",
+    automatic_1024: "自动 1024",
+    automatic_above_1024: "自动选择高于 1024 的最近候选",
+    automatic_below_1024: "自动选择低于 1024 的最大候选",
+    provider_observed_default: "实际探测默认",
+    user_probe: "用户候选",
+    legacy_explicit: "既有显式维度",
+  };
+  return labels[source];
+}
+
+function validationErrorHint(code: string): string {
+  if (code === "embedding_dimension_required") return "无法自动识别维度，请输入 64–4096 的候选后重新检测。";
+  if (code === "embedding_dimension_mismatch") return "Provider 返回维度与候选不一致，请修改候选后创建新修订。";
+  if (code === "embedding_response_invalid") return "Provider 返回了无效、非有限或零向量。";
+  return `检测失败（${code}），请检查模型 ID、连接和候选维度。`;
 }
 
 function message(error: unknown): string {

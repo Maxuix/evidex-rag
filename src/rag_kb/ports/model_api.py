@@ -43,14 +43,12 @@ class EmbeddingModelAdapter(Protocol):
 
 
 @runtime_checkable
-class MultimodalEmbeddingAdapter(Protocol):
+class MultimodalEmbeddingAdapter(EmbeddingModelAdapter, Protocol):
     @property
     def embedding_space(self) -> EmbeddingSpaceDefinition: ...
 
     @property
     def max_batch_size(self) -> int: ...
-
-    async def embed_texts(self, texts: tuple[str, ...]) -> EmbeddingBatch: ...
 
     async def embed_images(
         self,

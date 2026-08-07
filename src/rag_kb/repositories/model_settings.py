@@ -15,6 +15,7 @@ from rag_kb.domain import (
     ModelProviderProtocol,
     ModelSelection,
     ModelValidationStatus,
+    EmbeddingValidationSnapshot,
 )
 
 
@@ -95,6 +96,9 @@ class ModelSettingsRepository(Protocol):
         *,
         status: ModelValidationStatus,
         error_code: str | None,
+        validation_snapshot: EmbeddingValidationSnapshot | None,
+        capability_fingerprint: str | None,
+        compatibility_fingerprint: str | None,
     ) -> ModelProfileBundle | None: ...
 
     async def get_selection(self) -> ModelSelection: ...

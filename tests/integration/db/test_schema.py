@@ -153,7 +153,7 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
                     "UPDATE alembic_version SET version_num = 'runtime-mutation'"
                 )
             revision = await runtime.fetchval("SELECT version_num FROM alembic_version")
-            self.assertEqual(revision, "0003_model_settings")
+            self.assertEqual(revision, "0004_flexible_embedding_spaces")
         finally:
             await runtime.close()
 
@@ -175,9 +175,9 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
                 SELECT conname, pg_get_constraintdef(oid) AS definition
                 FROM pg_constraint
                 WHERE conrelid = 'public.chat_run'::regclass
-                  AND conname IN (
-                    'ck_chat_run_workflow_configuration_v1',
-                    'ck_chat_run_workflow_state_v1'
+                  AND (
+                    conname LIKE '%ck_chat_run_workflow_configuration_v1'
+                    OR conname LIKE '%ck_chat_run_workflow_state_v1'
                   )
                 ORDER BY conname
                 """
@@ -370,10 +370,11 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
             embedding = "[" + ",".join(["1", *("0" for _ in range(1023))]) + "]"
             await connection.execute(
                 """
-                INSERT INTO vector_record_1024 (
+                INSERT INTO vector_record (
                     workspace_id, kb_id, index_chunk_id,
-                    embedding_space_id, embedding
-                ) VALUES ($1, $2, $3, $4, $5::vector)
+                    embedding_space_id, embedding_dimension,
+                    representation_kind, embedding
+                ) VALUES ($1, $2, $3, $4, 1024, 'text', $5::vector)
                 """,
                 workspace_id,
                 kb_id,
@@ -384,7 +385,8 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
             distance = await connection.fetchval(
                 """
                 SELECT embedding <=> $1::vector
-                FROM vector_record_1024 WHERE index_chunk_id = $2
+                FROM vector_record WHERE index_chunk_id = $2
+                  AND embedding_dimension = 1024
                 """,
                 embedding,
                 chunk_id,

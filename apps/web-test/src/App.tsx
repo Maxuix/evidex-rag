@@ -7,6 +7,8 @@ import { ApiClient, loadRuntimeConfig } from "./api/client";
 import type {
   ChunkingPreset,
   KnowledgeBase,
+  KnowledgeBaseEmbeddingSelection,
+  ModelSettingsSummary,
   ParsingPreset,
   RetrievalCapabilities,
 } from "./api/types";
@@ -22,6 +24,13 @@ import {
 } from "./storage";
 
 type ViewName = "documents" | "chat" | "retrieval";
+type PendingKnowledgeBaseCreate = {
+  name: string;
+  preset: ChunkingPreset;
+  parsingPreset: ParsingPreset;
+  embedding: KnowledgeBaseEmbeddingSelection;
+  idempotencyKey: string;
+};
 
 export function App() {
   const [client, setClient] = useState<ApiClient | null>(null);
@@ -109,14 +118,16 @@ export function ObservationApp({
   const [newParsingPreset, setNewParsingPreset] = useState<ParsingPreset>(
     "text_local_v1",
   );
+  const [modelSettings, setModelSettings] = useState<ModelSettingsSummary | null>(null);
+  const [newEmbeddingStrategy, setNewEmbeddingStrategy] = useState<
+    "dual_space" | "unified_multimodal"
+  >("dual_space");
+  const [newTextProfileRevisionId, setNewTextProfileRevisionId] = useState("");
+  const [newMultimodalProfileRevisionId, setNewMultimodalProfileRevisionId] = useState("");
+  const [newUnifiedProfileRevisionId, setNewUnifiedProfileRevisionId] = useState("");
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<unknown | null>(null);
-  const [pendingCreate, setPendingCreate] = useState<{
-    name: string;
-    preset: ChunkingPreset;
-    parsingPreset: ParsingPreset;
-    idempotencyKey: string;
-  } | null>(null);
+  const [pendingCreate, setPendingCreate] = useState<PendingKnowledgeBaseCreate | null>(null);
   const [view, setView] = useState<ViewName>("documents");
   const [viewMutationPending, setViewMutationPending] = useState(false);
   const [focusedDocument, setFocusedDocument] = useState<{
@@ -127,6 +138,35 @@ export function ObservationApp({
   const selectedKnowledgeBase = useMemo(
     () => knowledgeBases.find((item) => item.id === selectedId) ?? null,
     [knowledgeBases, selectedId],
+  );
+  const textProfiles = useMemo(
+    () => (modelSettings?.profiles ?? []).filter((profile) =>
+      profile.kind === "text_embedding"
+      && profile.enabled
+      && profile.validation_status === "valid"
+    ),
+    [modelSettings],
+  );
+  const multimodalProfiles = useMemo(
+    () => (modelSettings?.profiles ?? []).filter((profile) =>
+      profile.kind === "multimodal_embedding"
+      && profile.enabled
+      && profile.validation_status === "valid"
+    ),
+    [modelSettings],
+  );
+  const unifiedProfiles = useMemo(
+    () => multimodalProfiles.filter((profile) => {
+      const validation = profile.embedding_validation;
+      return Boolean(
+        validation?.shared_text_image_space_confirmed
+        && validation.input_capabilities.includes("text_document")
+        && validation.input_capabilities.includes("text_query")
+        && validation.input_capabilities.includes("image")
+        && validation.normalization === "client_l2_v1"
+      );
+    }),
+    [multimodalProfiles],
   );
   const interactionLocked = pendingCreate !== null || viewMutationPending;
   const handleMutationPendingChange = useCallback((pending: boolean) => {
@@ -154,6 +194,37 @@ export function ObservationApp({
   }, [loadKnowledgeBases]);
 
   useEffect(() => {
+    let cancelled = false;
+    void client.getModelSettings().then((value) => {
+      if (!cancelled) setModelSettings(value);
+    }).catch(() => {
+      if (!cancelled) setModelSettings(null);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [client]);
+
+  useEffect(() => {
+    if (!modelSettings) return;
+    setNewTextProfileRevisionId((current) =>
+      current || modelSettings.selection.text_embedding_profile_revision_id || ""
+    );
+    setNewMultimodalProfileRevisionId((current) =>
+      current || modelSettings.selection.multimodal_embedding_profile_revision_id || ""
+    );
+    setNewUnifiedProfileRevisionId((current) => {
+      if (current && unifiedProfiles.some((profile) => profile.revision_id === current)) {
+        return current;
+      }
+      const selected = modelSettings.selection.multimodal_embedding_profile_revision_id;
+      return unifiedProfiles.find((profile) => profile.revision_id === selected)?.revision_id
+        ?? unifiedProfiles[0]?.revision_id
+        ?? "";
+    });
+  }, [modelSettings, unifiedProfiles]);
+
+  useEffect(() => {
     if (loading) return;
     setSelectedId((selection) =>
       selection && knowledgeBases.some((item) => item.id === selection)
@@ -173,22 +244,34 @@ export function ObservationApp({
     if (interactionLocked) return;
     const name = newKnowledgeBaseName.trim();
     if (!name) return;
+    const embedding: KnowledgeBaseEmbeddingSelection =
+      newParsingPreset === "text_local_v1"
+        ? {
+          strategy: "text_only",
+          text_profile_revision_id: newTextProfileRevisionId || null,
+        }
+        : newEmbeddingStrategy === "unified_multimodal"
+          ? {
+            strategy: "unified_multimodal",
+            profile_revision_id: newUnifiedProfileRevisionId || null,
+          }
+          : {
+            strategy: "dual_space",
+            text_profile_revision_id: newTextProfileRevisionId || null,
+            multimodal_profile_revision_id: newMultimodalProfileRevisionId || null,
+          };
     const pending = {
       name,
       preset: newChunkingPreset,
       parsingPreset: newParsingPreset,
+      embedding,
       idempotencyKey: crypto.randomUUID(),
     };
     setPendingCreate(pending);
     await performCreate(pending);
   };
 
-  const performCreate = async (pending: {
-    name: string;
-    preset: ChunkingPreset;
-    parsingPreset: ParsingPreset;
-    idempotencyKey: string;
-  }) => {
+  const performCreate = async (pending: PendingKnowledgeBaseCreate) => {
     setCreating(true);
     setCreateError(null);
     try {
@@ -196,6 +279,7 @@ export function ObservationApp({
         pending.name,
         pending.preset,
         pending.parsingPreset,
+        pending.embedding,
         pending.idempotencyKey,
       );
       setKnowledgeBases((current) => mergeKnowledgeBases(current, [value]));
@@ -287,10 +371,100 @@ export function ObservationApp({
             <button
               className="button secondary"
               type="submit"
-              disabled={creating || interactionLocked || !newKnowledgeBaseName.trim()}
+              disabled={
+                creating
+                || interactionLocked
+                || !newKnowledgeBaseName.trim()
+                || (
+                  newParsingPreset === "multimodal_local_v2"
+                  && newEmbeddingStrategy === "unified_multimodal"
+                  && !newUnifiedProfileRevisionId
+                )
+              }
             >
               {creating ? "Creating…" : "Create"}
             </button>
+          </div>
+          <div className="inline-controls" aria-label="Embedding strategy">
+            {newParsingPreset === "text_local_v1" ? (
+              <>
+                <span>Text-only embedding</span>
+                <select
+                  aria-label="Text embedding profile"
+                  value={newTextProfileRevisionId}
+                  onChange={(event) => setNewTextProfileRevisionId(event.target.value)}
+                  disabled={interactionLocked}
+                >
+                  <option value="">Workspace default text model</option>
+                  {textProfiles.map((profile) => (
+                    <option key={profile.revision_id} value={profile.revision_id}>
+                      {profile.name} · {profile.embedding_validation?.selected_dimension ?? "?"}d · r{profile.revision}
+                    </option>
+                  ))}
+                </select>
+              </>
+            ) : (
+              <>
+                <select
+                  aria-label="Embedding strategy"
+                  value={newEmbeddingStrategy}
+                  onChange={(event) => setNewEmbeddingStrategy(
+                    event.target.value as "dual_space" | "unified_multimodal"
+                  )}
+                  disabled={interactionLocked}
+                >
+                  <option value="dual_space">Dedicated dual models (default)</option>
+                  <option value="unified_multimodal" disabled={!unifiedProfiles.length}>
+                    Unified multimodal model
+                  </option>
+                </select>
+                {newEmbeddingStrategy === "dual_space" ? (
+                  <>
+                    <select
+                      aria-label="Text embedding profile"
+                      value={newTextProfileRevisionId}
+                      onChange={(event) => setNewTextProfileRevisionId(event.target.value)}
+                      disabled={interactionLocked}
+                    >
+                      <option value="">Workspace default text model</option>
+                      {textProfiles.map((profile) => (
+                        <option key={profile.revision_id} value={profile.revision_id}>
+                          Text · {profile.name} · {profile.embedding_validation?.selected_dimension ?? "?"}d
+                        </option>
+                      ))}
+                    </select>
+                    <select
+                      aria-label="Multimodal embedding profile"
+                      value={newMultimodalProfileRevisionId}
+                      onChange={(event) => setNewMultimodalProfileRevisionId(event.target.value)}
+                      disabled={interactionLocked}
+                    >
+                      <option value="">Workspace default multimodal model</option>
+                      {multimodalProfiles.map((profile) => (
+                        <option key={profile.revision_id} value={profile.revision_id}>
+                          Visual · {profile.name} · {profile.embedding_validation?.selected_dimension ?? "?"}d
+                        </option>
+                      ))}
+                    </select>
+                  </>
+                ) : (
+                  <select
+                    aria-label="Unified multimodal embedding profile"
+                    required
+                    value={newUnifiedProfileRevisionId}
+                    onChange={(event) => setNewUnifiedProfileRevisionId(event.target.value)}
+                    disabled={interactionLocked || !unifiedProfiles.length}
+                  >
+                    <option value="">Select an eligible unified model</option>
+                    {unifiedProfiles.map((profile) => (
+                      <option key={profile.revision_id} value={profile.revision_id}>
+                        {profile.name} · {profile.embedding_validation?.selected_dimension ?? "?"}d · r{profile.revision}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </>
+            )}
           </div>
           <small className="field-help">
             {newParsingPreset === "multimodal_local_v2"
@@ -299,6 +473,9 @@ export function ObservationApp({
             {newChunkingPreset === "structural_balanced_v2"
               ? "Uses titles and token windows."
               : "Uses additional embeddings to find semantic breakpoints."}
+            {newParsingPreset === "multimodal_local_v2" && !unifiedProfiles.length
+              ? " Unified is unavailable until a validated multimodal profile confirms one shared text/image semantic space."
+              : ""}
           </small>
         </form>
       </section>
@@ -358,7 +535,7 @@ export function ObservationApp({
           <section className="panel">
             <EmptyState
               title="Create the first knowledge base"
-              description="The public API will provision its active revision and fixed embedding space."
+              description="The public API will provision its active revision and selected embedding role bindings."
             />
           </section>
         ) : (
@@ -392,6 +569,19 @@ export function ObservationApp({
                     : selectedKnowledgeBase.chunking.preset === "structural_balanced_v2"
                       ? "Structural balanced"
                       : "Legacy (read-only)"}
+                </strong>
+              </div>
+              <div>
+                <span>Embedding strategy</span>
+                <strong>{selectedKnowledgeBase.embedding.strategy.replaceAll("_", " ")}</strong>
+              </div>
+              <div>
+                <span>Embedding dimensions</span>
+                <strong>
+                  Text {selectedKnowledgeBase.embedding.text.dimension}d
+                  {selectedKnowledgeBase.embedding.cross_modal
+                    ? ` · Visual ${selectedKnowledgeBase.embedding.cross_modal.dimension}d`
+                    : ""}
                 </strong>
               </div>
             </section>

@@ -1,4 +1,4 @@
-"""One-statement exact pgvector retrieval for the fixed P1A space."""
+"""One-statement exact pgvector retrieval for a frozen embedding space."""
 
 from __future__ import annotations
 
@@ -22,8 +22,8 @@ from rag_kb.db.models import (
     IndexRevisionStatus,
     IndexServingStatus,
     KnowledgeBase,
+    ModelProfileRevision,
     VectorRecord,
-    VectorRecord768,
 )
 from rag_kb.domain import (
     ErrorCode,
@@ -44,12 +44,11 @@ class PgVectorStore:
         sessions: async_sessionmaker[AsyncSession],
         configured_space: EmbeddingSpaceDefinition,
     ) -> None:
-        _vector_model(configured_space.dimension)
         if (
             configured_space.distance_metric != "cosine"
             or configured_space.vector_data_type != "float32"
         ):
-            raise ValueError("configured embedding space is not an allowed fixed space")
+            raise ValueError("configured embedding space is not supported")
         self._sessions = sessions
         self._configured_space = configured_space
 
@@ -82,8 +81,18 @@ class PgVectorStore:
         plan: RetrievalQueryPlan,
         space_role: str,
     ) -> EmbeddingSpaceDefinition | None:
+        return (await self.resolve_spaces(plan)).get(space_role)
+
+    async def resolve_spaces(
+        self,
+        plan: RetrievalQueryPlan,
+    ) -> dict[str, EmbeddingSpaceDefinition]:
         statement = (
-            select(EmbeddingSpace)
+            select(
+                IndexRevisionEmbeddingSpace.role,
+                EmbeddingSpace,
+                ModelProfileRevision.validation_snapshot,
+            )
             .join(
                 IndexRevisionEmbeddingSpace,
                 and_(
@@ -92,6 +101,10 @@ class PgVectorStore:
                     IndexRevisionEmbeddingSpace.workspace_id
                     == EmbeddingSpace.workspace_id,
                 ),
+            )
+            .outerjoin(
+                ModelProfileRevision,
+                ModelProfileRevision.id == EmbeddingSpace.model_profile_revision_id,
             )
             .join(
                 KnowledgeBase,
@@ -105,29 +118,41 @@ class PgVectorStore:
             .where(
                 KnowledgeBase.workspace_id == plan.workspace_id,
                 KnowledgeBase.id == plan.knowledge_base_id,
-                IndexRevisionEmbeddingSpace.role == space_role,
             )
-            .limit(1)
+            .order_by(IndexRevisionEmbeddingSpace.role)
         )
         async with self._sessions() as session:
-            row = await session.scalar(statement)
-        if row is None:
-            return None
+            rows = (await session.execute(statement)).all()
+        return {
+            role: self._definition(space, validation_snapshot)
+            for role, space, validation_snapshot in rows
+        }
+
+    @staticmethod
+    def _definition(
+        space: EmbeddingSpace,
+        validation_snapshot: dict[str, Any] | None,
+    ) -> EmbeddingSpaceDefinition:
         return EmbeddingSpaceDefinition(
-            provider_identity=row.provider_identity,
-            endpoint_identity=row.endpoint_identity,
-            requested_model=row.requested_model,
-            resolved_model=row.resolved_model,
-            model_version=row.model_version,
-            deployment_revision=row.deployment_revision,
-            dimension=row.dimension,
-            distance_metric=row.distance_metric,
-            vector_data_type=row.vector_data_type,
-            normalization=row.normalization,
-            configuration_fingerprint=row.configuration_fingerprint,
-            tokenizer_fingerprint=row.tokenizer_fingerprint,
-            compatibility_fingerprint=row.compatibility_fingerprint,
-            model_profile_revision_id=row.model_profile_revision_id,
+            provider_identity=space.provider_identity,
+            endpoint_identity=space.endpoint_identity,
+            requested_model=space.requested_model,
+            resolved_model=space.resolved_model,
+            model_version=space.model_version,
+            deployment_revision=space.deployment_revision,
+            dimension=space.dimension,
+            distance_metric=space.distance_metric,
+            vector_data_type=space.vector_data_type,
+            normalization=space.normalization,
+            configuration_fingerprint=space.configuration_fingerprint,
+            tokenizer_fingerprint=space.tokenizer_fingerprint,
+            compatibility_fingerprint=space.compatibility_fingerprint,
+            model_profile_revision_id=space.model_profile_revision_id,
+            dimension_request_mode=(
+                str(validation_snapshot.get("dimension_request_mode", "explicit"))
+                if validation_snapshot is not None
+                else "explicit"
+            ),
         )
 
     async def search(
@@ -167,6 +192,7 @@ class PgVectorStore:
             "top_k": plan.candidate_count or plan.top_k,
             "space_role": space_role,
             "representation_kinds": list(representation_kinds),
+            "expected_dimension": expected_space.dimension,
         }
         async with self._sessions() as session:
             result = await session.execute(statement, parameters)
@@ -218,7 +244,7 @@ class PgVectorStore:
 
     @staticmethod
     def _statement(dimension: int = 1024):
-        vector_record = _vector_model(dimension)
+        vector_record = VectorRecord
         query_vector = bindparam(
             "query_embedding",
             type_=Vector(dimension),
@@ -314,6 +340,8 @@ class PgVectorStore:
                 DocumentVersion.source_status == DocumentSourceStatus.AVAILABLE,
                 vector_record.embedding_space_id
                 == IndexRevisionEmbeddingSpace.embedding_space_id,
+                vector_record.embedding_dimension
+                == bindparam("expected_dimension", type_=Integer),
                 vector_record.representation_kind.in_(
                     bindparam("representation_kinds", expanding=True)
                 ),
@@ -423,11 +451,3 @@ class PgVectorStore:
             asset_width=row["asset_width"],
             asset_height=row["asset_height"],
         )
-
-
-def _vector_model(dimension: int):
-    if dimension == 768:
-        return VectorRecord768
-    if dimension == 1024:
-        return VectorRecord
-    raise ValueError("unsupported fixed vector dimension")

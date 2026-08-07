@@ -14,6 +14,11 @@ from rag_kb.domain import (
 
 @runtime_checkable
 class VectorStore(Protocol):
+    async def resolve_spaces(
+        self,
+        plan: RetrievalQueryPlan,
+    ) -> dict[str, EmbeddingSpaceDefinition]: ...
+
     async def resolve_space(
         self,
         plan: RetrievalQueryPlan,

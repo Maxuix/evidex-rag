@@ -17,18 +17,37 @@ from rag_kb.adapters.model_api.model_catalog import (
 )
 from rag_kb.adapters.model_api.routing_chat import RoutingChatModelAdapter
 from rag_kb.adapters.model_secrets.local import LocalModelSecretStore
+from rag_kb.db.models import ModelProfileRevision as ModelProfileRevisionRow
 from rag_kb.domain import (
     ChatModelMessage,
     ChatModelRequest,
     ChatModelResponse,
+    EmbeddingDimensionRequestMode,
+    EmbeddingDimensionSelectionSource,
+    EmbeddingExecutionMode,
+    EmbeddingInputCapability,
+    EmbeddingValidationSnapshot,
     ModelKind,
+    ModelProfile,
+    ModelProfileBundle,
+    ModelProfileRevision,
     ModelProvider,
     ModelProviderBundle,
     ModelProviderProtocol,
     ModelProviderRevision,
+    ModelValidationStatus,
+    ResourceStateConflictError,
+    derive_embedding_execution_mode,
+    select_automatic_embedding_dimension,
 )
 from rag_kb.schemas.model_settings import ModelProfileCreate
-from rag_kb.services.model_settings import model_fingerprints, provider_fingerprint
+from rag_kb.services.model_settings import (
+    _require_parameters,
+    embedding_capability_fingerprint,
+    embedding_compatibility_fingerprint,
+    model_fingerprints,
+    provider_fingerprint,
+)
 
 
 class _ChatModel:
@@ -44,6 +63,10 @@ class _ChatModel:
 
 
 class ModelSettingsTests(unittest.TestCase):
+    def test_validation_snapshot_none_is_bound_as_sql_null(self) -> None:
+        column_type = ModelProfileRevisionRow.__table__.c.validation_snapshot.type
+        self.assertTrue(column_type.none_as_null)
+
     def test_secret_store_uses_opaque_mode_0600_files(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = LocalModelSecretStore(Path(directory))
@@ -107,14 +130,124 @@ class ModelSettingsTests(unittest.TestCase):
                 (ChatModelMessage("user", "question"),),
                 max_output_tokens=8193,
             )
-        with self.assertRaises(ValidationError):
-            ModelProfileCreate.model_validate({
+        embedding = ModelProfileCreate.model_validate({
                 "provider_id": str(provider_id),
                 "name": "Embedding",
                 "kind": "text_embedding",
                 "model": "embedding-a",
-                "parameters": {"type": "embedding", "dimension": 768},
+                "parameters": {"type": "embedding", "dimension": 724},
             })
+        self.assertEqual(embedding.parameters.dimension, 724)
+        automatic = ModelProfileCreate.model_validate({
+            "provider_id": str(provider_id),
+            "name": "Automatic embedding",
+            "kind": "text_embedding",
+            "model": "embedding-b",
+            "parameters": {"type": "embedding"},
+        })
+        self.assertEqual(automatic.parameters.dimension, "auto")
+        for dimension in (63, 4097):
+            with self.assertRaises(ValidationError):
+                ModelProfileCreate.model_validate({
+                    "provider_id": str(provider_id),
+                    "name": "Invalid embedding",
+                    "kind": "text_embedding",
+                    "model": "embedding-invalid",
+                    "parameters": {"type": "embedding", "dimension": dimension},
+                })
+        with self.assertRaises(ValidationError):
+            ModelProfileCreate.model_validate({
+                "provider_id": str(provider_id),
+                "name": "Invalid shared embedding",
+                "kind": "text_embedding",
+                "model": "embedding-invalid",
+                "parameters": {
+                    "type": "embedding",
+                    "shared_text_image_space_confirmed": True,
+                },
+            })
+
+    def test_embedding_dimension_selection_snapshot_and_execution_mode(self) -> None:
+        cases = (
+            ((724, 1024, 2048), None, None, 1024, "automatic_1024"),
+            ((724, 2048), None, None, 2048, "automatic_above_1024"),
+            ((256, 724), None, None, 724, "automatic_below_1024"),
+            ((724, 1024, 2048), 2048, None, 2048, "provider_recommended"),
+            ((724, 1024, 2048), None, 724, 724, "provider_default"),
+        )
+        for candidates, recommended, default, expected, source in cases:
+            selected = select_automatic_embedding_dimension(
+                candidates,
+                provider_recommended_dimension=recommended,
+                provider_default_dimension=default,
+            )
+            self.assertEqual(selected, (expected, source))
+        with self.assertRaisesRegex(ValueError, "embedding_dimension_required"):
+            select_automatic_embedding_dimension(())
+        for invalid in ((63,), (4097,), (True,), (724.0,)):
+            with self.assertRaises(ValueError):
+                select_automatic_embedding_dimension(invalid)
+
+        snapshot = EmbeddingValidationSnapshot(
+            provider_supported_dimensions=(724, 1024),
+            verified_dimensions=(724,),
+            provider_default_dimension=1024,
+            recommended_dimension=1024,
+            selected_dimension=724,
+            selection_source=EmbeddingDimensionSelectionSource.USER_PROBE,
+            dimension_request_mode=EmbeddingDimensionRequestMode.EXPLICIT,
+            input_capabilities=(
+                EmbeddingInputCapability.TEXT_DOCUMENT,
+                EmbeddingInputCapability.TEXT_QUERY,
+            ),
+            shared_text_image_space_confirmed=False,
+        )
+        self.assertEqual(
+            EmbeddingValidationSnapshot.from_mapping(snapshot.as_dict()), snapshot
+        )
+
+        text_space = uuid4()
+        self.assertIs(
+            derive_embedding_execution_mode(text_space, None),
+            EmbeddingExecutionMode.TEXT_ONLY,
+        )
+        self.assertIs(
+            derive_embedding_execution_mode(text_space, text_space),
+            EmbeddingExecutionMode.UNIFIED_MULTIMODAL,
+        )
+        self.assertIs(
+            derive_embedding_execution_mode(text_space, uuid4()),
+            EmbeddingExecutionMode.DUAL_SPACE_MULTIMODAL,
+        )
+
+    def test_service_parameter_guard_covers_profile_update_boundaries(self) -> None:
+        _require_parameters(
+            ModelKind.TEXT_EMBEDDING,
+            {"type": "embedding", "dimension": 64},
+        )
+        _require_parameters(
+            ModelKind.MULTIMODAL_EMBEDDING,
+            {
+                "type": "embedding",
+                "dimension": 4096,
+                "shared_text_image_space_confirmed": True,
+            },
+        )
+        for invalid_dimension in (True, 63, 4097, 724.0):
+            with self.assertRaises(ResourceStateConflictError):
+                _require_parameters(
+                    ModelKind.TEXT_EMBEDDING,
+                    {"type": "embedding", "dimension": invalid_dimension},
+                )
+        with self.assertRaises(ResourceStateConflictError):
+            _require_parameters(
+                ModelKind.TEXT_EMBEDDING,
+                {
+                    "type": "embedding",
+                    "dimension": "auto",
+                    "shared_text_image_space_confirmed": True,
+                },
+            )
 
     def test_openai_compatible_catalog_loads_and_normalizes_models(self) -> None:
         self.assertEqual(
@@ -196,8 +329,108 @@ class ModelSettingsTests(unittest.TestCase):
             "vector_data_type": "float32",
             "normalization": "l2",
         })
-        self.assertIsNotNone(fingerprints[2])
-        self.assertNotEqual(fingerprints[0], fingerprints[2])
+        self.assertIsNone(fingerprints[2])
+
+        now = datetime.now(UTC)
+        workspace_id = uuid4()
+        provider_id = uuid4()
+        provider_revision_id = uuid4()
+        profile_id = uuid4()
+        profile_revision_id = uuid4()
+        provider = ModelProvider(
+            id=provider_id,
+            workspace_id=workspace_id,
+            name="Provider",
+            enabled=True,
+            created_at=now,
+            updated_at=now,
+        )
+        provider_revision = ModelProviderRevision(
+            id=provider_revision_id,
+            workspace_id=workspace_id,
+            provider_id=provider_id,
+            revision=1,
+            protocol=ModelProviderProtocol.OPENAI_COMPATIBLE,
+            base_url="https://provider.invalid/v1",
+            secret_reference="secret-reference",
+            timeout_seconds=30,
+            max_retries=2,
+            max_concurrency=2,
+            configuration_fingerprint="sha256:provider",
+            created_at=now,
+        )
+        profile = ModelProfile(
+            id=profile_id,
+            workspace_id=workspace_id,
+            provider_id=provider_id,
+            name="Embedding",
+            kind=ModelKind.TEXT_EMBEDDING,
+            enabled=True,
+            created_at=now,
+            updated_at=now,
+        )
+        revision = ModelProfileRevision(
+            id=profile_revision_id,
+            workspace_id=workspace_id,
+            profile_id=profile_id,
+            provider_revision_id=provider_revision_id,
+            revision=1,
+            model="embed-a",
+            configuration={"type": "embedding", "dimension": 724},
+            configuration_fingerprint="sha256:profile",
+            capability_fingerprint="sha256:unverified",
+            compatibility_fingerprint=None,
+            validation_status=ModelValidationStatus.UNVERIFIED,
+            validation_error_code=None,
+            validation_snapshot=None,
+            validated_at=None,
+            created_at=now,
+        )
+        bundle = ModelProfileBundle(
+            profile=profile,
+            current_revision=revision,
+            provider=provider,
+            provider_revision=provider_revision,
+        )
+        snapshot_724 = EmbeddingValidationSnapshot(
+            provider_supported_dimensions=None,
+            verified_dimensions=(724,),
+            provider_default_dimension=None,
+            recommended_dimension=None,
+            selected_dimension=724,
+            selection_source=EmbeddingDimensionSelectionSource.USER_PROBE,
+            dimension_request_mode=EmbeddingDimensionRequestMode.EXPLICIT,
+            input_capabilities=(
+                EmbeddingInputCapability.TEXT_DOCUMENT,
+                EmbeddingInputCapability.TEXT_QUERY,
+            ),
+            shared_text_image_space_confirmed=False,
+        )
+        capability = embedding_capability_fingerprint(snapshot_724)
+        compatibility = embedding_compatibility_fingerprint(bundle, snapshot_724)
+        self.assertEqual(
+            capability,
+            embedding_capability_fingerprint(snapshot_724),
+        )
+        self.assertEqual(
+            compatibility,
+            embedding_compatibility_fingerprint(bundle, snapshot_724),
+        )
+        snapshot_2048 = EmbeddingValidationSnapshot(
+            provider_supported_dimensions=None,
+            verified_dimensions=(2048,),
+            provider_default_dimension=None,
+            recommended_dimension=None,
+            selected_dimension=2048,
+            selection_source=EmbeddingDimensionSelectionSource.USER_PROBE,
+            dimension_request_mode=EmbeddingDimensionRequestMode.EXPLICIT,
+            input_capabilities=snapshot_724.input_capabilities,
+            shared_text_image_space_confirmed=False,
+        )
+        self.assertNotEqual(
+            compatibility,
+            embedding_compatibility_fingerprint(bundle, snapshot_2048),
+        )
 
     def test_routing_adapter_caches_revision_models_and_preserves_legacy(self) -> None:
         async def scenario() -> None:

@@ -155,9 +155,11 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
                       WHERE serving_status = 'serving') AS serving,
                     (SELECT count(*) FROM indexing_job WHERE status = 'completed') AS completed_jobs,
                     (SELECT count(*) FROM index_chunk) AS chunks,
-                    (SELECT count(*) FROM vector_record_1024) AS vectors,
-                    (SELECT bool_and(vector_dims(embedding) = 1024)
-                       FROM vector_record_1024) AS dimensions_valid
+                    (SELECT count(*) FROM vector_record) AS vectors,
+                    (SELECT bool_and(
+                         vector_dims(embedding) = embedding_dimension
+                         AND embedding_dimension = 1024)
+                       FROM vector_record) AS dimensions_valid
                 """
             )
         finally:
@@ -202,7 +204,7 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
                       WHERE indexed_document_version_id = $1) AS plans,
                     (SELECT count(*) FROM index_chunk
                       WHERE indexed_document_version_id = $1) AS chunks,
-                    (SELECT count(*) FROM vector_record_1024 vector
+                    (SELECT count(*) FROM vector_record vector
                       JOIN index_chunk chunk ON chunk.id = vector.index_chunk_id
                      WHERE chunk.indexed_document_version_id = $1) AS vectors
                 """,
@@ -306,7 +308,7 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
                        vector.embedding_space_id,
                        vector.representation_kind
                   FROM index_chunk chunk
-                  JOIN vector_record_1024 vector
+                  JOIN vector_record vector
                     ON vector.index_chunk_id = chunk.id
                  WHERE chunk.indexed_document_version_id = $1
                  ORDER BY chunk.ordinal
@@ -339,6 +341,7 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
             id=row["vector_id"],
             index_chunk_id=row["id"],
             embedding_space_id=row["embedding_space_id"],
+            embedding_dimension=1024,
             representation_kind=row["representation_kind"],
             embedding=drifted,
         )
@@ -357,7 +360,7 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
         connection = await asyncpg.connect(MIGRATION_DSN)
         try:
             stored = await connection.fetchval(
-                "SELECT embedding::text FROM vector_record_1024 WHERE id = $1",
+                "SELECT embedding::text FROM vector_record WHERE id = $1",
                 row["vector_id"],
             )
         finally:
@@ -1264,7 +1267,7 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
                        job.error_code,
                        (SELECT count(*) FROM index_chunk c
                          WHERE c.indexed_document_version_id = idv.id),
-                       (SELECT count(*) FROM vector_record_1024 v
+                       (SELECT count(*) FROM vector_record v
                          JOIN index_chunk c ON c.id = v.index_chunk_id
                         WHERE c.indexed_document_version_id = idv.id)
                   FROM indexed_document_version idv

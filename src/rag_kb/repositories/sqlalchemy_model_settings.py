@@ -18,6 +18,7 @@ from rag_kb.db.models import (
     ModelSelection as ModelSelectionRow,
 )
 from rag_kb.domain import (
+    EmbeddingValidationSnapshot,
     ModelKind,
     ModelProfile,
     ModelProfileBundle,
@@ -253,6 +254,7 @@ class SqlAlchemyModelSettingsRepository:
             compatibility_fingerprint=compatibility_fingerprint,
             validation_status=validation_status.value,
             validation_error_code=None,
+            validation_snapshot=None,
             validated_at=None,
         )
         self._session.add(revision)
@@ -329,6 +331,7 @@ class SqlAlchemyModelSettingsRepository:
                     else ModelValidationStatus.UNVERIFIED.value
                 ),
                 validation_error_code=None,
+                validation_snapshot=None,
                 validated_at=None,
             )
             self._session.add(current)
@@ -342,6 +345,9 @@ class SqlAlchemyModelSettingsRepository:
         *,
         status: ModelValidationStatus,
         error_code: str | None,
+        validation_snapshot: EmbeddingValidationSnapshot | None,
+        capability_fingerprint: str | None,
+        compatibility_fingerprint: str | None,
     ) -> ModelProfileBundle | None:
         self._ensure_active()
         revision = await self._session.scalar(
@@ -356,6 +362,12 @@ class SqlAlchemyModelSettingsRepository:
             return None
         revision.validation_status = status.value
         revision.validation_error_code = error_code
+        revision.validation_snapshot = (
+            validation_snapshot.as_dict() if validation_snapshot is not None else None
+        )
+        if capability_fingerprint is not None:
+            revision.capability_fingerprint = capability_fingerprint
+        revision.compatibility_fingerprint = compatibility_fingerprint
         revision.validated_at = datetime.now(UTC)
         await self._session.flush()
         profile = await self._session.scalar(
@@ -371,9 +383,13 @@ class SqlAlchemyModelSettingsRepository:
         self._ensure_active()
         row = await self._session.get(ModelSelectionRow, self._workspace_id)
         if row is None:
-            row = ModelSelectionRow(workspace_id=self._workspace_id)
-            self._session.add(row)
-            await self._session.flush()
+            return ModelSelection(
+                workspace_id=self._workspace_id,
+                chat_profile_revision_id=None,
+                text_embedding_profile_revision_id=None,
+                multimodal_embedding_profile_revision_id=None,
+                updated_at=datetime.now(UTC),
+            )
         return _selection(row)
 
     async def update_selection(
@@ -526,6 +542,11 @@ def _profile_revision(row: ModelProfileRevisionRow) -> ModelProfileRevision:
         compatibility_fingerprint=row.compatibility_fingerprint,
         validation_status=ModelValidationStatus(row.validation_status),
         validation_error_code=row.validation_error_code,
+        validation_snapshot=(
+            EmbeddingValidationSnapshot.from_mapping(row.validation_snapshot)
+            if row.validation_snapshot is not None
+            else None
+        ),
         validated_at=row.validated_at,
         created_at=row.created_at,
     )

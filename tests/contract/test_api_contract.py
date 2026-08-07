@@ -62,12 +62,14 @@ from rag_kb.domain import (
     DocumentVersion,
     Evidence,
     EvidencePack,
+    EmbeddingRoleSummary,
     FileAdmissionError,
     IdempotencyKeyReusedError,
     IdempotencyScope,
     InsufficiencyPolicy,
     IndexingJobSnapshot,
     KnowledgeBase,
+    KnowledgeBaseEmbeddingSummary,
     Page,
     QueryContextStatus,
     QueryRewriteSource,
@@ -94,7 +96,13 @@ from rag_kb.services.chat_delivery import (
     ChatSseConnectionLimiter,
     ChatTerminalWatcher,
 )
-from rag_kb.schemas import CursorPayload, ErrorCode, PaginationQuery
+from rag_kb.schemas import (
+    CursorPayload,
+    ErrorCode,
+    KnowledgeBaseCreate,
+    ModelProfileCreate,
+    PaginationQuery,
+)
 from rag_kb.retrieval.profile import exact_profile
 
 
@@ -768,6 +776,56 @@ class ApiContractTests(unittest.IsolatedAsyncioTestCase):
 
 
 class CommonContractTests(unittest.TestCase):
+    def test_flexible_embedding_requests_are_discriminated_and_bounded(self) -> None:
+        provider_id = uuid4()
+        for dimension in ("auto", 64, 724, 4096):
+            profile = ModelProfileCreate.model_validate(
+                {
+                    "provider_id": str(provider_id),
+                    "name": "Embedding",
+                    "kind": "text_embedding",
+                    "model": "embedding-model",
+                    "parameters": {
+                        "type": "embedding",
+                        "dimension": dimension,
+                    },
+                }
+            )
+            self.assertEqual(profile.parameters.dimension, dimension)
+        for dimension in (63, 4097):
+            with self.assertRaises(ValidationError):
+                ModelProfileCreate.model_validate(
+                    {
+                        "provider_id": str(provider_id),
+                        "name": "Embedding",
+                        "kind": "text_embedding",
+                        "model": "embedding-model",
+                        "parameters": {
+                            "type": "embedding",
+                            "dimension": dimension,
+                        },
+                    }
+                )
+
+        unified = KnowledgeBaseCreate.model_validate(
+            {
+                "name": "Unified",
+                "parsing": {"preset": "multimodal_local_v2"},
+                "embedding": {
+                    "strategy": "unified_multimodal",
+                    "profile_revision_id": str(uuid4()),
+                },
+            }
+        )
+        self.assertEqual(unified.embedding.strategy, "unified_multimodal")
+        with self.assertRaises(ValidationError):
+            KnowledgeBaseCreate.model_validate(
+                {
+                    "name": "Invalid",
+                    "embedding": {"strategy": "dual_space"},
+                }
+            )
+
     def test_pagination_bounds_and_sort_shape(self) -> None:
         self.assertEqual(PaginationQuery().limit, 50)
         self.assertEqual(PaginationQuery(limit=100, sort="-created_at").limit, 100)
@@ -1024,8 +1082,9 @@ class _FakeKnowledgeBaseService:
         chunking_preset,
         retrieval_defaults,
         answer_policy_defaults,
+        embedding_selection=None,
     ):
-        del context, key
+        del context, key, embedding_selection
         from rag_kb.document_processing.profiles import profile_for_preset
 
         self.value = dataclass_replace(
@@ -2391,6 +2450,16 @@ def _knowledge_base_value() -> KnowledgeBase:
         provisioned_at=now,
         created_at=now,
         updated_at=now,
+        embedding=KnowledgeBaseEmbeddingSummary(
+            strategy="text_only",
+            text=EmbeddingRoleSummary(
+                embedding_space_id=UUID(
+                    "01900000-0000-7000-8000-000000000013"
+                ),
+                profile_revision_id=None,
+                dimension=1024,
+            ),
+        ),
     )
 
 

@@ -9,6 +9,9 @@ from uuid import UUID
 from pydantic import AnyHttpUrl, Field, SecretStr, field_validator, model_validator
 
 from rag_kb.domain import (
+    EmbeddingDimensionRequestMode,
+    EmbeddingDimensionSelectionSource,
+    EmbeddingInputCapability,
     ModelKind,
     ModelProviderProtocol,
     ModelValidationStatus,
@@ -71,11 +74,9 @@ class ChatModelParameters(PublicSchema):
 
 class EmbeddingModelParameters(PublicSchema):
     type: Literal["embedding"] = "embedding"
-    dimension: Literal[768, 1024]
+    dimension: Literal["auto"] | Annotated[int, Field(ge=64, le=4096)] = "auto"
     max_batch_size: Annotated[int, Field(ge=1, le=100)] = 10
-    distance_metric: Literal["cosine"] = "cosine"
-    vector_data_type: Literal["float32"] = "float32"
-    normalization: Literal["l2"] = "l2"
+    shared_text_image_space_confirmed: bool = False
 
 
 ModelParameters = ChatModelParameters | EmbeddingModelParameters
@@ -103,14 +104,12 @@ class ModelProfileCreate(PublicSchema):
             self.parameters, EmbeddingModelParameters
         ):
             raise ValueError("embedding models require embedding parameters")
-        expected_dimension = (
-            1024 if self.kind is ModelKind.TEXT_EMBEDDING else 768
-        )
         if (
-            isinstance(self.parameters, EmbeddingModelParameters)
-            and self.parameters.dimension != expected_dimension
+            self.kind is ModelKind.TEXT_EMBEDDING
+            and isinstance(self.parameters, EmbeddingModelParameters)
+            and self.parameters.shared_text_image_space_confirmed
         ):
-            raise ValueError("embedding dimension does not match model kind")
+            raise ValueError("text embedding models cannot confirm a shared image space")
         return self
 
 
@@ -150,6 +149,22 @@ class ModelProviderResponse(PublicSchema):
     updated_at: datetime
 
 
+class EmbeddingValidationResponse(PublicSchema):
+    schema_version: Literal["embedding_validation_v1"]
+    provider_supported_dimensions: tuple[int, ...] | None
+    verified_dimensions: tuple[int, ...]
+    provider_default_dimension: int | None
+    recommended_dimension: int | None
+    selected_dimension: Annotated[int, Field(ge=64, le=4096)]
+    selection_source: EmbeddingDimensionSelectionSource
+    dimension_request_mode: EmbeddingDimensionRequestMode
+    input_capabilities: tuple[EmbeddingInputCapability, ...]
+    shared_text_image_space_confirmed: bool
+    distance_metric: Literal["cosine"]
+    vector_data_type: Literal["float32"]
+    normalization: Literal["l2", "client_l2_v1"]
+
+
 class ModelProfileResponse(PublicSchema):
     id: UUID
     revision_id: UUID
@@ -167,6 +182,7 @@ class ModelProfileResponse(PublicSchema):
     configuration_fingerprint: str
     capability_fingerprint: str
     compatibility_fingerprint: str | None
+    embedding_validation: EmbeddingValidationResponse | None = None
     created_at: datetime
     updated_at: datetime
 

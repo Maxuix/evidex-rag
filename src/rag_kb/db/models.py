@@ -279,6 +279,12 @@ class ModelProfileRevision(Base):
             "AND pg_column_size(configuration) <= 65536",
             name="model_profile_revision_configuration_object",
         ),
+        CheckConstraint(
+            "validation_snapshot IS NULL OR "
+            "(jsonb_typeof(validation_snapshot) = 'object' "
+            "AND pg_column_size(validation_snapshot) <= 65536)",
+            name="model_profile_revision_validation_snapshot_object",
+        ),
     )
 
     id: Mapped[UUID] = uuid_primary_key()
@@ -301,6 +307,9 @@ class ModelProfileRevision(Base):
     )
     validation_status: Mapped[str] = mapped_column(String(32), nullable=False)
     validation_error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    validation_snapshot: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB(none_as_null=True), nullable=True
+    )
     validated_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -397,7 +406,16 @@ class EmbeddingSpace(Base):
     __table_args__ = (
         UniqueConstraint("compatibility_fingerprint"),
         UniqueConstraint("workspace_id", "id", name="uq_embedding_space_workspace_id"),
-        CheckConstraint("dimension > 0", name="embedding_space_dimension_positive"),
+        UniqueConstraint(
+            "workspace_id",
+            "id",
+            "dimension",
+            name="uq_embedding_space_workspace_id_dimension",
+        ),
+        CheckConstraint(
+            "dimension BETWEEN 64 AND 4096",
+            name="embedding_space_dimension_supported",
+        ),
     )
 
     id: Mapped[UUID] = uuid_primary_key()
@@ -1198,10 +1216,13 @@ class IndexChunkAssetRelation(Base):
 
 
 class VectorRecord(Base):
-    __tablename__ = "vector_record_1024"
+    __tablename__ = "vector_record"
     __table_args__ = (
         UniqueConstraint(
-            "index_chunk_id", "embedding_space_id", "representation_kind"
+            "index_chunk_id",
+            "embedding_space_id",
+            "representation_kind",
+            name="uq_vector_record_chunk_space_representation",
         ),
         ForeignKeyConstraint(
             ["kb_id", "index_chunk_id"],
@@ -1209,48 +1230,26 @@ class VectorRecord(Base):
             name="fk_vector_record_same_kb_chunk",
         ),
         ForeignKeyConstraint(
-            ["workspace_id", "embedding_space_id"],
-            ["embedding_space.workspace_id", "embedding_space.id"],
-            name="fk_vector_record_same_workspace_embedding",
+            ["workspace_id", "embedding_space_id", "embedding_dimension"],
+            [
+                "embedding_space.workspace_id",
+                "embedding_space.id",
+                "embedding_space.dimension",
+            ],
+            name="fk_vector_record_same_workspace_embedding_dimension",
         ),
-    )
-
-    id: Mapped[UUID] = uuid_primary_key()
-    workspace_id: Mapped[UUID] = mapped_column(
-        ForeignKey("workspace.id", ondelete="RESTRICT"), nullable=False, index=True
-    )
-    kb_id: Mapped[UUID] = mapped_column(
-        ForeignKey("knowledge_base.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    index_chunk_id: Mapped[UUID] = mapped_column(
-        PostgreSQLUUID(as_uuid=True), nullable=False
-    )
-    embedding_space_id: Mapped[UUID] = mapped_column(
-        PostgreSQLUUID(as_uuid=True), nullable=False, index=True
-    )
-    representation_kind: Mapped[str] = mapped_column(String(64), nullable=False)
-    embedding: Mapped[list[float]] = mapped_column(Vector(1024), nullable=False)
-    created_at: Mapped[datetime] = created_timestamp()
-
-
-class VectorRecord768(Base):
-    __tablename__ = "vector_record_768"
-    __table_args__ = (
-        UniqueConstraint(
-            "index_chunk_id",
+        CheckConstraint(
+            "embedding_dimension BETWEEN 64 AND 4096",
+            name="vector_record_dimension_supported",
+        ),
+        CheckConstraint(
+            "vector_dims(embedding) = embedding_dimension",
+            name="vector_record_dimension_matches_value",
+        ),
+        Index(
+            "ix_vector_record_space_representation",
             "embedding_space_id",
             "representation_kind",
-            name="uq_vector_record_768_chunk_space_representation",
-        ),
-        ForeignKeyConstraint(
-            ["kb_id", "index_chunk_id"],
-            ["index_chunk.kb_id", "index_chunk.id"],
-            name="fk_vector_record_768_same_kb_chunk",
-        ),
-        ForeignKeyConstraint(
-            ["workspace_id", "embedding_space_id"],
-            ["embedding_space.workspace_id", "embedding_space.id"],
-            name="fk_vector_record_768_same_workspace_embedding",
         ),
     )
 
@@ -1265,10 +1264,11 @@ class VectorRecord768(Base):
         PostgreSQLUUID(as_uuid=True), nullable=False
     )
     embedding_space_id: Mapped[UUID] = mapped_column(
-        PostgreSQLUUID(as_uuid=True), nullable=False, index=True
+        PostgreSQLUUID(as_uuid=True), nullable=False
     )
+    embedding_dimension: Mapped[int] = mapped_column(Integer, nullable=False)
     representation_kind: Mapped[str] = mapped_column(String(64), nullable=False)
-    embedding: Mapped[list[float]] = mapped_column(Vector(768), nullable=False)
+    embedding: Mapped[list[float]] = mapped_column(Vector(), nullable=False)
     created_at: Mapped[datetime] = created_timestamp()
 
 
