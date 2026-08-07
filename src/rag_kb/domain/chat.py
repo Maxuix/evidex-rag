@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from typing import Any
 from uuid import UUID
+
+from rag_kb.domain.chat_workflow import ChatWorkflowMode, initial_chat_workflow
 
 
 class AnswerStyle(StrEnum):
@@ -244,3 +246,13 @@ class ChatRun:
     conversation_context: dict[str, Any]
     contextualized_query: dict[str, Any] | None = None
     final_llm_context: dict[str, Any] | None = None
+    workflow_configuration: dict[str, Any] = field(
+        default_factory=lambda: initial_chat_workflow(ChatWorkflowMode.SIMPLE)[
+            0
+        ].as_dict()
+    )
+    workflow_state: dict[str, Any] = field(
+        default_factory=lambda: initial_chat_workflow(ChatWorkflowMode.SIMPLE)[
+            1
+        ].as_dict()
+    )

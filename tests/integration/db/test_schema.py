@@ -153,9 +153,48 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
                     "UPDATE alembic_version SET version_num = 'runtime-mutation'"
                 )
             revision = await runtime.fetchval("SELECT version_num FROM alembic_version")
-            self.assertEqual(revision, "0001_current_only_baseline")
+            self.assertEqual(revision, "0003_model_settings")
         finally:
             await runtime.close()
+
+    async def test_chat_workflow_migration_has_bounded_simple_defaults(self) -> None:
+        connection = await asyncpg.connect(MIGRATION_DSN)
+        try:
+            columns = await connection.fetch(
+                """
+                SELECT column_name, is_nullable, column_default
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'chat_run'
+                  AND column_name IN ('workflow_configuration', 'workflow_state')
+                ORDER BY column_name
+                """
+            )
+            constraints = await connection.fetch(
+                """
+                SELECT conname, pg_get_constraintdef(oid) AS definition
+                FROM pg_constraint
+                WHERE conrelid = 'public.chat_run'::regclass
+                  AND conname IN (
+                    'ck_chat_run_workflow_configuration_v1',
+                    'ck_chat_run_workflow_state_v1'
+                  )
+                ORDER BY conname
+                """
+            )
+        finally:
+            await connection.close()
+
+        self.assertEqual(
+            [row["column_name"] for row in columns],
+            ["workflow_configuration", "workflow_state"],
+        )
+        self.assertTrue(all(row["is_nullable"] == "NO" for row in columns))
+        self.assertTrue(all("chat_workflow_v1" in row["column_default"] for row in columns))
+        self.assertEqual(len(constraints), 2)
+        self.assertTrue(
+            all("pg_column_size" in row["definition"] for row in constraints)
+        )
 
     async def test_same_kb_selector_and_deferred_active_rule(self) -> None:
         connection = await asyncpg.connect(MIGRATION_DSN)

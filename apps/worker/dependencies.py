@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 import os
 from pathlib import Path
@@ -13,15 +14,22 @@ from rag_kb.adapters.file_store.local import LocalFileStore
 from rag_kb.adapters.chat_preview.pg_notify import PgNotifyPreviewSink
 from rag_kb.adapters.lexical_store.postgres import PgLexicalStore
 from rag_kb.adapters.model_api.langchain_chat import LangChainChatModelAdapter
+from rag_kb.adapters.model_api.routing_chat import RoutingChatModelAdapter
+from rag_kb.adapters.model_api.unconfigured import (
+    UnconfiguredChatModelAdapter,
+    UnconfiguredEmbeddingModelAdapter,
+)
 from rag_kb.adapters.model_api.langchain_embeddings import (
     LangChainEmbeddingModelAdapter,
 )
 from rag_kb.adapters.model_api.multimodal_embeddings import (
     TongyiVisionEmbeddingAdapter,
 )
+from rag_kb.adapters.model_secrets.local import LocalModelSecretStore
 from rag_kb.adapters.parser.docling.parser import DoclingParser
 from rag_kb.adapters.vector_store.pgvector import PgVectorStore
 from rag_kb.answering.pipeline_steps import (
+    AdaptiveEvidenceAssessmentStep,
     AnswerGenerationStep,
     CosineEvidenceAssessmentStep,
 )
@@ -39,11 +47,20 @@ from rag_kb.db import (
     check_database_ready,
     create_database_resources,
 )
-from rag_kb.domain import ParserLimits
+from rag_kb.domain import (
+    ChatModelExecutionError,
+    ErrorCode,
+    EmbeddingSpaceDefinition,
+    ModelKind,
+    ModelValidationStatus,
+    ParserLimits,
+)
 from rag_kb.indexing.pipeline import IndexingPipeline
 from rag_kb.memory import ConversationContextSelector, SessionQueryContextualizer
 from rag_kb.ports.model_api import ChatModelAdapter, EmbeddingModelAdapter
 from rag_kb.retrieval.service import RetrievalService
+from rag_kb.retrieval.agent import RetrievalAgentService
+from rag_kb.retrieval.router import AutoWorkflowRouter
 from rag_kb.scheduling.chat import ChatRunScheduler
 from rag_kb.scheduling.indexing import IndexingJobScheduler, RetryPolicy
 from rag_kb.services.assets import IndexAssetService
@@ -52,6 +69,7 @@ from rag_kb.services.chat_execution import (
     ChatContextualizedQueryStore,
     ChatExecutionContextLoader,
     ChatRunCoordinator,
+    ChatWorkflowStateStore,
 )
 from rag_kb.services.chat_terminal import (
     ChatFailureSettlementService,
@@ -62,8 +80,10 @@ from rag_kb.services.composite_evidence import CompositeEvidenceHydrationService
 from rag_kb.services.content import (
     build_content_services,
     embedding_space_definition,
+    unconfigured_embedding_space_definition,
 )
 from rag_kb.services.files import FileReconciliationService
+from rag_kb.uow import UnitOfWork, UnitOfWorkPurpose, execute_in_transaction
 from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWorkFactory
 from rag_kb.workflows.contracts import GraphRunner
 from rag_kb.workflows.langgraph_runner import LangGraphRunner
@@ -92,6 +112,9 @@ class WorkerDependencies:
     query_contextualizer: SessionQueryContextualizer
     session_context_selector: ConversationContextSelector
     evidence_assessor: CosineEvidenceAssessmentStep
+    adaptive_evidence_assessor: AdaptiveEvidenceAssessmentStep
+    retrieval_agent: RetrievalAgentService
+    workflow_router: AutoWorkflowRouter
     visual_evidence_preparer: VisualEvidencePreparationStep
     answer_generator: AnswerGenerationStep
     structure_validator: AnswerStructureValidationStep
@@ -152,11 +175,16 @@ def build_worker_dependencies(
         database.sessions,
         identity.workspace_id,
     )
+    legacy_models = resolved_settings.model_provider
+    embedding_settings = legacy_models.embedding if legacy_models is not None else None
+    multimodal_settings = (
+        legacy_models.multimodal_embedding if legacy_models is not None else None
+    )
     content_services = build_content_services(
         unit_of_work,
         access_policy,
-        resolved_settings.model_provider.embedding,
-        resolved_settings.model_provider.multimodal_embedding,
+        embedding_settings,
+        multimodal_settings,
     )
     file_store = LocalFileStore(
         resolved_settings.file_store.staging_path,
@@ -170,18 +198,24 @@ def build_worker_dependencies(
             resolved_settings.parser.docling_artifact_manifest_path
         ),
     )
-    embedding_settings = resolved_settings.model_provider.embedding
-    embedding_space = embedding_space_definition(embedding_settings)
-    embedding_provider = LangChainEmbeddingModelAdapter(
-        base_url=str(embedding_settings.base_url),
-        api_key=embedding_settings.api_key.get_secret_value(),
-        embedding_space=embedding_space,
-        max_batch_size=embedding_settings.max_batch_size,
-        timeout_seconds=embedding_settings.timeout_seconds,
-        max_retries=embedding_settings.max_retries,
-        max_concurrency=embedding_settings.max_concurrency,
+    embedding_space = (
+        embedding_space_definition(embedding_settings)
+        if embedding_settings is not None
+        else unconfigured_embedding_space_definition()
     )
-    multimodal_settings = resolved_settings.model_provider.multimodal_embedding
+    embedding_provider: EmbeddingModelAdapter = (
+        LangChainEmbeddingModelAdapter(
+            base_url=str(embedding_settings.base_url),
+            api_key=embedding_settings.api_key.get_secret_value(),
+            embedding_space=embedding_space,
+            max_batch_size=embedding_settings.max_batch_size,
+            timeout_seconds=embedding_settings.timeout_seconds,
+            max_retries=embedding_settings.max_retries,
+            max_concurrency=embedding_settings.max_concurrency,
+        )
+        if embedding_settings is not None
+        else UnconfiguredEmbeddingModelAdapter(embedding_space)
+    )
     multimodal_embedding_provider = None
     asset_store = None
     if multimodal_settings is not None:
@@ -202,24 +236,32 @@ def build_worker_dependencies(
             resolved_settings.file_store.asset_staging_path,
             resolved_settings.file_store.asset_final_path,
         )
-    chat_settings = resolved_settings.model_provider.chat
-    chat_adapter_arguments = {
-        "base_url": str(chat_settings.base_url),
-        "api_key": chat_settings.api_key.get_secret_value(),
-        "model": chat_settings.model,
-        "timeout_seconds": chat_settings.timeout_seconds,
-        "max_retries": chat_settings.max_retries,
-        "max_concurrency": chat_settings.max_concurrency,
-        "temperature": chat_settings.temperature,
-        "max_tokens": chat_settings.max_tokens,
-        "thinking_enabled": chat_settings.thinking_enabled,
-        "max_visual_images": chat_settings.max_visual_images,
-        "max_visual_image_bytes": chat_settings.max_visual_image_bytes,
-        "max_visual_total_bytes": chat_settings.max_visual_total_bytes,
-    }
-    chat_model_adapter = LangChainChatModelAdapter(
-        **chat_adapter_arguments,
-        structured_output_mode=chat_settings.structured_output_mode,
+    chat_settings = legacy_models.chat if legacy_models is not None else None
+    legacy_chat_model_adapter: ChatModelAdapter = (
+        LangChainChatModelAdapter(
+            base_url=str(chat_settings.base_url),
+            api_key=chat_settings.api_key.get_secret_value(),
+            model=chat_settings.model,
+            timeout_seconds=chat_settings.timeout_seconds,
+            max_retries=chat_settings.max_retries,
+            max_concurrency=chat_settings.max_concurrency,
+            temperature=chat_settings.temperature,
+            max_tokens=chat_settings.max_tokens,
+            thinking_enabled=chat_settings.thinking_enabled,
+            max_visual_images=chat_settings.max_visual_images,
+            max_visual_image_bytes=chat_settings.max_visual_image_bytes,
+            max_visual_total_bytes=chat_settings.max_visual_total_bytes,
+            structured_output_mode=chat_settings.structured_output_mode,
+        )
+        if chat_settings is not None
+        else UnconfiguredChatModelAdapter()
+    )
+    model_secret_store = LocalModelSecretStore(
+        resolved_settings.model_secrets.root_path
+    )
+    chat_model_adapter = RoutingChatModelAdapter(
+        _chat_model_loader(unit_of_work, model_secret_store),
+        legacy_fallback=legacy_chat_model_adapter,
     )
     indexing_pipeline = IndexingPipeline(
         unit_of_work,
@@ -230,6 +272,12 @@ def build_worker_dependencies(
         asset_store=asset_store,
         multimodal_embedding_provider=multimodal_embedding_provider,
         parser_limits=parser_limits,
+        embedding_model_resolver=_embedding_model_loader(
+            unit_of_work, model_secret_store
+        ),
+        multimodal_embedding_model_resolver=_multimodal_model_loader(
+            unit_of_work, model_secret_store
+        ),
     )
     poller = resolved_settings.job_poller
     resolved_worker_id = worker_id or _worker_id()
@@ -285,6 +333,12 @@ def build_worker_dependencies(
         min_rerank_score=resolved_settings.retrieval.min_rerank_score,
         relation_hydrator=CompositeEvidenceHydrationService(unit_of_work),
         deadline_seconds=resolved_settings.retrieval.deadline_seconds,
+        embedding_model_resolver=_embedding_model_loader(
+            unit_of_work, model_secret_store
+        ),
+        multimodal_embedding_model_resolver=_multimodal_model_loader(
+            unit_of_work, model_secret_store
+        ),
     )
     evidence_assessor = CosineEvidenceAssessmentStep(
         resolved_settings.retrieval.min_cosine_similarity,
@@ -298,10 +352,10 @@ def build_worker_dependencies(
     )
     visual_evidence_preparer = VisualEvidencePreparationStep(
         index_asset_service,
-        max_images=chat_settings.max_visual_images,
-        max_image_bytes=chat_settings.max_visual_image_bytes,
-        max_total_bytes=chat_settings.max_visual_total_bytes,
-        max_pixels=chat_settings.max_visual_pixels,
+        max_images=(chat_settings.max_visual_images if chat_settings else 2),
+        max_image_bytes=(chat_settings.max_visual_image_bytes if chat_settings else 5_242_880),
+        max_total_bytes=(chat_settings.max_visual_total_bytes if chat_settings else 12_582_912),
+        max_pixels=(chat_settings.max_visual_pixels if chat_settings else 16_000_000),
     )
     chat_delivery = resolved_settings.chat_delivery
     chat_preview_sink = (
@@ -337,6 +391,25 @@ def build_worker_dependencies(
     )
     session_context_selector = ConversationContextSelector()
     evidence_retriever = ChatEvidenceRetriever(retrieval_service)
+    adaptive_evidence_assessor = AdaptiveEvidenceAssessmentStep(
+        resolved_settings.retrieval.min_cosine_similarity,
+        resolved_settings.retrieval.min_rerank_score,
+        resolved_settings.retrieval.cross_modal_min_cosine_similarity,
+    )
+    retrieval_agent = RetrievalAgentService(
+        chat_model_adapter,
+        evidence_retriever,
+        min_cosine_similarity=resolved_settings.retrieval.min_cosine_similarity,
+        min_rerank_score=resolved_settings.retrieval.min_rerank_score,
+        cross_modal_min_cosine_similarity=(
+            resolved_settings.retrieval.cross_modal_min_cosine_similarity
+        ),
+    )
+    workflow_router = AutoWorkflowRouter(
+        chat_model_adapter,
+        evidence_retriever,
+        ChatWorkflowStateStore(unit_of_work),
+    )
     chat_runner = LangGraphRunner(
         context_loader,
         evidence_retriever,
@@ -346,6 +419,10 @@ def build_worker_dependencies(
         result_persister,
         visual_evidence_preparer=visual_evidence_preparer,
         query_contextualizer=query_contextualizer,
+        retrieval_agent=retrieval_agent,
+        workflow_router=workflow_router,
+        adaptive_evidence_assessor=adaptive_evidence_assessor,
+        progress_sink=chat_preview_sink,
         deadline_seconds=poller.chat_deadline_seconds,
     )
     chat_scheduler = ChatRunScheduler(
@@ -403,6 +480,9 @@ def build_worker_dependencies(
         query_contextualizer=query_contextualizer,
         session_context_selector=session_context_selector,
         evidence_assessor=evidence_assessor,
+        adaptive_evidence_assessor=adaptive_evidence_assessor,
+        retrieval_agent=retrieval_agent,
+        workflow_router=workflow_router,
         visual_evidence_preparer=visual_evidence_preparer,
         answer_generator=answer_generator,
         structure_validator=structure_validator,
@@ -418,3 +498,154 @@ def build_worker_dependencies(
 
 def _worker_id() -> str:
     return f"{socket.gethostname()}:{os.getpid()}:{uuid4().hex}"
+
+
+def _chat_model_loader(
+    unit_of_work: SqlAlchemyUnitOfWorkFactory,
+    secret_store: LocalModelSecretStore,
+):
+    async def load(revision_id):
+        async def resolve(uow: UnitOfWork):
+            bundle = await uow.model_settings.get_profile_revision(revision_id)
+            if bundle is None:
+                raise ChatModelExecutionError(
+                    ErrorCode.CHAT_PROVIDER_UNAVAILABLE,
+                    diagnostic={"check": "model_profile_revision"},
+                )
+            if (
+                bundle.profile.kind is not ModelKind.CHAT
+                or not bundle.profile.enabled
+                or not bundle.provider.enabled
+                or bundle.current_revision.validation_status
+                is not ModelValidationStatus.VALID
+            ):
+                raise ChatModelExecutionError(
+                    ErrorCode.CHAT_PROVIDER_UNAVAILABLE,
+                    diagnostic={"check": "model_profile_state"},
+                )
+            return bundle
+
+        bundle = await execute_in_transaction(
+            unit_of_work,
+            resolve,
+            purpose=UnitOfWorkPurpose.REQUEST,
+        )
+        try:
+            api_key = await asyncio.to_thread(
+                secret_store.read,
+                bundle.provider_revision.secret_reference,
+            )
+        except (OSError, ValueError) as error:
+            raise ChatModelExecutionError(
+                ErrorCode.CHAT_PROVIDER_UNAVAILABLE,
+                diagnostic={"check": "model_provider_secret"},
+            ) from error
+        parameters = dict(bundle.current_revision.configuration)
+        return LangChainChatModelAdapter(
+            base_url=bundle.provider_revision.base_url,
+            api_key=api_key,
+            model=bundle.current_revision.model,
+            timeout_seconds=bundle.provider_revision.timeout_seconds,
+            max_retries=bundle.provider_revision.max_retries,
+            max_concurrency=bundle.provider_revision.max_concurrency,
+            temperature=parameters.get("temperature", 0.2),
+            top_p=parameters.get("top_p", 0.9),
+            sampling_top_k=parameters.get("sampling_top_k", 40),
+            max_tokens=parameters.get("max_output_tokens", 4096),
+            structured_output_mode=parameters.get(
+                "structured_output_mode", "json_object"
+            ),
+            reasoning_effort=parameters.get("reasoning_effort", "off"),
+            thinking_enabled=parameters.get("reasoning_effort", "off") != "off",
+        )
+
+    return load
+
+
+async def _embedding_bundle(
+    unit_of_work: SqlAlchemyUnitOfWorkFactory,
+    space: EmbeddingSpaceDefinition,
+    kind: ModelKind,
+):
+    revision_id = space.model_profile_revision_id
+    if revision_id is None:
+        raise ValueError("embedding space has no model profile revision")
+
+    async def resolve(uow: UnitOfWork):
+        bundle = await uow.model_settings.get_profile_revision(revision_id)
+        if (
+            bundle is None
+            or bundle.profile.kind is not kind
+            or not bundle.profile.enabled
+            or not bundle.provider.enabled
+            or bundle.current_revision.validation_status
+            is not ModelValidationStatus.VALID
+            or bundle.current_revision.compatibility_fingerprint
+            != space.compatibility_fingerprint
+        ):
+            raise ValueError("embedding model profile is unavailable")
+        return bundle
+
+    return await execute_in_transaction(
+        unit_of_work,
+        resolve,
+        purpose=UnitOfWorkPurpose.REQUEST,
+    )
+
+
+def _embedding_model_loader(unit_of_work, secret_store):
+    cache = {}
+
+    async def load(space):
+        revision_id = space.model_profile_revision_id
+        if revision_id in cache:
+            return cache[revision_id]
+        bundle = await _embedding_bundle(
+            unit_of_work, space, ModelKind.TEXT_EMBEDDING
+        )
+        key = await asyncio.to_thread(
+            secret_store.read, bundle.provider_revision.secret_reference
+        )
+        parameters = bundle.current_revision.configuration
+        adapter = LangChainEmbeddingModelAdapter(
+            base_url=bundle.provider_revision.base_url,
+            api_key=key,
+            embedding_space=space,
+            max_batch_size=parameters["max_batch_size"],
+            timeout_seconds=bundle.provider_revision.timeout_seconds,
+            max_retries=bundle.provider_revision.max_retries,
+            max_concurrency=bundle.provider_revision.max_concurrency,
+        )
+        cache[revision_id] = adapter
+        return adapter
+
+    return load
+
+
+def _multimodal_model_loader(unit_of_work, secret_store):
+    cache = {}
+
+    async def load(space):
+        revision_id = space.model_profile_revision_id
+        if revision_id in cache:
+            return cache[revision_id]
+        bundle = await _embedding_bundle(
+            unit_of_work, space, ModelKind.MULTIMODAL_EMBEDDING
+        )
+        key = await asyncio.to_thread(
+            secret_store.read, bundle.provider_revision.secret_reference
+        )
+        parameters = bundle.current_revision.configuration
+        adapter = TongyiVisionEmbeddingAdapter(
+            endpoint=bundle.provider_revision.base_url,
+            api_key=key,
+            embedding_space=space,
+            max_batch_size=parameters["max_batch_size"],
+            timeout_seconds=bundle.provider_revision.timeout_seconds,
+            max_retries=bundle.provider_revision.max_retries,
+            max_concurrency=bundle.provider_revision.max_concurrency,
+        )
+        cache[revision_id] = adapter
+        return adapter
+
+    return load

@@ -64,11 +64,12 @@ services:
     command:
       - /bin/sh
       - -c
-      - install -d -o 10001 -g 10001 /var/lib/rag-kb/sources/staging /var/lib/rag-kb/sources/final /var/lib/rag-kb/sources/asset-staging /var/lib/rag-kb/sources/assets /var/lib/rag-kb/sources/parser-temp /var/lib/rag-kb/sources/.tiktoken-cache /var/lib/rag-kb/sources/.worker-runtime /var/lib/rag-kb/model-cache/huggingface
+      - install -d -o 10001 -g 10001 /var/lib/rag-kb/sources/staging /var/lib/rag-kb/sources/final /var/lib/rag-kb/sources/asset-staging /var/lib/rag-kb/sources/assets /var/lib/rag-kb/sources/parser-temp /var/lib/rag-kb/sources/.tiktoken-cache /var/lib/rag-kb/sources/.worker-runtime /var/lib/rag-kb/model-cache/huggingface && install -d -m 0700 -o 10001 -g 10001 /var/lib/rag-kb/model-secrets
     depends_on: {}
     volumes:
       - source-data:/var/lib/rag-kb/sources
       - inference-model-cache:/var/lib/rag-kb/model-cache
+      - model-secrets:/var/lib/rag-kb/model-secrets
     restart: "no"
 
   migrate:
@@ -98,6 +99,7 @@ services:
       - 127.0.0.1:${RAG_KB_API_PORT:-8000}:8000
     volumes:
       - source-data:/var/lib/rag-kb/sources
+      - model-secrets:/var/lib/rag-kb/model-secrets
     healthcheck:
       test:
         - CMD
@@ -118,6 +120,7 @@ services:
     volumes:
       - source-data:/var/lib/rag-kb/sources
       - inference-model-cache:/var/lib/rag-kb/model-cache
+      - model-secrets:/var/lib/rag-kb/model-secrets:ro
     healthcheck:
       # A cheap liveness heartbeat gate runs before the full dependency check.
       # Fresh Workers still pay the native Docling import cost (~7s).
@@ -180,3 +183,4 @@ volumes:
   postgres-data:
   source-data:
   inference-model-cache:
+  model-secrets:

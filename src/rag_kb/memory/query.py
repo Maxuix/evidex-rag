@@ -6,6 +6,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 import json
 from typing import Any, Protocol
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
@@ -195,6 +196,7 @@ def build_contextualization_request(
         ),
         output_schema=ChatOutputSchema.CONTEXTUAL_QUERY_V2,
         max_output_tokens=_QUERY_OUTPUT_TOKENS,
+        model_profile_revision_id=_model_profile_revision_id(context),
     )
 
 
@@ -216,7 +218,13 @@ def build_contextualization_repair_request(
         ),
         output_schema=ChatOutputSchema.CONTEXTUAL_QUERY_V2,
         max_output_tokens=_QUERY_OUTPUT_TOKENS,
+        model_profile_revision_id=_model_profile_revision_id(context),
     )
+
+
+def _model_profile_revision_id(context: ChatExecutionContext) -> UUID | None:
+    value = context.model_configuration.get("model_profile_revision_id")
+    return UUID(value) if isinstance(value, str) else None
 
 
 def serialize_contextualized_query(value: ContextualizedQuery) -> dict[str, Any]:

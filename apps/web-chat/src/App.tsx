@@ -9,12 +9,17 @@ import {
 import { ApiClient, ApiClientError, loadRuntimeConfig } from "./api/client";
 import type {
   ChatMessage,
+  ChatProgressSnapshot,
+  ChatProgressStage,
   ChatPreviewDeltaEvent,
   ChatPreviewResetEvent,
   ChatRun,
   ChatRunCreate,
   ChatSession,
+  ChatWorkflowCapabilities,
+  ChatWorkflowMode,
   KnowledgeBase,
+  ModelSettings,
   RetrievalCapabilities,
 } from "./api/types";
 import {
@@ -37,6 +42,7 @@ import {
   storeSessionId,
   storeSidebarCollapsed,
 } from "./storage";
+import { ModelSettingsDialog } from "./ModelSettingsDialog";
 
 interface PendingRun {
   payload: ChatRunCreate;
@@ -57,6 +63,15 @@ interface ChatPreviewState {
   mode: "idle" | "streaming" | "verifying" | "discarded";
 }
 
+interface ChatProgressState {
+  runId: string | null;
+  attempt: number;
+  lastSeq: number;
+  snapshot: ChatProgressSnapshot | null;
+  stageRecords: Partial<Record<ChatProgressStage, ChatProgressSnapshot>>;
+  mode: "idle" | "live" | "disconnected";
+}
+
 export function App() {
   const [client, setClient] = useState<ApiClient | null>(null);
   const [startupError, setStartupError] = useState<string | null>(null);
@@ -65,6 +80,12 @@ export function App() {
   const [retrievalCapabilitiesLoading, setRetrievalCapabilitiesLoading] =
     useState(false);
   const [retrievalCapabilitiesError, setRetrievalCapabilitiesError] =
+    useState<unknown | null>(null);
+  const [workflowCapabilities, setWorkflowCapabilities] =
+    useState<ChatWorkflowCapabilities | null>(null);
+  const [workflowCapabilitiesLoading, setWorkflowCapabilitiesLoading] =
+    useState(false);
+  const [workflowCapabilitiesError, setWorkflowCapabilitiesError] =
     useState<unknown | null>(null);
 
   useEffect(() => {
@@ -84,6 +105,23 @@ export function App() {
       if (!cancelled) setRetrievalCapabilitiesError(error);
     }).finally(() => {
       if (!cancelled) setRetrievalCapabilitiesLoading(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [client]);
+
+  useEffect(() => {
+    if (!client) return;
+    let cancelled = false;
+    setWorkflowCapabilitiesLoading(true);
+    setWorkflowCapabilitiesError(null);
+    void client.getChatWorkflowCapabilities().then((value) => {
+      if (!cancelled) setWorkflowCapabilities(value);
+    }).catch((error) => {
+      if (!cancelled) setWorkflowCapabilitiesError(error);
+    }).finally(() => {
+      if (!cancelled) setWorkflowCapabilitiesLoading(false);
     });
     return () => {
       cancelled = true;
@@ -114,6 +152,9 @@ export function App() {
       retrievalCapabilities={retrievalCapabilities}
       retrievalCapabilitiesLoading={retrievalCapabilitiesLoading}
       retrievalCapabilitiesError={retrievalCapabilitiesError}
+      workflowCapabilities={workflowCapabilities}
+      workflowCapabilitiesLoading={workflowCapabilitiesLoading}
+      workflowCapabilitiesError={workflowCapabilitiesError}
     />
   );
 }
@@ -123,11 +164,17 @@ function KnowledgeChat({
   retrievalCapabilities,
   retrievalCapabilitiesLoading,
   retrievalCapabilitiesError,
+  workflowCapabilities,
+  workflowCapabilitiesLoading,
+  workflowCapabilitiesError,
 }: {
   client: ApiClient;
   retrievalCapabilities: RetrievalCapabilities | null;
   retrievalCapabilitiesLoading: boolean;
   retrievalCapabilitiesError: unknown | null;
+  workflowCapabilities: ChatWorkflowCapabilities | null;
+  workflowCapabilitiesLoading: boolean;
+  workflowCapabilitiesError: unknown | null;
 }) {
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
   const [knowledgeBaseCursor, setKnowledgeBaseCursor] = useState<string | null>(null);
@@ -150,6 +197,12 @@ function KnowledgeChat({
 
   const [draft, setDraft] = useState("");
   const [retrievalMode, setRetrievalMode] = useState<"vector" | "hybrid">("vector");
+  const [workflowMode, setWorkflowMode] = useState<ChatWorkflowMode>("simple");
+  const [modelSettings, setModelSettings] = useState<ModelSettings | null>(null);
+  const [modelSettingsLoading, setModelSettingsLoading] = useState(true);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [selectedChatModelRevisionId, setSelectedChatModelRevisionId] =
+    useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [pendingRun, setPendingRun] = useState<PendingRun | null>(null);
   const [submissionError, setSubmissionError] = useState<string | null>(null);
@@ -157,6 +210,9 @@ function KnowledgeChat({
   const [deliveryMode, setDeliveryMode] = useState<"idle" | "sse" | "polling">("idle");
   const [preview, setPreview] = useState<ChatPreviewState>(
     () => emptyPreview(null),
+  );
+  const [progress, setProgress] = useState<ChatProgressState>(
+    () => emptyProgress(null),
   );
 
   const [runCache, setRunCache] = useState<Record<string, ChatRun>>({});
@@ -186,6 +242,47 @@ function KnowledgeChat({
   const hybridEnabled = retrievalCapabilities?.modes.some(
     (item) => item.mode === "hybrid" && item.enabled,
   ) ?? false;
+  const agentEnabled = workflowCapabilities?.modes.some(
+    (item) => item.mode === "agent" && item.enabled,
+  ) ?? false;
+  const autoEnabled = workflowCapabilities?.modes.some(
+    (item) => item.mode === "auto" && item.enabled,
+  ) ?? false;
+  const chatModels = modelSettings?.profiles.filter((profile) => (
+    profile.kind === "chat"
+    && profile.enabled
+    && profile.validation_status === "valid"
+  )) ?? [];
+  const chatModelConfigured = Boolean(
+    selectedChatModelRevisionId
+    && chatModels.some(
+      (profile) => profile.revision_id === selectedChatModelRevisionId,
+    ),
+  );
+
+  const acceptModelSettings = useCallback((value: ModelSettings) => {
+    setModelSettings(value);
+    setSelectedChatModelRevisionId((current) => (
+      current && value.profiles.some((profile) => profile.revision_id === current)
+        ? current
+        : value.selection.chat_profile_revision_id
+    ));
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setModelSettingsLoading(true);
+    void client.getModelSettings().then((value) => {
+      if (!cancelled) acceptModelSettings(value);
+    }).catch(() => {
+      // The composer stays fail-closed; the settings dialog can retry visibly.
+    }).finally(() => {
+      if (!cancelled) setModelSettingsLoading(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [acceptModelSettings, client]);
 
   const loadKnowledgeBases = useCallback(async (cursor?: string) => {
     setKnowledgeBasesLoading(true);
@@ -265,6 +362,7 @@ function KnowledgeChat({
   useEffect(() => {
     storeKnowledgeBaseId(selectedKnowledgeBaseId || null);
     setRetrievalMode("vector");
+    setWorkflowMode("simple");
     setSessions([]);
     setSelectedSessionId(null);
     setMessages([]);
@@ -279,6 +377,15 @@ function KnowledgeChat({
   useEffect(() => {
     if (!hybridEnabled && retrievalMode === "hybrid") setRetrievalMode("vector");
   }, [hybridEnabled, retrievalMode]);
+
+  useEffect(() => {
+    if (
+      (workflowMode === "agent" && !agentEnabled)
+      || (workflowMode === "auto" && !autoEnabled)
+    ) {
+      setWorkflowMode("simple");
+    }
+  }, [agentEnabled, autoEnabled, workflowMode]);
 
   useEffect(() => {
     messageGeneration.current += 1;
@@ -308,7 +415,47 @@ function KnowledgeChat({
   }, [client, currentRun, messages, messagesLoading, selectedSessionId]);
 
   useEffect(() => {
+    if (!selectedSessionId || messagesLoading) return;
+    const missingRunIds = [...new Set(messages.flatMap((item) => (
+      item.role === "assistant" && item.run_id && !runCache[item.run_id]
+        ? [item.run_id]
+        : []
+    )))];
+    if (!missingRunIds.length) return;
+    let cancelled = false;
+    void Promise.allSettled(
+      missingRunIds.map((runId) => client.getChatRun(runId)),
+    ).then((results) => {
+      if (cancelled) return;
+      const loaded: Record<string, ChatRun> = {};
+      for (const result of results) {
+        if (
+          result.status === "fulfilled"
+          && result.value.session_id === selectedSessionId
+          && result.value.knowledge_base_id === selectedKnowledgeBaseId
+        ) {
+          loaded[result.value.run_id] = result.value;
+        }
+      }
+      if (Object.keys(loaded).length) {
+        setRunCache((current) => ({ ...current, ...loaded }));
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    client,
+    messages,
+    messagesLoading,
+    runCache,
+    selectedKnowledgeBaseId,
+    selectedSessionId,
+  ]);
+
+  useEffect(() => {
     setPreview(emptyPreview(currentRun?.run_id ?? null));
+    setProgress(emptyProgress(currentRun?.run_id ?? null));
   }, [currentRun?.run_id]);
 
   useEffect(() => {
@@ -348,6 +495,7 @@ function KnowledgeChat({
       closeStream?.();
       closeStream = null;
       setPreview((current) => discardPreview(current, currentRun.run_id));
+      setProgress((current) => disconnectProgress(current, currentRun.run_id));
       setDeliveryMode("polling");
       void poll();
     };
@@ -372,8 +520,14 @@ function KnowledgeChat({
       previewReset: (event) => setPreview(
         (current) => applyPreviewReset(current, currentRun.run_id, event),
       ),
+      progress: (event) => setProgress(
+        (current) => applyProgress(current, currentRun.run_id, event),
+      ),
       previewInvalid: () => setPreview(
         (current) => discardPreview(current, currentRun.run_id),
+      ),
+      progressInvalid: () => setProgress(
+        (current) => disconnectProgress(current, currentRun.run_id),
       ),
       error: beginPolling,
     });
@@ -422,6 +576,7 @@ function KnowledgeChat({
       || !draft.trim()
       || submitting
       || sessionBusy
+      || !chatModelConfigured
     ) return;
     const question = draft.trim();
     setSubmitting(true);
@@ -450,11 +605,15 @@ function KnowledgeChat({
               selectedKnowledgeBase.answer_policy_defaults.insufficiency_policy
             ),
           },
+          workflow: {
+            mode: workflowMode,
+          },
           retrieval: {
             mode: retrievalMode,
             top_k: selectedKnowledgeBase.retrieval_defaults.top_k,
             rerank: true,
           },
+          model_profile_revision_id: selectedChatModelRevisionId,
         },
       };
       setPendingRun(pending);
@@ -494,6 +653,24 @@ function KnowledgeChat({
       setSubmissionError(null);
     }
     setRetrievalMode(next);
+  };
+
+  const changeWorkflowMode = (next: ChatWorkflowMode) => {
+    if (next === "agent" && !agentEnabled) return;
+    if (next === "auto" && !autoEnabled) return;
+    if (pendingRun) {
+      setPendingRun(null);
+      setSubmissionError(null);
+    }
+    setWorkflowMode(next);
+  };
+
+  const changeChatModel = (next: string) => {
+    if (pendingRun) {
+      setPendingRun(null);
+      setSubmissionError(null);
+    }
+    setSelectedChatModelRevisionId(next || null);
   };
 
   const openEvidence = async (
@@ -721,6 +898,12 @@ function KnowledgeChat({
                     ? preview
                     : null
                   }
+                  progress={
+                    message.run_id
+                    && message.run_id === currentRun?.run_id
+                    ? progress
+                    : null
+                  }
                   onCitation={(ordinal, trigger) => {
                     if (message.run_id) {
                       void openEvidence(message.run_id, ordinal, trigger);
@@ -758,6 +941,48 @@ function KnowledgeChat({
             </div>
           ) : null}
           <div className="composer">
+            <label className="retrieval-mode-control model-control">
+              <span>对话模型</span>
+              <select
+                value={selectedChatModelRevisionId ?? ""}
+                onChange={(event) => changeChatModel(event.target.value)}
+                disabled={submitting || sessionBusy}
+              >
+                <option value="">未选择</option>
+                {chatModels.map((profile) => (
+                  <option key={profile.revision_id} value={profile.revision_id}>
+                    {profile.name} · r{profile.revision}
+                  </option>
+                ))}
+              </select>
+              <small>{modelSettingsLoading ? "正在读取模型设置…" : chatModels.length ? "本次对话固定使用所选修订版。" : "请在齿轮设置中添加并验证模型。"}</small>
+            </label>
+            <label className="retrieval-mode-control workflow-mode-control">
+              <span>回答工作流</span>
+              <select
+                value={workflowMode}
+                onChange={(event) => changeWorkflowMode(
+                  event.target.value as ChatWorkflowMode,
+                )}
+                disabled={submitting || sessionBusy}
+                aria-describedby="web-chat-workflow-mode-help"
+              >
+                <option value="simple">Simple</option>
+                <option value="agent" disabled={!agentEnabled}>Agent</option>
+                <option value="auto" disabled={!autoEnabled}>Auto</option>
+              </select>
+              <small id="web-chat-workflow-mode-help">
+                {workflowCapabilitiesLoading
+                  ? "能力状态加载中，已保持 Simple。"
+                  : workflowCapabilitiesError || !workflowCapabilities
+                    ? "能力状态不可用，Agent 与 Auto 已禁用。"
+                    : workflowMode === "agent"
+                      ? "多视角、多跳检索，通常更慢。"
+                      : workflowMode === "auto"
+                        ? "先判断问题复杂度，再选择工作流。"
+                        : "单次检索，速度最快。"}
+              </small>
+            </label>
             <label className="retrieval-mode-control">
               <span>检索模式</span>
               <select
@@ -788,9 +1013,11 @@ function KnowledgeChat({
               value={draft}
               rows={1}
               maxLength={32768}
-              disabled={!selectedKnowledgeBase || submitting || sessionBusy}
+              disabled={!selectedKnowledgeBase || !chatModelConfigured || submitting || sessionBusy}
               placeholder={
-                selectedKnowledgeBase
+                !chatModelConfigured
+                  ? "请先在右下角齿轮中选择对话模型"
+                  : selectedKnowledgeBase
                   ? "询问这个知识库中的内容…"
                   : "请先选择知识库"
               }
@@ -816,6 +1043,7 @@ function KnowledgeChat({
                 || !draft.trim()
                 || submitting
                 || sessionBusy
+                || !chatModelConfigured
               }
               onClick={() => void submit()}
             >
@@ -831,6 +1059,25 @@ function KnowledgeChat({
           </p>
         </div>
       </main>
+
+      <button
+        className="settings-gear"
+        type="button"
+        aria-label="打开模型设置"
+        title="模型设置"
+        onClick={() => setSettingsOpen(true)}
+      >
+        ⚙
+      </button>
+
+      {settingsOpen ? (
+        <ModelSettingsDialog
+          client={client}
+          initial={modelSettings}
+          onChange={acceptModelSettings}
+          onClose={() => setSettingsOpen(false)}
+        />
+      ) : null}
 
       {evidence ? (
         <EvidenceDrawer
@@ -853,11 +1100,13 @@ function Message({
   message,
   run,
   preview,
+  progress,
   onCitation,
 }: {
   message: ChatMessage;
   run: ChatRun | null;
   preview: ChatPreviewState | null;
+  progress: ChatProgressState | null;
   onCitation: (ordinal: number, trigger: HTMLButtonElement) => void;
 }) {
   if (message.role === "user") {
@@ -874,6 +1123,14 @@ function Message({
     <article className="message assistant-message">
       <div className="assistant-mark" aria-hidden="true">K</div>
       <div className="assistant-content">
+        {run ? <WorkflowSummary workflow={run.workflow} model={run.model} /> : null}
+        {run ? (
+          <ExecutionTrace
+            run={run}
+            progress={progress}
+            generating={generating}
+          />
+        ) : null}
         {generating && preview?.mode === "streaming" && preview.content ? (
           <div className="answer-preview" aria-live="polite">
             <div className="preview-label">
@@ -913,6 +1170,505 @@ function Message({
       </div>
     </article>
   );
+}
+
+function WorkflowSummary({ workflow, model }: {
+  workflow: ChatRun["workflow"];
+  model: ChatRun["model"];
+}) {
+  const requested = workflowModeLabel(workflow.requested_mode);
+  const resolved = workflow.resolved_mode === "pending"
+    ? "路由中"
+    : workflowModeLabel(workflow.resolved_mode);
+  const modeLabel = workflow.requested_mode === "auto"
+    ? `Auto → ${resolved}`
+    : requested;
+  const result = workflow.research_result;
+  const trace = workflow.search_trace;
+  const fallback = workflow.route_status === "fallback"
+    ? workflow.route_reason_codes.includes("router_invalid")
+      ? "路由结果无效，已回退"
+      : "路由服务不可用，已回退"
+    : null;
+  return (
+    <div className="workflow-summary" aria-label={`回答工作流：${modeLabel}`}>
+      <span className="workflow-badge">{modeLabel}</span>
+      <span className="workflow-badge">{model.profile_name || model.model}</span>
+      {fallback ? <span>{fallback}</span> : null}
+      {result && trace ? (
+        <span>
+          {researchStatusLabel(result.status)} · {terminationLabel(
+            result.termination_reason,
+          )} · 检索 {trace.retrieval_calls} 次 · 证据 {trace.evidence_count} 项
+          {result.missing_aspects.length
+            ? ` · 待补 ${result.missing_aspects.length} 项`
+            : ""}
+          {result.conflicts.length ? ` · 冲突 ${result.conflicts.length} 项` : ""}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+const PROGRESS_STAGES: ChatProgressStage[] = [
+  "understand_query",
+  "select_workflow",
+  "retrieve_evidence",
+  "assess_evidence",
+  "prepare_visual_evidence",
+  "generate_answer",
+  "validate_answer",
+  "persist_result",
+];
+
+function ExecutionTrace({
+  run,
+  progress,
+  generating,
+}: {
+  run: ChatRun;
+  progress: ChatProgressState | null;
+  generating: boolean;
+}) {
+  const [selectedStage, setSelectedStage] = useState<ChatProgressStage | null>(null);
+  useEffect(() => setSelectedStage(null), [run.run_id]);
+
+  const terminal = isTerminal(run);
+  const overview = run.status === "completed"
+    ? completedProgress(run)
+    : progress?.snapshot ?? null;
+  const disconnected = generating && progress?.mode === "disconnected";
+  const activeStage = overview?.active_stage ?? null;
+  const availableStages = new Set<ChatProgressStage>([
+    ...(overview?.completed_stages ?? []),
+    ...Object.keys(progress?.stageRecords ?? {}) as ChatProgressStage[],
+  ]);
+  if (activeStage) availableStages.add(activeStage);
+  const archivedStage = selectedStage
+    && selectedStage !== activeStage
+    && availableStages.has(selectedStage)
+    ? selectedStage
+    : null;
+  const viewedStage = archivedStage ?? activeStage;
+  const viewedSnapshot = viewedStage
+    ? stageProgress(run, progress, overview, viewedStage)
+    : null;
+  const followingCurrent = archivedStage === null;
+  const showViewedSnapshot = Boolean(
+    viewedSnapshot
+    && (!disconnected || !followingCurrent || terminal),
+  );
+  const content = (
+    <div className="execution-trace-body">
+      {disconnected ? (
+        <div className="trace-connection-note" role="status">
+          实时轨迹连接已中断，回答仍在后台运行；当前节点暂不确定。
+        </div>
+      ) : null}
+      {run.status === "failed" || run.status === "cancelled" ? (
+        <div className="trace-connection-note terminal">
+          执行在完成前中止；这里只保留已确认的工作流状态。
+        </div>
+      ) : null}
+      <div className="trace-stage-rail" aria-label="回答执行阶段">
+        {PROGRESS_STAGES.map((stage, index) => {
+          const complete = overview?.completed_stages.includes(stage) ?? false;
+          const active = Boolean(
+            overview
+            && !disconnected
+            && overview.status === "active"
+            && overview.active_stage === stage,
+          );
+          const available = availableStages.has(stage);
+          const selected = viewedStage === stage;
+          return (
+            <div className="trace-stage-wrap" key={stage}>
+              <button
+                type="button"
+                className={`trace-stage${complete ? " complete" : ""}${
+                active ? " active" : ""
+              }${selected ? " selected" : ""}`}
+                disabled={!available}
+                aria-pressed={selected}
+                aria-label={complete
+                  ? `查看${progressStageLabel(stage)}阶段记录`
+                  : active
+                    ? `${progressStageLabel(stage)}，当前阶段`
+                    : progressStageLabel(stage)}
+                onClick={() => setSelectedStage(stage === activeStage ? null : stage)}
+              >
+                <span aria-hidden="true">{complete ? "✓" : index + 1}</span>
+                <strong>{progressStageLabel(stage)}</strong>
+              </button>
+              {index < PROGRESS_STAGES.length - 1 ? (
+                <span className={`trace-arrow${complete ? " complete" : ""}`}>
+                  →
+                </span>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+      {showViewedSnapshot && viewedSnapshot && viewedStage ? (
+        <div
+          className="trace-current"
+          key={`${viewedStage}-${viewedSnapshot.activity}-${viewedSnapshot.seq}`}
+          aria-live={followingCurrent && !terminal ? "polite" : "off"}
+        >
+          <div className="trace-current-heading">
+            <div>
+              <span>{followingCurrent
+                ? viewedSnapshot.status === "completed" ? "执行完成" : "当前阶段"
+                : "阶段记录"}</span>
+              <strong>{activityLabel(viewedSnapshot.activity)}</strong>
+            </div>
+            {!followingCurrent && !terminal ? (
+              <button type="button" onClick={() => setSelectedStage(null)}>
+                返回当前阶段
+              </button>
+            ) : null}
+          </div>
+          <p>{activityDescription(viewedSnapshot.activity)}</p>
+          {viewedSnapshot.requested_mode === "auto"
+            && viewedSnapshot.resolved_mode !== "pending" ? (
+              <div className="trace-route-choice">
+                Auto 已选择 <strong>{workflowModeLabel(
+                  viewedSnapshot.resolved_mode,
+                )}</strong>
+              </div>
+            ) : null}
+          <ProgressFacts facts={viewedSnapshot.facts} />
+        </div>
+      ) : !terminal && !disconnected ? (
+        <div className="trace-current waiting" aria-live="polite">
+          正在等待第一个执行节点…
+        </div>
+      ) : null}
+      {viewedStage === "retrieve_evidence"
+        && run.workflow.search_trace?.steps.length ? (
+        <div className="trace-search-history">
+          <h4>检索决策记录</h4>
+          {run.workflow.search_trace.steps.map((step) => (
+            <div className="trace-search-step" key={step.observation_id}>
+              <div>
+                <strong>{step.objective}</strong>
+                <span>{searchResultLabel(step.result)} · 新增证据 {
+                  step.new_evidence_count
+                } 项</span>
+              </div>
+              {step.queries.length ? (
+                <ul>
+                  {step.queries.map((query) => <li key={query}>{query}</li>)}
+                </ul>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+  if (terminal) {
+    return (
+      <details className="execution-trace terminal-trace">
+        <summary>
+          <span>执行轨迹</span>
+          <strong>{run.status === "completed" ? "已完成" : "未完成"}</strong>
+        </summary>
+        {content}
+      </details>
+    );
+  }
+  return (
+    <section className="execution-trace" aria-label="实时执行轨迹">
+      <header>
+        <span>执行轨迹</span>
+        <strong>决策过程 · 实时</strong>
+      </header>
+      {content}
+    </section>
+  );
+}
+
+function stageProgress(
+  run: ChatRun,
+  progress: ChatProgressState | null,
+  overview: ChatProgressSnapshot | null,
+  stage: ChatProgressStage,
+): ChatProgressSnapshot {
+  const recorded = progress?.stageRecords[stage];
+  const complete = overview?.completed_stages.includes(stage) ?? false;
+  if (recorded) {
+    return {
+      ...recorded,
+      completed_stages: overview?.completed_stages ?? recorded.completed_stages,
+      status: complete ? "completed" : recorded.status,
+    };
+  }
+  return {
+    run_id: run.run_id,
+    attempt: run.attempt,
+    seq: overview?.seq ?? 0,
+    active_stage: stage,
+    activity: stageActivity(run, stage),
+    completed_stages: overview?.completed_stages ?? [],
+    status: complete ? "completed" : "active",
+    requested_mode: run.workflow.requested_mode,
+    resolved_mode: run.workflow.resolved_mode,
+    facts: stageFacts(run, stage),
+  };
+}
+
+function stageActivity(
+  run: ChatRun,
+  stage: ChatProgressStage,
+): ChatProgressSnapshot["activity"] {
+  if (stage === "retrieve_evidence") {
+    if (run.workflow.research_result) return "research_complete";
+    if (run.workflow.search_trace?.steps.length) return "retrieval_complete";
+    return "simple_search";
+  }
+  const activities: Record<Exclude<ChatProgressStage, "retrieve_evidence">,
+    ChatProgressSnapshot["activity"]> = {
+      understand_query: "contextualize_query",
+      select_workflow: "route_decision",
+      assess_evidence: "assess_evidence",
+      prepare_visual_evidence: "prepare_visual_evidence",
+      generate_answer: "generate_answer",
+      validate_answer: "validate_answer",
+      persist_result: "persist_result",
+    };
+  return activities[stage];
+}
+
+function stageFacts(
+  run: ChatRun,
+  stage: ChatProgressStage,
+): ChatProgressSnapshot["facts"] {
+  const result = run.workflow.research_result;
+  const trace = run.workflow.search_trace;
+  const lastSearch = trace?.steps.at(-1);
+  const facts: ChatProgressSnapshot["facts"] = {
+    objective: null,
+    queries: [],
+    evidence_count: null,
+    new_evidence_count: null,
+    retrieval_calls: null,
+    route_status: run.workflow.route_status,
+    route_reason_codes: run.workflow.route_reason_codes,
+    research_status: null,
+    covered_aspects: [],
+    missing_aspects: [],
+    conflict_count: null,
+    decision: null,
+  };
+  if (stage === "select_workflow" && run.workflow.resolved_mode !== "pending") {
+    facts.decision = run.workflow.resolved_mode === "agent"
+      ? "select_agent"
+      : "select_simple";
+  }
+  if (stage === "retrieve_evidence") {
+    facts.objective = lastSearch?.objective ?? null;
+    facts.queries = lastSearch?.queries ?? [];
+    facts.evidence_count = trace?.evidence_count ?? null;
+    facts.new_evidence_count = lastSearch?.new_evidence_count ?? null;
+    facts.retrieval_calls = trace?.retrieval_calls ?? null;
+    facts.research_status = result?.status ?? null;
+    facts.decision = result ? "finish_research" : null;
+  }
+  if (stage === "assess_evidence") {
+    facts.evidence_count = trace?.evidence_count ?? null;
+    facts.retrieval_calls = trace?.retrieval_calls ?? null;
+    facts.research_status = result?.status ?? null;
+    facts.covered_aspects = result?.covered_aspects.slice(0, 6) ?? [];
+    facts.missing_aspects = result?.missing_aspects.slice(0, 6) ?? [];
+    facts.conflict_count = result?.conflicts.length ?? null;
+    facts.decision = result ? "finish_research" : null;
+  }
+  return facts;
+}
+
+function ProgressFacts({ facts }: { facts: ChatProgressSnapshot["facts"] }) {
+  const routeReasons = facts.route_reason_codes.map(routeReasonLabel);
+  return (
+    <div className="trace-facts">
+      {facts.objective ? (
+        <div><span>检索目标</span><strong>{facts.objective}</strong></div>
+      ) : null}
+      {facts.queries.length ? (
+        <div>
+          <span>查询</span>
+          <ul>{facts.queries.map((query) => <li key={query}>{query}</li>)}</ul>
+        </div>
+      ) : null}
+      {routeReasons.length ? (
+        <div><span>路由依据</span><strong>{routeReasons.join("、")}</strong></div>
+      ) : null}
+      {facts.decision ? (
+        <div><span>当前决定</span><strong>{decisionLabel(facts.decision)}</strong></div>
+      ) : null}
+      {facts.evidence_count !== null ? (
+        <div><span>可用证据</span><strong>{facts.evidence_count} 项</strong></div>
+      ) : null}
+      {facts.retrieval_calls !== null ? (
+        <div><span>检索次数</span><strong>{facts.retrieval_calls} 次</strong></div>
+      ) : null}
+      {facts.new_evidence_count !== null ? (
+        <div><span>本轮新增</span><strong>{facts.new_evidence_count} 项</strong></div>
+      ) : null}
+      {facts.research_status ? (
+        <div>
+          <span>研究结论</span>
+          <strong>{researchStatusLabel(facts.research_status)}</strong>
+        </div>
+      ) : null}
+      {facts.covered_aspects.length ? (
+        <div><span>已覆盖</span><strong>{facts.covered_aspects.join("、")}</strong></div>
+      ) : null}
+      {facts.missing_aspects.length ? (
+        <div><span>仍缺少</span><strong>{facts.missing_aspects.join("、")}</strong></div>
+      ) : null}
+      {facts.conflict_count ? (
+        <div><span>冲突</span><strong>{facts.conflict_count} 项</strong></div>
+      ) : null}
+    </div>
+  );
+}
+
+function completedProgress(run: ChatRun): ChatProgressSnapshot {
+  return {
+    run_id: run.run_id,
+    attempt: run.attempt,
+    seq: 1,
+    active_stage: "persist_result",
+    activity: "persist_result",
+    completed_stages: [...PROGRESS_STAGES],
+    status: "completed",
+    requested_mode: run.workflow.requested_mode,
+    resolved_mode: run.workflow.resolved_mode,
+    facts: stageFacts(run, "persist_result"),
+  };
+}
+
+function progressStageLabel(stage: ChatProgressStage): string {
+  const labels: Record<ChatProgressStage, string> = {
+    understand_query: "理解问题",
+    select_workflow: "选择工作流",
+    retrieve_evidence: "检索证据",
+    assess_evidence: "评估证据",
+    prepare_visual_evidence: "准备素材",
+    generate_answer: "生成回答",
+    validate_answer: "校验回答",
+    persist_result: "保存结果",
+  };
+  return labels[stage];
+}
+
+function activityLabel(activity: ChatProgressSnapshot["activity"]): string {
+  const labels: Record<ChatProgressSnapshot["activity"], string> = {
+    load_context: "读取对话上下文",
+    contextualize_query: "理解并改写问题",
+    route_decision: "判断问题复杂度",
+    simple_search: "执行单次检索",
+    agent_decision: "规划下一步检索",
+    agent_search: "执行 Agent 查询",
+    retrieval_complete: "整理本轮检索结果",
+    verify_coverage: "Verifier 检查覆盖度",
+    research_complete: "研究阶段结束",
+    assess_evidence: "评估证据是否足够",
+    prepare_visual_evidence: "准备可引用的视觉证据",
+    generate_answer: "基于证据生成回答",
+    validate_answer: "校验结构与引用",
+    persist_result: "保存最终回答",
+  };
+  return labels[activity];
+}
+
+function activityDescription(activity: ChatProgressSnapshot["activity"]): string {
+  const descriptions: Record<ChatProgressSnapshot["activity"], string> = {
+    load_context: "读取本次问题、会话上下文与冻结配置。",
+    contextualize_query: "把当前问题整理成可独立检索的查询。",
+    route_decision: "根据问题是否需要多视角或多跳信息选择 Simple / Agent。",
+    simple_search: "使用冻结的检索配置查找最相关证据。",
+    agent_decision: "根据已有观察决定继续搜索还是进入覆盖度验证。",
+    agent_search: "按受控目标执行最多三条并行查询。",
+    retrieval_complete: "合并并去重本轮结果，只统计可用证据。",
+    verify_coverage: "独立检查证据覆盖、缺口与冲突，并决定是否继续检索。",
+    research_complete: "检索决策已结束，固定用于回答的证据集合。",
+    assess_evidence: "依据回答策略判断充分、部分覆盖或拒答。",
+    prepare_visual_evidence: "选择与文字证据相关的图片或表格素材。",
+    generate_answer: "只使用已选证据组织回答和引用。",
+    validate_answer: "检查回答结构、引用编号和证据约束。",
+    persist_result: "把最终回答和可核验事实写入本地数据库。",
+  };
+  return descriptions[activity];
+}
+
+function decisionLabel(decision: NonNullable<
+  ChatProgressSnapshot["facts"]["decision"]
+>): string {
+  return {
+    select_simple: "选择 Simple",
+    select_agent: "选择 Agent",
+    search_evidence: "继续执行检索",
+    continue_search: "覆盖仍不足，继续检索",
+    finish_research: "证据研究结束，进入回答",
+  }[decision];
+}
+
+function routeReasonLabel(reason: ChatRun["workflow"]["route_reason_codes"][number]) {
+  return {
+    single_lookup: "单点查询",
+    direct_summary: "直接总结",
+    multi_view_required: "需要多视角",
+    multi_hop_required: "需要多跳检索",
+    evidence_uncertain: "证据不确定",
+    router_invalid: "路由结果无效，已回退",
+    router_unavailable: "路由不可用，已回退",
+  }[reason];
+}
+
+function searchResultLabel(result: ChatSearchResult): string {
+  return {
+    evidence_found: "找到新证据",
+    no_evidence: "未找到新证据",
+    verification_gap: "根据覆盖缺口继续",
+  }[result];
+}
+
+type ChatSearchResult = "evidence_found" | "no_evidence" | "verification_gap";
+
+function workflowModeLabel(mode: ChatWorkflowMode): string {
+  if (mode === "agent") return "Agent";
+  if (mode === "auto") return "Auto";
+  return "Simple";
+}
+
+function researchStatusLabel(status: NonNullable<
+  ChatRun["workflow"]["research_result"]
+>["status"]): string {
+  const labels: Record<string, string> = {
+    sufficient: "研究充分",
+    partial: "部分覆盖",
+    no_evidence: "未找到证据",
+    conflict: "证据冲突",
+    premise_unsupported: "前提无依据",
+  };
+  return labels[String(status)] ?? "研究完成";
+}
+
+function terminationLabel(reason: NonNullable<
+  ChatRun["workflow"]["research_result"]
+>["termination_reason"]): string {
+  const labels: Record<string, string> = {
+    sufficient: "覆盖完成",
+    partial: "部分完成",
+    no_evidence: "无证据",
+    no_progress: "无新增证据",
+    budget_exhausted: "达到检索上限",
+    conflict_unresolved: "冲突未解决",
+    premise_unsupported: "问题前提不成立",
+  };
+  return labels[reason] ?? reason;
 }
 
 function Welcome({
@@ -1071,6 +1827,49 @@ function discardPreview(
     content: "",
     mode: "discarded",
   };
+}
+
+function emptyProgress(runId: string | null): ChatProgressState {
+  return {
+    runId,
+    attempt: 0,
+    lastSeq: 0,
+    snapshot: null,
+    stageRecords: {},
+    mode: "idle",
+  };
+}
+
+function applyProgress(
+  current: ChatProgressState,
+  activeRunId: string,
+  event: ChatProgressSnapshot,
+): ChatProgressState {
+  if (event.run_id !== activeRunId) return current;
+  const base = current.runId === activeRunId
+    ? current
+    : emptyProgress(activeRunId);
+  if (event.attempt < base.attempt) return base;
+  if (event.attempt === base.attempt && event.seq <= base.lastSeq) return base;
+  const stageRecords = event.attempt > base.attempt
+    ? { [event.active_stage]: event }
+    : { ...base.stageRecords, [event.active_stage]: event };
+  return {
+    runId: activeRunId,
+    attempt: event.attempt,
+    lastSeq: event.seq,
+    snapshot: event,
+    stageRecords,
+    mode: "live",
+  };
+}
+
+function disconnectProgress(
+  current: ChatProgressState,
+  runId: string,
+): ChatProgressState {
+  const base = current.runId === runId ? current : emptyProgress(runId);
+  return { ...base, mode: "disconnected" };
 }
 
 function errorMessage(error: unknown): string {

@@ -13,10 +13,12 @@ from rag_kb.domain import (
     ChatPipelinePhase,
     ChatPipelineState,
     ChatRunLease,
+    ChatWorkflowState,
     ContextualizedQuery,
     ErrorCode,
     EvidencePack,
     RetrievalRequest,
+    RetrievalExecutionError,
     RetrievalStrategy,
     ReconciliationResult,
 )
@@ -128,6 +130,25 @@ class ChatContextualizedQueryStore:
         return await execute_in_transaction(self._unit_of_work, persist)
 
 
+class ChatWorkflowStateStore:
+    """Persist an Auto resolution using the active lease/attempt CAS."""
+
+    def __init__(self, unit_of_work: UnitOfWorkFactory) -> None:
+        self._unit_of_work = unit_of_work
+
+    async def persist_resolution(
+        self,
+        context: ChatExecutionContext,
+        value: ChatWorkflowState,
+    ) -> ChatWorkflowState | None:
+        async def persist(uow: UnitOfWork) -> ChatWorkflowState | None:
+            return await uow.chat.save_workflow_resolution(
+                context.lease, value
+            )
+
+        return await execute_in_transaction(self._unit_of_work, persist)
+
+
 class ChatEvidenceRetriever:
     def __init__(self, retrieval: RetrievalService) -> None:
         self._retrieval = retrieval
@@ -144,9 +165,31 @@ class ChatEvidenceRetriever:
                 raise ValueError
             else:
                 query = query_context.standalone_query
+            return await self.retrieve_query(context, query)
+        except ChatPipelineExecutionError:
+            raise
+        except (KeyError, TypeError, ValueError) as error:
+            raise ChatPipelineExecutionError(
+                ErrorCode.CHAT_CONTEXT_INVALID,
+                phase=ChatPipelinePhase.RETRIEVE_EVIDENCE,
+                diagnostic={"check": "retrieval_snapshot"},
+            ) from error
+
+    async def retrieve_query(
+        self,
+        context: ChatExecutionContext,
+        query: str,
+        *,
+        top_k_override: int | None = None,
+    ) -> EvidencePack:
+        try:
             strategy, top_k, rerank = parse_retrieval_snapshot(
                 context.retrieval_strategy,
             )
+            if top_k_override is not None:
+                if not 1 <= top_k_override <= top_k:
+                    raise ValueError
+                top_k = top_k_override
             request = RetrievalRequest(
                 knowledge_base_id=context.knowledge_base_id,
                 query=query,
@@ -161,14 +204,21 @@ class ChatEvidenceRetriever:
                 phase=ChatPipelinePhase.RETRIEVE_EVIDENCE,
                 diagnostic={"check": "retrieval_snapshot"},
             ) from error
-        pack = await self._retrieval.retrieve(
-            AuthContext(
-                principal_id=context.principal_id,
-                client_id=context.client_id,
-                workspace_id=context.workspace_id,
-            ),
-            request,
-        )
+        try:
+            pack = await self._retrieval.retrieve(
+                AuthContext(
+                    principal_id=context.principal_id,
+                    client_id=context.client_id,
+                    workspace_id=context.workspace_id,
+                ),
+                request,
+            )
+        except RetrievalExecutionError as error:
+            raise ChatPipelineExecutionError(
+                error.code,
+                phase=ChatPipelinePhase.RETRIEVE_EVIDENCE,
+                diagnostic=error.diagnostic,
+            ) from error
         if (
             pack.knowledge_base_id != context.knowledge_base_id
             or pack.index_revision_id != context.index_revision_id

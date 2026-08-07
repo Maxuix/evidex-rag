@@ -6,6 +6,7 @@ from typing import Protocol, runtime_checkable
 from uuid import UUID
 
 from rag_kb.domain.chat_preview import (
+    ChatProgressUpdate,
     ChatPreviewEvent,
     ChatPreviewResetReason,
 )
@@ -30,6 +31,14 @@ class ChatPreviewSink(Protocol):
         run_id: UUID,
         attempt: int,
         reason: ChatPreviewResetReason,
+    ) -> None: ...
+
+    async def emit_progress(
+        self,
+        *,
+        run_id: UUID,
+        attempt: int,
+        update: ChatProgressUpdate,
     ) -> None: ...
 
 

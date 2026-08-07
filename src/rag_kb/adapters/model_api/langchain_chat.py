@@ -45,9 +45,12 @@ class LangChainChatModelAdapter:
         max_retries: int,
         max_concurrency: int,
         temperature: float = 0.1,
+        top_p: float | None = None,
+        sampling_top_k: int | None = None,
         max_tokens: int = 2048,
         structured_output_mode: str = "json_object",
         thinking_enabled: bool = False,
+        reasoning_effort: str = "off",
         max_visual_images: int = 4,
         max_visual_image_bytes: int = 5 * 1024 * 1024,
         max_visual_total_bytes: int = 12 * 1024 * 1024,
@@ -59,6 +62,12 @@ class LangChainChatModelAdapter:
             raise ValueError("chat provider limits are invalid")
         if not 0.0 <= temperature <= 2.0 or max_tokens <= 0:
             raise ValueError("chat generation limits are invalid")
+        if top_p is not None and not 0.0 < top_p <= 1.0:
+            raise ValueError("chat top_p is invalid")
+        if sampling_top_k is not None and sampling_top_k < 1:
+            raise ValueError("chat sampling top_k is invalid")
+        if reasoning_effort not in {"off", "low", "medium", "high"}:
+            raise ValueError("chat reasoning effort is invalid")
         if structured_output_mode not in {"json_object", "json_schema"}:
             raise ValueError("unsupported structured output mode")
         if (
@@ -68,6 +77,7 @@ class LangChainChatModelAdapter:
         ):
             raise ValueError("chat visual input limits are invalid")
         self._timeout_seconds = timeout_seconds
+        self._max_tokens = max_tokens
         self._semaphore = asyncio.Semaphore(max_concurrency)
         self._structured_output_method = (
             "json_schema" if structured_output_mode == "json_schema" else "json_mode"
@@ -76,6 +86,14 @@ class LangChainChatModelAdapter:
         self._max_visual_images = max_visual_images
         self._max_visual_image_bytes = max_visual_image_bytes
         self._max_visual_total_bytes = max_visual_total_bytes
+        extra_body: dict[str, Any] = {
+            "max_tokens": max_tokens,
+            "enable_thinking": thinking_enabled or reasoning_effort != "off",
+        }
+        if sampling_top_k is not None:
+            extra_body["top_k"] = sampling_top_k
+        if reasoning_effort != "off":
+            extra_body["reasoning_effort"] = reasoning_effort
         self._model = chat_model or ChatOpenAI(
             model=model,
             api_key=api_key,
@@ -83,12 +101,10 @@ class LangChainChatModelAdapter:
             timeout=timeout_seconds,
             max_retries=max_retries,
             temperature=temperature,
+            top_p=top_p,
             include_response_headers=True,
             use_responses_api=False,
-            extra_body={
-                "max_tokens": max_tokens,
-                "enable_thinking": thinking_enabled,
-            },
+            extra_body=extra_body,
             model_kwargs={"response_format": {"type": "json_object"}},
         )
 
@@ -179,10 +195,11 @@ class LangChainChatModelAdapter:
                 ) from error
 
     async def _invoke(self, request: ChatModelRequest, messages: list[Any]) -> Any:
+        output_limit = self._output_limit(request)
         if request.output_schema is None:
             invoke_arguments = (
-                {"max_tokens": request.max_output_tokens}
-                if request.max_output_tokens is not None
+                {"max_tokens": output_limit}
+                if output_limit is not None
                 else {}
             )
             return await self._model.ainvoke(messages, **invoke_arguments)
@@ -192,12 +209,12 @@ class LangChainChatModelAdapter:
                 ErrorCode.CHAT_RESPONSE_INVALID,
                 diagnostic={"check": "output_schema"},
             )
-        cache_key = (request.output_schema, request.max_output_tokens)
+        cache_key = (request.output_schema, output_limit)
         runnable = self._structured_models.get(cache_key)
         if runnable is None:
             model = (
-                _model_with_output_limit(self._model, request.max_output_tokens)
-                if request.max_output_tokens is not None
+                _model_with_output_limit(self._model, output_limit)
+                if output_limit is not None
                 else self._model
             )
             runnable = model.with_structured_output(
@@ -223,9 +240,10 @@ class LangChainChatModelAdapter:
                     ErrorCode.CHAT_RESPONSE_INVALID,
                     diagnostic={"check": "output_schema"},
                 )
+        output_limit = self._output_limit(request)
         model = (
-            _model_with_output_limit(self._model, request.max_output_tokens)
-            if request.max_output_tokens is not None
+            _model_with_output_limit(self._model, output_limit)
+            if output_limit is not None
             else self._model
         )
         combined = None
@@ -263,6 +281,11 @@ class LangChainChatModelAdapter:
             sort_keys=True,
         )
         return replace(mapped, content=canonical)
+
+    def _output_limit(self, request: ChatModelRequest) -> int | None:
+        if request.max_output_tokens is None:
+            return None
+        return min(request.max_output_tokens, self._max_tokens)
 
 
 def _model_with_output_limit(model: Any, max_tokens: int) -> Any:

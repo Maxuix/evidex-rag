@@ -27,7 +27,7 @@ class ConfiguredCorsMiddleware:
                 self.app,
                 allow_origins=list(origins),
                 allow_credentials=False,
-                allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+                allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
                 allow_headers=[
                     "Content-Type",
                     "Idempotency-Key",

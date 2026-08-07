@@ -423,6 +423,9 @@ def _refusal_messages(
             AnswerControlReason.AMBIGUOUS_QUESTION: (
                 "问题不够明确，请补充说明后再试。"
             ),
+            AnswerControlReason.CONFLICT_UNRESOLVED: (
+                "现有证据相互冲突，暂时无法给出可靠回答。"
+            ),
             AnswerControlReason.STRUCTURE_VALIDATION_FAILED: (
                 "暂时无法生成可靠回答，请重试。"
             ),
@@ -436,6 +439,9 @@ def _refusal_messages(
         ),
         AnswerControlReason.AMBIGUOUS_QUESTION: (
             "The question is ambiguous. Please clarify it and try again."
+        ),
+        AnswerControlReason.CONFLICT_UNRESOLVED: (
+            "The available evidence conflicts, so a reliable answer cannot be given."
         ),
         AnswerControlReason.STRUCTURE_VALIDATION_FAILED: (
             "A reliable answer could not be generated. Please try again."

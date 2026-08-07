@@ -143,6 +143,208 @@ class Workspace(Base):
     updated_at: Mapped[datetime] = updated_timestamp()
 
 
+class ModelProvider(Base):
+    __tablename__ = "model_provider"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id", "name", name="uq_model_provider_workspace_name"
+        ),
+        UniqueConstraint(
+            "workspace_id", "id", name="uq_model_provider_workspace_id"
+        ),
+    )
+
+    id: Mapped[UUID] = uuid_primary_key()
+    workspace_id: Mapped[UUID] = mapped_column(
+        ForeignKey("workspace.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
+    created_at: Mapped[datetime] = created_timestamp()
+    updated_at: Mapped[datetime] = updated_timestamp()
+
+
+class ModelProviderRevision(Base):
+    __tablename__ = "model_provider_revision"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id", "id", name="uq_model_provider_revision_workspace_id"
+        ),
+        UniqueConstraint(
+            "provider_id", "revision", name="uq_model_provider_revision_number"
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "provider_id"],
+            ["model_provider.workspace_id", "model_provider.id"],
+            name="fk_model_provider_revision_same_workspace_provider",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "revision > 0", name="model_provider_revision_positive"
+        ),
+        CheckConstraint(
+            "timeout_seconds > 0 AND max_retries >= 0 AND max_concurrency > 0",
+            name="model_provider_revision_limits_valid",
+        ),
+        CheckConstraint(
+            "protocol IN ('openai_compatible','tongyi_multimodal')",
+            name="model_provider_revision_protocol_supported",
+        ),
+    )
+
+    id: Mapped[UUID] = uuid_primary_key()
+    workspace_id: Mapped[UUID] = mapped_column(
+        ForeignKey("workspace.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    provider_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), nullable=False, index=True
+    )
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    protocol: Mapped[str] = mapped_column(String(64), nullable=False)
+    base_url: Mapped[str] = mapped_column(Text, nullable=False)
+    secret_reference: Mapped[str] = mapped_column(String(64), nullable=False)
+    timeout_seconds: Mapped[float] = mapped_column(Float, nullable=False)
+    max_retries: Mapped[int] = mapped_column(Integer, nullable=False)
+    max_concurrency: Mapped[int] = mapped_column(Integer, nullable=False)
+    configuration_fingerprint: Mapped[str] = mapped_column(String(80), nullable=False)
+    created_at: Mapped[datetime] = created_timestamp()
+
+
+class ModelProfile(Base):
+    __tablename__ = "model_profile"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id", "name", name="uq_model_profile_workspace_name"
+        ),
+        UniqueConstraint(
+            "workspace_id", "id", name="uq_model_profile_workspace_id"
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "provider_id"],
+            ["model_provider.workspace_id", "model_provider.id"],
+            name="fk_model_profile_same_workspace_provider",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "kind IN ('chat','text_embedding','multimodal_embedding')",
+            name="model_profile_kind_supported",
+        ),
+    )
+
+    id: Mapped[UUID] = uuid_primary_key()
+    workspace_id: Mapped[UUID] = mapped_column(
+        ForeignKey("workspace.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    provider_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
+    created_at: Mapped[datetime] = created_timestamp()
+    updated_at: Mapped[datetime] = updated_timestamp()
+
+
+class ModelProfileRevision(Base):
+    __tablename__ = "model_profile_revision"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id", "id", name="uq_model_profile_revision_workspace_id"
+        ),
+        UniqueConstraint(
+            "profile_id", "revision", name="uq_model_profile_revision_number"
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "profile_id"],
+            ["model_profile.workspace_id", "model_profile.id"],
+            name="fk_model_profile_revision_same_workspace_profile",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "provider_revision_id"],
+            [
+                "model_provider_revision.workspace_id",
+                "model_provider_revision.id",
+            ],
+            name="fk_model_profile_revision_same_workspace_provider_revision",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint("revision > 0", name="model_profile_revision_positive"),
+        CheckConstraint(
+            "validation_status IN ('unverified','valid','invalid')",
+            name="model_profile_revision_validation_status_supported",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(configuration) = 'object' "
+            "AND pg_column_size(configuration) <= 65536",
+            name="model_profile_revision_configuration_object",
+        ),
+    )
+
+    id: Mapped[UUID] = uuid_primary_key()
+    workspace_id: Mapped[UUID] = mapped_column(
+        ForeignKey("workspace.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    profile_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), nullable=False, index=True
+    )
+    provider_revision_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), nullable=False, index=True
+    )
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    model: Mapped[str] = mapped_column(String(255), nullable=False)
+    configuration: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    configuration_fingerprint: Mapped[str] = mapped_column(String(80), nullable=False)
+    capability_fingerprint: Mapped[str] = mapped_column(String(80), nullable=False)
+    compatibility_fingerprint: Mapped[str | None] = mapped_column(
+        String(80), nullable=True
+    )
+    validation_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    validation_error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    validated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = created_timestamp()
+
+
+class ModelSelection(Base):
+    __tablename__ = "model_selection"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["workspace_id", "chat_profile_revision_id"],
+            ["model_profile_revision.workspace_id", "model_profile_revision.id"],
+            name="fk_model_selection_same_workspace_chat_profile",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "text_embedding_profile_revision_id"],
+            ["model_profile_revision.workspace_id", "model_profile_revision.id"],
+            name="fk_model_selection_same_workspace_text_embedding_profile",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "multimodal_embedding_profile_revision_id"],
+            ["model_profile_revision.workspace_id", "model_profile_revision.id"],
+            name="fk_model_selection_same_workspace_multimodal_embedding_profile",
+            ondelete="RESTRICT",
+        ),
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(
+        ForeignKey("workspace.id", ondelete="CASCADE"), primary_key=True
+    )
+    chat_profile_revision_id: Mapped[UUID | None] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), nullable=True
+    )
+    text_embedding_profile_revision_id: Mapped[UUID | None] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), nullable=True
+    )
+    multimodal_embedding_profile_revision_id: Mapped[UUID | None] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), nullable=True
+    )
+    updated_at: Mapped[datetime] = updated_timestamp()
+
+
 class KnowledgeBase(Base):
     __tablename__ = "knowledge_base"
     __table_args__ = (
@@ -215,6 +417,11 @@ class EmbeddingSpace(Base):
     configuration_fingerprint: Mapped[str] = mapped_column(String(80), nullable=False)
     tokenizer_fingerprint: Mapped[str | None] = mapped_column(String(80), nullable=True)
     compatibility_fingerprint: Mapped[str] = mapped_column(String(80), nullable=False)
+    model_profile_revision_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("model_profile_revision.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
     created_at: Mapped[datetime] = created_timestamp()
 
 
@@ -1144,6 +1351,26 @@ class ChatRun(Base):
             name="fk_chat_run_same_workspace_session",
         ),
         CheckConstraint("attempt >= 0", name="chat_run_attempt_nonnegative"),
+        CheckConstraint(
+            "jsonb_typeof(workflow_configuration) = 'object' "
+            "AND workflow_configuration->>'version' = 'chat_workflow_v1' "
+            "AND workflow_configuration->>'requested_mode' IN "
+            "('simple','agent','auto') "
+            "AND jsonb_typeof(workflow_configuration->'budget') = 'object' "
+            "AND pg_column_size(workflow_configuration) <= 65536",
+            name=conv("ck_chat_run_workflow_configuration_v1"),
+        ),
+        CheckConstraint(
+            "jsonb_typeof(workflow_state) = 'object' "
+            "AND workflow_state->>'version' = 'chat_workflow_v1' "
+            "AND workflow_state->>'resolved_mode' IN "
+            "('pending','simple','agent') "
+            "AND workflow_state->>'route_status' IN "
+            "('not_applicable','pending','resolved','fallback') "
+            "AND jsonb_typeof(workflow_state->'route_reason_codes') = 'array' "
+            "AND pg_column_size(workflow_state) <= 65536",
+            name=conv("ck_chat_run_workflow_state_v1"),
+        ),
         Index("ix_chat_run_claim", "status", "next_attempt_at", "created_at"),
         Index(
             "uq_chat_run_session_nonterminal",
@@ -1177,6 +1404,32 @@ class ChatRun(Base):
     effective_policy: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     retrieval_strategy: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     model_configuration: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    workflow_configuration: Mapped[dict[str, Any]] = mapped_column(
+        JSONB,
+        nullable=False,
+        server_default=text(
+            "jsonb_build_object("
+            "'version', 'chat_workflow_v1', "
+            "'requested_mode', 'simple', "
+            "'budget', jsonb_build_object("
+            "'decision_rounds', 4, 'retrieval_calls', 6, "
+            "'parallel_queries', 3, 'verifier_continuations', 1, "
+            "'no_progress_rounds', 1))"
+        ),
+    )
+    workflow_state: Mapped[dict[str, Any]] = mapped_column(
+        JSONB,
+        nullable=False,
+        server_default=text(
+            "jsonb_build_object("
+            "'version', 'chat_workflow_v1', "
+            "'resolved_mode', 'simple', "
+            "'route_status', 'not_applicable', "
+            "'route_reason_codes', '[]'::jsonb, "
+            "'research_result', 'null'::jsonb, "
+            "'search_trace', 'null'::jsonb)"
+        ),
+    )
     conversation_context: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     contextualized_query: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     attempt: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))

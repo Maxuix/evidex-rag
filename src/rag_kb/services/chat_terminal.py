@@ -15,7 +15,10 @@ from rag_kb.domain import (
     ChatTerminalSuccessCommand,
     ChatTerminalWriteStatus,
     ErrorCode,
+    ChatWorkflowState,
+    hydrate_chat_workflow_state,
 )
+from rag_kb.retrieval.agent import WORKFLOW_STATE_ARTIFACT
 from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, execute_in_transaction
 
 
@@ -59,6 +62,7 @@ class ChatResultPersistenceStep:
             visual_image_count=len(answering.visual_content),
             visual_total_bytes=answering.visual_total_bytes,
             final_llm_context=_final_llm_context(state),
+            workflow_state=_workflow_state(state),
         )
 
         async def persist(uow: UnitOfWork) -> ChatTerminalWriteStatus:
@@ -83,6 +87,27 @@ class ChatResultPersistenceStep:
                 model_calls=answering.model_calls,
             )
         return state
+
+
+def _workflow_state(state: ChatPipelineState) -> dict[str, Any]:
+    value = state.artifacts.get(WORKFLOW_STATE_ARTIFACT)
+    if value is None:
+        assert state.context is not None
+        try:
+            value = hydrate_chat_workflow_state(state.context.workflow_state)
+        except (TypeError, ValueError) as error:
+            raise ChatPipelineExecutionError(
+                ErrorCode.CHAT_CONTEXT_INVALID,
+                phase=ChatPipelinePhase.PERSIST_RESULT,
+                diagnostic={"check": "workflow_state"},
+            ) from error
+    if not isinstance(value, ChatWorkflowState):
+        raise ChatPipelineExecutionError(
+            ErrorCode.CHAT_CONTEXT_INVALID,
+            phase=ChatPipelinePhase.PERSIST_RESULT,
+            diagnostic={"check": "workflow_state"},
+        )
+    return value.as_dict()
 
 
 class ChatFailureSettlementService:
@@ -161,6 +186,11 @@ _SAFE_DIAGNOSTIC_KEYS = frozenset(
 
 
 def _is_retryable(error: ChatPipelineExecutionError) -> bool:
+    if (
+        error.code is ErrorCode.CHAT_PROVIDER_UNAVAILABLE
+        and error.diagnostic.get("retryable") is False
+    ):
+        return False
     if error.code in _RETRYABLE_CODES:
         return True
     return bool(

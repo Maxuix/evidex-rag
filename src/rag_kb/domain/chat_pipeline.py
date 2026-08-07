@@ -22,6 +22,7 @@ from rag_kb.domain.memory import (
     ConversationContextSnapshot,
     empty_context_snapshot,
 )
+from rag_kb.domain.chat_workflow import ChatWorkflowMode, initial_chat_workflow
 
 
 class ChatPipelinePhase(StrEnum):
@@ -38,6 +39,9 @@ class ChatPipelinePhase(StrEnum):
 class ChatOutputSchema(StrEnum):
     ANSWER_V1 = "answer_v1"
     CONTEXTUAL_QUERY_V2 = "contextual_query_v2"
+    RETRIEVAL_AGENT_ACTION_V1 = "retrieval_agent_action_v1"
+    RESEARCH_RESULT_VERIFICATION_V1 = "research_result_verification_v1"
+    AUTO_ROUTE_V1 = "auto_route_v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +87,16 @@ class ChatExecutionContext:
         default_factory=empty_context_snapshot
     )
     contextualized_query: ContextualizedQuery | None = None
+    workflow_configuration: Mapping[str, Any] = field(
+        default_factory=lambda: initial_chat_workflow(ChatWorkflowMode.SIMPLE)[
+            0
+        ].as_dict()
+    )
+    workflow_state: Mapping[str, Any] = field(
+        default_factory=lambda: initial_chat_workflow(ChatWorkflowMode.SIMPLE)[
+            1
+        ].as_dict()
+    )
 
     def __post_init__(self) -> None:
         if not self.query.strip():
@@ -103,6 +117,14 @@ class ChatExecutionContext:
         )
         object.__setattr__(
             self, "model_configuration", _frozen_mapping(self.model_configuration)
+        )
+        object.__setattr__(
+            self,
+            "workflow_configuration",
+            _frozen_mapping(self.workflow_configuration),
+        )
+        object.__setattr__(
+            self, "workflow_state", _frozen_mapping(self.workflow_state)
         )
 
 
@@ -141,6 +163,7 @@ class ChatModelRequest:
     messages: tuple[ChatModelMessage, ...]
     output_schema: ChatOutputSchema | None = None
     max_output_tokens: int | None = None
+    model_profile_revision_id: UUID | None = None
 
     def __post_init__(self) -> None:
         if not self.messages:
@@ -149,7 +172,7 @@ class ChatModelRequest:
             self.max_output_tokens is not None
             and (
                 isinstance(self.max_output_tokens, bool)
-                or not 1 <= self.max_output_tokens <= 2048
+                or not 1 <= self.max_output_tokens <= 8192
             )
         ):
             raise ValueError("chat model output token limit is invalid")

@@ -29,6 +29,10 @@ from rag_kb.domain import (
     ChatRunLease,
     ChatTerminalSuccessCommand,
     ChatTerminalWriteStatus,
+    ChatResolvedMode,
+    ChatRouteStatus,
+    ChatWorkflowMode,
+    ChatWorkflowState,
     ChatSession,
     ContextualizedQuery,
     ConversationTurn,
@@ -36,6 +40,8 @@ from rag_kb.domain import (
     IdempotencyScope,
     Page,
     ReconciliationResult,
+    hydrate_chat_workflow_configuration,
+    hydrate_chat_workflow_state,
 )
 from rag_kb.memory import (
     hydrate_contextualized_query,
@@ -218,6 +224,12 @@ class SqlAlchemyChatRepository:
                     if command.final_llm_context is not None
                     else None
                 )
+                and run.workflow_state
+                == (
+                    dict(command.workflow_state)
+                    if command.workflow_state is not None
+                    else run.workflow_state
+                )
             ):
                 return ChatTerminalWriteStatus.IDEMPOTENT
             return ChatTerminalWriteStatus.STALE
@@ -281,6 +293,8 @@ class SqlAlchemyChatRepository:
             if command.final_llm_context is not None
             else None
         )
+        if command.workflow_state is not None:
+            run.workflow_state = dict(command.workflow_state)
         run.error_code = None
         run.error_detail = None
         run.error_retryable = None
@@ -474,6 +488,10 @@ class SqlAlchemyChatRepository:
                 if run.contextualized_query is not None
                 else None
             )
+            workflow_configuration = hydrate_chat_workflow_configuration(
+                run.workflow_configuration
+            )
+            workflow_state = hydrate_chat_workflow_state(run.workflow_state)
         except (TypeError, ValueError):
             return None
         return ChatExecutionContext(
@@ -494,6 +512,8 @@ class SqlAlchemyChatRepository:
             attempt=run.attempt,
             conversation_context=conversation_context,
             contextualized_query=contextualized_query,
+            workflow_configuration=workflow_configuration.as_dict(),
+            workflow_state=workflow_state.as_dict(),
         )
 
     async def create_session(
@@ -639,6 +659,49 @@ class SqlAlchemyChatRepository:
         except (TypeError, ValueError):
             return None
         return existing
+
+    async def save_workflow_resolution(
+        self,
+        lease: ChatRunLease,
+        value: ChatWorkflowState,
+    ) -> ChatWorkflowState | None:
+        self._ensure_active()
+        if lease.workspace_id != self._workspace_id:
+            return None
+        if (
+            value.resolved_mode is ChatResolvedMode.PENDING
+            or value.route_status
+            not in {ChatRouteStatus.RESOLVED, ChatRouteStatus.FALLBACK}
+            or value.research_result is not None
+        ):
+            raise ValueError("workflow resolution state is invalid")
+        row = await self._session.scalar(
+            select(ChatRunRow)
+            .where(
+                ChatRunRow.workspace_id == self._workspace_id,
+                ChatRunRow.id == lease.run_id,
+                ChatRunRow.status == ChatRunStatus.RUNNING,
+                ChatRunRow.claimed_by == lease.claimed_by,
+                ChatRunRow.attempt == lease.attempt,
+            )
+            .with_for_update()
+        )
+        if row is None:
+            return None
+        try:
+            configuration = hydrate_chat_workflow_configuration(
+                row.workflow_configuration
+            )
+            existing = hydrate_chat_workflow_state(row.workflow_state)
+        except (TypeError, ValueError):
+            return None
+        if configuration.requested_mode is not ChatWorkflowMode.AUTO:
+            return None
+        if existing.resolved_mode is not ChatResolvedMode.PENDING:
+            return existing
+        row.workflow_state = value.as_dict()
+        await self._session.flush()
+        return value
 
     async def list_sessions(
         self,
@@ -789,6 +852,8 @@ class SqlAlchemyChatRepository:
         effective_policy: dict[str, Any],
         retrieval_strategy: dict[str, Any],
         model_configuration: dict[str, Any],
+        workflow_configuration: dict[str, Any],
+        workflow_state: dict[str, Any],
         conversation_context: dict[str, Any],
         contextualized_query: dict[str, Any] | None,
     ) -> ChatRun:
@@ -820,6 +885,8 @@ class SqlAlchemyChatRepository:
             effective_policy=dict(effective_policy),
             retrieval_strategy=dict(retrieval_strategy),
             model_configuration=dict(model_configuration),
+            workflow_configuration=dict(workflow_configuration),
+            workflow_state=dict(workflow_state),
             conversation_context=dict(conversation_context),
             contextualized_query=(
                 dict(contextualized_query)
@@ -1050,6 +1117,19 @@ def _serialized_validation(command: ChatTerminalSuccessCommand) -> dict[str, Any
             "safe_fallback": validation.safe_fallback,
         },
         "retrieval": dict(command.retrieval_diagnostics),
+        "workflow": (
+            {
+                "resolved_mode": command.workflow_state.get("resolved_mode"),
+                "route_status": command.workflow_state.get("route_status"),
+                "termination_reason": (
+                    (command.workflow_state.get("research_result") or {}).get(
+                        "termination_reason"
+                    )
+                ),
+            }
+            if command.workflow_state is not None
+            else None
+        ),
         "visual_evidence": {
             "candidate_count": len(command.visual_decisions),
             "selected_count": sum(
@@ -1217,6 +1297,8 @@ def _run(
         effective_policy=dict(run.effective_policy),
         retrieval_strategy=dict(run.retrieval_strategy),
         model_configuration=dict(run.model_configuration),
+        workflow_configuration=dict(run.workflow_configuration),
+        workflow_state=dict(run.workflow_state),
         assistant_status=assistant.assistant_status.value,
         assistant_content=assistant.content,
         citations=citations,

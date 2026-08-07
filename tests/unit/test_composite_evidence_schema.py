@@ -10,11 +10,31 @@ from rag_kb.db.readiness import EXPECTED_REVISION
 
 class CompositeEvidenceSchemaTests(unittest.TestCase):
     def test_current_head_and_inventory_include_composite_relations(self) -> None:
-        self.assertEqual(EXPECTED_REVISION, "0001_current_only_baseline")
+        self.assertEqual(EXPECTED_REVISION, "0003_model_settings")
         self.assertIn("index_chunk_asset_relation", Base.metadata.tables)
         self.assertIn("index_chunk_lexical", Base.metadata.tables)
         self.assertIn("index_lexical_manifest", Base.metadata.tables)
-        self.assertEqual(len(Base.metadata.tables), 25)
+        self.assertEqual(len(Base.metadata.tables), 30)
+        self.assertIn("model_provider", Base.metadata.tables)
+        self.assertIn("model_profile_revision", Base.metadata.tables)
+        self.assertIn("model_selection", Base.metadata.tables)
+
+        chat_run = Base.metadata.tables["chat_run"]
+        self.assertFalse(chat_run.c.workflow_configuration.nullable)
+        self.assertFalse(chat_run.c.workflow_state.nullable)
+        self.assertEqual(
+            {
+                constraint.name
+                for constraint in chat_run.constraints
+                if isinstance(constraint, CheckConstraint)
+                and constraint.name is not None
+                and "workflow" in constraint.name
+            },
+            {
+                "ck_chat_run_workflow_configuration_v1",
+                "ck_chat_run_workflow_state_v1",
+            },
+        )
 
     def test_current_rows_require_complete_relation_manifest_facts(self) -> None:
         chunk = Base.metadata.tables["index_chunk"]

@@ -1,6 +1,7 @@
 """Evidence-grounded assessment, generation, and validation boundary."""
 
 from rag_kb.answering.pipeline_steps import (
+    AdaptiveEvidenceAssessmentStep,
     AnswerGenerationStep,
     CosineEvidenceAssessmentStep,
 )
@@ -17,6 +18,7 @@ from rag_kb.answering.structure_validator import (
 from rag_kb.answering.wire_schemas import WireAnswer
 
 __all__ = [
+    "AdaptiveEvidenceAssessmentStep",
     "AnswerGenerationStep",
     "AnswerStructureValidationStep",
     "CosineEvidenceAssessmentStep",

@@ -17,6 +17,7 @@ from rag_kb.domain import (
     ChatSession,
     ChatTerminalSuccessCommand,
     ChatTerminalWriteStatus,
+    ChatWorkflowState,
     IdempotencyScope,
     Page,
     ReconciliationResult,
@@ -84,6 +85,12 @@ class ChatRepository(Protocol):
         value: ContextualizedQuery,
     ) -> ContextualizedQuery | None: ...
 
+    async def save_workflow_resolution(
+        self,
+        lease: ChatRunLease,
+        value: ChatWorkflowState,
+    ) -> ChatWorkflowState | None: ...
+
     async def list_sessions(
         self,
         *,
@@ -125,6 +132,8 @@ class ChatRepository(Protocol):
         effective_policy: dict[str, Any],
         retrieval_strategy: dict[str, Any],
         model_configuration: dict[str, Any],
+        workflow_configuration: dict[str, Any],
+        workflow_state: dict[str, Any],
         conversation_context: dict[str, Any],
         contextualized_query: dict[str, Any] | None,
     ) -> ChatRun: ...

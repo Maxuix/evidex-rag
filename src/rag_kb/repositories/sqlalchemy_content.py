@@ -203,6 +203,7 @@ class SqlAlchemyKnowledgeBaseRepository:
                 configuration_fingerprint=definition.configuration_fingerprint,
                 tokenizer_fingerprint=definition.tokenizer_fingerprint,
                 compatibility_fingerprint=definition.compatibility_fingerprint,
+                model_profile_revision_id=definition.model_profile_revision_id,
             )
             self._session.add(embedding)
             await self._session.flush()
@@ -1286,6 +1287,7 @@ def _embedding_matches(row: EmbeddingSpaceRow, workspace_id: UUID, value: Embedd
         and row.normalization == value.normalization
         and row.configuration_fingerprint == value.configuration_fingerprint
         and row.tokenizer_fingerprint == value.tokenizer_fingerprint
+        and row.model_profile_revision_id == value.model_profile_revision_id
     )
 
 

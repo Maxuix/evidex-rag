@@ -6,6 +6,7 @@ from apps.api.routers.indexing import router as indexing_router
 from apps.api.routers.knowledge_bases import router as knowledge_bases_router
 from apps.api.routers.retrieval import router as retrieval_router
 from apps.api.routers.assets import router as assets_router
+from apps.api.routers.model_settings import router as model_settings_router
 
 
 BUSINESS_ROUTERS = (
@@ -15,6 +16,7 @@ BUSINESS_ROUTERS = (
     retrieval_router,
     assets_router,
     chat_router,
+    model_settings_router,
 )
 
 __all__ = ["BUSINESS_ROUTERS"]

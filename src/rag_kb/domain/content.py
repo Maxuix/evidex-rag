@@ -34,6 +34,7 @@ class EmbeddingSpaceDefinition:
     configuration_fingerprint: str
     tokenizer_fingerprint: str | None
     compatibility_fingerprint: str
+    model_profile_revision_id: UUID | None = None
 
 
 @dataclass(frozen=True, slots=True)

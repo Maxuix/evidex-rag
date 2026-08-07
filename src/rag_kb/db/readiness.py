@@ -5,7 +5,7 @@ from __future__ import annotations
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-EXPECTED_REVISION = "0001_current_only_baseline"
+EXPECTED_REVISION = "0003_model_settings"
 
 
 class DatabaseReadinessError(RuntimeError):

@@ -16,6 +16,7 @@ from rag_kb.domain.answering import (
     RenderedAnswer,
 )
 from rag_kb.domain.chat_pipeline import ChatPipelinePhase, ChatRunLease
+from rag_kb.domain.chat_workflow import hydrate_chat_workflow_state
 from rag_kb.domain.errors import ErrorCode
 from rag_kb.domain.composite import VisualEvidenceDecision
 
@@ -39,6 +40,7 @@ class ChatTerminalSuccessCommand:
     visual_image_count: int = 0
     visual_total_bytes: int = 0
     final_llm_context: Mapping[str, Any] | None = None
+    workflow_state: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         _require_finish_time(self.lease, self.finished_at)
@@ -61,6 +63,16 @@ class ChatTerminalSuccessCommand:
                 self,
                 "final_llm_context",
                 MappingProxyType(dict(self.final_llm_context)),
+            )
+        if self.workflow_state is not None:
+            try:
+                workflow_state = hydrate_chat_workflow_state(self.workflow_state)
+            except (TypeError, ValueError) as error:
+                raise ValueError("terminal workflow state is invalid") from error
+            object.__setattr__(
+                self,
+                "workflow_state",
+                MappingProxyType(workflow_state.as_dict()),
             )
 
 

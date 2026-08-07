@@ -236,6 +236,17 @@ class ChatDeliverySettings(StrictSettingsModel):
     preview_queue_size: Annotated[int, Field(ge=8, le=256)] = 64
 
 
+class ChatWorkflowSettings(StrictSettingsModel):
+    agent_enabled: bool = True
+    auto_enabled: bool = True
+
+    @model_validator(mode="after")
+    def require_agent_for_auto(self) -> Self:
+        if self.auto_enabled and not self.agent_enabled:
+            raise ValueError("Auto workflow requires Agent capability")
+        return self
+
+
 class FileStoreSettings(StrictSettingsModel):
     root_path: Path = Path("/var/lib/rag-kb/sources")
     staging_path: Path = Path("/var/lib/rag-kb/sources/staging")
@@ -312,6 +323,17 @@ class ParserSettings(StrictSettingsModel):
     docling_artifact_manifest_path: Path = Path(
         "/app/config/docling-artifacts-v1.json"
     )
+
+
+class ModelSecretsSettings(StrictSettingsModel):
+    root_path: Path = Path("/var/lib/rag-kb/model-secrets")
+
+    @field_validator("root_path")
+    @classmethod
+    def require_absolute_root(cls, value: Path) -> Path:
+        if not value.is_absolute():
+            raise ValueError("model-secret root_path must be absolute")
+        return value
 
 
 class ProviderSettings(StrictSettingsModel):
@@ -469,10 +491,12 @@ class Settings(BaseSettings):
     database: DatabaseSettings
     job_poller: JobPollerSettings = Field(default_factory=JobPollerSettings)
     chat_delivery: ChatDeliverySettings = Field(default_factory=ChatDeliverySettings)
+    chat_workflow: ChatWorkflowSettings = Field(default_factory=ChatWorkflowSettings)
     file_store: FileStoreSettings = Field(default_factory=FileStoreSettings)
     maintenance: MaintenanceSettings = Field(default_factory=MaintenanceSettings)
     parser: ParserSettings = Field(default_factory=ParserSettings)
-    model_provider: ModelProviderSettings
+    model_secrets: ModelSecretsSettings = Field(default_factory=ModelSecretsSettings)
+    model_provider: ModelProviderSettings | None = None
     retrieval: RetrievalSettings = Field(default_factory=RetrievalSettings)
     observability: ObservabilitySettings = Field(
         default_factory=ObservabilitySettings
@@ -497,33 +521,50 @@ class Settings(BaseSettings):
             raise ValueError(
                 "API database pool cannot cover requests, SSE reads, and safety margin"
             )
-        operation_timeouts = [
-            self.model_provider.chat.timeout_seconds,
-            self.model_provider.embedding.timeout_seconds,
-        ]
-        if self.model_provider.multimodal_embedding is not None:
+        operation_timeouts: list[float] = []
+        if self.model_provider is not None:
+            operation_timeouts.extend(
+                (
+                    self.model_provider.chat.timeout_seconds,
+                    self.model_provider.embedding.timeout_seconds,
+                )
+            )
+        if (
+            self.model_provider is not None
+            and self.model_provider.multimodal_embedding is not None
+        ):
             operation_timeouts.append(
                 self.model_provider.multimodal_embedding.timeout_seconds
             )
-        longest_operation = max(operation_timeouts)
-        if self.job_poller.stale_after_seconds <= longest_operation:
+        if (
+            operation_timeouts
+            and self.job_poller.stale_after_seconds <= max(operation_timeouts)
+        ):
             raise ValueError(
                 "stale_after_seconds must exceed every bounded indexing operation"
             )
-        retrieval_provider_budgets = [
-            embedding_retry_budget_seconds(
-                self.model_provider.embedding.timeout_seconds,
-                self.model_provider.embedding.max_retries,
+        retrieval_provider_budgets: list[float] = []
+        if self.model_provider is not None:
+            retrieval_provider_budgets.append(
+                embedding_retry_budget_seconds(
+                    self.model_provider.embedding.timeout_seconds,
+                    self.model_provider.embedding.max_retries,
+                )
             )
-        ]
-        if self.model_provider.multimodal_embedding is not None:
+        if (
+            self.model_provider is not None
+            and self.model_provider.multimodal_embedding is not None
+        ):
             retrieval_provider_budgets.append(
                 embedding_retry_budget_seconds(
                     self.model_provider.multimodal_embedding.timeout_seconds,
                     self.model_provider.multimodal_embedding.max_retries,
                 )
             )
-        if self.retrieval.deadline_seconds <= max(retrieval_provider_budgets):
+        if (
+            retrieval_provider_budgets
+            and self.retrieval.deadline_seconds <= max(retrieval_provider_budgets)
+        ):
             raise ValueError(
                 "retrieval deadline must exceed every query embedding retry budget"
             )

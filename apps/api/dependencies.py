@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -13,9 +14,15 @@ from rag_kb.adapters.markdown_media.http import PublicHttpImageFetcher
 from rag_kb.adapters.model_api.langchain_embeddings import (
     LangChainEmbeddingModelAdapter,
 )
+from rag_kb.adapters.model_api.langchain_chat import LangChainChatModelAdapter
+from rag_kb.adapters.model_api.model_catalog import (
+    OpenAICompatibleModelCatalogAdapter,
+)
 from rag_kb.adapters.model_api.multimodal_embeddings import (
     TongyiVisionEmbeddingAdapter,
 )
+from rag_kb.adapters.model_api.unconfigured import UnconfiguredEmbeddingModelAdapter
+from rag_kb.adapters.model_secrets.local import LocalModelSecretStore
 from rag_kb.adapters.vector_store.pgvector import PgVectorStore
 from rag_kb.auth import DevelopmentAuthProvider, SingleWorkspaceAccessPolicy
 from rag_kb.config import (
@@ -30,7 +37,15 @@ from rag_kb.db import (
     check_database_ready,
     create_database_resources,
 )
-from rag_kb.domain import AdmissionLimits
+from rag_kb.domain import (
+    AdmissionLimits,
+    ChatModelMessage,
+    ChatModelRequest,
+    EmbeddingSpaceDefinition,
+    ModelKind,
+    ModelProfileBundle,
+    ModelValidationStatus,
+)
 from rag_kb.ports.model_api import EmbeddingModelAdapter
 from rag_kb.retrieval.service import RetrievalService
 from rag_kb.services.admission import FileAdmissionService
@@ -47,11 +62,14 @@ from rag_kb.services.content import (
     KnowledgeBaseService,
     build_content_services,
     embedding_space_definition,
+    unconfigured_embedding_space_definition,
 )
 from rag_kb.services.files import SourceFileService
 from rag_kb.services.indexing import IndexingJobService
 from rag_kb.services.markdown_media import MarkdownMediaNormalizer
+from rag_kb.services.model_settings import ModelSettingsService
 from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWorkFactory
+from rag_kb.uow import UnitOfWork, UnitOfWorkPurpose, execute_in_transaction
 
 
 @dataclass(frozen=True)
@@ -81,6 +99,8 @@ class ApiDependencies:
     chat_event_watcher: ChatEventWatcher
     chat_sse_connection_limiter: ChatSseConnectionLimiter
     chat_preview_broker: PgNotifyPreviewBroker | None
+    model_secret_store: LocalModelSecretStore
+    model_settings_service: ModelSettingsService
 
     async def close(self) -> None:
         """Release process-owned database resources during API shutdown."""
@@ -127,18 +147,39 @@ def build_api_dependencies(
         identity.workspace_id,
     )
     access_policy = SingleWorkspaceAccessPolicy(identity.workspace_id)
-    embedding = resolved_settings.model_provider.embedding
-    embedding_space = embedding_space_definition(embedding)
-    embedding_provider = LangChainEmbeddingModelAdapter(
-        base_url=str(embedding.base_url),
-        api_key=embedding.api_key.get_secret_value(),
-        embedding_space=embedding_space,
-        max_batch_size=embedding.max_batch_size,
-        timeout_seconds=embedding.timeout_seconds,
-        max_retries=embedding.max_retries,
-        max_concurrency=embedding.max_concurrency,
+    model_secret_store = LocalModelSecretStore(
+        resolved_settings.model_secrets.root_path
     )
-    multimodal_settings = resolved_settings.model_provider.multimodal_embedding
+    model_settings_service = ModelSettingsService(
+        unit_of_work,
+        access_policy,
+        model_secret_store,
+        profile_validator=_validate_model_profile,
+        provider_catalog=OpenAICompatibleModelCatalogAdapter().list_models,
+    )
+    legacy_models = resolved_settings.model_provider
+    embedding = legacy_models.embedding if legacy_models is not None else None
+    embedding_space = (
+        embedding_space_definition(embedding)
+        if embedding is not None
+        else unconfigured_embedding_space_definition()
+    )
+    embedding_provider: EmbeddingModelAdapter = (
+        LangChainEmbeddingModelAdapter(
+            base_url=str(embedding.base_url),
+            api_key=embedding.api_key.get_secret_value(),
+            embedding_space=embedding_space,
+            max_batch_size=embedding.max_batch_size,
+            timeout_seconds=embedding.timeout_seconds,
+            max_retries=embedding.max_retries,
+            max_concurrency=embedding.max_concurrency,
+        )
+        if embedding is not None
+        else UnconfiguredEmbeddingModelAdapter(embedding_space)
+    )
+    multimodal_settings = (
+        legacy_models.multimodal_embedding if legacy_models is not None else None
+    )
     multimodal_embedding_provider = None
     asset_store = None
     if multimodal_settings is not None:
@@ -166,7 +207,7 @@ def build_api_dependencies(
         unit_of_work,
         access_policy,
         embedding,
-        resolved_settings.model_provider.multimodal_embedding,
+        multimodal_settings,
     )
     file_store = LocalFileStore(
         resolved_settings.file_store.staging_path,
@@ -213,15 +254,25 @@ def build_api_dependencies(
         min_rerank_score=resolved_settings.retrieval.min_rerank_score,
         relation_hydrator=CompositeEvidenceHydrationService(unit_of_work),
         deadline_seconds=resolved_settings.retrieval.deadline_seconds,
+        embedding_model_resolver=_embedding_model_loader(
+            unit_of_work, model_secret_store
+        ),
+        multimodal_embedding_model_resolver=_multimodal_model_loader(
+            unit_of_work, model_secret_store
+        ),
     )
     chat_service = ChatService(
         unit_of_work,
         access_policy,
-        model_configuration=chat_model_configuration(
-            resolved_settings.model_provider.chat
+        model_configuration=(
+            chat_model_configuration(legacy_models.chat)
+            if legacy_models is not None
+            else {}
         ),
         default_rerank=resolved_settings.retrieval.rerank_enabled,
         hybrid_enabled=retrieval_service.hybrid_request_enabled(),
+        agent_enabled=resolved_settings.chat_workflow.agent_enabled,
+        auto_enabled=resolved_settings.chat_workflow.auto_enabled,
         retrieval_profile_factory=lambda strategy, top_k, rerank: (
             retrieval_service.execution_profile(
                 strategy=strategy,
@@ -229,6 +280,7 @@ def build_api_dependencies(
                 rerank=rerank,
             )
         ),
+        allow_legacy_model_configuration=False,
     )
     chat_delivery = resolved_settings.chat_delivery
     chat_preview_broker = (
@@ -286,4 +338,160 @@ def build_api_dependencies(
             chat_delivery.max_connections_per_principal_run
         ),
         chat_preview_broker=chat_preview_broker,
+        model_secret_store=model_secret_store,
+        model_settings_service=model_settings_service,
     )
+
+
+async def _validate_model_profile(
+    bundle: ModelProfileBundle,
+    api_key: str,
+) -> None:
+    provider = bundle.provider_revision
+    revision = bundle.current_revision
+    parameters = dict(revision.configuration)
+    if bundle.profile.kind is ModelKind.CHAT:
+        adapter = LangChainChatModelAdapter(
+            base_url=provider.base_url,
+            api_key=api_key,
+            model=revision.model,
+            timeout_seconds=provider.timeout_seconds,
+            max_retries=provider.max_retries,
+            max_concurrency=provider.max_concurrency,
+            temperature=parameters.get("temperature", 0.2),
+            top_p=parameters.get("top_p", 0.9),
+            sampling_top_k=parameters.get("sampling_top_k", 40),
+            max_tokens=parameters.get("max_output_tokens", 4096),
+            structured_output_mode=parameters.get(
+                "structured_output_mode", "json_object"
+            ),
+            reasoning_effort=parameters.get("reasoning_effort", "off"),
+        )
+        await adapter.complete(
+            ChatModelRequest(
+                messages=(ChatModelMessage("user", "Return an empty JSON object."),),
+                max_output_tokens=16,
+            )
+        )
+        return
+
+    embedding_space = EmbeddingSpaceDefinition(
+        provider_identity=bundle.provider.name,
+        endpoint_identity=provider.configuration_fingerprint,
+        requested_model=revision.model,
+        resolved_model=revision.model,
+        model_version=revision.model,
+        deployment_revision=None,
+        dimension=parameters["dimension"],
+        distance_metric=parameters["distance_metric"],
+        vector_data_type=parameters["vector_data_type"],
+        normalization=parameters["normalization"],
+        configuration_fingerprint=revision.configuration_fingerprint,
+        tokenizer_fingerprint=None,
+        compatibility_fingerprint=revision.compatibility_fingerprint or "",
+    )
+    if bundle.profile.kind is ModelKind.TEXT_EMBEDDING:
+        adapter = LangChainEmbeddingModelAdapter(
+            base_url=provider.base_url,
+            api_key=api_key,
+            embedding_space=embedding_space,
+            max_batch_size=parameters["max_batch_size"],
+            timeout_seconds=provider.timeout_seconds,
+            max_retries=provider.max_retries,
+            max_concurrency=provider.max_concurrency,
+        )
+        await adapter.embed_query("model validation")
+        return
+    adapter = TongyiVisionEmbeddingAdapter(
+        endpoint=provider.base_url,
+        api_key=api_key,
+        embedding_space=embedding_space,
+        max_batch_size=parameters["max_batch_size"],
+        timeout_seconds=provider.timeout_seconds,
+        max_retries=provider.max_retries,
+        max_concurrency=provider.max_concurrency,
+    )
+    await adapter.embed_texts(("model validation",))
+
+
+async def _embedding_bundle(unit_of_work, space, kind):
+    revision_id = space.model_profile_revision_id
+    if revision_id is None:
+        raise ValueError("embedding space has no model profile revision")
+
+    async def resolve(uow: UnitOfWork):
+        bundle = await uow.model_settings.get_profile_revision(revision_id)
+        if (
+            bundle is None
+            or bundle.profile.kind is not kind
+            or not bundle.profile.enabled
+            or not bundle.provider.enabled
+            or bundle.current_revision.validation_status
+            is not ModelValidationStatus.VALID
+            or bundle.current_revision.compatibility_fingerprint
+            != space.compatibility_fingerprint
+        ):
+            raise ValueError("embedding model profile is unavailable")
+        return bundle
+
+    return await execute_in_transaction(
+        unit_of_work, resolve, purpose=UnitOfWorkPurpose.REQUEST
+    )
+
+
+def _embedding_model_loader(unit_of_work, secret_store):
+    cache = {}
+
+    async def load(space):
+        revision_id = space.model_profile_revision_id
+        if revision_id in cache:
+            return cache[revision_id]
+        bundle = await _embedding_bundle(
+            unit_of_work, space, ModelKind.TEXT_EMBEDDING
+        )
+        key = await asyncio.to_thread(
+            secret_store.read, bundle.provider_revision.secret_reference
+        )
+        parameters = bundle.current_revision.configuration
+        adapter = LangChainEmbeddingModelAdapter(
+            base_url=bundle.provider_revision.base_url,
+            api_key=key,
+            embedding_space=space,
+            max_batch_size=parameters["max_batch_size"],
+            timeout_seconds=bundle.provider_revision.timeout_seconds,
+            max_retries=bundle.provider_revision.max_retries,
+            max_concurrency=bundle.provider_revision.max_concurrency,
+        )
+        cache[revision_id] = adapter
+        return adapter
+
+    return load
+
+
+def _multimodal_model_loader(unit_of_work, secret_store):
+    cache = {}
+
+    async def load(space):
+        revision_id = space.model_profile_revision_id
+        if revision_id in cache:
+            return cache[revision_id]
+        bundle = await _embedding_bundle(
+            unit_of_work, space, ModelKind.MULTIMODAL_EMBEDDING
+        )
+        key = await asyncio.to_thread(
+            secret_store.read, bundle.provider_revision.secret_reference
+        )
+        parameters = bundle.current_revision.configuration
+        adapter = TongyiVisionEmbeddingAdapter(
+            endpoint=bundle.provider_revision.base_url,
+            api_key=key,
+            embedding_space=space,
+            max_batch_size=parameters["max_batch_size"],
+            timeout_seconds=bundle.provider_revision.timeout_seconds,
+            max_retries=bundle.provider_revision.max_retries,
+            max_concurrency=bundle.provider_revision.max_concurrency,
+        )
+        cache[revision_id] = adapter
+        return adapter
+
+    return load

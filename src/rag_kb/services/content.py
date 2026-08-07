@@ -21,6 +21,8 @@ from rag_kb.domain import (
     IdempotencyScope,
     IndexProfileDefinition,
     KnowledgeBase,
+    ModelKind,
+    ModelValidationStatus,
     Page,
     ParsingPreset,
     ResourceNotFoundError,
@@ -52,7 +54,9 @@ def build_content_services(
 ) -> ContentServices:
     """Construct content services without exposing domain configuration to the API."""
 
-    definition = embedding_space_definition(embedding)
+    definition = (
+        embedding_space_definition(embedding) if embedding is not None else None
+    )
     multimodal_definition = (
         embedding_space_definition(multimodal_embedding)
         if multimodal_embedding is not None
@@ -91,13 +95,86 @@ def embedding_space_definition(embedding: Any) -> EmbeddingSpaceDefinition:
     )
 
 
+def unconfigured_embedding_space_definition() -> EmbeddingSpaceDefinition:
+    """Return a non-persistable runtime shape for the fail-closed adapter."""
+
+    fingerprint = "sha256:" + "0" * 64
+    return EmbeddingSpaceDefinition(
+        provider_identity="unconfigured",
+        endpoint_identity="unconfigured",
+        requested_model="unconfigured",
+        resolved_model="unconfigured",
+        model_version="unconfigured",
+        deployment_revision=None,
+        dimension=1024,
+        distance_metric="cosine",
+        vector_data_type="float32",
+        normalization="l2",
+        configuration_fingerprint=fingerprint,
+        tokenizer_fingerprint=None,
+        compatibility_fingerprint=fingerprint,
+    )
+
+
+async def _selected_embedding_space(
+    uow: UnitOfWork,
+    kind: ModelKind,
+    fallback: EmbeddingSpaceDefinition | None,
+) -> EmbeddingSpaceDefinition:
+    repository = getattr(uow, "model_settings", None)
+    if repository is None:
+        if fallback is None:
+            raise ResourceStateConflictError("an embedding model must be selected")
+        return fallback
+    selection = await repository.get_selection()
+    revision_id = (
+        selection.text_embedding_profile_revision_id
+        if kind is ModelKind.TEXT_EMBEDDING
+        else selection.multimodal_embedding_profile_revision_id
+    )
+    if revision_id is None:
+        if fallback is None:
+            raise ResourceStateConflictError("an embedding model must be selected")
+        return fallback
+    bundle = await repository.get_profile_revision(revision_id)
+    if bundle is None or bundle.profile.kind is not kind:
+        raise ResourceStateConflictError("the selected embedding model is invalid")
+    if (
+        not bundle.profile.enabled
+        or not bundle.provider.enabled
+        or bundle.current_revision.validation_status
+        is not ModelValidationStatus.VALID
+    ):
+        raise ResourceStateConflictError("the selected embedding model is unavailable")
+    revision = bundle.current_revision
+    parameters = revision.configuration
+    if revision.compatibility_fingerprint is None:
+        raise ResourceStateConflictError("embedding compatibility is missing")
+    return EmbeddingSpaceDefinition(
+        provider_identity=bundle.provider.name,
+        endpoint_identity=bundle.provider_revision.configuration_fingerprint,
+        requested_model=revision.model,
+        resolved_model=revision.model,
+        model_version=revision.model,
+        deployment_revision=None,
+        dimension=parameters["dimension"],
+        distance_metric=parameters["distance_metric"],
+        vector_data_type=parameters["vector_data_type"],
+        normalization=parameters["normalization"],
+        configuration_fingerprint=revision.configuration_fingerprint,
+        tokenizer_fingerprint=None,
+        compatibility_fingerprint=revision.compatibility_fingerprint,
+        model_profile_revision_id=revision.id,
+    )
+
+
 class KnowledgeBaseService:
     def __init__(
         self,
         unit_of_work: UnitOfWorkFactory,
         access_policy: AccessPolicy,
         *,
-        embedding_space: EmbeddingSpaceDefinition,
+        embedding_space: EmbeddingSpaceDefinition | None,
         cross_modal_embedding_space: EmbeddingSpaceDefinition | None = None,
         index_profile: IndexProfileDefinition,
     ) -> None:
@@ -129,13 +206,6 @@ class KnowledgeBaseService:
         resolved_preset = ChunkingPreset(chunking_preset)
         resolved_parsing = ParsingPreset(parsing_preset)
         resolved_profile = profile_for_preset(resolved_preset, resolved_parsing)
-        if (
-            resolved_parsing is ParsingPreset.MULTIMODAL_LOCAL_V2
-            and self._cross_modal_embedding_space is None
-        ):
-            raise ResourceStateConflictError(
-                "multimodal parsing requires a configured cross-modal embedding space"
-            )
         scope = IdempotencyScope(
             context.principal_id,
             context.client_id,
@@ -165,16 +235,24 @@ class KnowledgeBaseService:
                 if existing is None:
                     raise ResourceNotFoundError("idempotent knowledge base is unavailable")
                 return existing
+            embedding_space = await _selected_embedding_space(
+                uow,
+                ModelKind.TEXT_EMBEDDING,
+                self._embedding_space,
+            )
+            cross_modal_embedding_space = None
+            if resolved_parsing is ParsingPreset.MULTIMODAL_LOCAL_V2:
+                cross_modal_embedding_space = await _selected_embedding_space(
+                    uow,
+                    ModelKind.MULTIMODAL_EMBEDDING,
+                    self._cross_modal_embedding_space,
+                )
             created = await uow.knowledge_bases.create(
                 name=name,
                 retrieval_defaults=retrieval_defaults,
                 answer_policy_defaults=resolved_answer_defaults,
-                embedding_space=self._embedding_space,
-                cross_modal_embedding_space=(
-                    self._cross_modal_embedding_space
-                    if resolved_parsing is ParsingPreset.MULTIMODAL_LOCAL_V2
-                    else None
-                ),
+                embedding_space=embedding_space,
+                cross_modal_embedding_space=cross_modal_embedding_space,
                 index_profile=resolved_profile,
             )
             await uow.content_mutations.add(

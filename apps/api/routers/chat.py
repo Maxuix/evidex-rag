@@ -20,8 +20,11 @@ from rag_kb.domain import (
     ChatMessage,
     ChatPreviewDelta,
     ChatPreviewReset,
+    ChatProgressSnapshot,
     ChatRun,
     ChatSession,
+    hydrate_chat_workflow_configuration,
+    hydrate_chat_workflow_state,
 )
 from rag_kb.services.chat_delivery import ChatSseSubscription
 from rag_kb.schemas import (
@@ -38,6 +41,9 @@ from rag_kb.schemas import (
     ChatRunFailedEvent,
     ChatRunResponse,
     ChatRunQueryContextResponse,
+    ChatWorkflowCapabilitiesResponse,
+    ChatWorkflowResponse,
+    ChatWorkflowProgressEvent,
     ChatSessionCreate,
     ChatSessionPage,
     ChatSessionResponse,
@@ -54,6 +60,21 @@ from rag_kb.memory import (
 router = APIRouter(prefix="/chat", tags=["chat"])
 SessionSort = Literal["created_at", "-created_at", "updated_at", "-updated_at"]
 MessageSort = Literal["created_at", "-created_at"]
+
+
+@router.get(
+    "/capabilities",
+    response_model=ChatWorkflowCapabilitiesResponse,
+    responses=problem_responses(500),
+)
+async def chat_workflow_capabilities(
+    request: Request,
+    context: Annotated[AuthContext, Depends(get_auth_context)],
+) -> ChatWorkflowCapabilitiesResponse:
+    del context
+    return ChatWorkflowCapabilitiesResponse.model_validate(
+        request.app.state.dependencies.chat_service.workflow_capabilities_snapshot()
+    )
 
 
 @router.post(
@@ -155,6 +176,8 @@ async def create_chat_run(
         retrieval_mode=payload.retrieval.mode,
         top_k=payload.retrieval.top_k,
         rerank=payload.retrieval.rerank,
+        workflow_mode=payload.workflow.mode,
+        model_profile_revision_id=payload.model_profile_revision_id,
     )
     response.headers["Location"] = _status_url(value.id)
     return _run_response(value)
@@ -279,6 +302,57 @@ async def stream_chat_run_events(
                     reason=value.reason.value,
                 ),
             )
+        elif isinstance(value, ChatProgressSnapshot):
+            update = value.update
+            facts = update.facts
+            yield ServerSentEvent(
+                event="workflow.progress",
+                data=ChatWorkflowProgressEvent(
+                    run_id=value.run_id,
+                    attempt=value.attempt,
+                    seq=value.seq,
+                    active_stage=update.active_stage.value,
+                    activity=update.activity.value,
+                    completed_stages=tuple(
+                        item.value for item in update.completed_stages
+                    ),
+                    status=update.status.value,
+                    requested_mode=(
+                        update.requested_mode.value
+                        if update.requested_mode is not None
+                        else None
+                    ),
+                    resolved_mode=update.resolved_mode.value,
+                    facts={
+                        "objective": facts.objective,
+                        "queries": facts.queries,
+                        "evidence_count": facts.evidence_count,
+                        "new_evidence_count": facts.new_evidence_count,
+                        "retrieval_calls": facts.retrieval_calls,
+                        "route_status": (
+                            facts.route_status.value
+                            if facts.route_status is not None
+                            else None
+                        ),
+                        "route_reason_codes": tuple(
+                            item.value for item in facts.route_reason_codes
+                        ),
+                        "research_status": (
+                            facts.research_status.value
+                            if facts.research_status is not None
+                            else None
+                        ),
+                        "covered_aspects": facts.covered_aspects,
+                        "missing_aspects": facts.missing_aspects,
+                        "conflict_count": facts.conflict_count,
+                        "decision": (
+                            facts.decision.value
+                            if facts.decision is not None
+                            else None
+                        ),
+                    },
+                ),
+            )
         elif value.status == "completed":
             if not value.assistant_content:
                 raise RuntimeError("completed ChatRun is missing its answer")
@@ -344,10 +418,12 @@ def _run_response(value: ChatRun) -> ChatRunResponse:
         events_url=f"{_status_url(value.id)}/events",
         final_context_url=f"{_status_url(value.id)}/final-context",
         effective_answer_policy=_policy_response(value),
+        workflow=_workflow_response(value),
         retrieval={
             key: value.retrieval_strategy[key]
             for key in ("profile_version", "strategy", "top_k", "rerank")
         },
+        model=_model_response(value),
         query_context=_query_context_response(value),
         attempt=value.attempt,
         error=_run_error(value),
@@ -357,6 +433,30 @@ def _run_response(value: ChatRun) -> ChatRunResponse:
         updated_at=value.updated_at,
         completed_at=value.completed_at,
     )
+
+
+def _model_response(value: ChatRun) -> dict[str, object]:
+    configuration = value.model_configuration
+    revision_id = configuration.get("model_profile_revision_id")
+    return {
+        "profile_revision_id": revision_id if isinstance(revision_id, str) else None,
+        "profile_name": configuration.get("model_profile_name"),
+        "provider_name": str(configuration.get("provider_identity", "unknown")),
+        "model": str(
+            configuration.get("resolved_model")
+            or configuration.get("requested_model")
+            or "unknown"
+        ),
+        "revision": configuration.get("model_profile_revision"),
+        "temperature": configuration.get("temperature", 0.2),
+        "top_p": configuration.get("top_p", 0.9),
+        "sampling_top_k": configuration.get("sampling_top_k", 40),
+        "max_output_tokens": configuration.get("max_tokens", 4096),
+        "reasoning_effort": configuration.get(
+            "reasoning_effort",
+            "medium" if configuration.get("thinking_enabled") else "off",
+        ),
+    }
 
 
 def _final_context_response(value: ChatRun) -> ChatRunFinalContextResponse:
@@ -446,6 +546,27 @@ def _citation_responses(value: ChatRun) -> tuple[ChatCitationResponse, ...]:
 
 def _policy_response(value: ChatRun) -> EffectiveAnswerPolicyResponse:
     return EffectiveAnswerPolicyResponse.model_validate(value.effective_policy)
+
+
+def _workflow_response(value: ChatRun) -> ChatWorkflowResponse:
+    try:
+        configuration = hydrate_chat_workflow_configuration(
+            value.workflow_configuration
+        )
+        state = hydrate_chat_workflow_state(value.workflow_state)
+        return ChatWorkflowResponse.model_validate(
+            {
+                **state.as_dict(),
+                "requested_mode": configuration.requested_mode.value,
+            }
+        )
+    except (TypeError, ValueError) as error:
+        raise ApiProblem(
+            code=ErrorCode.CHAT_CONTEXT_INVALID,
+            status=500,
+            title="Chat workflow invalid",
+            detail="The persisted ChatRun workflow is invalid.",
+        ) from error
 
 
 def _run_error(value: ChatRun) -> ChatRunErrorResponse | None:

@@ -678,6 +678,7 @@ class StructureValidationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("no tools", system)
         self.assertIn("direct, natural answer to the user", system)
         self.assertIn("Never narrate the RAG process", system)
+        self.assertIn("required_missing_aspects", system)
         self.assertEqual(payload["untrusted_original_draft"], malicious)
         self.assertEqual(payload["validation_issues"], ["json_invalid"])
         self.assertEqual(

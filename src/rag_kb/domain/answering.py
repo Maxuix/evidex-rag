@@ -12,6 +12,7 @@ from typing import Any
 from uuid import UUID
 
 from rag_kb.domain.composite import VisualEvidenceDecision
+from rag_kb.domain.chat_workflow import ResearchAspect, ResearchStatus
 
 
 class EvidenceCoverage(StrEnum):
@@ -19,6 +20,7 @@ class EvidenceCoverage(StrEnum):
     PARTIAL = "partial"
     NONE = "none"
     AMBIGUOUS = "ambiguous"
+    CONFLICT = "conflict"
 
 
 class AnswerOutcome(StrEnum):
@@ -37,6 +39,7 @@ class AnswerControlReason(StrEnum):
     INSUFFICIENT_EVIDENCE = "insufficient_evidence"
     NO_USABLE_EVIDENCE = "no_usable_evidence"
     AMBIGUOUS_QUESTION = "ambiguous_question"
+    CONFLICT_UNRESOLVED = "conflict_unresolved"
     STRUCTURE_VALIDATION_FAILED = "structure_validation_failed"
 
 
@@ -45,6 +48,111 @@ class ChatModelOperation(StrEnum):
     ASSESS_EVIDENCE = "assess_evidence"
     GENERATE_ANSWER = "generate_answer"
     REPAIR_ANSWER = "repair_answer"
+    RETRIEVAL_AGENT = "retrieval_agent"
+    REPAIR_RETRIEVAL_AGENT = "repair_retrieval_agent"
+    VERIFY_RESEARCH_RESULT = "verify_research_result"
+    REPAIR_RESEARCH_RESULT = "repair_research_result"
+    AUTO_ROUTE = "auto_route"
+    REPAIR_AUTO_ROUTE = "repair_auto_route"
+
+
+class RetrievalAgentActionKind(StrEnum):
+    SEARCH = "search"
+    FINISH = "finish"
+
+
+class RetrievalAgentProposedReason(StrEnum):
+    SUFFICIENT = "sufficient"
+    PARTIAL = "partial"
+    NO_EVIDENCE = "no_evidence"
+    NO_PROGRESS = "no_progress"
+    BUDGET_EXHAUSTED = "budget_exhausted"
+    CONFLICT_UNRESOLVED = "conflict_unresolved"
+    PREMISE_UNSUPPORTED = "premise_unsupported"
+
+
+@dataclass(frozen=True, slots=True)
+class RetrievalAgentQuery:
+    query: str
+    based_on_observation_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.query.strip() or len(self.query) > 2048:
+            raise ValueError("Agent query is invalid")
+        _require_bounded_unique_strings(
+            self.based_on_observation_ids,
+            field="Agent observation references",
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class RetrievalAgentAction:
+    action: RetrievalAgentActionKind
+    objective: str | None = None
+    queries: tuple[RetrievalAgentQuery, ...] = ()
+    proposed_reason: RetrievalAgentProposedReason | None = None
+    selected_evidence_keys: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.action is RetrievalAgentActionKind.SEARCH:
+            if (
+                self.objective is None
+                or not self.objective.strip()
+                or len(self.objective) > 1024
+                or not 1 <= len(self.queries) <= 3
+                or self.proposed_reason is not None
+                or self.selected_evidence_keys
+            ):
+                raise ValueError("Agent search action is invalid")
+        elif (
+            self.objective is not None
+            or self.queries
+            or self.proposed_reason is None
+        ):
+            raise ValueError("Agent finish action is invalid")
+        _require_bounded_unique_strings(
+            self.selected_evidence_keys,
+            field="Agent selected evidence",
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class RetrievalToolObservation:
+    observation_id: str
+    objective: str
+    queries: tuple[str, ...]
+    result: str
+    new_evidence_keys: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if not self.observation_id.strip() or len(self.observation_id) > 128:
+            raise ValueError("retrieval observation identifier is invalid")
+        if not self.objective.strip() or len(self.objective) > 1024:
+            raise ValueError("retrieval observation objective is invalid")
+        _require_bounded_unique_strings(self.queries, field="observation queries")
+        _require_bounded_unique_strings(
+            self.new_evidence_keys, field="observation evidence"
+        )
+        if self.result not in {"evidence_found", "no_evidence", "verification_gap"}:
+            raise ValueError("retrieval observation result is invalid")
+
+
+@dataclass(frozen=True, slots=True)
+class ResearchResultVerification:
+    status: ResearchStatus
+    aspects: tuple[ResearchAspect, ...]
+    missing_aspects: tuple[str, ...]
+    conflicts: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if not self.aspects or len(self.aspects) > 100:
+            raise ValueError("research verification aspects are invalid")
+        _require_bounded_unique_strings(
+            self.missing_aspects, field="verification missing aspects"
+        )
+        _require_bounded_unique_strings(
+            self.conflicts, field="verification conflicts"
+        )
 
 
 class AnswerValidationIssue(StrEnum):

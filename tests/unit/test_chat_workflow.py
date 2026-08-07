@@ -1,0 +1,145 @@
+from __future__ import annotations
+
+import unittest
+
+from rag_kb.domain import (
+    ChatResolvedMode,
+    ChatRouteReason,
+    ChatRouteStatus,
+    ChatWorkflowMode,
+    ChatWorkflowState,
+    ResearchAspect,
+    ResearchAspectStatus,
+    ResearchResult,
+    ResearchStatus,
+    ResearchTerminationReason,
+    SearchTrace,
+    SearchTraceStep,
+    hydrate_chat_workflow_configuration,
+    hydrate_chat_workflow_state,
+    initial_chat_workflow,
+)
+
+
+class ChatWorkflowContractTests(unittest.TestCase):
+    def test_initial_modes_are_deterministic_and_round_trip(self) -> None:
+        expected = {
+            ChatWorkflowMode.SIMPLE: (
+                ChatResolvedMode.SIMPLE,
+                ChatRouteStatus.NOT_APPLICABLE,
+            ),
+            ChatWorkflowMode.AGENT: (
+                ChatResolvedMode.AGENT,
+                ChatRouteStatus.NOT_APPLICABLE,
+            ),
+            ChatWorkflowMode.AUTO: (
+                ChatResolvedMode.PENDING,
+                ChatRouteStatus.PENDING,
+            ),
+        }
+        for mode, (resolved, route_status) in expected.items():
+            with self.subTest(mode=mode):
+                configuration, state = initial_chat_workflow(mode)
+                self.assertEqual(
+                    hydrate_chat_workflow_configuration(configuration.as_dict()),
+                    configuration,
+                )
+                self.assertEqual(
+                    hydrate_chat_workflow_state(state.as_dict()), state
+                )
+                self.assertIs(state.resolved_mode, resolved)
+                self.assertIs(state.route_status, route_status)
+
+    def test_verified_research_and_bounded_trace_round_trip(self) -> None:
+        result = ResearchResult(
+            status=ResearchStatus.PARTIAL,
+            selected_evidence_keys=("chunk:one",),
+            aspects=(
+                ResearchAspect(
+                    aspect="current rule",
+                    status=ResearchAspectStatus.SUPPORTED,
+                    evidence_keys=("chunk:one",),
+                ),
+                ResearchAspect(
+                    aspect="exception",
+                    status=ResearchAspectStatus.MISSING,
+                ),
+            ),
+            covered_aspects=("current rule",),
+            missing_aspects=("exception",),
+            conflicts=(),
+            termination_reason=ResearchTerminationReason.NO_PROGRESS,
+        )
+        trace = SearchTrace(
+            steps=(
+                SearchTraceStep(
+                    observation_id="observation_1",
+                    objective="Find the current rule",
+                    queries=("current rule",),
+                    based_on_observation_ids=(),
+                    result="evidence_found",
+                    new_evidence_count=1,
+                ),
+            ),
+            decision_rounds=1,
+            retrieval_calls=1,
+            verifier_calls=1,
+            evidence_count=1,
+        )
+        state = ChatWorkflowState(
+            resolved_mode=ChatResolvedMode.AGENT,
+            route_status=ChatRouteStatus.RESOLVED,
+            route_reason_codes=(ChatRouteReason.EVIDENCE_UNCERTAIN,),
+            research_result=result,
+            search_trace=trace,
+        )
+        self.assertEqual(hydrate_chat_workflow_state(state.as_dict()), state)
+
+    def test_hydration_and_cross_field_invariants_reject_invalid_state(self) -> None:
+        _, state = initial_chat_workflow(ChatWorkflowMode.SIMPLE)
+        invalid_fields = state.as_dict()
+        invalid_fields["raw_reasoning"] = "must not be stored"
+        with self.assertRaises(ValueError):
+            hydrate_chat_workflow_state(invalid_fields)
+
+        inconsistent = state.as_dict()
+        inconsistent["research_result"] = {
+            "version": "research_result_v1",
+            "status": "no_evidence",
+            "selected_evidence_keys": [],
+            "aspects": [],
+            "covered_aspects": [],
+            "missing_aspects": [],
+            "conflicts": [],
+            "termination_reason": "no_evidence",
+        }
+        with self.assertRaises(ValueError):
+            hydrate_chat_workflow_state(inconsistent)
+
+        with self.assertRaises(ValueError):
+            SearchTrace(
+                steps=(),
+                decision_rounds=0,
+                retrieval_calls=-1,
+                verifier_calls=0,
+                evidence_count=0,
+            )
+
+        invalid_route_pairs = (
+            (ChatResolvedMode.SIMPLE, ChatRouteStatus.PENDING),
+            (ChatResolvedMode.PENDING, ChatRouteStatus.NOT_APPLICABLE),
+        )
+        for resolved_mode, route_status in invalid_route_pairs:
+            with self.subTest(
+                resolved_mode=resolved_mode,
+                route_status=route_status,
+            ):
+                with self.assertRaises(ValueError):
+                    ChatWorkflowState(
+                        resolved_mode=resolved_mode,
+                        route_status=route_status,
+                    )
+
+
+if __name__ == "__main__":
+    unittest.main()

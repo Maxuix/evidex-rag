@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from uuid import UUID
 
 from rag_kb.domain import (
     AnswerOutcome,
@@ -58,7 +59,10 @@ Never narrate the RAG process or say that evidence, documents, sources, context,
 retrieval results, a knowledge base, or citation IDs provide, show, contain, or lack
 information. Put support only in citation_ids. For a partial outcome,
 missing_aspects must be short user-topic labels, not diagnostic sentences, evidence
-status reports, or instructions to the renderer. Match the user's language."""
+status reports, or instructions to the renderer. Match the user's language. For a
+partial outcome, copy the controller-provided labels exactly without translating,
+reordering, combining, or rephrasing them: use missing_aspects in the initial request
+and required_missing_aspects in a repair request."""
 
 _ACKNOWLEDGEMENT_RULE = """If and only if the current message merely acknowledges or
 accepts the prior answer and asks for no new information, return outcome
@@ -158,6 +162,7 @@ def build_generation_request(
             ),
         ),
         output_schema=ChatOutputSchema.ANSWER_V1,
+        model_profile_revision_id=_model_profile_revision_id(context),
     )
 
 
@@ -226,7 +231,13 @@ def build_repair_request(
             ),
         ),
         output_schema=ChatOutputSchema.ANSWER_V1,
+        model_profile_revision_id=_model_profile_revision_id(context),
     )
+
+
+def _model_profile_revision_id(context: ChatExecutionContext) -> UUID | None:
+    value = context.model_configuration.get("model_profile_revision_id")
+    return UUID(value) if isinstance(value, str) else None
 
 
 def serialize_final_llm_context(

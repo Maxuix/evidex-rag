@@ -13,13 +13,16 @@ from rag_kb.domain import (
     ChatPipelineState,
     EvidencePack,
     ContextualizedQuery,
+    ChatWorkflowState,
 )
+from rag_kb.services.chat_progress import ChatProgressReporter
 
 
 @dataclass(slots=True)
 class ChatGraphProgress:
     phase: ChatPipelinePhase = ChatPipelinePhase.LOAD_CONTEXT
     model_calls: tuple[ChatModelCallRecord, ...] = ()
+    reporter: ChatProgressReporter | None = None
 
 
 class ChatGraphState(TypedDict):
@@ -27,6 +30,8 @@ class ChatGraphState(TypedDict):
     progress: ChatGraphProgress
     context: NotRequired[ChatExecutionContext]
     query_context: NotRequired[ContextualizedQuery]
+    workflow_state: NotRequired[ChatWorkflowState]
+    workflow_model_calls: NotRequired[tuple[ChatModelCallRecord, ...]]
     evidence_pack: NotRequired[EvidencePack]
     pipeline_state: NotRequired[ChatPipelineState]
 

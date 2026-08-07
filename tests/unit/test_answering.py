@@ -539,6 +539,10 @@ class AnswerPolicyRoutingTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(generation_payload["answer_style"], "summary")
         self.assertEqual(generation_payload["missing_aspects"], [])
+        self.assertIn(
+            "copy the controller-provided labels exactly",
+            model.requests[0].messages[0].content,
+        )
         self.assertEqual(
             [item["citation_id"] for item in generation_payload["evidence"]],
             ["cite_1"],

@@ -77,6 +77,59 @@ class PgVectorStore:
         async with self._sessions() as session:
             return (await session.scalar(statement)) is not None
 
+    async def resolve_space(
+        self,
+        plan: RetrievalQueryPlan,
+        space_role: str,
+    ) -> EmbeddingSpaceDefinition | None:
+        statement = (
+            select(EmbeddingSpace)
+            .join(
+                IndexRevisionEmbeddingSpace,
+                and_(
+                    IndexRevisionEmbeddingSpace.embedding_space_id
+                    == EmbeddingSpace.id,
+                    IndexRevisionEmbeddingSpace.workspace_id
+                    == EmbeddingSpace.workspace_id,
+                ),
+            )
+            .join(
+                KnowledgeBase,
+                and_(
+                    KnowledgeBase.active_index_revision_id
+                    == IndexRevisionEmbeddingSpace.index_revision_id,
+                    KnowledgeBase.workspace_id
+                    == IndexRevisionEmbeddingSpace.workspace_id,
+                ),
+            )
+            .where(
+                KnowledgeBase.workspace_id == plan.workspace_id,
+                KnowledgeBase.id == plan.knowledge_base_id,
+                IndexRevisionEmbeddingSpace.role == space_role,
+            )
+            .limit(1)
+        )
+        async with self._sessions() as session:
+            row = await session.scalar(statement)
+        if row is None:
+            return None
+        return EmbeddingSpaceDefinition(
+            provider_identity=row.provider_identity,
+            endpoint_identity=row.endpoint_identity,
+            requested_model=row.requested_model,
+            resolved_model=row.resolved_model,
+            model_version=row.model_version,
+            deployment_revision=row.deployment_revision,
+            dimension=row.dimension,
+            distance_metric=row.distance_metric,
+            vector_data_type=row.vector_data_type,
+            normalization=row.normalization,
+            configuration_fingerprint=row.configuration_fingerprint,
+            tokenizer_fingerprint=row.tokenizer_fingerprint,
+            compatibility_fingerprint=row.compatibility_fingerprint,
+            model_profile_revision_id=row.model_profile_revision_id,
+        )
+
     async def search(
         self,
         plan: RetrievalQueryPlan,

@@ -14,11 +14,26 @@ from uuid import UUID
 import asyncpg
 
 from rag_kb.domain.chat_preview import (
+    CHAT_PROGRESS_VERSION,
     CHAT_PREVIEW_VERSION,
+    ChatProgressActivity,
+    ChatProgressDecision,
+    ChatProgressFacts,
+    ChatProgressSnapshot,
+    ChatProgressStage,
+    ChatProgressStatus,
+    ChatProgressUpdate,
     ChatPreviewDelta,
     ChatPreviewEvent,
     ChatPreviewReset,
     ChatPreviewResetReason,
+)
+from rag_kb.domain.chat_workflow import (
+    ChatResolvedMode,
+    ChatRouteReason,
+    ChatRouteStatus,
+    ChatWorkflowMode,
+    ResearchStatus,
 )
 from rag_kb.observability import get_logger, log_event
 
@@ -45,6 +60,13 @@ class _ResetCommand:
     run_id: UUID
     attempt: int
     reason: ChatPreviewResetReason
+
+
+@dataclass(frozen=True, slots=True)
+class _ProgressCommand:
+    run_id: UUID
+    attempt: int
+    update: ChatProgressUpdate
 
 
 @dataclass(slots=True)
@@ -75,7 +97,9 @@ class PgNotifyPreviewSink:
         self._flush_interval_seconds = flush_interval_ms / 1_000
         self._max_total_bytes = max_total_bytes
         self._connect = connect
-        self._commands: asyncio.Queue[_DeltaCommand | _ResetCommand] = (
+        self._commands: asyncio.Queue[
+            _DeltaCommand | _ResetCommand | _ProgressCommand
+        ] = (
             asyncio.Queue(maxsize=command_queue_size)
         )
         self._forced_resets: dict[
@@ -145,6 +169,22 @@ class PgNotifyPreviewSink:
         except asyncio.QueueFull:
             self._forced_resets[key] = reason
 
+    async def emit_progress(
+        self,
+        *,
+        run_id: UUID,
+        attempt: int,
+        update: ChatProgressUpdate,
+    ) -> None:
+        if self._closed or attempt < 1:
+            return
+        self._ensure_worker()
+        try:
+            self._commands.put_nowait(_ProgressCommand(run_id, attempt, update))
+        except asyncio.QueueFull:
+            # A later full snapshot recovers the visible state.
+            return
+
     def _ensure_worker(self) -> None:
         if self._worker_task is None or self._worker_task.done():
             self._worker_task = asyncio.create_task(
@@ -154,6 +194,7 @@ class PgNotifyPreviewSink:
 
     async def _run(self) -> None:
         states: dict[tuple[UUID, int], _AttemptState] = {}
+        progress_sequences: OrderedDict[tuple[UUID, int], int] = OrderedDict()
         loop = asyncio.get_running_loop()
         while not self._closed:
             await self._publish_forced_resets(states)
@@ -173,7 +214,32 @@ class PgNotifyPreviewSink:
                 await self._accept_delta(states, command, loop.time())
             elif isinstance(command, _ResetCommand):
                 await self._publish_reset(states, command)
+            elif isinstance(command, _ProgressCommand):
+                await self._publish_progress(progress_sequences, command)
             await self._flush_due(states, loop.time())
+
+    async def _publish_progress(
+        self,
+        sequences: OrderedDict[tuple[UUID, int], int],
+        command: _ProgressCommand,
+    ) -> None:
+        key = (command.run_id, command.attempt)
+        seq = sequences.pop(key, 1)
+        sequences[key] = seq + 1
+        if len(sequences) > _MAX_ATTEMPT_STATES:
+            sequences.popitem(last=False)
+        try:
+            payload = serialize_preview_event(
+                ChatProgressSnapshot(
+                    run_id=command.run_id,
+                    attempt=command.attempt,
+                    seq=seq,
+                    update=command.update,
+                )
+            )
+        except (UnicodeError, ValueError):
+            return
+        await self._notify(payload)
 
     async def _accept_delta(
         self,
@@ -559,7 +625,7 @@ def serialize_preview_event(event: ChatPreviewEvent) -> str:
             "seq": event.seq,
             "delta": event.delta,
         }
-    else:
+    elif isinstance(event, ChatPreviewReset):
         payload = {
             "version": CHAT_PREVIEW_VERSION,
             "event": "answer.preview.reset",
@@ -567,6 +633,52 @@ def serialize_preview_event(event: ChatPreviewEvent) -> str:
             "attempt": event.attempt,
             "seq": event.seq,
             "reason": event.reason.value,
+        }
+    else:
+        update = event.update
+        facts = update.facts
+        payload = {
+            "version": CHAT_PROGRESS_VERSION,
+            "event": "workflow.progress",
+            "run_id": str(event.run_id),
+            "attempt": event.attempt,
+            "seq": event.seq,
+            "active_stage": update.active_stage.value,
+            "activity": update.activity.value,
+            "completed_stages": [item.value for item in update.completed_stages],
+            "status": update.status.value,
+            "requested_mode": (
+                update.requested_mode.value
+                if update.requested_mode is not None
+                else None
+            ),
+            "resolved_mode": update.resolved_mode.value,
+            "facts": {
+                "objective": facts.objective,
+                "queries": list(facts.queries),
+                "evidence_count": facts.evidence_count,
+                "new_evidence_count": facts.new_evidence_count,
+                "retrieval_calls": facts.retrieval_calls,
+                "route_status": (
+                    facts.route_status.value
+                    if facts.route_status is not None
+                    else None
+                ),
+                "route_reason_codes": [
+                    item.value for item in facts.route_reason_codes
+                ],
+                "research_status": (
+                    facts.research_status.value
+                    if facts.research_status is not None
+                    else None
+                ),
+                "covered_aspects": list(facts.covered_aspects),
+                "missing_aspects": list(facts.missing_aspects),
+                "conflict_count": facts.conflict_count,
+                "decision": (
+                    facts.decision.value if facts.decision is not None else None
+                ),
+            },
         }
     encoded = json.dumps(
         payload,
@@ -634,9 +746,14 @@ def parse_preview_payload(payload: str) -> ChatPreviewEvent:
         value = json.loads(payload)
     except json.JSONDecodeError as error:
         raise ValueError("invalid chat preview JSON") from error
-    if not isinstance(value, dict) or value.get("version") != CHAT_PREVIEW_VERSION:
+    if not isinstance(value, dict) or value.get("version") not in {
+        CHAT_PREVIEW_VERSION,
+        CHAT_PROGRESS_VERSION,
+    }:
         raise ValueError("invalid chat preview version")
     event_type = value.get("event")
+    if event_type == "workflow.progress":
+        return _parse_progress_payload(value)
     expected_keys = {
         "version",
         "event",
@@ -667,6 +784,135 @@ def parse_preview_payload(payload: str) -> ChatPreviewEvent:
             raise ValueError("invalid chat preview reset reason") from error
         return ChatPreviewReset(run_id, attempt, seq, reason)
     raise ValueError("invalid chat preview event type")
+
+
+def _parse_progress_payload(value: dict[str, Any]) -> ChatProgressSnapshot:
+    expected_keys = {
+        "version",
+        "event",
+        "run_id",
+        "attempt",
+        "seq",
+        "active_stage",
+        "activity",
+        "completed_stages",
+        "status",
+        "requested_mode",
+        "resolved_mode",
+        "facts",
+    }
+    if value.get("version") != CHAT_PROGRESS_VERSION or set(value) != expected_keys:
+        raise ValueError("invalid chat progress fields")
+    attempt = value.get("attempt")
+    seq = value.get("seq")
+    if type(attempt) is not int or type(seq) is not int:
+        raise ValueError("invalid chat progress sequence")
+    try:
+        run_id = UUID(value["run_id"])
+        active_stage = ChatProgressStage(value.get("active_stage"))
+        activity = ChatProgressActivity(value.get("activity"))
+        status = ChatProgressStatus(value.get("status"))
+        resolved_mode = ChatResolvedMode(value.get("resolved_mode"))
+    except (AttributeError, TypeError, ValueError) as error:
+        raise ValueError("invalid chat progress enum or run ID") from error
+    requested_value = value.get("requested_mode")
+    try:
+        requested_mode = (
+            ChatWorkflowMode(requested_value)
+            if requested_value is not None
+            else None
+        )
+        completed = _enum_tuple(
+            value.get("completed_stages"), ChatProgressStage
+        )
+    except (TypeError, ValueError) as error:
+        raise ValueError("invalid chat progress workflow values") from error
+    facts_value = value.get("facts")
+    if not isinstance(facts_value, dict) or set(facts_value) != {
+        "objective",
+        "queries",
+        "evidence_count",
+        "new_evidence_count",
+        "retrieval_calls",
+        "route_status",
+        "route_reason_codes",
+        "research_status",
+        "covered_aspects",
+        "missing_aspects",
+        "conflict_count",
+        "decision",
+    }:
+        raise ValueError("invalid chat progress facts")
+    objective = facts_value.get("objective")
+    if objective is not None and not isinstance(objective, str):
+        raise ValueError("invalid chat progress objective")
+    for field in (
+        "evidence_count",
+        "new_evidence_count",
+        "retrieval_calls",
+        "conflict_count",
+    ):
+        item = facts_value.get(field)
+        if item is not None and type(item) is not int:
+            raise ValueError("invalid chat progress counter")
+    try:
+        route_status_value = facts_value.get("route_status")
+        research_status_value = facts_value.get("research_status")
+        decision_value = facts_value.get("decision")
+        facts = ChatProgressFacts(
+            objective=objective,
+            queries=_string_tuple(facts_value.get("queries")),
+            evidence_count=facts_value.get("evidence_count"),
+            new_evidence_count=facts_value.get("new_evidence_count"),
+            retrieval_calls=facts_value.get("retrieval_calls"),
+            route_status=(
+                ChatRouteStatus(route_status_value)
+                if route_status_value is not None
+                else None
+            ),
+            route_reason_codes=_enum_tuple(
+                facts_value.get("route_reason_codes"), ChatRouteReason
+            ),
+            research_status=(
+                ResearchStatus(research_status_value)
+                if research_status_value is not None
+                else None
+            ),
+            covered_aspects=_string_tuple(
+                facts_value.get("covered_aspects")
+            ),
+            missing_aspects=_string_tuple(
+                facts_value.get("missing_aspects")
+            ),
+            conflict_count=facts_value.get("conflict_count"),
+            decision=(
+                ChatProgressDecision(decision_value)
+                if decision_value is not None
+                else None
+            ),
+        )
+        update = ChatProgressUpdate(
+            active_stage=active_stage,
+            activity=activity,
+            completed_stages=completed,
+            status=status,
+            requested_mode=requested_mode,
+            resolved_mode=resolved_mode,
+            facts=facts,
+        )
+        return ChatProgressSnapshot(run_id, attempt, seq, update)
+    except (TypeError, ValueError) as error:
+        raise ValueError("invalid chat progress payload") from error
+
+
+def _string_tuple(value: Any) -> tuple[str, ...]:
+    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        raise ValueError("invalid chat progress string list")
+    return tuple(value)
+
+
+def _enum_tuple(value: Any, enum: Any) -> tuple[Any, ...]:
+    return tuple(enum(item) for item in _string_tuple(value))
 
 
 def _delta_payload_fits(

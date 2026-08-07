@@ -91,6 +91,12 @@ from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, UnitOfWorkPurpose, execute
 
 
 ResultT = TypeVar("ResultT")
+EmbeddingModelResolver = Callable[
+    [EmbeddingSpaceDefinition], Awaitable[EmbeddingModelAdapter]
+]
+MultimodalEmbeddingModelResolver = Callable[
+    [EmbeddingSpaceDefinition], Awaitable[MultimodalEmbeddingAdapter]
+]
 _LEXICAL_CAS_BATCH_SIZE = 250
 
 
@@ -106,6 +112,8 @@ class IndexingPipeline:
         asset_store: IndexAssetStore | None = None,
         multimodal_embedding_provider: MultimodalEmbeddingAdapter | None = None,
         parser_limits: ParserLimits | None = None,
+        embedding_model_resolver: EmbeddingModelResolver | None = None,
+        multimodal_embedding_model_resolver: MultimodalEmbeddingModelResolver | None = None,
     ) -> None:
         self._unit_of_work = unit_of_work
         self._file_store = file_store
@@ -115,6 +123,8 @@ class IndexingPipeline:
         self._asset_store = asset_store
         self._multimodal_embedding_provider = multimodal_embedding_provider
         self._parser_limits = parser_limits or ParserLimits()
+        self._embedding_model_resolver = embedding_model_resolver
+        self._multimodal_embedding_model_resolver = multimodal_embedding_model_resolver
         self._promotion = CandidatePromotionService(unit_of_work)
 
     async def execute(self, command: IndexingCommand) -> IndexingResult:
@@ -128,6 +138,12 @@ class IndexingPipeline:
                     diagnostic={"check": "job_target_mapping"},
                 )
             strategy = self._require_revision_profile(target)
+            embedding_provider = (
+                await self._embedding_model_resolver(target.embedding_space)
+                if self._embedding_model_resolver is not None
+                and target.embedding_space.model_profile_revision_id is not None
+                else self._embedding_provider
+            )
             if strategy is ChunkingStrategyKind.SEMANTIC:
                 self._require_semantic_space_role(target)
             if target.already_complete:
@@ -144,9 +160,13 @@ class IndexingPipeline:
                 )
             await self._discard_partial_assets(command, target)
             require_compatible_embedding_spaces(
-                self._embedding_space,
+                (
+                    target.embedding_space
+                    if target.embedding_space.model_profile_revision_id is not None
+                    else self._embedding_space
+                ),
                 target.embedding_space,
-                self._embedding_provider.embedding_space,
+                embedding_provider.embedding_space,
             )
             content = await self._read_source(target)
 
@@ -157,9 +177,12 @@ class IndexingPipeline:
             )
             resolved_parsing = parsing_preset(target.parser_config)
             multimodal = resolved_parsing is ParsingPreset.MULTIMODAL_LOCAL_V2
-            cross_space = (
-                self._require_multimodal_runtime(target) if multimodal else None
-            )
+            cross_space = None
+            cross_provider = None
+            if multimodal:
+                cross_space, cross_provider = await self._require_multimodal_runtime(
+                    target
+                )
             parsed = await self._parse(
                 command,
                 source,
@@ -168,7 +191,7 @@ class IndexingPipeline:
             document = parsed.document
             labels = dict(parsed.surface_labels)
             chunks = await self._chunks(
-                command, target, document, strategy, labels
+                command, target, document, strategy, labels, embedding_provider
             )
             result = await self._execute_current(
                 command,
@@ -176,6 +199,8 @@ class IndexingPipeline:
                 document,
                 chunks,
                 cross_space,
+                embedding_provider,
+                cross_provider,
                 labels,
                 page_image_surfaces=parsed.page_image_surfaces,
                 multimodal=multimodal,
@@ -387,6 +412,7 @@ class IndexingPipeline:
         document: DoclingDocument,
         strategy: ChunkingStrategyKind,
         surface_labels: Mapping[int, str],
+        embedding_provider: EmbeddingModelAdapter,
     ) -> tuple[ChunkAssemblyDraft, ...]:
         """Apply the revision's chunking strategy to the converted document."""
 
@@ -402,7 +428,7 @@ class IndexingPipeline:
                     diagnostic=error.diagnostic,
                 ) from error
         return await self._semantic_chunks(
-            command, target, document, surface_labels
+            command, target, document, surface_labels, embedding_provider
         )
 
     async def _semantic_chunks(
@@ -411,6 +437,7 @@ class IndexingPipeline:
         target: IndexingTarget,
         document: DoclingDocument,
         surface_labels: Mapping[int, str],
+        embedding_provider: EmbeddingModelAdapter,
     ) -> tuple[ChunkAssemblyDraft, ...]:
         await self._set_phase(command, IndexingPhase.SEMANTIC_ANALYSIS)
         try:
@@ -438,7 +465,7 @@ class IndexingPipeline:
             units,
         )
         vectors = (
-            await self._embed_analysis_units(target, units)
+            await self._embed_analysis_units(target, units, embedding_provider)
             if requires_analysis
             else None
         )
@@ -500,10 +527,10 @@ class IndexingPipeline:
             target.representation_config,
         )
 
-    def _require_multimodal_runtime(self, target: IndexingTarget):
+    async def _require_multimodal_runtime(self, target: IndexingTarget):
         """Reject an unusable multimodal revision before converting its source."""
 
-        if self._asset_store is None or self._multimodal_embedding_provider is None:
+        if self._asset_store is None:
             raise IndexingExecutionError(
                 ErrorCode.INDEX_REVISION_INCOMPATIBLE,
                 phase=IndexingPhase.SOURCE_READ,
@@ -516,12 +543,24 @@ class IndexingPipeline:
                 phase=IndexingPhase.SOURCE_READ,
                 diagnostic={"check": "cross_modal_space_role"},
             )
+        provider = (
+            await self._multimodal_embedding_model_resolver(cross_space)
+            if self._multimodal_embedding_model_resolver is not None
+            and cross_space.model_profile_revision_id is not None
+            else self._multimodal_embedding_provider
+        )
+        if provider is None:
+            raise IndexingExecutionError(
+                ErrorCode.INDEX_REVISION_INCOMPATIBLE,
+                phase=IndexingPhase.SOURCE_READ,
+                diagnostic={"check": "multimodal_runtime_dependencies"},
+            )
         require_compatible_embedding_spaces(
             cross_space,
             cross_space,
-            self._multimodal_embedding_provider.embedding_space,
+            provider.embedding_space,
         )
-        return cross_space
+        return cross_space, provider
 
     @staticmethod
     def _require_semantic_space_role(target: IndexingTarget) -> None:
@@ -549,6 +588,8 @@ class IndexingPipeline:
         document: DoclingDocument,
         assembled: tuple[ChunkAssemblyDraft, ...],
         cross_space,
+        embedding_provider: EmbeddingModelAdapter,
+        cross_provider: MultimodalEmbeddingAdapter | None,
         surface_labels: Mapping[int, str],
         *,
         page_image_surfaces: frozenset[int],
@@ -707,6 +748,8 @@ class IndexingPipeline:
             chunks,
             planned,
             cross_space,
+            embedding_provider,
+            cross_provider,
         )
         changed = await self._transaction(
             lambda uow: uow.indexing.upsert_relations(command, relation_writes)
@@ -973,6 +1016,8 @@ class IndexingPipeline:
         chunks,
         planned,
         cross_space,
+        embedding_provider: EmbeddingModelAdapter,
+        cross_provider: MultimodalEmbeddingAdapter | None,
     ) -> None:
         assets = {item.asset_key: item for item in extracted}
         units_by_id = {str(chunk.id): unit for chunk, unit in zip(chunks, units, strict=True)}
@@ -982,7 +1027,7 @@ class IndexingPipeline:
             for item in planned
             if item["space_role"] == "text_retrieval"
         )
-        text_batch_size = self._embedding_provider.max_batch_size
+        text_batch_size = embedding_provider.max_batch_size
         for offset in range(0, len(text_items), text_batch_size):
             batch = text_items[offset : offset + text_batch_size]
             usable = tuple(
@@ -1004,7 +1049,7 @@ class IndexingPipeline:
                 continue
             await self._set_phase(command, IndexingPhase.EMBEDDING)
             try:
-                embedded = await self._embedding_provider.embed_documents(
+                embedded = await embedding_provider.embed_documents(
                     tuple(
                         units_by_id[item["unit_id"]].embedding_text or ""
                         for item in usable
@@ -1048,7 +1093,7 @@ class IndexingPipeline:
         )
         if not image_items:
             return
-        provider = self._multimodal_embedding_provider
+        provider = cross_provider
         assert provider is not None
         for offset in range(0, len(image_items), provider.max_batch_size):
             batch = image_items[offset : offset + provider.max_batch_size]
@@ -1112,13 +1157,14 @@ class IndexingPipeline:
         self,
         target: IndexingTarget,
         units,
+        embedding_provider: EmbeddingModelAdapter,
     ) -> tuple[tuple[float, ...], ...]:
         vectors: list[tuple[float, ...]] = []
-        batch_size = self._embedding_provider.max_batch_size
+        batch_size = embedding_provider.max_batch_size
         for offset in range(0, len(units), batch_size):
             batch = units[offset : offset + batch_size]
             try:
-                embedded = await self._embedding_provider.embed_documents(
+                embedded = await embedding_provider.embed_documents(
                     tuple(unit.text for unit in batch)
                 )
             except IndexingExecutionError as error:

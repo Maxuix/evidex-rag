@@ -17,6 +17,11 @@ from rag_kb.adapters.chat_preview.pg_notify import (
     PgNotifyPreviewSink,
 )
 from rag_kb.adapters.model_api.langchain_chat import LangChainChatModelAdapter
+from rag_kb.adapters.model_api.routing_chat import RoutingChatModelAdapter
+from rag_kb.adapters.model_api.unconfigured import (
+    UnconfiguredChatModelAdapter,
+    UnconfiguredEmbeddingModelAdapter,
+)
 from rag_kb.adapters.model_api.langchain_embeddings import (
     LangChainEmbeddingModelAdapter,
 )
@@ -47,6 +52,9 @@ def valid_payload(root: Path) -> dict[str, object]:
             "root_path": root,
             "staging_path": root / "staging",
             "final_path": root / "final",
+        },
+        "model_secrets": {
+            "root_path": root / ".model-secrets",
         },
         "model_provider": {
             "chat": {
@@ -123,6 +131,9 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.chat_delivery.preview_flush_interval_ms, 250)
         self.assertEqual(settings.chat_delivery.preview_max_total_bytes, 65_536)
         self.assertEqual(settings.chat_delivery.preview_queue_size, 64)
+        self.assertTrue(settings.chat_workflow.agent_enabled)
+        self.assertTrue(settings.chat_workflow.auto_enabled)
+
         self.assertEqual(settings.maintenance.batch_size, 100)
         self.assertEqual(settings.maintenance.task_retention_seconds, 604_800)
         self.assertEqual(settings.model_provider.chat.temperature, 0.1)
@@ -136,6 +147,19 @@ class SettingsTests(unittest.TestCase):
             "model",
             type(settings.model_provider.embedding).model_fields,
         )
+
+    def test_auto_workflow_requires_agent_capability(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(
+                ValidationError, "Auto workflow requires Agent capability"
+            ):
+                build_settings(
+                    Path(directory),
+                    chat_workflow={
+                        "agent_enabled": False,
+                        "auto_enabled": True,
+                    },
+                )
 
     def test_removed_configuration_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -598,11 +622,37 @@ class SettingsTests(unittest.TestCase):
 
 
 class StartupValidationTests(unittest.TestCase):
+    def test_api_and_worker_start_without_legacy_model_environment(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "staging").mkdir()
+            (root / "final").mkdir()
+            (root / ".model-secrets").mkdir()
+            payload = valid_payload(root)
+            payload.pop("model_provider")
+            settings = Settings(_env_file=None, **payload)  # type: ignore[arg-type]
+
+            api = build_api_dependencies(settings)
+            worker = build_worker_dependencies(settings)
+            try:
+                self.assertIsInstance(
+                    api.embedding_provider,
+                    UnconfiguredEmbeddingModelAdapter,
+                )
+                self.assertIsInstance(
+                    worker.chat_model_adapter._legacy_fallback,
+                    UnconfiguredChatModelAdapter,
+                )
+            finally:
+                asyncio.run(api.close())
+                asyncio.run(worker.close())
+
     def test_preview_enabled_composition_uses_dedicated_transport(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "staging").mkdir()
             (root / "final").mkdir()
+            (root / ".model-secrets").mkdir()
             settings = build_settings(
                 root,
                 chat_delivery={"preview_enabled": True},
@@ -636,10 +686,15 @@ class StartupValidationTests(unittest.TestCase):
             root = Path(directory)
             (root / "staging").mkdir()
             (root / "final").mkdir()
+            (root / ".model-secrets").mkdir()
             worker = build_worker_dependencies(build_settings(root))
 
             self.assertIsInstance(
                 worker.chat_model_adapter,
+                RoutingChatModelAdapter,
+            )
+            self.assertIsInstance(
+                worker.chat_model_adapter._legacy_fallback,
                 LangChainChatModelAdapter,
             )
             self.assertIsInstance(
@@ -666,6 +721,7 @@ class StartupValidationTests(unittest.TestCase):
             root = Path(directory)
             (root / "staging").mkdir()
             (root / "final").mkdir()
+            (root / ".model-secrets").mkdir()
             settings = build_settings(root)
 
             api = build_api_dependencies(settings)
@@ -691,6 +747,14 @@ class StartupValidationTests(unittest.TestCase):
             self.assertEqual(
                 api.chat_service._hybrid_enabled,
                 api.retrieval_service.hybrid_request_enabled(),
+            )
+            self.assertEqual(
+                api.chat_service._agent_enabled,
+                settings.chat_workflow.agent_enabled,
+            )
+            self.assertEqual(
+                api.chat_service._auto_enabled,
+                settings.chat_workflow.auto_enabled,
             )
             self.assertEqual(
                 worker.retrieval_service.hybrid_request_enabled(),
@@ -737,13 +801,21 @@ class StartupValidationTests(unittest.TestCase):
                 worker.retrieval_service,
             )
             self.assertIs(
+                worker.chat_runner._retrieval_agent,
+                worker.retrieval_agent,
+            )
+            self.assertIs(
+                worker.chat_runner._workflow_router,
+                worker.workflow_router,
+            )
+            self.assertIs(
                 worker.chat_scheduler._runner,
                 worker.chat_runner,
             )
             self.assertIsInstance(worker.chat_runner, LangGraphRunner)
             self.assertIsInstance(
                 worker.chat_model_adapter,
-                LangChainChatModelAdapter,
+                RoutingChatModelAdapter,
             )
             self.assertIsInstance(
                 api.embedding_provider,

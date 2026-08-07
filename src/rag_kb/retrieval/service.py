@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, replace
 import math
 from typing import Any, Literal, Protocol
@@ -12,6 +12,7 @@ from uuid import UUID
 from rag_kb.auth import AccessPolicy, AuthContext
 from rag_kb.domain import (
     ErrorCode,
+    EmbeddingSpaceDefinition,
     ChunkAssetRelationType,
     Evidence,
     EvidenceAsset,
@@ -116,6 +117,14 @@ class RetrievalService:
         min_rerank_score: float = 0.45,
         relation_hydrator: CompositeEvidenceHydrator | None = None,
         deadline_seconds: float = 240.0,
+        embedding_model_resolver: (
+            Callable[[EmbeddingSpaceDefinition], Awaitable[EmbeddingModelAdapter]]
+            | None
+        ) = None,
+        multimodal_embedding_model_resolver: (
+            Callable[[EmbeddingSpaceDefinition], Awaitable[MultimodalEmbeddingAdapter]]
+            | None
+        ) = None,
     ) -> None:
         if candidate_multiplier < 2:
             raise ValueError("candidate_multiplier must be at least two")
@@ -155,6 +164,10 @@ class RetrievalService:
         )
         self._relation_hydrator = relation_hydrator
         self._deadline_seconds = deadline_seconds
+        self._embedding_model_resolver = embedding_model_resolver
+        self._multimodal_embedding_model_resolver = (
+            multimodal_embedding_model_resolver
+        )
         common_profile = {
             "top_k": 10,
             "rerank": True,
@@ -297,6 +310,7 @@ class RetrievalService:
             ),
             rerank=request.rerank,
         )
+        embedding_provider = await self._text_embedding_provider(plan)
         multimodal = bool(
             hasattr(self._vector_store, "has_space_role")
             and await self._vector_store.has_space_role(
@@ -306,14 +320,15 @@ class RetrievalService:
         relations: tuple[IndexChunkAssetRelationSnapshot, ...] = ()
         cross_result: VectorSearchResult | None = None
         if multimodal:
-            if self._multimodal_embedding_provider is None:
+            cross_provider = await self._cross_modal_embedding_provider(plan)
+            if cross_provider is None:
                 raise RetrievalExecutionError(
                     ErrorCode.INDEX_REVISION_INCOMPATIBLE,
                     diagnostic={"check": "cross_modal_provider_required"},
                 )
             query_embedding, cross_embedding = await _gather_cancel_on_error(
-                self._embed_query(request.query),
-                self._embed_multimodal_query(request.query),
+                self._embed_query(request.query, embedding_provider),
+                self._embed_multimodal_query(request.query, cross_provider),
             )
             cross_plan = RetrievalQueryPlan(
                 workspace_id=plan.workspace_id,
@@ -324,13 +339,13 @@ class RetrievalService:
                 rerank=True,
             )
             result, cross_result = await _gather_cancel_on_error(
-                self._vector_store.search(plan, query_embedding),
+                self._search_text(plan, query_embedding, embedding_provider),
                 self._vector_store.search_space(
                     cross_plan,
                     cross_embedding,
                     space_role="cross_modal_retrieval",
                     representation_kinds=("native_image", "table_image"),
-                    expected_space=self._multimodal_embedding_provider.embedding_space,
+                    expected_space=cross_provider.embedding_space,
                 ),
             )
             if result is None:
@@ -368,8 +383,12 @@ class RetrievalService:
                 profile,
             )
         else:
-            query_embedding = await self._embed_query(request.query)
-            result = await self._vector_store.search(plan, query_embedding)
+            query_embedding = await self._embed_query(
+                request.query, embedding_provider
+            )
+            result = await self._search_text(
+                plan, query_embedding, embedding_provider
+            )
             if result is None:
                 raise ResourceNotFoundError(
                     "knowledge base or active revision was not found"
@@ -437,19 +456,21 @@ class RetrievalService:
             candidate_count=dense_count,
             rerank=True,
         )
+        embedding_provider = await self._text_embedding_provider(plan)
         multimodal = await self._vector_store.has_space_role(
             plan, "cross_modal_retrieval"
         )
         cross_result: VectorSearchResult | None = None
         if multimodal:
-            if self._multimodal_embedding_provider is None:
+            cross_provider = await self._cross_modal_embedding_provider(plan)
+            if cross_provider is None:
                 raise RetrievalExecutionError(
                     ErrorCode.INDEX_REVISION_INCOMPATIBLE,
                     diagnostic={"check": "cross_modal_provider_required"},
                 )
             query_embedding, cross_embedding = await _gather_cancel_on_error(
-                self._embed_query(request.query),
-                self._embed_multimodal_query(request.query),
+                self._embed_query(request.query, embedding_provider),
+                self._embed_multimodal_query(request.query, cross_provider),
             )
             cross_plan = replace(
                 plan,
@@ -457,7 +478,7 @@ class RetrievalService:
             )
             dense_result, lexical_result, cross_result = (
                 await _gather_cancel_on_error(
-                    self._vector_store.search(plan, query_embedding),
+                    self._search_text(plan, query_embedding, embedding_provider),
                     lexical_store.search(
                         plan,
                         request.query,
@@ -477,15 +498,17 @@ class RetrievalService:
                             "table_image",
                         ),
                         expected_space=(
-                            self._multimodal_embedding_provider.embedding_space
+                            cross_provider.embedding_space
                         ),
                     ),
                 )
             )
         else:
-            query_embedding = await self._embed_query(request.query)
+            query_embedding = await self._embed_query(
+                request.query, embedding_provider
+            )
             dense_result, lexical_result = await _gather_cancel_on_error(
-                self._vector_store.search(plan, query_embedding),
+                self._search_text(plan, query_embedding, embedding_provider),
                 lexical_store.search(
                     plan,
                     request.query,
@@ -1001,9 +1024,62 @@ class RetrievalService:
                 diagnostic={"capability": request.strategy.value},
             )
 
-    async def _embed_query(self, query: str) -> tuple[float, ...]:
+    async def _text_embedding_provider(
+        self,
+        plan: RetrievalQueryPlan,
+    ) -> EmbeddingModelAdapter:
+        if self._embedding_model_resolver is None or not hasattr(
+            self._vector_store, "resolve_space"
+        ):
+            return self._embedding_provider
+        space = await self._vector_store.resolve_space(plan, "text_retrieval")
+        if space is None:
+            raise ResourceNotFoundError(
+                "knowledge base or active revision was not found"
+            )
+        if space.model_profile_revision_id is None:
+            return self._embedding_provider
+        return await self._embedding_model_resolver(space)
+
+    async def _cross_modal_embedding_provider(
+        self,
+        plan: RetrievalQueryPlan,
+    ) -> MultimodalEmbeddingAdapter | None:
+        if self._multimodal_embedding_model_resolver is None or not hasattr(
+            self._vector_store, "resolve_space"
+        ):
+            return self._multimodal_embedding_provider
+        space = await self._vector_store.resolve_space(
+            plan, "cross_modal_retrieval"
+        )
+        if space is None or space.model_profile_revision_id is None:
+            return self._multimodal_embedding_provider
+        return await self._multimodal_embedding_model_resolver(space)
+
+    async def _search_text(
+        self,
+        plan: RetrievalQueryPlan,
+        query_embedding: tuple[float, ...],
+        provider: EmbeddingModelAdapter,
+    ) -> VectorSearchResult | None:
+        if provider is self._embedding_provider:
+            return await self._vector_store.search(plan, query_embedding)
+        return await self._vector_store.search_space(
+            plan,
+            query_embedding,
+            space_role="text_retrieval",
+            representation_kinds=("text", "caption_text", "ocr_text", "table_text"),
+            expected_space=provider.embedding_space,
+        )
+
+    async def _embed_query(
+        self,
+        query: str,
+        provider: EmbeddingModelAdapter | None = None,
+    ) -> tuple[float, ...]:
+        resolved_provider = provider or self._embedding_provider
         try:
-            vector = await self._embedding_provider.embed_query(query)
+            vector = await resolved_provider.embed_query(query)
         except IndexingExecutionError as error:
             raise RetrievalExecutionError(
                 error.code,
@@ -1014,7 +1090,7 @@ class RetrievalService:
                 ErrorCode.EMBEDDING_PROVIDER_UNAVAILABLE,
                 diagnostic={"check": "provider_contract"},
             ) from error
-        definition = self._embedding_provider.embedding_space
+        definition = resolved_provider.embedding_space
         if (
             definition.distance_metric != "cosine"
             or definition.vector_data_type != "float32"
@@ -1044,8 +1120,12 @@ class RetrievalService:
             )
         return normalized
 
-    async def _embed_multimodal_query(self, query: str) -> tuple[float, ...]:
-        provider = self._multimodal_embedding_provider
+    async def _embed_multimodal_query(
+        self,
+        query: str,
+        provider: MultimodalEmbeddingAdapter | None = None,
+    ) -> tuple[float, ...]:
+        provider = provider or self._multimodal_embedding_provider
         assert provider is not None
         try:
             embedded = await provider.embed_texts((query,))

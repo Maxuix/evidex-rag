@@ -16,6 +16,16 @@ from rag_kb.adapters.chat_preview.pg_notify import (
     serialize_preview_event,
 )
 from rag_kb.domain import (
+    ChatProgressActivity,
+    ChatProgressDecision,
+    ChatProgressFacts,
+    ChatProgressSnapshot,
+    ChatProgressStage,
+    ChatProgressUpdate,
+    ChatResolvedMode,
+    ChatRouteReason,
+    ChatRouteStatus,
+    ChatWorkflowMode,
     ChatPreviewDelta,
     ChatPreviewReset,
     ChatPreviewResetReason,
@@ -162,6 +172,55 @@ class ChatPreviewPayloadTests(unittest.TestCase):
                     json.dumps(case, separators=(",", ":"))
                 )
 
+    def test_progress_snapshot_round_trips_allowlisted_bounded_facts(self) -> None:
+        run_id = uuid4()
+        event = ChatProgressSnapshot(
+            run_id,
+            2,
+            4,
+            ChatProgressUpdate(
+                active_stage=ChatProgressStage.RETRIEVE_EVIDENCE,
+                activity=ChatProgressActivity.AGENT_SEARCH,
+                completed_stages=(
+                    ChatProgressStage.UNDERSTAND_QUERY,
+                    ChatProgressStage.SELECT_WORKFLOW,
+                ),
+                requested_mode=ChatWorkflowMode.AUTO,
+                resolved_mode=ChatResolvedMode.AGENT,
+                facts=ChatProgressFacts(
+                    objective="查找负责人与期限",
+                    queries=("负责人", "截止日期"),
+                    evidence_count=3,
+                    route_status=ChatRouteStatus.RESOLVED,
+                    route_reason_codes=(ChatRouteReason.MULTI_VIEW_REQUIRED,),
+                    decision=ChatProgressDecision.SEARCH_EVIDENCE,
+                ),
+            ),
+        )
+
+        payload = serialize_preview_event(event)
+
+        self.assertLessEqual(len(payload.encode("utf-8")), MAX_NOTIFY_PAYLOAD_BYTES)
+        self.assertEqual(parse_preview_payload(payload), event)
+        self.assertNotIn("evidence_text", json.loads(payload)["facts"])
+
+    def test_progress_payload_rejects_unknown_fact_and_overlong_text(self) -> None:
+        event = ChatProgressSnapshot(
+            uuid4(),
+            1,
+            1,
+            ChatProgressUpdate(
+                ChatProgressStage.RETRIEVE_EVIDENCE,
+                ChatProgressActivity.AGENT_DECISION,
+            ),
+        )
+        payload = json.loads(serialize_preview_event(event))
+        payload["facts"]["evidence_excerpt"] = "must not cross the boundary"
+        with self.assertRaises(ValueError):
+            parse_preview_payload(json.dumps(payload))
+        with self.assertRaises(ValueError):
+            ChatProgressFacts(objective="x" * 161)
+
 
 class ChatPreviewTransportTests(unittest.IsolatedAsyncioTestCase):
     async def test_sink_batches_delta_and_uses_one_dedicated_connection(self) -> None:
@@ -193,6 +252,36 @@ class ChatPreviewTransportTests(unittest.IsolatedAsyncioTestCase):
             ChatPreviewDelta(run_id, 1, 1, "你好"),
         )
         self.assertTrue(connection.closed)
+
+    async def test_sink_publishes_full_progress_snapshots_with_own_sequence(self) -> None:
+        connection = _Connection()
+        sink = PgNotifyPreviewSink(
+            _DSN,
+            flush_interval_ms=10,
+            max_total_bytes=1024,
+            connect=_Connector(connection),
+        )
+        run_id = uuid4()
+        first = ChatProgressUpdate(
+            ChatProgressStage.UNDERSTAND_QUERY,
+            ChatProgressActivity.LOAD_CONTEXT,
+        )
+        second = ChatProgressUpdate(
+            ChatProgressStage.SELECT_WORKFLOW,
+            ChatProgressActivity.ROUTE_DECISION,
+            completed_stages=(ChatProgressStage.UNDERSTAND_QUERY,),
+        )
+        try:
+            await sink.start()
+            await sink.emit_progress(run_id=run_id, attempt=1, update=first)
+            await sink.emit_progress(run_id=run_id, attempt=1, update=second)
+            await asyncio.sleep(0.02)
+        finally:
+            await sink.close()
+
+        events = [parse_preview_payload(item[2]) for item in connection.executions]
+        self.assertEqual([item.seq for item in events], [1, 2])
+        self.assertEqual(events[1].update, second)
 
     async def test_sink_truncates_at_total_limit_without_splitting_unicode(
         self,

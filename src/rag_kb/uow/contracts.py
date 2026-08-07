@@ -14,6 +14,7 @@ from rag_kb.repositories import (
     FileConsistencyRepository,
     IndexingRepository,
     KnowledgeBaseRepository,
+    ModelSettingsRepository,
     WorkspaceRepository,
 )
 
@@ -67,6 +68,9 @@ class UnitOfWork(Protocol):
 
     @property
     def indexing(self) -> IndexingRepository: ...
+
+    @property
+    def model_settings(self) -> ModelSettingsRepository: ...
 
     async def __aenter__(self) -> UnitOfWork: ...
 

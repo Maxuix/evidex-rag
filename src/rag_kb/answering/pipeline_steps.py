@@ -30,6 +30,7 @@ from rag_kb.domain import (
     AnswerStyle,
     ChatAnsweringState,
     ChatExecutionContext,
+    ChatModelCallRecord,
     ChatModelOperation,
     ChatPipelineExecutionError,
     ChatPipelinePhase,
@@ -42,10 +43,16 @@ from rag_kb.domain import (
     EvidenceScoreKind,
     ErrorCode,
     InsufficiencyPolicy,
+    ChatWorkflowState,
+    ResearchStatus,
 )
 from rag_kb.ports.chat_preview import ChatPreviewSink
 from rag_kb.ports.model_api import ChatModelAdapter
 from rag_kb.retrieval.eligibility import EvidenceEligibilityPolicy
+
+
+WORKFLOW_STATE_ARTIFACT = "chat_workflow_state"
+WORKFLOW_MODEL_CALLS_ARTIFACT = "chat_workflow_model_calls"
 
 
 class CosineEvidenceAssessmentStep:
@@ -108,7 +115,8 @@ class CosineEvidenceAssessmentStep:
                 state.query_context.model_calls_for_attempt(context.attempt)
                 if state.query_context is not None
                 else ()
-            ),
+            )
+            + _workflow_model_calls(state),
         )
         return ChatPipelineState(
             context=context,
@@ -117,6 +125,85 @@ class CosineEvidenceAssessmentStep:
             query_context=state.query_context,
             artifacts=state.artifacts,
         )
+
+
+class AdaptiveEvidenceAssessmentStep(CosineEvidenceAssessmentStep):
+    """Combine numeric admission with an independently verified Research Result."""
+
+    async def run(self, state: ChatPipelineState) -> ChatPipelineState:
+        context, pack = _require_inputs(state, ChatPipelinePhase.ASSESS_EVIDENCE)
+        workflow_state = state.artifacts.get(WORKFLOW_STATE_ARTIFACT)
+        if (
+            not isinstance(workflow_state, ChatWorkflowState)
+            or workflow_state.research_result is None
+        ):
+            raise _context_error(
+                ChatPipelinePhase.ASSESS_EVIDENCE, "research_result_state"
+            )
+        result = workflow_state.research_result
+        evidence = build_evidence_envelope(pack)
+        admitted = {
+            _evidence_key(item): prompt.citation_id
+            for item, prompt in zip(pack.evidence, evidence.items, strict=True)
+            if self._policy.usable(item)
+        }
+        usable_citation_ids = tuple(
+            admitted[key]
+            for key in result.selected_evidence_keys
+            if key in admitted
+        )
+        supported = result.covered_aspects or (
+            ("question",) if usable_citation_ids else ()
+        )
+        if not usable_citation_ids or result.status in {
+            ResearchStatus.NO_EVIDENCE,
+            ResearchStatus.PREMISE_UNSUPPORTED,
+        }:
+            assessment = EvidenceAssessment(
+                coverage=EvidenceCoverage.NONE,
+                usable_citation_ids=(),
+                supported_aspects=(),
+                missing_aspects=result.missing_aspects,
+            )
+        elif result.status is ResearchStatus.SUFFICIENT:
+            assessment = EvidenceAssessment(
+                coverage=EvidenceCoverage.SUFFICIENT,
+                usable_citation_ids=usable_citation_ids,
+                supported_aspects=supported,
+                missing_aspects=(),
+            )
+        elif result.status is ResearchStatus.CONFLICT:
+            assessment = EvidenceAssessment(
+                coverage=EvidenceCoverage.CONFLICT,
+                usable_citation_ids=usable_citation_ids,
+                supported_aspects=supported,
+                missing_aspects=result.conflicts or ("conflict",),
+            )
+        else:
+            assessment = EvidenceAssessment(
+                coverage=EvidenceCoverage.PARTIAL,
+                usable_citation_ids=usable_citation_ids,
+                supported_aspects=supported,
+                missing_aspects=result.missing_aspects or ("coverage",),
+            )
+        answering = ChatAnsweringState(
+            evidence=evidence,
+            assessment=assessment,
+            model_calls=(
+                state.query_context.model_calls_for_attempt(context.attempt)
+                if state.query_context is not None
+                else ()
+            )
+            + _workflow_model_calls(state),
+        )
+        return ChatPipelineState(
+            context=context,
+            evidence_pack=pack,
+            answering=answering,
+            query_context=state.query_context,
+            artifacts=state.artifacts,
+        )
+
 
 class AnswerGenerationStep:
     def __init__(
@@ -271,7 +358,27 @@ def _route(
         return AnswerControlReason.INSUFFICIENT_EVIDENCE
     if coverage is EvidenceCoverage.AMBIGUOUS:
         return AnswerControlReason.AMBIGUOUS_QUESTION
+    if coverage is EvidenceCoverage.CONFLICT:
+        return AnswerControlReason.CONFLICT_UNRESOLVED
     return AnswerControlReason.NO_USABLE_EVIDENCE
+
+
+def _workflow_model_calls(
+    state: ChatPipelineState,
+) -> tuple[ChatModelCallRecord, ...]:
+    value = state.artifacts.get(WORKFLOW_MODEL_CALLS_ARTIFACT, ())
+    if (
+        not isinstance(value, tuple)
+        or any(not isinstance(item, ChatModelCallRecord) for item in value)
+    ):
+        raise _context_error(
+            ChatPipelinePhase.ASSESS_EVIDENCE, "workflow_model_calls"
+        )
+    return value
+
+
+def _evidence_key(value) -> str:
+    return f"chunk:{value.index_chunk_id}"
 
 
 def _deterministic_refusal(reason: AnswerControlReason) -> AnswerDraftCandidate:

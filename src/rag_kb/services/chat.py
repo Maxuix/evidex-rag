@@ -9,12 +9,17 @@ from uuid import UUID
 from rag_kb.auth import AccessPolicy, AuthContext
 from rag_kb.domain import (
     AnswerStyle,
+    CHAT_WORKFLOW_VERSION,
     ChatMessage,
     ChatRun,
     ChatSession,
     ChatSessionBusyError,
+    ChatWorkflowMode,
     ContextualizedQuery,
     ErrorCode,
+    ModelKind,
+    ModelProfileBundle,
+    ModelValidationStatus,
     QueryContextStatus,
     QueryRewriteSource,
     CONTEXTUAL_QUERY_VERSION,
@@ -27,6 +32,7 @@ from rag_kb.domain import (
     ResourceStateConflictError,
     RetrievalStrategy,
     canonical_request_hash,
+    initial_chat_workflow,
     resolve_p1_policy,
 )
 from rag_kb.retrieval.profile import RetrievalExecutionProfile
@@ -52,6 +58,8 @@ class ChatService:
         model_configuration: dict[str, Any],
         default_rerank: bool = False,
         hybrid_enabled: bool = False,
+        agent_enabled: bool = False,
+        auto_enabled: bool = False,
         retrieval_profile_factory: Callable[
             [RetrievalStrategy, int, bool], RetrievalExecutionProfile
         ],
@@ -59,12 +67,16 @@ class ChatService:
         context_max_turns: int = 6,
         context_max_tokens: int = 4000,
         context_tokenizer: str = "cl100k_base",
+        allow_legacy_model_configuration: bool = True,
     ) -> None:
         self._unit_of_work = unit_of_work
         self._access_policy = access_policy
         self._model_configuration = dict(model_configuration)
+        self._allow_legacy_model_configuration = allow_legacy_model_configuration
         self._default_rerank = default_rerank
         self._hybrid_enabled = hybrid_enabled
+        self._agent_enabled = agent_enabled
+        self._auto_enabled = auto_enabled
         self._retrieval_profile_factory = retrieval_profile_factory
         if (
             context_strategy != "recent_completed_turns_v1"
@@ -79,6 +91,23 @@ class ChatService:
             tokenizer=context_tokenizer,
         )
         self._context_max_turns = context_max_turns
+
+    def workflow_capabilities_snapshot(self) -> dict[str, Any]:
+        return {
+            "version": CHAT_WORKFLOW_VERSION,
+            "default_mode": ChatWorkflowMode.SIMPLE.value,
+            "modes": (
+                {"mode": ChatWorkflowMode.SIMPLE.value, "enabled": True},
+                {
+                    "mode": ChatWorkflowMode.AGENT.value,
+                    "enabled": self._agent_enabled,
+                },
+                {
+                    "mode": ChatWorkflowMode.AUTO.value,
+                    "enabled": self._auto_enabled,
+                },
+            ),
+        }
 
     async def create_session(
         self,
@@ -187,8 +216,20 @@ class ChatService:
         retrieval_mode: str,
         top_k: int,
         rerank: bool | None = None,
+        workflow_mode: ChatWorkflowMode = ChatWorkflowMode.SIMPLE,
+        model_profile_revision_id: UUID | None = None,
     ) -> ChatRun:
         self._authorize(context)
+        if workflow_mode is ChatWorkflowMode.AGENT and not self._agent_enabled:
+            raise RetrievalExecutionError(
+                ErrorCode.CAPABILITY_NOT_ENABLED,
+                diagnostic={"capability": "chat_agent"},
+            )
+        if workflow_mode is ChatWorkflowMode.AUTO and not self._auto_enabled:
+            raise RetrievalExecutionError(
+                ErrorCode.CAPABILITY_NOT_ENABLED,
+                diagnostic={"capability": "chat_auto"},
+            )
         if retrieval_mode not in {"vector", "hybrid"}:
             raise ResourceStateConflictError("retrieval mode is unsupported")
         if retrieval_mode == "hybrid" and not self._hybrid_enabled:
@@ -225,13 +266,22 @@ class ChatService:
         retrieval_strategy = self._retrieval_profile_factory(
             strategy, top_k, resolved_rerank
         ).as_dict()
+        workflow_configuration, workflow_state = initial_chat_workflow(
+            workflow_mode
+        )
         request_hash = canonical_request_hash(
             {
                 "session_id": str(session_id),
                 "knowledge_base_id": str(kb_id),
                 "message": normalized_message,
                 "answer_policy": requested_policy,
+                "workflow": {"mode": workflow_mode.value},
                 "retrieval": requested_retrieval,
+                "model_profile_revision_id": (
+                    str(model_profile_revision_id)
+                    if model_profile_revision_id is not None
+                    else None
+                ),
             }
         )
 
@@ -262,6 +312,10 @@ class ChatService:
             knowledge_base = await uow.knowledge_bases.get(kb_id)
             if knowledge_base is None:
                 raise ResourceNotFoundError("knowledge base was not found")
+            model_configuration = await self._resolve_model_configuration(
+                uow,
+                model_profile_revision_id,
+            )
             effective_policy = resolve_p1_policy(
                 requested_policy=requested_policy,
                 knowledge_base_defaults=knowledge_base.answer_policy_defaults,
@@ -295,7 +349,9 @@ class ChatService:
                 requested_policy=requested_policy,
                 effective_policy=effective_policy,
                 retrieval_strategy=retrieval_strategy,
-                model_configuration=self._model_configuration,
+                model_configuration=model_configuration,
+                workflow_configuration=workflow_configuration.as_dict(),
+                workflow_state=workflow_state.as_dict(),
                 conversation_context=serialize_conversation_context(
                     conversation_context
                 ),
@@ -307,6 +363,43 @@ class ChatService:
             )
 
         return await execute_in_transaction(self._unit_of_work, persist)
+
+    async def _resolve_model_configuration(
+        self,
+        uow: UnitOfWork,
+        requested_revision_id: UUID | None,
+    ) -> dict[str, Any]:
+        revision_id = requested_revision_id
+        repository = getattr(uow, "model_settings", None)
+        if repository is None:
+            if revision_id is not None:
+                raise ResourceStateConflictError("model settings are unavailable")
+            return dict(self._model_configuration)
+        if revision_id is None:
+            selection = await repository.get_selection()
+            revision_id = selection.chat_profile_revision_id
+        if revision_id is None:
+            if (
+                not self._allow_legacy_model_configuration
+                or not self._model_configuration
+            ):
+                raise ResourceStateConflictError(
+                    "a chat model must be selected before creating a run"
+                )
+            return dict(self._model_configuration)
+        bundle = await repository.get_profile_revision(revision_id)
+        if bundle is None:
+            raise ResourceNotFoundError("chat model profile revision was not found")
+        if bundle.profile.kind is not ModelKind.CHAT:
+            raise ResourceStateConflictError("model profile is not a chat model")
+        if not bundle.profile.enabled or not bundle.provider.enabled:
+            raise ResourceStateConflictError("chat model profile is disabled")
+        if (
+            bundle.current_revision.validation_status
+            is not ModelValidationStatus.VALID
+        ):
+            raise ResourceStateConflictError("chat model profile is not validated")
+        return _chat_profile_configuration(bundle, self._model_configuration)
 
     def _authorize(self, context: AuthContext) -> None:
         self._access_policy.metadata_filter(context)
@@ -333,6 +426,47 @@ def chat_model_configuration(settings: Any) -> dict[str, Any]:
         "visual_media_profile": settings.visual_media_profile,
         "configuration_fingerprint": settings.configuration_fingerprint,
         "capability_fingerprint": settings.capability_fingerprint,
+    }
+
+
+def _chat_profile_configuration(
+    bundle: ModelProfileBundle,
+    safety_defaults: dict[str, Any],
+) -> dict[str, Any]:
+    revision = bundle.current_revision
+    parameters = dict(revision.configuration)
+    return {
+        "source": "user_model_profile",
+        "model_profile_id": str(bundle.profile.id),
+        "model_profile_name": bundle.profile.name,
+        "model_profile_revision_id": str(revision.id),
+        "model_profile_revision": revision.revision,
+        "provider_id": str(bundle.provider.id),
+        "provider_revision_id": str(bundle.provider_revision.id),
+        "provider_identity": bundle.provider.name,
+        "requested_model": revision.model,
+        "resolved_model": revision.model,
+        "temperature": parameters.get("temperature", 0.2),
+        "top_p": parameters.get("top_p", 0.9),
+        "sampling_top_k": parameters.get("sampling_top_k", 40),
+        "max_tokens": parameters.get("max_output_tokens", 4096),
+        "reasoning_effort": parameters.get("reasoning_effort", "off"),
+        "thinking_enabled": parameters.get("reasoning_effort", "off") != "off",
+        "structured_output_mode": parameters.get(
+            "structured_output_mode", "json_object"
+        ),
+        "vision_enabled": parameters.get("vision_enabled", False),
+        "configuration_fingerprint": revision.configuration_fingerprint,
+        "capability_fingerprint": revision.capability_fingerprint,
+        "max_visual_images": safety_defaults.get("max_visual_images", 4),
+        "max_visual_image_bytes": safety_defaults.get(
+            "max_visual_image_bytes", 5 * 1024 * 1024
+        ),
+        "max_visual_total_bytes": safety_defaults.get(
+            "max_visual_total_bytes", 12 * 1024 * 1024
+        ),
+        "max_visual_pixels": safety_defaults.get("max_visual_pixels", 16_000_000),
+        "visual_media_profile": safety_defaults.get("visual_media_profile"),
     }
 
 

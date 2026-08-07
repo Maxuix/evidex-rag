@@ -33,7 +33,10 @@ def validate_startup_environment(settings: Settings) -> StartupValidation:
         settings.file_store.staging_path,
         settings.file_store.final_path,
     )
-    if settings.model_provider.multimodal_embedding is not None:
+    if (
+        settings.model_provider is not None
+        and settings.model_provider.multimodal_embedding is not None
+    ):
         # The application-owned Docling child renders and recognizes through
         # pypdfium2 and RapidOCR, so parsing never shells out to a system binary.
         configured_paths += (
@@ -75,6 +78,19 @@ def validate_startup_environment(settings: Settings) -> StartupValidation:
     if len(device_ids) != 1:
         raise StartupConfigurationError(
             "root, staging, and final file-store paths must share one filesystem"
+        )
+
+    try:
+        model_secret_root = settings.model_secrets.root_path.resolve(strict=True)
+    except FileNotFoundError as error:
+        raise StartupConfigurationError(
+            "configured model-secret root does not exist: "
+            f"{settings.model_secrets.root_path}"
+        ) from error
+    if not model_secret_root.is_dir():
+        raise StartupConfigurationError(
+            "configured model-secret root is not a directory: "
+            f"{settings.model_secrets.root_path}"
         )
 
     return StartupValidation(

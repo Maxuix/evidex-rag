@@ -101,6 +101,17 @@ class ChatTerminalServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             repository.success.finished_at, observed + timedelta(seconds=2)
         )
+        self.assertEqual(
+            repository.success.workflow_state["resolved_mode"], "simple"
+        )
+        self.assertEqual(
+            _serialized_validation(repository.success)["workflow"],
+            {
+                "resolved_mode": "simple",
+                "route_status": "not_applicable",
+                "termination_reason": None,
+            },
+        )
 
     async def test_success_persists_final_llm_context_snapshot(self) -> None:
         observed = datetime(2026, 7, 15, 8, 0, tzinfo=UTC)
@@ -211,6 +222,30 @@ class ChatTerminalServiceTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(repository.failure.retryable, retryable)
                 self.assertEqual(repository.failure.exhausted, exhausted)
                 self.assertIsNone(repository.failure.next_attempt_at)
+
+    async def test_provider_nonretryable_diagnostic_prevents_requeue(self) -> None:
+        observed = datetime(2026, 7, 15, 8, 0, tzinfo=UTC)
+        repository = _Repository(ChatTerminalWriteStatus.APPLIED)
+        service = ChatFailureSettlementService(
+            _Factory(repository),
+            max_attempts=3,
+            base_delay_seconds=5,
+            max_delay_seconds=30,
+            clock=lambda: observed + timedelta(seconds=1),
+        )
+
+        await service.settle(
+            _lease(observed, attempt=1),
+            ChatPipelineExecutionError(
+                ErrorCode.CHAT_PROVIDER_UNAVAILABLE,
+                phase=ChatPipelinePhase.RETRIEVE_EVIDENCE,
+                diagnostic={"http_status": 400, "retryable": False},
+            ),
+        )
+
+        self.assertFalse(repository.failure.retryable)
+        self.assertFalse(repository.failure.exhausted)
+        self.assertIsNone(repository.failure.next_attempt_at)
 
 
 class _Repository:

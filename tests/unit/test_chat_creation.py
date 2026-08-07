@@ -13,6 +13,7 @@ from rag_kb.domain import (
     AnswerPolicyNotSupportedError,
     AnswerStyle,
     ChatSessionBusyError,
+    ChatWorkflowMode,
     ConversationTurn,
     ErrorCode,
     InsufficiencyPolicy,
@@ -126,6 +127,26 @@ class ChatCreationContractTests(unittest.TestCase):
         )
         self.assertEqual(request.message, "查询 RUN-ORD-14")
         self.assertIs(request.answer_policy.answer_style, AnswerStyle.SUMMARY)
+        self.assertIs(request.workflow.mode, ChatWorkflowMode.SIMPLE)
+
+        explicit = ChatRunCreate.model_validate(
+            {
+                "session_id": "01900000-0000-7000-8000-000000000101",
+                "knowledge_base_id": "01900000-0000-7000-8000-000000000102",
+                "message": "question",
+                "workflow": {"mode": "agent"},
+            }
+        )
+        self.assertIs(explicit.workflow.mode, ChatWorkflowMode.AGENT)
+        with self.assertRaises(ValidationError):
+            ChatRunCreate.model_validate(
+                {
+                    "session_id": "01900000-0000-7000-8000-000000000101",
+                    "knowledge_base_id": "01900000-0000-7000-8000-000000000102",
+                    "message": "question",
+                    "workflow": {"mode": "unbounded"},
+                }
+            )
 
         for field_name in (
             "grounding_policy",
@@ -187,6 +208,82 @@ class ChatCreationContractTests(unittest.TestCase):
 
 
 class ChatCreationServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_workflow_capabilities_gate_new_modes_before_persistence(self) -> None:
+        workspace_id = uuid4()
+        kb_id = uuid4()
+        chat = _ChatRepository(kb_id=kb_id)
+        service = ChatService(
+            _Factory(workspace_id, chat, kb_id),
+            SingleWorkspaceAccessPolicy(workspace_id),
+            model_configuration={"resolved_model": "fixed-model"},
+            retrieval_profile_factory=_profile_factory,
+        )
+        self.assertEqual(
+            service.workflow_capabilities_snapshot()["modes"],
+            (
+                {"mode": "simple", "enabled": True},
+                {"mode": "agent", "enabled": False},
+                {"mode": "auto", "enabled": False},
+            ),
+        )
+
+        for mode in (ChatWorkflowMode.AGENT, ChatWorkflowMode.AUTO):
+            with self.subTest(mode=mode), self.assertRaises(
+                RetrievalExecutionError
+            ) as failure:
+                await service.create_run(
+                    AuthContext("principal", "client", workspace_id),
+                    uuid4(),
+                    session_id=uuid4(),
+                    kb_id=kb_id,
+                    message="query",
+                    answer_style=None,
+                    insufficiency_policy=None,
+                    retrieval_mode="vector",
+                    top_k=5,
+                    workflow_mode=mode,
+                )
+            self.assertEqual(
+                failure.exception.code, ErrorCode.CAPABILITY_NOT_ENABLED
+            )
+        self.assertNotIn("idempotency", chat.events)
+
+    async def test_enabled_workflow_is_frozen_and_changes_request_identity(self) -> None:
+        workspace_id = uuid4()
+        kb_id = uuid4()
+
+        async def create(mode: ChatWorkflowMode):
+            chat = _ChatRepository(kb_id=kb_id)
+            service = ChatService(
+                _Factory(workspace_id, chat, kb_id),
+                SingleWorkspaceAccessPolicy(workspace_id),
+                model_configuration={"resolved_model": "fixed-model"},
+                retrieval_profile_factory=_profile_factory,
+                agent_enabled=True,
+                auto_enabled=True,
+            )
+            return await service.create_run(
+                AuthContext("principal", "client", workspace_id),
+                UUID("01900000-0000-7000-8000-000000000211"),
+                session_id=UUID("01900000-0000-7000-8000-000000000212"),
+                kb_id=kb_id,
+                message="query",
+                answer_style=None,
+                insufficiency_policy=None,
+                retrieval_mode="vector",
+                top_k=5,
+                workflow_mode=mode,
+            )
+
+        simple = await create(ChatWorkflowMode.SIMPLE)
+        agent = await create(ChatWorkflowMode.AGENT)
+        auto = await create(ChatWorkflowMode.AUTO)
+        self.assertEqual(agent["workflow_configuration"]["requested_mode"], "agent")
+        self.assertEqual(agent["workflow_state"]["resolved_mode"], "agent")
+        self.assertEqual(auto["workflow_state"]["resolved_mode"], "pending")
+        self.assertNotEqual(simple["request_hash"], agent["request_hash"])
+        self.assertNotEqual(agent["request_hash"], auto["request_hash"])
+
     async def test_disabled_hybrid_run_uses_capability_error(self) -> None:
         workspace_id = uuid4()
         kb_id = uuid4()

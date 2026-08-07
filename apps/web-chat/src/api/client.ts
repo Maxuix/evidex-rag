@@ -3,12 +3,21 @@ import type {
   ChatMessage,
   ChatPreviewDeltaEvent,
   ChatPreviewResetEvent,
+  ChatProgressSnapshot,
   ChatRun,
   ChatRunCreate,
+  ChatWorkflowCapabilities,
   RetrievalCapabilities,
   ChatSession,
   ChatTerminalEvent,
   KnowledgeBase,
+  ModelKind,
+  ModelCatalog,
+  ModelProfile,
+  ModelProvider,
+  ModelProviderProtocol,
+  ModelSelection,
+  ModelSettings,
   Page,
   UUID,
 } from "./types";
@@ -77,6 +86,101 @@ export class ApiClient {
     return this.request("/retrieval/capabilities");
   }
 
+  getChatWorkflowCapabilities(): Promise<ChatWorkflowCapabilities> {
+    return this.request("/chat/capabilities");
+  }
+
+  getModelSettings(): Promise<ModelSettings> {
+    return this.request("/model-settings");
+  }
+
+  createModelProvider(payload: {
+    name: string;
+    protocol: ModelProviderProtocol;
+    base_url: string;
+    api_key: string;
+    timeout_seconds: number;
+    max_retries: number;
+    max_concurrency: number;
+  }): Promise<ModelProvider> {
+    return this.request("/model-providers", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  }
+
+  updateModelProvider(providerId: UUID, payload: {
+    name?: string;
+    protocol?: ModelProviderProtocol;
+    base_url?: string;
+    api_key?: string;
+    timeout_seconds?: number;
+    max_retries?: number;
+    max_concurrency?: number;
+    enabled?: boolean;
+  }): Promise<ModelProvider> {
+    return this.request(`/model-providers/${providerId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  }
+
+  listProviderModels(providerId: UUID): Promise<ModelCatalog> {
+    return this.request(`/model-providers/${providerId}/models`);
+  }
+
+  createModelProfile(payload: {
+    provider_id: UUID;
+    name: string;
+    kind: ModelKind;
+    model: string;
+    parameters: Record<string, unknown>;
+  }): Promise<ModelProfile> {
+    return this.request("/model-profiles", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  }
+
+  updateModelProfile(profileId: UUID, payload: {
+    provider_id?: UUID;
+    name?: string;
+    model?: string;
+    parameters?: Record<string, unknown>;
+    enabled?: boolean;
+  }): Promise<ModelProfile> {
+    return this.request(`/model-profiles/${profileId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  }
+
+  validateModelProfile(profileId: UUID): Promise<ModelProfile> {
+    return this.request(`/model-profiles/${profileId}/validate`, {
+      method: "POST",
+    });
+  }
+
+  updateModelSelection(payload: {
+    chat_profile_revision_id: UUID | null;
+    text_embedding_profile_revision_id: UUID | null;
+    multimodal_embedding_profile_revision_id: UUID | null;
+  }): Promise<ModelSelection> {
+    return this.request("/model-selection", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_profile_revision_id: payload.chat_profile_revision_id,
+        text_embedding_profile_revision_id: payload.text_embedding_profile_revision_id,
+        multimodal_embedding_profile_revision_id: payload.multimodal_embedding_profile_revision_id,
+      }),
+    });
+  }
+
   listChatSessions(
     knowledgeBaseId: UUID,
     cursor?: string,
@@ -143,7 +247,9 @@ export class ApiClient {
       failed: (event: ChatTerminalEvent) => void;
       previewDelta: (event: ChatPreviewDeltaEvent) => void;
       previewReset: (event: ChatPreviewResetEvent) => void;
+      progress: (event: ChatProgressSnapshot) => void;
       previewInvalid: () => void;
+      progressInvalid: () => void;
       error: () => void;
       open?: () => void;
     },
@@ -165,12 +271,17 @@ export class ApiClient {
       const value = parsePreviewReset(event);
       value ? handlers.previewReset(value) : handlers.previewInvalid();
     };
+    const progress = (event: Event) => {
+      const value = parseProgressSnapshot(event);
+      value ? handlers.progress(value) : handlers.progressInvalid();
+    };
     const open = () => handlers.open?.();
     const error = () => handlers.error();
     source.addEventListener("answer.completed", completed);
     source.addEventListener("run.failed", failed);
     source.addEventListener("answer.preview.delta", previewDelta);
     source.addEventListener("answer.preview.reset", previewReset);
+    source.addEventListener("workflow.progress", progress);
     source.addEventListener("open", open);
     source.addEventListener("error", error);
     return () => {
@@ -178,6 +289,7 @@ export class ApiClient {
       source.removeEventListener("run.failed", failed);
       source.removeEventListener("answer.preview.delta", previewDelta);
       source.removeEventListener("answer.preview.reset", previewReset);
+      source.removeEventListener("workflow.progress", progress);
       source.removeEventListener("open", open);
       source.removeEventListener("error", error);
       source.close();
@@ -219,7 +331,7 @@ export class ApiClient {
       });
     } catch (error) {
       if (error instanceof ApiClientError) throw error;
-      throw new ApiClientError("无法连接本地知识库服务，请确认服务已启动。", {
+      throw new ApiClientError("无法完成 API 请求，请检查本地服务状态或跨域配置。", {
         retryable: true,
       });
     }
@@ -308,6 +420,153 @@ function parsePreviewReset(event: Event): ChatPreviewResetEvent | null {
     || !reasons.has(value.reason)
   ) return null;
   return value as unknown as ChatPreviewResetEvent;
+}
+
+function parseProgressSnapshot(event: Event): ChatProgressSnapshot | null {
+  const value = parseJsonObject(event);
+  if (
+    !value
+    || !hasExactKeys(value, [
+      "run_id",
+      "attempt",
+      "seq",
+      "active_stage",
+      "activity",
+      "completed_stages",
+      "status",
+      "requested_mode",
+      "resolved_mode",
+      "facts",
+    ])
+    || typeof value.run_id !== "string"
+    || !isPositiveInteger(value.attempt)
+    || !isPositiveInteger(value.seq)
+  ) return null;
+  const stages = new Set([
+    "understand_query",
+    "select_workflow",
+    "retrieve_evidence",
+    "assess_evidence",
+    "prepare_visual_evidence",
+    "generate_answer",
+    "validate_answer",
+    "persist_result",
+  ]);
+  const activities = new Set([
+    "load_context",
+    "contextualize_query",
+    "route_decision",
+    "simple_search",
+    "agent_decision",
+    "agent_search",
+    "retrieval_complete",
+    "verify_coverage",
+    "research_complete",
+    "assess_evidence",
+    "prepare_visual_evidence",
+    "generate_answer",
+    "validate_answer",
+    "persist_result",
+  ]);
+  if (
+    typeof value.active_stage !== "string"
+    || !stages.has(value.active_stage)
+    || typeof value.activity !== "string"
+    || !activities.has(value.activity)
+    || !isStringArray(value.completed_stages, 8, stages)
+    || !["active", "completed"].includes(String(value.status))
+    || ![null, "simple", "agent", "auto"].includes(
+      value.requested_mode as null | string,
+    )
+    || !["pending", "simple", "agent"].includes(String(value.resolved_mode))
+    || !isProgressFacts(value.facts)
+  ) return null;
+  return value as unknown as ChatProgressSnapshot;
+}
+
+function isProgressFacts(value: unknown): value is ChatProgressSnapshot["facts"] {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const facts = value as Record<string, unknown>;
+  const reasons = new Set([
+    "single_lookup",
+    "direct_summary",
+    "multi_view_required",
+    "multi_hop_required",
+    "evidence_uncertain",
+    "router_invalid",
+    "router_unavailable",
+  ]);
+  const researchStatuses = [
+    null,
+    "sufficient",
+    "partial",
+    "no_evidence",
+    "conflict",
+    "premise_unsupported",
+  ];
+  const decisions = [
+    null,
+    "select_simple",
+    "select_agent",
+    "search_evidence",
+    "continue_search",
+    "finish_research",
+  ];
+  return hasExactKeys(facts, [
+    "objective",
+    "queries",
+    "evidence_count",
+    "new_evidence_count",
+    "retrieval_calls",
+    "route_status",
+    "route_reason_codes",
+    "research_status",
+    "covered_aspects",
+    "missing_aspects",
+    "conflict_count",
+    "decision",
+  ])
+    && isNullableBoundedString(facts.objective)
+    && isStringArray(facts.queries, 3)
+    && isNullableCounter(facts.evidence_count)
+    && isNullableCounter(facts.new_evidence_count)
+    && isNullableCounter(facts.retrieval_calls)
+    && [null, "not_applicable", "pending", "resolved", "fallback"].includes(
+      facts.route_status as null | string,
+    )
+    && isStringArray(facts.route_reason_codes, 6, reasons)
+    && researchStatuses.includes(facts.research_status as null | string)
+    && isStringArray(facts.covered_aspects, 6)
+    && isStringArray(facts.missing_aspects, 6)
+    && isNullableCounter(facts.conflict_count)
+    && decisions.includes(facts.decision as null | string);
+}
+
+function isStringArray(
+  value: unknown,
+  maximum: number,
+  allowed?: Set<string>,
+): value is string[] {
+  return Array.isArray(value)
+    && value.length <= maximum
+    && value.every((item) => (
+      typeof item === "string"
+      && item.length > 0
+      && item.length <= 160
+      && (!allowed || allowed.has(item))
+    ));
+}
+
+function isNullableBoundedString(value: unknown): value is string | null {
+  return value === null
+    || (typeof value === "string" && value.length > 0 && value.length <= 160);
+}
+
+function isNullableCounter(value: unknown): value is number | null {
+  return value === null
+    || (Number.isInteger(value) && Number(value) >= 0 && Number(value) <= 1000);
 }
 
 function parseJsonObject(event: Event): Record<string, unknown> | null {

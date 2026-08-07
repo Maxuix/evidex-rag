@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 import json
 import unittest
+from dataclasses import replace
 from datetime import UTC, datetime
 
 from rag_kb.answering import (
     AnswerGenerationStep,
     AnswerStructureValidationStep,
+    AdaptiveEvidenceAssessmentStep,
     CosineEvidenceAssessmentStep,
 )
 from rag_kb.domain import (
@@ -22,10 +24,23 @@ from rag_kb.domain import (
     CONTEXTUAL_QUERY_VERSION,
     ChatModelCallRecord,
     ChatModelOperation,
+    ChatResolvedMode,
+    ChatRouteStatus,
+    ChatWorkflowMode,
+    ChatWorkflowState,
     ContextualizedQuery,
     QueryContextStatus,
     QueryRewriteSource,
+    ResearchAspect,
+    ResearchAspectStatus,
+    ResearchResult,
+    ResearchStatus,
+    ResearchTerminationReason,
+    SearchTrace,
+    SearchTraceStep,
+    initial_chat_workflow,
 )
+from rag_kb.retrieval.agent import AgentResearchOutcome, evidence_key
 from rag_kb.workflows.langgraph_runner import LangGraphRunner
 from rag_kb.workflows.chat_graph import CHAT_GRAPH_NODES
 from tests.unit.test_answering import (
@@ -83,6 +98,20 @@ class _FailStep:
         raise RuntimeError("sensitive step content")
 
 
+class _ProgressSink:
+    enabled = True
+
+    def __init__(self, *, fail: bool = False) -> None:
+        self.fail = fail
+        self.events: list[object] = []
+
+    async def emit_progress(self, *, run_id, attempt, update) -> None:
+        del run_id, attempt
+        if self.fail:
+            raise OSError("progress transport unavailable")
+        self.events.append(update)
+
+
 def _answer(outcome: AnswerOutcome) -> str:
     if outcome is AnswerOutcome.ANSWERED:
         return json.dumps(
@@ -111,6 +140,10 @@ def _build(
     retriever=None,
     assessor=None,
     contextualizer=None,
+    workflow_router=None,
+    retrieval_agent=None,
+    adaptive_assessor=None,
+    progress_sink=None,
 ):
     model = _Model(*responses)
     context_loader = loader or _Loader(context)
@@ -131,6 +164,10 @@ def _build(
         LangGraphRunner(
             *values,
             query_contextualizer=contextualizer,
+            workflow_router=workflow_router,
+            retrieval_agent=retrieval_agent,
+            adaptive_evidence_assessor=adaptive_assessor,
+            progress_sink=progress_sink,
             deadline_seconds=deadline,
         ),  # type: ignore[arg-type]
         model,
@@ -139,6 +176,133 @@ def _build(
 
 
 class LangGraphRunnerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_simple_run_reports_full_stage_progress_and_delivery_is_best_effort(
+        self,
+    ) -> None:
+        context = _context(insufficiency="partial_answer")
+        pack = _pack(context)
+        sink = _ProgressSink()
+        runner, _, persister = _build(
+            context=context,
+            pack=pack,
+            progress_sink=sink,
+        )
+
+        await runner.execute(ChatExecutionCommand(context.lease))
+
+        self.assertEqual(persister.calls, 1)
+        self.assertGreaterEqual(len(sink.events), 8)
+        final = sink.events[-1]
+        self.assertEqual(final.status.value, "completed")
+        self.assertEqual(final.active_stage.value, "persist_result")
+        self.assertEqual(len(final.completed_stages), 8)
+        self.assertEqual(final.facts.route_status.value, "not_applicable")
+
+        failing = _ProgressSink(fail=True)
+        runner, _, persister = _build(
+            context=context,
+            pack=pack,
+            progress_sink=failing,
+        )
+        await runner.execute(ChatExecutionCommand(context.lease))
+        self.assertEqual(persister.calls, 1)
+
+    async def test_agent_branch_skips_simple_retrieval_and_uses_verified_assessment(
+        self,
+    ) -> None:
+        base = _context(insufficiency="partial_answer")
+        configuration, initial = initial_chat_workflow(ChatWorkflowMode.AGENT)
+        context = replace(
+            base,
+            workflow_configuration=configuration.as_dict(),
+            workflow_state=initial.as_dict(),
+        )
+        pack = _pack(context, "Policy applies.")
+        key = evidence_key(pack.evidence[0])
+        result = ResearchResult(
+            status=ResearchStatus.SUFFICIENT,
+            selected_evidence_keys=(key,),
+            aspects=(
+                ResearchAspect(
+                    aspect="question",
+                    status=ResearchAspectStatus.SUPPORTED,
+                    evidence_keys=(key,),
+                ),
+            ),
+            covered_aspects=("question",),
+            missing_aspects=(),
+            conflicts=(),
+            termination_reason=ResearchTerminationReason.SUFFICIENT,
+        )
+        workflow_state = ChatWorkflowState(
+            resolved_mode=ChatResolvedMode.AGENT,
+            route_status=ChatRouteStatus.NOT_APPLICABLE,
+            research_result=result,
+            search_trace=SearchTrace(
+                steps=(
+                    SearchTraceStep(
+                        observation_id="obs_1",
+                        objective="find policy",
+                        queries=("policy",),
+                        based_on_observation_ids=(),
+                        result="evidence_found",
+                        new_evidence_count=1,
+                    ),
+                ),
+                decision_rounds=2,
+                retrieval_calls=1,
+                verifier_calls=1,
+                evidence_count=1,
+            ),
+        )
+        workflow_call = ChatModelCallRecord(
+            operation=ChatModelOperation.VERIFY_RESEARCH_RESULT,
+            model="fixed-model",
+            provider_request_id="verify-agent",
+            usage={"prompt_tokens": 3},
+        )
+
+        class Router:
+            calls = 0
+
+            async def resolve(self, value, query_context):
+                del value, query_context
+                self.calls += 1
+                return initial, ()
+
+        class Agent:
+            calls = 0
+
+            async def research(self, value, query_context, **kwargs):
+                del value, query_context, kwargs
+                self.calls += 1
+                return AgentResearchOutcome(pack, workflow_state, (workflow_call,))
+
+        router = Router()
+        agent = Agent()
+        simple_retriever = _Retriever(pack)
+        runner, _, persister = _build(
+            context=context,
+            pack=pack,
+            responses=(_response(_answer(AnswerOutcome.ANSWERED)),),
+            retriever=simple_retriever,
+            workflow_router=router,
+            retrieval_agent=agent,
+            adaptive_assessor=AdaptiveEvidenceAssessmentStep(0.6),
+        )
+
+        output = await runner.execute(ChatExecutionCommand(context.lease))
+
+        self.assertEqual(router.calls, 1)
+        self.assertEqual(agent.calls, 1)
+        self.assertEqual(simple_retriever.calls, 0)
+        self.assertEqual(persister.calls, 1)
+        assert output.answering is not None
+        self.assertIn(workflow_call, output.answering.model_calls)
+        self.assertIs(
+            output.answering.assessment.coverage, EvidenceCoverage.SUFFICIENT
+        )
+
     async def test_fallback_query_continues_through_retrieval(self) -> None:
         context = _context()
         query_context = ContextualizedQuery(

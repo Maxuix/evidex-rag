@@ -2160,6 +2160,7 @@ def _embedding(row: EmbeddingSpaceRow) -> EmbeddingSpaceDefinition:
         configuration_fingerprint=row.configuration_fingerprint,
         tokenizer_fingerprint=row.tokenizer_fingerprint,
         compatibility_fingerprint=row.compatibility_fingerprint,
+        model_profile_revision_id=row.model_profile_revision_id,
     )
 
 
