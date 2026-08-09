@@ -59,6 +59,7 @@ from rag_kb.schemas.indexing import (
     IndexingErrorResponse,
     IndexingJobPage,
     IndexingJobResponse,
+    IndexingProgressResponse,
 )
 from rag_kb.schemas.knowledge_bases import (
     KnowledgeBaseAnswerPolicyDefaults,
@@ -149,6 +150,7 @@ __all__ = [
     "IndexingErrorResponse",
     "IndexingJobPage",
     "IndexingJobResponse",
+    "IndexingProgressResponse",
     "ErrorCode",
     "EffectiveAnswerPolicyResponse",
     "EmbeddingValidationResponse",

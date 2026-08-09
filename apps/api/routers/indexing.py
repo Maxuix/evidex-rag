@@ -110,6 +110,7 @@ def _response(value: Any) -> IndexingJobResponse:
         index_revision_id=value.index_revision_id,
         status=value.job_status,
         phase=value.phase,
+        progress=value.progress or None,
         attempt=value.attempt,
         build_status=value.build_status,
         serving_status=value.serving_status,

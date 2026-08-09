@@ -783,6 +783,34 @@ export function DocumentsView({
                         ["Job ID", shortId(job.job_id)],
                         ["Version ID", shortId(job.document_version_id)],
                       ]} />
+                      {job.progress ? (
+                        <div className="job-progress" aria-live="polite">
+                          <div className="job-progress-heading">
+                            <strong>{parsingStageLabel(job.progress.stage)}</strong>
+                            <span className="count-label">
+                              Segment {job.progress.segment_number}/{job.progress.segment_count}
+                            </span>
+                          </div>
+                          <progress
+                            className="upload-progress-bar"
+                            value={job.progress.completed_pages}
+                            max={job.progress.total_pages}
+                            aria-label={`${job.progress.completed_pages} of ${job.progress.total_pages} PDF pages assembled`}
+                          />
+                          <p className="field-hint">
+                            {job.progress.completed_pages}/{job.progress.total_pages} pages · current range {job.progress.page_from}–{job.progress.page_to}
+                          </p>
+                          <div className="job-progress-stages">
+                            {Object.entries(job.progress.stage_pages).map(([stage, count]) => (
+                              <span className="count-label" key={stage}>
+                                {parsingStageLabel(stage)} {count}
+                              </span>
+                            ))}
+                            <span className="count-label">OCR {job.progress.ocr_regions} regions</span>
+                            <span className="count-label">Tables {job.progress.table_candidates}</span>
+                          </div>
+                        </div>
+                      ) : null}
                       {job.error ? (
                         <div className="inline-error">
                           <strong>{job.error.code}</strong>
@@ -892,6 +920,20 @@ export function DocumentsView({
       </section>
     </div>
   );
+}
+
+function parsingStageLabel(stage: string): string {
+  return ({
+    page_parse: "Reading pages",
+    ocr: "OCR",
+    layout: "Layout",
+    table_structure: "Table structure",
+    page_assembly: "Page assembly",
+    document_assembly: "Document assembly",
+    segment_checkpointed: "Segment saved",
+    segment_split: "Slow segment divided",
+    completed: "PDF parsing complete",
+  } as Record<string, string>)[stage] ?? stage.replaceAll("_", " ");
 }
 
 function mergeDocuments(

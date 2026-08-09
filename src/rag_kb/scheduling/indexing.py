@@ -314,6 +314,8 @@ def _safe_detail(detail: dict, *, attempt: int) -> dict:
         "unit_count",
         "chunk_count",
         "analysis_batch_count",
+        "page_from",
+        "page_to",
     }
     return {
         **{key: value for key, value in detail.items() if key in allowed},

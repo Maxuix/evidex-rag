@@ -108,6 +108,7 @@ class IndexingJobSnapshot:
     can_retry: bool
     created_at: datetime
     updated_at: datetime
+    progress: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)

@@ -139,6 +139,14 @@ class IndexingRepository(Protocol):
 
     async def set_phase(self, command: IndexingCommand, phase: IndexingPhase) -> bool: ...
 
+    async def set_progress(
+        self, command: IndexingCommand, progress: dict[str, Any]
+    ) -> bool: ...
+
+    async def yield_continuation(
+        self, command: IndexingCommand, progress: dict[str, Any]
+    ) -> bool: ...
+
     async def upsert_batch(
         self,
         command: IndexingCommand,

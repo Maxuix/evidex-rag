@@ -16,6 +16,23 @@ class IndexingErrorResponse(PublicSchema):
     detail: dict[str, Any]
 
 
+class IndexingProgressResponse(PublicSchema):
+    schema_version: Literal["pdf_parsing_progress_v1"]
+    stage: str
+    total_pages: int
+    completed_pages: int
+    segment_number: int
+    segment_count: int
+    page_from: int
+    page_to: int
+    stage_pages: dict[str, int]
+    ocr_pages: int
+    ocr_regions: int
+    table_candidates: int
+    elapsed_ms: int
+    child_peak_rss_bytes: int | None = None
+
+
 class IndexingJobResponse(PublicSchema):
     job_id: UUID
     kb_id: UUID
@@ -25,6 +42,7 @@ class IndexingJobResponse(PublicSchema):
     index_revision_id: UUID
     status: Literal["queued", "running", "completed", "failed", "cancelled"]
     phase: str
+    progress: IndexingProgressResponse | None
     attempt: int
     build_status: Literal["queued", "processing", "ready", "failed"]
     serving_status: Literal["candidate", "serving", "retired"]

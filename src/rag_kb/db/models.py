@@ -952,6 +952,10 @@ class IndexingJob(Base):
     __table_args__ = (
         UniqueConstraint("indexed_document_version_id"),
         CheckConstraint("attempt >= 0", name="indexing_job_attempt_nonnegative"),
+        CheckConstraint(
+            "continuation_count >= 0",
+            name="indexing_job_continuation_count_nonnegative",
+        ),
         Index("ix_indexing_job_claim", "status", "next_attempt_at", "created_at"),
     )
 
@@ -969,6 +973,15 @@ class IndexingJob(Base):
         enum_type(JobStatus, "job_status"), nullable=False
     )
     phase: Mapped[str] = mapped_column(String(64), nullable=False)
+    progress: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    continuation_pending: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    continuation_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("0")
+    )
     attempt: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     claimed_by: Mapped[str | None] = mapped_column(String(255))
     claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

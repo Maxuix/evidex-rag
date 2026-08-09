@@ -36,7 +36,7 @@ class _Engine:
 class DatabaseReadinessTests(unittest.IsolatedAsyncioTestCase):
     async def test_current_revision_is_ready(self) -> None:
         await check_database_ready(  # type: ignore[arg-type]
-            _Engine("0005_content_management")
+            _Engine("0006_pdf_parsing_progress")
         )
 
     async def test_missing_or_stale_revision_is_rejected(self) -> None:

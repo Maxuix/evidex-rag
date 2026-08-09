@@ -38,6 +38,8 @@ from rag_kb.domain import (
     ParsedAssetDraft,
     ParserExecutionError,
     ParserLimits,
+    ParserProfile,
+    ParserProgress,
     ParserSource,
     ParsingPreset,
     PromotionCommand,
@@ -58,7 +60,7 @@ from rag_kb.document_processing.profiles import (
     DOCLING_REPRESENTATION_CONFIG,
     SEMANTIC_CHUNKING_CONFIG,
     profile_fingerprint,
-    parsing_preset,
+    parser_profile,
     resolve,
 )
 from rag_kb.document_processing.tokenization import count_chunk_tokens
@@ -86,7 +88,11 @@ from rag_kb.indexing.promotion import CandidatePromotionService
 from rag_kb.indexing.embedding_spaces import require_compatible_embedding_spaces
 from rag_kb.ports.files import IndexAssetStore, SourceFileStore
 from rag_kb.ports.model_api import EmbeddingModelAdapter, MultimodalEmbeddingAdapter
-from rag_kb.ports.parsing import DocumentParseResult, DocumentParser
+from rag_kb.ports.parsing import (
+    DocumentParseContinuation,
+    DocumentParseResult,
+    DocumentParser,
+)
 from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, UnitOfWorkPurpose, execute_in_transaction
 
 
@@ -187,7 +193,8 @@ class IndexingPipeline:
                 media_type=target.media_type,
                 content=content,
             )
-            resolved_parsing = parsing_preset(target.parser_config)
+            resolved_profile = parser_profile(target.parser_config)
+            resolved_parsing = resolved_profile.preset
             multimodal = resolved_parsing is ParsingPreset.MULTIMODAL_LOCAL_V2
             if multimodal and cross_provider is None:
                 cross_space, cross_provider = await self._require_multimodal_runtime(
@@ -196,8 +203,16 @@ class IndexingPipeline:
             parsed = await self._parse(
                 command,
                 source,
-                preset=resolved_parsing,
+                profile=resolved_profile,
             )
+            if isinstance(parsed, DocumentParseContinuation):
+                return IndexingResult(
+                    command.job_id,
+                    command.indexed_document_version_id,
+                    "queued",
+                    0,
+                    serving_status="candidate",
+                )
             document = parsed.document
             labels = dict(parsed.surface_labels)
             chunks = await self._chunks(
@@ -216,6 +231,12 @@ class IndexingPipeline:
                 multimodal=multimodal,
             )
             promotion = await self._promotion.promote(_promotion_command(command))
+            try:
+                self._document_parser.discard_checkpoint(
+                    str(command.indexed_document_version_id)
+                )
+            except Exception:
+                pass
             return IndexingResult(
                 command.job_id,
                 command.indexed_document_version_id,
@@ -224,6 +245,12 @@ class IndexingPipeline:
                 serving_status=promotion.status.value,
             )
         except IndexingCancelled:
+            try:
+                self._document_parser.discard_checkpoint(
+                    str(command.indexed_document_version_id)
+                )
+            except Exception:
+                pass
             return IndexingResult(
                 command.job_id,
                 command.indexed_document_version_id,
@@ -273,6 +300,17 @@ class IndexingPipeline:
     async def _set_phase(self, command: IndexingCommand, phase: IndexingPhase) -> None:
         changed = await self._transaction(
             lambda uow: uow.indexing.set_phase(command, phase)
+        )
+        if not changed:
+            raise IndexingCancelled
+
+    async def _set_progress(
+        self,
+        command: IndexingCommand,
+        progress: ParserProgress,
+    ) -> None:
+        changed = await self._transaction(
+            lambda uow: uow.indexing.set_progress(command, progress.as_dict())
         )
         if not changed:
             raise IndexingCancelled
@@ -393,19 +431,36 @@ class IndexingPipeline:
         command: IndexingCommand,
         source: ParserSource,
         *,
-        preset: ParsingPreset,
-    ) -> DocumentParseResult:
-        """Convert the source exactly once for the whole job."""
+        profile: ParserProfile,
+    ) -> DocumentParseResult | DocumentParseContinuation:
+        """Parse one bounded lease slice, or return the completed document."""
 
         await self._set_phase(command, IndexingPhase.PARSING)
         try:
-            return await self._document_parser.parse(source, preset=preset)
+            parsed = await self._document_parser.parse(
+                source,
+                profile=profile,
+                checkpoint_key=str(command.indexed_document_version_id),
+                on_progress=lambda progress: self._set_progress(command, progress),
+            )
+            if isinstance(parsed, DocumentParseContinuation):
+                changed = await self._transaction(
+                    lambda uow: uow.indexing.yield_continuation(
+                        command,
+                        parsed.progress.as_dict(),
+                    )
+                )
+                if not changed:
+                    raise IndexingCancelled
+            return parsed
         except ParserExecutionError as error:
             raise IndexingExecutionError(
                 error.code,
                 phase=IndexingPhase.PARSING,
                 diagnostic=error.diagnostic,
             ) from error
+        except IndexingCancelled:
+            raise
         except IndexingExecutionError:
             raise
         except Exception as error:
@@ -830,7 +885,7 @@ class IndexingPipeline:
         surface_labels: Mapping[int, str],
         page_image_surfaces: frozenset[int],
     ) -> tuple[CompositeEvidenceDraft, tuple[ParsedAssetDraft, ...]]:
-        """Derive assets, relations and evidence units from the one conversion."""
+        """Derive assets, relations and evidence units from the assembled result."""
 
         try:
             assets = extract_docling_assets(
@@ -1262,6 +1317,8 @@ def _safe_diagnostic(value: dict) -> dict:
         "unit_count",
         "chunk_count",
         "analysis_batch_count",
+        "page_from",
+        "page_to",
     }
     return {key: item for key, item in value.items() if key in allowed}
 

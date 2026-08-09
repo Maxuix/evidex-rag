@@ -5,16 +5,22 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from io import BytesIO
+import hashlib
 import json
 import multiprocessing
 from multiprocessing.connection import Connection
+import os
 from pathlib import Path, PurePath
 import re
 import signal
+import shutil
 from tempfile import TemporaryDirectory
 import threading
+import time
 from typing import Any
+from uuid import UUID
 import warnings
 from zipfile import BadZipFile, ZipFile
 
@@ -28,12 +34,14 @@ from docling.datamodel.base_models import (
 from docling.document_converter import DocumentConverter
 from docling_core.types.doc import DoclingDocument
 from PIL import Image as PillowImage
+from pypdf import PdfReader
 
 from rag_kb.adapters.parser.docling.artifacts import (
     ArtifactManifestError,
     verify_docling_artifacts,
 )
 from rag_kb.adapters.parser.docling.factory import build_docling_converter
+from rag_kb.adapters.parser.docling.progress_pipeline import emit_pdf_progress
 from rag_kb.adapters.parser.ooxml_metadata import worksheet_labels
 from rag_kb.adapters.parser.scanned_pages import scanned_surfaces
 from rag_kb.domain import (
@@ -41,6 +49,8 @@ from rag_kb.domain import (
     FileAdmissionError,
     ParserExecutionError,
     ParserLimits,
+    ParserProfile,
+    ParserProgress,
     ParserSource,
     ParsingPreset,
 )
@@ -54,7 +64,11 @@ from rag_kb.document_processing.resource_preflight import (
     validate_csv_structure,
     validate_ooxml_images,
 )
-from rag_kb.ports.parsing import DocumentParseResult
+from rag_kb.ports.parsing import (
+    DocumentParseContinuation,
+    DocumentParseResult,
+    ParserProgressHandler,
+)
 
 
 _OOXML_PREFIX = "application/vnd.openxmlformats-officedocument"
@@ -78,6 +92,25 @@ _PROCESS_STOP_GRACE_SECONDS = 1.0
 _MAX_IPC_RESPONSE_BYTES = 256 * 1024 * 1024
 _SUCCESS_RESPONSE = b"O"
 _ERROR_RESPONSE = b"E"
+_PROGRESS_RESPONSE = b"P"
+_CHECKPOINT_SCHEMA = "docling_page_range_json_v1"
+_MAX_CHECKPOINT_MANIFEST_BYTES = 256 * 1024
+_PDF_PROGRESS_STAGE_NAMES = frozenset(
+    {
+        "page_parse",
+        "ocr",
+        "layout",
+        "table_structure",
+        "page_assembly",
+        "document_assembly",
+    }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _RoundTripResult:
+    response: bytes
+    last_progress: dict[str, Any]
 
 
 class DoclingParser:
@@ -89,11 +122,13 @@ class DoclingParser:
         *,
         artifacts_path: Path,
         artifact_manifest_path: Path,
+        checkpoint_root: Path | None = None,
         child_target: ChildTarget | None = None,
     ) -> None:
         self._limits = limits
         self._artifacts_path = artifacts_path
         self._artifact_manifest_path = artifact_manifest_path
+        self._checkpoint_root = checkpoint_root
         self._child_target = child_target or _parser_child
         self._context = multiprocessing.get_context("spawn")
         self._process: multiprocessing.Process | None = None
@@ -110,15 +145,57 @@ class DoclingParser:
         self,
         source: ParserSource,
         *,
-        preset: ParsingPreset,
-    ) -> DocumentParseResult:
+        profile: ParserProfile | None = None,
+        checkpoint_key: str | None = None,
+        on_progress: ParserProgressHandler | None = None,
+        preset: ParsingPreset | None = None,
+    ) -> DocumentParseResult | DocumentParseContinuation:
         """Convert once and return the native model with bounded source metadata."""
 
         try:
-            resolved_preset = ParsingPreset(preset)
+            resolved_profile = _resolve_profile(profile=profile, preset=preset)
         except ValueError as error:
             raise ParserExecutionError(ErrorCode.PARSER_NOT_CONFIGURED) from error
+        resolved_preset = resolved_profile.preset
         _validate_source(source, self._limits, resolved_preset)
+        if (
+            resolved_profile.uses_balanced_pdf_runtime
+            and PurePath(source.original_filename).suffix.lower() == ".pdf"
+        ):
+            if checkpoint_key is None:
+                raise ParserExecutionError(
+                    ErrorCode.PARSER_NOT_CONFIGURED,
+                    diagnostic={"check": "pdf_checkpoint_key"},
+                )
+            return await self._parse_segmented_pdf(
+                source,
+                profile=resolved_profile,
+                checkpoint_key=checkpoint_key,
+                on_progress=on_progress,
+            )
+
+        round_trip = await self._convert_once(
+            source,
+            profile=resolved_profile,
+            timeout_seconds=self._limits.document_timeout_seconds,
+        )
+        try:
+            document = _decode_response(round_trip.response, self._limits)
+        except ParserExecutionError as error:
+            if error.code is ErrorCode.PARSER_CRASHED:
+                await self._reset_child()
+            raise
+        return await self._result(source, resolved_preset, document)
+
+    async def _convert_once(
+        self,
+        source: ParserSource,
+        *,
+        profile: ParserProfile,
+        timeout_seconds: float,
+        page_range: tuple[int, int] | None = None,
+        on_raw_progress: Callable[[dict[str, Any]], None] | None = None,
+    ) -> _RoundTripResult:
         async with self._request_lock:
             connection = self._ensure_child()
             loop = asyncio.get_running_loop()
@@ -127,7 +204,9 @@ class DoclingParser:
                     _round_trip,
                     connection,
                     source,
-                    resolved_preset,
+                    profile,
+                    page_range,
+                    on_raw_progress,
                 )
             except RuntimeError as error:
                 raise ParserExecutionError(
@@ -136,8 +215,8 @@ class DoclingParser:
                 ) from error
             wrapped = asyncio.wrap_future(concurrent_future, loop=loop)
             try:
-                async with asyncio.timeout(self._limits.document_timeout_seconds):
-                    response = await asyncio.shield(wrapped)
+                async with asyncio.timeout(timeout_seconds):
+                    return await asyncio.shield(wrapped)
             except TimeoutError as error:
                 wrapped.add_done_callback(_consume_cancelled_result)
                 await self._reset_child()
@@ -145,7 +224,7 @@ class DoclingParser:
                     ErrorCode.PARSER_RESOURCE_LIMIT,
                     diagnostic={
                         "limit_name": "document_timeout",
-                        "limit": self._limits.document_timeout_seconds,
+                        "limit": timeout_seconds,
                     },
                 ) from error
             except asyncio.CancelledError:
@@ -164,23 +243,417 @@ class DoclingParser:
                     diagnostic={"check": "docling_child_ipc"},
                 ) from error
 
+
+    async def _result(
+        self,
+        source: ParserSource,
+        preset: ParsingPreset,
+        document: DoclingDocument,
+    ) -> DocumentParseResult:
+        labels = await asyncio.to_thread(worksheet_labels, source)
+        page_image_surfaces = (
+            await asyncio.to_thread(scanned_surfaces, source)
+            if preset is ParsingPreset.MULTIMODAL_LOCAL_V2
+            else frozenset()
+        )
+        return DocumentParseResult(
+            document=document,
+            surface_labels=tuple(labels.items()),
+            page_image_surfaces=page_image_surfaces,
+        )
+
+    async def _parse_segmented_pdf(
+        self,
+        source: ParserSource,
+        *,
+        profile: ParserProfile,
+        checkpoint_key: str,
+        on_progress: ParserProgressHandler | None,
+    ) -> DocumentParseResult | DocumentParseContinuation:
+        total_pages = await asyncio.to_thread(_pdf_page_count, source, self._limits)
+        checkpoint = await asyncio.to_thread(
+            self._load_or_create_checkpoint,
+            checkpoint_key,
+            source,
+            profile,
+            total_pages,
+        )
+        _ensure_pdf_total_budget(checkpoint, self._limits)
+
+        pending_index = next(
+            (
+                index
+                for index, segment in enumerate(checkpoint["segments"])
+                if segment["status"] != "completed"
+            ),
+            None,
+        )
+        if pending_index is not None:
+            segment = checkpoint["segments"][pending_index]
+            started_at = time.monotonic()
+            progress_state: dict[str, Any] = {
+                "stage_pages": {},
+                "ocr_pages": 0,
+                "ocr_regions": 0,
+                "table_candidates": 0,
+                "child_peak_rss_bytes": None,
+                "last_emit_at": 0.0,
+            }
+            loop = asyncio.get_running_loop()
+            queue: asyncio.Queue[ParserProgress | None] = asyncio.Queue()
+            consumer = asyncio.create_task(
+                _consume_progress(queue, on_progress)
+            )
+
+            def forward(raw: dict[str, Any]) -> None:
+                stage = str(raw.get("stage") or "page_parse")
+                stage_completed = _nonnegative_int(
+                    raw.get("stage_completed_pages")
+                )
+                progress_state["stage_pages"][stage] = stage_completed
+                for name in ("ocr_pages", "ocr_regions", "table_candidates"):
+                    progress_state[name] = max(
+                        progress_state[name], _nonnegative_int(raw.get(name))
+                    )
+                peak = raw.get("child_peak_rss_bytes")
+                if isinstance(peak, int) and peak >= 0:
+                    progress_state["child_peak_rss_bytes"] = max(
+                        progress_state["child_peak_rss_bytes"] or 0,
+                        peak,
+                    )
+                progress = _progress(
+                    checkpoint,
+                    pending_index,
+                    stage=stage,
+                    current_stage_pages=progress_state["stage_pages"],
+                    current_ocr_pages=progress_state["ocr_pages"],
+                    current_ocr_regions=progress_state["ocr_regions"],
+                    current_table_candidates=progress_state[
+                        "table_candidates"
+                    ],
+                    current_elapsed_ms=int(
+                        (time.monotonic() - started_at) * 1000
+                    ),
+                    child_peak_rss_bytes=progress_state[
+                        "child_peak_rss_bytes"
+                    ],
+                )
+                now = time.monotonic()
+                if now - progress_state["last_emit_at"] >= 1.0:
+                    progress_state["last_emit_at"] = now
+                    loop.call_soon_threadsafe(queue.put_nowait, progress)
+
             try:
-                document = _decode_response(response, self._limits)
+                round_trip = await self._convert_once(
+                    source,
+                    profile=profile,
+                    timeout_seconds=self._limits.pdf_segment_timeout_seconds,
+                    page_range=(segment["page_from"], segment["page_to"]),
+                    on_raw_progress=forward,
+                )
+            except ParserExecutionError as error:
+                if (
+                    error.code is ErrorCode.PARSER_RESOURCE_LIMIT
+                    and error.diagnostic.get("limit_name") == "document_timeout"
+                    and segment["page_from"] < segment["page_to"]
+                ):
+                    checkpoint = await asyncio.to_thread(
+                        self._split_timed_out_segment,
+                        checkpoint_key,
+                        checkpoint,
+                        pending_index,
+                        int((time.monotonic() - started_at) * 1000),
+                    )
+                    _ensure_pdf_total_budget(checkpoint, self._limits)
+                    progress = _progress(
+                        checkpoint,
+                        pending_index,
+                        stage="segment_split",
+                    )
+                    await _publish_progress(on_progress, progress)
+                    return DocumentParseContinuation(progress)
+                if (
+                    error.code is ErrorCode.PARSER_RESOURCE_LIMIT
+                    and error.diagnostic.get("limit_name") == "document_timeout"
+                ):
+                    error.diagnostic.update(
+                        {
+                            "limit_name": "pdf_segment_timeout",
+                            "page_from": segment["page_from"],
+                            "page_to": segment["page_to"],
+                        }
+                    )
+                raise
+            finally:
+                loop.call_soon_threadsafe(queue.put_nowait, None)
+                await consumer
+
+            try:
+                document = _decode_response(
+                    round_trip.response,
+                    self._limits,
+                    allow_empty=True,
+                )
             except ParserExecutionError as error:
                 if error.code is ErrorCode.PARSER_CRASHED:
                     await self._reset_child()
                 raise
-            labels = await asyncio.to_thread(worksheet_labels, source)
-            page_image_surfaces = (
-                await asyncio.to_thread(scanned_surfaces, source)
-                if resolved_preset is ParsingPreset.MULTIMODAL_LOCAL_V2
-                else frozenset()
+            elapsed_ms = int((time.monotonic() - started_at) * 1000)
+            checkpoint = await asyncio.to_thread(
+                self._complete_segment,
+                checkpoint_key,
+                checkpoint,
+                pending_index,
+                document,
+                elapsed_ms,
+                progress_state,
             )
-            return DocumentParseResult(
-                document=document,
-                surface_labels=tuple(labels.items()),
-                page_image_surfaces=page_image_surfaces,
+            _ensure_pdf_total_budget(checkpoint, self._limits)
+            pending_index = next(
+                (
+                    index
+                    for index, item in enumerate(checkpoint["segments"])
+                    if item["status"] != "completed"
+                ),
+                None,
             )
+            if pending_index is not None:
+                progress = _progress(
+                    checkpoint,
+                    pending_index,
+                    stage="segment_checkpointed",
+                )
+                await _publish_progress(on_progress, progress)
+                return DocumentParseContinuation(progress)
+
+        assembling = _progress(
+            checkpoint,
+            max(len(checkpoint["segments"]) - 1, 0),
+            stage="document_assembly",
+        )
+        await _publish_progress(on_progress, assembling)
+        document = await asyncio.to_thread(
+            self._assemble_checkpoint,
+            checkpoint_key,
+            checkpoint,
+        )
+        completed = _progress(
+            checkpoint,
+            max(len(checkpoint["segments"]) - 1, 0),
+            stage="completed",
+        )
+        await _publish_progress(on_progress, completed)
+        return await self._result(source, profile.preset, document)
+
+    def discard_checkpoint(self, checkpoint_key: str) -> None:
+        directory = self._checkpoint_directory(checkpoint_key)
+        if not directory.exists():
+            return
+        if directory.is_symlink() or not directory.is_dir():
+            raise ParserExecutionError(
+                ErrorCode.PARSER_CRASHED,
+                diagnostic={"check": "pdf_checkpoint_path"},
+            )
+        shutil.rmtree(directory)
+
+    def _load_or_create_checkpoint(
+        self,
+        checkpoint_key: str,
+        source: ParserSource,
+        profile: ParserProfile,
+        total_pages: int,
+    ) -> dict[str, Any]:
+        directory = self._checkpoint_directory(checkpoint_key)
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        root = self._checkpoint_root.resolve() if self._checkpoint_root else None
+        if (
+            root is None
+            or directory.is_symlink()
+            or not directory.is_dir()
+            or not directory.resolve().is_relative_to(root)
+        ):
+            raise ParserExecutionError(
+                ErrorCode.PARSER_CRASHED,
+                diagnostic={"check": "pdf_checkpoint_path"},
+            )
+        manifest_path = directory / "manifest.json"
+        source_sha256 = hashlib.sha256(source.content).hexdigest()
+        if manifest_path.exists():
+            checkpoint = _read_checkpoint_manifest(manifest_path)
+            if (
+                checkpoint.get("source_sha256") != source_sha256
+                or checkpoint.get("profile") != profile.value
+                or checkpoint.get("total_pages") != total_pages
+            ):
+                raise ParserExecutionError(
+                    ErrorCode.PARSER_CRASHED,
+                    diagnostic={"check": "pdf_checkpoint_identity"},
+                )
+            _validate_checkpoint(checkpoint, total_pages)
+            return checkpoint
+        segments = [
+            {
+                "page_from": page_from,
+                "page_to": min(
+                    page_from + self._limits.pdf_segment_pages - 1,
+                    total_pages,
+                ),
+                "status": "pending",
+            }
+            for page_from in range(
+                1,
+                total_pages + 1,
+                self._limits.pdf_segment_pages,
+            )
+        ]
+        checkpoint = {
+            "schema_version": _CHECKPOINT_SCHEMA,
+            "source_sha256": source_sha256,
+            "profile": profile.value,
+            "total_pages": total_pages,
+            "elapsed_ms": 0,
+            "segments": segments,
+        }
+        _write_private_json(manifest_path, checkpoint)
+        return checkpoint
+
+    def _complete_segment(
+        self,
+        checkpoint_key: str,
+        checkpoint: dict[str, Any],
+        segment_index: int,
+        document: DoclingDocument,
+        elapsed_ms: int,
+        progress_state: dict[str, Any],
+    ) -> dict[str, Any]:
+        directory = self._checkpoint_directory(checkpoint_key)
+        segment = checkpoint["segments"][segment_index]
+        filename = f"pages-{segment['page_from']}-{segment['page_to']}.json"
+        payload = document.model_dump_json().encode("utf-8")
+        _write_private_bytes(directory / filename, payload)
+        completed = {
+            **segment,
+            "status": "completed",
+            "filename": filename,
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "elapsed_ms": elapsed_ms,
+            "stage_pages": {
+                name: int(value)
+                for name, value in sorted(progress_state["stage_pages"].items())
+                if name in _PDF_PROGRESS_STAGE_NAMES
+            },
+            "ocr_pages": int(progress_state["ocr_pages"]),
+            "ocr_regions": int(progress_state["ocr_regions"]),
+            "table_candidates": int(progress_state["table_candidates"]),
+            "child_peak_rss_bytes": progress_state["child_peak_rss_bytes"],
+        }
+        checkpoint = {
+            **checkpoint,
+            "elapsed_ms": int(checkpoint["elapsed_ms"]) + elapsed_ms,
+            "segments": [
+                completed if index == segment_index else item
+                for index, item in enumerate(checkpoint["segments"])
+            ],
+        }
+        _write_private_json(directory / "manifest.json", checkpoint)
+        return checkpoint
+
+    def _split_timed_out_segment(
+        self,
+        checkpoint_key: str,
+        checkpoint: dict[str, Any],
+        segment_index: int,
+        elapsed_ms: int,
+    ) -> dict[str, Any]:
+        segment = checkpoint["segments"][segment_index]
+        midpoint = (segment["page_from"] + segment["page_to"]) // 2
+        replacements = [
+            {
+                "page_from": segment["page_from"],
+                "page_to": midpoint,
+                "status": "pending",
+            },
+            {
+                "page_from": midpoint + 1,
+                "page_to": segment["page_to"],
+                "status": "pending",
+            },
+        ]
+        segments = list(checkpoint["segments"])
+        segments[segment_index : segment_index + 1] = replacements
+        checkpoint = {
+            **checkpoint,
+            "elapsed_ms": int(checkpoint["elapsed_ms"]) + elapsed_ms,
+            "segments": segments,
+        }
+        _write_private_json(
+            self._checkpoint_directory(checkpoint_key) / "manifest.json",
+            checkpoint,
+        )
+        return checkpoint
+
+    def _assemble_checkpoint(
+        self,
+        checkpoint_key: str,
+        checkpoint: dict[str, Any],
+    ) -> DoclingDocument:
+        directory = self._checkpoint_directory(checkpoint_key)
+        documents: list[DoclingDocument] = []
+        for segment in checkpoint["segments"]:
+            if segment["status"] != "completed":
+                raise ParserExecutionError(
+                    ErrorCode.PARSER_CRASHED,
+                    diagnostic={"check": "pdf_checkpoint_incomplete"},
+                )
+            payload = _read_private_bytes(directory / segment["filename"])
+            if hashlib.sha256(payload).hexdigest() != segment["sha256"]:
+                raise ParserExecutionError(
+                    ErrorCode.PARSER_CRASHED,
+                    diagnostic={"check": "pdf_checkpoint_digest"},
+                )
+            try:
+                documents.append(DoclingDocument.model_validate_json(payload))
+            except Exception as error:
+                raise ParserExecutionError(
+                    ErrorCode.PARSER_CRASHED,
+                    diagnostic={"check": "pdf_checkpoint_document"},
+                ) from error
+        document = DoclingDocument.concatenate(documents)
+        # Docling's public concatenate() merges pages and all item collections
+        # but intentionally creates a fresh document without ``origin``. Keep
+        # the source identity so downstream provenance continues to recognize
+        # a PDF as paginated; otherwise page boundaries collapse to logical
+        # surfaces and change chunk packing after a segment boundary.
+        document.origin = documents[0].origin
+        _validate_document(document, self._limits)
+        return document
+
+    def _checkpoint_directory(self, checkpoint_key: str) -> Path:
+        if self._checkpoint_root is None:
+            raise ParserExecutionError(
+                ErrorCode.PARSER_NOT_CONFIGURED,
+                diagnostic={"check": "pdf_checkpoint_root"},
+            )
+        try:
+            normalized = str(UUID(checkpoint_key))
+        except (TypeError, ValueError, AttributeError) as error:
+            raise ParserExecutionError(
+                ErrorCode.PARSER_CRASHED,
+                diagnostic={"check": "pdf_checkpoint_key"},
+            ) from error
+        if normalized != checkpoint_key:
+            raise ParserExecutionError(
+                ErrorCode.PARSER_CRASHED,
+                diagnostic={"check": "pdf_checkpoint_key"},
+            )
+        root = self._checkpoint_root.resolve()
+        directory = root / "pdf-checkpoints" / normalized
+        if not directory.is_relative_to(root):
+            raise ParserExecutionError(
+                ErrorCode.PARSER_CRASHED,
+                diagnostic={"check": "pdf_checkpoint_path"},
+            )
+        return directory
 
     def close(self) -> None:
         """Stop accepting conversions and terminate the owned child process."""
@@ -265,17 +738,21 @@ class _DoclingRuntime:
         self._artifacts_path = artifacts_path
         self._artifact_manifest_path = artifact_manifest_path
         self._converter_factory = converter_factory
-        self._converters: dict[ParsingPreset, DocumentConverter] = {}
+        self._converters: dict[ParserProfile, DocumentConverter] = {}
         self._artifacts_verified = False
 
     def convert(
         self,
         source: ParserSource,
-        preset: ParsingPreset,
+        profile: ParserProfile | ParsingPreset,
+        *,
+        page_range: tuple[int, int] | None = None,
+        progress_emitter: Callable[[dict[str, Any]], None] | None = None,
     ) -> DoclingDocument:
+        resolved_profile = _resolve_profile(profile=profile, preset=None)
         try:
             _preflight_conversion_source(source, self._limits)
-            converter = self._get_converter(preset)
+            converter = self._get_converter(resolved_profile)
             if source.media_type == MARKDOWN_BUNDLE_MEDIA_TYPE:
                 result = self._convert_markdown_bundle(converter, source.content)
             else:
@@ -283,12 +760,15 @@ class _DoclingRuntime:
                     name=source.original_filename,
                     stream=BytesIO(source.content),
                 )
-                result = converter.convert(
-                    stream,
-                    raises_on_error=False,
-                    max_num_pages=self._limits.max_num_pages,
-                    max_file_size=self._limits.max_file_size,
-                )
+                kwargs: dict[str, Any] = {
+                    "raises_on_error": False,
+                    "max_num_pages": self._limits.max_num_pages,
+                    "max_file_size": self._limits.max_file_size,
+                }
+                if page_range is not None:
+                    kwargs["page_range"] = page_range
+                with emit_pdf_progress(progress_emitter):
+                    result = converter.convert(stream, **kwargs)
         except ParserExecutionError:
             raise
         except (FileNotFoundError, ImportError, ModuleNotFoundError) as error:
@@ -317,7 +797,11 @@ class _DoclingRuntime:
                 ErrorCode.PARSER_CRASHED,
                 diagnostic={"check": "docling_conversion"},
             ) from error
-        return _validate_conversion_result(result, self._limits)
+        return _validate_conversion_result(
+            result,
+            self._limits,
+            allow_empty=page_range is not None,
+        )
 
     def _convert_markdown_bundle(
         self,
@@ -349,8 +833,8 @@ class _DoclingRuntime:
                 max_file_size=self._limits.max_file_size,
             )
 
-    def _get_converter(self, preset: ParsingPreset) -> DocumentConverter:
-        converter = self._converters.get(preset)
+    def _get_converter(self, profile: ParserProfile) -> DocumentConverter:
+        converter = self._converters.get(profile)
         if converter is not None:
             return converter
         if not self._artifacts_verified:
@@ -368,8 +852,13 @@ class _DoclingRuntime:
                 ) from error
             self._artifacts_verified = True
         try:
+            factory_profile: ParserProfile | ParsingPreset = (
+                profile
+                if profile.uses_balanced_pdf_runtime
+                else profile.preset
+            )
             converter = self._converter_factory(
-                preset,
+                factory_profile,
                 artifacts_path=self._artifacts_path,
                 limits=self._limits,
             )
@@ -378,7 +867,7 @@ class _DoclingRuntime:
                 ErrorCode.PARSER_NOT_CONFIGURED,
                 diagnostic={"check": "docling_converter_factory"},
             ) from error
-        self._converters[preset] = converter
+        self._converters[profile] = converter
         return converter
 
 
@@ -394,6 +883,12 @@ def _parser_child(
         artifacts_path=artifacts_path,
         artifact_manifest_path=artifact_manifest_path,
     )
+    send_lock = threading.Lock()
+
+    def send(payload: bytes) -> None:
+        with send_lock:
+            connection.send_bytes(payload)
+
     try:
         while True:
             try:
@@ -401,21 +896,44 @@ def _parser_child(
             except EOFError:
                 return
             try:
-                kind, source, preset_value = request
+                if len(request) == 3:
+                    kind, source, profile_value = request
+                    page_range = None
+                else:
+                    kind, source, profile_value, page_range = request
                 if kind != "parse" or not isinstance(source, ParserSource):
                     raise ValueError("invalid parser child request")
-                preset = ParsingPreset(preset_value)
-                document = runtime.convert(source, preset)
-                connection.send_bytes(
+                profile = _resolve_profile_value(profile_value)
+                started_at = time.monotonic()
+
+                def emit(payload: dict[str, Any]) -> None:
+                    send(
+                        _encode_progress_response(
+                            {
+                                **payload,
+                                "elapsed_ms": int(
+                                    (time.monotonic() - started_at) * 1000
+                                ),
+                            }
+                        )
+                    )
+
+                document = runtime.convert(
+                    source,
+                    profile,
+                    page_range=page_range,
+                    progress_emitter=emit,
+                )
+                send(
                     _SUCCESS_RESPONSE + document.model_dump_json().encode("utf-8")
                 )
             except ParserExecutionError as error:
-                connection.send_bytes(
+                send(
                     _encode_error_response(error.code, error.diagnostic)
                 )
             except BaseException:
                 try:
-                    connection.send_bytes(
+                    send(
                         _encode_error_response(
                             ErrorCode.PARSER_CRASHED,
                             {"check": "docling_child_runtime"},
@@ -489,13 +1007,381 @@ def _preflight_conversion_source(
 def _round_trip(
     connection: Connection,
     source: ParserSource,
-    preset: ParsingPreset,
-) -> bytes:
-    connection.send(("parse", source, preset.value))
-    return connection.recv_bytes(_MAX_IPC_RESPONSE_BYTES)
+    profile: ParserProfile,
+    page_range: tuple[int, int] | None,
+    on_progress: Callable[[dict[str, Any]], None] | None,
+) -> _RoundTripResult:
+    request = (
+        ("parse", source, profile.value)
+        if page_range is None and not profile.uses_balanced_pdf_runtime
+        else ("parse", source, profile.value, page_range)
+    )
+    connection.send(request)
+    last_progress: dict[str, Any] = {}
+    while True:
+        response = connection.recv_bytes(_MAX_IPC_RESPONSE_BYTES)
+        if response[:1] != _PROGRESS_RESPONSE:
+            return _RoundTripResult(response, last_progress)
+        progress = _decode_progress_response(response)
+        last_progress = progress
+        if on_progress is not None:
+            on_progress(progress)
 
 
-def _decode_response(response: Any, limits: ParserLimits) -> DoclingDocument:
+def _resolve_profile(
+    *,
+    profile: ParserProfile | ParsingPreset | None,
+    preset: ParsingPreset | None,
+) -> ParserProfile:
+    if profile is not None:
+        if isinstance(profile, ParsingPreset):
+            preset = profile
+        else:
+            return ParserProfile(profile)
+    if preset is None:
+        raise ValueError("parser profile is required")
+    resolved_preset = ParsingPreset(preset)
+    return (
+        ParserProfile.DOCLING_MULTIMODAL_LOCAL_V2
+        if resolved_preset is ParsingPreset.MULTIMODAL_LOCAL_V2
+        else ParserProfile.DOCLING_TEXT_LOCAL_V1
+    )
+
+
+def _resolve_profile_value(value: Any) -> ParserProfile:
+    try:
+        return ParserProfile(value)
+    except ValueError:
+        return _resolve_profile(profile=ParsingPreset(value), preset=None)
+
+
+def _pdf_page_count(source: ParserSource, limits: ParserLimits) -> int:
+    try:
+        # Docling accepts many PDFs with repairable cross-reference defects.
+        # Keep the page-count probe at least as permissive as the converter so
+        # segmentation does not reject a document the legacy path could parse.
+        total = len(PdfReader(BytesIO(source.content), strict=False).pages)
+    except Exception as error:
+        raise ParserExecutionError(
+            ErrorCode.FILE_CONTENT_INVALID,
+            diagnostic={"check": "pdf_page_count"},
+        ) from error
+    if total <= 0:
+        raise ParserExecutionError(
+            ErrorCode.FILE_CONTENT_INVALID,
+            diagnostic={"check": "pdf_page_count"},
+        )
+    if total > limits.max_num_pages:
+        _raise_limit("max_num_pages", limits.max_num_pages)
+    return total
+
+
+def _ensure_pdf_total_budget(
+    checkpoint: dict[str, Any],
+    limits: ParserLimits,
+) -> None:
+    if checkpoint["elapsed_ms"] < int(limits.pdf_total_timeout_seconds * 1000):
+        return
+    raise ParserExecutionError(
+        ErrorCode.PARSER_RESOURCE_LIMIT,
+        diagnostic={
+            "limit_name": "pdf_total_timeout",
+            "limit": limits.pdf_total_timeout_seconds,
+        },
+    )
+
+
+async def _consume_progress(
+    queue: asyncio.Queue[ParserProgress | None],
+    handler: ParserProgressHandler | None,
+) -> None:
+    while True:
+        progress = await queue.get()
+        if progress is None:
+            return
+        await _publish_progress(handler, progress)
+
+
+async def _publish_progress(
+    handler: ParserProgressHandler | None,
+    progress: ParserProgress,
+) -> None:
+    if handler is None:
+        return
+    try:
+        await handler(progress)
+    except Exception:
+        # Progress is diagnostic. A transient status-write failure must not
+        # corrupt or abort an otherwise healthy conversion.
+        return
+
+
+def _progress(
+    checkpoint: dict[str, Any],
+    segment_index: int,
+    *,
+    stage: str,
+    current_stage_pages: dict[str, int] | None = None,
+    current_ocr_pages: int = 0,
+    current_ocr_regions: int = 0,
+    current_table_candidates: int = 0,
+    current_elapsed_ms: int = 0,
+    child_peak_rss_bytes: int | None = None,
+) -> ParserProgress:
+    segments = checkpoint["segments"]
+    safe_index = min(max(segment_index, 0), len(segments) - 1)
+    segment = segments[safe_index]
+    completed_segments = [
+        item for item in segments if item["status"] == "completed"
+    ]
+    completed_pages = sum(
+        item["page_to"] - item["page_from"] + 1
+        for item in completed_segments
+    )
+    persisted_ocr_pages = sum(item.get("ocr_pages", 0) for item in completed_segments)
+    persisted_ocr_regions = sum(
+        item.get("ocr_regions", 0) for item in completed_segments
+    )
+    persisted_table_candidates = sum(
+        item.get("table_candidates", 0) for item in completed_segments
+    )
+    persisted_stage_pages: dict[str, int] = {}
+    for item in completed_segments:
+        for name, value in item.get("stage_pages", {}).items():
+            persisted_stage_pages[name] = persisted_stage_pages.get(name, 0) + value
+    peaks = [
+        item.get("child_peak_rss_bytes")
+        for item in completed_segments
+        if isinstance(item.get("child_peak_rss_bytes"), int)
+    ]
+    if child_peak_rss_bytes is not None:
+        peaks.append(child_peak_rss_bytes)
+    current_stage_pages = dict(current_stage_pages or {})
+    stage_pages = dict(persisted_stage_pages)
+    for name, value in current_stage_pages.items():
+        stage_pages[name] = stage_pages.get(name, 0) + value
+    current_assembled = current_stage_pages.get("page_assembly", 0)
+    if stage == "completed":
+        completed_pages = checkpoint["total_pages"]
+    else:
+        completed_pages = min(
+            checkpoint["total_pages"], completed_pages + current_assembled
+        )
+    return ParserProgress(
+        stage=stage,
+        total_pages=checkpoint["total_pages"],
+        completed_pages=completed_pages,
+        segment_number=safe_index + 1,
+        segment_count=len(segments),
+        page_from=segment["page_from"],
+        page_to=segment["page_to"],
+        stage_pages=tuple(sorted(stage_pages.items())),
+        ocr_pages=persisted_ocr_pages + current_ocr_pages,
+        ocr_regions=persisted_ocr_regions + current_ocr_regions,
+        table_candidates=(
+            persisted_table_candidates + current_table_candidates
+        ),
+        elapsed_ms=int(checkpoint["elapsed_ms"]) + current_elapsed_ms,
+        child_peak_rss_bytes=max(peaks) if peaks else None,
+    )
+
+
+def _nonnegative_int(value: Any) -> int:
+    return (
+        value
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+        else 0
+    )
+
+
+def _encode_progress_response(progress: dict[str, Any]) -> bytes:
+    return _PROGRESS_RESPONSE + json.dumps(
+        progress,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+
+
+def _decode_progress_response(response: bytes) -> dict[str, Any]:
+    try:
+        payload = json.loads(response[1:])
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise ParserExecutionError(
+            ErrorCode.PARSER_CRASHED,
+            diagnostic={"check": "docling_child_progress"},
+        ) from error
+    if not isinstance(payload, dict):
+        raise ParserExecutionError(
+            ErrorCode.PARSER_CRASHED,
+            diagnostic={"check": "docling_child_progress"},
+        )
+    allowed = {
+        "stage",
+        "segment_total_pages",
+        "stage_completed_pages",
+        "ocr_pages",
+        "ocr_regions",
+        "table_candidates",
+        "elapsed_ms",
+        "child_peak_rss_bytes",
+    }
+    return {key: value for key, value in payload.items() if key in allowed}
+
+
+def _read_checkpoint_manifest(path: Path) -> dict[str, Any]:
+    try:
+        payload = _read_private_bytes(path)
+        if len(payload) > _MAX_CHECKPOINT_MANIFEST_BYTES:
+            raise ValueError("manifest too large")
+        value = json.loads(payload)
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as error:
+        raise ParserExecutionError(
+            ErrorCode.PARSER_CRASHED,
+            diagnostic={"check": "pdf_checkpoint_manifest"},
+        ) from error
+    if not isinstance(value, dict):
+        raise ParserExecutionError(
+            ErrorCode.PARSER_CRASHED,
+            diagnostic={"check": "pdf_checkpoint_manifest"},
+        )
+    return value
+
+
+def _validate_checkpoint(checkpoint: dict[str, Any], total_pages: int) -> None:
+    segments = checkpoint.get("segments")
+    if (
+        checkpoint.get("schema_version") != _CHECKPOINT_SCHEMA
+        or not isinstance(checkpoint.get("elapsed_ms"), int)
+        or checkpoint["elapsed_ms"] < 0
+        or not isinstance(segments, list)
+        or not segments
+    ):
+        raise ParserExecutionError(
+            ErrorCode.PARSER_CRASHED,
+            diagnostic={"check": "pdf_checkpoint_manifest"},
+        )
+    expected_page = 1
+    for segment in segments:
+        if (
+            not isinstance(segment, dict)
+            or segment.get("page_from") != expected_page
+            or not isinstance(segment.get("page_to"), int)
+            or segment["page_to"] < segment["page_from"]
+            or segment["page_to"] > total_pages
+            or segment.get("status") not in {"pending", "completed"}
+        ):
+            raise ParserExecutionError(
+                ErrorCode.PARSER_CRASHED,
+                diagnostic={"check": "pdf_checkpoint_manifest"},
+            )
+        if segment["status"] == "completed" and not all(
+            isinstance(segment.get(key), expected_type)
+            for key, expected_type in (
+                ("filename", str),
+                ("sha256", str),
+                ("elapsed_ms", int),
+                ("stage_pages", dict),
+                ("ocr_pages", int),
+                ("ocr_regions", int),
+                ("table_candidates", int),
+            )
+        ):
+            raise ParserExecutionError(
+                ErrorCode.PARSER_CRASHED,
+                diagnostic={"check": "pdf_checkpoint_manifest"},
+            )
+        if segment["status"] == "completed":
+            expected_filename = (
+                f"pages-{segment['page_from']}-{segment['page_to']}.json"
+            )
+            segment_page_count = segment["page_to"] - segment["page_from"] + 1
+            if (
+                segment["filename"] != expected_filename
+                or not re.fullmatch(r"[0-9a-f]{64}", segment["sha256"])
+                or any(
+                    name not in _PDF_PROGRESS_STAGE_NAMES
+                    or not isinstance(value, int)
+                    or isinstance(value, bool)
+                    or not 0 <= value <= segment_page_count
+                    for name, value in segment["stage_pages"].items()
+                )
+                or any(
+                    segment[name] < 0
+                    for name in (
+                        "elapsed_ms",
+                        "ocr_pages",
+                        "ocr_regions",
+                        "table_candidates",
+                    )
+                )
+            ):
+                raise ParserExecutionError(
+                    ErrorCode.PARSER_CRASHED,
+                    diagnostic={"check": "pdf_checkpoint_manifest"},
+                )
+        expected_page = segment["page_to"] + 1
+    if expected_page != total_pages + 1:
+        raise ParserExecutionError(
+            ErrorCode.PARSER_CRASHED,
+            diagnostic={"check": "pdf_checkpoint_manifest"},
+        )
+
+
+def _write_private_json(path: Path, value: dict[str, Any]) -> None:
+    _write_private_bytes(
+        path,
+        json.dumps(
+            value,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8"),
+    )
+
+
+def _write_private_bytes(path: Path, payload: bytes) -> None:
+    temporary = path.with_name(f".{path.name}.tmp")
+    descriptor = os.open(
+        temporary,
+        os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+        0o600,
+    )
+    try:
+        with os.fdopen(descriptor, "wb") as output:
+            output.write(payload)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        try:
+            temporary.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def _read_private_bytes(path: Path) -> bytes:
+    if path.is_symlink() or not path.is_file():
+        raise ParserExecutionError(
+            ErrorCode.PARSER_CRASHED,
+            diagnostic={"check": "pdf_checkpoint_file"},
+        )
+    try:
+        return path.read_bytes()
+    except OSError as error:
+        raise ParserExecutionError(
+            ErrorCode.PARSER_CRASHED,
+            diagnostic={"check": "pdf_checkpoint_file"},
+        ) from error
+
+
+def _decode_response(
+    response: Any,
+    limits: ParserLimits,
+    *,
+    allow_empty: bool = False,
+) -> DoclingDocument:
     if not isinstance(response, bytes) or len(response) < 2:
         raise ParserExecutionError(
             ErrorCode.PARSER_CRASHED,
@@ -506,7 +1392,7 @@ def _decode_response(response: Any, limits: ParserLimits) -> DoclingDocument:
     if kind == _SUCCESS_RESPONSE:
         try:
             document = DoclingDocument.model_validate_json(payload)
-            _validate_document(document, limits)
+            _validate_document(document, limits, allow_empty=allow_empty)
             return document
         except ParserExecutionError:
             raise
@@ -611,6 +1497,8 @@ def _validate_source(
 def _validate_conversion_result(
     result: Any,
     limits: ParserLimits,
+    *,
+    allow_empty: bool = False,
 ) -> DoclingDocument:
     status = getattr(result, "status", None)
     errors = getattr(result, "errors", ()) or ()
@@ -642,7 +1530,7 @@ def _validate_conversion_result(
             ErrorCode.PARSER_OUTPUT_INVALID,
             diagnostic={"check": "docling_document_type"},
         )
-    _validate_document(document, limits)
+    _validate_document(document, limits, allow_empty=allow_empty)
     return document
 
 
@@ -660,7 +1548,12 @@ def _is_input_failure(result: Any, errors: Any) -> bool:
     return False
 
 
-def _validate_document(document: DoclingDocument, limits: ParserLimits) -> None:
+def _validate_document(
+    document: DoclingDocument,
+    limits: ParserLimits,
+    *,
+    allow_empty: bool = False,
+) -> None:
     if document.schema_name != "DoclingDocument":
         raise ParserExecutionError(
             ErrorCode.PARSER_OUTPUT_INVALID,
@@ -694,7 +1587,7 @@ def _validate_document(document: DoclingDocument, limits: ParserLimits) -> None:
                 "max_extracted_characters",
                 limits.max_extracted_characters,
             )
-    if item_count == 0:
+    if item_count == 0 and not allow_empty:
         raise ParserExecutionError(
             ErrorCode.PARSER_OUTPUT_INVALID,
             diagnostic={"check": "non_empty_docling_items"},

@@ -16,6 +16,7 @@ import tempfile
 import time
 import unittest
 from unittest.mock import patch
+from uuid import uuid4
 import warnings
 import zlib
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -39,7 +40,9 @@ from docling_core.types.doc import (
     TableCell,
     TableData,
 )
+from docling_core.types.doc.common.origin import DocumentOrigin
 from PIL import Image
+from pypdf import PdfWriter
 
 from rag_kb.adapters.parser.docling.artifacts import (
     ArtifactManifestError,
@@ -57,12 +60,14 @@ from rag_kb.domain import (
     ErrorCode,
     ParserExecutionError,
     ParserLimits,
+    ParserProfile,
     ParserSource,
     ParsingPreset,
 )
 from rag_kb.document_processing.markdown_bundle import (
     MARKDOWN_BUNDLE_MEDIA_TYPE,
 )
+from rag_kb.ports.parsing import DocumentParseContinuation, DocumentParseResult
 
 
 def _document(*texts: str) -> DoclingDocument:
@@ -107,6 +112,15 @@ def _docx_with_image(image: bytes) -> bytes:
         archive.writestr("[Content_Types].xml", b"<Types/>")
         archive.writestr("word/document.xml", b"<document/>")
         archive.writestr("word/media/image.png", image)
+    return target.getvalue()
+
+
+def _pdf_with_pages(count: int) -> bytes:
+    target = BytesIO()
+    writer = PdfWriter()
+    for _ in range(count):
+        writer.add_blank_page(width=100, height=100)
+    writer.write(target)
     return target.getvalue()
 
 
@@ -205,6 +219,7 @@ class _ProcessHarness:
             replace(ParserLimits(), document_timeout_seconds=timeout),
             artifacts_path=root,
             artifact_manifest_path=root / "manifest.json",
+            checkpoint_root=root / "parser-temp",
             child_target=child_target,
         )
 
@@ -262,6 +277,51 @@ def _oom_killed_child(
     del limits, artifacts_path, artifact_manifest_path
     connection.recv()
     os.kill(os.getpid(), signal.SIGKILL)
+
+
+def _segmented_child(connection, limits, artifacts_path, artifact_manifest_path) -> None:
+    del limits, artifacts_path, artifact_manifest_path
+    try:
+        while True:
+            try:
+                kind, source, _profile, page_range = connection.recv()
+            except EOFError:
+                return
+            if kind != "parse" or page_range is None:
+                return
+            if source.original_filename == "budget.pdf":
+                time.sleep(0.02)
+            page_from, page_to = page_range
+            connection.send_bytes(
+                b"P"
+                + json.dumps(
+                    {
+                        "stage": "layout",
+                        "stage_completed_pages": page_to - page_from + 1,
+                        "ocr_pages": 0,
+                        "ocr_regions": 0,
+                        "table_candidates": 0,
+                        "elapsed_ms": 1,
+                        "child_peak_rss_bytes": 1024,
+                    }
+                ).encode("utf-8")
+            )
+            document = _document(f"pages-{page_from}-{page_to}")
+            document.origin = DocumentOrigin(
+                mimetype="application/pdf",
+                binary_hash=17,
+                filename="segmented.pdf",
+            )
+            for page_no in range(page_from, page_to + 1):
+                document.add_page(
+                    page_no=page_no,
+                    size=Size(width=100, height=100),
+                )
+            connection.send_bytes(
+                b"O" + document.model_dump_json().encode("utf-8")
+            )
+    finally:
+        connection.close()
 
 
 def _write_manifest(path: Path, artifact: Path) -> None:
@@ -390,6 +450,25 @@ class DoclingConverterFactoryTests(unittest.TestCase):
             self.assertFalse(options.allow_external_plugins)
             self.assertEqual(options.accelerator_options.device, AcceleratorDevice.CPU)
 
+    def test_balanced_profile_uses_benchmarked_batches_and_progress(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            converter = build_docling_converter(
+                ParserProfile.DOCLING_TEXT_LOCAL_V2,
+                artifacts_path=Path(directory),
+                limits=ParserLimits(),
+            )
+
+        options = converter.format_to_options[InputFormat.PDF].pipeline_options
+        self.assertEqual(options.accelerator_options.num_threads, 1)
+        self.assertEqual(options.ocr_batch_size, 1)
+        self.assertEqual(options.layout_batch_size, 1)
+        self.assertEqual(options.table_batch_size, 1)
+        self.assertEqual(options.document_timeout, 180)
+        self.assertEqual(
+            converter.format_to_options[InputFormat.PDF].pipeline_cls.__name__,
+            "ProgressStandardPdfPipeline",
+        )
+
     def test_docling_document_exposes_page_picture_and_table_images(self) -> None:
         document = _document("body")
         image = Image.new("RGB", (8, 6), "white")
@@ -420,6 +499,126 @@ class DoclingConverterFactoryTests(unittest.TestCase):
 
 
 class DoclingParserTests(unittest.IsolatedAsyncioTestCase):
+    async def test_balanced_pdf_yields_segments_and_reassembles_checkpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            parser = DoclingParser(
+                replace(
+                    ParserLimits(),
+                    pdf_segment_pages=2,
+                    pdf_segment_timeout_seconds=5,
+                    pdf_total_timeout_seconds=30,
+                ),
+                artifacts_path=root,
+                artifact_manifest_path=root / "manifest.json",
+                checkpoint_root=root / "parser-temp",
+                child_target=_segmented_child,
+            )
+            self.addCleanup(parser.close)
+            checkpoint_key = str(uuid4())
+            source = ParserSource(
+                "three-pages.pdf",
+                "application/pdf",
+                _pdf_with_pages(3),
+            )
+            observed = []
+
+            async def on_progress(progress):
+                observed.append(progress)
+
+            first = await parser.parse(
+                source,
+                profile=ParserProfile.DOCLING_TEXT_LOCAL_V2,
+                checkpoint_key=checkpoint_key,
+                on_progress=on_progress,
+            )
+            second = await parser.parse(
+                source,
+                profile=ParserProfile.DOCLING_TEXT_LOCAL_V2,
+                checkpoint_key=checkpoint_key,
+                on_progress=on_progress,
+            )
+
+            self.assertIsInstance(first, DocumentParseContinuation)
+            self.assertIsInstance(second, DocumentParseResult)
+            assert isinstance(first, DocumentParseContinuation)
+            assert isinstance(second, DocumentParseResult)
+            self.assertEqual(tuple(second.document.pages), (1, 2, 3))
+            self.assertEqual(second.document.origin.mimetype, "application/pdf")
+            self.assertEqual(first.progress.completed_pages, 2)
+            self.assertEqual(first.progress.stage_pages, (("layout", 2),))
+            self.assertTrue(any(item.stage == "layout" for item in observed))
+            self.assertEqual(observed[-1].stage, "completed")
+            self.assertEqual(observed[-1].stage_pages, (("layout", 3),))
+            checkpoint = (
+                root / "parser-temp" / "pdf-checkpoints" / checkpoint_key
+            )
+            self.assertTrue(checkpoint.is_dir())
+            parser.discard_checkpoint(checkpoint_key)
+            self.assertFalse(checkpoint.exists())
+
+    async def test_pdf_total_budget_is_checked_after_segment_checkpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            parser = DoclingParser(
+                replace(
+                    ParserLimits(),
+                    pdf_segment_pages=2,
+                    pdf_segment_timeout_seconds=5,
+                    pdf_total_timeout_seconds=5,
+                ),
+                artifacts_path=root,
+                artifact_manifest_path=root / "manifest.json",
+                checkpoint_root=root / "parser-temp",
+                child_target=_segmented_child,
+            )
+            self.addCleanup(parser.close)
+            checkpoint_key = str(uuid4())
+            source = ParserSource(
+                "budget.pdf",
+                "application/pdf",
+                _pdf_with_pages(3),
+            )
+
+            first = await parser.parse(
+                source,
+                profile=ParserProfile.DOCLING_TEXT_LOCAL_V2,
+                checkpoint_key=checkpoint_key,
+            )
+            self.assertIsInstance(first, DocumentParseContinuation)
+            manifest_path = (
+                root
+                / "parser-temp"
+                / "pdf-checkpoints"
+                / checkpoint_key
+                / "manifest.json"
+            )
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["elapsed_ms"] = 4_990
+            manifest_path.write_text(
+                json.dumps(manifest, separators=(",", ":"), sort_keys=True),
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(ParserExecutionError) as raised:
+                await parser.parse(
+                    source,
+                    profile=ParserProfile.DOCLING_TEXT_LOCAL_V2,
+                    checkpoint_key=checkpoint_key,
+                )
+
+            self.assertEqual(
+                raised.exception.diagnostic["limit_name"],
+                "pdf_total_timeout",
+            )
+            saved = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertTrue(
+                all(
+                    segment["status"] == "completed"
+                    for segment in saved["segments"]
+                )
+            )
+
     async def test_markdown_bundle_uses_its_distinct_source_limit(self) -> None:
         limits = ParserLimits(
             max_file_size=32,

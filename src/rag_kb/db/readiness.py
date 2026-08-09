@@ -5,7 +5,7 @@ from __future__ import annotations
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-EXPECTED_REVISION = "0005_content_management"
+EXPECTED_REVISION = "0006_pdf_parsing_progress"
 
 
 class DatabaseReadinessError(RuntimeError):

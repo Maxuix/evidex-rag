@@ -104,7 +104,9 @@ export interface KnowledgeBase {
     preset: ParsingPreset;
     profile:
       | "docling_text_local_v1"
-      | "docling_multimodal_local_v2";
+      | "docling_multimodal_local_v2"
+      | "docling_text_local_v2"
+      | "docling_multimodal_local_v3";
   };
   chunking: {
     preset: ChunkingPreset;
@@ -223,6 +225,7 @@ export interface IndexingJob {
   index_revision_id: UUID;
   status: "queued" | "running" | "completed" | "failed" | "cancelled";
   phase: string;
+  progress: IndexingProgress | null;
   attempt: number;
   build_status: "queued" | "processing" | "ready" | "failed";
   serving_status: "candidate" | "serving" | "retired";
@@ -233,6 +236,23 @@ export interface IndexingJob {
   can_retry: boolean;
   created_at: IsoDate;
   updated_at: IsoDate;
+}
+
+export interface IndexingProgress {
+  schema_version: "pdf_parsing_progress_v1";
+  stage: string;
+  total_pages: number;
+  completed_pages: number;
+  segment_number: number;
+  segment_count: number;
+  page_from: number;
+  page_to: number;
+  stage_pages: Record<string, number>;
+  ocr_pages: number;
+  ocr_regions: number;
+  table_candidates: number;
+  elapsed_ms: number;
+  child_peak_rss_bytes: number | null;
 }
 
 export interface ChatSession {

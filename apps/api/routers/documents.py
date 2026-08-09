@@ -23,12 +23,13 @@ from rag_kb.domain import (
     DocumentChunkAsset,
     DocumentMutationResult,
     FileAdmissionError,
+    ParsingPreset,
 )
 from rag_kb.document_processing.markdown_bundle import (
     MARKDOWN_BUNDLE_EXTENSION,
     MARKDOWN_BUNDLE_MEDIA_TYPE,
 )
-from rag_kb.document_processing.profiles import DOCLING_MULTIMODAL_PARSER_CONFIG
+from rag_kb.document_processing.profiles import parsing_preset
 from rag_kb.schemas import (
     CursorPayload,
     DocumentChunkAssetResponse,
@@ -423,8 +424,8 @@ async def _accept_upload(
             kb_id,
         )
         markdown_v2 = (
-            knowledge_base.parser_config
-            == DOCLING_MULTIMODAL_PARSER_CONFIG
+            parsing_preset(knowledge_base.parser_config)
+            is ParsingPreset.MULTIMODAL_LOCAL_V2
         )
         async for block in request.stream():
             size += len(block)

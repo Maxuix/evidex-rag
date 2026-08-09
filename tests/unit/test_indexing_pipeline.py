@@ -40,6 +40,7 @@ from rag_kb.domain import (
     PromotionResult,
     PromotionStatus,
     ParserExecutionError,
+    ParserProgress,
     ParsingPreset,
     SourceFileIdentity,
     stable_chunk_id,
@@ -48,7 +49,7 @@ from rag_kb.domain import (
 )
 from rag_kb.indexing.embedding_spaces import require_compatible_embedding_spaces
 from rag_kb.indexing.pipeline import IndexingPipeline
-from rag_kb.ports.parsing import DocumentParseResult
+from rag_kb.ports.parsing import DocumentParseContinuation, DocumentParseResult
 
 
 WORKSPACE = UUID("01900000-0000-7000-8000-000000000401")
@@ -80,7 +81,7 @@ class IndexingDomainTests(unittest.TestCase):
             (800, 600, "cl100k_base"),
         )
         self.assertEqual(
-            profile.parser_config["profile"], "docling_text_local_v1"
+            profile.parser_config["profile"], "docling_text_local_v2"
         )
         self.assertNotIn("max_characters", STRUCTURAL_CHUNKING_CONFIG_V4)
         self.assertNotIn("new_after_n_chars", STRUCTURAL_CHUNKING_CONFIG_V4)
@@ -128,7 +129,7 @@ class IndexingDomainTests(unittest.TestCase):
             public_parsing_descriptor(markdown_profile.parser_config),
             {
                 "preset": "multimodal_local_v2",
-                "profile": "docling_multimodal_local_v2",
+                "profile": "docling_multimodal_local_v3",
             },
         )
         self.assertTrue(
@@ -172,6 +173,48 @@ class IndexingPipelineTests(unittest.IsolatedAsyncioTestCase):
         )
         tokenizer.start()
         self.addCleanup(tokenizer.stop)
+
+    async def test_pdf_segment_continuation_yields_without_consuming_embeddings(self) -> None:
+        repository = _Repository(_target())
+        factory = _Factory(repository)
+        provider = _Provider(factory)
+        parser = _ContinuationParser(factory)
+        pipeline = _pipeline(factory, provider, parser)
+        command = IndexingCommand(
+            repository.target.job_id,
+            repository.target.indexed_document_version_id,
+        )
+
+        result = await pipeline.execute(command)
+
+        self.assertEqual(result.status, "queued")
+        self.assertEqual(repository.status, "queued")
+        self.assertEqual(provider.calls, 0)
+        self.assertEqual(parser.calls, 1)
+
+    async def test_rejected_continuation_is_cancelled_and_checkpoint_is_discarded(
+        self,
+    ) -> None:
+        repository = _Repository(_target())
+        repository.yield_allowed = False
+        factory = _Factory(repository)
+        provider = _Provider(factory)
+        parser = _ContinuationParser(factory)
+        pipeline = _pipeline(factory, provider, parser)
+        command = IndexingCommand(
+            repository.target.job_id,
+            repository.target.indexed_document_version_id,
+        )
+
+        result = await pipeline.execute(command)
+
+        self.assertEqual(result.status, "cancelled")
+        self.assertIsNone(repository.failure)
+        self.assertEqual(
+            parser.discarded,
+            [str(repository.target.indexed_document_version_id)],
+        )
+        self.assertEqual(provider.calls, 0)
 
     async def test_markdown_v2_reuses_multimodal_assets_and_both_spaces(self) -> None:
         repository = _Repository(_target(multimodal=True, markdown_v2=True))
@@ -752,6 +795,7 @@ class _Repository:
         self.lexical_rows = {}
         self.lexical_manifest = None
         self.asset_discard_calls = 0
+        self.yield_allowed = True
 
     async def prepare(self, command):
         self._active()
@@ -815,6 +859,18 @@ class _Repository:
         del command, phase
         self._active()
         return self.status == "running"
+
+    async def set_progress(self, command, progress):
+        del command, progress
+        self._active()
+        return self.status == "running"
+
+    async def yield_continuation(self, command, progress):
+        del command, progress
+        self._active()
+        if self.yield_allowed:
+            self.status = "queued"
+        return self.yield_allowed
 
     async def save_chunk_plan(self, command, proposed):
         del command
@@ -957,10 +1013,10 @@ class _Parser:
         self.calls = 0
         self.document = document
 
-    async def parse(self, source, *, preset):
+    async def parse(self, source, *, profile, checkpoint_key, on_progress=None):
         if self.factory.active:
             raise AssertionError("parser ran inside transaction")
-        del source, preset
+        del source, profile, checkpoint_key, on_progress
         self.calls += 1
         return DocumentParseResult(self.document or _text_document())
 
@@ -972,12 +1028,13 @@ class _MultimodalParser:
         self.presets = []
         self.document = document
 
-    async def parse(self, source, *, preset):
+    async def parse(self, source, *, profile, checkpoint_key, on_progress=None):
         if self.factory.active:
             raise AssertionError("parser ran inside transaction")
         del source
         self.calls += 1
-        self.presets.append(preset)
+        del checkpoint_key, on_progress
+        self.presets.append(profile.preset)
         return DocumentParseResult(self.document or _visual_document())
 
 
@@ -986,12 +1043,40 @@ class _SemanticParser:
         self.factory = factory
         self.calls = 0
 
-    async def parse(self, source, *, preset):
+    async def parse(self, source, *, profile, checkpoint_key, on_progress=None):
         if self.factory.active:
             raise AssertionError("parser ran inside transaction")
-        del source, preset
+        del source, profile, checkpoint_key, on_progress
         self.calls += 1
         return DocumentParseResult(_analysis_document())
+
+
+class _ContinuationParser:
+    def __init__(self, factory) -> None:
+        self.factory = factory
+        self.calls = 0
+        self.discarded = []
+
+    async def parse(self, source, *, profile, checkpoint_key, on_progress=None):
+        del source, profile, checkpoint_key
+        if self.factory.active:
+            raise AssertionError("parser ran inside transaction")
+        self.calls += 1
+        progress = ParserProgress(
+            stage="segment_checkpointed",
+            total_pages=40,
+            completed_pages=20,
+            segment_number=2,
+            segment_count=2,
+            page_from=21,
+            page_to=40,
+        )
+        if on_progress is not None:
+            await on_progress(progress)
+        return DocumentParseContinuation(progress)
+
+    def discard_checkpoint(self, checkpoint_key):
+        self.discarded.append(checkpoint_key)
 
 
 def _document(name: str) -> DoclingDocument:
@@ -1143,8 +1228,8 @@ class _FailingParser:
     def __init__(self, factory) -> None:
         self.factory = factory
 
-    async def parse(self, source, *, preset):
-        del source, preset
+    async def parse(self, source, *, profile, checkpoint_key, on_progress=None):
+        del source, profile, checkpoint_key, on_progress
         if self.factory.active:
             raise AssertionError("parser ran inside transaction")
         raise ParserExecutionError(

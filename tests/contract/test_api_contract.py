@@ -32,6 +32,7 @@ from rag_kb.auth import (
     MetadataFilter,
     SingleWorkspaceAccessPolicy,
 )
+from rag_kb.document_processing.profiles import DOCLING_TEXT_PARSER_CONFIG
 from rag_kb.domain import (
     CONTEXTUAL_QUERY_VERSION,
     AdmissionLimits,
@@ -1837,7 +1838,7 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
             created.json()["parsing"],
             {
                 "preset": "multimodal_local_v2",
-                "profile": "docling_multimodal_local_v2",
+                "profile": "docling_multimodal_local_v3",
             },
         )
 
@@ -2522,6 +2523,7 @@ def _knowledge_base_value() -> KnowledgeBase:
         provisioned_at=now,
         created_at=now,
         updated_at=now,
+        parser_config=DOCLING_TEXT_PARSER_CONFIG,
         embedding=KnowledgeBaseEmbeddingSummary(
             strategy="text_only",
             text=EmbeddingRoleSummary(

@@ -557,6 +557,7 @@ class SqlAlchemyIndexingRepository:
         job.claimed_by = None
         job.claimed_at = None
         job.heartbeat_at = None
+        job.continuation_pending = False
         job.next_attempt_at = observed_at
         job.error_code = None
         job.error_detail = None
@@ -811,7 +812,14 @@ class SqlAlchemyIndexingRepository:
                     *_claimable_job(observed_at, max_attempts),
                 )
                 .order_by(
-                    IndexingJobRow.next_attempt_at.asc().nullsfirst(),
+                    # A continuation receives the time at which its previous
+                    # segment yielded. Fresh jobs that arrived during that
+                    # segment therefore run first, while later arrivals sort
+                    # after the already-due continuation and cannot starve it.
+                    func.coalesce(
+                        IndexingJobRow.next_attempt_at,
+                        IndexingJobRow.created_at,
+                    ),
                     DocumentVersionRow.size_bytes,
                     IndexingJobRow.created_at,
                     IndexingJobRow.id,
@@ -826,7 +834,10 @@ class SqlAlchemyIndexingRepository:
         if job.status is JobStatus.QUEUED:
             job.status = JobStatus.RUNNING
             job.phase = "claimed"
-            job.attempt += 1
+            if job.continuation_pending:
+                job.continuation_pending = False
+            else:
+                job.attempt += 1
         elif job.attempt == 0:
             job.attempt = 1
         job.claimed_by = worker_id
@@ -879,6 +890,7 @@ class SqlAlchemyIndexingRepository:
             .values(
                 status=JobStatus.QUEUED,
                 phase="queued",
+                continuation_pending=False,
                 claimed_by=None,
                 claimed_at=None,
                 heartbeat_at=None,
@@ -917,6 +929,7 @@ class SqlAlchemyIndexingRepository:
             .values(
                 status=JobStatus.FAILED,
                 phase="failed",
+                continuation_pending=False,
                 claimed_by=None,
                 claimed_at=None,
                 heartbeat_at=None,
@@ -1022,11 +1035,13 @@ class SqlAlchemyIndexingRepository:
             if job.attempt < max_attempts:
                 job.status = JobStatus.QUEUED
                 job.phase = "queued"
+                job.continuation_pending = False
                 job.next_attempt_at = retry_at_by_attempt[job.attempt - 1]
                 requeued += 1
             else:
                 job.status = JobStatus.FAILED
                 job.phase = "failed"
+                job.continuation_pending = False
                 job.next_attempt_at = None
                 failed += 1
         await self._session.flush()
@@ -1598,6 +1613,50 @@ class SqlAlchemyIndexingRepository:
         if not _is_writable(job, target):
             return False
         job.phase = phase.value
+        await self._session.flush()
+        return True
+
+    async def set_progress(
+        self,
+        command: IndexingCommand,
+        progress: dict[str, Any],
+    ) -> bool:
+        self._ensure_active()
+        row = await self._load(command, lock=True)
+        if row is None:
+            return False
+        job, target, *_ = row
+        if not _is_writable(job, target):
+            return False
+        stage = progress.get("stage")
+        if not isinstance(stage, str) or not stage:
+            raise ValueError("indexing progress stage is required")
+        job.progress = dict(progress)
+        job.phase = f"parsing_{stage}"[:64]
+        await self._session.flush()
+        return True
+
+    async def yield_continuation(
+        self,
+        command: IndexingCommand,
+        progress: dict[str, Any],
+    ) -> bool:
+        self._ensure_active()
+        row = await self._load(command, lock=True)
+        if row is None:
+            return False
+        job, target, *_ = row
+        if not _is_writable(job, target):
+            return False
+        job.status = JobStatus.QUEUED
+        job.phase = "parsing_queued"
+        job.progress = dict(progress)
+        job.continuation_pending = True
+        job.continuation_count += 1
+        job.claimed_by = None
+        job.claimed_at = None
+        job.heartbeat_at = None
+        job.next_attempt_at = func.now()
         await self._session.flush()
         return True
 
@@ -2318,13 +2377,23 @@ def _claimable_job(
         or_(
             and_(
                 IndexingJobRow.status == JobStatus.QUEUED,
-                IndexingJobRow.attempt < max_attempts,
+                or_(
+                    IndexingJobRow.continuation_pending.is_(True),
+                    IndexingJobRow.attempt < max_attempts,
+                ),
                 or_(
                     IndexingJobRow.next_attempt_at.is_(None),
                     IndexingJobRow.next_attempt_at <= observed_at,
                 ),
-                IndexedDocumentVersionRow.build_status.in_(
-                    (IndexBuildStatus.QUEUED, IndexBuildStatus.FAILED)
+                or_(
+                    IndexedDocumentVersionRow.build_status.in_(
+                        (IndexBuildStatus.QUEUED, IndexBuildStatus.FAILED)
+                    ),
+                    and_(
+                        IndexingJobRow.continuation_pending.is_(True),
+                        IndexedDocumentVersionRow.build_status
+                        == IndexBuildStatus.PROCESSING,
+                    ),
                 ),
             ),
             and_(
@@ -2368,6 +2437,7 @@ def _job_snapshot(row) -> IndexingJobSnapshot:
         index_revision_id=target.index_revision_id,
         job_status=job.status.value,
         phase=job.phase,
+        progress=dict(job.progress or {}),
         attempt=job.attempt,
         build_status=target.build_status.value,
         serving_status=target.serving_status.value,

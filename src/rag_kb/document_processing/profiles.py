@@ -10,6 +10,7 @@ from rag_kb.domain import (
     ChunkingPreset,
     ChunkingStrategyKind,
     IndexProfileDefinition,
+    ParserProfile,
     ParsingPreset,
 )
 
@@ -21,7 +22,7 @@ CHUNK_TOKENIZER = {
     "tokenizer_version": "0.13.0",
 }
 
-_DOCLING_PARSER_BASE = {
+_DOCLING_PARSER_BASE_V1 = {
     "engine": "docling",
     "engine_version": "2.114.0",
     "core_version": "2.87.1",
@@ -56,16 +57,16 @@ _DOCLING_PARSER_BASE = {
     "model_artifact_manifest": "docling-artifacts-v1",
 }
 
-DOCLING_TEXT_PARSER_CONFIG = {
-    **_DOCLING_PARSER_BASE,
+DOCLING_TEXT_PARSER_CONFIG_V1 = {
+    **_DOCLING_PARSER_BASE_V1,
     "profile": "docling_text_local_v1",
     "generate_page_images": False,
     "generate_picture_images": False,
     "asset_mapping": "none",
 }
 
-DOCLING_MULTIMODAL_PARSER_CONFIG = {
-    **_DOCLING_PARSER_BASE,
+DOCLING_MULTIMODAL_PARSER_CONFIG_V2 = {
+    **_DOCLING_PARSER_BASE_V1,
     "profile": "docling_multimodal_local_v2",
     "generate_page_images": True,
     "generate_picture_images": True,
@@ -89,6 +90,41 @@ DOCLING_MULTIMODAL_PARSER_CONFIG = {
         "read_timeout_seconds": 10,
         "remote_address_policy": "all_dns_answers_public_v1",
     },
+}
+
+_DOCLING_PARSER_BASE_V2 = {
+    **_DOCLING_PARSER_BASE_V1,
+    "pdf_pipeline": "progress_standard_segmented_v1",
+    "accelerator": "cpu_single_thread_m4_benchmarked_v1",
+    "ocr_batch_size": 1,
+    "layout_batch_size": 1,
+    "table_batch_size": 1,
+    "table_structure_mode": "accurate",
+    "pdf_segment_pages": 20,
+    "pdf_segment_timeout_seconds": 180,
+    "pdf_total_timeout_seconds": 1800,
+    "progress_protocol": "pdf_parsing_progress_v1",
+    "checkpoint_protocol": "docling_page_range_json_v1",
+}
+
+DOCLING_TEXT_PARSER_CONFIG = {
+    **_DOCLING_PARSER_BASE_V2,
+    "profile": "docling_text_local_v2",
+    "generate_page_images": False,
+    "generate_picture_images": False,
+    "asset_mapping": "none",
+}
+
+DOCLING_MULTIMODAL_PARSER_CONFIG = {
+    **_DOCLING_PARSER_BASE_V2,
+    "profile": "docling_multimodal_local_v3",
+    "generate_page_images": True,
+    "generate_picture_images": True,
+    "asset_mapping": "docling_picture_table_page_v1",
+    "page_image_policy": "scanned_surface_v1",
+    "markdown_media": deepcopy(
+        DOCLING_MULTIMODAL_PARSER_CONFIG_V2["markdown_media"]
+    ),
 }
 
 DOCLING_ENRICHMENT_CONFIG = {
@@ -221,13 +257,10 @@ def resolve(
 ) -> ChunkingStrategyKind:
     """Fail closed unless the complete persisted profile exactly matches a preset.
 
-    Only the two current native Docling parser profiles are executable.
+    Current profiles and their exact legacy predecessors remain executable.
     """
 
-    if parser_config not in (
-        DOCLING_TEXT_PARSER_CONFIG,
-        DOCLING_MULTIMODAL_PARSER_CONFIG,
-    ):
+    if not any(parser_config == known for known, _ in _EXECUTABLE_PARSER_CONFIGS):
         raise ValueError("unknown parser profile")
     if chunking_config == STRUCTURAL_CHUNKING_CONFIG_V4:
         return ChunkingStrategyKind.STRUCTURAL
@@ -237,10 +270,13 @@ def resolve(
 
 
 def parsing_preset(parser_config: dict) -> ParsingPreset:
-    if parser_config == DOCLING_TEXT_PARSER_CONFIG:
-        return ParsingPreset.TEXT_LOCAL_V1
-    if parser_config == DOCLING_MULTIMODAL_PARSER_CONFIG:
-        return ParsingPreset.MULTIMODAL_LOCAL_V2
+    return parser_profile(parser_config).preset
+
+
+def parser_profile(parser_config: dict) -> ParserProfile:
+    for known, profile in _EXECUTABLE_PARSER_CONFIGS:
+        if parser_config == known:
+            return profile
     raise ValueError("unknown parser profile")
 
 
@@ -261,6 +297,20 @@ def public_descriptor(chunking_config: dict) -> dict[str, str]:
             "profile": SEMANTIC_CHUNKING_CONFIG["profile"],
         }
     raise ValueError("unknown chunking profile")
+
+
+_EXECUTABLE_PARSER_CONFIGS = (
+    (DOCLING_TEXT_PARSER_CONFIG_V1, ParserProfile.DOCLING_TEXT_LOCAL_V1),
+    (
+        DOCLING_MULTIMODAL_PARSER_CONFIG_V2,
+        ParserProfile.DOCLING_MULTIMODAL_LOCAL_V2,
+    ),
+    (DOCLING_TEXT_PARSER_CONFIG, ParserProfile.DOCLING_TEXT_LOCAL_V2),
+    (
+        DOCLING_MULTIMODAL_PARSER_CONFIG,
+        ParserProfile.DOCLING_MULTIMODAL_LOCAL_V3,
+    ),
+)
 
 
 def profile_fingerprint(

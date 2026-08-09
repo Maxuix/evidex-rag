@@ -5717,6 +5717,16 @@
             "type": "string",
             "title": "Phase"
           },
+          "progress": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IndexingProgressResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "attempt": {
             "type": "integer",
             "title": "Attempt"
@@ -5812,6 +5822,7 @@
           "index_revision_id",
           "status",
           "phase",
+          "progress",
           "attempt",
           "build_status",
           "serving_status",
@@ -5824,6 +5835,95 @@
           "updated_at"
         ],
         "title": "IndexingJobResponse"
+      },
+      "IndexingProgressResponse": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "pdf_parsing_progress_v1",
+            "title": "Schema Version"
+          },
+          "stage": {
+            "type": "string",
+            "title": "Stage"
+          },
+          "total_pages": {
+            "type": "integer",
+            "title": "Total Pages"
+          },
+          "completed_pages": {
+            "type": "integer",
+            "title": "Completed Pages"
+          },
+          "segment_number": {
+            "type": "integer",
+            "title": "Segment Number"
+          },
+          "segment_count": {
+            "type": "integer",
+            "title": "Segment Count"
+          },
+          "page_from": {
+            "type": "integer",
+            "title": "Page From"
+          },
+          "page_to": {
+            "type": "integer",
+            "title": "Page To"
+          },
+          "stage_pages": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Stage Pages"
+          },
+          "ocr_pages": {
+            "type": "integer",
+            "title": "Ocr Pages"
+          },
+          "ocr_regions": {
+            "type": "integer",
+            "title": "Ocr Regions"
+          },
+          "table_candidates": {
+            "type": "integer",
+            "title": "Table Candidates"
+          },
+          "elapsed_ms": {
+            "type": "integer",
+            "title": "Elapsed Ms"
+          },
+          "child_peak_rss_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Child Peak Rss Bytes"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "schema_version",
+          "stage",
+          "total_pages",
+          "completed_pages",
+          "segment_number",
+          "segment_count",
+          "page_from",
+          "page_to",
+          "stage_pages",
+          "ocr_pages",
+          "ocr_regions",
+          "table_candidates",
+          "elapsed_ms"
+        ],
+        "title": "IndexingProgressResponse"
       },
       "InsufficiencyPolicy": {
         "type": "string",
@@ -6095,7 +6195,9 @@
             "type": "string",
             "enum": [
               "docling_text_local_v1",
-              "docling_multimodal_local_v2"
+              "docling_multimodal_local_v2",
+              "docling_text_local_v2",
+              "docling_multimodal_local_v3"
             ],
             "title": "Profile"
           }

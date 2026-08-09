@@ -572,6 +572,26 @@ textarea:hover {
   accent-color: var(--forest);
 }
 
+.job-progress {
+  margin-top: 14px;
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+
+.job-progress-heading,
+.job-progress-stages {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.job-progress-stages {
+  justify-content: flex-start;
+  margin-top: 10px;
+}
+
 .upload-items {
   display: grid;
   gap: 8px;

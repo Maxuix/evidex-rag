@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
-from rag_kb.domain import ParserSource, ParsingPreset
+from rag_kb.domain import ParserProfile, ParserProgress, ParserSource
 
 if TYPE_CHECKING:
     from docling_core.types.doc import DoclingDocument
@@ -27,11 +28,23 @@ class DocumentParseResult:
             raise ValueError("parse result surface metadata is invalid")
 
 
+@dataclass(frozen=True, slots=True)
+class DocumentParseContinuation:
+    progress: ParserProgress
+
+
+ParserProgressHandler = Callable[[ParserProgress], Awaitable[None]]
+
+
 @runtime_checkable
 class DocumentParser(Protocol):
     async def parse(
         self,
         source: ParserSource,
         *,
-        preset: ParsingPreset,
-    ) -> DocumentParseResult: ...
+        profile: ParserProfile,
+        checkpoint_key: str,
+        on_progress: ParserProgressHandler | None = None,
+    ) -> DocumentParseResult | DocumentParseContinuation: ...
+
+    def discard_checkpoint(self, checkpoint_key: str) -> None: ...

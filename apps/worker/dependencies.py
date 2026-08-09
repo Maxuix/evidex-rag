@@ -197,6 +197,7 @@ def build_worker_dependencies(
         artifact_manifest_path=(
             resolved_settings.parser.docling_artifact_manifest_path
         ),
+        checkpoint_root=resolved_settings.file_store.parser_temp_path,
     )
     embedding_space = (
         embedding_space_definition(embedding_settings)

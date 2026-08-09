@@ -606,37 +606,77 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
         assert retry is not None
         self.assertEqual((retry.claimed_by, retry.attempt), ("worker-b", 2))
 
-    async def test_claim_prioritizes_smaller_ready_source_files(self) -> None:
+    async def test_segment_yield_is_fair_and_does_not_spend_retry_attempts(
+        self,
+    ) -> None:
         kb = await self._create_kb()
-        larger = await self._upload(
-            kb.id,
-            "large.txt",
-            "text/plain",
-            b"large source" * 100,
-        )
-        smaller = await self._upload(
-            kb.id,
-            "small.txt",
-            "text/plain",
-            b"small",
-        )
+        first = await self._upload(kb.id, "large.txt", "text/plain", b"first")
+        current = [datetime.now(UTC)]
         scheduler = self._scheduler_for(
             self._pipeline(_Provider()),
             worker_id="worker-a",
+            clock=lambda: current[0],
         )
 
-        lease = await scheduler.claim_once()
+        first_lease = await scheduler.claim_once()
+        self.assertIsNotNone(first_lease)
+        assert first_lease is not None
+        await execute_in_transaction(
+            self.factory,
+            lambda uow: uow.indexing.prepare(_command(first)),
+            purpose=UnitOfWorkPurpose.INDEXING,
+        )
+        arrived_during_segment = await self._upload(
+            kb.id,
+            "small.txt",
+            "text/plain",
+            b"second",
+        )
+        yielded = await execute_in_transaction(
+            self.factory,
+            lambda uow: uow.indexing.yield_continuation(
+                _command(first),
+                {
+                    "schema_version": "pdf_parsing_progress_v1",
+                    "stage": "segment_checkpointed",
+                    "total_pages": 40,
+                    "completed_pages": 20,
+                    "segment_number": 2,
+                    "segment_count": 2,
+                    "page_from": 21,
+                    "page_to": 40,
+                },
+            ),
+            purpose=UnitOfWorkPurpose.INDEXING,
+        )
+        self.assertTrue(yielded)
 
-        self.assertIsNotNone(lease)
-        assert lease is not None
-        self.assertEqual(
-            lease.indexed_document_version_id,
-            smaller.indexed_document_version_id,
+        current[0] += timedelta(seconds=2)
+        fresh_lease = await scheduler.claim_once()
+        self.assertIsNotNone(fresh_lease)
+        assert fresh_lease is not None
+        self.assertEqual(fresh_lease.job_id, arrived_during_segment.job_id)
+        self.assertEqual(fresh_lease.attempt, 1)
+        await execute_in_transaction(
+            self.factory,
+            lambda uow: uow.indexing.fail_owned(
+                fresh_lease,
+                observed_at=current[0],
+                error_code=ErrorCode.INDEX_PERSISTENCE_FAILED.value,
+                error_detail={"operation": "test_cleanup"},
+            ),
+            purpose=UnitOfWorkPurpose.RECONCILIATION,
         )
-        self.assertNotEqual(
-            lease.indexed_document_version_id,
-            larger.indexed_document_version_id,
-        )
+
+        current[0] += timedelta(seconds=1)
+        resumed = await scheduler.claim_once()
+        self.assertIsNotNone(resumed)
+        assert resumed is not None
+        self.assertEqual(resumed.job_id, first.job_id)
+        self.assertEqual(resumed.attempt, 1)
+        state = await self._job_claim_state(first.job_id)
+        self.assertEqual(state["continuation_count"], 1)
+        self.assertFalse(state["continuation_pending"])
 
     async def test_stale_reconciliation_requeues_then_exhausts(self) -> None:
         kb = await self._create_kb()
@@ -1317,7 +1357,8 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
             return await connection.fetchrow(
                 """
                 SELECT status::text, attempt, claimed_by, claimed_at,
-                       heartbeat_at, next_attempt_at, error_code
+                       heartbeat_at, next_attempt_at, error_code,
+                       continuation_pending, continuation_count
                   FROM indexing_job
                  WHERE id = $1
                 """,
@@ -1378,8 +1419,8 @@ class _MarkdownParser:
     def __init__(self) -> None:
         self._converter = DocumentConverter(allowed_formats=[InputFormat.MD])
 
-    async def parse(self, source, *, preset):
-        del preset
+    async def parse(self, source, *, profile, checkpoint_key, on_progress=None):
+        del profile, checkpoint_key, on_progress
         document = await asyncio.to_thread(self._convert, source)
         return DocumentParseResult(document)
 
