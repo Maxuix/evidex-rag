@@ -597,8 +597,13 @@ function ProfileForm({
                 type="checkbox"
                 defaultChecked={embeddingParameters?.shared_text_image_space_confirmed ?? false}
               />
-              我确认该模型的文档文本、查询文本和图片输出属于同一语义空间
+              可用于文本 Embedding
             </label>
+          ) : null}
+          {kind === "multimodal_embedding" ? (
+            <small className="model-catalog-note">
+              勾选后，这个多模态模型会同时处理文档文字和图片，并使用同一个向量空间。
+            </small>
           ) : null}
           <small className="model-catalog-note">
             {knownDimensions.length
