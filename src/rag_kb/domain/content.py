@@ -80,6 +80,7 @@ class KnowledgeBase:
     updated_at: datetime
     parser_config: dict[str, Any] = field(default_factory=dict)
     embedding: KnowledgeBaseEmbeddingSummary | None = None
+    deleted_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,6 +179,7 @@ class DocumentChunk:
     representations: tuple[str, ...]
     asset: DocumentChunkAsset | None = None
     related_visuals: tuple[DocumentChunkRelation, ...] = ()
+    excluded_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)

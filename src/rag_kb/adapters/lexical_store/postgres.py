@@ -68,7 +68,8 @@ class PgLexicalStore:
                         " AND revision.workspace_id = kb.workspace_id "
                         " AND revision.status = 'active' "
                         "WHERE kb.workspace_id = :workspace_id "
-                        " AND kb.id = :kb_id"
+                        " AND kb.id = :kb_id "
+                        " AND kb.deleted_at IS NULL"
                     ),
                     {
                         "workspace_id": plan.workspace_id,
@@ -225,10 +226,15 @@ class PgLexicalStore:
                        32
                      ) AS lexical_score
               FROM index_chunk_lexical lexical
+              JOIN index_chunk admitted_chunk
+                ON admitted_chunk.id = lexical.index_chunk_id
+                AND admitted_chunk.workspace_id = lexical.workspace_id
+                AND admitted_chunk.kb_id = lexical.kb_id
               WHERE lexical.workspace_id = :workspace_id
                 AND lexical.kb_id = :kb_id
                 AND lexical.indexed_document_version_id IN :target_ids
                 AND lexical.analyzer_version = :analyzer_version
+                AND admitted_chunk.excluded_at IS NULL
                 AND lexical.lexical_tsv @@ to_tsquery('simple', :tsquery)
               ORDER BY lexical_score DESC, lexical.index_chunk_id
               LIMIT :candidate_count
@@ -292,6 +298,7 @@ class PgLexicalStore:
                 AND target.build_status = 'ready'
                 AND target.serving_status = 'serving'
                 AND doc.deleted_at IS NULL
+                AND chunk.excluded_at IS NULL
                 AND version.source_status = 'available'
               ORDER BY chunk.id, cosine_distance,
                        CASE vector.representation_kind

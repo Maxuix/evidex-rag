@@ -10,7 +10,30 @@ export interface Page<T> {
 export interface KnowledgeBase {
   id: UUID;
   name: string;
+  source_change_seq: number;
   active_index_revision_id: UUID;
+  embedding_space_id: UUID;
+  embedding: {
+    strategy: "text_only" | "dual_space" | "unified_multimodal";
+    text: {
+      embedding_space_id: UUID;
+      profile_revision_id: UUID | null;
+      dimension: number;
+    };
+    cross_modal: {
+      embedding_space_id: UUID;
+      profile_revision_id: UUID | null;
+      dimension: number;
+    } | null;
+  };
+  parsing: {
+    preset: ParsingPreset;
+    profile: "docling_text_local_v1" | "docling_multimodal_local_v2";
+  };
+  chunking: {
+    preset: ChunkingPreset;
+    profile: "structural_by_title_token_v4" | "semantic_breakpoint_v3";
+  };
   retrieval_defaults: {
     strategy: "exact_vector";
     top_k: number;
@@ -20,8 +43,177 @@ export interface KnowledgeBase {
     answer_style: "concise" | "summary";
     insufficiency_policy: "refuse" | "partial_answer";
   };
+  provisioned_at: IsoDate;
   created_at: IsoDate;
   updated_at: IsoDate;
+}
+
+export type ParsingPreset = "text_local_v1" | "multimodal_local_v2";
+export type ChunkingPreset = "structural_balanced_v2" | "semantic_balanced_v1";
+
+export type KnowledgeBaseEmbeddingSelection =
+  | {
+    strategy: "text_only";
+    text_profile_revision_id?: UUID | null;
+  }
+  | {
+    strategy: "dual_space";
+    text_profile_revision_id?: UUID | null;
+    multimodal_profile_revision_id?: UUID | null;
+  }
+  | {
+    strategy: "unified_multimodal";
+    profile_revision_id?: UUID | null;
+  };
+
+export interface DocumentVersion {
+  id: UUID;
+  version_number: number;
+  source_status: "available" | "unavailable" | "deleted";
+  checksum_sha256: string;
+  original_filename: string;
+  media_type: string;
+  size_bytes: number;
+  created_at: IsoDate;
+}
+
+export interface DocumentRecord {
+  id: UUID;
+  kb_id: UUID;
+  display_name: string;
+  current_version: DocumentVersion | null;
+  deleted_at: IsoDate | null;
+  created_at: IsoDate;
+  updated_at: IsoDate;
+}
+
+export interface DocumentIndexSummary {
+  indexed_document_version_id: UUID;
+  index_revision_id: UUID;
+  build_status: "queued" | "processing" | "ready" | "failed";
+  serving_status: "candidate" | "serving" | "retired";
+  unit_count: number | null;
+  asset_count: number | null;
+  representation_count: number | null;
+  composite_chunk_count: number | null;
+  visual_unit_count: number | null;
+  relation_count: number | null;
+  text_representation_count: number | null;
+  native_image_representation_count: number | null;
+  table_representation_count: number | null;
+}
+
+export interface DocumentDetail extends DocumentRecord {
+  index: DocumentIndexSummary | null;
+}
+
+export interface DocumentChunkAsset {
+  id: UUID;
+  media_type: string;
+  checksum_sha256: string;
+  content_url: string;
+  width: number | null;
+  height: number | null;
+}
+
+export interface DocumentChunkRelation {
+  visual_unit_id: UUID;
+  asset: DocumentChunkAsset;
+  relation_type: string;
+  confidence_micros: number;
+  provenance: string;
+  figure_label: string | null;
+}
+
+export interface DocumentChunk {
+  id: UUID;
+  ordinal: number;
+  modality: "text" | "image" | "table";
+  content: string;
+  token_count: number;
+  source_location: JsonMap;
+  hierarchy: JsonMap;
+  source_metadata: JsonMap;
+  evidence_group_key: string | null;
+  representations: string[];
+  asset: DocumentChunkAsset | null;
+  related_visuals: DocumentChunkRelation[];
+  excluded_at: IsoDate | null;
+}
+
+export interface DocumentChunkInspection {
+  document_id: UUID;
+  document_version_id: UUID;
+  indexed_document_version_id: UUID;
+  index_revision_id: UUID;
+  total_chunks: number;
+  items: DocumentChunk[];
+  next_cursor: string | null;
+}
+
+export interface DocumentUpload {
+  document: DocumentRecord;
+  document_version_id: UUID;
+  source_change_id: UUID;
+  source_change_seq: number;
+  indexed_document_version_id: UUID;
+  index_revision_id: UUID;
+  job_id: UUID;
+  job_status: "queued";
+}
+
+export interface IndexingJob {
+  job_id: UUID;
+  kb_id: UUID;
+  document_id: UUID;
+  document_version_id: UUID;
+  indexed_document_version_id: UUID;
+  index_revision_id: UUID;
+  status: "queued" | "running" | "completed" | "failed" | "cancelled";
+  phase: string;
+  attempt: number;
+  build_status: "queued" | "processing" | "ready" | "failed";
+  serving_status: "candidate" | "serving" | "retired";
+  claimed_at: IsoDate | null;
+  heartbeat_at: IsoDate | null;
+  next_attempt_at: IsoDate | null;
+  error: { code: string; detail: JsonMap } | null;
+  can_retry: boolean;
+  created_at: IsoDate;
+  updated_at: IsoDate;
+}
+
+export interface RetrievalEvidence {
+  rank: number;
+  index_chunk_id: UUID;
+  document_id: UUID;
+  document_version_id: UUID;
+  ordinal: number;
+  text: string;
+  source_location: JsonMap;
+  hierarchy: JsonMap;
+  score: number;
+  score_kind: "cosine_similarity" | "hybrid_rerank" | "reciprocal_rank_fusion";
+  vector_similarity: number | null;
+  lexical_score: number;
+  modality: "text" | "image" | "table";
+  asset: DocumentChunkAsset | null;
+  matched_representations: string[];
+}
+
+export interface RetrievalEvidencePack {
+  knowledge_base_id: UUID;
+  index_revision_id: UUID;
+  strategy: "exact_vector" | "hybrid";
+  evidence: RetrievalEvidence[];
+  debug: {
+    result_count: number;
+    text_candidate_count: number | null;
+    lexical_candidate_count: number | null;
+    cross_modal_candidate_count: number | null;
+    hydrated_relation_count: number | null;
+    evidence_group_count: number | null;
+  } | null;
 }
 
 export interface ChatSession {
@@ -419,4 +611,10 @@ export interface ApiProblem {
   title?: string;
   detail?: unknown;
   retryable?: boolean;
+  trace_id?: string;
+  errors?: Array<{
+    location: Array<string | number>;
+    message: string;
+    error_type: string;
+  }> | null;
 }

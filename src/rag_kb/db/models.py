@@ -357,7 +357,14 @@ class ModelSelection(Base):
 class KnowledgeBase(Base):
     __tablename__ = "knowledge_base"
     __table_args__ = (
-        UniqueConstraint("workspace_id", "name", name="uq_knowledge_base_workspace_name"),
+        Index(
+            "uq_knowledge_base_workspace_active_name",
+            "workspace_id",
+            "name",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index("ix_knowledge_base_workspace_deleted_at", "workspace_id", "deleted_at"),
         UniqueConstraint("workspace_id", "id", name="uq_knowledge_base_workspace_id"),
         ForeignKeyConstraint(
             ["id", "active_index_revision_id"],
@@ -396,6 +403,9 @@ class KnowledgeBase(Base):
             "'{\"answer_style\": \"concise\", "
             "\"insufficiency_policy\": \"refuse\"}'::jsonb"
         ),
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
     created_at: Mapped[datetime] = created_timestamp()
     updated_at: Mapped[datetime] = updated_timestamp()
@@ -1031,6 +1041,9 @@ class IndexChunk(Base):
     )
     source_metadata: Mapped[dict[str, Any]] = mapped_column(
         JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    excluded_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
     created_at: Mapped[datetime] = created_timestamp()
 

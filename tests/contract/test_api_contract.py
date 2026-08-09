@@ -861,10 +861,12 @@ class CommonContractTests(unittest.TestCase):
             {
                 "/api/v1/documents/{document_id}",
                 "/api/v1/documents/{document_id}/chunks",
+                "/api/v1/documents/{document_id}/chunks/{chunk_id}",
                 "/api/v1/documents/{document_id}/versions",
                 "/api/v1/knowledge-bases",
                 "/api/v1/knowledge-bases/{kb_id}",
                 "/api/v1/knowledge-bases/{kb_id}/documents",
+                "/api/v1/knowledge-bases/{kb_id}/indexing-jobs",
                 "/api/v1/indexing-jobs/{job_id}",
                 "/api/v1/indexing-jobs/{job_id}/retry",
                 "/api/v1/index-assets/{asset_id}/content",
@@ -1136,6 +1138,16 @@ class _FakeKnowledgeBaseService:
         )
         return self.value
 
+    async def delete(self, context, key, kb_id):
+        del context, key
+        if kb_id != self.value.id:
+            raise ResourceNotFoundError("internal detail")
+        self.value = dataclass_replace(
+            self.value,
+            deleted_at=datetime(2026, 8, 9, tzinfo=UTC),
+        )
+        return self.value
+
 
 class _FakeDocumentService:
     def __init__(self) -> None:
@@ -1213,6 +1225,15 @@ class _FakeDocumentService:
             index_revision_id=UUID("01900000-0000-7000-8000-000000000012"),
         )
 
+    async def exclude_chunk(self, context, *, document_id, chunk_id):
+        del context
+        if (
+            document_id != self.value.id
+            or chunk_id != UUID("01900000-0000-7000-8000-000000000031")
+        ):
+            raise ResourceNotFoundError("internal chunk detail")
+        return datetime(2026, 8, 9, tzinfo=UTC)
+
 
 class _FakeSourceFileService:
     def __init__(self, documents: _FakeDocumentService) -> None:
@@ -1280,6 +1301,12 @@ class _FakeIndexingJobService:
         if job_id != self.value.job_id:
             raise ResourceNotFoundError("internal indexing detail")
         return self.value
+
+    async def list(self, context, *, kb_id, limit, after):
+        del context, limit, after
+        if kb_id != self.value.kb_id:
+            raise ResourceNotFoundError("internal knowledge base detail")
+        return Page(items=(self.value,))
 
     async def retry(self, context, key, job_id):
         del context, key
@@ -1582,6 +1609,27 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(conflict.json()["code"], "IDEMPOTENCY_KEY_REUSED")
         self.assertNotIn("internal hash", conflict.body.decode())
 
+    async def test_knowledge_base_delete_requires_idempotency_and_returns_tombstone(
+        self,
+    ) -> None:
+        value = self.dependencies.knowledge_base_service.value
+        missing_key = await request(
+            self.app,
+            "DELETE",
+            f"{API_PREFIX}/knowledge-bases/{value.id}",
+        )
+        self.assertEqual(missing_key.status, 422)
+        deleted = await request(
+            self.app,
+            "DELETE",
+            f"{API_PREFIX}/knowledge-bases/{value.id}",
+            headers={"idempotency-key": str(uuid4())},
+        )
+        self.assertEqual(deleted.status, 200)
+        self.assertEqual(deleted.json()["id"], str(value.id))
+        self.assertEqual(deleted.json()["name"], value.name)
+        self.assertIsNotNone(deleted.json()["deleted_at"])
+
     async def test_document_upload_version_read_and_delete_are_published(self) -> None:
         value = _document_value()
         loaded = await request(
@@ -1616,7 +1664,23 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(chunks.status, 200)
         self.assertEqual(chunks.json()["total_chunks"], 1)
         self.assertEqual(chunks.json()["items"][0]["ordinal"], 0)
+        self.assertIsNone(chunks.json()["items"][0]["excluded_at"])
         self.assertNotIn("storage_uri", chunks.body.decode())
+
+        excluded = await request(
+            self.app,
+            "DELETE",
+            (
+                f"{API_PREFIX}/documents/{value.id}/chunks/"
+                "01900000-0000-7000-8000-000000000031"
+            ),
+        )
+        self.assertEqual(excluded.status, 200)
+        self.assertEqual(
+            excluded.json()["chunk_id"],
+            "01900000-0000-7000-8000-000000000031",
+        )
+        self.assertIsNotNone(excluded.json()["excluded_at"])
 
         deleted = await request(
             self.app,
@@ -1801,6 +1865,14 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_indexing_status_and_explicit_retry_are_published(self) -> None:
         service = self.dependencies.indexing_job_service
+        listed = await request(
+            self.app,
+            "GET",
+            f"{API_PREFIX}/knowledge-bases/{service.value.kb_id}/indexing-jobs",
+        )
+        self.assertEqual(listed.status, 200)
+        self.assertEqual(listed.json()["items"][0]["job_id"], str(service.value.job_id))
+
         status = await request(
             self.app,
             "GET",

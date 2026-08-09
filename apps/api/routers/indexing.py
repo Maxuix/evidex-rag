@@ -2,23 +2,62 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Annotated, Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, Query, Request, Response
 
+from apps.api.errors import ApiProblem
 from apps.api.idempotency import RequiredIdempotencyKey
 from apps.api.openapi import problem_responses
+from apps.api.pagination import decode_cursor, encode_cursor
 from apps.api.security import get_auth_context
 from rag_kb.auth import AuthContext
-from rag_kb.schemas import IndexingErrorResponse, IndexingJobResponse
+from rag_kb.schemas import (
+    CursorPayload,
+    ErrorCode,
+    IndexingErrorResponse,
+    IndexingJobPage,
+    IndexingJobResponse,
+)
 
 
-router = APIRouter(prefix="/indexing-jobs", tags=["indexing"])
+router = APIRouter(tags=["indexing"])
 
 
 @router.get(
-    "/{job_id}",
+    "/knowledge-bases/{kb_id}/indexing-jobs",
+    response_model=IndexingJobPage,
+    responses=problem_responses(400, 404, 422),
+)
+async def list_indexing_jobs(
+    request: Request,
+    kb_id: UUID,
+    context: Annotated[AuthContext, Depends(get_auth_context)],
+    limit: Annotated[int, Query(ge=1, le=100)] = 100,
+    cursor: Annotated[str | None, Query(min_length=1, max_length=2048)] = None,
+) -> IndexingJobPage:
+    page = await request.app.state.dependencies.indexing_job_service.list(
+        context,
+        kb_id=kb_id,
+        limit=limit,
+        after=_after(cursor),
+    )
+    return IndexingJobPage(
+        items=tuple(_response(item) for item in page.items),
+        next_cursor=(
+            encode_cursor(
+                CursorPayload(sort="-created_at", values=page.next_values)
+            )
+            if page.next_values is not None
+            else None
+        ),
+    )
+
+
+@router.get(
+    "/indexing-jobs/{job_id}",
     response_model=IndexingJobResponse,
     responses=problem_responses(404, 422),
 )
@@ -34,7 +73,7 @@ async def get_indexing_job(
 
 
 @router.post(
-    "/{job_id}/retry",
+    "/indexing-jobs/{job_id}/retry",
     response_model=IndexingJobResponse,
     status_code=202,
     responses=problem_responses(404, 409, 422),
@@ -81,4 +120,27 @@ def _response(value: Any) -> IndexingJobResponse:
         can_retry=value.can_retry,
         created_at=value.created_at,
         updated_at=value.updated_at,
+    )
+
+
+def _after(cursor: str | None) -> tuple[str, ...] | None:
+    if cursor is None:
+        return None
+    decoded = decode_cursor(cursor)
+    if decoded.sort != "-created_at" or len(decoded.values) != 2:
+        _invalid_cursor("The pagination cursor does not match indexing-job ordering.")
+    try:
+        datetime.fromisoformat(decoded.values[0])
+        UUID(decoded.values[1])
+    except ValueError:
+        _invalid_cursor("The indexing-job cursor has an invalid position.")
+    return decoded.values
+
+
+def _invalid_cursor(detail: str) -> None:
+    raise ApiProblem(
+        code=ErrorCode.INVALID_CURSOR,
+        status=400,
+        title="Invalid cursor",
+        detail=detail,
     )

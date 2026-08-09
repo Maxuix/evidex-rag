@@ -43,6 +43,7 @@ import {
   storeSidebarCollapsed,
 } from "./storage";
 import { ModelSettingsDialog } from "./ModelSettingsDialog";
+import { KnowledgeBaseManagementPage } from "./KnowledgeBaseManagementPage";
 
 interface PendingRun {
   payload: ChatRunCreate;
@@ -230,6 +231,7 @@ function KnowledgeChat({
 
   const [sidebarCollapsed, setSidebarCollapsed] = useState(readSidebarCollapsed);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [activePage, setActivePage] = useState<"chat" | "knowledge-base">("chat");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const messageGeneration = useRef(0);
 
@@ -568,6 +570,7 @@ function KnowledgeChat({
   };
 
   const beginNewConversation = () => {
+    setActivePage("chat");
     setSelectedSessionId(null);
     setMessages([]);
     setCurrentRun(null);
@@ -750,6 +753,33 @@ function KnowledgeChat({
           </button>
         </div>
 
+        <nav className="sidebar-primary-nav" aria-label="主要页面">
+          <button
+            className={activePage === "chat" ? "active" : ""}
+            type="button"
+            title="对话"
+            onClick={() => {
+              setActivePage("chat");
+              setMobileSidebarOpen(false);
+            }}
+          >
+            <span aria-hidden="true">◌</span>
+            <span>对话</span>
+          </button>
+          <button
+            className={activePage === "knowledge-base" ? "active" : ""}
+            type="button"
+            title="知识库管理"
+            onClick={() => {
+              setActivePage("knowledge-base");
+              setMobileSidebarOpen(false);
+            }}
+          >
+            <span aria-hidden="true">▤</span>
+            <span>知识库管理</span>
+          </button>
+        </nav>
+
         <label className="knowledge-select">
           <span>知识库</span>
           <select
@@ -773,17 +803,19 @@ function KnowledgeChat({
           </button>
         ) : null}
 
-        <button
-          className="new-chat-button"
-          type="button"
-          disabled={!selectedKnowledgeBase}
-          onClick={beginNewConversation}
-        >
-          <span aria-hidden="true">＋</span>
-          <span>新对话</span>
-        </button>
+        {activePage === "chat" ? (
+          <button
+            className="new-chat-button"
+            type="button"
+            disabled={!selectedKnowledgeBase}
+            onClick={beginNewConversation}
+          >
+            <span aria-hidden="true">＋</span>
+            <span>新对话</span>
+          </button>
+        ) : null}
 
-        <nav className="session-navigation" aria-label="会话历史">
+        {activePage === "chat" ? <nav className="session-navigation" aria-label="会话历史">
           {sessionsLoading && !sessions.length ? (
             <div className="sidebar-loading">正在加载会话…</div>
           ) : null}
@@ -830,14 +862,41 @@ function KnowledgeChat({
               加载更早会话
             </button>
           ) : null}
-        </nav>
+        </nav> : (
+          <div className="sidebar-management-note">
+            <strong>知识库工作区</strong>
+            <p>创建、导入、查看解析结果并测试检索。</p>
+          </div>
+        )}
         <div className="local-boundary">
           <span className="status-dot" aria-hidden="true" />
           <span>本地试用</span>
         </div>
       </aside>
 
-      <main className="chat-main">
+      {activePage === "knowledge-base" ? (
+        <KnowledgeBaseManagementPage
+          client={client}
+          knowledgeBases={knowledgeBases}
+          selectedKnowledgeBaseId={selectedKnowledgeBaseId}
+          modelSettings={modelSettings}
+          hybridEnabled={hybridEnabled}
+          onKnowledgeBaseCreated={(created) => {
+            setKnowledgeBases((current) => (
+              [...current.filter((item) => item.id !== created.id), created]
+                .sort((left, right) => left.name.localeCompare(right.name, "zh-CN"))
+            ));
+            setSelectedKnowledgeBaseId(created.id);
+          }}
+          onKnowledgeBaseDeleted={(id) => {
+            const remaining = knowledgeBases.filter((item) => item.id !== id);
+            setKnowledgeBases(remaining);
+            setSelectedKnowledgeBaseId(remaining[0]?.id ?? "");
+          }}
+          onOpenModelSettings={() => setSettingsOpen(true)}
+          onOpenMobileSidebar={() => setMobileSidebarOpen(true)}
+        />
+      ) : <main className="chat-main">
         <header className="chat-header">
           <button
             className="icon-button mobile-menu"
@@ -868,7 +927,7 @@ function KnowledgeChat({
             />
           ) : null}
           {!knowledgeBasesLoading && !knowledgeBases.length ? (
-            <EmptyKnowledgeBase />
+            <EmptyKnowledgeBase onManage={() => setActivePage("knowledge-base")} />
           ) : messagesLoading && !messages.length && selectedSessionId ? (
             <div className="center-state">
               <span className="loading-ring" aria-hidden="true" />
@@ -1086,9 +1145,9 @@ function KnowledgeChat({
             回答仅基于当前知识库内容，请核对重要信息。
           </p>
         </div>
-      </main>
+      </main>}
 
-      <button
+      {activePage === "chat" ? <button
         className="settings-gear"
         type="button"
         aria-label="打开模型设置"
@@ -1096,7 +1155,7 @@ function KnowledgeChat({
         onClick={() => setSettingsOpen(true)}
       >
         ⚙
-      </button>
+      </button> : null}
 
       {settingsOpen ? (
         <ModelSettingsDialog
@@ -1842,12 +1901,13 @@ function Welcome({
   );
 }
 
-function EmptyKnowledgeBase() {
+function EmptyKnowledgeBase({ onManage }: { onManage: () => void }) {
   return (
     <section className="welcome">
       <div className="welcome-mark">K</div>
       <h2>还没有可用的知识库</h2>
-      <p>请先在本地诊断界面创建知识库并添加文档。</p>
+      <p>创建知识库并添加文档后，就可以开始基于资料提问。</p>
+      <button className="primary-button" type="button" onClick={onManage}>创建知识库</button>
     </section>
   );
 }

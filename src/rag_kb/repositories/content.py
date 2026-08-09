@@ -37,7 +37,9 @@ class KnowledgeBaseRepository(Protocol):
         index_profile: IndexProfileDefinition,
     ) -> KnowledgeBase: ...
 
-    async def get(self, kb_id: UUID) -> KnowledgeBase | None: ...
+    async def get(
+        self, kb_id: UUID, *, include_deleted: bool = False
+    ) -> KnowledgeBase | None: ...
 
     async def list(
         self,
@@ -55,6 +57,8 @@ class KnowledgeBaseRepository(Protocol):
         retrieval_defaults: dict[str, Any] | None,
         answer_policy_defaults: dict[str, Any] | None,
     ) -> KnowledgeBase | None: ...
+
+    async def soft_delete(self, kb_id: UUID) -> KnowledgeBase | None: ...
 
 
 @runtime_checkable
@@ -97,6 +101,10 @@ class DocumentRepository(Protocol):
     ) -> DocumentMutationResult: ...
 
     async def soft_delete(self, document_id: UUID) -> DocumentMutationResult | None: ...
+
+    async def exclude_chunk(
+        self, *, document_id: UUID, chunk_id: UUID
+    ) -> datetime | None: ...
 
 
 @runtime_checkable

@@ -265,6 +265,85 @@ class ContentLifecycleTests(unittest.IsolatedAsyncioTestCase):
             await connection.close()
         self.assertEqual([row["source_change_seq"] for row in sequences], [1, 2])
 
+    async def test_knowledge_base_delete_retires_content_and_allows_name_reuse(
+        self,
+    ) -> None:
+        kb = await self._create_kb()
+        upload_key = uuid4()
+        reserved = await self.documents.reserve_version(
+            self.context,
+            upload_key,
+            kb_id=kb.id,
+            document_id=None,
+            display_name="guide.txt",
+            source=_source("8"),
+        )
+        activated = await self.documents.activate_reserved_version(
+            self.context,
+            upload_key,
+            document_id=reserved.document.id,
+        )
+
+        delete_key = uuid4()
+        deleted = await self.knowledge_bases.delete(
+            self.context,
+            delete_key,
+            kb.id,
+        )
+        replay = await self.knowledge_bases.delete(
+            self.context,
+            delete_key,
+            kb.id,
+        )
+        self.assertEqual(replay.id, deleted.id)
+        self.assertIsNotNone(deleted.deleted_at)
+        with self.assertRaises(ResourceNotFoundError):
+            await self.knowledge_bases.get(self.context, kb.id)
+        with self.assertRaises(ResourceNotFoundError):
+            await self.documents.get(self.context, activated.document.id)
+
+        recreated = await self.knowledge_bases.create(
+            self.context,
+            uuid4(),
+            name="lifecycle-kb",
+            retrieval_defaults={"strategy": "exact_vector", "top_k": 10},
+        )
+        self.assertNotEqual(recreated.id, kb.id)
+
+        connection = await asyncpg.connect(MIGRATION_DSN)
+        try:
+            state = await connection.fetchrow(
+                """
+                SELECT
+                    (SELECT deleted_at IS NOT NULL FROM knowledge_base WHERE id = $1)
+                        AS kb_deleted,
+                    (SELECT deleted_at IS NOT NULL FROM document WHERE id = $2)
+                        AS document_deleted,
+                    (SELECT source_status::text FROM document_version WHERE id = $3)
+                        AS source_status,
+                    (SELECT serving_status::text FROM indexed_document_version WHERE id = $4)
+                        AS serving_status,
+                    (SELECT status::text FROM indexing_job WHERE id = $5)
+                        AS job_status,
+                    (SELECT status::text FROM index_revision WHERE id = $6)
+                        AS revision_status,
+                    (SELECT count(*) FROM source_file_cleanup
+                     WHERE document_version_id = $3) AS cleanup_count
+                """,
+                kb.id,
+                activated.document.id,
+                activated.document_version_id,
+                activated.indexed_document_version_id,
+                activated.job_id,
+                kb.active_index_revision_id,
+            )
+        finally:
+            await connection.close()
+        self.assertEqual(
+            tuple(state),
+            (True, True, "deleted", "retired", "cancelled", "retired", 1),
+        )
+
     async def test_document_detail_reports_active_revision_manifest_counts(self) -> None:
         kb = await self._create_kb()
         key = uuid4()

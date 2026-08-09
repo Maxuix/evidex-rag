@@ -19,6 +19,7 @@ from rag_kb.schemas import (
     CursorPayload,
     ErrorCode,
     KnowledgeBaseCreate,
+    KnowledgeBaseDeleteResponse,
     KnowledgeBaseChunkingResponse,
     KnowledgeBaseAnswerPolicyDefaults,
     KnowledgeBasePage,
@@ -134,6 +135,30 @@ async def update_knowledge_base(
         ),
     )
     return _response(updated)
+
+
+@router.delete(
+    "/knowledge-bases/{kb_id}",
+    response_model=KnowledgeBaseDeleteResponse,
+    responses=problem_responses(404, 409, 422),
+)
+async def delete_knowledge_base(
+    request: Request,
+    kb_id: UUID,
+    idempotency_key: RequiredIdempotencyKey,
+    context: Annotated[AuthContext, Depends(get_auth_context)],
+) -> KnowledgeBaseDeleteResponse:
+    deleted = await request.app.state.dependencies.knowledge_base_service.delete(
+        context,
+        idempotency_key,
+        kb_id,
+    )
+    assert deleted.deleted_at is not None
+    return KnowledgeBaseDeleteResponse(
+        id=deleted.id,
+        name=deleted.name,
+        deleted_at=deleted.deleted_at,
+    )
 
 
 def _after(cursor: str | None, sort: str) -> tuple[str, ...] | None:

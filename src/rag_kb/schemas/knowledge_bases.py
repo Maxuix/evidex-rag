@@ -167,6 +167,12 @@ class KnowledgeBaseResponse(PublicSchema):
     updated_at: datetime
 
 
+class KnowledgeBaseDeleteResponse(PublicSchema):
+    id: UUID
+    name: str
+    deleted_at: datetime
+
+
 class KnowledgeBasePage(PublicSchema):
     items: tuple[KnowledgeBaseResponse, ...]
     next_cursor: OpaqueCursor | None = None

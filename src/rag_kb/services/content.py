@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
@@ -34,6 +35,7 @@ from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, UnitOfWorkPurpose, execute
 
 
 CREATE_KB_ENDPOINT = "POST /api/v1/knowledge-bases"
+DELETE_KB_ENDPOINT = "DELETE /api/v1/knowledge-bases/{kb_id}"
 PATCH_KB_ENDPOINT = "PATCH /api/v1/knowledge-bases/{kb_id}"
 DELETE_DOCUMENT_ENDPOINT = "DELETE /api/v1/documents/{document_id}"
 CREATE_DOCUMENT_ENDPOINT = "POST /api/v1/knowledge-bases/{kb_id}/documents"
@@ -408,6 +410,48 @@ class KnowledgeBaseService:
 
         return await execute_in_transaction(self._unit_of_work, persist)
 
+    async def delete(
+        self,
+        context: AuthContext,
+        idempotency_key: UUID,
+        kb_id: UUID,
+    ) -> KnowledgeBase:
+        self._authorize(context)
+        scope = IdempotencyScope(
+            context.principal_id,
+            context.client_id,
+            DELETE_KB_ENDPOINT,
+            idempotency_key,
+        )
+        request_hash = canonical_request_hash({"kb_id": str(kb_id)})
+
+        async def persist(uow: UnitOfWork) -> KnowledgeBase:
+            _require_scope(uow, context)
+            await uow.content_mutations.lock(scope)
+            prior = await uow.content_mutations.get(scope)
+            if prior is not None:
+                _require_same_hash(prior.request_hash, request_hash)
+                assert prior.kb_id is not None
+                replay = await uow.knowledge_bases.get(
+                    prior.kb_id, include_deleted=True
+                )
+                if replay is None:
+                    raise ResourceNotFoundError("knowledge base was not found")
+                return replay
+            deleted = await uow.knowledge_bases.soft_delete(kb_id)
+            if deleted is None:
+                raise ResourceNotFoundError("knowledge base was not found")
+            await uow.content_mutations.add(
+                scope=scope,
+                request_hash=request_hash,
+                operation="knowledge_base.delete",
+                status="completed",
+                result=deleted,
+            )
+            return deleted
+
+        return await execute_in_transaction(self._unit_of_work, persist)
+
     def _authorize(self, context: AuthContext) -> None:
         self._access_policy.metadata_filter(context)
 
@@ -605,6 +649,27 @@ class DocumentService:
                 result=deleted,
             )
             return deleted
+
+        return await execute_in_transaction(self._unit_of_work, persist)
+
+    async def exclude_chunk(
+        self,
+        context: AuthContext,
+        *,
+        document_id: UUID,
+        chunk_id: UUID,
+    ) -> datetime:
+        self._authorize(context)
+
+        async def persist(uow: UnitOfWork) -> datetime:
+            _require_scope(uow, context)
+            excluded_at = await uow.documents.exclude_chunk(
+                document_id=document_id,
+                chunk_id=chunk_id,
+            )
+            if excluded_at is None:
+                raise ResourceNotFoundError("document chunk was not found")
+            return excluded_at
 
         return await execute_in_transaction(self._unit_of_work, persist)
 

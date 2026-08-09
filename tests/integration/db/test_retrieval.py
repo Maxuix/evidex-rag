@@ -28,6 +28,7 @@ from rag_kb.document_processing.lexical import (
 )
 from rag_kb.retrieval.service import RetrievalService
 from rag_kb.services.composite_evidence import CompositeEvidenceHydrationService
+from rag_kb.services.content import DocumentService
 from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWorkFactory
 
 
@@ -65,6 +66,10 @@ class ExactRetrievalDatabaseTests(unittest.IsolatedAsyncioTestCase):
         )
         self.hydrator = CompositeEvidenceHydrationService(
             SqlAlchemyUnitOfWorkFactory(self.database.sessions, WORKSPACE)
+        )
+        self.documents = DocumentService(
+            SqlAlchemyUnitOfWorkFactory(self.database.sessions, WORKSPACE),
+            self.policy,
         )
         self.service = RetrievalService(
             self.policy,
@@ -173,6 +178,51 @@ class ExactRetrievalDatabaseTests(unittest.IsolatedAsyncioTestCase):
             pack.debug.lexical_analyzer_version,
             LEXICAL_ANALYZER_VERSION,
         )
+
+    async def test_excluded_chunk_remains_manifest_complete_but_is_not_retrieved(
+        self,
+    ) -> None:
+        foundation = await self._foundation()
+        target = await self._target(
+            foundation,
+            chunk_id=UUID("01900000-0000-7000-8000-000000001120"),
+            vector=_axis_vector(0),
+        )
+        await self._lexical_target(foundation, target)
+        excluded_at = await self.documents.exclude_chunk(
+            self.context,
+            document_id=target.document_id,
+            chunk_id=target.chunk_id,
+        )
+        self.assertIsNotNone(excluded_at)
+
+        exact = await self.service.retrieve(
+            self.context,
+            RetrievalRequest(foundation.kb_id, "evidence", top_k=3),
+        )
+        hybrid_service = RetrievalService(
+            self.policy,
+            self.provider,
+            self.vector_store,
+            lexical_store=PgLexicalStore(self.database.sessions),
+            hybrid_enabled=True,
+        )
+        hybrid = await hybrid_service.retrieve(
+            self.context,
+            RetrievalRequest(
+                foundation.kb_id,
+                "evidence",
+                top_k=3,
+                strategy=RetrievalStrategy.HYBRID,
+                rerank=True,
+                include_debug=True,
+            ),
+        )
+
+        self.assertEqual(exact.evidence, ())
+        self.assertEqual(hybrid.evidence, ())
+        assert hybrid.debug is not None
+        self.assertEqual(hybrid.debug.lexical_manifest_target_count, 1)
 
     async def test_hybrid_fts_rejects_partial_target_backfill(self) -> None:
         foundation = await self._foundation()

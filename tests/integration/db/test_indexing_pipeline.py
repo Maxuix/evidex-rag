@@ -606,6 +606,38 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
         assert retry is not None
         self.assertEqual((retry.claimed_by, retry.attempt), ("worker-b", 2))
 
+    async def test_claim_prioritizes_smaller_ready_source_files(self) -> None:
+        kb = await self._create_kb()
+        larger = await self._upload(
+            kb.id,
+            "large.txt",
+            "text/plain",
+            b"large source" * 100,
+        )
+        smaller = await self._upload(
+            kb.id,
+            "small.txt",
+            "text/plain",
+            b"small",
+        )
+        scheduler = self._scheduler_for(
+            self._pipeline(_Provider()),
+            worker_id="worker-a",
+        )
+
+        lease = await scheduler.claim_once()
+
+        self.assertIsNotNone(lease)
+        assert lease is not None
+        self.assertEqual(
+            lease.indexed_document_version_id,
+            smaller.indexed_document_version_id,
+        )
+        self.assertNotEqual(
+            lease.indexed_document_version_id,
+            larger.indexed_document_version_id,
+        )
+
     async def test_stale_reconciliation_requeues_then_exhausts(self) -> None:
         kb = await self._create_kb()
         await self._upload(kb.id, "guide.txt", "text/plain", b"safe")

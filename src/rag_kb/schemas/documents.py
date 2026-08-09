@@ -81,6 +81,13 @@ class DocumentChunkResponse(PublicSchema):
     representations: tuple[str, ...]
     asset: DocumentChunkAssetResponse | None = None
     related_visuals: tuple[DocumentChunkRelationResponse, ...] = ()
+    excluded_at: datetime | None = None
+
+
+class DocumentChunkDeleteResponse(PublicSchema):
+    document_id: UUID
+    chunk_id: UUID
+    excluded_at: datetime
 
 
 class DocumentChunkInspectionResponse(PublicSchema):

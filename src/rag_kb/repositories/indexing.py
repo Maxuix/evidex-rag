@@ -22,6 +22,7 @@ from rag_kb.domain import (
     IndexingJobSnapshot,
     IndexingPhase,
     IndexingTarget,
+    Page,
     PromotionCommand,
     PromotionResult,
     RetiredIndexTargetAssets,
@@ -49,6 +50,14 @@ class IndexingRepository(Protocol):
     ) -> tuple[IndexChunkAssetRelationSnapshot, ...]: ...
 
     async def get_job(self, job_id: UUID) -> IndexingJobSnapshot | None: ...
+
+    async def list_jobs(
+        self,
+        *,
+        kb_id: UUID,
+        limit: int,
+        after: tuple[str, ...] | None,
+    ) -> Page[IndexingJobSnapshot]: ...
 
     async def retry_failed(
         self, job_id: UUID, *, observed_at: datetime

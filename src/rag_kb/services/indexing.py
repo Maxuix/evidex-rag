@@ -10,6 +10,7 @@ from rag_kb.domain import (
     IdempotencyKeyReusedError,
     IdempotencyScope,
     IndexingJobSnapshot,
+    Page,
     ResourceNotFoundError,
     canonical_request_hash,
 )
@@ -41,6 +42,32 @@ class IndexingJobService:
             if result is None:
                 raise ResourceNotFoundError("indexing job was not found")
             return result
+
+        return await execute_in_transaction(
+            self._unit_of_work,
+            load,
+            purpose=UnitOfWorkPurpose.REQUEST,
+        )
+
+    async def list(
+        self,
+        context: AuthContext,
+        *,
+        kb_id: UUID,
+        limit: int,
+        after: tuple[str, ...] | None,
+    ) -> Page[IndexingJobSnapshot]:
+        self._authorize(context)
+
+        async def load(uow: UnitOfWork) -> Page[IndexingJobSnapshot]:
+            _require_scope(uow, context)
+            if await uow.knowledge_bases.get(kb_id) is None:
+                raise ResourceNotFoundError("knowledge base was not found")
+            return await uow.indexing.list_jobs(
+                kb_id=kb_id,
+                limit=limit,
+                after=after,
+            )
 
         return await execute_in_transaction(
             self._unit_of_work,

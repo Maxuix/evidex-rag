@@ -69,6 +69,7 @@ class PgVectorStore:
             .where(
                 KnowledgeBase.workspace_id == plan.workspace_id,
                 KnowledgeBase.id == plan.knowledge_base_id,
+                KnowledgeBase.deleted_at.is_(None),
                 IndexRevisionEmbeddingSpace.role == space_role,
             )
             .limit(1)
@@ -118,6 +119,7 @@ class PgVectorStore:
             .where(
                 KnowledgeBase.workspace_id == plan.workspace_id,
                 KnowledgeBase.id == plan.knowledge_base_id,
+                KnowledgeBase.deleted_at.is_(None),
             )
             .order_by(IndexRevisionEmbeddingSpace.role)
         )
@@ -337,6 +339,7 @@ class PgVectorStore:
                 IndexedDocumentVersion.build_status == IndexBuildStatus.READY,
                 IndexedDocumentVersion.serving_status == IndexServingStatus.SERVING,
                 Document.deleted_at.is_(None),
+                IndexChunk.excluded_at.is_(None),
                 DocumentVersion.source_status == DocumentSourceStatus.AVAILABLE,
                 vector_record.embedding_space_id
                 == IndexRevisionEmbeddingSpace.embedding_space_id,
@@ -414,6 +417,7 @@ class PgVectorStore:
             .where(
                 KnowledgeBase.workspace_id == bindparam("workspace_id"),
                 KnowledgeBase.id == bindparam("knowledge_base_id"),
+                KnowledgeBase.deleted_at.is_(None),
             )
             .order_by(
                 hits.c.cosine_distance.asc().nulls_last(),

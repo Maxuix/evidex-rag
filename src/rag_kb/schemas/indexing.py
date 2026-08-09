@@ -8,6 +8,7 @@ from uuid import UUID
 
 from rag_kb.domain import ErrorCode
 from rag_kb.schemas.common import PublicSchema
+from rag_kb.schemas.common import OpaqueCursor
 
 
 class IndexingErrorResponse(PublicSchema):
@@ -34,3 +35,8 @@ class IndexingJobResponse(PublicSchema):
     can_retry: bool
     created_at: datetime
     updated_at: datetime
+
+
+class IndexingJobPage(PublicSchema):
+    items: tuple[IndexingJobResponse, ...]
+    next_cursor: OpaqueCursor | None = None

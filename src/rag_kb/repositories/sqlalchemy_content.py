@@ -110,6 +110,7 @@ class SqlAlchemyKnowledgeBaseRepository:
             select(KnowledgeBaseRow.id).where(
                 KnowledgeBaseRow.workspace_id == self._workspace_id,
                 KnowledgeBaseRow.name == name,
+                KnowledgeBaseRow.deleted_at.is_(None),
             )
         )
         if duplicate is not None:
@@ -218,8 +219,16 @@ class SqlAlchemyKnowledgeBaseRepository:
             )
         return embedding
 
-    async def get(self, kb_id: UUID) -> KnowledgeBase | None:
+    async def get(
+        self, kb_id: UUID, *, include_deleted: bool = False
+    ) -> KnowledgeBase | None:
         self._ensure_active()
+        filters = [
+            KnowledgeBaseRow.workspace_id == self._workspace_id,
+            KnowledgeBaseRow.id == kb_id,
+        ]
+        if not include_deleted:
+            filters.append(KnowledgeBaseRow.deleted_at.is_(None))
         row = (
             await self._session.execute(
                 select(
@@ -232,10 +241,7 @@ class SqlAlchemyKnowledgeBaseRepository:
                     IndexRevisionRow,
                     IndexRevisionRow.id == KnowledgeBaseRow.active_index_revision_id,
                 )
-                .where(
-                    KnowledgeBaseRow.workspace_id == self._workspace_id,
-                    KnowledgeBaseRow.id == kb_id,
-                )
+                .where(*filters)
             )
         ).one_or_none()
         if row is None:
@@ -268,7 +274,10 @@ class SqlAlchemyKnowledgeBaseRepository:
                 IndexRevisionRow,
                 IndexRevisionRow.id == KnowledgeBaseRow.active_index_revision_id,
             )
-            .where(KnowledgeBaseRow.workspace_id == self._workspace_id)
+            .where(
+                KnowledgeBaseRow.workspace_id == self._workspace_id,
+                KnowledgeBaseRow.deleted_at.is_(None),
+            )
         )
         statement = _with_after(statement, column, KnowledgeBaseRow.id, after, descending)
         ordering = column.desc() if descending else column.asc()
@@ -305,6 +314,7 @@ class SqlAlchemyKnowledgeBaseRepository:
             select(KnowledgeBaseRow).where(
                 KnowledgeBaseRow.workspace_id == self._workspace_id,
                 KnowledgeBaseRow.id == kb_id,
+                KnowledgeBaseRow.deleted_at.is_(None),
             ).with_for_update()
         )
         if kb is None:
@@ -315,6 +325,7 @@ class SqlAlchemyKnowledgeBaseRepository:
                     KnowledgeBaseRow.workspace_id == self._workspace_id,
                     KnowledgeBaseRow.name == name,
                     KnowledgeBaseRow.id != kb_id,
+                    KnowledgeBaseRow.deleted_at.is_(None),
                 )
             )
             if duplicate is not None:
@@ -346,6 +357,131 @@ class SqlAlchemyKnowledgeBaseRepository:
             revision_facts[1],
             revision_facts[2],
             await self._embedding_summary(kb.active_index_revision_id),
+        )
+
+    async def soft_delete(self, kb_id: UUID) -> KnowledgeBase | None:
+        self._ensure_active()
+        kb = await self._session.scalar(
+            select(KnowledgeBaseRow).where(
+                KnowledgeBaseRow.workspace_id == self._workspace_id,
+                KnowledgeBaseRow.id == kb_id,
+            ).with_for_update()
+        )
+        if kb is None:
+            return None
+        assert kb.active_index_revision_id is not None
+        revision_facts = (
+            await self._session.execute(
+                select(
+                    IndexRevisionRow.embedding_space_id,
+                    IndexRevisionRow.parser_config,
+                    IndexRevisionRow.chunking_config,
+                ).where(
+                    IndexRevisionRow.workspace_id == self._workspace_id,
+                    IndexRevisionRow.kb_id == kb.id,
+                    IndexRevisionRow.id == kb.active_index_revision_id,
+                )
+            )
+        ).one_or_none()
+        if revision_facts is None:
+            raise ResourceStateConflictError(
+                "knowledge base active revision is unavailable"
+            )
+        embedding = await self._embedding_summary(kb.active_index_revision_id)
+        if kb.deleted_at is None:
+            now = datetime.now(UTC)
+            versions = (
+                await self._session.execute(
+                    select(
+                        DocumentVersionRow.id,
+                        DocumentVersionRow.storage_uri,
+                    ).where(
+                        DocumentVersionRow.workspace_id == self._workspace_id,
+                        DocumentVersionRow.kb_id == kb.id,
+                    )
+                )
+            ).all()
+            if versions:
+                await self._session.execute(
+                    pg_insert(SourceFileCleanupRow)
+                    .values(
+                        [
+                            {
+                                "workspace_id": self._workspace_id,
+                                "document_version_id": version.id,
+                                "storage_uri": version.storage_uri,
+                                "reason": "knowledge_base_deleted",
+                            }
+                            for version in versions
+                        ]
+                    )
+                    .on_conflict_do_nothing(index_elements=["document_version_id"])
+                )
+            await self._session.execute(
+                update(DocumentRow)
+                .where(
+                    DocumentRow.workspace_id == self._workspace_id,
+                    DocumentRow.kb_id == kb.id,
+                )
+                .values(deleted_at=now, updated_at=now)
+            )
+            await self._session.execute(
+                update(DocumentVersionRow)
+                .where(
+                    DocumentVersionRow.workspace_id == self._workspace_id,
+                    DocumentVersionRow.kb_id == kb.id,
+                )
+                .values(source_status=DocumentSourceStatus.DELETED)
+            )
+            target_ids = select(IndexedDocumentVersionRow.id).where(
+                IndexedDocumentVersionRow.workspace_id == self._workspace_id,
+                IndexedDocumentVersionRow.kb_id == kb.id,
+            )
+            await self._session.execute(
+                update(IndexedDocumentVersionRow)
+                .where(IndexedDocumentVersionRow.id.in_(target_ids))
+                .values(
+                    serving_status=IndexServingStatus.RETIRED,
+                    updated_at=now,
+                )
+            )
+            await self._session.execute(
+                update(IndexingJobRow)
+                .where(
+                    IndexingJobRow.workspace_id == self._workspace_id,
+                    IndexingJobRow.kb_id == kb.id,
+                    IndexingJobRow.status.in_((JobStatus.QUEUED, JobStatus.RUNNING)),
+                )
+                .values(
+                    status=JobStatus.CANCELLED,
+                    phase="knowledge_base_deleted",
+                    claimed_by=None,
+                    claimed_at=None,
+                    heartbeat_at=None,
+                    next_attempt_at=None,
+                    updated_at=now,
+                )
+            )
+            await self._session.execute(
+                update(IndexRevisionRow)
+                .where(
+                    IndexRevisionRow.workspace_id == self._workspace_id,
+                    IndexRevisionRow.kb_id == kb.id,
+                    IndexRevisionRow.status.in_(
+                        (IndexRevisionStatus.ACTIVE, IndexRevisionStatus.READY)
+                    ),
+                )
+                .values(status=IndexRevisionStatus.RETIRED, updated_at=now)
+            )
+            kb.deleted_at = now
+            kb.updated_at = now
+            await self._session.flush()
+        return _knowledge_base(
+            kb,
+            revision_facts[0],
+            revision_facts[1],
+            revision_facts[2],
+            embedding,
         )
 
     async def _embedding_summary(
@@ -412,6 +548,7 @@ class SqlAlchemyDocumentRepository:
         row = (
             await self._session.execute(
                 select(DocumentRow, DocumentVersionRow)
+                .join(KnowledgeBaseRow, KnowledgeBaseRow.id == DocumentRow.kb_id)
                 .outerjoin(
                     DocumentVersionRow,
                     DocumentVersionRow.id == DocumentRow.current_version_id,
@@ -419,6 +556,8 @@ class SqlAlchemyDocumentRepository:
                 .where(
                     DocumentRow.workspace_id == self._workspace_id,
                     DocumentRow.id == document_id,
+                    KnowledgeBaseRow.workspace_id == self._workspace_id,
+                    KnowledgeBaseRow.deleted_at.is_(None),
                 )
             )
         ).one_or_none()
@@ -462,6 +601,7 @@ class SqlAlchemyDocumentRepository:
                 .where(
                     DocumentRow.workspace_id == self._workspace_id,
                     KnowledgeBaseRow.workspace_id == self._workspace_id,
+                    KnowledgeBaseRow.deleted_at.is_(None),
                     DocumentRow.id == document_id,
                 )
             )
@@ -521,6 +661,7 @@ class SqlAlchemyDocumentRepository:
                 .where(
                     DocumentRow.workspace_id == self._workspace_id,
                     KnowledgeBaseRow.workspace_id == self._workspace_id,
+                    KnowledgeBaseRow.deleted_at.is_(None),
                     DocumentRow.id == document_id,
                 )
             )
@@ -661,6 +802,7 @@ class SqlAlchemyDocumentRepository:
                     representations=tuple(sorted(representations[item.id])),
                     asset=assets.get(item.index_asset_id),
                     related_visuals=tuple(related[item.id]),
+                    excluded_at=item.excluded_at,
                 )
                 for item in rows
             ),
@@ -682,6 +824,7 @@ class SqlAlchemyDocumentRepository:
             select(KnowledgeBaseRow.id).where(
                 KnowledgeBaseRow.workspace_id == self._workspace_id,
                 KnowledgeBaseRow.id == kb_id,
+                KnowledgeBaseRow.deleted_at.is_(None),
             )
         )
         if kb_exists is None:
@@ -722,6 +865,7 @@ class SqlAlchemyDocumentRepository:
                 KnowledgeBaseRow.workspace_id == self._workspace_id,
                 KnowledgeBaseRow.id == kb_id,
                 KnowledgeBaseRow.provisioned_at.is_not(None),
+                KnowledgeBaseRow.deleted_at.is_(None),
             )
         )
         if kb_exists is None:
@@ -804,6 +948,7 @@ class SqlAlchemyDocumentRepository:
                 KnowledgeBaseRow.workspace_id == self._workspace_id,
                 KnowledgeBaseRow.id == document.kb_id,
                 KnowledgeBaseRow.provisioned_at.is_not(None),
+                KnowledgeBaseRow.deleted_at.is_(None),
             )
             .values(
                 source_change_seq=KnowledgeBaseRow.source_change_seq + 1,
@@ -865,9 +1010,13 @@ class SqlAlchemyDocumentRepository:
     async def soft_delete(self, document_id: UUID) -> DocumentMutationResult | None:
         self._ensure_active()
         document = await self._session.scalar(
-            select(DocumentRow).where(
+            select(DocumentRow)
+            .join(KnowledgeBaseRow, KnowledgeBaseRow.id == DocumentRow.kb_id)
+            .where(
                 DocumentRow.workspace_id == self._workspace_id,
                 DocumentRow.id == document_id,
+                KnowledgeBaseRow.workspace_id == self._workspace_id,
+                KnowledgeBaseRow.deleted_at.is_(None),
             ).with_for_update()
         )
         if document is None:
@@ -950,6 +1099,55 @@ class SqlAlchemyDocumentRepository:
             source_change_seq=allocated.source_change_seq,
             index_revision_id=allocated.active_index_revision_id,
         )
+
+    async def exclude_chunk(
+        self, *, document_id: UUID, chunk_id: UUID
+    ) -> datetime | None:
+        self._ensure_active()
+        document = await self._session.scalar(
+            select(DocumentRow)
+            .join(KnowledgeBaseRow, KnowledgeBaseRow.id == DocumentRow.kb_id)
+            .where(
+                DocumentRow.workspace_id == self._workspace_id,
+                DocumentRow.id == document_id,
+                DocumentRow.deleted_at.is_(None),
+                KnowledgeBaseRow.workspace_id == self._workspace_id,
+                KnowledgeBaseRow.deleted_at.is_(None),
+            )
+            .with_for_update(of=DocumentRow)
+        )
+        if document is None:
+            return None
+        target = await self._session.scalar(
+            select(IndexedDocumentVersionRow).where(
+                IndexedDocumentVersionRow.workspace_id == self._workspace_id,
+                IndexedDocumentVersionRow.kb_id == document.kb_id,
+                IndexedDocumentVersionRow.document_id == document.id,
+                IndexedDocumentVersionRow.document_version_id
+                == document.current_version_id,
+                IndexedDocumentVersionRow.build_status == IndexBuildStatus.READY,
+                IndexedDocumentVersionRow.serving_status
+                == IndexServingStatus.SERVING,
+            )
+        )
+        if target is None:
+            raise ResourceStateConflictError(
+                "the current document version has no serving chunk snapshot"
+            )
+        chunk = await self._session.scalar(
+            select(IndexChunkRow).where(
+                IndexChunkRow.workspace_id == self._workspace_id,
+                IndexChunkRow.kb_id == document.kb_id,
+                IndexChunkRow.indexed_document_version_id == target.id,
+                IndexChunkRow.id == chunk_id,
+            ).with_for_update()
+        )
+        if chunk is None:
+            return None
+        if chunk.excluded_at is None:
+            chunk.excluded_at = datetime.now(UTC)
+            await self._session.flush()
+        return chunk.excluded_at
 
     async def _schedule_file_cleanup(self, document_id: UUID) -> None:
         versions = (
@@ -1393,6 +1591,7 @@ def _knowledge_base(
         created_at=row.created_at,
         updated_at=row.updated_at,
         embedding=embedding,
+        deleted_at=row.deleted_at,
     )
 
 

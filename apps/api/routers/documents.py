@@ -32,6 +32,7 @@ from rag_kb.document_processing.profiles import DOCLING_MULTIMODAL_PARSER_CONFIG
 from rag_kb.schemas import (
     CursorPayload,
     DocumentChunkAssetResponse,
+    DocumentChunkDeleteResponse,
     DocumentChunkInspectionResponse,
     DocumentChunkRelationResponse,
     DocumentChunkResponse,
@@ -187,6 +188,29 @@ async def inspect_document_chunks(
             if inspection.next_values is not None
             else None
         ),
+    )
+
+
+@router.delete(
+    "/documents/{document_id}/chunks/{chunk_id}",
+    response_model=DocumentChunkDeleteResponse,
+    responses=problem_responses(404, 409, 422),
+)
+async def delete_document_chunk(
+    request: Request,
+    document_id: UUID,
+    chunk_id: UUID,
+    context: Annotated[AuthContext, Depends(get_auth_context)],
+) -> DocumentChunkDeleteResponse:
+    excluded_at = await request.app.state.dependencies.document_service.exclude_chunk(
+        context,
+        document_id=document_id,
+        chunk_id=chunk_id,
+    )
+    return DocumentChunkDeleteResponse(
+        document_id=document_id,
+        chunk_id=chunk_id,
+        excluded_at=excluded_at,
     )
 
 
@@ -353,6 +377,7 @@ def _chunk_response(value: DocumentChunk) -> DocumentChunkResponse:
             )
             for relation in value.related_visuals
         ),
+        excluded_at=value.excluded_at,
     )
 
 

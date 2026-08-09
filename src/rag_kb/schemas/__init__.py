@@ -43,6 +43,7 @@ from rag_kb.schemas.chat import (
 )
 from rag_kb.schemas.documents import (
     DocumentChunkAssetResponse,
+    DocumentChunkDeleteResponse,
     DocumentChunkInspectionResponse,
     DocumentChunkRelationResponse,
     DocumentChunkResponse,
@@ -54,10 +55,15 @@ from rag_kb.schemas.documents import (
     DocumentUploadResponse,
     DocumentVersionResponse,
 )
-from rag_kb.schemas.indexing import IndexingErrorResponse, IndexingJobResponse
+from rag_kb.schemas.indexing import (
+    IndexingErrorResponse,
+    IndexingJobPage,
+    IndexingJobResponse,
+)
 from rag_kb.schemas.knowledge_bases import (
     KnowledgeBaseAnswerPolicyDefaults,
     KnowledgeBaseCreate,
+    KnowledgeBaseDeleteResponse,
     KnowledgeBaseEmbeddingResponse,
     KnowledgeBaseChunking,
     KnowledgeBaseChunkingResponse,
@@ -130,6 +136,7 @@ __all__ = [
     "CursorPayload",
     "DocumentDeleteResponse",
     "DocumentChunkAssetResponse",
+    "DocumentChunkDeleteResponse",
     "DocumentChunkInspectionResponse",
     "DocumentChunkRelationResponse",
     "DocumentChunkResponse",
@@ -140,12 +147,14 @@ __all__ = [
     "DocumentUploadResponse",
     "DocumentVersionResponse",
     "IndexingErrorResponse",
+    "IndexingJobPage",
     "IndexingJobResponse",
     "ErrorCode",
     "EffectiveAnswerPolicyResponse",
     "EmbeddingValidationResponse",
     "FieldViolation",
     "KnowledgeBaseCreate",
+    "KnowledgeBaseDeleteResponse",
     "KnowledgeBaseEmbeddingResponse",
     "KnowledgeBaseChunking",
     "KnowledgeBaseChunkingResponse",

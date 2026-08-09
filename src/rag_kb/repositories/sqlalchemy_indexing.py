@@ -57,6 +57,7 @@ from rag_kb.domain import (
     IndexingJobSnapshot,
     IndexingPhase,
     IndexingTarget,
+    Page,
     PromotionCommand,
     PromotionReason,
     PromotionResult,
@@ -87,9 +88,16 @@ class SqlAlchemyIndexingRepository:
     async def get_asset(self, asset_id: UUID) -> IndexAssetSnapshot | None:
         self._ensure_active()
         row = await self._session.scalar(
-            select(IndexAssetRow).where(
+            select(IndexAssetRow)
+            .join(
+                KnowledgeBaseRow,
+                KnowledgeBaseRow.id == IndexAssetRow.kb_id,
+            )
+            .where(
                 IndexAssetRow.workspace_id == self._workspace_id,
                 IndexAssetRow.id == asset_id,
+                KnowledgeBaseRow.workspace_id == self._workspace_id,
+                KnowledgeBaseRow.deleted_at.is_(None),
             )
         )
         if row is None:
@@ -308,12 +316,15 @@ class SqlAlchemyIndexingRepository:
                     IndexedDocumentVersionRow.index_revision_id == index_revision_id,
                     KnowledgeBaseRow.workspace_id == self._workspace_id,
                     KnowledgeBaseRow.id == kb_id,
+                    KnowledgeBaseRow.deleted_at.is_(None),
                     KnowledgeBaseRow.active_index_revision_id == index_revision_id,
                     IndexedDocumentVersionRow.build_status == IndexBuildStatus.READY,
                     IndexedDocumentVersionRow.serving_status == IndexServingStatus.SERVING,
                     DocumentRow.workspace_id == self._workspace_id,
                     DocumentRow.kb_id == kb_id,
                     DocumentRow.deleted_at.is_(None),
+                    parent_chunk.excluded_at.is_(None),
+                    visual_chunk.excluded_at.is_(None),
                     DocumentVersionRow.source_status
                     == DocumentSourceStatus.AVAILABLE,
                     or_(*selectors),
@@ -376,6 +387,78 @@ class SqlAlchemyIndexingRepository:
         row = await self._job_row(job_id)
         return _job_snapshot(row) if row is not None else None
 
+    async def list_jobs(
+        self,
+        *,
+        kb_id: UUID,
+        limit: int,
+        after: tuple[str, ...] | None,
+    ) -> Page[IndexingJobSnapshot]:
+        self._ensure_active()
+        statement = (
+            select(
+                IndexingJobRow,
+                IndexedDocumentVersionRow,
+                DocumentRow,
+                DocumentVersionRow,
+                IndexRevisionRow,
+                KnowledgeBaseRow,
+            )
+            .join(
+                IndexedDocumentVersionRow,
+                IndexedDocumentVersionRow.id
+                == IndexingJobRow.indexed_document_version_id,
+            )
+            .join(DocumentRow, DocumentRow.id == IndexedDocumentVersionRow.document_id)
+            .join(
+                DocumentVersionRow,
+                DocumentVersionRow.id
+                == IndexedDocumentVersionRow.document_version_id,
+            )
+            .join(
+                IndexRevisionRow,
+                IndexRevisionRow.id == IndexedDocumentVersionRow.index_revision_id,
+            )
+            .join(KnowledgeBaseRow, KnowledgeBaseRow.id == IndexingJobRow.kb_id)
+            .where(
+                IndexingJobRow.workspace_id == self._workspace_id,
+                IndexedDocumentVersionRow.workspace_id == self._workspace_id,
+                IndexingJobRow.kb_id == kb_id,
+                KnowledgeBaseRow.workspace_id == self._workspace_id,
+                KnowledgeBaseRow.deleted_at.is_(None),
+            )
+        )
+        if after is not None:
+            if len(after) != 2:
+                raise ValueError("job cursor must contain created_at and id")
+            created_at, job_id = datetime.fromisoformat(after[0]), UUID(after[1])
+            statement = statement.where(
+                or_(
+                    IndexingJobRow.created_at < created_at,
+                    and_(
+                        IndexingJobRow.created_at == created_at,
+                        IndexingJobRow.id < job_id,
+                    ),
+                )
+            )
+        rows = (
+            await self._session.execute(
+                statement.order_by(
+                    IndexingJobRow.created_at.desc(),
+                    IndexingJobRow.id.desc(),
+                ).limit(limit + 1)
+            )
+        ).all()
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+        items = tuple(_job_snapshot(row) for row in rows)
+        next_values = (
+            (items[-1].created_at.isoformat(), str(items[-1].job_id))
+            if has_more and items
+            else None
+        )
+        return Page(items=items, next_values=next_values)
+
     async def retry_failed(
         self,
         job_id: UUID,
@@ -416,6 +499,7 @@ class SqlAlchemyIndexingRepository:
             .where(
                 KnowledgeBaseRow.workspace_id == self._workspace_id,
                 KnowledgeBaseRow.id == kb_id,
+                KnowledgeBaseRow.deleted_at.is_(None),
             )
             .with_for_update()
         )
@@ -462,6 +546,7 @@ class SqlAlchemyIndexingRepository:
             and document.current_version_id == target.document_version_id
             and version.source_status is DocumentSourceStatus.AVAILABLE
             and revision.status is IndexRevisionStatus.ACTIVE
+            and knowledge_base.deleted_at is None
             and knowledge_base.active_index_revision_id == target.index_revision_id
         )
         if not eligible:
@@ -688,6 +773,7 @@ class SqlAlchemyIndexingRepository:
                     IndexingJobRow.workspace_id == self._workspace_id,
                     IndexedDocumentVersionRow.workspace_id == self._workspace_id,
                     IndexingJobRow.id == job_id,
+                    KnowledgeBaseRow.deleted_at.is_(None),
                 )
             )
         ).one_or_none()
@@ -708,13 +794,25 @@ class SqlAlchemyIndexingRepository:
                     IndexedDocumentVersionRow.id
                     == IndexingJobRow.indexed_document_version_id,
                 )
+                .join(
+                    DocumentVersionRow,
+                    DocumentVersionRow.id
+                    == IndexedDocumentVersionRow.document_version_id,
+                )
+                .join(
+                    KnowledgeBaseRow,
+                    KnowledgeBaseRow.id == IndexingJobRow.kb_id,
+                )
                 .where(
                     IndexingJobRow.workspace_id == self._workspace_id,
                     IndexedDocumentVersionRow.workspace_id == self._workspace_id,
+                    KnowledgeBaseRow.workspace_id == self._workspace_id,
+                    KnowledgeBaseRow.deleted_at.is_(None),
                     *_claimable_job(observed_at, max_attempts),
                 )
                 .order_by(
                     IndexingJobRow.next_attempt_at.asc().nullsfirst(),
+                    DocumentVersionRow.size_bytes,
                     IndexingJobRow.created_at,
                     IndexingJobRow.id,
                 )
@@ -1093,7 +1191,8 @@ class SqlAlchemyIndexingRepository:
         if document.deleted_at is not None:
             retirement_reason = PromotionReason.DOCUMENT_DELETED
         elif (
-            knowledge_base.active_index_revision_id != target.index_revision_id
+            knowledge_base.deleted_at is not None
+            or knowledge_base.active_index_revision_id != target.index_revision_id
             or revision_status is not IndexRevisionStatus.ACTIVE
         ):
             retirement_reason = PromotionReason.REVISION_INACTIVE
@@ -1149,6 +1248,8 @@ class SqlAlchemyIndexingRepository:
                 space_roles=await self._space_roles(revision.id),
             )
         if job.status is JobStatus.CANCELLED or target.serving_status is IndexServingStatus.RETIRED:
+            raise IndexingCancelled
+        if knowledge_base.deleted_at is not None:
             raise IndexingCancelled
         if target.build_status is IndexBuildStatus.READY or job.status is JobStatus.COMPLETED:
             raise _execution_error(

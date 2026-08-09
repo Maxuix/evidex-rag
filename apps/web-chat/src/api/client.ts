@@ -10,7 +10,14 @@ import type {
   RetrievalCapabilities,
   ChatSession,
   ChatTerminalEvent,
+  ChunkingPreset,
+  DocumentChunkInspection,
+  DocumentDetail,
+  DocumentRecord,
+  DocumentUpload,
+  IndexingJob,
   KnowledgeBase,
+  KnowledgeBaseEmbeddingSelection,
   ModelKind,
   ModelCatalog,
   ModelProfile,
@@ -19,10 +26,24 @@ import type {
   ModelSelection,
   ModelSettings,
   Page,
+  ParsingPreset,
+  RetrievalEvidencePack,
   UUID,
 } from "./types";
 
 const API_PATH = "/api/v1";
+const OOXML = "application/vnd.openxmlformats-officedocument";
+const UPLOAD_MEDIA_TYPES: Record<string, string> = {
+  txt: "text/plain",
+  md: "text/markdown",
+  mdz: "application/vnd.rag-kb.markdown-bundle+zip",
+  html: "text/html",
+  csv: "text/csv",
+  pdf: "application/pdf",
+  docx: `${OOXML}.wordprocessingml.document`,
+  pptx: `${OOXML}.presentationml.presentation`,
+  xlsx: `${OOXML}.spreadsheetml.sheet`,
+};
 
 interface RuntimeConfig {
   api_base_url: string;
@@ -32,6 +53,8 @@ export class ApiClientError extends Error {
   readonly status: number | null;
   readonly code: string | null;
   readonly retryable: boolean;
+  readonly traceId: string | null;
+  readonly fieldErrors: ApiProblem["errors"];
 
   constructor(
     message: string,
@@ -39,6 +62,8 @@ export class ApiClientError extends Error {
       status?: number;
       code?: string;
       retryable?: boolean;
+      traceId?: string;
+      fieldErrors?: ApiProblem["errors"];
     } = {},
   ) {
     super(message);
@@ -46,6 +71,8 @@ export class ApiClientError extends Error {
     this.status = options.status ?? null;
     this.code = options.code ?? null;
     this.retryable = options.retryable ?? false;
+    this.traceId = options.traceId ?? null;
+    this.fieldErrors = options.fieldErrors ?? null;
   }
 }
 
@@ -80,6 +107,136 @@ export class ApiClient {
       sort: "name",
       cursor,
     }));
+  }
+
+  createKnowledgeBase(
+    name: string,
+    parsingPreset: ParsingPreset,
+    chunkingPreset: ChunkingPreset,
+    embedding: KnowledgeBaseEmbeddingSelection,
+    idempotencyKey: UUID,
+  ): Promise<KnowledgeBase> {
+    return this.request("/knowledge-bases", {
+      method: "POST",
+      headers: this.jsonHeaders(idempotencyKey),
+      body: JSON.stringify({
+        name,
+        parsing: { preset: parsingPreset },
+        chunking: { preset: chunkingPreset },
+        embedding,
+      }),
+    });
+  }
+
+  deleteKnowledgeBase(kbId: UUID, idempotencyKey: UUID): Promise<{
+    id: UUID;
+    name: string;
+    deleted_at: string;
+  }> {
+    return this.request(`/knowledge-bases/${kbId}`, {
+      method: "DELETE",
+      headers: { "Idempotency-Key": idempotencyKey },
+    });
+  }
+
+  listDocuments(kbId: UUID, cursor?: string): Promise<Page<DocumentRecord>> {
+    return this.request(this.withQuery(`/knowledge-bases/${kbId}/documents`, {
+      limit: "100",
+      sort: "-created_at",
+      cursor,
+    }));
+  }
+
+  getDocument(documentId: UUID): Promise<DocumentDetail> {
+    return this.request(`/documents/${documentId}`);
+  }
+
+  getDocumentChunks(
+    documentId: UUID,
+    cursor?: string,
+  ): Promise<DocumentChunkInspection> {
+    return this.request(this.withQuery(`/documents/${documentId}/chunks`, {
+      limit: "100",
+      cursor,
+    }));
+  }
+
+  uploadDocument(
+    kbId: UUID,
+    file: File,
+    idempotencyKey: UUID,
+  ): Promise<DocumentUpload> {
+    return this.upload(
+      `/knowledge-bases/${kbId}/documents`,
+      file,
+      file.name,
+      idempotencyKey,
+    );
+  }
+
+  uploadDocumentVersion(
+    documentId: UUID,
+    file: File,
+    displayName: string,
+    idempotencyKey: UUID,
+  ): Promise<DocumentUpload> {
+    return this.upload(
+      `/documents/${documentId}/versions`,
+      file,
+      displayName,
+      idempotencyKey,
+    );
+  }
+
+  deleteDocument(documentId: UUID, idempotencyKey: UUID): Promise<unknown> {
+    return this.request(`/documents/${documentId}`, {
+      method: "DELETE",
+      headers: { "Idempotency-Key": idempotencyKey },
+    });
+  }
+
+  deleteDocumentChunk(documentId: UUID, chunkId: UUID): Promise<{
+    document_id: UUID;
+    chunk_id: UUID;
+    excluded_at: string;
+  }> {
+    return this.request(`/documents/${documentId}/chunks/${chunkId}`, {
+      method: "DELETE",
+    });
+  }
+
+  listIndexingJobs(kbId: UUID): Promise<Page<IndexingJob>> {
+    return this.request(this.withQuery(`/knowledge-bases/${kbId}/indexing-jobs`, {
+      limit: "100",
+    }));
+  }
+
+  retryIndexingJob(jobId: UUID, idempotencyKey: UUID): Promise<IndexingJob> {
+    return this.request(`/indexing-jobs/${jobId}/retry`, {
+      method: "POST",
+      headers: { "Idempotency-Key": idempotencyKey },
+    });
+  }
+
+  queryRetrievalDebug(
+    knowledgeBaseId: UUID,
+    query: string,
+    topK: number,
+    strategy: "exact_vector" | "hybrid",
+    rerank: boolean,
+  ): Promise<RetrievalEvidencePack> {
+    return this.request("/retrieval/query", {
+      method: "POST",
+      headers: this.jsonHeaders(),
+      body: JSON.stringify({
+        knowledge_base_id: knowledgeBaseId,
+        query,
+        top_k: topK,
+        strategy,
+        rerank,
+        include_debug: true,
+      }),
+    });
   }
 
   getRetrievalCapabilities(): Promise<RetrievalCapabilities> {
@@ -322,6 +479,38 @@ export class ApiClient {
     return `${path}?${query.toString()}`;
   }
 
+  private upload(
+    path: string,
+    file: File,
+    displayName: string,
+    idempotencyKey: UUID,
+  ): Promise<DocumentUpload> {
+    const extension = file.name.toLowerCase().split(".").pop() ?? "";
+    const mediaType = UPLOAD_MEDIA_TYPES[extension];
+    if (!mediaType) {
+      throw new ApiClientError(
+        "不支持该文件类型。请选择 TXT、Markdown、HTML、CSV、PDF、DOCX、PPTX、XLSX 或 MDZ 文件。",
+        { code: "FRONTEND_FILE_TYPE_UNSUPPORTED" },
+      );
+    }
+    return this.request(path, {
+      method: "POST",
+      headers: {
+        "Content-Type": mediaType,
+        "Idempotency-Key": idempotencyKey,
+        "X-Document-Metadata": encodeUploadMetadata(file.name, displayName),
+      },
+      body: file,
+    });
+  }
+
+  private jsonHeaders(idempotencyKey?: UUID): Record<string, string> {
+    return {
+      "Content-Type": "application/json",
+      ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
+    };
+  }
+
   private async request<T>(pathOrUrl: string, init: RequestInit = {}): Promise<T> {
     let response: Response;
     try {
@@ -346,10 +535,26 @@ export class ApiClient {
         status: response.status,
         code: problem.code,
         retryable: Boolean(problem.retryable),
+        traceId: problem.trace_id,
+        fieldErrors: problem.errors,
       });
     }
     return response.json() as Promise<T>;
   }
+}
+
+function encodeUploadMetadata(filename: string, displayName: string): string {
+  const bytes = new TextEncoder().encode(JSON.stringify({
+    v: 1,
+    filename,
+    display_name: displayName,
+  }));
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary)
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
 }
 
 function validateApiBaseUrl(value: string): URL {
@@ -601,9 +806,11 @@ function problemMessage(status: number, problem: ApiProblem): string {
   if (problem.code === "CHAT_SESSION_BUSY") {
     return "这个会话仍在生成回答，请稍候。";
   }
-  if (status === 404) return "请求的本地内容已不存在。";
-  if (status === 409) return "当前状态暂时不能完成此操作。";
-  if (status === 422) return "提交内容不符合要求，请检查后重试。";
+  const detail = typeof problem.detail === "string" ? problem.detail : null;
+  const fieldDetail = problem.errors?.map((item) => item.message).join("；");
+  if (status === 404) return detail || "请求的本地内容已不存在。";
+  if (status === 409) return detail || "当前状态暂时不能完成此操作。";
+  if (status === 422) return fieldDetail || detail || "提交内容不符合要求，请检查后重试。";
   if (status >= 500) return "本地知识库服务暂时不可用，请稍后重试。";
-  return typeof problem.title === "string" ? problem.title : "请求未能完成。";
+  return detail || (typeof problem.title === "string" ? problem.title : "请求未能完成。");
 }

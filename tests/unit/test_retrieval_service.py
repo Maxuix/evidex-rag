@@ -65,6 +65,8 @@ class RetrievalContractTests(unittest.TestCase):
         self.assertIn("indexed_document_version.serving_status", sql)
         self.assertNotIn("document.current_version_id", sql)
         self.assertIn("document.deleted_at IS NULL", sql)
+        self.assertIn("knowledge_base.deleted_at IS NULL", sql)
+        self.assertIn("index_chunk.excluded_at IS NULL", sql)
         self.assertIn("document_version.source_status", sql)
         self.assertIn("vector_record.embedding_space_id", sql)
         self.assertIn("vector_record.embedding_dimension", sql)
@@ -92,6 +94,8 @@ class RetrievalContractTests(unittest.TestCase):
         self.assertIn("target.build_status = 'ready'", sql)
         self.assertIn("target.serving_status = 'serving'", sql)
         self.assertIn("doc.deleted_at IS NULL", sql)
+        self.assertIn("admitted_chunk.excluded_at IS NULL", sql)
+        self.assertIn("chunk.excluded_at IS NULL", sql)
         self.assertIn("version.source_status = 'available'", sql)
         self.assertNotIn("hnsw", sql.lower())
 
@@ -147,6 +151,8 @@ class RelationHydrationRepositoryQueryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("indexed_document_version.serving_status", sql)
         self.assertIn("knowledge_base.active_index_revision_id", sql)
         self.assertIn("document.deleted_at IS NULL", sql)
+        self.assertIn("knowledge_base.deleted_at IS NULL", sql)
+        self.assertGreaterEqual(sql.count("excluded_at IS NULL"), 2)
 
 
 class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
