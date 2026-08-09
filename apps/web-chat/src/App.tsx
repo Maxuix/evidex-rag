@@ -72,6 +72,13 @@ interface ChatProgressState {
   mode: "idle" | "live" | "disconnected";
 }
 
+interface ComposerMenuOption<T extends string> {
+  value: T;
+  label: string;
+  description: string;
+  disabled?: boolean;
+}
+
 export function App() {
   const [client, setClient] = useState<ApiClient | null>(null);
   const [startupError, setStartupError] = useState<string | null>(null);
@@ -941,73 +948,6 @@ function KnowledgeChat({
             </div>
           ) : null}
           <div className="composer">
-            <label className="retrieval-mode-control model-control">
-              <span>对话模型</span>
-              <select
-                value={selectedChatModelRevisionId ?? ""}
-                onChange={(event) => changeChatModel(event.target.value)}
-                disabled={submitting || sessionBusy}
-              >
-                <option value="">未选择</option>
-                {chatModels.map((profile) => (
-                  <option key={profile.revision_id} value={profile.revision_id}>
-                    {profile.name} · r{profile.revision}
-                  </option>
-                ))}
-              </select>
-              <small>{modelSettingsLoading ? "正在读取模型设置…" : chatModels.length ? "本次对话固定使用所选修订版。" : "请在齿轮设置中添加并验证模型。"}</small>
-            </label>
-            <label className="retrieval-mode-control workflow-mode-control">
-              <span>回答工作流</span>
-              <select
-                value={workflowMode}
-                onChange={(event) => changeWorkflowMode(
-                  event.target.value as ChatWorkflowMode,
-                )}
-                disabled={submitting || sessionBusy}
-                aria-describedby="web-chat-workflow-mode-help"
-              >
-                <option value="simple">Simple</option>
-                <option value="agent" disabled={!agentEnabled}>Agent</option>
-                <option value="auto" disabled={!autoEnabled}>Auto</option>
-              </select>
-              <small id="web-chat-workflow-mode-help">
-                {workflowCapabilitiesLoading
-                  ? "能力状态加载中，已保持 Simple。"
-                  : workflowCapabilitiesError || !workflowCapabilities
-                    ? "能力状态不可用，Agent 与 Auto 已禁用。"
-                    : workflowMode === "agent"
-                      ? "多视角、多跳检索，通常更慢。"
-                      : workflowMode === "auto"
-                        ? "先判断问题复杂度，再选择工作流。"
-                        : "单次检索，速度最快。"}
-              </small>
-            </label>
-            <label className="retrieval-mode-control">
-              <span>检索模式</span>
-              <select
-                value={retrievalMode}
-                onChange={(event) => changeRetrievalMode(
-                  event.target.value as "vector" | "hybrid",
-                )}
-                disabled={submitting || sessionBusy}
-                aria-describedby="web-chat-retrieval-mode-help"
-              >
-                <option value="vector">精确向量</option>
-                <option value="hybrid" disabled={!hybridEnabled}>
-                  混合（关键词 + 语义）
-                </option>
-              </select>
-              <small id="web-chat-retrieval-mode-help">
-                {retrievalCapabilitiesLoading
-                  ? "能力状态加载中，已保持精确检索。"
-                  : retrievalCapabilitiesError || !retrievalCapabilities
-                    ? "能力状态不可用，混合模式已禁用。"
-                    : hybridEnabled
-                      ? "结合关键词与语义，可能更慢。"
-                      : "当前 API 未启用混合模式。"}
-              </small>
-            </label>
             <textarea
               ref={textareaRef}
               value={draft}
@@ -1034,25 +974,113 @@ function KnowledgeChat({
                 }
               }}
             />
-            <button
-              className="send-button"
-              type="button"
-              aria-label="发送问题"
-              disabled={
-                !selectedKnowledgeBase
-                || !draft.trim()
-                || submitting
-                || sessionBusy
-                || !chatModelConfigured
-              }
-              onClick={() => void submit()}
-            >
-              {submitting || sessionBusy ? (
-                <span className="send-pulse" aria-hidden="true" />
-              ) : (
-                <span aria-hidden="true">↑</span>
-              )}
-            </button>
+            <div className="composer-toolbar">
+              <div className="composer-options">
+                <label
+                  className="composer-model-control"
+                  title={modelSettingsLoading
+                    ? "正在读取模型设置…"
+                    : chatModels.length
+                      ? "选择本次对话使用的模型修订版"
+                      : "请在齿轮设置中添加并验证模型"}
+                >
+                  <ComposerModelIcon />
+                  <select
+                    aria-label="对话模型"
+                    value={selectedChatModelRevisionId ?? ""}
+                    onChange={(event) => changeChatModel(event.target.value)}
+                    disabled={submitting || sessionBusy}
+                  >
+                    <option value="">未选择模型</option>
+                    {chatModels.map((profile) => (
+                      <option key={profile.revision_id} value={profile.revision_id}>
+                        {profile.name} · r{profile.revision}
+                      </option>
+                    ))}
+                  </select>
+                  <span className="composer-model-chevron" aria-hidden="true">⌄</span>
+                </label>
+                <ComposerOptionMenu
+                  kind="workflow"
+                  label="回答工作流"
+                  value={workflowMode}
+                  disabled={submitting || sessionBusy}
+                  options={[
+                    {
+                      value: "simple",
+                      label: "Simple",
+                      description: "单次检索，速度最快。",
+                    },
+                    {
+                      value: "agent",
+                      label: "Agent",
+                      description: agentEnabled
+                        ? "多视角、多跳检索，通常更慢。"
+                        : workflowCapabilitiesLoading
+                          ? "能力状态加载中。"
+                          : "当前服务未启用 Agent。",
+                      disabled: !agentEnabled,
+                    },
+                    {
+                      value: "auto",
+                      label: "Auto",
+                      description: autoEnabled
+                        ? "自动判断问题复杂度并选择工作流。"
+                        : workflowCapabilitiesError || !workflowCapabilities
+                          ? "能力状态不可用。"
+                          : "当前服务未启用 Auto。",
+                      disabled: !autoEnabled,
+                    },
+                  ]}
+                  onChange={changeWorkflowMode}
+                />
+                <ComposerOptionMenu
+                  kind="retrieval"
+                  label="检索模式"
+                  value={retrievalMode}
+                  disabled={submitting || sessionBusy}
+                  options={[
+                    {
+                      value: "vector",
+                      label: "精确向量",
+                      description: "按语义相似度检索。",
+                    },
+                    {
+                      value: "hybrid",
+                      label: "混合检索",
+                      description: hybridEnabled
+                        ? "结合关键词与语义，可能更慢。"
+                        : retrievalCapabilitiesLoading
+                          ? "能力状态加载中。"
+                          : retrievalCapabilitiesError || !retrievalCapabilities
+                            ? "能力状态不可用。"
+                            : "当前服务未启用混合检索。",
+                      disabled: !hybridEnabled,
+                    },
+                  ]}
+                  onChange={changeRetrievalMode}
+                />
+              </div>
+              <button
+                className="send-button"
+                type="button"
+                aria-label="发送问题"
+                disabled={
+                  !selectedKnowledgeBase
+                  || !draft.trim()
+                  || submitting
+                  || sessionBusy
+                  || !chatModelConfigured
+                }
+                onClick={() => void submit()}
+              >
+                {submitting || sessionBusy ? (
+                  <span className="send-pulse" aria-hidden="true" />
+                ) : (
+                  <span aria-hidden="true">↑</span>
+                )}
+              </button>
+            </div>
           </div>
           <p className="composer-disclaimer">
             回答仅基于当前知识库内容，请核对重要信息。
@@ -1093,6 +1121,120 @@ function KnowledgeChat({
         />
       ) : null}
     </div>
+  );
+}
+
+function ComposerOptionMenu<T extends string>({
+  kind,
+  label,
+  value,
+  options,
+  disabled,
+  onChange,
+}: {
+  kind: "workflow" | "retrieval";
+  label: string;
+  value: T;
+  options: readonly ComposerMenuOption<T>[];
+  disabled: boolean;
+  onChange: (value: T) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const selected = options.find((option) => option.value === value) ?? options[0];
+
+  useEffect(() => {
+    if (!open) return;
+    const closeOnPointerDown = (event: PointerEvent) => {
+      if (
+        rootRef.current
+        && event.target instanceof Node
+        && !rootRef.current.contains(event.target)
+      ) {
+        setOpen(false);
+      }
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("pointerdown", closeOnPointerDown);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnPointerDown);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [open]);
+
+  return (
+    <div className="composer-option-menu" ref={rootRef}>
+      <button
+        className={`composer-icon-button${open ? " active" : ""}`}
+        type="button"
+        aria-label={`${label}：${selected.label}`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        title={`${label}：${selected.label}`}
+        disabled={disabled}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <ComposerMenuIcon kind={kind} />
+      </button>
+      {open ? (
+        <div className="composer-popover" role="menu" aria-label={label}>
+          <div className="composer-popover-title">{label}</div>
+          {options.map((option) => (
+            <button
+              key={option.value}
+              className="composer-popover-option"
+              type="button"
+              role="menuitemradio"
+              aria-checked={option.value === value}
+              disabled={option.disabled}
+              onClick={() => {
+                onChange(option.value);
+                setOpen(false);
+              }}
+            >
+              <span className="composer-option-check" aria-hidden="true">
+                {option.value === value ? "✓" : ""}
+              </span>
+              <span>
+                <strong>{option.label}</strong>
+                <small>{option.description}</small>
+              </span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ComposerModelIcon() {
+  return (
+    <svg className="composer-model-icon" viewBox="0 0 20 20" aria-hidden="true">
+      <path d="M10 2.75 16 6.2v7.6l-6 3.45-6-3.45V6.2L10 2.75Z" />
+      <circle cx="10" cy="10" r="2.1" />
+    </svg>
+  );
+}
+
+function ComposerMenuIcon({ kind }: { kind: "workflow" | "retrieval" }) {
+  if (kind === "retrieval") {
+    return (
+      <svg viewBox="0 0 20 20" aria-hidden="true">
+        <circle cx="8.5" cy="8.5" r="4.75" />
+        <path d="m12 12 4.25 4.25" />
+      </svg>
+    );
+  }
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true">
+      <circle cx="5" cy="5" r="1.75" />
+      <circle cx="15" cy="5" r="1.75" />
+      <circle cx="10" cy="15" r="1.75" />
+      <path d="M6.7 5h2.05A1.25 1.25 0 0 1 10 6.25v6.9M13.3 5h-2.05A1.25 1.25 0 0 0 10 6.25" />
+    </svg>
   );
 }
 

@@ -1431,10 +1431,10 @@ input:focus-visible {
 
 .composer {
   display: flex;
-  min-height: 56px;
-  padding: 8px 8px 8px 18px;
-  align-items: flex-end;
-  gap: 10px;
+  min-height: 82px;
+  padding: 11px 11px 9px;
+  flex-direction: column;
+  gap: 5px;
   background: #f7f7f7;
   border: 1px solid var(--border-strong);
   border-radius: 20px;
@@ -1449,9 +1449,9 @@ input:focus-visible {
 
 .composer textarea {
   width: 100%;
-  min-height: 38px;
+  min-height: 34px;
   max-height: 180px;
-  padding: 8px 0;
+  padding: 5px 5px 3px;
   resize: none;
   overflow-y: auto;
   background: transparent;
@@ -1465,53 +1465,187 @@ input:focus-visible {
   color: #8a8a8a;
 }
 
-.retrieval-mode-control {
-  display: grid;
-  min-width: 132px;
-  max-width: 180px;
-  flex: 0 1 170px;
-  align-self: stretch;
-  align-content: center;
-  gap: 2px;
-  color: var(--muted);
-  font-size: 10px;
-  line-height: 1.2;
+.composer-toolbar,
+.composer-options {
+  display: flex;
+  align-items: center;
 }
 
-.retrieval-mode-control select {
+.composer-toolbar {
   min-width: 0;
-  height: 28px;
-  padding: 0 6px;
-  background: #ffffff;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  font-size: 11px;
+  justify-content: space-between;
+  gap: 10px;
 }
 
-.retrieval-mode-control small {
+.composer-options {
+  min-width: 0;
+  gap: 3px;
+}
+
+.composer-model-control {
+  position: relative;
+  display: flex;
+  width: min(230px, 32vw);
+  min-width: 122px;
+  height: 34px;
+  align-items: center;
+  color: var(--muted);
+  background: transparent;
+  border-radius: 10px;
+}
+
+.composer-model-control:hover {
+  background: #ececec;
+}
+
+.composer-model-control select {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  padding: 0 24px 0 31px;
   overflow: hidden;
-  color: var(--faint);
-  font-size: 9px;
+  appearance: none;
+  background: transparent;
+  border: 0;
+  outline: 0;
+  font-size: 12px;
+  font-weight: 620;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.workflow-mode-control {
-  flex-basis: 150px;
+.composer-model-icon,
+.composer-model-chevron {
+  position: absolute;
+  pointer-events: none;
+}
+
+.composer-model-icon {
+  left: 9px;
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.5;
+}
+
+.composer-model-chevron {
+  right: 8px;
+  top: 7px;
+  font-size: 14px;
+}
+
+.composer-option-menu {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.composer-icon-button {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  place-items: center;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-radius: 10px;
+}
+
+.composer-icon-button:hover,
+.composer-icon-button.active {
+  color: var(--text);
+  background: #e9e9e9;
+}
+
+.composer-icon-button svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.55;
+}
+
+.composer-popover {
+  position: absolute;
+  bottom: calc(100% + 9px);
+  left: 0;
+  z-index: 30;
+  width: 268px;
+  padding: 7px;
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 18px 48px rgb(0 0 0 / 14%);
+  animation: composer-popover-in 130ms ease-out;
+}
+
+.composer-popover-title {
+  padding: 5px 9px 7px;
+  color: var(--faint);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.composer-popover-option {
+  display: grid;
+  width: 100%;
+  padding: 9px 9px 9px 5px;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 3px;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: 9px;
+}
+
+.composer-popover-option:hover {
+  background: #f2f2f2;
+}
+
+.composer-popover-option > span:last-child {
+  display: grid;
+  gap: 2px;
+}
+
+.composer-popover-option strong {
+  font-size: 12px;
+  font-weight: 680;
+}
+
+.composer-popover-option small {
+  color: var(--faint);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.composer-option-check {
+  color: var(--text);
+  font-size: 12px;
+  text-align: center;
+}
+
+@keyframes composer-popover-in {
+  from { opacity: 0; transform: translateY(4px) scale(0.98); }
 }
 
 .send-button {
   display: grid;
-  width: 40px;
-  height: 40px;
+  width: 36px;
+  height: 36px;
   flex: 0 0 auto;
   padding: 0;
   place-items: center;
   color: #ffffff;
   background: #111111;
   border: 0;
-  border-radius: 14px;
-  font-size: 22px;
+  border-radius: 12px;
+  font-size: 20px;
 }
 
 .send-button:disabled {
@@ -2000,11 +2134,6 @@ input:focus-visible {
     border-radius: 17px;
   }
 
-  .retrieval-mode-control {
-    min-width: 118px;
-    flex-basis: 150px;
-  }
-
   .drawer-backdrop {
     background: rgb(0 0 0 / 24%);
   }
@@ -2031,29 +2160,25 @@ input:focus-visible {
 
 @media (max-width: 480px) {
   .composer {
-    flex-wrap: wrap;
-    align-items: center;
-    padding-left: 12px;
+    padding-inline: 9px;
   }
 
-  .composer textarea {
-    order: 1;
-    flex: 1 1 calc(100% - 52px);
+  .composer-model-control {
+    width: min(180px, calc(100vw - 174px));
+    min-width: 105px;
   }
 
-  .retrieval-mode-control {
-    order: 3;
-    min-width: 0;
-    max-width: none;
-    flex: 1 1 100%;
+  .composer-model-control select {
+    padding-left: 29px;
+    font-size: 11px;
   }
 
-  .retrieval-mode-control small {
-    white-space: normal;
-  }
-
-  .send-button {
-    order: 2;
+  .composer-popover {
+    position: fixed;
+    right: 12px;
+    bottom: 104px;
+    left: 12px;
+    width: auto;
   }
 }
 
