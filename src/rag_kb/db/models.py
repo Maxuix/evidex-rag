@@ -401,7 +401,7 @@ class KnowledgeBase(Base):
         nullable=False,
         server_default=text(
             "'{\"answer_style\": \"concise\", "
-            "\"insufficiency_policy\": \"refuse\"}'::jsonb"
+            "\"insufficiency_policy\": \"partial_answer\"}'::jsonb"
         ),
     )
     deleted_at: Mapped[datetime | None] = mapped_column(

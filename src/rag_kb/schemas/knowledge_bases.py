@@ -28,7 +28,7 @@ class RetrievalDefaults(PublicSchema):
 
 class KnowledgeBaseAnswerPolicyDefaults(PublicSchema):
     answer_style: AnswerStyle = AnswerStyle.CONCISE
-    insufficiency_policy: InsufficiencyPolicy = InsufficiencyPolicy.REFUSE
+    insufficiency_policy: InsufficiencyPolicy = InsufficiencyPolicy.PARTIAL_ANSWER
 
 
 class KnowledgeBaseChunking(PublicSchema):

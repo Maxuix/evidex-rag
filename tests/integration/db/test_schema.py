@@ -153,9 +153,38 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
                     "UPDATE alembic_version SET version_num = 'runtime-mutation'"
                 )
             revision = await runtime.fetchval("SELECT version_num FROM alembic_version")
-            self.assertEqual(revision, "0006_pdf_parsing_progress")
+            self.assertEqual(revision, "0007_default_partial_answer")
         finally:
             await runtime.close()
+
+    async def test_knowledge_base_default_policy_is_partial_answer(self) -> None:
+        connection = await asyncpg.connect(MIGRATION_DSN)
+        try:
+            _, _, kb_id = await self.create_foundation(
+                connection, suffix="partial-policy-default"
+            )
+            policy = await connection.fetchval(
+                """
+                SELECT answer_policy_defaults ->> 'insufficiency_policy'
+                FROM knowledge_base
+                WHERE id = $1
+                """,
+                kb_id,
+            )
+            column_default = await connection.fetchval(
+                """
+                SELECT column_default
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'knowledge_base'
+                  AND column_name = 'answer_policy_defaults'
+                """
+            )
+        finally:
+            await connection.close()
+
+        self.assertEqual(policy, "partial_answer")
+        self.assertIn("partial_answer", column_default)
 
     async def test_chat_workflow_migration_has_bounded_simple_defaults(self) -> None:
         connection = await asyncpg.connect(MIGRATION_DSN)

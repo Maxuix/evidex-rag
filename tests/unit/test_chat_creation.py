@@ -34,15 +34,9 @@ from rag_kb.retrieval.profile import (
 
 class ChatCreationContractTests(unittest.TestCase):
     def test_safe_defaults_and_all_four_override_pairs_are_complete(self) -> None:
-        default = resolve_p1_policy(
-            requested_policy={},
-            knowledge_base_defaults={
-                "answer_style": "concise",
-                "insufficiency_policy": "refuse",
-            },
-        ).as_dict()
+        default = resolve_p1_policy(requested_policy={}).as_dict()
         self.assertEqual(default["answer_style"], "concise")
-        self.assertEqual(default["insufficiency_policy"], "refuse")
+        self.assertEqual(default["insufficiency_policy"], "partial_answer")
         self.assertEqual(default["grounding_policy"], "evidence_only")
         self.assertTrue(default["citation_required"])
         self.assertEqual(default["citation_granularity"], "claim_level")
@@ -57,7 +51,7 @@ class ChatCreationContractTests(unittest.TestCase):
                     },
                     knowledge_base_defaults={
                         "answer_style": "concise",
-                        "insufficiency_policy": "refuse",
+                        "insufficiency_policy": "partial_answer",
                     },
                 ).answer_style,
                 resolve_p1_policy(
@@ -67,7 +61,7 @@ class ChatCreationContractTests(unittest.TestCase):
                     },
                     knowledge_base_defaults={
                         "answer_style": "concise",
-                        "insufficiency_policy": "refuse",
+                        "insufficiency_policy": "partial_answer",
                     },
                 ).insufficiency_policy,
             )

@@ -59,7 +59,7 @@ class ChatSessionBusyError(RuntimeError):
 @dataclass(frozen=True, slots=True)
 class AnswerPolicyDefaults:
     answer_style: AnswerStyle = AnswerStyle.CONCISE
-    insufficiency_policy: InsufficiencyPolicy = InsufficiencyPolicy.REFUSE
+    insufficiency_policy: InsufficiencyPolicy = InsufficiencyPolicy.PARTIAL_ANSWER
 
     def as_dict(self) -> dict[str, str]:
         return {

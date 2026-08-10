@@ -1400,7 +1400,8 @@ class _FakeChatService:
                 values["answer_style"] or AnswerStyle.CONCISE
             ).value,
             "insufficiency_policy": (
-                values["insufficiency_policy"] or InsufficiencyPolicy.REFUSE
+                values["insufficiency_policy"]
+                or InsufficiencyPolicy.PARTIAL_ANSWER
             ).value,
             "citation_required": True,
             "citation_granularity": "claim_level",
@@ -1503,7 +1504,10 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             created.json()["answer_policy_defaults"],
-            {"answer_style": "concise", "insufficiency_policy": "refuse"},
+            {
+                "answer_style": "concise",
+                "insufficiency_policy": "partial_answer",
+            },
         )
 
         updated = await request(
@@ -2518,7 +2522,7 @@ def _knowledge_base_value() -> KnowledgeBase:
         retrieval_defaults={"strategy": "exact_vector", "top_k": 10},
         answer_policy_defaults={
             "answer_style": "concise",
-            "insufficiency_policy": "refuse",
+            "insufficiency_policy": "partial_answer",
         },
         provisioned_at=now,
         created_at=now,
@@ -2596,7 +2600,7 @@ def _chat_run_value(session: ChatSession) -> ChatRun:
         effective_policy={
             "grounding_policy": "evidence_only",
             "answer_style": "concise",
-            "insufficiency_policy": "refuse",
+            "insufficiency_policy": "partial_answer",
             "citation_required": True,
             "citation_granularity": "claim_level",
             "answer_task": "answer",

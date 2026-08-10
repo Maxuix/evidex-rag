@@ -5,7 +5,7 @@ from __future__ import annotations
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-EXPECTED_REVISION = "0006_pdf_parsing_progress"
+EXPECTED_REVISION = "0007_default_partial_answer"
 
 
 class DatabaseReadinessError(RuntimeError):

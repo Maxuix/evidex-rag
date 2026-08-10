@@ -5941,7 +5941,7 @@
           },
           "insufficiency_policy": {
             "$ref": "#/components/schemas/InsufficiencyPolicy",
-            "default": "refuse"
+            "default": "partial_answer"
           }
         },
         "additionalProperties": false,
@@ -6013,7 +6013,7 @@
             "$ref": "#/components/schemas/KnowledgeBaseAnswerPolicyDefaults",
             "default": {
               "answer_style": "concise",
-              "insufficiency_policy": "refuse"
+              "insufficiency_policy": "partial_answer"
             }
           },
           "embedding": {
@@ -6253,7 +6253,7 @@
             "$ref": "#/components/schemas/KnowledgeBaseAnswerPolicyDefaults",
             "default": {
               "answer_style": "concise",
-              "insufficiency_policy": "refuse"
+              "insufficiency_policy": "partial_answer"
             }
           },
           "provisioned_at": {

@@ -10,7 +10,7 @@ from rag_kb.db.readiness import EXPECTED_REVISION
 
 class CompositeEvidenceSchemaTests(unittest.TestCase):
     def test_current_head_and_inventory_include_composite_relations(self) -> None:
-        self.assertEqual(EXPECTED_REVISION, "0006_pdf_parsing_progress")
+        self.assertEqual(EXPECTED_REVISION, "0007_default_partial_answer")
         self.assertIn("index_chunk_asset_relation", Base.metadata.tables)
         self.assertIn("index_chunk_lexical", Base.metadata.tables)
         self.assertIn("index_lexical_manifest", Base.metadata.tables)
