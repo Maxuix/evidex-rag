@@ -593,15 +593,15 @@ class ApiContractTests(unittest.IsolatedAsyncioTestCase):
             for record in captured.records
             if getattr(record, "safe_event", None) == "unexpected_api_error"
         )
+        self.assertEqual(error_record.safe_fields["trace_id"], body["trace_id"])
+        self.assertEqual(error_record.safe_fields["method"], "GET")
         self.assertEqual(
-            error_record.safe_fields,
-            {
-                "trace_id": body["trace_id"],
-                "method": "GET",
-                "path": f"{API_PREFIX}/unexpected/{{resource_id}}",
-                "error_type": "RuntimeError",
-            },
+            error_record.safe_fields["path"],
+            f"{API_PREFIX}/unexpected/{{resource_id}}",
         )
+        self.assertEqual(error_record.safe_fields["error_type"], "RuntimeError")
+        self.assertEqual(error_record.safe_exception["type"], "RuntimeError")
+        self.assertTrue(error_record.safe_exception["fingerprint"])
         self.assertNotIn("internal-secret", repr(captured.records))
         self.assertNotIn("runtime-resource-id", repr(captured.records))
 

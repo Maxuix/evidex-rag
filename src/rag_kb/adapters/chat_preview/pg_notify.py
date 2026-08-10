@@ -35,7 +35,7 @@ from rag_kb.domain.chat_workflow import (
     ChatWorkflowMode,
     ResearchStatus,
 )
-from rag_kb.observability import get_logger, log_event
+from rag_kb.observability import get_logger, log_exception
 
 
 CHAT_PREVIEW_CHANNEL = "rag_kb_chat_preview_v1"
@@ -347,7 +347,7 @@ class PgNotifyPreviewSink:
             )
         except Exception as error:
             await self._discard_connection(connection)
-            self._report_unavailable("worker", error)
+            self._report_unavailable(error)
 
     async def _ensure_connection(self) -> Any | None:
         if self._closed:
@@ -366,7 +366,7 @@ class PgNotifyPreviewSink:
                 )
             except Exception as error:
                 self._connection = None
-                self._report_unavailable("worker", error)
+                self._report_unavailable(error)
                 return None
             self._reported_unavailable = False
             return self._connection
@@ -383,17 +383,16 @@ class PgNotifyPreviewSink:
                 except Exception:
                     pass
 
-    def _report_unavailable(self, process: str, error: Exception) -> None:
+    def _report_unavailable(self, error: Exception) -> None:
         if self._reported_unavailable:
             return
         self._reported_unavailable = True
-        log_event(
+        log_exception(
             _LOGGER,
             "chat_preview_unavailable",
+            error,
             level=logging.WARNING,
-            process=process,
             component="notify_sink",
-            error_type=type(error).__name__,
         )
 
     def _mark_stopped(self, key: tuple[UUID, int]) -> None:
@@ -605,13 +604,12 @@ class PgNotifyPreviewBroker:
         if self._reported_unavailable:
             return
         self._reported_unavailable = True
-        log_event(
+        log_exception(
             _LOGGER,
             "chat_preview_unavailable",
+            error,
             level=logging.WARNING,
-            process="api",
             component="listen_broker",
-            error_type=type(error).__name__,
         )
 
 

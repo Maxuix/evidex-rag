@@ -470,6 +470,14 @@ class RetrievalSettings(StrictSettingsModel):
 
 class ObservabilitySettings(StrictSettingsModel):
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+    log_directory: Path | None = None
+
+    @field_validator("log_directory")
+    @classmethod
+    def require_absolute_log_directory(cls, value: Path | None) -> Path | None:
+        if value is not None and not value.is_absolute():
+            raise ValueError("log_directory must be absolute")
+        return value
 
 
 class Settings(BaseSettings):

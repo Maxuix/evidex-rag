@@ -16,7 +16,7 @@ from rag_kb.domain import (
     ErrorCode,
     ReconciliationResult,
 )
-from rag_kb.observability import get_logger, log_event
+from rag_kb.observability import get_logger, log_event, log_exception
 from rag_kb.scheduling.indexing import RetryPolicy
 from rag_kb.workflows.contracts import GraphRunner
 
@@ -117,10 +117,29 @@ class ChatRunScheduler:
                 try:
                     pipeline_task.result()
                 except ChatPipelineExecutionError as error:
+                    log_event(
+                        LOGGER,
+                        "chat_attempt_failed",
+                        level=logging.ERROR,
+                        lane="chat",
+                        run_id=lease.run_id,
+                        attempt=lease.attempt,
+                        error_code=error.code.value,
+                        phase=error.phase.value,
+                    )
                     await self._failure_settler.settle(lease, error)
                 except asyncio.CancelledError:
                     raise
-                except Exception:
+                except Exception as error:
+                    log_exception(
+                        LOGGER,
+                        "chat_attempt_crashed",
+                        error,
+                        lane="chat",
+                        run_id=lease.run_id,
+                        attempt=lease.attempt,
+                        phase=ChatPipelinePhase.LOAD_CONTEXT.value,
+                    )
                     await self._failure_settler.settle(
                         lease,
                         ChatPipelineExecutionError(
@@ -129,11 +148,35 @@ class ChatRunScheduler:
                             diagnostic={"check": "scheduler_execution"},
                         ),
                     )
+                else:
+                    log_event(
+                        LOGGER,
+                        "chat_attempt_completed",
+                        lane="chat",
+                        run_id=lease.run_id,
+                        attempt=lease.attempt,
+                        outcome="terminal",
+                    )
             elif stop_task in done:
                 await _cancel(pipeline_task)
+                log_event(
+                    LOGGER,
+                    "chat_attempt_stopped",
+                    lane="chat",
+                    run_id=lease.run_id,
+                    attempt=lease.attempt,
+                )
                 await self._settle_stopped(lease)
             else:
                 await _cancel(pipeline_task)
+                log_event(
+                    LOGGER,
+                    "chat_attempt_ownership_lost",
+                    level=logging.WARNING,
+                    lane="chat",
+                    run_id=lease.run_id,
+                    attempt=lease.attempt,
+                )
         except asyncio.CancelledError:
             await _cancel(pipeline_task)
             await self._settle_stopped(lease)
@@ -162,13 +205,13 @@ class ChatRunScheduler:
                     observed_at=self._clock(),
                 )
             except Exception as error:
-                log_event(
+                log_exception(
                     LOGGER,
                     "chat_heartbeat_failed",
-                    level=logging.ERROR,
+                    error,
                     lane="chat",
+                    run_id=lease.run_id,
                     attempt=lease.attempt,
-                    error_type=type(error).__name__,
                 )
                 continue
             if not owned:

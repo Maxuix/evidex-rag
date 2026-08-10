@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
-import logging
+from time import perf_counter
 from typing import Any, Protocol
 
-from rag_kb.observability import get_logger, log_event
+from rag_kb.observability import (
+    bind_log_context,
+    get_logger,
+    log_event,
+    log_exception,
+)
 
 
 DEFAULT_RECONCILIATION_INTERVAL_SECONDS = 30.0
@@ -45,12 +50,22 @@ async def consume_lane(
         if lease is None:
             await _wait_or_stop(stopped, poll_interval_seconds)
             continue
-        try:
-            await scheduler.execute(lease, stopped)
-        except asyncio.CancelledError:
-            raise
-        except Exception as error:
-            _log_failure("worker_execution_failed", lane, error)
+        with bind_log_context(**_lease_context(lane, lease)):
+            started = perf_counter()
+            log_event(LOGGER, "worker_job_claimed")
+            try:
+                await scheduler.execute(lease, stopped)
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                _log_failure("worker_execution_failed", lane, error)
+            else:
+                log_event(
+                    LOGGER,
+                    "worker_attempt_finished",
+                    duration_ms=round((perf_counter() - started) * 1000, 3),
+                    outcome="returned",
+                )
 
 
 async def reconcile_lanes(
@@ -76,6 +91,17 @@ async def reconcile_lanes(
                 raise result
             if isinstance(result, Exception):
                 _log_failure("worker_reconciliation_failed", lane, result)
+                continue
+            requeued = getattr(result, "requeued", 0)
+            failed = getattr(result, "failed", 0)
+            if requeued or failed:
+                log_event(
+                    LOGGER,
+                    "worker_reconciliation_completed",
+                    lane=lane,
+                    requeued=requeued,
+                    failed=failed,
+                )
         await _wait_or_stop(stopped, interval_seconds)
 
 
@@ -87,10 +113,24 @@ async def _wait_or_stop(stopped: asyncio.Event, timeout: float) -> None:
 
 
 def _log_failure(event: str, lane: str, error: Exception) -> None:
-    log_event(
+    log_exception(
         LOGGER,
         event,
-        level=logging.ERROR,
+        error,
         lane=lane,
-        error_type=type(error).__name__,
     )
+
+
+def _lease_context(lane: str, lease: Any) -> dict[str, object]:
+    context: dict[str, object] = {"lane": lane}
+    for field in (
+        "attempt",
+        "indexed_document_version_id",
+        "job_id",
+        "run_id",
+        "workspace_id",
+    ):
+        value = getattr(lease, field, None)
+        if value is not None:
+            context[field] = value
+    return context

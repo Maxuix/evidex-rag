@@ -5,6 +5,7 @@ set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 STATE_FILE=${RAG_KB_LOCAL_COMPOSE_ENV_FILE:-"$ROOT/.env.local"}
 APP_ENV_FILE=${RAG_KB_LOCAL_APP_ENV_FILE:-"$ROOT/.env"}
+LOG_DIRECTORY="$ROOT/.runtime/logs"
 
 fail() {
   printf 'Local startup failed: %s\n' "$1" >&2
@@ -91,6 +92,14 @@ command -v docker >/dev/null 2>&1 || fail "Docker is not installed or not on PAT
 docker info >/dev/null 2>&1 || fail "Docker is not running"
 [ -f "$APP_ENV_FILE" ] ||
   fail "missing $APP_ENV_FILE; copy .env.example to .env and configure the model providers"
+[ ! -L "$ROOT/.runtime" ] || fail "runtime directory must not be a symbolic link"
+[ ! -L "$LOG_DIRECTORY" ] || fail "log directory must not be a symbolic link"
+[ ! -e "$ROOT/.runtime" ] || [ -d "$ROOT/.runtime" ] ||
+  fail "runtime path is not a directory: $ROOT/.runtime"
+[ ! -e "$LOG_DIRECTORY" ] || [ -d "$LOG_DIRECTORY" ] ||
+  fail "log path is not a directory: $LOG_DIRECTORY"
+mkdir -p "$LOG_DIRECTORY"
+chmod 700 "$ROOT/.runtime" "$LOG_DIRECTORY"
 
 credential_source=
 if [ -f "$STATE_FILE" ]; then

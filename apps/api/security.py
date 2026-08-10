@@ -10,6 +10,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from apps.api.errors import problem_response
 from rag_kb.auth import AuthContext, MetadataFilter
+from rag_kb.observability import bind_log_context
 from rag_kb.schemas import ErrorCode
 
 
@@ -50,10 +51,14 @@ class IdentityOverrideMiddleware:
             )
             await response(scope, receive, send)
             return
-        scope.setdefault("state", {})["auth_context"] = (
-            scope["app"].state.dependencies.auth_provider.get_context()
-        )
-        await self.app(scope, receive, send)
+        context = scope["app"].state.dependencies.auth_provider.get_context()
+        scope.setdefault("state", {})["auth_context"] = context
+        with bind_log_context(
+            principal_id=context.principal_id,
+            client_id=context.client_id,
+            workspace_id=context.workspace_id,
+        ):
+            await self.app(scope, receive, send)
 
 
 def get_auth_context(request: Request) -> AuthContext:

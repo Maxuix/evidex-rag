@@ -13,3 +13,4 @@ coverage.xml
 dist/
 htmlcov/
 node_modules/
+.runtime/

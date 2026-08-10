@@ -35,14 +35,22 @@ def create_app(
         resolved = dependencies or build_api_dependencies()
         app.state.dependencies = resolved
         try:
-            configure_logging(level=resolved.settings.observability.log_level)
+            configure_logging(
+                level=resolved.settings.observability.log_level,
+                process="api",
+                log_directory=getattr(
+                    resolved.settings.observability,
+                    "log_directory",
+                    None,
+                ),
+            )
             await resolved.start()
-            log_event(LOGGER, "process_ready", process="api")
+            log_event(LOGGER, "process_ready")
             yield
         finally:
             await resolved.close()
             app.state.dependencies = None
-            log_event(LOGGER, "process_stopped", process="api")
+            log_event(LOGGER, "process_stopped")
 
     app = FastAPI(
         title="Enterprise Knowledge Base API",

@@ -7,6 +7,8 @@ from uuid import uuid4
 from starlette.datastructures import MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from rag_kb.observability import bind_log_context
+
 
 class TraceIdMiddleware:
     """Assign a server-generated trace identifier to every HTTP request."""
@@ -29,4 +31,5 @@ class TraceIdMiddleware:
                 headers["X-Trace-ID"] = trace_id
             await send(message)
 
-        await self.app(scope, receive, send_with_trace)
+        with bind_log_context(trace_id=trace_id):
+            await self.app(scope, receive, send_with_trace)

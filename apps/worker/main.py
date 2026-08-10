@@ -13,7 +13,13 @@ import stat
 from typing import Any
 
 from rag_kb.config import load_settings
-from rag_kb.observability import configure_logging, get_logger, log_event
+from rag_kb.observability import (
+    bind_log_context,
+    configure_logging,
+    get_logger,
+    log_event,
+    log_exception,
+)
 from rag_kb.scheduling.worker import consume_lane, reconcile_lanes
 
 
@@ -34,7 +40,11 @@ class WorkerBackgroundTaskError(RuntimeError):
 
 async def check_runtime() -> None:
     settings = load_settings()
-    configure_logging(level=settings.observability.log_level)
+    configure_logging(
+        level=settings.observability.log_level,
+        process="worker-check",
+        log_directory=settings.observability.log_directory,
+    )
     _require_fresh_heartbeat(_heartbeat_path(settings.file_store.root_path))
     from apps.worker.dependencies import build_worker_dependencies
 
@@ -44,7 +54,7 @@ async def check_runtime() -> None:
         log_event(
             LOGGER,
             "runtime_check_passed",
-            process="worker",
+            level=logging.DEBUG,
             database="ready",
         )
     finally:
@@ -53,7 +63,11 @@ async def check_runtime() -> None:
 
 async def serve() -> None:
     settings = load_settings()
-    configure_logging(level=settings.observability.log_level)
+    configure_logging(
+        level=settings.observability.log_level,
+        process="worker",
+        log_directory=settings.observability.log_directory,
+    )
     heartbeat_path = _heartbeat_path(settings.file_store.root_path)
     _remove_heartbeat(heartbeat_path)
     from apps.worker.dependencies import build_worker_dependencies
@@ -69,7 +83,6 @@ async def serve() -> None:
         log_event(
             LOGGER,
             "process_ready",
-            process="worker",
             component="foundation_runtime",
             database="ready",
         )
@@ -107,7 +120,6 @@ async def serve() -> None:
         log_event(
             LOGGER,
             "worker_consumers_started",
-            process="worker",
             queue_backend="postgresql",
             lane="chat,indexing",
         )
@@ -115,44 +127,56 @@ async def serve() -> None:
         log_event(
             LOGGER,
             "worker_consumers_stopped",
-            process="worker",
             lane="chat,indexing",
         )
     finally:
         stopped.set()
         _remove_heartbeat(heartbeat_path, best_effort=True)
         await dependencies.close()
-        log_event(LOGGER, "process_stopped", process="worker")
+        log_event(LOGGER, "process_stopped")
         for shutdown_signal in (signal.SIGINT, signal.SIGTERM):
             loop.remove_signal_handler(shutdown_signal)
 
 
 async def _run_janitor(dependencies, stopped: asyncio.Event, interval: float) -> None:
     context = dependencies.auth_provider.get_context()
-    while not stopped.is_set():
-        try:
-            result = await dependencies.reconciliation_service.run_once(context)
-            log_event(
-                LOGGER,
-                "source_file_reconciliation_completed",
-                process="worker",
-                pending_activated=result.pending_activated,
-                missing_compensated=result.missing_compensated,
-                cleanup_completed=result.cleanup_completed,
-                cleanup_failed=result.cleanup_failed,
-                orphans_removed=result.orphans_removed,
-            )
-        except Exception as error:
-            log_event(
-                LOGGER,
-                "source_file_reconciliation_failed",
-                process="worker",
-                error_type=type(error).__name__,
-            )
-        try:
-            await asyncio.wait_for(stopped.wait(), timeout=interval)
-        except TimeoutError:
-            pass
+    with bind_log_context(
+        principal_id=context.principal_id,
+        client_id=context.client_id,
+        workspace_id=context.workspace_id,
+    ):
+        while not stopped.is_set():
+            try:
+                result = await dependencies.reconciliation_service.run_once(context)
+                changed = any(
+                    (
+                        result.pending_activated,
+                        result.missing_compensated,
+                        result.cleanup_completed,
+                        result.cleanup_failed,
+                        result.orphans_removed,
+                    )
+                )
+                log_event(
+                    LOGGER,
+                    "source_file_reconciliation_completed",
+                    level=logging.INFO if changed else logging.DEBUG,
+                    pending_activated=result.pending_activated,
+                    missing_compensated=result.missing_compensated,
+                    cleanup_completed=result.cleanup_completed,
+                    cleanup_failed=result.cleanup_failed,
+                    orphans_removed=result.orphans_removed,
+                )
+            except Exception as error:
+                log_exception(
+                    LOGGER,
+                    "source_file_reconciliation_failed",
+                    error,
+                )
+            try:
+                await asyncio.wait_for(stopped.wait(), timeout=interval)
+            except TimeoutError:
+                pass
 
 
 async def _run_liveness_heartbeat(
@@ -201,19 +225,22 @@ async def _supervise_background_tasks(
             if task in done
         }
         for component, task in finished.items():
-            error_type = _task_error_type(task)
-            log_event(
-                LOGGER,
-                (
-                    "worker_background_task_failed"
-                    if error_type is not None
-                    else "worker_background_task_stopped"
-                ),
-                level=logging.ERROR,
-                process="worker",
-                component=component,
-                error_type=error_type,
-            )
+            error = _task_error(task)
+            if error is not None:
+                log_exception(
+                    LOGGER,
+                    "worker_background_task_failed",
+                    error,
+                    component=component,
+                )
+            else:
+                log_event(
+                    LOGGER,
+                    "worker_background_task_stopped",
+                    level=logging.ERROR,
+                    component=component,
+                    error_type=("CancelledError" if task.cancelled() else None),
+                )
         stopped.set()
         for task in tasks.values():
             if not task.done():
@@ -245,22 +272,19 @@ def _log_background_failures(
         if not isinstance(result, Exception):
             continue
         failed = True
-        log_event(
+        log_exception(
             LOGGER,
             "worker_background_task_failed",
-            level=logging.ERROR,
-            process="worker",
+            result,
             component=component,
-            error_type=type(result).__name__,
         )
     return failed
 
 
-def _task_error_type(task: asyncio.Task[None]) -> str | None:
+def _task_error(task: asyncio.Task[None]) -> BaseException | None:
     if task.cancelled():
-        return "CancelledError"
-    error = task.exception()
-    return type(error).__name__ if error is not None else None
+        return None
+    return task.exception()
 
 
 def _heartbeat_path(root: Path) -> Path:
@@ -308,15 +332,17 @@ def main() -> int:
         ),
     )
     arguments = parser.parse_args()
+    configure_logging(
+        level="INFO",
+        process="worker-check" if arguments.check else "worker",
+    )
     try:
         asyncio.run(check_runtime() if arguments.check else serve())
     except Exception as error:
-        log_event(
+        log_exception(
             LOGGER,
             "process_failed",
-            level=logging.ERROR,
-            process="worker",
-            error_type=type(error).__name__,
+            error,
         )
         return 1
     return 0

@@ -21,7 +21,7 @@ from rag_kb.domain import (
     ResourceStateConflictError,
     RetrievalExecutionError,
 )
-from rag_kb.observability import get_logger, log_event
+from rag_kb.observability import get_logger, log_event, log_exception
 from rag_kb.schemas import ErrorCode, FieldViolation, ProblemDetails
 
 
@@ -244,7 +244,6 @@ async def _file_admission_handler(
     log_event(
         LOGGER,
         "file_admission_rejected",
-        process="api",
         trace_id=getattr(request.state, "trace_id", None),
         reason_code=safe_reason,
     )
@@ -405,14 +404,14 @@ async def _unexpected_exception_handler(
     request: Request,
     error: Exception,
 ) -> JSONResponse:
-    log_event(
+    log_exception(
         LOGGER,
         "unexpected_api_error",
+        error,
         level=logging.ERROR,
         trace_id=getattr(request.state, "trace_id", None),
         method=request.method,
         path=_normalized_route_path(request),
-        error_type=type(error).__name__,
     )
     return problem_response(
         request,

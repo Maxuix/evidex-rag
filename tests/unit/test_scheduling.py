@@ -120,7 +120,7 @@ class IndexingSchedulerTests(unittest.IsolatedAsyncioTestCase):
         scheduler = _scheduler(factory, _Pipeline(factory), deadline=1)
         ownership_lost = asyncio.Event()
 
-        with patch("rag_kb.scheduling.indexing.log_event") as logged:
+        with patch("rag_kb.scheduling.indexing.log_exception") as logged:
             await scheduler._heartbeat(  # noqa: SLF001
                 _lease(attempt=1),
                 ownership_lost,
@@ -129,8 +129,7 @@ class IndexingSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(ownership_lost.is_set())
         self.assertEqual(logged.call_args.args[1], "indexing_heartbeat_failed")
         self.assertEqual(logged.call_args.kwargs["lane"], "indexing")
-        self.assertEqual(logged.call_args.kwargs["error_type"], "RuntimeError")
-        self.assertNotIn("document-body-must-not-leak", repr(logged.mock_calls))
+        self.assertIsInstance(logged.call_args.args[2], RuntimeError)
 
 
 class ChatSchedulerTests(unittest.IsolatedAsyncioTestCase):
@@ -213,7 +212,7 @@ class ChatSchedulerTests(unittest.IsolatedAsyncioTestCase):
         )
         ownership_lost = asyncio.Event()
 
-        with patch("rag_kb.scheduling.chat.log_event") as logged:
+        with patch("rag_kb.scheduling.chat.log_exception") as logged:
             await scheduler._heartbeat(  # noqa: SLF001
                 _chat_lease(),
                 ownership_lost,
@@ -222,8 +221,7 @@ class ChatSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(ownership_lost.is_set())
         self.assertEqual(logged.call_args.args[1], "chat_heartbeat_failed")
         self.assertEqual(logged.call_args.kwargs["lane"], "chat")
-        self.assertEqual(logged.call_args.kwargs["error_type"], "RuntimeError")
-        self.assertNotIn("chat-content-must-not-leak", repr(logged.mock_calls))
+        self.assertIsInstance(logged.call_args.args[2], RuntimeError)
 
 
 class WorkerConsumerTests(unittest.IsolatedAsyncioTestCase):
@@ -274,7 +272,7 @@ class WorkerConsumerTests(unittest.IsolatedAsyncioTestCase):
         chat.reconciliation_error = RuntimeError("query-must-not-leak")
         chat.stop_after_reconciliation = stopped
 
-        with patch("rag_kb.scheduling.worker.log_event") as logged:
+        with patch("rag_kb.scheduling.worker.log_exception") as logged:
             await reconcile_lanes(
                 {"chat": chat, "indexing": _Lane([], release)},
                 stopped,
@@ -286,8 +284,7 @@ class WorkerConsumerTests(unittest.IsolatedAsyncioTestCase):
             "worker_reconciliation_failed",
         )
         self.assertEqual(logged.call_args.kwargs["lane"], "chat")
-        self.assertEqual(logged.call_args.kwargs["error_type"], "RuntimeError")
-        self.assertNotIn("query-must-not-leak", repr(logged.mock_calls))
+        self.assertIsInstance(logged.call_args.args[2], RuntimeError)
 
     async def test_claim_exception_emits_stable_event(self) -> None:
         stopped = asyncio.Event()
@@ -296,7 +293,7 @@ class WorkerConsumerTests(unittest.IsolatedAsyncioTestCase):
         claim_lane.claim_error = RuntimeError("claim-content-must-not-leak")
         claim_lane.stop_after_claim = stopped
 
-        with patch("rag_kb.scheduling.worker.log_event") as logged:
+        with patch("rag_kb.scheduling.worker.log_exception") as logged:
             await consume_lane(
                 "chat",
                 claim_lane,
@@ -306,9 +303,8 @@ class WorkerConsumerTests(unittest.IsolatedAsyncioTestCase):
 
         events = [call.args[1] for call in logged.call_args_list]
         self.assertEqual(events, ["worker_claim_failed"])
-        self.assertNotIn("must-not-leak", repr(logged.mock_calls))
         self.assertEqual(logged.call_args.kwargs["lane"], "chat")
-        self.assertEqual(logged.call_args.kwargs["error_type"], "RuntimeError")
+        self.assertIsInstance(logged.call_args.args[2], RuntimeError)
 
     async def test_execution_exception_emits_stable_event(self) -> None:
         stopped = asyncio.Event()
@@ -316,7 +312,10 @@ class WorkerConsumerTests(unittest.IsolatedAsyncioTestCase):
         lane.execution_error = RuntimeError("pipeline-content-must-not-leak")
         lane.stop_after_execution = stopped
 
-        with patch("rag_kb.scheduling.worker.log_event") as logged:
+        with (
+            patch("rag_kb.scheduling.worker.log_event") as events,
+            patch("rag_kb.scheduling.worker.log_exception") as logged,
+        ):
             await consume_lane(
                 "indexing",
                 lane,
@@ -329,8 +328,8 @@ class WorkerConsumerTests(unittest.IsolatedAsyncioTestCase):
             "worker_execution_failed",
         )
         self.assertEqual(logged.call_args.kwargs["lane"], "indexing")
-        self.assertEqual(logged.call_args.kwargs["error_type"], "RuntimeError")
-        self.assertNotIn("pipeline-content-must-not-leak", repr(logged.mock_calls))
+        self.assertIsInstance(logged.call_args.args[2], RuntimeError)
+        self.assertEqual(events.call_args_list[0].args[1], "worker_job_claimed")
 
 
 class _Factory:

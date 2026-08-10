@@ -16,7 +16,7 @@ from rag_kb.domain import (
     IndexingLease,
     ReconciliationResult,
 )
-from rag_kb.observability import get_logger, log_event
+from rag_kb.observability import get_logger, log_event, log_exception
 from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, UnitOfWorkPurpose, execute_in_transaction
 
 if TYPE_CHECKING:
@@ -153,15 +153,38 @@ class IndexingJobScheduler:
                     await self._settle_error(lease, error)
                 except asyncio.CancelledError:
                     raise
-                except Exception:
+                except Exception as error:
+                    log_exception(
+                        LOGGER,
+                        "indexing_attempt_crashed",
+                        error,
+                        lane="indexing",
+                        job_id=lease.job_id,
+                        indexed_document_version_id=(
+                            lease.indexed_document_version_id
+                        ),
+                        attempt=lease.attempt,
+                    )
                     await self._settle(
                         lease,
                         code=ErrorCode.INDEX_PERSISTENCE_FAILED,
                         detail={"operation": "worker_execution"},
                         retryable=True,
+                        phase="worker_execution",
                     )
                 else:
                     await self._release_terminal(lease)
+                    log_event(
+                        LOGGER,
+                        "indexing_attempt_completed",
+                        lane="indexing",
+                        job_id=lease.job_id,
+                        indexed_document_version_id=(
+                            lease.indexed_document_version_id
+                        ),
+                        attempt=lease.attempt,
+                        outcome="released",
+                    )
             elif stop_task in done:
                 await _cancel(pipeline_task)
                 await self._settle(
@@ -169,6 +192,7 @@ class IndexingJobScheduler:
                     code=ErrorCode.INDEXING_WORKER_STOPPED,
                     detail={"operation": "worker_shutdown"},
                     retryable=True,
+                    phase="worker_shutdown",
                 )
             elif deadline_task in done:
                 await _cancel(pipeline_task)
@@ -177,9 +201,21 @@ class IndexingJobScheduler:
                     code=ErrorCode.INDEXING_DEADLINE_EXCEEDED,
                     detail={"limit": self._deadline_seconds},
                     retryable=True,
+                    phase="deadline",
                 )
             else:
                 await _cancel(pipeline_task)
+                log_event(
+                    LOGGER,
+                    "indexing_attempt_ownership_lost",
+                    level=logging.WARNING,
+                    lane="indexing",
+                    job_id=lease.job_id,
+                    indexed_document_version_id=(
+                        lease.indexed_document_version_id
+                    ),
+                    attempt=lease.attempt,
+                )
         except asyncio.CancelledError:
             await _cancel(pipeline_task)
             await self._settle(
@@ -187,6 +223,7 @@ class IndexingJobScheduler:
                 code=ErrorCode.INDEXING_WORKER_STOPPED,
                 detail={"operation": "worker_shutdown"},
                 retryable=True,
+                phase="worker_shutdown",
             )
             raise
         finally:
@@ -219,17 +256,16 @@ class IndexingJobScheduler:
                     purpose=UnitOfWorkPurpose.HEARTBEAT,
                 )
             except Exception as error:
-                log_event(
+                log_exception(
                     LOGGER,
                     "indexing_heartbeat_failed",
-                    level=logging.ERROR,
+                    error,
                     lane="indexing",
                     job_id=lease.job_id,
                     indexed_document_version_id=(
                         lease.indexed_document_version_id
                     ),
                     attempt=lease.attempt,
-                    error_type=type(error).__name__,
                 )
                 continue
             if not owned:
@@ -246,6 +282,7 @@ class IndexingJobScheduler:
             code=error.code,
             detail=error.diagnostic,
             retryable=_is_retryable(error),
+            phase=error.phase.value,
         )
 
     async def _settle(
@@ -255,12 +292,14 @@ class IndexingJobScheduler:
         code: ErrorCode,
         detail: dict,
         retryable: bool,
+        phase: str,
     ) -> None:
         observed_at = self._clock()
         safe_detail = _safe_detail(detail, attempt=lease.attempt)
+        will_retry = retryable and lease.attempt < self._retry.max_attempts
 
         async def persist(uow: UnitOfWork) -> bool:
-            if retryable and lease.attempt < self._retry.max_attempts:
+            if will_retry:
                 return await uow.indexing.reschedule(
                     lease,
                     observed_at=observed_at,
@@ -283,7 +322,40 @@ class IndexingJobScheduler:
             purpose=UnitOfWorkPurpose.RECONCILIATION,
         )
         if not changed:
+            log_event(
+                LOGGER,
+                "indexing_attempt_settlement_skipped",
+                level=logging.WARNING,
+                lane="indexing",
+                job_id=lease.job_id,
+                indexed_document_version_id=(
+                    lease.indexed_document_version_id
+                ),
+                attempt=lease.attempt,
+                error_code=code.value,
+                phase=phase,
+                retryable=retryable,
+                outcome="ownership_lost",
+            )
             await self._release_terminal(lease)
+            return
+        log_event(
+            LOGGER,
+            (
+                "indexing_attempt_rescheduled"
+                if will_retry
+                else "indexing_attempt_failed"
+            ),
+            level=logging.WARNING if will_retry else logging.ERROR,
+            lane="indexing",
+            job_id=lease.job_id,
+            indexed_document_version_id=lease.indexed_document_version_id,
+            attempt=lease.attempt,
+            error_code=code.value,
+            phase=phase,
+            retryable=retryable,
+            outcome="requeued" if will_retry else "terminal",
+        )
 
     async def _release_terminal(self, lease: IndexingLease) -> None:
         await execute_in_transaction(

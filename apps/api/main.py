@@ -8,7 +8,7 @@ import logging
 import uvicorn
 
 from rag_kb.config import Settings, load_settings
-from rag_kb.observability import configure_logging, get_logger, log_event
+from rag_kb.observability import configure_logging, get_logger, log_exception
 
 
 LOGGER = get_logger("rag_kb.api.runtime")
@@ -31,10 +31,14 @@ def main() -> int:
         help="listen on the container interface; Compose must publish loopback-only",
     )
     arguments = parser.parse_args()
-    configure_logging(level="INFO")
+    configure_logging(level="INFO", process="api")
     try:
         settings = load_settings()
-        configure_logging(level=settings.observability.log_level)
+        configure_logging(
+            level=settings.observability.log_level,
+            process="api",
+            log_directory=settings.observability.log_directory,
+        )
         host, port = server_address(
             settings,
             container_listen=arguments.container_listen,
@@ -49,12 +53,11 @@ def main() -> int:
             log_config=None,
         )
     except (Exception, SystemExit) as error:
-        log_event(
+        log_exception(
             LOGGER,
             "process_failed",
+            error,
             level=logging.ERROR,
-            process="api",
-            error_type=type(error).__name__,
         )
         return 1
     return 0

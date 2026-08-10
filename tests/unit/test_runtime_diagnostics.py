@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
 from apps.api.main import main as api_main, server_address
+from apps.api.request_logging import _request_path
 from apps.worker.main import (
     WORKER_HEARTBEAT_MAX_AGE_SECONDS,
     WorkerBackgroundTaskError,
@@ -26,11 +27,31 @@ from apps.worker.main import (
     main as worker_main,
 )
 from rag_kb.observability import ContentSafeJsonFormatter, log_event
+from rag_kb.observability import bind_log_context, log_exception
+from rag_kb.observability.logging import _PrivateRotatingFileHandler
 
 from tests.unit.test_settings import build_settings
 
 
 class RuntimeDiagnosticsTests(unittest.TestCase):
+    def test_request_logging_uses_route_template_or_unmatched_sentinel(self) -> None:
+        route = Mock(path_format="/api/v1/documents/{document_id}")
+        self.assertEqual(
+            _request_path(
+                {
+                    "route": route,
+                    "path": "/api/v1/documents/private-value",
+                }  # type: ignore[arg-type]
+            ),
+            "/api/v1/documents/{document_id}",
+        )
+        self.assertEqual(
+            _request_path(
+                {"path": "/private-value"}  # type: ignore[arg-type]
+            ),
+            "/<unmatched>",
+        )
+
     def test_worker_heartbeat_uses_storage_initialized_runtime_directory(
         self,
     ) -> None:
@@ -118,6 +139,55 @@ class RuntimeDiagnosticsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             log_event(logger, "unsafe", request_body="must-not-leak")
 
+    def test_exception_diagnostics_keep_locations_without_content(self) -> None:
+        stream = io.StringIO()
+        handler = logging.StreamHandler(stream)
+        handler.setFormatter(ContentSafeJsonFormatter(process="api"))
+        logger = logging.getLogger("tests.runtime.exception")
+        logger.handlers[:] = [handler]
+        logger.propagate = False
+        logger.setLevel(logging.INFO)
+
+        try:
+            raise RuntimeError("provider-body-must-not-leak")
+        except RuntimeError as error:
+            with bind_log_context(trace_id="trace-safe"):
+                log_exception(logger, "request_failed", error, method="GET")
+
+        rendered = stream.getvalue()
+        payload = json.loads(rendered)
+        self.assertEqual(payload["trace_id"], "trace-safe")
+        self.assertEqual(payload["exception"]["type"], "RuntimeError")
+        self.assertTrue(payload["exception"]["fingerprint"])
+        self.assertTrue(payload["exception"]["frames"])
+        self.assertNotIn("provider-body-must-not-leak", rendered)
+        self.assertNotIn(str(Path.cwd()), rendered)
+
+    def test_private_jsonl_handler_rotates_with_private_permissions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "api.jsonl"
+            handler = _PrivateRotatingFileHandler(
+                path,
+                max_bytes=300,
+                backup_count=2,
+            )
+            handler.setFormatter(ContentSafeJsonFormatter(process="api"))
+            logger = logging.getLogger("tests.runtime.rotation")
+            logger.handlers[:] = [handler]
+            logger.propagate = False
+            logger.setLevel(logging.INFO)
+            for index in range(12):
+                log_event(logger, "rotation_test", attempt=index + 1)
+            handler.close()
+
+            self.assertTrue(path.exists())
+            self.assertTrue(path.with_name("api.jsonl.1").exists())
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(
+                path.with_name("api.jsonl.1").stat().st_mode & 0o777,
+                0o600,
+            )
+
     def test_worker_background_failure_returns_nonzero_process_status(self) -> None:
         with (
             patch("sys.argv", ["worker"]),
@@ -129,15 +199,13 @@ class RuntimeDiagnosticsTests(unittest.TestCase):
                     )
                 ),
             ),
-            patch("apps.worker.main.log_event") as logged,
+            patch("apps.worker.main.configure_logging"),
+            patch("apps.worker.main.log_exception") as logged,
         ):
             self.assertEqual(worker_main(), 1)
 
         self.assertEqual(logged.call_args.args[1], "process_failed")
-        self.assertEqual(
-            logged.call_args.kwargs["error_type"],
-            "WorkerBackgroundTaskError",
-        )
+        self.assertIsInstance(logged.call_args.args[2], WorkerBackgroundTaskError)
 
     def test_api_startup_failure_returns_nonzero_without_exception_message(
         self,
@@ -149,14 +217,12 @@ class RuntimeDiagnosticsTests(unittest.TestCase):
                 "apps.api.main.load_settings",
                 side_effect=RuntimeError("settings-secret-must-not-leak"),
             ),
-            patch("apps.api.main.log_event") as logged,
+            patch("apps.api.main.log_exception") as logged,
         ):
             self.assertEqual(api_main(), 1)
 
         self.assertEqual(logged.call_args.args[1], "process_failed")
-        self.assertEqual(logged.call_args.kwargs["process"], "api")
-        self.assertEqual(logged.call_args.kwargs["error_type"], "RuntimeError")
-        self.assertNotIn("settings-secret-must-not-leak", repr(logged.mock_calls))
+        self.assertIsInstance(logged.call_args.args[2], RuntimeError)
 
     def test_api_uvicorn_failure_returns_nonzero_without_exception_message(
         self,
@@ -171,14 +237,12 @@ class RuntimeDiagnosticsTests(unittest.TestCase):
                 "apps.api.main.uvicorn.run",
                 side_effect=SystemExit("lifespan-secret-must-not-leak"),
             ),
-            patch("apps.api.main.log_event") as logged,
+            patch("apps.api.main.log_exception") as logged,
         ):
             self.assertEqual(api_main(), 1)
 
         self.assertEqual(logged.call_args.args[1], "process_failed")
-        self.assertEqual(logged.call_args.kwargs["process"], "api")
-        self.assertEqual(logged.call_args.kwargs["error_type"], "SystemExit")
-        self.assertNotIn("lifespan-secret-must-not-leak", repr(logged.mock_calls))
+        self.assertIsInstance(logged.call_args.args[2], SystemExit)
 
 
 class WorkerRuntimeDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
@@ -326,7 +390,7 @@ class WorkerRuntimeDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
         async def wait_forever() -> None:
             await asyncio.Event().wait()
 
-        with patch("apps.worker.main.log_event") as logged:
+        with patch("apps.worker.main.log_exception") as logged:
             with self.assertRaises(WorkerBackgroundTaskError):
                 await _supervise_background_tasks(
                     {
@@ -341,8 +405,7 @@ class WorkerRuntimeDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
             logged.call_args.args[1],
             "worker_background_task_failed",
         )
-        self.assertEqual(logged.call_args.kwargs["error_type"], "RuntimeError")
-        self.assertNotIn("worker-content-must-not-leak", repr(logged.mock_calls))
+        self.assertIsInstance(logged.call_args.args[2], RuntimeError)
 
     async def test_stop_signal_allows_graceful_background_shutdown(self) -> None:
         stopped = asyncio.Event()

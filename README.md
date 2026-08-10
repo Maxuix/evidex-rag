@@ -63,6 +63,7 @@ compatibility, or release matrix is part of the normal workflow.
 ```bash
 docker compose --env-file .env.local ps
 docker compose --env-file .env.local logs --no-color api worker
+PYTHONPATH=src:. .venv/bin/python tools/collect_diagnostics.py
 docker compose --env-file .env.local down
 PYTHONPATH=src:. .venv/bin/python tools/reset_local.py \
   --env-file .env.local \
@@ -70,6 +71,14 @@ PYTHONPATH=src:. .venv/bin/python tools/reset_local.py \
   --inspect-only \
   --confirm DESTROY_RAG_KB_LOCAL_DATA
 ```
+
+Application-safe JSONL logs persist across container recreation in
+`.runtime/logs` and rotate automatically. The diagnostics command exports the
+latest 72 hours of allowlisted events plus health, Compose and Git state to a
+private zip below `.runtime/diagnostics`; it never reads `.env` or includes raw
+Docker output, request/model content, exception messages or source lines.
+Search `.runtime/logs` with a response `X-Trace-ID`, Run/Job ID, or exception
+fingerprint to follow one issue across API and Worker events.
 
 After inspecting the exact project-owned volumes, repeat the reset command
 without `--inspect-only`. It permanently removes the selected Compose project's

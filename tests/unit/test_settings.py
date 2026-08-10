@@ -138,6 +138,7 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.maintenance.task_retention_seconds, 604_800)
         self.assertEqual(settings.model_provider.chat.temperature, 0.1)
         self.assertEqual(settings.model_provider.chat.max_tokens, 2048)
+        self.assertIsNone(settings.observability.log_directory)
 
         self.assertNotIn("session_context", Settings.model_fields)
         self.assertNotIn("file_admission", Settings.model_fields)
@@ -147,6 +148,14 @@ class SettingsTests(unittest.TestCase):
             "model",
             type(settings.model_provider.embedding).model_fields,
         )
+
+    def test_observability_log_directory_must_be_absolute(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(ValidationError, "must be absolute"):
+                build_settings(
+                    Path(directory),
+                    observability={"log_directory": ".runtime/logs"},
+                )
 
     def test_auto_workflow_requires_agent_capability(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
