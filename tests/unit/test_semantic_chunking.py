@@ -160,7 +160,7 @@ class SemanticBoundaryTests(unittest.TestCase):
         )
         self.assertEqual(
             plan.plan_hash,
-            "96d40decea1c0ad6b2d8600bd18f704fd2c51434a967d51e2506432b727cb180",
+            "456719e05130d11062d2d1bf56380cf30f7ce925a7d86b8b3d9be656fbcd45c3",
         )
 
     def test_no_section_boundaries_are_unchanged_but_profile_hash_changes(self) -> None:

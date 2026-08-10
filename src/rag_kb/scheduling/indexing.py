@@ -60,7 +60,6 @@ class IndexingJobScheduler:
         worker_id: str,
         heartbeat_interval_seconds: float,
         stale_after_seconds: float,
-        deadline_seconds: float,
         retry_policy: RetryPolicy,
         reconciliation_batch_size: int,
         clock: Clock | None = None,
@@ -69,7 +68,6 @@ class IndexingJobScheduler:
             not worker_id
             or heartbeat_interval_seconds <= 0
             or stale_after_seconds <= heartbeat_interval_seconds
-            or deadline_seconds <= 0
             or reconciliation_batch_size <= 0
         ):
             raise ValueError("scheduler limits are invalid")
@@ -78,7 +76,6 @@ class IndexingJobScheduler:
         self._worker_id = worker_id
         self._heartbeat_interval_seconds = heartbeat_interval_seconds
         self._stale_after_seconds = stale_after_seconds
-        self._deadline_seconds = deadline_seconds
         self._retry = retry_policy
         self._reconciliation_batch_size = reconciliation_batch_size
         self._clock = clock or (lambda: datetime.now(UTC))
@@ -139,11 +136,10 @@ class IndexingJobScheduler:
             self._heartbeat(lease, ownership_lost)
         )
         stop_task = asyncio.create_task(stopped.wait())
-        deadline_task = asyncio.create_task(asyncio.sleep(self._deadline_seconds))
         ownership_task = asyncio.create_task(ownership_lost.wait())
         try:
             done, _ = await asyncio.wait(
-                (pipeline_task, stop_task, deadline_task, ownership_task),
+                (pipeline_task, stop_task, ownership_task),
                 return_when=asyncio.FIRST_COMPLETED,
             )
             if pipeline_task in done:
@@ -194,15 +190,6 @@ class IndexingJobScheduler:
                     retryable=True,
                     phase="worker_shutdown",
                 )
-            elif deadline_task in done:
-                await _cancel(pipeline_task)
-                await self._settle(
-                    lease,
-                    code=ErrorCode.INDEXING_DEADLINE_EXCEEDED,
-                    detail={"limit": self._deadline_seconds},
-                    retryable=True,
-                    phase="deadline",
-                )
             else:
                 await _cancel(pipeline_task)
                 log_event(
@@ -229,12 +216,10 @@ class IndexingJobScheduler:
         finally:
             heartbeat_task.cancel()
             stop_task.cancel()
-            deadline_task.cancel()
             ownership_task.cancel()
             await asyncio.gather(
                 heartbeat_task,
                 stop_task,
-                deadline_task,
                 ownership_task,
                 return_exceptions=True,
             )

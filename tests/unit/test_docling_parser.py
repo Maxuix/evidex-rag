@@ -210,13 +210,12 @@ class _ProcessHarness:
         self,
         *,
         child_target,
-        timeout: float,
     ) -> None:
         self._temporary = tempfile.TemporaryDirectory()
         root = Path(self._temporary.name)
         self.root = root
         self.parser = DoclingParser(
-            replace(ParserLimits(), document_timeout_seconds=timeout),
+            ParserLimits(),
             artifacts_path=root,
             artifact_manifest_path=root / "manifest.json",
             checkpoint_root=root / "parser-temp",
@@ -241,6 +240,19 @@ def _echo_child(connection, limits, artifacts_path, artifact_manifest_path) -> N
             document = _document(source.original_filename)
             document.name = str(os.getpid())
             connection.send_bytes(b"O" + document.model_dump_json().encode("utf-8"))
+    finally:
+        connection.close()
+
+
+def _slow_child(connection, limits, artifacts_path, artifact_manifest_path) -> None:
+    del limits, artifacts_path, artifact_manifest_path
+    try:
+        kind, source, _preset = connection.recv()
+        if kind != "parse":
+            return
+        time.sleep(0.05)
+        document = _document(source.original_filename)
+        connection.send_bytes(b"O" + document.model_dump_json().encode("utf-8"))
     finally:
         connection.close()
 
@@ -411,7 +423,7 @@ class DoclingConverterFactoryTests(unittest.TestCase):
         multimodal_options = (
             multimodal.format_to_options[InputFormat.PDF].pipeline_options
         )
-        self.assertEqual(text_options.document_timeout, 600)
+        self.assertIsNone(text_options.document_timeout)
         self.assertFalse(text_options.enable_remote_services)
         self.assertFalse(text_options.allow_external_plugins)
         self.assertTrue(text_options.do_ocr)
@@ -445,7 +457,7 @@ class DoclingConverterFactoryTests(unittest.TestCase):
                 text.format_to_options[input_format].pipeline_cls,
                 SimplePipeline,
             )
-            self.assertEqual(options.document_timeout, 600)
+            self.assertIsNone(options.document_timeout)
             self.assertFalse(options.enable_remote_services)
             self.assertFalse(options.allow_external_plugins)
             self.assertEqual(options.accelerator_options.device, AcceleratorDevice.CPU)
@@ -463,7 +475,7 @@ class DoclingConverterFactoryTests(unittest.TestCase):
         self.assertEqual(options.ocr_batch_size, 1)
         self.assertEqual(options.layout_batch_size, 1)
         self.assertEqual(options.table_batch_size, 1)
-        self.assertEqual(options.document_timeout, 180)
+        self.assertIsNone(options.document_timeout)
         self.assertEqual(
             converter.format_to_options[InputFormat.PDF].pipeline_cls.__name__,
             "ProgressStandardPdfPipeline",
@@ -506,8 +518,6 @@ class DoclingParserTests(unittest.IsolatedAsyncioTestCase):
                 replace(
                     ParserLimits(),
                     pdf_segment_pages=2,
-                    pdf_segment_timeout_seconds=5,
-                    pdf_total_timeout_seconds=30,
                 ),
                 artifacts_path=root,
                 artifact_manifest_path=root / "manifest.json",
@@ -557,15 +567,13 @@ class DoclingParserTests(unittest.IsolatedAsyncioTestCase):
             parser.discard_checkpoint(checkpoint_key)
             self.assertFalse(checkpoint.exists())
 
-    async def test_pdf_total_budget_is_checked_after_segment_checkpoint(self) -> None:
+    async def test_pdf_elapsed_time_does_not_prevent_next_segment(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             parser = DoclingParser(
                 replace(
                     ParserLimits(),
                     pdf_segment_pages=2,
-                    pdf_segment_timeout_seconds=5,
-                    pdf_total_timeout_seconds=5,
                 ),
                 artifacts_path=root,
                 artifact_manifest_path=root / "manifest.json",
@@ -594,23 +602,19 @@ class DoclingParserTests(unittest.IsolatedAsyncioTestCase):
                 / "manifest.json"
             )
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            manifest["elapsed_ms"] = 4_990
+            manifest["elapsed_ms"] = 86_400_000
             manifest_path.write_text(
                 json.dumps(manifest, separators=(",", ":"), sort_keys=True),
                 encoding="utf-8",
             )
 
-            with self.assertRaises(ParserExecutionError) as raised:
-                await parser.parse(
-                    source,
-                    profile=ParserProfile.DOCLING_TEXT_LOCAL_V2,
-                    checkpoint_key=checkpoint_key,
-                )
-
-            self.assertEqual(
-                raised.exception.diagnostic["limit_name"],
-                "pdf_total_timeout",
+            second = await parser.parse(
+                source,
+                profile=ParserProfile.DOCLING_TEXT_LOCAL_V2,
+                checkpoint_key=checkpoint_key,
             )
+
+            self.assertIsInstance(second, DocumentParseResult)
             saved = json.loads(manifest_path.read_text(encoding="utf-8"))
             self.assertTrue(
                 all(
@@ -974,7 +978,7 @@ class DoclingParserTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(converter.calls, [])
 
     async def test_child_process_is_reused_for_serial_conversions(self) -> None:
-        harness = _ProcessHarness(child_target=_echo_child, timeout=5.0)
+        harness = _ProcessHarness(child_target=_echo_child)
         self.addCleanup(harness.close)
         source = ParserSource("guide.txt", "text/plain", b"body")
 
@@ -990,7 +994,7 @@ class DoclingParserTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first.document.name, second.document.name)
 
     async def test_scanned_surface_probe_does_not_block_event_loop(self) -> None:
-        harness = _ProcessHarness(child_target=_echo_child, timeout=5.0)
+        harness = _ProcessHarness(child_target=_echo_child)
         self.addCleanup(harness.close)
         source = ParserSource("guide.pdf", "application/pdf", b"%PDF-1.7")
         loop_thread = threading.get_ident()
@@ -1033,32 +1037,22 @@ class DoclingParserTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(probe_thread), 1)
         self.assertNotEqual(probe_thread[0], loop_thread)
 
-    async def test_timeout_kills_child_and_next_conversion_uses_clean_process(
-        self,
-    ) -> None:
-        harness = _ProcessHarness(child_target=_hang_once_child, timeout=6.0)
+    async def test_slow_conversion_is_allowed_to_finish(self) -> None:
+        harness = _ProcessHarness(child_target=_slow_child)
         self.addCleanup(harness.close)
         source = ParserSource("guide.html", "text/html", b"<p>body</p>")
 
-        with self.assertRaises(ParserExecutionError) as raised:
-            await harness.parser.parse(
-                source,
-                preset=ParsingPreset.TEXT_LOCAL_V1,
-            )
+        execution = asyncio.create_task(
+            harness.parser.parse(source, preset=ParsingPreset.TEXT_LOCAL_V1)
+        )
+        await asyncio.sleep(0.01)
 
-        self.assertEqual(raised.exception.code, ErrorCode.PARSER_RESOURCE_LIMIT)
-        self.assertEqual(
-            raised.exception.diagnostic,
-            {"limit_name": "document_timeout", "limit": 6.0},
-        )
-        document = await harness.parser.parse(
-            source,
-            preset=ParsingPreset.TEXT_LOCAL_V1,
-        )
+        self.assertFalse(execution.done())
+        document = await execution
         self.assertEqual(document.document.texts[0].text, "guide.html")
 
     async def test_cancellation_kills_child_and_next_conversion_recovers(self) -> None:
-        harness = _ProcessHarness(child_target=_hang_once_child, timeout=10.0)
+        harness = _ProcessHarness(child_target=_hang_once_child)
         self.addCleanup(harness.close)
         source = ParserSource("guide.csv", "text/csv", b"a,b")
         first = asyncio.create_task(
@@ -1080,7 +1074,7 @@ class DoclingParserTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(document.document.texts[0].text, "guide.csv")
 
     async def test_abnormal_child_exit_is_redacted_and_recoverable(self) -> None:
-        harness = _ProcessHarness(child_target=_crash_child, timeout=5.0)
+        harness = _ProcessHarness(child_target=_crash_child)
         self.addCleanup(harness.close)
 
         with self.assertRaises(ParserExecutionError) as raised:
@@ -1104,7 +1098,7 @@ class DoclingParserTests(unittest.IsolatedAsyncioTestCase):
     async def test_sigkill_child_is_a_non_retryable_memory_resource_failure(
         self,
     ) -> None:
-        harness = _ProcessHarness(child_target=_oom_killed_child, timeout=5.0)
+        harness = _ProcessHarness(child_target=_oom_killed_child)
         self.addCleanup(harness.close)
 
         with self.assertRaises(ParserExecutionError) as raised:
@@ -1123,7 +1117,7 @@ class DoclingParserTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_close_terminates_and_reaps_active_conversion_child(self) -> None:
-        harness = _ProcessHarness(child_target=_hang_once_child, timeout=10.0)
+        harness = _ProcessHarness(child_target=_hang_once_child)
         self.addCleanup(harness.close)
         execution = asyncio.create_task(
             harness.parser.parse(

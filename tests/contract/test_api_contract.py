@@ -1838,7 +1838,7 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
             created.json()["parsing"],
             {
                 "preset": "multimodal_local_v2",
-                "profile": "docling_multimodal_local_v3",
+                "profile": "docling_multimodal_local_v4",
             },
         )
 

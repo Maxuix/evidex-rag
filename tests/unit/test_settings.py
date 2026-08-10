@@ -102,7 +102,6 @@ class SettingsTests(unittest.TestCase):
             settings.parser.docling_artifacts_path,
             Path("/opt/rag-kb/docling-artifacts"),
         )
-        self.assertEqual(settings.job_poller.indexing_deadline_seconds, 900)
         self.assertEqual(settings.job_poller.chat_deadline_seconds, 120)
         self.assertEqual(settings.database.required_api_connections, 3)
         self.assertEqual(settings.database.api_statement_timeout_ms, 30_000)

@@ -46,6 +46,8 @@ class KnowledgeBaseParsingResponse(PublicSchema):
         "docling_multimodal_local_v2",
         "docling_text_local_v2",
         "docling_multimodal_local_v3",
+        "docling_text_local_v3",
+        "docling_multimodal_local_v4",
     ]
 
 

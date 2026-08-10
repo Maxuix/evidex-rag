@@ -107,7 +107,7 @@ _DOCLING_PARSER_BASE_V2 = {
     "checkpoint_protocol": "docling_page_range_json_v1",
 }
 
-DOCLING_TEXT_PARSER_CONFIG = {
+DOCLING_TEXT_PARSER_CONFIG_V2 = {
     **_DOCLING_PARSER_BASE_V2,
     "profile": "docling_text_local_v2",
     "generate_page_images": False,
@@ -115,7 +115,7 @@ DOCLING_TEXT_PARSER_CONFIG = {
     "asset_mapping": "none",
 }
 
-DOCLING_MULTIMODAL_PARSER_CONFIG = {
+DOCLING_MULTIMODAL_PARSER_CONFIG_V3 = {
     **_DOCLING_PARSER_BASE_V2,
     "profile": "docling_multimodal_local_v3",
     "generate_page_images": True,
@@ -124,6 +124,39 @@ DOCLING_MULTIMODAL_PARSER_CONFIG = {
     "page_image_policy": "scanned_surface_v1",
     "markdown_media": deepcopy(
         DOCLING_MULTIMODAL_PARSER_CONFIG_V2["markdown_media"]
+    ),
+}
+
+_DOCLING_PARSER_BASE_V3 = {
+    key: value
+    for key, value in _DOCLING_PARSER_BASE_V2.items()
+    if key not in {
+        "document_timeout_seconds",
+        "pdf_segment_timeout_seconds",
+        "pdf_total_timeout_seconds",
+    }
+}
+_DOCLING_PARSER_BASE_V3["time_limit_policy"] = (
+    "unbounded_with_long_running_notice_v1"
+)
+
+DOCLING_TEXT_PARSER_CONFIG = {
+    **_DOCLING_PARSER_BASE_V3,
+    "profile": "docling_text_local_v3",
+    "generate_page_images": False,
+    "generate_picture_images": False,
+    "asset_mapping": "none",
+}
+
+DOCLING_MULTIMODAL_PARSER_CONFIG = {
+    **_DOCLING_PARSER_BASE_V3,
+    "profile": "docling_multimodal_local_v4",
+    "generate_page_images": True,
+    "generate_picture_images": True,
+    "asset_mapping": "docling_picture_table_page_v1",
+    "page_image_policy": "scanned_surface_v1",
+    "markdown_media": deepcopy(
+        DOCLING_MULTIMODAL_PARSER_CONFIG_V3["markdown_media"]
     ),
 }
 
@@ -305,10 +338,15 @@ _EXECUTABLE_PARSER_CONFIGS = (
         DOCLING_MULTIMODAL_PARSER_CONFIG_V2,
         ParserProfile.DOCLING_MULTIMODAL_LOCAL_V2,
     ),
-    (DOCLING_TEXT_PARSER_CONFIG, ParserProfile.DOCLING_TEXT_LOCAL_V2),
+    (DOCLING_TEXT_PARSER_CONFIG_V2, ParserProfile.DOCLING_TEXT_LOCAL_V2),
+    (
+        DOCLING_MULTIMODAL_PARSER_CONFIG_V3,
+        ParserProfile.DOCLING_MULTIMODAL_LOCAL_V3,
+    ),
+    (DOCLING_TEXT_PARSER_CONFIG, ParserProfile.DOCLING_TEXT_LOCAL_V3),
     (
         DOCLING_MULTIMODAL_PARSER_CONFIG,
-        ParserProfile.DOCLING_MULTIMODAL_LOCAL_V3,
+        ParserProfile.DOCLING_MULTIMODAL_LOCAL_V4,
     ),
 )
 

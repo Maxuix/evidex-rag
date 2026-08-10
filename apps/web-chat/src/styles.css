@@ -2562,6 +2562,10 @@ input:focus-visible {
   color: var(--success);
 }
 
+.document-progress .job-activity.long-running {
+  color: #9a6700;
+}
+
 .document-actions {
   display: flex;
   align-items: center;

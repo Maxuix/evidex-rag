@@ -30,7 +30,6 @@ class ParserLimits:
     max_file_size: int = 10 * 1024 * 1024
     max_markdown_bundle_size: int = 20 * 1024 * 1024
     max_num_pages: int = 500
-    document_timeout_seconds: float = 600.0
     max_csv_columns: int = 1_024
     max_csv_cells: int = 200_000
     max_docling_items: int = 20_000
@@ -56,8 +55,6 @@ class ParserLimits:
     pdf_layout_batch_size: int = 1
     pdf_table_batch_size: int = 1
     pdf_segment_pages: int = 20
-    pdf_segment_timeout_seconds: float = 180.0
-    pdf_total_timeout_seconds: float = 1_800.0
 
     def __post_init__(self) -> None:
         if (
@@ -66,8 +63,6 @@ class ParserLimits:
             or self.pdf_layout_batch_size <= 0
             or self.pdf_table_batch_size <= 0
             or self.pdf_segment_pages <= 0
-            or self.pdf_segment_timeout_seconds <= 0
-            or self.pdf_total_timeout_seconds < self.pdf_segment_timeout_seconds
         ):
             raise ValueError("PDF parser limits are invalid")
 
@@ -82,12 +77,15 @@ class ParserProfile(StrEnum):
     DOCLING_MULTIMODAL_LOCAL_V2 = "docling_multimodal_local_v2"
     DOCLING_TEXT_LOCAL_V2 = "docling_text_local_v2"
     DOCLING_MULTIMODAL_LOCAL_V3 = "docling_multimodal_local_v3"
+    DOCLING_TEXT_LOCAL_V3 = "docling_text_local_v3"
+    DOCLING_MULTIMODAL_LOCAL_V4 = "docling_multimodal_local_v4"
 
     @property
     def preset(self) -> ParsingPreset:
         if self in {
             self.DOCLING_MULTIMODAL_LOCAL_V2,
             self.DOCLING_MULTIMODAL_LOCAL_V3,
+            self.DOCLING_MULTIMODAL_LOCAL_V4,
         }:
             return ParsingPreset.MULTIMODAL_LOCAL_V2
         return ParsingPreset.TEXT_LOCAL_V1
@@ -97,6 +95,8 @@ class ParserProfile(StrEnum):
         return self in {
             self.DOCLING_TEXT_LOCAL_V2,
             self.DOCLING_MULTIMODAL_LOCAL_V3,
+            self.DOCLING_TEXT_LOCAL_V3,
+            self.DOCLING_MULTIMODAL_LOCAL_V4,
         }
 
 

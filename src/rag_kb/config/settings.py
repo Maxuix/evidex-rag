@@ -199,7 +199,6 @@ class JobPollerSettings(StrictSettingsModel):
     retry_base_delay_seconds: PositiveFloat = 5.0
     retry_max_delay_seconds: PositiveFloat = 60.0
     chat_deadline_seconds: PositiveFloat = 120.0
-    indexing_deadline_seconds: PositiveFloat = 900.0
     reconciliation_batch_size: PositiveInt = 100
 
     @model_validator(mode="after")
@@ -211,10 +210,6 @@ class JobPollerSettings(StrictSettingsModel):
         if self.retry_max_delay_seconds < self.retry_base_delay_seconds:
             raise ValueError(
                 "retry_max_delay_seconds must be at least retry_base_delay_seconds"
-            )
-        if self.indexing_deadline_seconds <= self.heartbeat_interval_seconds:
-            raise ValueError(
-                "indexing_deadline_seconds must exceed heartbeat_interval_seconds"
             )
         if self.chat_deadline_seconds <= self.heartbeat_interval_seconds:
             raise ValueError(

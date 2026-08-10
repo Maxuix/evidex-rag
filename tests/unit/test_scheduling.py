@@ -38,7 +38,7 @@ class IndexingSchedulerTests(unittest.IsolatedAsyncioTestCase):
         repository = _Repository()
         factory = _Factory(repository)
         pipeline = _Pipeline(factory, delay=0.04)
-        scheduler = _scheduler(factory, pipeline, deadline=1)
+        scheduler = _scheduler(factory, pipeline)
 
         await scheduler._execute(_lease(attempt=1), asyncio.Event())  # noqa: SLF001
 
@@ -46,30 +46,27 @@ class IndexingSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(repository.released, 1)
         self.assertFalse(factory.active)
 
-    async def test_deadline_requeues_before_attempt_exhaustion(self) -> None:
+    async def test_long_running_attempt_is_not_cancelled_or_requeued(self) -> None:
         repository = _Repository()
         factory = _Factory(repository)
-        scheduler = _scheduler(factory, _Pipeline(factory, never=True), deadline=0.01)
+        scheduler = _scheduler(factory, _Pipeline(factory, delay=0.04))
+        execution = asyncio.create_task(
+            scheduler._execute(_lease(attempt=1), asyncio.Event())  # noqa: SLF001
+        )
 
-        await scheduler._execute(_lease(attempt=1), asyncio.Event())  # noqa: SLF001
+        await asyncio.sleep(0.02)
 
-        self.assertEqual(repository.rescheduled["error_code"], "INDEXING_DEADLINE_EXCEEDED")
-        self.assertEqual(repository.failed, 0)
-
-    async def test_attempt_exhaustion_is_terminal(self) -> None:
-        repository = _Repository()
-        factory = _Factory(repository)
-        scheduler = _scheduler(factory, _Pipeline(factory, never=True), deadline=0.01)
-
-        await scheduler._execute(_lease(attempt=2), asyncio.Event())  # noqa: SLF001
-
-        self.assertEqual(repository.failed, 1)
+        self.assertFalse(execution.done())
+        self.assertGreaterEqual(repository.heartbeats, 1)
         self.assertIsNone(repository.rescheduled)
+        self.assertEqual(repository.failed, 0)
+        await execution
+        self.assertEqual(repository.released, 1)
 
     async def test_stop_requeues_owned_execution(self) -> None:
         repository = _Repository()
         factory = _Factory(repository)
-        scheduler = _scheduler(factory, _Pipeline(factory, never=True), deadline=1)
+        scheduler = _scheduler(factory, _Pipeline(factory, never=True))
         stopped = asyncio.Event()
         execution = asyncio.create_task(
             scheduler._execute(_lease(attempt=1), stopped)  # noqa: SLF001
@@ -81,7 +78,7 @@ class IndexingSchedulerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(repository.rescheduled["error_code"], "INDEXING_WORKER_STOPPED")
 
-    async def test_parser_wall_timeout_is_terminal_without_retry_cascade(self) -> None:
+    async def test_parser_resource_limit_is_terminal_without_retry_cascade(self) -> None:
         repository = _Repository()
         factory = _Factory(repository)
         pipeline = _Pipeline(
@@ -89,13 +86,10 @@ class IndexingSchedulerTests(unittest.IsolatedAsyncioTestCase):
             error=IndexingExecutionError(
                 ErrorCode.PARSER_RESOURCE_LIMIT,
                 phase=IndexingPhase.PARSING,
-                diagnostic={
-                    "limit_name": "document_timeout",
-                    "limit": 600,
-                },
+                diagnostic={"limit_name": "process_memory"},
             ),
         )
-        scheduler = _scheduler(factory, pipeline, deadline=900)
+        scheduler = _scheduler(factory, pipeline)
 
         await scheduler._execute(_lease(attempt=1), asyncio.Event())  # noqa: SLF001
 
@@ -117,7 +111,7 @@ class IndexingSchedulerTests(unittest.IsolatedAsyncioTestCase):
 
         repository = FailingHeartbeatRepository()
         factory = _Factory(repository)
-        scheduler = _scheduler(factory, _Pipeline(factory), deadline=1)
+        scheduler = _scheduler(factory, _Pipeline(factory))
         ownership_lost = asyncio.Event()
 
         with patch("rag_kb.scheduling.indexing.log_exception") as logged:
@@ -501,14 +495,13 @@ def _chat_lease():
     return ChatRunLease(uuid4(), uuid4(), "worker-a", 1, NOW)
 
 
-def _scheduler(factory, pipeline, *, deadline):
+def _scheduler(factory, pipeline):
     return IndexingJobScheduler(
         factory,
         pipeline,
         worker_id="worker-a",
         heartbeat_interval_seconds=0.005,
         stale_after_seconds=1,
-        deadline_seconds=deadline,
         retry_policy=RetryPolicy(2, 0.01, 0.02),
         reconciliation_batch_size=10,
         clock=lambda: NOW,

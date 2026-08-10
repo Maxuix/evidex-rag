@@ -62,7 +62,7 @@ def build_docling_converter(
         device=AcceleratorDevice.CPU,
     )
     simple_options = ConvertPipelineOptions(
-        document_timeout=limits.document_timeout_seconds,
+        document_timeout=None,
         accelerator_options=accelerator_options,
         enable_remote_services=False,
         allow_external_plugins=False,
@@ -72,11 +72,7 @@ def build_docling_converter(
         do_chart_extraction=False,
     )
     pdf_options = PdfPipelineOptions(
-        document_timeout=(
-            limits.pdf_segment_timeout_seconds
-            if balanced
-            else limits.document_timeout_seconds
-        ),
+        document_timeout=None,
         accelerator_options=accelerator_options,
         enable_remote_services=False,
         allow_external_plugins=False,

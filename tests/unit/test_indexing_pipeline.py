@@ -81,7 +81,7 @@ class IndexingDomainTests(unittest.TestCase):
             (800, 600, "cl100k_base"),
         )
         self.assertEqual(
-            profile.parser_config["profile"], "docling_text_local_v2"
+            profile.parser_config["profile"], "docling_text_local_v3"
         )
         self.assertNotIn("max_characters", STRUCTURAL_CHUNKING_CONFIG_V4)
         self.assertNotIn("new_after_n_chars", STRUCTURAL_CHUNKING_CONFIG_V4)
@@ -129,7 +129,7 @@ class IndexingDomainTests(unittest.TestCase):
             public_parsing_descriptor(markdown_profile.parser_config),
             {
                 "preset": "multimodal_local_v2",
-                "profile": "docling_multimodal_local_v3",
+                "profile": "docling_multimodal_local_v4",
             },
         )
         self.assertTrue(

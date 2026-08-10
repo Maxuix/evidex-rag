@@ -26,6 +26,7 @@ import type {
 
 const ACCEPTED_EXTENSIONS = ".txt,.md,.mdz,.html,.csv,.pdf,.docx,.pptx,.xlsx";
 const TERMINAL_JOB_STATUSES = new Set(["completed", "failed", "cancelled"]);
+const LONG_RUNNING_JOB_SECONDS = 10 * 60;
 const INDEX_PHASES = [
   "queued",
   "claimed",
@@ -866,7 +867,9 @@ function DocumentRow({
         </div>
         <progress max={100} value={progress} />
         {job?.status === "running" ? (
-          <small className="job-activity">{runningActivity(job)}</small>
+          <small className={`job-activity${jobLongRunning(job) ? " long-running" : ""}`}>
+            {runningActivity(job)}
+          </small>
         ) : null}
         {job?.status === "failed" ? <small>{jobFailure(job)}</small> : null}
       </div>
@@ -1218,17 +1221,34 @@ function phaseLabel(phase: string): string {
 }
 
 function runningActivity(job: IndexingJob): string {
-  const started = job.claimed_at ? Date.parse(job.claimed_at) : Number.NaN;
   const heartbeat = job.heartbeat_at ? Date.parse(job.heartbeat_at) : Number.NaN;
-  const elapsedSeconds = Number.isFinite(started)
-    ? Math.max(0, Math.floor((Date.now() - started) / 1000))
-    : null;
+  const elapsedSeconds = jobElapsedSeconds(job);
   const heartbeatFresh = Number.isFinite(heartbeat)
     && Date.now() - heartbeat < 45_000;
   const elapsed = elapsedSeconds === null
     ? ""
     : ` · 已运行 ${formatElapsed(elapsedSeconds)}`;
+  if (jobLongRunning(job)) {
+    return `处理时间较长，任务未完成但仍会继续运行 · ${heartbeatFresh ? "Worker 正常" : "等待 Worker 心跳"}${elapsed}`;
+  }
   return `${heartbeatFresh ? "Worker 正常" : "等待 Worker 心跳"}${elapsed}`;
+}
+
+function jobLongRunning(job: IndexingJob): boolean {
+  const elapsed = jobElapsedSeconds(job);
+  return elapsed !== null && elapsed >= LONG_RUNNING_JOB_SECONDS;
+}
+
+function jobElapsedSeconds(job: IndexingJob): number | null {
+  const claimedAt = job.claimed_at ? Date.parse(job.claimed_at) : Number.NaN;
+  const currentAttempt = Number.isFinite(claimedAt)
+    ? Math.max(0, Math.floor((Date.now() - claimedAt) / 1000))
+    : 0;
+  const parsing = job.progress
+    ? Math.max(0, Math.floor(job.progress.elapsed_ms / 1000))
+    : 0;
+  const elapsed = Math.max(currentAttempt, parsing);
+  return elapsed > 0 ? elapsed : null;
 }
 
 function formatElapsed(seconds: number): string {
@@ -1256,12 +1276,15 @@ function jobFailure(job: IndexingJob): string {
     INDEX_INCOMPLETE: "索引完整性校验失败",
     INDEXING_DEADLINE_EXCEEDED: "索引处理超时",
   };
+  const legacyTimeLimit = job.error.detail.limit_name;
   if (
-    job.error.code === "PARSER_RESOURCE_LIMIT"
-    && job.error.detail.limit_name === "document_timeout"
+    (job.error.code === "PARSER_RESOURCE_LIMIT"
+      && ["document_timeout", "pdf_segment_timeout", "pdf_total_timeout"].includes(
+        typeof legacyTimeLimit === "string" ? legacyTimeLimit : "",
+      ))
+    || job.error.code === "INDEXING_DEADLINE_EXCEEDED"
   ) {
-    const limit = job.error.detail.limit;
-    return `文档解析超时${typeof limit === "number" ? `（超过 ${limit} 秒）` : ""}，已跳过该任务，队列会继续处理其他文档。`;
+    return "此任务此前因旧版耗时上限中止；当前版本已取消耗时上限，请点击“重试索引”继续处理。";
   }
   const detail = Object.entries(job.error.detail)
     .filter(([, value]) => typeof value === "string" || typeof value === "number")

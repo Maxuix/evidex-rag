@@ -177,7 +177,6 @@ class DoclingParser:
         round_trip = await self._convert_once(
             source,
             profile=resolved_profile,
-            timeout_seconds=self._limits.document_timeout_seconds,
         )
         try:
             document = _decode_response(round_trip.response, self._limits)
@@ -192,7 +191,6 @@ class DoclingParser:
         source: ParserSource,
         *,
         profile: ParserProfile,
-        timeout_seconds: float,
         page_range: tuple[int, int] | None = None,
         on_raw_progress: Callable[[dict[str, Any]], None] | None = None,
     ) -> _RoundTripResult:
@@ -215,18 +213,7 @@ class DoclingParser:
                 ) from error
             wrapped = asyncio.wrap_future(concurrent_future, loop=loop)
             try:
-                async with asyncio.timeout(timeout_seconds):
-                    return await asyncio.shield(wrapped)
-            except TimeoutError as error:
-                wrapped.add_done_callback(_consume_cancelled_result)
-                await self._reset_child()
-                raise ParserExecutionError(
-                    ErrorCode.PARSER_RESOURCE_LIMIT,
-                    diagnostic={
-                        "limit_name": "document_timeout",
-                        "limit": timeout_seconds,
-                    },
-                ) from error
+                return await asyncio.shield(wrapped)
             except asyncio.CancelledError:
                 wrapped.add_done_callback(_consume_cancelled_result)
                 await self._reset_child()
@@ -278,7 +265,6 @@ class DoclingParser:
             profile,
             total_pages,
         )
-        _ensure_pdf_total_budget(checkpoint, self._limits)
 
         pending_index = next(
             (
@@ -347,43 +333,9 @@ class DoclingParser:
                 round_trip = await self._convert_once(
                     source,
                     profile=profile,
-                    timeout_seconds=self._limits.pdf_segment_timeout_seconds,
                     page_range=(segment["page_from"], segment["page_to"]),
                     on_raw_progress=forward,
                 )
-            except ParserExecutionError as error:
-                if (
-                    error.code is ErrorCode.PARSER_RESOURCE_LIMIT
-                    and error.diagnostic.get("limit_name") == "document_timeout"
-                    and segment["page_from"] < segment["page_to"]
-                ):
-                    checkpoint = await asyncio.to_thread(
-                        self._split_timed_out_segment,
-                        checkpoint_key,
-                        checkpoint,
-                        pending_index,
-                        int((time.monotonic() - started_at) * 1000),
-                    )
-                    _ensure_pdf_total_budget(checkpoint, self._limits)
-                    progress = _progress(
-                        checkpoint,
-                        pending_index,
-                        stage="segment_split",
-                    )
-                    await _publish_progress(on_progress, progress)
-                    return DocumentParseContinuation(progress)
-                if (
-                    error.code is ErrorCode.PARSER_RESOURCE_LIMIT
-                    and error.diagnostic.get("limit_name") == "document_timeout"
-                ):
-                    error.diagnostic.update(
-                        {
-                            "limit_name": "pdf_segment_timeout",
-                            "page_from": segment["page_from"],
-                            "page_to": segment["page_to"],
-                        }
-                    )
-                raise
             finally:
                 loop.call_soon_threadsafe(queue.put_nowait, None)
                 await consumer
@@ -408,7 +360,6 @@ class DoclingParser:
                 elapsed_ms,
                 progress_state,
             )
-            _ensure_pdf_total_budget(checkpoint, self._limits)
             pending_index = next(
                 (
                     index
@@ -556,40 +507,6 @@ class DoclingParser:
             ],
         }
         _write_private_json(directory / "manifest.json", checkpoint)
-        return checkpoint
-
-    def _split_timed_out_segment(
-        self,
-        checkpoint_key: str,
-        checkpoint: dict[str, Any],
-        segment_index: int,
-        elapsed_ms: int,
-    ) -> dict[str, Any]:
-        segment = checkpoint["segments"][segment_index]
-        midpoint = (segment["page_from"] + segment["page_to"]) // 2
-        replacements = [
-            {
-                "page_from": segment["page_from"],
-                "page_to": midpoint,
-                "status": "pending",
-            },
-            {
-                "page_from": midpoint + 1,
-                "page_to": segment["page_to"],
-                "status": "pending",
-            },
-        ]
-        segments = list(checkpoint["segments"])
-        segments[segment_index : segment_index + 1] = replacements
-        checkpoint = {
-            **checkpoint,
-            "elapsed_ms": int(checkpoint["elapsed_ms"]) + elapsed_ms,
-            "segments": segments,
-        }
-        _write_private_json(
-            self._checkpoint_directory(checkpoint_key) / "manifest.json",
-            checkpoint,
-        )
         return checkpoint
 
     def _assemble_checkpoint(
@@ -1074,21 +991,6 @@ def _pdf_page_count(source: ParserSource, limits: ParserLimits) -> int:
     if total > limits.max_num_pages:
         _raise_limit("max_num_pages", limits.max_num_pages)
     return total
-
-
-def _ensure_pdf_total_budget(
-    checkpoint: dict[str, Any],
-    limits: ParserLimits,
-) -> None:
-    if checkpoint["elapsed_ms"] < int(limits.pdf_total_timeout_seconds * 1000):
-        return
-    raise ParserExecutionError(
-        ErrorCode.PARSER_RESOURCE_LIMIT,
-        diagnostic={
-            "limit_name": "pdf_total_timeout",
-            "limit": limits.pdf_total_timeout_seconds,
-        },
-    )
 
 
 async def _consume_progress(
