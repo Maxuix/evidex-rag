@@ -16,6 +16,8 @@ from rag_kb.db import DatabaseProcess, create_database_resources
 from rag_kb.domain import (
     EmbeddingSpaceDefinition,
     ErrorCode,
+    Evidence,
+    EvidenceScoreKind,
     ResourceNotFoundError,
     RetrievalExecutionError,
     RetrievalRequest,
@@ -135,6 +137,119 @@ class ExactRetrievalDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(pack.debug)
         assert pack.debug is not None
         self.assertEqual(pack.debug.result_count, 2)
+
+    async def test_adjacency_is_one_scoped_read_with_shared_neighbor_links(
+        self,
+    ) -> None:
+        foundation = await self._foundation()
+        target = await self._target(
+            foundation,
+            chunk_id=uuid4(),
+            vector=_axis_vector(0),
+        )
+        chunk_ids = {ordinal: uuid4() for ordinal in range(1, 6)}
+        connection = await asyncpg.connect(MIGRATION_DSN)
+        try:
+            async with connection.transaction():
+                for ordinal, modality, excluded in (
+                    (1, "text", True),
+                    (2, "text", False),
+                    (3, "table", False),
+                    (4, "table", False),
+                    (5, "image", False),
+                ):
+                    chunk_id = chunk_ids[ordinal]
+                    await connection.execute(
+                        """
+                        INSERT INTO index_chunk (
+                            id, workspace_id, kb_id,
+                            indexed_document_version_id, ordinal, content,
+                            content_hash, token_count, source_location,
+                            hierarchy, source_metadata, unit_key, modality,
+                            excluded_at
+                        ) VALUES (
+                            $1, $2, $3, $4, $5, $6, $7, 2,
+                            jsonb_build_object('ordinal', $5::integer),
+                            '{}'::jsonb, '{}'::jsonb, $8, $9,
+                            CASE WHEN $10 THEN now() ELSE NULL END
+                        )
+                        """,
+                        chunk_id,
+                        foundation.workspace_id,
+                        foundation.kb_id,
+                        target.indexed_document_version_id,
+                        ordinal,
+                        "" if modality == "image" else f"chunk-{ordinal}",
+                        chunk_id.hex.ljust(64, "0")[:64],
+                        f"adjacency:{chunk_id}",
+                        modality,
+                        excluded,
+                    )
+        finally:
+            await connection.close()
+
+        anchors = tuple(
+            Evidence(
+                rank=rank,
+                index_chunk_id=chunk_ids[ordinal],
+                indexed_document_version_id=target.indexed_document_version_id,
+                document_id=target.document_id,
+                document_version_id=target.document_version_id,
+                index_revision_id=foundation.revision_id,
+                ordinal=ordinal,
+                text=f"chunk-{ordinal}",
+                source_location={"ordinal": ordinal},
+                hierarchy={},
+                source_metadata={},
+                score=0.9,
+                modality="text" if ordinal == 2 else "table",
+            )
+            for rank, ordinal in enumerate((2, 4), start=1)
+        )
+        statements: list[str] = []
+
+        def capture_statement(*args) -> None:
+            statements.append(args[2])
+
+        event.listen(
+            self.database.engine.sync_engine,
+            "before_cursor_execute",
+            capture_statement,
+        )
+        try:
+            evidence = await self.service.retrieve_adjacent_evidence(
+                self.context,
+                knowledge_base_id=foundation.kb_id,
+                index_revision_id=foundation.revision_id,
+                anchors=anchors,
+            )
+        finally:
+            event.remove(
+                self.database.engine.sync_engine,
+                "before_cursor_execute",
+                capture_statement,
+            )
+
+        self.assertEqual(len(statements), 1)
+        self.assertNotIn("vector_record", statements[0])
+        self.assertEqual(len(evidence), 2)
+        self.assertEqual(
+            {item.index_chunk_id for item in evidence},
+            {chunk_ids[3]},
+        )
+        self.assertEqual(
+            tuple(item.adjacency_anchor_index_chunk_id for item in evidence),
+            (chunk_ids[2], chunk_ids[4]),
+        )
+        self.assertEqual(tuple(item.adjacency_offset for item in evidence), (1, -1))
+        self.assertTrue(
+            all(
+                item.score_kind is EvidenceScoreKind.ADJACENCY
+                and item.score == 0.0
+                and item.modality == "table"
+                for item in evidence
+            )
+        )
 
     async def test_hybrid_fts_validates_manifest_and_returns_lane_rank(
         self,

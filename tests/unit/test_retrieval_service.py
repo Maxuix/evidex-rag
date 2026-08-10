@@ -17,9 +17,12 @@ from rag_kb.auth import (
     SingleWorkspaceAccessPolicy,
 )
 from rag_kb.domain import (
+    AdjacentChunkHit,
+    AdjacentChunkResult,
     EmbeddingSpaceDefinition,
     EmbeddingBatch,
     ErrorCode,
+    Evidence,
     EvidenceScoreKind,
     IndexChunkAssetRelationSnapshot,
     LexicalSearchResult,
@@ -80,6 +83,24 @@ class RetrievalContractTests(unittest.TestCase):
         self.assertIn("vector_record.embedding <=>", cross_modal)
         self.assertIn("vector_record.embedding_space_id", cross_modal)
         self.assertIn("vector_record.embedding_dimension", cross_modal)
+
+    def test_adjacency_statement_is_one_bounded_frozen_scope_read(self) -> None:
+        statement = PgVectorStore._adjacent_statement(2)  # noqa: SLF001
+        sql = str(statement.compile(dialect=postgresql.dialect()))
+
+        self.assertIn("VALUES (", sql)
+        self.assertIn("valid_adjacency_anchors", sql)
+        self.assertIn("LEFT OUTER JOIN LATERAL", sql)
+        self.assertIn("active_index_revision_id", sql)
+        self.assertIn("adjacency_anchor_chunk.id =", sql)
+        self.assertIn("adjacency_anchor_chunk.ordinal =", sql)
+        self.assertIn("adjacency_neighbor_chunk.ordinal =", sql)
+        self.assertIn("adjacency_neighbor_chunk.excluded_at IS NULL", sql)
+        self.assertIn("adjacency_document.deleted_at IS NULL", sql)
+        self.assertIn("adjacency_document_version.source_status", sql)
+        self.assertIn("build_status", sql)
+        self.assertIn("serving_status", sql)
+        self.assertNotIn("vector_record", sql)
 
     def test_lexical_statement_uses_gin_predicate_and_real_cosine(self) -> None:
         statement = PgLexicalStore._statement()  # noqa: SLF001 - SQL contract
@@ -219,6 +240,93 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ranked[0].hit.index_chunk_id, CHUNK_2)
         self.assertNotEqual(ranked[1].hit.index_chunk_id, duplicate.index_chunk_id)
         self.assertGreater(ranked[0].lexical_coverage, 0.9)
+
+    async def test_adjacent_evidence_has_independent_score_and_no_embedding(
+        self,
+    ) -> None:
+        anchor = _evidence(CHUNK_1, ordinal=4)
+        store = _Store(
+            None,
+            adjacent_result=AdjacentChunkResult(
+                resolved_active_revision_id=REVISION_ID,
+                validated_anchor_count=1,
+                hits=(
+                    AdjacentChunkHit(
+                        workspace_id=WORKSPACE,
+                        knowledge_base_id=KB_ID,
+                        index_revision_id=REVISION_ID,
+                        index_chunk_id=CHUNK_2,
+                        indexed_document_version_id=(
+                            anchor.indexed_document_version_id
+                        ),
+                        document_id=anchor.document_id,
+                        document_version_id=anchor.document_version_id,
+                        ordinal=5,
+                        text="continued definition",
+                        source_location={"line_start": 5},
+                        hierarchy={"section": "test"},
+                        source_metadata={},
+                        anchor_index_chunk_id=CHUNK_1,
+                        anchor_rank=1,
+                        offset=1,
+                        build_status="ready",
+                        serving_status="serving",
+                        is_current_serving_version=True,
+                        modality="table",
+                    ),
+                ),
+            ),
+        )
+        provider = _Provider()
+        service = RetrievalService(
+            SingleWorkspaceAccessPolicy(WORKSPACE),
+            provider,
+            store,
+        )
+
+        evidence = await service.retrieve_adjacent_evidence(
+            _context(),
+            knowledge_base_id=KB_ID,
+            index_revision_id=REVISION_ID,
+            anchors=(anchor,),
+        )
+
+        self.assertEqual(provider.queries, [])
+        self.assertEqual(len(store.adjacent_queries), 1)
+        self.assertEqual(len(evidence), 1)
+        self.assertIs(evidence[0].score_kind, EvidenceScoreKind.ADJACENCY)
+        self.assertEqual(evidence[0].score, 0.0)
+        self.assertIsNone(evidence[0].vector_similarity)
+        self.assertEqual(evidence[0].adjacency_anchor_index_chunk_id, CHUNK_1)
+        self.assertEqual(evidence[0].adjacency_offset, 1)
+
+    async def test_adjacent_evidence_rejects_partial_anchor_validation(self) -> None:
+        store = _Store(
+            None,
+            adjacent_result=AdjacentChunkResult(
+                resolved_active_revision_id=REVISION_ID,
+                validated_anchor_count=0,
+            ),
+        )
+        service = RetrievalService(
+            SingleWorkspaceAccessPolicy(WORKSPACE),
+            _Provider(),
+            store,
+        )
+
+        with self.assertRaises(RetrievalExecutionError) as raised:
+            await service.retrieve_adjacent_evidence(
+                _context(),
+                knowledge_base_id=KB_ID,
+                index_revision_id=REVISION_ID,
+                anchors=(_evidence(CHUNK_1, ordinal=4),),
+            )
+
+        self.assertEqual(raised.exception.code, ErrorCode.INTERNAL_SERVER_ERROR)
+        self.assertEqual(
+            raised.exception.diagnostic,
+            {"check": "adjacency_anchor_scope"},
+        )
 
     async def test_builds_mandatory_plan_and_returns_deterministic_evidence(self) -> None:
         provider = _Provider()
@@ -817,10 +925,21 @@ class _HangingProvider(_Provider):
 
 
 class _Store:
-    def __init__(self, result: VectorSearchResult | None) -> None:
+    def __init__(
+        self,
+        result: VectorSearchResult | None,
+        *,
+        adjacent_result: AdjacentChunkResult | None = None,
+    ) -> None:
         self.result = result
+        self.adjacent_result = adjacent_result
         self.plans = []
         self.embeddings = []
+        self.adjacent_queries = []
+
+    async def adjacent_chunks(self, query):
+        self.adjacent_queries.append(query)
+        return self.adjacent_result
 
     async def search(self, plan, query_embedding):
         self.plans.append(plan)
@@ -1067,4 +1186,22 @@ def _hit(
         build_status="ready",
         serving_status="serving",
         is_current_serving_version=True,
+    )
+
+
+def _evidence(chunk_id: UUID, *, ordinal: int) -> Evidence:
+    hit = _hit(chunk_id, ordinal=ordinal)
+    return Evidence(
+        rank=1,
+        index_chunk_id=hit.index_chunk_id,
+        indexed_document_version_id=hit.indexed_document_version_id,
+        document_id=hit.document_id,
+        document_version_id=hit.document_version_id,
+        index_revision_id=hit.index_revision_id,
+        ordinal=hit.ordinal,
+        text=hit.text,
+        source_location=hit.source_location,
+        hierarchy=hit.hierarchy,
+        source_metadata=hit.source_metadata,
+        score=0.9,
     )

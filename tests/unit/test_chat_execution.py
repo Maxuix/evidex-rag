@@ -14,6 +14,7 @@ from rag_kb.domain import (
     ErrorCode,
     Evidence,
     EvidencePack,
+    EvidenceScoreKind,
     RetrievalDebug,
     RetrievalQueryPlan,
     RetrievalStrategy,
@@ -111,6 +112,61 @@ class ChatExecutionServiceTests(unittest.IsolatedAsyncioTestCase):
             await retriever.retrieve(context)
 
         self.assertEqual(raised.exception.code, ErrorCode.CHAT_REVISION_MISMATCH)
+
+    async def test_adjacent_retrieval_reuses_frozen_chat_scope(self) -> None:
+        context = _context()
+        anchor = Evidence(
+            rank=1,
+            index_chunk_id=uuid4(),
+            indexed_document_version_id=uuid4(),
+            document_id=uuid4(),
+            document_version_id=uuid4(),
+            index_revision_id=context.index_revision_id,
+            ordinal=2,
+            text="anchor",
+            source_location={"page": 1},
+            hierarchy={},
+            source_metadata={},
+            score=0.9,
+        )
+        neighbor = Evidence(
+            rank=1,
+            index_chunk_id=uuid4(),
+            indexed_document_version_id=anchor.indexed_document_version_id,
+            document_id=anchor.document_id,
+            document_version_id=anchor.document_version_id,
+            index_revision_id=context.index_revision_id,
+            ordinal=3,
+            text="neighbor",
+            source_location={"page": 2},
+            hierarchy={},
+            source_metadata={},
+            score=0.0,
+            score_kind=EvidenceScoreKind.ADJACENCY,
+            adjacency_anchor_index_chunk_id=anchor.index_chunk_id,
+            adjacency_offset=1,
+        )
+
+        class Retrieval:
+            call = None
+
+            async def retrieve_adjacent_evidence(self, auth, **kwargs):
+                self.call = (auth, kwargs)
+                return (neighbor,)
+
+        retrieval = Retrieval()
+        result = await ChatEvidenceRetriever(retrieval).retrieve_adjacent(  # type: ignore[arg-type]
+            context,
+            (anchor,),
+        )
+
+        self.assertEqual(result, (neighbor,))
+        assert retrieval.call is not None
+        auth, kwargs = retrieval.call
+        self.assertEqual(auth.workspace_id, context.workspace_id)
+        self.assertEqual(kwargs["knowledge_base_id"], context.knowledge_base_id)
+        self.assertEqual(kwargs["index_revision_id"], context.index_revision_id)
+        self.assertEqual(kwargs["anchors"], (anchor,))
 
     async def test_native_image_only_evidence_is_retained_for_visual_preparation(
         self,

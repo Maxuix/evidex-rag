@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import Protocol, runtime_checkable
 
 from rag_kb.domain import (
+    AdjacentChunkQuery,
+    AdjacentChunkResult,
     EmbeddingSpaceDefinition,
     LexicalSearchResult,
     RetrievalQueryPlan,
@@ -14,6 +16,11 @@ from rag_kb.domain import (
 
 @runtime_checkable
 class VectorStore(Protocol):
+    async def adjacent_chunks(
+        self,
+        query: AdjacentChunkQuery,
+    ) -> AdjacentChunkResult | None: ...
+
     async def resolve_spaces(
         self,
         plan: RetrievalQueryPlan,

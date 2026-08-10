@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
 from uuid import UUID
 
 from pydantic import ValidationError
 
 from rag_kb.domain import (
+    AdjacentChunkAnchor,
+    AdjacentChunkQuery,
     Evidence,
     EvidenceAsset,
     EvidencePack,
+    EvidenceScoreKind,
     RetrievalDebug,
     RetrievalQueryPlan,
     RetrievalStrategy,
@@ -26,6 +30,51 @@ ASSET_ID = UUID("01900000-0000-7000-8000-000000000909")
 
 
 class RetrievalTransportContractTests(unittest.TestCase):
+    def test_adjacency_contract_is_fixed_to_two_anchors_and_explicit_score(self) -> None:
+        anchor = AdjacentChunkAnchor(
+            index_chunk_id=CHUNK_ID,
+            indexed_document_version_id=UUID(
+                "01900000-0000-7000-8000-000000000905"
+            ),
+            ordinal=3,
+        )
+        query = AdjacentChunkQuery(
+            workspace_id=WORKSPACE,
+            knowledge_base_id=KB_ID,
+            index_revision_id=REVISION_ID,
+            anchors=(anchor,),
+        )
+        self.assertEqual(query.anchors, (anchor,))
+        with self.assertRaises(ValueError):
+            replace(query, anchors=(anchor, anchor))
+
+        neighbor = Evidence(
+            rank=1,
+            index_chunk_id=UUID("01900000-0000-7000-8000-000000000910"),
+            indexed_document_version_id=anchor.indexed_document_version_id,
+            document_id=UUID("01900000-0000-7000-8000-000000000906"),
+            document_version_id=UUID(
+                "01900000-0000-7000-8000-000000000907"
+            ),
+            index_revision_id=REVISION_ID,
+            ordinal=4,
+            text="continued evidence",
+            source_location={"line_start": 8},
+            hierarchy={},
+            source_metadata={},
+            score=0.0,
+            score_kind=EvidenceScoreKind.ADJACENCY,
+            adjacency_anchor_index_chunk_id=CHUNK_ID,
+            adjacency_offset=1,
+        )
+        self.assertIs(neighbor.score_kind, EvidenceScoreKind.ADJACENCY)
+        with self.assertRaises(ValueError):
+            replace(neighbor, vector_similarity=0.9)
+        with self.assertRaises(ValueError):
+            replace(neighbor, lexical_score=0.5)
+        with self.assertRaises(ValueError):
+            replace(neighbor, modality="image")
+
     def test_request_accepts_hybrid_strategy(self) -> None:
         request = RetrievalQueryRequest.model_validate(
             {

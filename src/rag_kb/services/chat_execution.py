@@ -16,7 +16,9 @@ from rag_kb.domain import (
     ChatWorkflowState,
     ContextualizedQuery,
     ErrorCode,
+    Evidence,
     EvidencePack,
+    ResourceNotFoundError,
     RetrievalRequest,
     RetrievalExecutionError,
     RetrievalStrategy,
@@ -235,3 +237,53 @@ class ChatEvidenceRetriever:
             evidence=pack.evidence,
             debug=pack.debug,
         )
+
+    async def retrieve_adjacent(
+        self,
+        context: ChatExecutionContext,
+        anchors: tuple[Evidence, ...],
+    ) -> tuple[Evidence, ...]:
+        if not anchors:
+            return ()
+        try:
+            evidence = await self._retrieval.retrieve_adjacent_evidence(
+                AuthContext(
+                    principal_id=context.principal_id,
+                    client_id=context.client_id,
+                    workspace_id=context.workspace_id,
+                ),
+                knowledge_base_id=context.knowledge_base_id,
+                index_revision_id=context.index_revision_id,
+                anchors=anchors,
+            )
+        except ResourceNotFoundError as error:
+            raise ChatPipelineExecutionError(
+                ErrorCode.CHAT_REVISION_MISMATCH,
+                phase=ChatPipelinePhase.RETRIEVE_EVIDENCE,
+                diagnostic={"check": "adjacency_frozen_revision"},
+            ) from error
+        except RetrievalExecutionError as error:
+            code = (
+                ErrorCode.CHAT_REVISION_MISMATCH
+                if error.diagnostic.get("check")
+                == "adjacency_frozen_revision"
+                else error.code
+            )
+            raise ChatPipelineExecutionError(
+                code,
+                phase=ChatPipelinePhase.RETRIEVE_EVIDENCE,
+                diagnostic=error.diagnostic,
+            ) from error
+        anchor_ids = {item.index_chunk_id for item in anchors}
+        if any(
+            item.index_revision_id != context.index_revision_id
+            or item.adjacency_anchor_index_chunk_id not in anchor_ids
+            or item.adjacency_offset not in {-1, 1}
+            for item in evidence
+        ):
+            raise ChatPipelineExecutionError(
+                ErrorCode.CHAT_REVISION_MISMATCH,
+                phase=ChatPipelinePhase.RETRIEVE_EVIDENCE,
+                diagnostic={"check": "adjacency_frozen_scope"},
+            )
+        return evidence

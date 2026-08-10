@@ -252,6 +252,10 @@ from rag_kb.domain.parsing import (
     ProcessedDocument,
 )
 from rag_kb.domain.retrieval import (
+    AdjacentChunkAnchor,
+    AdjacentChunkHit,
+    AdjacentChunkQuery,
+    AdjacentChunkResult,
     Evidence,
     EvidenceAsset,
     EvidenceGroupIdentity,
@@ -271,6 +275,10 @@ from rag_kb.domain.retrieval import (
 from rag_kb.domain.workspaces import Workspace
 
 __all__ = [
+    "AdjacentChunkAnchor",
+    "AdjacentChunkHit",
+    "AdjacentChunkQuery",
+    "AdjacentChunkResult",
     "AnswerClaim",
     "AnswerControlReason",
     "AnswerDraftCandidate",

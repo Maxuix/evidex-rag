@@ -375,6 +375,8 @@ export interface ChatSearchTrace {
   retrieval_calls: number;
   verifier_calls: number;
   evidence_count: number;
+  adjacency_loaded_count: number;
+  adjacency_selected_count: number;
 }
 
 export interface ChatWorkflow {

@@ -11,6 +11,9 @@ from uuid import UUID
 
 from rag_kb.auth import AccessPolicy, AuthContext
 from rag_kb.domain import (
+    AdjacentChunkAnchor,
+    AdjacentChunkQuery,
+    AdjacentChunkResult,
     ErrorCode,
     EmbeddingSpaceDefinition,
     ChunkAssetRelationType,
@@ -280,6 +283,114 @@ class RetrievalService:
                 ErrorCode.RETRIEVAL_DEADLINE_EXCEEDED,
                 diagnostic={"check": "absolute_deadline"},
             ) from error
+
+    async def retrieve_adjacent_evidence(
+        self,
+        context: AuthContext,
+        *,
+        knowledge_base_id: UUID,
+        index_revision_id: UUID,
+        anchors: tuple[Evidence, ...],
+    ) -> tuple[Evidence, ...]:
+        deadline = asyncio.timeout(self._deadline_seconds)
+        try:
+            async with deadline:
+                return await self._retrieve_adjacent_evidence(
+                    context,
+                    knowledge_base_id=knowledge_base_id,
+                    index_revision_id=index_revision_id,
+                    anchors=anchors,
+                )
+        except TimeoutError as error:
+            if not deadline.expired():
+                raise
+            raise RetrievalExecutionError(
+                ErrorCode.RETRIEVAL_DEADLINE_EXCEEDED,
+                diagnostic={"check": "adjacency_absolute_deadline"},
+            ) from error
+
+    async def _retrieve_adjacent_evidence(
+        self,
+        context: AuthContext,
+        *,
+        knowledge_base_id: UUID,
+        index_revision_id: UUID,
+        anchors: tuple[Evidence, ...],
+    ) -> tuple[Evidence, ...]:
+        metadata_filter = self._access_policy.metadata_filter(context)
+        if (
+            not 1 <= len(anchors) <= 2
+            or len({item.index_chunk_id for item in anchors}) != len(anchors)
+            or any(
+                item.index_revision_id != index_revision_id
+                or item.modality not in {"text", "table"}
+                or item.score_kind is EvidenceScoreKind.ADJACENCY
+                for item in anchors
+            )
+        ):
+            raise RetrievalExecutionError(
+                ErrorCode.INTERNAL_SERVER_ERROR,
+                diagnostic={"check": "adjacency_anchor_scope"},
+            )
+        query = AdjacentChunkQuery(
+            workspace_id=metadata_filter.workspace_id,
+            knowledge_base_id=knowledge_base_id,
+            index_revision_id=index_revision_id,
+            anchors=tuple(
+                AdjacentChunkAnchor(
+                    index_chunk_id=item.index_chunk_id,
+                    indexed_document_version_id=(
+                        item.indexed_document_version_id
+                    ),
+                    ordinal=item.ordinal,
+                )
+                for item in anchors
+            ),
+        )
+        result = await self._vector_store.adjacent_chunks(query)
+        if result is None:
+            raise ResourceNotFoundError(
+                "knowledge base or active revision was not found"
+            )
+        if result.resolved_active_revision_id != index_revision_id:
+            raise RetrievalExecutionError(
+                ErrorCode.INDEX_REVISION_INCOMPATIBLE,
+                diagnostic={"check": "adjacency_frozen_revision"},
+            )
+        if result.validated_anchor_count != len(anchors):
+            raise RetrievalExecutionError(
+                ErrorCode.INTERNAL_SERVER_ERROR,
+                diagnostic={"check": "adjacency_anchor_scope"},
+            )
+        self._validate_adjacent_scope(query, result)
+        return tuple(
+            Evidence(
+                rank=rank,
+                index_chunk_id=hit.index_chunk_id,
+                indexed_document_version_id=hit.indexed_document_version_id,
+                document_id=hit.document_id,
+                document_version_id=hit.document_version_id,
+                index_revision_id=hit.index_revision_id,
+                ordinal=hit.ordinal,
+                text=hit.text,
+                source_location=hit.source_location,
+                hierarchy=hit.hierarchy,
+                source_metadata=hit.source_metadata,
+                score=0.0,
+                score_kind=EvidenceScoreKind.ADJACENCY,
+                modality=hit.modality,
+                asset=self._asset(hit),
+                evidence_group_key=hit.evidence_group_key,
+                matched_representations=("adjacency",),
+                document_display_name=hit.document_display_name,
+                document_original_filename=hit.document_original_filename,
+                adjacency_anchor_index_chunk_id=(
+                    hit.anchor_index_chunk_id
+                ),
+                adjacency_offset=hit.offset,
+            )
+            for rank, hit in enumerate(result.hits, start=1)
+        )
 
     async def _retrieve(
         self,
@@ -1305,6 +1416,58 @@ class RetrievalService:
                 raise RetrievalExecutionError(
                     ErrorCode.INTERNAL_SERVER_ERROR,
                     diagnostic={"check": "mandatory_scope"},
+                )
+
+    @staticmethod
+    def _validate_adjacent_scope(
+        query: AdjacentChunkQuery,
+        result: AdjacentChunkResult,
+    ) -> None:
+        anchors = {
+            item.index_chunk_id: (rank, item)
+            for rank, item in enumerate(query.anchors, start=1)
+        }
+        ordered_links = [
+            (hit.anchor_rank, hit.offset, hit.index_chunk_id.int)
+            for hit in result.hits
+        ]
+        identities = [
+            (hit.anchor_index_chunk_id, hit.index_chunk_id)
+            for hit in result.hits
+        ]
+        if (
+            ordered_links != sorted(ordered_links)
+            or len(identities) != len(set(identities))
+        ):
+            raise RetrievalExecutionError(
+                ErrorCode.INTERNAL_SERVER_ERROR,
+                diagnostic={"check": "adjacency_result_order"},
+            )
+        for hit in result.hits:
+            anchor_value = anchors.get(hit.anchor_index_chunk_id)
+            if anchor_value is None:
+                raise RetrievalExecutionError(
+                    ErrorCode.INTERNAL_SERVER_ERROR,
+                    diagnostic={"check": "adjacency_anchor_identity"},
+                )
+            anchor_rank, anchor = anchor_value
+            if (
+                hit.workspace_id != query.workspace_id
+                or hit.knowledge_base_id != query.knowledge_base_id
+                or hit.index_revision_id != result.resolved_active_revision_id
+                or hit.indexed_document_version_id
+                != anchor.indexed_document_version_id
+                or hit.ordinal - anchor.ordinal != hit.offset
+                or hit.offset not in {-1, 1}
+                or hit.anchor_rank != anchor_rank
+                or hit.build_status != "ready"
+                or hit.serving_status != "serving"
+                or not hit.is_current_serving_version
+                or hit.modality not in {"text", "table"}
+            ):
+                raise RetrievalExecutionError(
+                    ErrorCode.INTERNAL_SERVER_ERROR,
+                    diagnostic={"check": "adjacency_mandatory_scope"},
                 )
 
     @classmethod

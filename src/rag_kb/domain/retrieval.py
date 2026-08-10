@@ -32,6 +32,92 @@ class EvidenceScoreKind(StrEnum):
     COSINE_SIMILARITY = "cosine_similarity"
     HYBRID_RERANK = "hybrid_rerank"
     RECIPROCAL_RANK_FUSION = "reciprocal_rank_fusion"
+    ADJACENCY = "adjacency"
+
+
+@dataclass(frozen=True, slots=True)
+class AdjacentChunkAnchor:
+    index_chunk_id: UUID
+    indexed_document_version_id: UUID
+    ordinal: int
+
+    def __post_init__(self) -> None:
+        if self.ordinal < 0:
+            raise ValueError("adjacency anchor ordinal must be non-negative")
+
+
+@dataclass(frozen=True, slots=True)
+class AdjacentChunkQuery:
+    workspace_id: UUID
+    knowledge_base_id: UUID
+    index_revision_id: UUID
+    anchors: tuple[AdjacentChunkAnchor, ...]
+
+    def __post_init__(self) -> None:
+        if not 1 <= len(self.anchors) <= 2:
+            raise ValueError("adjacency query requires one or two anchors")
+        chunk_ids = [item.index_chunk_id for item in self.anchors]
+        if len(chunk_ids) != len(set(chunk_ids)):
+            raise ValueError("adjacency anchors must be unique")
+
+
+@dataclass(frozen=True, slots=True)
+class AdjacentChunkHit:
+    workspace_id: UUID
+    knowledge_base_id: UUID
+    index_revision_id: UUID
+    index_chunk_id: UUID
+    indexed_document_version_id: UUID
+    document_id: UUID
+    document_version_id: UUID
+    ordinal: int
+    text: str
+    source_location: dict[str, Any]
+    hierarchy: dict[str, Any]
+    source_metadata: dict[str, Any]
+    anchor_index_chunk_id: UUID
+    anchor_rank: int
+    offset: int
+    build_status: str
+    serving_status: str
+    is_current_serving_version: bool
+    modality: str = "text"
+    evidence_group_key: str | None = None
+    index_asset_id: UUID | None = None
+    asset_media_type: str | None = None
+    asset_checksum_sha256: str | None = None
+    asset_width: int | None = None
+    asset_height: int | None = None
+    document_display_name: str | None = None
+    document_original_filename: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.ordinal < 0:
+            raise ValueError("adjacent chunk ordinal must be non-negative")
+        if self.anchor_rank < 1:
+            raise ValueError("adjacency anchor rank must be positive")
+        if self.offset not in {-1, 1}:
+            raise ValueError("adjacency offset must be minus or plus one")
+        if self.modality not in {"text", "table"}:
+            raise ValueError("adjacent chunk modality is unsupported")
+        if not self.text and self.modality == "text":
+            raise ValueError("adjacent text evidence must not be empty")
+        object.__setattr__(self, "source_location", dict(self.source_location))
+        object.__setattr__(self, "hierarchy", dict(self.hierarchy))
+        object.__setattr__(self, "source_metadata", dict(self.source_metadata))
+
+
+@dataclass(frozen=True, slots=True)
+class AdjacentChunkResult:
+    resolved_active_revision_id: UUID
+    validated_anchor_count: int
+    hits: tuple[AdjacentChunkHit, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not 0 <= self.validated_anchor_count <= 2:
+            raise ValueError("validated adjacency anchor count is invalid")
+        if len(self.hits) > 4:
+            raise ValueError("adjacency result exceeds the fixed neighbor bound")
 
 
 @dataclass(frozen=True, slots=True)
@@ -235,6 +321,8 @@ class Evidence:
     related_visuals: tuple[RelatedVisualEvidence, ...] = ()
     document_display_name: str | None = None
     document_original_filename: str | None = None
+    adjacency_anchor_index_chunk_id: UUID | None = None
+    adjacency_offset: int | None = None
 
     def __post_init__(self) -> None:
         if self.rank < 1:
@@ -247,6 +335,26 @@ class Evidence:
             object.__setattr__(self, "score_kind", EvidenceScoreKind(self.score_kind))
         except ValueError as error:
             raise ValueError("unsupported evidence score kind") from error
+        if self.score_kind is EvidenceScoreKind.ADJACENCY:
+            if (
+                self.score != 0.0
+                or self.lexical_score != 0.0
+                or self.lexical_coverage != 0.0
+                or self.modality not in {"text", "table"}
+                or self.adjacency_anchor_index_chunk_id is None
+                or self.adjacency_offset not in {-1, 1}
+                or self.vector_similarity is not None
+                or self.text_space_rank is not None
+                or self.lexical_rank is not None
+                or self.cross_modal_rank is not None
+                or self.fusion_score is not None
+            ):
+                raise ValueError("adjacency evidence metadata is invalid")
+        elif (
+            self.adjacency_anchor_index_chunk_id is not None
+            or self.adjacency_offset is not None
+        ):
+            raise ValueError("non-adjacency evidence cannot reference an anchor")
         for name, value in (
             ("vector_similarity", self.vector_similarity),
             ("lexical_score", self.lexical_score),

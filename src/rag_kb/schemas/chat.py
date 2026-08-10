@@ -168,6 +168,8 @@ class ChatSearchTraceResponse(PublicSchema):
     retrieval_calls: Annotated[int, Field(ge=0, le=12)]
     verifier_calls: Annotated[int, Field(ge=0, le=4)]
     evidence_count: Annotated[int, Field(ge=0, le=100)]
+    adjacency_loaded_count: Annotated[int, Field(ge=0, le=100)] = 0
+    adjacency_selected_count: Annotated[int, Field(ge=0, le=100)] = 0
 
 
 class ChatWorkflowResponse(PublicSchema):

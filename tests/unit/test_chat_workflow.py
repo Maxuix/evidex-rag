@@ -85,6 +85,8 @@ class ChatWorkflowContractTests(unittest.TestCase):
             retrieval_calls=1,
             verifier_calls=1,
             evidence_count=1,
+            adjacency_loaded_count=2,
+            adjacency_selected_count=1,
         )
         state = ChatWorkflowState(
             resolved_mode=ChatResolvedMode.AGENT,
@@ -94,6 +96,15 @@ class ChatWorkflowContractTests(unittest.TestCase):
             search_trace=trace,
         )
         self.assertEqual(hydrate_chat_workflow_state(state.as_dict()), state)
+
+        legacy = state.as_dict()
+        assert legacy["search_trace"] is not None
+        legacy["search_trace"].pop("adjacency_loaded_count")
+        legacy["search_trace"].pop("adjacency_selected_count")
+        hydrated_legacy = hydrate_chat_workflow_state(legacy)
+        assert hydrated_legacy.search_trace is not None
+        self.assertEqual(hydrated_legacy.search_trace.adjacency_loaded_count, 0)
+        self.assertEqual(hydrated_legacy.search_trace.adjacency_selected_count, 0)
 
     def test_hydration_and_cross_field_invariants_reject_invalid_state(self) -> None:
         _, state = initial_chat_workflow(ChatWorkflowMode.SIMPLE)

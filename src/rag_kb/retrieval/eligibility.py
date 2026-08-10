@@ -27,6 +27,8 @@ class EvidenceEligibilityPolicy:
     def usable(self, item: Evidence) -> bool:
         if item.score is None:
             return False
+        if item.score_kind is EvidenceScoreKind.ADJACENCY:
+            return False
         if item.score_kind is EvidenceScoreKind.RECIPROCAL_RANK_FUSION:
             if item.vector_similarity is None:
                 return False

@@ -142,11 +142,33 @@ class AdaptiveEvidenceAssessmentStep(CosineEvidenceAssessmentStep):
             )
         result = workflow_state.research_result
         evidence = build_evidence_envelope(pack)
-        admitted = {
-            _evidence_key(item): prompt.citation_id
-            for item, prompt in zip(pack.evidence, evidence.items, strict=True)
-            if self._policy.usable(item)
+        pack_by_chunk_id = {
+            item.index_chunk_id: item for item in pack.evidence
         }
+        selected = set(result.selected_evidence_keys)
+        admitted: dict[str, str] = {}
+        for item, prompt in zip(pack.evidence, evidence.items, strict=True):
+            key = _evidence_key(item)
+            if item.score_kind is not EvidenceScoreKind.ADJACENCY:
+                if self._policy.usable(item):
+                    admitted[key] = prompt.citation_id
+                continue
+            anchor = pack_by_chunk_id.get(
+                item.adjacency_anchor_index_chunk_id
+            )
+            if (
+                key in selected
+                and anchor is not None
+                and anchor.score_kind is not EvidenceScoreKind.ADJACENCY
+                and item.index_revision_id == anchor.index_revision_id
+                and item.indexed_document_version_id
+                == anchor.indexed_document_version_id
+                and item.document_id == anchor.document_id
+                and item.document_version_id == anchor.document_version_id
+                and item.ordinal - anchor.ordinal == item.adjacency_offset
+                and self._policy.usable(anchor)
+            ):
+                admitted[key] = prompt.citation_id
         usable_citation_ids = tuple(
             admitted[key]
             for key in result.selected_evidence_keys

@@ -241,6 +241,8 @@ class SearchTrace:
     retrieval_calls: int
     verifier_calls: int
     evidence_count: int
+    adjacency_loaded_count: int = 0
+    adjacency_selected_count: int = 0
     version: str = SEARCH_TRACE_VERSION
 
     def __post_init__(self) -> None:
@@ -255,9 +257,13 @@ class SearchTrace:
                 self.retrieval_calls,
                 self.verifier_calls,
                 self.evidence_count,
+                self.adjacency_loaded_count,
+                self.adjacency_selected_count,
             )
         ):
             raise ValueError("search trace counters are invalid")
+        if self.adjacency_selected_count > self.adjacency_loaded_count:
+            raise ValueError("selected adjacency count exceeds loaded count")
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -267,6 +273,8 @@ class SearchTrace:
             "retrieval_calls": self.retrieval_calls,
             "verifier_calls": self.verifier_calls,
             "evidence_count": self.evidence_count,
+            "adjacency_loaded_count": self.adjacency_loaded_count,
+            "adjacency_selected_count": self.adjacency_selected_count,
         }
 
 
@@ -455,14 +463,22 @@ def _hydrate_research_result(value: Any) -> ResearchResult:
 
 
 def _hydrate_search_trace(value: Any) -> SearchTrace:
-    if not isinstance(value, Mapping) or set(value) != {
+    legacy_fields = {
         "version",
         "steps",
         "decision_rounds",
         "retrieval_calls",
         "verifier_calls",
         "evidence_count",
-    }:
+    }
+    current_fields = legacy_fields | {
+        "adjacency_loaded_count",
+        "adjacency_selected_count",
+    }
+    if not isinstance(value, Mapping):
+        raise ValueError("search trace fields are invalid")
+    fields = frozenset(value)
+    if fields not in {frozenset(legacy_fields), frozenset(current_fields)}:
         raise ValueError("search trace fields are invalid")
     raw_steps = value["steps"]
     if not isinstance(raw_steps, (list, tuple)):
@@ -497,6 +513,12 @@ def _hydrate_search_trace(value: Any) -> SearchTrace:
         retrieval_calls=_strict_int(value["retrieval_calls"]),
         verifier_calls=_strict_int(value["verifier_calls"]),
         evidence_count=_strict_int(value["evidence_count"]),
+        adjacency_loaded_count=_strict_int(
+            value.get("adjacency_loaded_count", 0)
+        ),
+        adjacency_selected_count=_strict_int(
+            value.get("adjacency_selected_count", 0)
+        ),
     )
 
 

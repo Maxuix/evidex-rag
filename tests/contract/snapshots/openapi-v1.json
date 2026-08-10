@@ -3860,6 +3860,20 @@
             "maximum": 100.0,
             "minimum": 0.0,
             "title": "Evidence Count"
+          },
+          "adjacency_loaded_count": {
+            "type": "integer",
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Adjacency Loaded Count",
+            "default": 0
+          },
+          "adjacency_selected_count": {
+            "type": "integer",
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Adjacency Selected Count",
+            "default": 0
           }
         },
         "additionalProperties": false,
@@ -5570,7 +5584,8 @@
         "enum": [
           "cosine_similarity",
           "hybrid_rerank",
-          "reciprocal_rank_fusion"
+          "reciprocal_rank_fusion",
+          "adjacency"
         ],
         "title": "EvidenceScoreKind"
       },
