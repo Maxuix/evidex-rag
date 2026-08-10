@@ -91,7 +91,7 @@ run_compose() {
 command -v docker >/dev/null 2>&1 || fail "Docker is not installed or not on PATH"
 docker info >/dev/null 2>&1 || fail "Docker is not running"
 [ -f "$APP_ENV_FILE" ] ||
-  fail "missing $APP_ENV_FILE; copy .env.example to .env and configure the model providers"
+  fail "missing $APP_ENV_FILE; copy .env.example to .env (legacy model providers are optional)"
 [ ! -L "$ROOT/.runtime" ] || fail "runtime directory must not be a symbolic link"
 [ ! -L "$LOG_DIRECTORY" ] || fail "log directory must not be a symbolic link"
 [ ! -e "$ROOT/.runtime" ] || [ -d "$ROOT/.runtime" ] ||
