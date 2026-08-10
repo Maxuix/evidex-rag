@@ -28,7 +28,8 @@ FORBIDDEN_APPLICATION_IMPORTS = (
     "langchain_openai",
     "docling",
 )
-COMPOSITION_ROOTS = {
+COMPOSITION_MODULES = {
+    ROOT / "apps" / "model_asset_runtime.py",
     ROOT / "apps" / "api" / "dependencies.py",
     ROOT / "apps" / "worker" / "dependencies.py",
     ROOT / "apps" / "maintenance" / "dependencies.py",
@@ -143,7 +144,7 @@ class ArchitectureBoundaryTests(unittest.TestCase):
             if path.is_relative_to(SOURCE_ROOT / "adapters"):
                 continue
             for name in _imports(path):
-                if _matches(name, "rag_kb.adapters") and path not in COMPOSITION_ROOTS:
+                if _matches(name, "rag_kb.adapters") and path not in COMPOSITION_MODULES:
                     violations.append(f"{path.relative_to(ROOT)} imports {name}")
 
         self.assertEqual(violations, [])

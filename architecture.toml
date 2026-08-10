@@ -68,7 +68,16 @@ scan_roots = ["src", "apps"]
   "rag_kb.domain",
   "rag_kb.services",
 ]
+"apps.model_asset_runtime" = [
+  "rag_kb.adapters",
+  "rag_kb.config",
+  "rag_kb.domain",
+  "rag_kb.ports",
+  "rag_kb.services",
+  "rag_kb.uow",
+]
 "apps.api" = [
+  "apps.model_asset_runtime",
   "rag_kb.adapters",
   "rag_kb.auth",
   "rag_kb.config",
@@ -84,6 +93,7 @@ scan_roots = ["src", "apps"]
   "rag_kb.uow",
 ]
 "apps.worker" = [
+  "apps.model_asset_runtime",
   "rag_kb.adapters",
   "rag_kb.answering",
   "rag_kb.auth",
@@ -101,6 +111,7 @@ scan_roots = ["src", "apps"]
   "rag_kb.workflows",
 ]
 "apps.maintenance" = [
+  "apps.model_asset_runtime",
   "rag_kb.adapters",
   "rag_kb.auth",
   "rag_kb.config",

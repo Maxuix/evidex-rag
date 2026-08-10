@@ -33,6 +33,13 @@ class StartLocalScriptTests(unittest.TestCase):
             dockerfile,
         )
         self.assertIn("pip install --require-hashes", dockerfile)
+        self.assertIn("python -m pip check", dockerfile)
+        self.assertIn("python -m pip uninstall --yes pip", dockerfile)
+        self.assertIn("find_spec('pip') is None", dockerfile)
+        self.assertLess(
+            dockerfile.index("python -m pip uninstall --yes pip"),
+            dockerfile.index("FROM python-dependencies AS runtime"),
+        )
         self.assertNotIn("pip install --no-cache-dir", dockerfile)
 
     def test_application_build_uses_single_overridable_china_mirrors(self) -> None:

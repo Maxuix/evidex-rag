@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import hashlib
 import sys
+import tempfile
 import unittest
 from datetime import UTC, datetime
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import UUID, uuid4
 
+from rag_kb.adapters.file_store.assets import LocalIndexAssetStore
 from rag_kb.auth import AuthContext
 from rag_kb.config import DeploymentProfile
 from rag_kb.domain import (
@@ -15,7 +19,9 @@ from rag_kb.domain import (
     IndexAssetSnapshot,
     IndexCleanupResult,
     RetiredIndexTargetAssets,
+    SourceFileMissingError,
 )
+from rag_kb.ports.files import IndexAssetStore
 from rag_kb.services.maintenance import MaintenanceCleanupService
 from tools.reset_local import (
     CONFIRMATION,
@@ -317,6 +323,81 @@ class MaintenanceCleanupServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(repository.cleanup_target_ids, [(target_id,), (target_id,)])
         self.assertEqual(result.index.retired_targets_cleaned, 1)
 
+    async def test_real_local_asset_is_deleted_before_retired_target_cleanup(
+        self,
+    ) -> None:
+        target_id = uuid4()
+        content = b"retired derived image"
+        checksum = hashlib.sha256(content).hexdigest()
+        identity = IndexAssetIdentity(_WORKSPACE_ID, target_id, checksum)
+        snapshot = _asset_snapshot(target_id, identity.storage_uri, checksum)
+        repository = _IndexingRepository(
+            (RetiredIndexTargetAssets(target_id, (snapshot,)),)
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            staging = root / "asset-staging"
+            final = root / "assets"
+            staging.mkdir()
+            final.mkdir()
+            store = LocalIndexAssetStore(staging, final)
+            await store.put(identity, content, checksum)
+
+            result = await _service(repository, asset_store=store).run_once(
+                _context(),
+                now=_NOW,
+            )
+
+            with self.assertRaises(SourceFileMissingError):
+                await store.read(identity)
+
+        self.assertEqual(repository.cleanup_target_ids, [(target_id,)])
+        self.assertEqual(result.index.retired_targets_cleaned, 1)
+
+    async def test_invalid_local_asset_uri_preserves_target_and_other_files(
+        self,
+    ) -> None:
+        target_id = uuid4()
+        retained_target_id = uuid4()
+        content = b"retained derived image"
+        checksum = hashlib.sha256(content).hexdigest()
+        retained = IndexAssetIdentity(
+            _WORKSPACE_ID,
+            retained_target_id,
+            checksum,
+        )
+        invalid = _asset_snapshot(
+            target_id,
+            (
+                f"local-index-asset://{_WORKSPACE_ID}/{target_id}/"
+                "../escaped"
+            ),
+            checksum,
+        )
+        repository = _IndexingRepository(
+            (RetiredIndexTargetAssets(target_id, (invalid,)),)
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            staging = root / "asset-staging"
+            final = root / "assets"
+            staging.mkdir()
+            final.mkdir()
+            store = LocalIndexAssetStore(staging, final)
+            await store.put(retained, content, checksum)
+
+            result = await _service(repository, asset_store=store).run_once(
+                _context(),
+                now=_NOW,
+            )
+
+            self.assertEqual(await store.read(retained), content)
+
+        self.assertEqual(repository.cleanup_target_ids, [()])
+        self.assertEqual(result.index.retired_targets_cleaned, 0)
+
 
 class _FileReconciliation:
     async def run_once(self, context, *, now):
@@ -420,10 +501,10 @@ class _UnitOfWorkFactory:
 def _service(
     repository: _IndexingRepository,
     *,
-    asset_store: _AssetStore | None,
+    asset_store: IndexAssetStore | None,
     batch_size: int = 10,
 ) -> MaintenanceCleanupService:
-    if asset_store is not None:
+    if isinstance(asset_store, _AssetStore):
         asset_store.events = repository.events
     return MaintenanceCleanupService(
         _UnitOfWorkFactory(repository),
@@ -460,6 +541,24 @@ def _asset(target_id: UUID, ordinal: int) -> IndexAssetSnapshot:
         ),
         media_type="image/png",
         checksum_sha256=asset_key,
+    )
+
+
+def _asset_snapshot(
+    target_id: UUID,
+    storage_uri: str,
+    checksum_sha256: str,
+) -> IndexAssetSnapshot:
+    return IndexAssetSnapshot(
+        id=uuid4(),
+        workspace_id=_WORKSPACE_ID,
+        kb_id=uuid4(),
+        document_id=uuid4(),
+        document_version_id=uuid4(),
+        indexed_document_version_id=target_id,
+        storage_uri=storage_uri,
+        media_type="image/png",
+        checksum_sha256=checksum_sha256,
     )
 
 

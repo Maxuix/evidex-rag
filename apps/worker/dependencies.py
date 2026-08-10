@@ -9,7 +9,11 @@ from pathlib import Path
 import socket
 from uuid import uuid4
 
-from rag_kb.adapters.file_store.assets import LocalIndexAssetStore
+from apps.model_asset_runtime import (
+    assemble_model_asset_runtime,
+    build_dynamic_embedding_loaders,
+    build_legacy_embedding_adapters,
+)
 from rag_kb.adapters.file_store.local import LocalFileStore
 from rag_kb.adapters.chat_preview.pg_notify import PgNotifyPreviewSink
 from rag_kb.adapters.lexical_store.postgres import PgLexicalStore
@@ -17,13 +21,6 @@ from rag_kb.adapters.model_api.langchain_chat import LangChainChatModelAdapter
 from rag_kb.adapters.model_api.routing_chat import RoutingChatModelAdapter
 from rag_kb.adapters.model_api.unconfigured import (
     UnconfiguredChatModelAdapter,
-    UnconfiguredEmbeddingModelAdapter,
-)
-from rag_kb.adapters.model_api.langchain_embeddings import (
-    LangChainEmbeddingModelAdapter,
-)
-from rag_kb.adapters.model_api.multimodal_embeddings import (
-    TongyiVisionEmbeddingAdapter,
 )
 from rag_kb.adapters.model_secrets.local import LocalModelSecretStore
 from rag_kb.adapters.parser.docling.parser import DoclingParser
@@ -50,14 +47,18 @@ from rag_kb.db import (
 from rag_kb.domain import (
     ChatModelExecutionError,
     ErrorCode,
-    EmbeddingSpaceDefinition,
     ModelKind,
     ModelValidationStatus,
     ParserLimits,
 )
 from rag_kb.indexing.pipeline import IndexingPipeline
 from rag_kb.memory import ConversationContextSelector, SessionQueryContextualizer
-from rag_kb.ports.model_api import ChatModelAdapter, EmbeddingModelAdapter
+from rag_kb.ports.files import IndexAssetStore
+from rag_kb.ports.model_api import (
+    ChatModelAdapter,
+    EmbeddingModelAdapter,
+    MultimodalEmbeddingAdapter,
+)
 from rag_kb.retrieval.service import RetrievalService
 from rag_kb.retrieval.agent import RetrievalAgentService
 from rag_kb.retrieval.router import AutoWorkflowRouter
@@ -79,8 +80,6 @@ from rag_kb.services.chat_visuals import VisualEvidencePreparationStep
 from rag_kb.services.composite_evidence import CompositeEvidenceHydrationService
 from rag_kb.services.content import (
     build_content_services,
-    embedding_space_definition,
-    unconfigured_embedding_space_definition,
 )
 from rag_kb.services.files import FileReconciliationService
 from rag_kb.uow import UnitOfWork, UnitOfWorkPurpose, execute_in_transaction
@@ -100,12 +99,12 @@ class WorkerDependencies:
     auth_provider: DevelopmentAuthProvider
     access_policy: SingleWorkspaceAccessPolicy
     file_store: LocalFileStore
-    asset_store: LocalIndexAssetStore | None
-    index_asset_service: IndexAssetService | None
+    asset_store: IndexAssetStore
+    index_asset_service: IndexAssetService
     reconciliation_service: FileReconciliationService
     document_parser: DoclingParser
     embedding_provider: EmbeddingModelAdapter
-    multimodal_embedding_provider: TongyiVisionEmbeddingAdapter | None
+    multimodal_embedding_provider: MultimodalEmbeddingAdapter | None
     vector_store: PgVectorStore
     retrieval_service: RetrievalService
     chat_model_adapter: ChatModelAdapter
@@ -175,11 +174,11 @@ def build_worker_dependencies(
         database.sessions,
         identity.workspace_id,
     )
-    legacy_models = resolved_settings.model_provider
-    embedding_settings = legacy_models.embedding if legacy_models is not None else None
-    multimodal_settings = (
-        legacy_models.multimodal_embedding if legacy_models is not None else None
-    )
+    model_assets = assemble_model_asset_runtime(resolved_settings)
+    legacy_embeddings = build_legacy_embedding_adapters(model_assets)
+    legacy_models = model_assets.legacy_models
+    embedding_settings = model_assets.embedding_settings
+    multimodal_settings = model_assets.multimodal_settings
     content_services = build_content_services(
         unit_of_work,
         access_policy,
@@ -199,44 +198,10 @@ def build_worker_dependencies(
         ),
         checkpoint_root=resolved_settings.file_store.parser_temp_path,
     )
-    embedding_space = (
-        embedding_space_definition(embedding_settings)
-        if embedding_settings is not None
-        else unconfigured_embedding_space_definition()
-    )
-    embedding_provider: EmbeddingModelAdapter = (
-        LangChainEmbeddingModelAdapter(
-            base_url=str(embedding_settings.base_url),
-            api_key=embedding_settings.api_key.get_secret_value(),
-            embedding_space=embedding_space,
-            max_batch_size=embedding_settings.max_batch_size,
-            timeout_seconds=embedding_settings.timeout_seconds,
-            max_retries=embedding_settings.max_retries,
-            max_concurrency=embedding_settings.max_concurrency,
-        )
-        if embedding_settings is not None
-        else UnconfiguredEmbeddingModelAdapter(embedding_space)
-    )
-    multimodal_embedding_provider = None
-    asset_store = None
-    if multimodal_settings is not None:
-        assert resolved_settings.file_store.asset_staging_path is not None
-        assert resolved_settings.file_store.asset_final_path is not None
-        multimodal_space = embedding_space_definition(multimodal_settings)
-        multimodal_embedding_provider = TongyiVisionEmbeddingAdapter(
-            endpoint=str(multimodal_settings.base_url),
-            api_key=multimodal_settings.api_key.get_secret_value(),
-            embedding_space=multimodal_space,
-            max_batch_size=multimodal_settings.max_batch_size,
-            timeout_seconds=multimodal_settings.timeout_seconds,
-            max_retries=multimodal_settings.max_retries,
-            max_concurrency=multimodal_settings.max_concurrency,
-            text_query_template=multimodal_settings.text_query_template,
-        )
-        asset_store = LocalIndexAssetStore(
-            resolved_settings.file_store.asset_staging_path,
-            resolved_settings.file_store.asset_final_path,
-        )
+    embedding_space = model_assets.embedding_space
+    embedding_provider = legacy_embeddings.embedding
+    multimodal_embedding_provider = legacy_embeddings.multimodal
+    asset_store = model_assets.asset_store
     chat_settings = legacy_models.chat if legacy_models is not None else None
     legacy_chat_model_adapter: ChatModelAdapter = (
         LangChainChatModelAdapter(
@@ -260,6 +225,10 @@ def build_worker_dependencies(
     model_secret_store = LocalModelSecretStore(
         resolved_settings.model_secrets.root_path
     )
+    dynamic_embeddings = build_dynamic_embedding_loaders(
+        unit_of_work,
+        model_secret_store,
+    )
     chat_model_adapter = RoutingChatModelAdapter(
         _chat_model_loader(unit_of_work, model_secret_store),
         legacy_fallback=legacy_chat_model_adapter,
@@ -273,12 +242,8 @@ def build_worker_dependencies(
         asset_store=asset_store,
         multimodal_embedding_provider=multimodal_embedding_provider,
         parser_limits=parser_limits,
-        embedding_model_resolver=_embedding_model_loader(
-            unit_of_work, model_secret_store
-        ),
-        multimodal_embedding_model_resolver=_multimodal_model_loader(
-            unit_of_work, model_secret_store
-        ),
+        embedding_model_resolver=dynamic_embeddings.embedding,
+        multimodal_embedding_model_resolver=dynamic_embeddings.multimodal,
     )
     poller = resolved_settings.job_poller
     resolved_worker_id = worker_id or _worker_id()
@@ -334,22 +299,18 @@ def build_worker_dependencies(
         min_rerank_score=resolved_settings.retrieval.min_rerank_score,
         relation_hydrator=CompositeEvidenceHydrationService(unit_of_work),
         deadline_seconds=resolved_settings.retrieval.deadline_seconds,
-        embedding_model_resolver=_embedding_model_loader(
-            unit_of_work, model_secret_store
-        ),
-        multimodal_embedding_model_resolver=_multimodal_model_loader(
-            unit_of_work, model_secret_store
-        ),
+        embedding_model_resolver=dynamic_embeddings.embedding,
+        multimodal_embedding_model_resolver=dynamic_embeddings.multimodal,
     )
     evidence_assessor = CosineEvidenceAssessmentStep(
         resolved_settings.retrieval.min_cosine_similarity,
         resolved_settings.retrieval.min_rerank_score,
         resolved_settings.retrieval.cross_modal_min_cosine_similarity,
     )
-    index_asset_service = (
-        IndexAssetService(unit_of_work, access_policy, asset_store)
-        if asset_store is not None
-        else None
+    index_asset_service = IndexAssetService(
+        unit_of_work,
+        access_policy,
+        asset_store,
     )
     visual_evidence_preparer = VisualEvidencePreparationStep(
         index_asset_service,
@@ -558,94 +519,5 @@ def _chat_model_loader(
             reasoning_effort=parameters.get("reasoning_effort", "off"),
             thinking_enabled=parameters.get("reasoning_effort", "off") != "off",
         )
-
-    return load
-
-
-async def _embedding_bundle(
-    unit_of_work: SqlAlchemyUnitOfWorkFactory,
-    space: EmbeddingSpaceDefinition,
-    kind: ModelKind,
-):
-    revision_id = space.model_profile_revision_id
-    if revision_id is None:
-        raise ValueError("embedding space has no model profile revision")
-
-    async def resolve(uow: UnitOfWork):
-        bundle = await uow.model_settings.get_profile_revision(revision_id)
-        if (
-            bundle is None
-            or bundle.profile.kind is not kind
-            or not bundle.profile.enabled
-            or not bundle.provider.enabled
-            or bundle.current_revision.validation_status
-            is not ModelValidationStatus.VALID
-            or bundle.current_revision.compatibility_fingerprint
-            != space.compatibility_fingerprint
-        ):
-            raise ValueError("embedding model profile is unavailable")
-        return bundle
-
-    return await execute_in_transaction(
-        unit_of_work,
-        resolve,
-        purpose=UnitOfWorkPurpose.REQUEST,
-    )
-
-
-def _embedding_model_loader(unit_of_work, secret_store):
-    cache = {}
-
-    async def load(space):
-        revision_id = space.model_profile_revision_id
-        if revision_id in cache:
-            return cache[revision_id]
-        bundle = await _embedding_bundle(
-            unit_of_work, space, ModelKind.TEXT_EMBEDDING
-        )
-        key = await asyncio.to_thread(
-            secret_store.read, bundle.provider_revision.secret_reference
-        )
-        parameters = bundle.current_revision.configuration
-        adapter = LangChainEmbeddingModelAdapter(
-            base_url=bundle.provider_revision.base_url,
-            api_key=key,
-            embedding_space=space,
-            max_batch_size=parameters["max_batch_size"],
-            timeout_seconds=bundle.provider_revision.timeout_seconds,
-            max_retries=bundle.provider_revision.max_retries,
-            max_concurrency=bundle.provider_revision.max_concurrency,
-        )
-        cache[revision_id] = adapter
-        return adapter
-
-    return load
-
-
-def _multimodal_model_loader(unit_of_work, secret_store):
-    cache = {}
-
-    async def load(space):
-        revision_id = space.model_profile_revision_id
-        if revision_id in cache:
-            return cache[revision_id]
-        bundle = await _embedding_bundle(
-            unit_of_work, space, ModelKind.MULTIMODAL_EMBEDDING
-        )
-        key = await asyncio.to_thread(
-            secret_store.read, bundle.provider_revision.secret_reference
-        )
-        parameters = bundle.current_revision.configuration
-        adapter = TongyiVisionEmbeddingAdapter(
-            endpoint=bundle.provider_revision.base_url,
-            api_key=key,
-            embedding_space=space,
-            max_batch_size=parameters["max_batch_size"],
-            timeout_seconds=bundle.provider_revision.timeout_seconds,
-            max_retries=bundle.provider_revision.max_retries,
-            max_concurrency=bundle.provider_revision.max_concurrency,
-        )
-        cache[revision_id] = adapter
-        return adapter
 
     return load

@@ -1,4 +1,4 @@
-FROM docker.io/library/python:3.12.13-slim-bookworm@sha256:8a7e7cc04fd3e2bd787f7f24e22d5d119aa590d429b50c95dfe12b3abe52f48b
+FROM docker.io/library/python:3.12.13-slim-bookworm@sha256:8a7e7cc04fd3e2bd787f7f24e22d5d119aa590d429b50c95dfe12b3abe52f48b AS python-dependencies
 
 ARG RAG_KB_BUILD_DEBIAN_MIRROR=https://mirrors.tuna.tsinghua.edu.cn/debian
 ARG RAG_KB_BUILD_PYPI_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
@@ -31,6 +31,16 @@ COPY requirements.lock /app/requirements.lock
 RUN --mount=type=cache,id=rag-kb-pip-v1,target=/root/.cache/pip,sharing=locked \
     PIP_INDEX_URL="${RAG_KB_BUILD_PYPI_INDEX_URL}" \
     python -m pip install --require-hashes -r /app/requirements.lock
+
+# Package installation is a build-time capability. The application never
+# installs packages at runtime, so remove pip from the stage inherited by the
+# final image. Verify the installed graph first, then fail the build if pip's
+# module remains importable after removal.
+RUN python -m pip check \
+    && python -m pip uninstall --yes pip \
+    && python -c "import importlib.util; assert importlib.util.find_spec('pip') is None"
+
+FROM python-dependencies AS runtime
 
 COPY config/docling-artifacts-v1.json /app/config/docling-artifacts-v1.json
 COPY tools/prepare_docling_artifacts.py /app/tools/prepare_docling_artifacts.py

@@ -5,11 +5,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from rag_kb.adapters.file_store.assets import LocalIndexAssetStore
+from apps.model_asset_runtime import assemble_model_asset_runtime
 from rag_kb.adapters.file_store.local import LocalFileStore
 from rag_kb.auth import DevelopmentAuthProvider, SingleWorkspaceAccessPolicy
-from rag_kb.config import Settings, load_settings, validate_startup_environment
+from rag_kb.config import (
+    Settings,
+    StartupValidation,
+    load_settings,
+    validate_startup_environment,
+)
 from rag_kb.db import DatabaseProcess, DatabaseResources, create_database_resources
+from rag_kb.ports.files import IndexAssetStore
 from rag_kb.services.content import build_content_services
 from rag_kb.services.files import FileReconciliationService
 from rag_kb.services.maintenance import MaintenanceCleanupService
@@ -19,8 +25,10 @@ from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWorkFactory
 @dataclass(frozen=True)
 class MaintenanceDependencies:
     settings: Settings
+    startup: StartupValidation
     database: DatabaseResources
     auth_provider: DevelopmentAuthProvider
+    asset_store: IndexAssetStore
     cleanup: MaintenanceCleanupService
 
     async def close(self) -> None:
@@ -33,7 +41,7 @@ def build_maintenance_dependencies(
     env_file: str | Path | None = ".env",
 ) -> MaintenanceDependencies:
     resolved = settings or load_settings(env_file=env_file)
-    validate_startup_environment(resolved)
+    startup = validate_startup_environment(resolved)
     identity = resolved.identity
     access_policy = SingleWorkspaceAccessPolicy(identity.workspace_id)
     database = create_database_resources(
@@ -53,11 +61,12 @@ def build_maintenance_dependencies(
         database.sessions,
         identity.workspace_id,
     )
+    model_assets = assemble_model_asset_runtime(resolved)
     content = build_content_services(
         unit_of_work,
         access_policy,
-        resolved.model_provider.embedding,
-        resolved.model_provider.multimodal_embedding,
+        model_assets.embedding_settings,
+        model_assets.multimodal_settings,
     )
     file_store = LocalFileStore(
         resolved.file_store.staging_path,
@@ -73,16 +82,9 @@ def build_maintenance_dependencies(
         cleanup_base_delay_seconds=resolved.file_store.cleanup_base_delay_seconds,
     )
     maintenance = resolved.maintenance
-    asset_store = None
-    if resolved.model_provider.multimodal_embedding is not None:
-        assert resolved.file_store.asset_staging_path is not None
-        assert resolved.file_store.asset_final_path is not None
-        asset_store = LocalIndexAssetStore(
-            resolved.file_store.asset_staging_path,
-            resolved.file_store.asset_final_path,
-        )
     return MaintenanceDependencies(
         settings=resolved,
+        startup=startup,
         database=database,
         auth_provider=DevelopmentAuthProvider(
             deployment_profile=resolved.app.deployment_profile.value,
@@ -90,12 +92,13 @@ def build_maintenance_dependencies(
             client_id=identity.client_id,
             workspace_id=identity.workspace_id,
         ),
+        asset_store=model_assets.asset_store,
         cleanup=MaintenanceCleanupService(
             unit_of_work,
             files,
             batch_size=maintenance.batch_size,
             retired_data_grace_seconds=maintenance.retired_data_grace_seconds,
             task_retention_seconds=maintenance.task_retention_seconds,
-            asset_store=asset_store,
+            asset_store=model_assets.asset_store,
         ),
     )

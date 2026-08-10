@@ -11,11 +11,13 @@ from unittest.mock import patch
 from pydantic import ValidationError
 
 from apps.api.dependencies import build_api_dependencies
+from apps.maintenance.dependencies import build_maintenance_dependencies
 from apps.worker.dependencies import build_worker_dependencies
 from rag_kb.adapters.chat_preview.pg_notify import (
     PgNotifyPreviewBroker,
     PgNotifyPreviewSink,
 )
+from rag_kb.adapters.file_store.assets import LocalIndexAssetStore
 from rag_kb.adapters.model_api.langchain_chat import LangChainChatModelAdapter
 from rag_kb.adapters.model_api.routing_chat import RoutingChatModelAdapter
 from rag_kb.adapters.model_api.unconfigured import (
@@ -73,6 +75,18 @@ def build_settings(root: Path, **overrides: object) -> Settings:
     payload = valid_payload(root)
     payload.update(overrides)
     return Settings(_env_file=None, **payload)  # type: ignore[arg-type]
+
+
+def create_runtime_directories(root: Path) -> None:
+    for relative_path in (
+        "staging",
+        "final",
+        "asset-staging",
+        "assets",
+        "parser-temp",
+        ".model-secrets",
+    ):
+        (root / relative_path).mkdir()
 
 
 class SettingsTests(unittest.TestCase):
@@ -339,21 +353,8 @@ class SettingsTests(unittest.TestCase):
             settings = load_settings(env_file=PROJECT_ROOT / ".env.example")
 
         self.assertEqual(settings.database.runtime_role, "rag_kb_runtime")
-        self.assertEqual(
-            settings.model_provider.chat.model,
-            "qwen3.7-plus",
-        )
-        self.assertEqual(
-            settings.model_provider.embedding.model,
-            "qwen3.7-text-embedding",
-        )
+        self.assertIsNone(settings.model_provider)
         self.assertTrue(settings.chat_delivery.preview_enabled)
-        assert settings.model_provider.multimodal_embedding is not None
-        self.assertEqual(
-            settings.model_provider.multimodal_embedding.model,
-            "tongyi-embedding-vision-flash-2026-03-06",
-        )
-        self.assertEqual(settings.model_provider.multimodal_embedding.dimension, 768)
 
     def test_non_development_and_non_loopback_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -630,18 +631,17 @@ class SettingsTests(unittest.TestCase):
 
 
 class StartupValidationTests(unittest.TestCase):
-    def test_api_and_worker_start_without_legacy_model_environment(self) -> None:
+    def test_all_processes_start_without_legacy_model_environment(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            (root / "staging").mkdir()
-            (root / "final").mkdir()
-            (root / ".model-secrets").mkdir()
+            create_runtime_directories(root)
             payload = valid_payload(root)
             payload.pop("model_provider")
             settings = Settings(_env_file=None, **payload)  # type: ignore[arg-type]
 
             api = build_api_dependencies(settings)
             worker = build_worker_dependencies(settings)
+            maintenance = build_maintenance_dependencies(settings)
             try:
                 self.assertIsInstance(
                     api.embedding_provider,
@@ -651,16 +651,55 @@ class StartupValidationTests(unittest.TestCase):
                     worker.chat_model_adapter._legacy_fallback,
                     UnconfiguredChatModelAdapter,
                 )
+                self.assertIsNone(api.multimodal_embedding_provider)
+                self.assertIsNone(worker.multimodal_embedding_provider)
+                self.assertIsInstance(api.asset_store, LocalIndexAssetStore)
+                self.assertIsInstance(worker.asset_store, LocalIndexAssetStore)
+                self.assertIsInstance(
+                    maintenance.asset_store,
+                    LocalIndexAssetStore,
+                )
+                self.assertIs(
+                    api.index_asset_service._asset_store,
+                    api.asset_store,
+                )
+                self.assertIs(
+                    worker.indexing_pipeline._asset_store,
+                    worker.asset_store,
+                )
+                self.assertIs(
+                    maintenance.cleanup._asset_store,
+                    maintenance.asset_store,
+                )
             finally:
                 asyncio.run(api.close())
                 asyncio.run(worker.close())
+                asyncio.run(maintenance.close())
 
-    def test_preview_enabled_composition_uses_dedicated_transport(self) -> None:
+    def test_asset_and_parser_directories_are_required_without_legacy_models(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "staging").mkdir()
             (root / "final").mkdir()
             (root / ".model-secrets").mkdir()
+            payload = valid_payload(root)
+            payload.pop("model_provider")
+            settings = Settings(_env_file=None, **payload)  # type: ignore[arg-type]
+
+            with self.assertRaisesRegex(
+                StartupConfigurationError,
+                "asset-staging",
+            ):
+                validate_startup_environment(settings)
+
+            self.assertFalse((root / "asset-staging").exists())
+
+    def test_preview_enabled_composition_uses_dedicated_transport(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            create_runtime_directories(root)
             settings = build_settings(
                 root,
                 chat_delivery={"preview_enabled": True},
@@ -692,9 +731,7 @@ class StartupValidationTests(unittest.TestCase):
     def test_worker_composes_only_the_active_ai_paths(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            (root / "staging").mkdir()
-            (root / "final").mkdir()
-            (root / ".model-secrets").mkdir()
+            create_runtime_directories(root)
             worker = build_worker_dependencies(build_settings(root))
 
             self.assertIsInstance(
@@ -727,9 +764,7 @@ class StartupValidationTests(unittest.TestCase):
     def test_api_and_worker_composition_roots_run_same_checks(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            (root / "staging").mkdir()
-            (root / "final").mkdir()
-            (root / ".model-secrets").mkdir()
+            create_runtime_directories(root)
             settings = build_settings(root)
 
             api = build_api_dependencies(settings)

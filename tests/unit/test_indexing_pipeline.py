@@ -309,6 +309,55 @@ class IndexingPipelineTests(unittest.IsolatedAsyncioTestCase):
             {"text", "native_image"},
         )
 
+    async def test_dynamic_multimodal_revision_uses_local_assets_without_legacy_adapter(
+        self,
+    ) -> None:
+        cross_role = EmbeddingSpaceRole.CROSS_MODAL_RETRIEVAL.value
+        target = _target(multimodal=True)
+        dynamic_space = replace(
+            target.embedding_spaces[cross_role],
+            model_profile_revision_id=uuid4(),
+        )
+        target = replace(
+            target,
+            embedding_spaces={
+                **target.embedding_spaces,
+                cross_role: dynamic_space,
+            },
+        )
+        repository = _Repository(target)
+        factory = _Factory(repository)
+        visual_provider = _MultimodalProvider(factory)
+        visual_provider.embedding_space = dynamic_space
+        resolver_calls: list[EmbeddingSpaceDefinition] = []
+
+        async def resolve(space: EmbeddingSpaceDefinition):
+            resolver_calls.append(space)
+            return visual_provider
+
+        asset_store = _AssetStore(factory)
+        global _CURRENT_FACTORY
+        _CURRENT_FACTORY = factory
+        pipeline = IndexingPipeline(
+            factory,
+            _FileStore(factory),
+            _MultimodalParser(factory),
+            _Provider(factory),
+            _embedding(),
+            asset_store=asset_store,
+            multimodal_embedding_provider=None,
+            multimodal_embedding_model_resolver=resolve,
+        )
+
+        result = await pipeline.execute(
+            IndexingCommand(target.job_id, target.indexed_document_version_id)
+        )
+
+        self.assertEqual(result.status, "ready")
+        self.assertEqual(resolver_calls, [dynamic_space])
+        self.assertEqual(len(asset_store.writes), 1)
+        self.assertEqual(visual_provider.image_calls, 1)
+
     async def test_external_operations_hold_no_transaction_and_replay_is_idempotent(self) -> None:
         repository = _Repository(_target())
         factory = _Factory(repository)

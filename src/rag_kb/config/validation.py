@@ -28,22 +28,17 @@ def validate_startup_environment(settings: Settings) -> StartupValidation:
     assert settings.file_store.asset_staging_path is not None
     assert settings.file_store.asset_final_path is not None
     assert settings.file_store.parser_temp_path is not None
+    # Source, derived assets, and parser checkpoints are fixed local runtime
+    # capabilities. They must remain safe even when all legacy model adapters
+    # are omitted and model revisions are configured only through the UI.
     configured_paths = (
         settings.file_store.root_path,
         settings.file_store.staging_path,
         settings.file_store.final_path,
+        settings.file_store.asset_staging_path,
+        settings.file_store.asset_final_path,
+        settings.file_store.parser_temp_path,
     )
-    if (
-        settings.model_provider is not None
-        and settings.model_provider.multimodal_embedding is not None
-    ):
-        # The application-owned Docling child renders and recognizes through
-        # pypdfium2 and RapidOCR, so parsing never shells out to a system binary.
-        configured_paths += (
-            settings.file_store.asset_staging_path,
-            settings.file_store.asset_final_path,
-            settings.file_store.parser_temp_path,
-        )
     resolved_paths: list[Path] = []
     device_ids: set[int] = set()
 
@@ -64,7 +59,7 @@ def validate_startup_environment(settings: Settings) -> StartupValidation:
     resolved_root, resolved_staging, resolved_final, *derived_paths = resolved_paths
     if len({resolved_staging, resolved_final, *derived_paths}) != len(resolved_paths) - 1:
         raise StartupConfigurationError(
-            "resolved staging and final file-store paths must be different"
+            "resolved managed file-store paths must be different"
         )
     if not resolved_staging.is_relative_to(
         resolved_root
@@ -73,11 +68,11 @@ def validate_startup_environment(settings: Settings) -> StartupValidation:
         for path in (resolved_final, *derived_paths)
     ):
         raise StartupConfigurationError(
-            "resolved staging and final paths must remain beneath root_path"
+            "resolved managed file-store paths must remain beneath root_path"
         )
     if len(device_ids) != 1:
         raise StartupConfigurationError(
-            "root, staging, and final file-store paths must share one filesystem"
+            "all managed file-store paths must share one filesystem"
         )
 
     try:

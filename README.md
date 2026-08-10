@@ -6,7 +6,7 @@ retrieval, and chatting with source citations.
 
 ## Start
 
-Configure the model endpoints in `.env` once, then run:
+Copy `.env.example` to `.env`, replace the database placeholders, then run:
 
 ```bash
 ./start-local.sh
@@ -24,6 +24,11 @@ cache, starts all services, and waits for health. Existing database and file
 volumes are retained. Local image builds default to HTTPS TUNA mirrors for PyPI
 and the Debian main repository while retaining Debian's official security
 repository; build-only mirror URLs remain explicitly overridable.
+
+The default environment has no legacy model provider. After startup, use the
+bottom-right model settings in Web Chat to add, validate, and select Chat and
+Embedding models. The commented `MODEL_PROVIDER` example is only an optional
+fallback for historical runs and Embedding Spaces.
 
 Chat model integration defaults to LangChain and the fixed evidence-only chat
 workflow defaults to a checkpoint-free LangGraph `StateGraph`. PostgreSQL
