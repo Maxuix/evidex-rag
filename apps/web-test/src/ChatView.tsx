@@ -418,7 +418,11 @@ export function ChatView({
           answer_style: answerStyle,
           insufficiency_policy: insufficiencyPolicy,
         },
-        retrieval: { mode: retrievalMode, top_k: topK, rerank: true },
+        retrieval: {
+          mode: retrievalMode,
+          top_k: topK,
+          rerank_mode: "classic",
+        },
       },
     };
     setPendingSubmission(pending);
@@ -808,7 +812,7 @@ export function ChatView({
                 <KeyValueGrid values={[
                   ["Profile", run.retrieval.profile_version],
                   ["Top K", run.retrieval.top_k],
-                  ["Rerank", run.retrieval.rerank ? "enabled" : "disabled"],
+                  ["Rerank", run.retrieval.rerank_mode],
                 ]} />
               </div>
               <div className="policy-card">

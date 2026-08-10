@@ -168,7 +168,7 @@ export function RetrievalView({
               ["Strategy", result.debug!.query_plan.strategy],
               ["Top K", result.debug!.query_plan.top_k],
               ["Distance", result.debug!.query_plan.distance_metric],
-              ["Rerank", result.debug!.query_plan.rerank],
+              ["Rerank", result.debug!.query_plan.rerank_mode],
               ["Result count", result.debug!.result_count],
               ["Text candidates", result.debug!.text_candidate_count],
               ["Lexical candidates", result.debug!.lexical_candidate_count],
@@ -177,6 +177,8 @@ export function RetrievalView({
               ["Lexical manifests", result.debug!.lexical_manifest_target_count],
               ["Hydrated relations", result.debug!.hydrated_relation_count],
               ["Evidence groups", result.debug!.evidence_group_count],
+              ["Model candidates", result.debug!.model_rerank_candidate_count],
+              ["Model windows", result.debug!.model_rerank_window_count],
               ["Active revision", shortId(result.debug!.resolved_active_revision_id)],
               ["Workspace", shortId(result.debug!.query_plan.workspace_id)],
             ]} />

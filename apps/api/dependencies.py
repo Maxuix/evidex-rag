@@ -13,6 +13,7 @@ from apps.model_asset_runtime import (
 from rag_kb.adapters.file_store.local import LocalFileStore
 from rag_kb.adapters.chat_preview.pg_notify import PgNotifyPreviewBroker
 from rag_kb.adapters.lexical_store.postgres import PgLexicalStore
+from rag_kb.adapters.local_reranker import LocalMiniLmReranker
 from rag_kb.adapters.markdown_media.http import PublicHttpImageFetcher
 from rag_kb.adapters.model_api.langchain_embeddings import (
     probe_openai_embedding_dimension,
@@ -237,6 +238,7 @@ def build_api_dependencies(
         deadline_seconds=resolved_settings.retrieval.deadline_seconds,
         embedding_model_resolver=dynamic_embeddings.embedding,
         multimodal_embedding_model_resolver=dynamic_embeddings.multimodal,
+        text_reranker=LocalMiniLmReranker(),
     )
     chat_service = ChatService(
         unit_of_work,
@@ -250,11 +252,11 @@ def build_api_dependencies(
         hybrid_enabled=retrieval_service.hybrid_request_enabled(),
         agent_enabled=resolved_settings.chat_workflow.agent_enabled,
         auto_enabled=resolved_settings.chat_workflow.auto_enabled,
-        retrieval_profile_factory=lambda strategy, top_k, rerank: (
+        retrieval_profile_factory=lambda strategy, top_k, rerank_mode: (
             retrieval_service.execution_profile(
                 strategy=strategy,
                 top_k=top_k,
-                rerank=rerank,
+                rerank_mode=rerank_mode,
             )
         ),
         allow_legacy_model_configuration=False,

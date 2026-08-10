@@ -132,6 +132,12 @@ async def _retrieval_execution_handler(
             "The query embedding provider returned an invalid response.",
             False,
         ),
+        ErrorCode.LOCAL_RERANKER_UNAVAILABLE: (
+            503,
+            "Local reranker unavailable",
+            "The selected local reranker could not complete the request.",
+            False,
+        ),
         ErrorCode.EMBEDDING_SPACE_MISMATCH: (
             503,
             "Retrieval configuration unavailable",

@@ -11,6 +11,9 @@ from rag_kb.domain import (
     EmbeddingBatch,
     EmbeddingSpaceDefinition,
     ImageEmbeddingInput,
+    ModelRerankScore,
+    RerankDocument,
+    RerankMode,
 )
 
 
@@ -54,3 +57,22 @@ class MultimodalEmbeddingAdapter(EmbeddingModelAdapter, Protocol):
         self,
         images: tuple[ImageEmbeddingInput, ...],
     ) -> EmbeddingBatch: ...
+
+
+class RerankerAdapterError(RuntimeError):
+    """Content-safe local reranker adapter failure."""
+
+
+@runtime_checkable
+class TextRerankerAdapter(Protocol):
+    @property
+    def profile(self) -> RerankMode: ...
+
+    @property
+    def max_documents(self) -> int: ...
+
+    async def score(
+        self,
+        query: str,
+        documents: tuple[RerankDocument, ...],
+    ) -> tuple[ModelRerankScore, ...]: ...

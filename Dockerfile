@@ -51,6 +51,15 @@ RUN python /app/tools/prepare_docling_artifacts.py \
         --manifest /app/config/docling-artifacts-v1.json \
     && chmod -R a-w /opt/rag-kb/docling-artifacts
 
+COPY config/local-reranker-artifacts-v1.json /app/config/local-reranker-artifacts-v1.json
+COPY tools/prepare_local_reranker_artifacts.py /app/tools/prepare_local_reranker_artifacts.py
+COPY src/rag_kb/adapters/local_reranker_artifacts.py /app/tools/local_reranker_artifacts_verifier.py
+RUN python /app/tools/prepare_local_reranker_artifacts.py \
+        --download \
+        --artifacts-path /opt/rag-kb/local-reranker \
+        --manifest /app/config/local-reranker-artifacts-v1.json \
+    && chmod -R a-w /opt/rag-kb/local-reranker
+
 ENV HOME=/tmp/rag-kb-home \
     MPLCONFIGDIR=/tmp/rag-kb-home/.config/matplotlib \
     NUMBA_CACHE_DIR=/tmp/rag-kb-home/.cache/numba \

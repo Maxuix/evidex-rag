@@ -26,6 +26,8 @@ from rag_kb.domain import (
     EvidenceScoreKind,
     IndexChunkAssetRelationSnapshot,
     LexicalSearchResult,
+    ModelRerankScore,
+    RerankMode,
     RetrievalExecutionError,
     RetrievalQueryPlan,
     RetrievalRequest,
@@ -140,7 +142,7 @@ class RetrievalContractTests(unittest.TestCase):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 replace(plan, **changes)
 
-        reranked = replace(plan, rerank=True)
+        reranked = replace(plan, rerank_mode=RerankMode.CLASSIC)
         self.assertEqual(reranked.candidate_count, 20)
 
 
@@ -189,8 +191,8 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [(item.mode, item.strategy, item.profile_version, item.enabled) for item in snapshot.modes],
             [
-                ("vector", "exact_vector", "exact_vector_v1", True),
-                ("hybrid", "hybrid", "hybrid_fts_rrf_v1", False),
+                ("vector", "exact_vector", "exact_vector_v2", True),
+                ("hybrid", "hybrid", "hybrid_fts_rrf_v2", False),
             ],
         )
         self.assertFalse(service.hybrid_request_enabled())
@@ -386,7 +388,7 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
                 KB_ID,
                 "policy deadline",
                 top_k=2,
-                rerank=True,
+                rerank_mode=RerankMode.CLASSIC,
                 include_debug=True,
             ),
         )
@@ -400,6 +402,84 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
             EvidenceScoreKind.HYBRID_RERANK,
         )
         self.assertGreater(pack.evidence[0].lexical_score or 0.0, 0.0)
+
+    async def test_local_model_reorders_classic_candidates_and_keeps_base_scores(
+        self,
+    ) -> None:
+        first = replace(
+            _hit(CHUNK_1, distance=0.05, ordinal=1),
+            text="general handbook introduction",
+        )
+        second = replace(
+            _hit(CHUNK_2, distance=0.20, ordinal=2),
+            text="specific policy deadline",
+        )
+        store = _Store(VectorSearchResult(REVISION_ID, (first, second)))
+        reranker = _LocalReranker(
+            {
+                CHUNK_1: (0.9, 2.0, 2, 1),
+                CHUNK_2: (0.2, -1.0, 3, 0),
+            }
+        )
+        service = RetrievalService(
+            SingleWorkspaceAccessPolicy(WORKSPACE),
+            _Provider(),
+            store,
+            text_reranker=reranker,
+        )
+
+        pack = await service.retrieve(
+            _context(),
+            RetrievalRequest(
+                KB_ID,
+                "policy deadline",
+                top_k=2,
+                rerank_mode=RerankMode.LOCAL_MINILM_V1,
+                include_debug=True,
+            ),
+        )
+
+        self.assertEqual(
+            [item.index_chunk_id for item in pack.evidence],
+            [CHUNK_1, CHUNK_2],
+        )
+        self.assertEqual(reranker.queries, ["policy deadline"])
+        self.assertEqual(
+            [item.index_chunk_id for item in reranker.documents[0]],
+            [CHUNK_2, CHUNK_1],
+        )
+        self.assertEqual(pack.evidence[0].model_rerank_score, 0.9)
+        self.assertEqual(pack.evidence[0].model_rerank_rank, 1)
+        self.assertEqual(pack.evidence[0].model_rerank_window_count, 2)
+        self.assertEqual(pack.evidence[0].model_rerank_winning_window_index, 1)
+        self.assertIs(pack.evidence[0].score_kind, EvidenceScoreKind.HYBRID_RERANK)
+        assert pack.debug is not None
+        self.assertEqual(pack.debug.model_rerank_candidate_count, 2)
+        self.assertEqual(pack.debug.model_rerank_window_count, 5)
+
+    async def test_selected_local_model_fails_explicitly_when_not_configured(
+        self,
+    ) -> None:
+        service = RetrievalService(
+            SingleWorkspaceAccessPolicy(WORKSPACE),
+            _Provider(),
+            _Store(VectorSearchResult(REVISION_ID, (_hit(CHUNK_1),))),
+        )
+
+        with self.assertRaises(RetrievalExecutionError) as failure:
+            await service.retrieve(
+                _context(),
+                RetrievalRequest(
+                    KB_ID,
+                    "query",
+                    rerank_mode=RerankMode.LOCAL_MINILM_V1,
+                ),
+            )
+
+        self.assertEqual(
+            failure.exception.code,
+            ErrorCode.LOCAL_RERANKER_UNAVAILABLE,
+        )
 
     async def test_empty_and_underfilled_results_are_valid_without_filter_relaxation(self) -> None:
         store = _Store(VectorSearchResult(REVISION_ID))
@@ -468,7 +548,7 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
                 "policy deadline",
                 top_k=2,
                 strategy=RetrievalStrategy.HYBRID,
-                rerank=True,
+                rerank_mode=RerankMode.CLASSIC,
                 include_debug=True,
             ),
         )
@@ -523,7 +603,7 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
                 "policy deadline",
                 top_k=2,
                 strategy=RetrievalStrategy.HYBRID,
-                rerank=True,
+                rerank_mode=RerankMode.CLASSIC,
             ),
         )
 
@@ -551,7 +631,7 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
                         KB_ID,
                         "query",
                         strategy=RetrievalStrategy.HYBRID,
-                        rerank=True,
+                        rerank_mode=RerankMode.CLASSIC,
                     ),
                 ),
                 timeout=1.0,
@@ -780,7 +860,7 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
                 KB_ID,
                 "unified hybrid",
                 strategy=RetrievalStrategy.HYBRID,
-                rerank=True,
+                rerank_mode=RerankMode.CLASSIC,
             ),
         )
 
@@ -907,6 +987,33 @@ class _Provider:
     async def embed_query(self, text: str) -> tuple[float, ...]:
         self.queries.append(text)
         return self.vector
+
+
+class _LocalReranker:
+    profile = RerankMode.LOCAL_MINILM_V1
+    max_documents = 20
+
+    def __init__(
+        self,
+        values: dict[UUID, tuple[float, float, int, int]],
+    ) -> None:
+        self._values = values
+        self.queries: list[str] = []
+        self.documents = []
+
+    async def score(self, query, documents):
+        self.queries.append(query)
+        self.documents.append(documents)
+        return tuple(
+            ModelRerankScore(
+                index_chunk_id=item.index_chunk_id,
+                score=self._values[item.index_chunk_id][0],
+                raw_logit=self._values[item.index_chunk_id][1],
+                window_count=self._values[item.index_chunk_id][2],
+                winning_window_index=self._values[item.index_chunk_id][3],
+            )
+            for item in documents
+        )
 
 
 class _HangingProvider(_Provider):

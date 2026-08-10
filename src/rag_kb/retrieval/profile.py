@@ -10,11 +10,13 @@ from rag_kb.document_processing.lexical import (
     LEXICAL_ANALYZER_VERSION,
     LEXICAL_QUERY_VERSION,
 )
-from rag_kb.domain import RetrievalStrategy
+from rag_kb.domain import RerankMode, RetrievalStrategy
 
 
-EXACT_PROFILE_VERSION = "exact_vector_v1"
-HYBRID_PROFILE_VERSION = "hybrid_fts_rrf_v1"
+EXACT_PROFILE_VERSION = "exact_vector_v2"
+HYBRID_PROFILE_VERSION = "hybrid_fts_rrf_v2"
+LEGACY_EXACT_PROFILE_VERSION = "exact_vector_v1"
+LEGACY_HYBRID_PROFILE_VERSION = "hybrid_fts_rrf_v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,7 +26,7 @@ class RetrievalExecutionProfile:
     profile_version: str
     strategy: RetrievalStrategy
     top_k: int
-    rerank: bool
+    rerank_mode: RerankMode
     dense_candidate_count: int
     lexical_candidate_count: int
     cross_modal_candidate_count: int
@@ -51,6 +53,24 @@ class RetrievalExecutionProfile:
             raise ValueError("retrieval profile version and strategy differ")
         if not 1 <= self.top_k <= 100:
             raise ValueError("profile top_k is invalid")
+        try:
+            object.__setattr__(
+                self,
+                "rerank_mode",
+                RerankMode(self.rerank_mode),
+            )
+        except ValueError as error:
+            raise ValueError("profile rerank mode is invalid") from error
+        if (
+            self.strategy is RetrievalStrategy.HYBRID
+            and self.rerank_mode is RerankMode.NONE
+        ):
+            raise ValueError("hybrid profile requires reranking")
+        if (
+            self.rerank_mode is RerankMode.LOCAL_MINILM_V1
+            and self.top_k > 20
+        ):
+            raise ValueError("local reranking supports top_k up to 20")
         for count in (
             self.dense_candidate_count,
             self.lexical_candidate_count,
@@ -110,23 +130,46 @@ class RetrievalExecutionProfile:
             "profile_version": self.profile_version,
             "strategy": self.strategy.value,
             "top_k": self.top_k,
-            "rerank": self.rerank,
+            "rerank_mode": self.rerank_mode.value,
         }
+
+    @property
+    def rerank(self) -> bool:
+        return self.rerank_mode is not RerankMode.NONE
 
 
 def parse_retrieval_snapshot(
     value: Mapping[str, Any],
-) -> tuple[RetrievalStrategy, int, bool]:
+) -> tuple[RetrievalStrategy, int, RerankMode]:
     """Validate one persisted local ChatRun retrieval preset."""
 
-    if set(value) != {"profile_version", "strategy", "top_k", "rerank"}:
+    legacy = set(value) == {
+        "profile_version",
+        "strategy",
+        "top_k",
+        "rerank",
+    }
+    current = set(value) == {
+        "profile_version",
+        "strategy",
+        "top_k",
+        "rerank_mode",
+    }
+    if not legacy and not current:
         raise ValueError("retrieval snapshot fields are invalid")
     strategy = RetrievalStrategy(value["strategy"])
-    expected_version = (
-        EXACT_PROFILE_VERSION
-        if strategy is RetrievalStrategy.EXACT_VECTOR
-        else HYBRID_PROFILE_VERSION
-    )
+    if legacy:
+        expected_version = (
+            LEGACY_EXACT_PROFILE_VERSION
+            if strategy is RetrievalStrategy.EXACT_VECTOR
+            else LEGACY_HYBRID_PROFILE_VERSION
+        )
+    else:
+        expected_version = (
+            EXACT_PROFILE_VERSION
+            if strategy is RetrievalStrategy.EXACT_VECTOR
+            else HYBRID_PROFILE_VERSION
+        )
     if value["profile_version"] != expected_version:
         raise ValueError("retrieval profile version and strategy differ")
     raw_top_k = value["top_k"]
@@ -135,18 +178,41 @@ def parse_retrieval_snapshot(
     top_k = raw_top_k
     if not 1 <= top_k <= 100:
         raise ValueError("retrieval snapshot top_k is invalid")
-    rerank = _require_bool(value["rerank"])
-    return strategy, top_k, rerank
+    if legacy:
+        rerank_mode = (
+            RerankMode.CLASSIC
+            if _require_bool(value["rerank"])
+            else RerankMode.NONE
+        )
+    else:
+        rerank_mode = RerankMode(value["rerank_mode"])
+    if strategy is RetrievalStrategy.HYBRID and rerank_mode is RerankMode.NONE:
+        raise ValueError("hybrid snapshot requires reranking")
+    if rerank_mode is RerankMode.LOCAL_MINILM_V1 and top_k > 20:
+        raise ValueError("local reranking supports top_k up to 20")
+    return strategy, top_k, rerank_mode
 
 
 def exact_profile(
-    *, top_k: int = 10, rerank: bool = True
+    *,
+    top_k: int = 10,
+    rerank_mode: RerankMode | None = None,
+    rerank: bool | None = None,
 ) -> RetrievalExecutionProfile:
+    if rerank_mode is not None and rerank is not None:
+        raise ValueError("choose rerank_mode or legacy rerank, not both")
+    resolved_mode = (
+        rerank_mode
+        if rerank_mode is not None
+        else RerankMode.CLASSIC
+        if rerank is None or rerank
+        else RerankMode.NONE
+    )
     return RetrievalExecutionProfile(
         profile_version=EXACT_PROFILE_VERSION,
         strategy=RetrievalStrategy.EXACT_VECTOR,
         top_k=top_k,
-        rerank=rerank,
+        rerank_mode=resolved_mode,
         dense_candidate_count=max(top_k, min(top_k * 4, 40)),
         lexical_candidate_count=max(top_k, 40),
         cross_modal_candidate_count=max(top_k, 20),

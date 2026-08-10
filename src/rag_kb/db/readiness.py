@@ -5,7 +5,7 @@ from __future__ import annotations
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-EXPECTED_REVISION = "0007_default_partial_answer"
+EXPECTED_REVISION = "0008_local_rerank_mode"
 
 
 class DatabaseReadinessError(RuntimeError):

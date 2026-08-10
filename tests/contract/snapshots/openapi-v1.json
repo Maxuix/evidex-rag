@@ -3222,16 +3222,15 @@
             "title": "Top K",
             "default": 10
           },
-          "rerank": {
+          "rerank_mode": {
             "anyOf": [
               {
-                "type": "boolean"
+                "$ref": "#/components/schemas/RerankMode"
               },
               {
                 "type": "null"
               }
-            ],
-            "title": "Rerank"
+            ]
           }
         },
         "additionalProperties": false,
@@ -3790,7 +3789,9 @@
             "type": "string",
             "enum": [
               "exact_vector_v1",
-              "hybrid_fts_rrf_v1"
+              "hybrid_fts_rrf_v1",
+              "exact_vector_v2",
+              "hybrid_fts_rrf_v2"
             ],
             "title": "Profile Version"
           },
@@ -3808,9 +3809,8 @@
             "minimum": 1.0,
             "title": "Top K"
           },
-          "rerank": {
-            "type": "boolean",
-            "title": "Rerank"
+          "rerank_mode": {
+            "$ref": "#/components/schemas/RerankMode"
           }
         },
         "additionalProperties": false,
@@ -3819,7 +3819,7 @@
           "profile_version",
           "strategy",
           "top_k",
-          "rerank"
+          "rerank_mode"
         ],
         "title": "ChatRunRetrievalResponse"
       },
@@ -5285,6 +5285,7 @@
           "EMBEDDING_SPACE_MISMATCH",
           "EMBEDDING_PROVIDER_UNAVAILABLE",
           "EMBEDDING_RESPONSE_INVALID",
+          "LOCAL_RERANKER_UNAVAILABLE",
           "RETRIEVAL_DEADLINE_EXCEEDED",
           "INDEX_PERSISTENCE_FAILED",
           "INDEX_INCOMPLETE",
@@ -5550,6 +5551,50 @@
               }
             ],
             "title": "Fusion Score"
+          },
+          "model_rerank_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Rerank Score"
+          },
+          "model_rerank_rank": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Rerank Rank"
+          },
+          "model_rerank_window_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Rerank Window Count"
+          },
+          "model_rerank_winning_window_index": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Rerank Winning Window Index"
           },
           "related_visuals": {
             "items": {
@@ -6021,7 +6066,7 @@
             "default": {
               "strategy": "exact_vector",
               "top_k": 10,
-              "rerank": true
+              "rerank_mode": "classic"
             }
           },
           "answer_policy_defaults": {
@@ -7202,6 +7247,15 @@
         ],
         "title": "RelatedVisualEvidenceResponse"
       },
+      "RerankMode": {
+        "type": "string",
+        "enum": [
+          "none",
+          "classic",
+          "local_minilm_v1"
+        ],
+        "title": "RerankMode"
+      },
       "RetrievalCapabilitiesResponse": {
         "properties": {
           "default_mode": {
@@ -7246,8 +7300,8 @@
           "profile_version": {
             "type": "string",
             "enum": [
-              "exact_vector_v1",
-              "hybrid_fts_rrf_v1"
+              "exact_vector_v2",
+              "hybrid_fts_rrf_v2"
             ],
             "title": "Profile Version"
           },
@@ -7356,6 +7410,28 @@
               }
             ],
             "title": "Evidence Group Count"
+          },
+          "model_rerank_candidate_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Rerank Candidate Count"
+          },
+          "model_rerank_window_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Rerank Window Count"
           }
         },
         "additionalProperties": false,
@@ -7382,10 +7458,9 @@
             "title": "Top K",
             "default": 10
           },
-          "rerank": {
-            "type": "boolean",
-            "title": "Rerank",
-            "default": true
+          "rerank_mode": {
+            "$ref": "#/components/schemas/RerankMode",
+            "default": "classic"
           }
         },
         "additionalProperties": false,
@@ -7426,9 +7501,8 @@
             ],
             "title": "Candidate Count"
           },
-          "rerank": {
-            "type": "boolean",
-            "title": "Rerank"
+          "rerank_mode": {
+            "$ref": "#/components/schemas/RerankMode"
           }
         },
         "additionalProperties": false,
@@ -7440,7 +7514,7 @@
           "top_k",
           "distance_metric",
           "candidate_count",
-          "rerank"
+          "rerank_mode"
         ],
         "title": "RetrievalQueryPlanResponse"
       },
@@ -7467,10 +7541,9 @@
             "$ref": "#/components/schemas/RetrievalStrategy",
             "default": "exact_vector"
           },
-          "rerank": {
-            "type": "boolean",
-            "title": "Rerank",
-            "default": false
+          "rerank_mode": {
+            "$ref": "#/components/schemas/RerankMode",
+            "default": "none"
           },
           "include_debug": {
             "type": "boolean",

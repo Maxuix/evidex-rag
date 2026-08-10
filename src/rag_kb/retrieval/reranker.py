@@ -6,9 +6,10 @@ import math
 import re
 from collections import Counter
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Iterable, Mapping
+from uuid import UUID
 
-from rag_kb.domain import VectorSearchHit
+from rag_kb.domain import Evidence, VectorSearchHit
 
 
 _TOKEN = re.compile(r"[0-9A-Za-z_]+|[\u3400-\u9fff]")
@@ -137,6 +138,41 @@ def score_hits(
     )
 
 
+def order_model_scored_evidence(
+    evidence: Iterable[Evidence],
+    scores: Mapping[UUID, float],
+    *,
+    mmr_lambda: float = 0.75,
+) -> tuple[Evidence, ...]:
+    """Order model-scored evidence with the existing diversity penalty."""
+
+    if not 0.0 < mmr_lambda <= 1.0:
+        raise ValueError("mmr_lambda must be between zero and one")
+    candidates = tuple(evidence)
+    if set(scores) != {item.index_chunk_id for item in candidates}:
+        raise ValueError("model score identities do not match evidence")
+    if any(not math.isfinite(value) for value in scores.values()):
+        raise ValueError("model scores must be finite")
+    source_order = {
+        item.index_chunk_id: index for index, item in enumerate(candidates)
+    }
+    remaining = list(candidates)
+    selected: list[Evidence] = []
+    while remaining:
+        best = max(
+            remaining,
+            key=lambda item: (
+                _model_mmr_value(item, selected, scores, mmr_lambda),
+                scores[item.index_chunk_id],
+                -source_order[item.index_chunk_id],
+                -item.index_chunk_id.int,
+            ),
+        )
+        selected.append(best)
+        remaining.remove(best)
+    return tuple(selected)
+
+
 def _score(
     hit: VectorSearchHit,
     terms: tuple[str, ...],
@@ -208,6 +244,21 @@ def _mmr_value(item: RerankedHit, selected: list[RerankedHit], mmr_lambda: float
         _text_similarity(item.hit.text, prior.hit.text) for prior in selected
     )
     return mmr_lambda * item.score - (1.0 - mmr_lambda) * redundancy
+
+
+def _model_mmr_value(
+    item: Evidence,
+    selected: list[Evidence],
+    scores: Mapping[UUID, float],
+    mmr_lambda: float,
+) -> float:
+    score = scores[item.index_chunk_id]
+    if not selected:
+        return score
+    redundancy = max(
+        _text_similarity(item.text, prior.text) for prior in selected
+    )
+    return mmr_lambda * score - (1.0 - mmr_lambda) * redundancy
 
 
 def _text_similarity(left: str, right: str) -> float:

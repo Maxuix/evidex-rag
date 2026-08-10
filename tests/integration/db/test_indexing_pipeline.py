@@ -783,8 +783,8 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 "configuration_fingerprint": "sha256:" + "c" * 64,
                 "capability_fingerprint": "sha256:" + "d" * 64,
             },
-            retrieval_profile_factory=lambda _strategy, top_k, rerank: (
-                exact_profile(top_k=top_k, rerank=rerank)
+            retrieval_profile_factory=lambda _strategy, top_k, rerank_mode: (
+                exact_profile(top_k=top_k, rerank_mode=rerank_mode)
             ),
         )
         session = await chat.create_session(self.context, kb_id=kb.id, title=None)

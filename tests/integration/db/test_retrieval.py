@@ -21,6 +21,7 @@ from rag_kb.domain import (
     ResourceNotFoundError,
     RetrievalExecutionError,
     RetrievalRequest,
+    RerankMode,
     RetrievalStrategy,
 )
 from rag_kb.document_processing.lexical import (
@@ -277,7 +278,7 @@ class ExactRetrievalDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 "evidence",
                 top_k=3,
                 strategy=RetrievalStrategy.HYBRID,
-                rerank=True,
+                rerank_mode=RerankMode.CLASSIC,
                 include_debug=True,
             ),
         )
@@ -329,7 +330,7 @@ class ExactRetrievalDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 "evidence",
                 top_k=3,
                 strategy=RetrievalStrategy.HYBRID,
-                rerank=True,
+                rerank_mode=RerankMode.CLASSIC,
                 include_debug=True,
             ),
         )
@@ -366,7 +367,7 @@ class ExactRetrievalDatabaseTests(unittest.IsolatedAsyncioTestCase):
                     foundation.kb_id,
                     "evidence",
                     strategy=RetrievalStrategy.HYBRID,
-                    rerank=True,
+                    rerank_mode=RerankMode.CLASSIC,
                 ),
             )
 

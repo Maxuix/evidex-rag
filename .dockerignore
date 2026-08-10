@@ -9,4 +9,5 @@ tests
 tools
 !tools/embedding_stub.py
 !tools/prepare_docling_artifacts.py
+!tools/prepare_local_reranker_artifacts.py
 verification

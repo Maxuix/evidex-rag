@@ -28,11 +28,54 @@ class RetrievalStrategy(StrEnum):
     HYBRID = "hybrid"
 
 
+class RerankMode(StrEnum):
+    NONE = "none"
+    CLASSIC = "classic"
+    LOCAL_MINILM_V1 = "local_minilm_v1"
+
+
 class EvidenceScoreKind(StrEnum):
     COSINE_SIMILARITY = "cosine_similarity"
     HYBRID_RERANK = "hybrid_rerank"
     RECIPROCAL_RANK_FUSION = "reciprocal_rank_fusion"
     ADJACENCY = "adjacency"
+
+
+@dataclass(frozen=True, slots=True)
+class RerankDocument:
+    index_chunk_id: UUID
+    text: str
+    hierarchy: dict[str, Any]
+    modality: str = "text"
+
+    def __post_init__(self) -> None:
+        if not self.text.strip():
+            raise ValueError("rerank document text must not be empty")
+        if self.modality not in {"text", "table"}:
+            raise ValueError("rerank document modality is unsupported")
+        object.__setattr__(self, "text", self.text.strip())
+        object.__setattr__(self, "hierarchy", dict(self.hierarchy))
+
+
+@dataclass(frozen=True, slots=True)
+class ModelRerankScore:
+    index_chunk_id: UUID
+    score: float
+    raw_logit: float
+    window_count: int
+    winning_window_index: int
+
+    def __post_init__(self) -> None:
+        if (
+            not math.isfinite(self.score)
+            or not 0.0 <= self.score <= 1.0
+            or not math.isfinite(self.raw_logit)
+        ):
+            raise ValueError("model rerank scores must be finite")
+        if self.window_count < 1:
+            raise ValueError("model rerank window count must be positive")
+        if not 0 <= self.winning_window_index < self.window_count:
+            raise ValueError("winning rerank window index is invalid")
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,7 +206,7 @@ class RetrievalRequest:
     query: str
     top_k: int = 10
     strategy: RetrievalStrategy = RetrievalStrategy.EXACT_VECTOR
-    rerank: bool = False
+    rerank_mode: RerankMode = RerankMode.NONE
     include_debug: bool = False
 
     def __post_init__(self) -> None:
@@ -172,7 +215,24 @@ class RetrievalRequest:
             raise ValueError("retrieval query must not be empty")
         if not 1 <= self.top_k <= 100:
             raise ValueError("top_k must be between 1 and 100")
+        try:
+            object.__setattr__(
+                self,
+                "rerank_mode",
+                RerankMode(self.rerank_mode),
+            )
+        except ValueError as error:
+            raise ValueError("unsupported rerank mode") from error
+        if (
+            self.rerank_mode is RerankMode.LOCAL_MINILM_V1
+            and self.top_k > 20
+        ):
+            raise ValueError("local reranking supports top_k up to 20")
         object.__setattr__(self, "query", normalized)
+
+    @property
+    def rerank(self) -> bool:
+        return self.rerank_mode is not RerankMode.NONE
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,11 +243,24 @@ class RetrievalQueryPlan:
     top_k: int
     distance_metric: str = "cosine"
     candidate_count: int | None = None
-    rerank: bool = False
+    rerank_mode: RerankMode = RerankMode.NONE
 
     def __post_init__(self) -> None:
         if not 1 <= self.top_k <= 100:
             raise ValueError("top_k must be between 1 and 100")
+        try:
+            object.__setattr__(
+                self,
+                "rerank_mode",
+                RerankMode(self.rerank_mode),
+            )
+        except ValueError as error:
+            raise ValueError("unsupported rerank mode") from error
+        if (
+            self.rerank_mode is RerankMode.LOCAL_MINILM_V1
+            and self.top_k > 20
+        ):
+            raise ValueError("local reranking supports top_k up to 20")
         if self.strategy is RetrievalStrategy.EXACT_VECTOR:
             if self.distance_metric != "cosine":
                 raise ValueError("exact-vector retrieval uses cosine distance")
@@ -211,8 +284,12 @@ class RetrievalQueryPlan:
                 or not self.top_k <= self.candidate_count <= 100
             ):
                 raise ValueError(
-                    "hybrid v1 requires a bounded scored candidate set"
+                    "hybrid retrieval requires a bounded scored candidate set"
                 )
+
+    @property
+    def rerank(self) -> bool:
+        return self.rerank_mode is not RerankMode.NONE
 
 
 @dataclass(frozen=True, slots=True)
@@ -318,6 +395,10 @@ class Evidence:
     lexical_rank: int | None = None
     cross_modal_rank: int | None = None
     fusion_score: float | None = None
+    model_rerank_score: float | None = None
+    model_rerank_rank: int | None = None
+    model_rerank_window_count: int | None = None
+    model_rerank_winning_window_index: int | None = None
     related_visuals: tuple[RelatedVisualEvidence, ...] = ()
     document_display_name: str | None = None
     document_original_filename: str | None = None
@@ -348,6 +429,10 @@ class Evidence:
                 or self.lexical_rank is not None
                 or self.cross_modal_rank is not None
                 or self.fusion_score is not None
+                or self.model_rerank_score is not None
+                or self.model_rerank_rank is not None
+                or self.model_rerank_window_count is not None
+                or self.model_rerank_winning_window_index is not None
             ):
                 raise ValueError("adjacency evidence metadata is invalid")
         elif (
@@ -374,6 +459,30 @@ class Evidence:
             raise ValueError("lexical scores must be at most one")
         if self.modality not in {"text", "image", "table"}:
             raise ValueError("unsupported evidence modality")
+        model_values = (
+            self.model_rerank_score,
+            self.model_rerank_rank,
+            self.model_rerank_window_count,
+            self.model_rerank_winning_window_index,
+        )
+        if any(value is not None for value in model_values):
+            if any(value is None for value in model_values):
+                raise ValueError("model rerank evidence metadata is incomplete")
+            assert self.model_rerank_score is not None
+            assert self.model_rerank_rank is not None
+            assert self.model_rerank_window_count is not None
+            assert self.model_rerank_winning_window_index is not None
+            if (
+                not math.isfinite(self.model_rerank_score)
+                or not 0.0 <= self.model_rerank_score <= 1.0
+                or self.model_rerank_rank < 1
+                or self.model_rerank_window_count < 1
+                or not 0
+                <= self.model_rerank_winning_window_index
+                < self.model_rerank_window_count
+                or self.modality not in {"text", "table"}
+            ):
+                raise ValueError("model rerank evidence metadata is invalid")
         if not self.text and self.modality == "text":
             raise ValueError("text evidence must not be empty")
         object.__setattr__(self, "source_location", dict(self.source_location))
@@ -396,6 +505,8 @@ class RetrievalDebug:
     lexical_manifest_target_count: int | None = None
     hydrated_relation_count: int | None = None
     evidence_group_count: int | None = None
+    model_rerank_candidate_count: int | None = None
+    model_rerank_window_count: int | None = None
 
     def __post_init__(self) -> None:
         if self.result_count < 0 or self.result_count > self.query_plan.top_k:
@@ -407,6 +518,8 @@ class RetrievalDebug:
             self.lexical_manifest_target_count,
             self.hydrated_relation_count,
             self.evidence_group_count,
+            self.model_rerank_candidate_count,
+            self.model_rerank_window_count,
         ):
             if value is not None and value < 0:
                 raise ValueError("debug counts must be non-negative")

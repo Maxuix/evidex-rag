@@ -105,8 +105,8 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.factory,
             self.policy,
             model_configuration=_model_configuration(),
-            retrieval_profile_factory=lambda _strategy, top_k, rerank: (
-                exact_profile(top_k=top_k, rerank=rerank)
+            retrieval_profile_factory=lambda _strategy, top_k, rerank_mode: (
+                exact_profile(top_k=top_k, rerank_mode=rerank_mode)
             ),
             agent_enabled=True,
             auto_enabled=True,

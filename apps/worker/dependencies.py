@@ -17,6 +17,7 @@ from apps.model_asset_runtime import (
 from rag_kb.adapters.file_store.local import LocalFileStore
 from rag_kb.adapters.chat_preview.pg_notify import PgNotifyPreviewSink
 from rag_kb.adapters.lexical_store.postgres import PgLexicalStore
+from rag_kb.adapters.local_reranker import LocalMiniLmReranker
 from rag_kb.adapters.model_api.langchain_chat import LangChainChatModelAdapter
 from rag_kb.adapters.model_api.routing_chat import RoutingChatModelAdapter
 from rag_kb.adapters.model_api.unconfigured import (
@@ -301,6 +302,7 @@ def build_worker_dependencies(
         deadline_seconds=resolved_settings.retrieval.deadline_seconds,
         embedding_model_resolver=dynamic_embeddings.embedding,
         multimodal_embedding_model_resolver=dynamic_embeddings.multimodal,
+        text_reranker=LocalMiniLmReranker(),
     )
     evidence_assessor = CosineEvidenceAssessmentStep(
         resolved_settings.retrieval.min_cosine_similarity,

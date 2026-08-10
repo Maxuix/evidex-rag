@@ -1,6 +1,7 @@
 export type UUID = string;
 export type IsoDate = string;
 export type JsonMap = Record<string, unknown>;
+export type RerankMode = "none" | "classic" | "local_minilm_v1";
 
 export interface RuntimeConfig {
   api_base_url: string;
@@ -117,7 +118,7 @@ export interface KnowledgeBase {
   retrieval_defaults: {
     strategy: "exact_vector";
     top_k: number;
-    rerank: boolean;
+    rerank_mode: RerankMode;
   };
   answer_policy_defaults: {
     answer_style: AnswerStyle;
@@ -290,16 +291,20 @@ export interface ChatRunError {
 }
 
 export interface ChatRunRetrieval {
-  profile_version: "exact_vector_v1" | "hybrid_fts_rrf_v1";
+  profile_version:
+    | "exact_vector_v1"
+    | "hybrid_fts_rrf_v1"
+    | "exact_vector_v2"
+    | "hybrid_fts_rrf_v2";
   strategy: "exact_vector" | "hybrid";
   top_k: number;
-  rerank: boolean;
+  rerank_mode: RerankMode;
 }
 
 export interface RetrievalCapability {
   mode: "vector" | "hybrid";
   strategy: "exact_vector" | "hybrid";
-  profile_version: "exact_vector_v1" | "hybrid_fts_rrf_v1";
+  profile_version: "exact_vector_v2" | "hybrid_fts_rrf_v2";
   enabled: boolean;
 }
 
@@ -400,7 +405,7 @@ export interface ChatRunCreate {
   retrieval: {
     mode: "vector" | "hybrid";
     top_k: number;
-    rerank?: boolean;
+    rerank_mode?: RerankMode;
   };
 }
 
@@ -442,7 +447,7 @@ export interface RetrievalQueryPlan {
   top_k: number;
   distance_metric: "cosine";
   candidate_count: number | null;
-  rerank: boolean;
+  rerank_mode: RerankMode;
 }
 
 export interface Evidence {
@@ -470,6 +475,10 @@ export interface Evidence {
   lexical_rank: number | null;
   cross_modal_rank: number | null;
   fusion_score: number | null;
+  model_rerank_score: number | null;
+  model_rerank_rank: number | null;
+  model_rerank_window_count: number | null;
+  model_rerank_winning_window_index: number | null;
   related_visuals: RelatedVisualEvidence[];
 }
 
@@ -514,5 +523,7 @@ export interface EvidencePack {
     lexical_manifest_target_count: number | null;
     hydrated_relation_count: number | null;
     evidence_group_count: number | null;
+    model_rerank_candidate_count: number | null;
+    model_rerank_window_count: number | null;
   } | null;
 }

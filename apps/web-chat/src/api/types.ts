@@ -1,6 +1,7 @@
 export type UUID = string;
 export type IsoDate = string;
 export type JsonMap = Record<string, unknown>;
+export type RerankMode = "none" | "classic" | "local_minilm_v1";
 
 export interface Page<T> {
   items: T[];
@@ -43,7 +44,7 @@ export interface KnowledgeBase {
   retrieval_defaults: {
     strategy: "exact_vector";
     top_k: number;
-    rerank: boolean;
+    rerank_mode: RerankMode;
   };
   answer_policy_defaults: {
     answer_style: "concise" | "summary";
@@ -223,6 +224,10 @@ export interface RetrievalEvidence {
   modality: "text" | "image" | "table";
   asset: DocumentChunkAsset | null;
   matched_representations: string[];
+  model_rerank_score: number | null;
+  model_rerank_rank: number | null;
+  model_rerank_window_count: number | null;
+  model_rerank_winning_window_index: number | null;
 }
 
 export interface RetrievalEvidencePack {
@@ -237,6 +242,8 @@ export interface RetrievalEvidencePack {
     cross_modal_candidate_count: number | null;
     hydrated_relation_count: number | null;
     evidence_group_count: number | null;
+    model_rerank_candidate_count: number | null;
+    model_rerank_window_count: number | null;
   } | null;
 }
 
@@ -288,31 +295,20 @@ export interface ChatRunError {
 }
 
 export interface ChatRunRetrieval {
-  profile_version: "exact_vector_v1" | "hybrid_fts_rrf_v1";
+  profile_version:
+    | "exact_vector_v1"
+    | "hybrid_fts_rrf_v1"
+    | "exact_vector_v2"
+    | "hybrid_fts_rrf_v2";
   strategy: "exact_vector" | "hybrid";
   top_k: number;
-  rerank: boolean;
-  dense_candidate_count: number;
-  lexical_candidate_count: number;
-  cross_modal_candidate_count: number;
-  lexical_analyzer_version: string | null;
-  lexical_query_version: string | null;
-  rrf_k: number;
-  dense_weight_micros: number;
-  lexical_weight_micros: number;
-  cross_modal_weight_micros: number;
-  min_cosine_similarity: number;
-  min_rerank_score: number;
-  cross_modal_min_cosine_similarity: number;
-  rerank_vector_weight: number;
-  rerank_lexical_weight: number;
-  mmr_lambda: number;
+  rerank_mode: RerankMode;
 }
 
 export interface RetrievalCapability {
   mode: "vector" | "hybrid";
   strategy: "exact_vector" | "hybrid";
-  profile_version: "exact_vector_v1" | "hybrid_fts_rrf_v1";
+  profile_version: "exact_vector_v2" | "hybrid_fts_rrf_v2";
   enabled: boolean;
 }
 
@@ -446,7 +442,7 @@ export interface ChatRunCreate {
   retrieval: {
     mode: "vector" | "hybrid";
     top_k: number;
-    rerank: boolean;
+    rerank_mode: RerankMode;
   };
   model_profile_revision_id?: UUID | null;
 }

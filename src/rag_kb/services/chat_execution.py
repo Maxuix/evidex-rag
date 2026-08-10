@@ -185,7 +185,7 @@ class ChatEvidenceRetriever:
         top_k_override: int | None = None,
     ) -> EvidencePack:
         try:
-            strategy, top_k, rerank = parse_retrieval_snapshot(
+            strategy, top_k, rerank_mode = parse_retrieval_snapshot(
                 context.retrieval_strategy,
             )
             if top_k_override is not None:
@@ -197,7 +197,7 @@ class ChatEvidenceRetriever:
                 query=query,
                 top_k=top_k,
                 strategy=strategy,
-                rerank=rerank,
+                rerank_mode=rerank_mode,
                 include_debug=True,
             )
         except (KeyError, TypeError, ValueError) as error:

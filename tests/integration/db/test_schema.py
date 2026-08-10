@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import unittest
 from uuid import UUID
@@ -153,7 +154,7 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
                     "UPDATE alembic_version SET version_num = 'runtime-mutation'"
                 )
             revision = await runtime.fetchval("SELECT version_num FROM alembic_version")
-            self.assertEqual(revision, "0007_default_partial_answer")
+            self.assertEqual(revision, "0008_local_rerank_mode")
         finally:
             await runtime.close()
 
@@ -185,6 +186,35 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(policy, "partial_answer")
         self.assertIn("partial_answer", column_default)
+
+    async def test_knowledge_base_default_uses_explicit_classic_rerank_mode(
+        self,
+    ) -> None:
+        connection = await asyncpg.connect(MIGRATION_DSN)
+        try:
+            _, _, kb_id = await self.create_foundation(
+                connection, suffix="rerank-mode-default"
+            )
+            defaults = await connection.fetchval(
+                "SELECT retrieval_defaults FROM knowledge_base WHERE id = $1",
+                kb_id,
+            )
+            column_default = await connection.fetchval(
+                """
+                SELECT column_default
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'knowledge_base'
+                  AND column_name = 'retrieval_defaults'
+                """
+            )
+        finally:
+            await connection.close()
+
+        decoded = json.loads(defaults)
+        self.assertEqual(decoded["rerank_mode"], "classic")
+        self.assertNotIn("rerank", decoded)
+        self.assertIn("rerank_mode", column_default)
 
     async def test_chat_workflow_migration_has_bounded_simple_defaults(self) -> None:
         connection = await asyncpg.connect(MIGRATION_DSN)

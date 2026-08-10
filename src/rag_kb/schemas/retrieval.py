@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Self
 from uuid import UUID
 
-from pydantic import ConfigDict, Field, field_validator
+from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from rag_kb.domain import (
     EvidencePack,
     EvidenceScoreKind,
+    RerankMode,
     RetrievalStrategy,
 )
 from rag_kb.schemas.common import PublicSchema
@@ -24,8 +25,22 @@ class RetrievalQueryRequest(RetrievalPublicSchema):
     query: Annotated[str, Field(min_length=1)]
     top_k: Annotated[int, Field(ge=1, le=100)] = 10
     strategy: RetrievalStrategy = RetrievalStrategy.EXACT_VECTOR
-    rerank: bool = False
+    rerank_mode: RerankMode = RerankMode.NONE
     include_debug: bool = False
+
+    @model_validator(mode="after")
+    def require_supported_rerank_combination(self) -> Self:
+        if (
+            self.strategy is RetrievalStrategy.HYBRID
+            and self.rerank_mode is RerankMode.NONE
+        ):
+            raise ValueError("hybrid retrieval requires reranking")
+        if (
+            self.rerank_mode is RerankMode.LOCAL_MINILM_V1
+            and self.top_k > 20
+        ):
+            raise ValueError("local reranking supports top_k up to 20")
+        return self
 
     @field_validator("query")
     @classmethod
@@ -39,7 +54,7 @@ class RetrievalQueryRequest(RetrievalPublicSchema):
 class RetrievalCapabilityResponse(RetrievalPublicSchema):
     mode: Literal["vector", "hybrid"]
     strategy: Literal["exact_vector", "hybrid"]
-    profile_version: Literal["exact_vector_v1", "hybrid_fts_rrf_v1"]
+    profile_version: Literal["exact_vector_v2", "hybrid_fts_rrf_v2"]
     enabled: bool
 
 
@@ -55,7 +70,7 @@ class RetrievalQueryPlanResponse(RetrievalPublicSchema):
     top_k: int
     distance_metric: str
     candidate_count: int | None
-    rerank: bool
+    rerank_mode: RerankMode
 
 
 class EvidenceResponse(RetrievalPublicSchema):
@@ -83,6 +98,10 @@ class EvidenceResponse(RetrievalPublicSchema):
     lexical_rank: int | None = None
     cross_modal_rank: int | None = None
     fusion_score: float | None = None
+    model_rerank_score: float | None = None
+    model_rerank_rank: int | None = None
+    model_rerank_window_count: int | None = None
+    model_rerank_winning_window_index: int | None = None
     related_visuals: tuple["RelatedVisualEvidenceResponse", ...] = ()
 
 
@@ -122,6 +141,8 @@ class RetrievalDebugResponse(RetrievalPublicSchema):
     lexical_manifest_target_count: int | None = None
     hydrated_relation_count: int | None = None
     evidence_group_count: int | None = None
+    model_rerank_candidate_count: int | None = None
+    model_rerank_window_count: int | None = None
 
 
 class EvidencePackResponse(RetrievalPublicSchema):

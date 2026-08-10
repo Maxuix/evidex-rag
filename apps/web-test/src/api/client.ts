@@ -266,7 +266,7 @@ export class ApiClient {
         query,
         top_k: topK,
         strategy,
-        rerank: true,
+        rerank_mode: "classic",
         include_debug: true,
       }),
     });

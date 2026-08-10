@@ -28,6 +28,7 @@ import type {
   Page,
   ParsingPreset,
   RetrievalEvidencePack,
+  RerankMode,
   UUID,
 } from "./types";
 
@@ -223,7 +224,7 @@ export class ApiClient {
     query: string,
     topK: number,
     strategy: "exact_vector" | "hybrid",
-    rerank: boolean,
+    rerankMode: RerankMode,
   ): Promise<RetrievalEvidencePack> {
     return this.request("/retrieval/query", {
       method: "POST",
@@ -233,7 +234,7 @@ export class ApiClient {
         query,
         top_k: topK,
         strategy,
-        rerank,
+        rerank_mode: rerankMode,
         include_debug: true,
       }),
     });

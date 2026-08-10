@@ -13,6 +13,7 @@ from rag_kb.domain import (
     ChunkingPreset,
     InsufficiencyPolicy,
     ParsingPreset,
+    RerankMode,
 )
 from rag_kb.schemas.common import OpaqueCursor, PublicSchema
 
@@ -23,7 +24,16 @@ KnowledgeBaseName = Annotated[str, Field(min_length=1, max_length=255)]
 class RetrievalDefaults(PublicSchema):
     strategy: Literal["exact_vector"] = "exact_vector"
     top_k: Annotated[int, Field(ge=1, le=100)] = 10
-    rerank: bool = True
+    rerank_mode: RerankMode = RerankMode.CLASSIC
+
+    @model_validator(mode="after")
+    def require_supported_rerank_combination(self) -> Self:
+        if (
+            self.rerank_mode is RerankMode.LOCAL_MINILM_V1
+            and self.top_k > 20
+        ):
+            raise ValueError("local reranking supports top_k up to 20")
+        return self
 
 
 class KnowledgeBaseAnswerPolicyDefaults(PublicSchema):

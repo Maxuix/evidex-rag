@@ -13,6 +13,7 @@ from rag_kb.domain import (
     EvidenceAsset,
     EvidencePack,
     EvidenceScoreKind,
+    RerankMode,
     RetrievalDebug,
     RetrievalQueryPlan,
     RetrievalStrategy,
@@ -81,13 +82,14 @@ class RetrievalTransportContractTests(unittest.TestCase):
                 "knowledge_base_id": str(KB_ID),
                 "query": "  混合检索 ABC-42  ",
                 "strategy": "hybrid",
-                "rerank": True,
+                "rerank_mode": "classic",
                 "include_debug": True,
                 "top_k": 5,
             }
         )
         self.assertEqual(request.query, "混合检索 ABC-42")
         self.assertIs(request.strategy, RetrievalStrategy.HYBRID)
+        self.assertIs(request.rerank_mode, RerankMode.CLASSIC)
 
     def test_request_rejects_unimplemented_strategies(self) -> None:
         for strategy in ("ann_vector", "lexical"):
@@ -99,6 +101,28 @@ class RetrievalTransportContractTests(unittest.TestCase):
                         "knowledge_base_id": str(KB_ID),
                         "query": "query",
                         "strategy": strategy,
+                    }
+                )
+
+    def test_request_rejects_invalid_rerank_combinations(self) -> None:
+        for changes in (
+            {
+                "strategy": "hybrid",
+                "rerank_mode": "none",
+            },
+            {
+                "top_k": 21,
+                "rerank_mode": "local_minilm_v1",
+            },
+        ):
+            with self.subTest(changes=changes), self.assertRaises(
+                ValidationError
+            ):
+                RetrievalQueryRequest.model_validate(
+                    {
+                        "knowledge_base_id": str(KB_ID),
+                        "query": "query",
+                        **changes,
                     }
                 )
 
@@ -209,7 +233,7 @@ class RetrievalTransportContractTests(unittest.TestCase):
                 "top_k",
                 "distance_metric",
                 "candidate_count",
-                "rerank",
+                "rerank_mode",
             },
         )
         self.assertNotIn("query", body["debug"]["query_plan"])

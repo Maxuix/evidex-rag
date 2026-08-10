@@ -32,6 +32,8 @@ from rag_kb.domain import (
     RetrievalRequest,
     RetrievalStrategy,
     RelatedVisualEvidence,
+    RerankDocument,
+    RerankMode,
     VectorSearchHit,
     VectorSearchResult,
     validate_embedding_vector,
@@ -40,9 +42,19 @@ from rag_kb.document_processing.lexical import (
     LEXICAL_ANALYZER_VERSION,
     LEXICAL_QUERY_VERSION,
 )
-from rag_kb.ports.model_api import EmbeddingModelAdapter, MultimodalEmbeddingAdapter
+from rag_kb.ports.model_api import (
+    EmbeddingModelAdapter,
+    MultimodalEmbeddingAdapter,
+    RerankerAdapterError,
+    TextRerankerAdapter,
+)
 from rag_kb.ports.retrieval import LexicalStore, VectorStore
-from rag_kb.retrieval.reranker import RerankedHit, rerank_hits, score_hits
+from rag_kb.retrieval.reranker import (
+    RerankedHit,
+    order_model_scored_evidence,
+    rerank_hits,
+    score_hits,
+)
 from rag_kb.retrieval.fusion import (
     reciprocal_rank_fusion,
     reciprocal_rank_fusion_lanes,
@@ -69,7 +81,7 @@ class CompositeEvidenceHydrator(Protocol):
 
 RetrievalMode = Literal["vector", "hybrid"]
 RetrievalCapabilityStrategy = Literal["exact_vector", "hybrid"]
-RetrievalCapabilityProfile = Literal["exact_vector_v1", "hybrid_fts_rrf_v1"]
+RetrievalCapabilityProfile = Literal["exact_vector_v2", "hybrid_fts_rrf_v2"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,6 +140,7 @@ class RetrievalService:
             Callable[[EmbeddingSpaceDefinition], Awaitable[MultimodalEmbeddingAdapter]]
             | None
         ) = None,
+        text_reranker: TextRerankerAdapter | None = None,
     ) -> None:
         if candidate_multiplier < 2:
             raise ValueError("candidate_multiplier must be at least two")
@@ -171,9 +184,10 @@ class RetrievalService:
         self._multimodal_embedding_model_resolver = (
             multimodal_embedding_model_resolver
         )
+        self._text_reranker = text_reranker
         common_profile = {
             "top_k": 10,
-            "rerank": True,
+            "rerank_mode": RerankMode.CLASSIC,
             "dense_candidate_count": max_candidate_count,
             "lexical_candidate_count": lexical_candidate_count,
             "cross_modal_candidate_count": cross_modal_candidate_count,
@@ -224,13 +238,13 @@ class RetrievalService:
                 RetrievalCapability(
                     mode="vector",
                     strategy="exact_vector",
-                    profile_version="exact_vector_v1",
+                    profile_version="exact_vector_v2",
                     enabled=True,
                 ),
                 RetrievalCapability(
                     mode="hybrid",
                     strategy="hybrid",
-                    profile_version="hybrid_fts_rrf_v1",
+                    profile_version="hybrid_fts_rrf_v2",
                     enabled=self.hybrid_request_enabled(),
                 ),
             ),
@@ -241,7 +255,7 @@ class RetrievalService:
         *,
         strategy: RetrievalStrategy,
         top_k: int,
-        rerank: bool,
+        rerank_mode: RerankMode,
     ) -> RetrievalExecutionProfile:
         base = (
             self._hybrid_profile
@@ -251,7 +265,7 @@ class RetrievalService:
         return replace(
             base,
             top_k=top_k,
-            rerank=rerank,
+            rerank_mode=rerank_mode,
             dense_candidate_count=max(
                 top_k,
                 min(
@@ -404,7 +418,7 @@ class RetrievalService:
         profile = self.execution_profile(
             strategy=request.strategy,
             top_k=request.top_k,
-            rerank=request.rerank,
+            rerank_mode=request.rerank_mode,
         )
         if request.strategy is RetrievalStrategy.HYBRID:
             return await self._retrieve_hybrid(context, request, profile)
@@ -419,7 +433,7 @@ class RetrievalService:
                 if request.rerank
                 else None
             ),
-            rerank=request.rerank,
+            rerank_mode=request.rerank_mode,
         )
         embedding_provider, cross_provider = await self._embedding_providers(plan)
         multimodal = cross_provider is not None
@@ -443,7 +457,11 @@ class RetrievalService:
                 strategy=plan.strategy,
                 top_k=plan.top_k,
                 candidate_count=profile.cross_modal_candidate_count,
-                rerank=True,
+                rerank_mode=(
+                    plan.rerank_mode
+                    if plan.rerank
+                    else RerankMode.CLASSIC
+                ),
             )
             result, cross_result = await _gather_cancel_on_error(
                 self._search_text(plan, query_embedding, embedding_provider),
@@ -481,13 +499,20 @@ class RetrievalService:
                     ),
                 )
                 self._validate_relations(plan, result, relations)
-            evidence = self._multimodal_evidence(
+            candidates = self._multimodal_evidence(
                 plan,
                 result,
                 cross_result,
                 request.query,
                 relations,
                 profile,
+            )
+            evidence, model_candidate_count, model_window_count = (
+                await self._finish_reranking(
+                    request.query,
+                    candidates,
+                    plan,
+                )
             )
         else:
             query_embedding = await self._embed_query(
@@ -501,11 +526,13 @@ class RetrievalService:
                     "knowledge base or active revision was not found"
                 )
             self._validate_scope(plan, result)
-            evidence = self._normalize(
-                plan,
-                result,
-                query=request.query,
-                profile=profile,
+            evidence, model_candidate_count, model_window_count = (
+                await self._normalize(
+                    plan,
+                    result,
+                    query=request.query,
+                    profile=profile,
+                )
             )
         debug = (
             RetrievalDebug(
@@ -533,6 +560,8 @@ class RetrievalService:
                     if multimodal
                     else None
                 ),
+                model_rerank_candidate_count=model_candidate_count,
+                model_rerank_window_count=model_window_count,
             )
             if request.include_debug
             else None
@@ -561,7 +590,7 @@ class RetrievalService:
             strategy=RetrievalStrategy.HYBRID,
             top_k=request.top_k,
             candidate_count=dense_count,
-            rerank=True,
+            rerank_mode=request.rerank_mode,
         )
         embedding_provider, cross_provider = await self._embedding_providers(plan)
         multimodal = cross_provider is not None
@@ -656,7 +685,7 @@ class RetrievalService:
                 ),
             )
             self._validate_relations(plan, dense_result, relations)
-        evidence = self._hybrid_evidence(
+        candidates = self._hybrid_evidence(
             plan,
             dense_result,
             lexical_result,
@@ -664,6 +693,13 @@ class RetrievalService:
             request.query,
             relations,
             profile,
+        )
+        evidence, model_candidate_count, model_window_count = (
+            await self._finish_reranking(
+                request.query,
+                candidates,
+                plan,
+            )
         )
         debug = (
             RetrievalDebug(
@@ -690,6 +726,8 @@ class RetrievalService:
                         for item in evidence
                     }
                 ),
+                model_rerank_candidate_count=model_candidate_count,
+                model_rerank_window_count=model_window_count,
             )
             if request.include_debug
             else None
@@ -711,6 +749,7 @@ class RetrievalService:
         relations: tuple[IndexChunkAssetRelationSnapshot, ...],
         profile: RetrievalExecutionProfile,
     ) -> tuple[Evidence, ...]:
+        output_limit = self._candidate_evidence_limit(plan)
         text_hits = tuple(
             hit
             for hit in text_result.hits
@@ -725,7 +764,7 @@ class RetrievalService:
         reranked = rerank_hits(
             query,
             text_hits,
-            top_k=len(text_hits) or 1,
+            top_k=min(len(text_hits), output_limit) or 1,
             vector_weight=profile.rerank_vector_weight,
             lexical_weight=profile.rerank_lexical_weight,
             mmr_lambda=profile.mmr_lambda,
@@ -870,7 +909,7 @@ class RetrievalService:
                     ),
                     related_visuals=tuple(visuals.values()),
                 )
-            if len(by_chunk) >= plan.top_k:
+            if len(by_chunk) >= output_limit:
                 break
         return tuple(
             replace(value, rank=rank)
@@ -887,6 +926,7 @@ class RetrievalService:
         relations: tuple[IndexChunkAssetRelationSnapshot, ...],
         profile: RetrievalExecutionProfile,
     ) -> tuple[Evidence, ...]:
+        output_limit = self._candidate_evidence_limit(plan)
         merged: dict[UUID, VectorSearchHit] = {}
         for hit in dense_result.hits:
             merged[hit.index_chunk_id] = hit
@@ -1109,7 +1149,7 @@ class RetrievalService:
                     ),
                     related_visuals=tuple(visuals.values()),
                 )
-            if len(by_chunk) >= plan.top_k:
+            if len(by_chunk) >= output_limit:
                 break
         return tuple(
             replace(value, rank=rank)
@@ -1122,6 +1162,11 @@ class RetrievalService:
                 raise RetrievalExecutionError(
                     ErrorCode.CAPABILITY_NOT_ENABLED,
                     diagnostic={"capability": request.strategy.value},
+                )
+            if request.rerank_mode is RerankMode.NONE:
+                raise RetrievalExecutionError(
+                    ErrorCode.CAPABILITY_NOT_ENABLED,
+                    diagnostic={"capability": "hybrid_reranking"},
                 )
             return
         if request.strategy is not RetrievalStrategy.EXACT_VECTOR:
@@ -1338,14 +1383,14 @@ class RetrievalService:
                 diagnostic={"check": "cross_modal_provider_contract"},
             ) from error
 
-    def _normalize(
+    async def _normalize(
         self,
         plan: RetrievalQueryPlan,
         result: VectorSearchResult,
         *,
         query: str,
         profile: RetrievalExecutionProfile,
-    ) -> tuple[Evidence, ...]:
+    ) -> tuple[tuple[Evidence, ...], int | None, int | None]:
         result_limit = plan.candidate_count or plan.top_k
         if len(result.hits) > result_limit:
             raise RetrievalExecutionError(
@@ -1360,23 +1405,25 @@ class RetrievalService:
             )
         self._validate_scope(plan, result)
         if plan.rerank:
+            output_limit = self._candidate_evidence_limit(plan)
             ordered_reranked = rerank_hits(
                 query,
                 result.hits,
-                top_k=plan.top_k,
+                top_k=output_limit,
                 vector_weight=profile.rerank_vector_weight,
                 lexical_weight=profile.rerank_lexical_weight,
                 mmr_lambda=profile.mmr_lambda,
             )
-            return tuple(
+            candidates = tuple(
                 RetrievalService._evidence_from_reranked(rank, item)
                 for rank, item in enumerate(ordered_reranked, start=1)
             )
+            return await self._finish_reranking(query, candidates, plan)
         ordered = sorted(
             result.hits,
             key=lambda hit: (hit.cosine_distance, hit.index_chunk_id.int),
         )[: plan.top_k]
-        return tuple(
+        evidence = tuple(
             Evidence(
                 rank=rank,
                 index_chunk_id=hit.index_chunk_id,
@@ -1398,6 +1445,113 @@ class RetrievalService:
                 document_original_filename=hit.document_original_filename,
             )
             for rank, hit in enumerate(ordered, start=1)
+        )
+        return evidence, None, None
+
+    @staticmethod
+    def _candidate_evidence_limit(plan: RetrievalQueryPlan) -> int:
+        if plan.rerank_mode is RerankMode.LOCAL_MINILM_V1:
+            return 20
+        return plan.top_k
+
+    async def _finish_reranking(
+        self,
+        query: str,
+        candidates: tuple[Evidence, ...],
+        plan: RetrievalQueryPlan,
+    ) -> tuple[tuple[Evidence, ...], int | None, int | None]:
+        if plan.rerank_mode is not RerankMode.LOCAL_MINILM_V1:
+            return candidates[: plan.top_k], None, None
+        reranker = self._text_reranker
+        if reranker is None or reranker.profile is not plan.rerank_mode:
+            raise RetrievalExecutionError(
+                ErrorCode.LOCAL_RERANKER_UNAVAILABLE,
+                diagnostic={"check": "local_reranker_not_configured"},
+            )
+        model_positions = tuple(
+            index
+            for index, item in enumerate(candidates)
+            if item.modality in {"text", "table"} and item.text.strip()
+        )
+        if len(model_positions) > reranker.max_documents:
+            raise RetrievalExecutionError(
+                ErrorCode.LOCAL_RERANKER_UNAVAILABLE,
+                diagnostic={"check": "local_reranker_candidate_limit"},
+            )
+        if not model_positions:
+            return candidates[: plan.top_k], 0, 0
+        documents = tuple(
+            RerankDocument(
+                index_chunk_id=candidates[index].index_chunk_id,
+                text=candidates[index].text,
+                hierarchy=candidates[index].hierarchy,
+                modality=candidates[index].modality,
+            )
+            for index in model_positions
+        )
+        try:
+            scores = await reranker.score(query, documents)
+        except (RerankerAdapterError, OSError, RuntimeError) as error:
+            raise RetrievalExecutionError(
+                ErrorCode.LOCAL_RERANKER_UNAVAILABLE,
+                diagnostic={"check": "local_reranker_inference"},
+            ) from error
+        score_by_id = {item.index_chunk_id: item for item in scores}
+        document_ids = {item.index_chunk_id for item in documents}
+        if (
+            len(scores) != len(documents)
+            or len(score_by_id) != len(scores)
+            or set(score_by_id) != document_ids
+        ):
+            raise RetrievalExecutionError(
+                ErrorCode.LOCAL_RERANKER_UNAVAILABLE,
+                diagnostic={"check": "local_reranker_response_contract"},
+            )
+        raw_ranked = sorted(
+            (candidates[index] for index in model_positions),
+            key=lambda item: (
+                -score_by_id[item.index_chunk_id].score,
+                item.rank,
+                item.index_chunk_id.int,
+            ),
+        )
+        raw_rank_by_id = {
+            item.index_chunk_id: rank
+            for rank, item in enumerate(raw_ranked, start=1)
+        }
+        ranked = order_model_scored_evidence(
+            (candidates[index] for index in model_positions),
+            {
+                item.index_chunk_id: item.score
+                for item in scores
+            },
+            mmr_lambda=self._mmr_lambda,
+        )
+        ranked_values = tuple(
+            replace(
+                item,
+                model_rerank_score=score_by_id[item.index_chunk_id].score,
+                model_rerank_rank=raw_rank_by_id[item.index_chunk_id],
+                model_rerank_window_count=(
+                    score_by_id[item.index_chunk_id].window_count
+                ),
+                model_rerank_winning_window_index=(
+                    score_by_id[item.index_chunk_id].winning_window_index
+                ),
+            )
+            for item in ranked
+        )
+        reordered = list(candidates)
+        for position, item in zip(model_positions, ranked_values, strict=True):
+            reordered[position] = item
+        final = tuple(
+            replace(item, rank=rank)
+            for rank, item in enumerate(reordered[: plan.top_k], start=1)
+        )
+        return (
+            final,
+            len(documents),
+            sum(item.window_count for item in scores),
         )
 
     @staticmethod

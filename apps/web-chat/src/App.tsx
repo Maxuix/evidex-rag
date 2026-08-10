@@ -20,6 +20,7 @@ import type {
   ChatWorkflowMode,
   KnowledgeBase,
   ModelSettings,
+  RerankMode,
   RetrievalCapabilities,
 } from "./api/types";
 import {
@@ -205,6 +206,7 @@ function KnowledgeChat({
 
   const [draft, setDraft] = useState("");
   const [retrievalMode, setRetrievalMode] = useState<"vector" | "hybrid">("vector");
+  const [rerankMode, setRerankMode] = useState<RerankMode>("classic");
   const [workflowMode, setWorkflowMode] = useState<ChatWorkflowMode>("simple");
   const [modelSettings, setModelSettings] = useState<ModelSettings | null>(null);
   const [modelSettingsLoading, setModelSettingsLoading] = useState(true);
@@ -388,13 +390,25 @@ function KnowledgeChat({
   }, [hybridEnabled, retrievalMode]);
 
   useEffect(() => {
+    if (selectedKnowledgeBase) {
+      setRerankMode(selectedKnowledgeBase.retrieval_defaults.rerank_mode);
+    }
+  }, [
+    selectedKnowledgeBase?.id,
+    selectedKnowledgeBase?.retrieval_defaults.rerank_mode,
+  ]);
+
+  useEffect(() => {
     if (
       (workflowMode === "agent" && !agentEnabled)
       || (workflowMode === "auto" && !autoEnabled)
     ) {
       setWorkflowMode("simple");
     }
-  }, [agentEnabled, autoEnabled, workflowMode]);
+    if (workflowMode !== "simple" && rerankMode === "local_minilm_v1") {
+      setRerankMode("classic");
+    }
+  }, [agentEnabled, autoEnabled, rerankMode, workflowMode]);
 
   useEffect(() => {
     messageGeneration.current += 1;
@@ -621,7 +635,7 @@ function KnowledgeChat({
           retrieval: {
             mode: retrievalMode,
             top_k: selectedKnowledgeBase.retrieval_defaults.top_k,
-            rerank: true,
+            rerank_mode: rerankMode,
           },
           model_profile_revision_id: selectedChatModelRevisionId,
         },
@@ -662,6 +676,7 @@ function KnowledgeChat({
       setPendingRun(null);
       setSubmissionError(null);
     }
+    if (next === "hybrid" && rerankMode === "none") setRerankMode("classic");
     setRetrievalMode(next);
   };
 
@@ -672,7 +687,26 @@ function KnowledgeChat({
       setPendingRun(null);
       setSubmissionError(null);
     }
+    if (next !== "simple" && rerankMode === "local_minilm_v1") {
+      setRerankMode("classic");
+    }
     setWorkflowMode(next);
+  };
+
+  const changeRerankMode = (next: RerankMode) => {
+    if (next === "none" && retrievalMode === "hybrid") return;
+    if (
+      next === "local_minilm_v1"
+      && (
+        workflowMode !== "simple"
+        || (selectedKnowledgeBase?.retrieval_defaults.top_k ?? 100) > 20
+      )
+    ) return;
+    if (pendingRun) {
+      setPendingRun(null);
+      setSubmissionError(null);
+    }
+    setRerankMode(next);
   };
 
   const changeChatModel = (next: string) => {
@@ -1119,6 +1153,39 @@ function KnowledgeChat({
                   ]}
                   onChange={changeRetrievalMode}
                 />
+                <ComposerOptionMenu
+                  kind="rerank"
+                  label="精排方式"
+                  value={rerankMode}
+                  disabled={submitting || sessionBusy}
+                  options={[
+                    {
+                      value: "none",
+                      label: "不精排",
+                      description: retrievalMode === "hybrid"
+                        ? "混合检索必须保留精排。"
+                        : "直接使用向量检索顺序，资源开销最低。",
+                      disabled: retrievalMode === "hybrid",
+                    },
+                    {
+                      value: "classic",
+                      label: "经典精排",
+                      description: "使用现有关键词、向量与去重规则。",
+                    },
+                    {
+                      value: "local_minilm_v1",
+                      label: "本地 MiniLM",
+                      description: workflowMode !== "simple"
+                        ? "首版仅支持 Simple 工作流。"
+                        : (selectedKnowledgeBase?.retrieval_defaults.top_k ?? 100) > 20
+                          ? "本地模型要求知识库 Top K 不超过 20。"
+                          : "本机离线 CrossEncoder 精排，相关性更强但更慢。",
+                      disabled: workflowMode !== "simple"
+                        || (selectedKnowledgeBase?.retrieval_defaults.top_k ?? 100) > 20,
+                    },
+                  ]}
+                  onChange={changeRerankMode}
+                />
               </div>
               <button
                 className="send-button"
@@ -1191,7 +1258,7 @@ function ComposerOptionMenu<T extends string>({
   disabled,
   onChange,
 }: {
-  kind: "workflow" | "retrieval";
+  kind: "workflow" | "retrieval" | "rerank";
   label: string;
   value: T;
   options: readonly ComposerMenuOption<T>[];
@@ -1278,12 +1345,24 @@ function ComposerModelIcon() {
   );
 }
 
-function ComposerMenuIcon({ kind }: { kind: "workflow" | "retrieval" }) {
+function ComposerMenuIcon({ kind }: {
+  kind: "workflow" | "retrieval" | "rerank";
+}) {
   if (kind === "retrieval") {
     return (
       <svg viewBox="0 0 20 20" aria-hidden="true">
         <circle cx="8.5" cy="8.5" r="4.75" />
         <path d="m12 12 4.25 4.25" />
+      </svg>
+    );
+  }
+  if (kind === "rerank") {
+    return (
+      <svg viewBox="0 0 20 20" aria-hidden="true">
+        <path d="M4 5h12M4 10h12M4 15h12" />
+        <circle cx="8" cy="5" r="1.5" />
+        <circle cx="13" cy="10" r="1.5" />
+        <circle cx="7" cy="15" r="1.5" />
       </svg>
     );
   }

@@ -55,6 +55,7 @@ from rag_kb.memory import (
     hydrate_contextualized_query,
     hydrate_conversation_context,
 )
+from rag_kb.retrieval.profile import parse_retrieval_snapshot
 
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -175,7 +176,7 @@ async def create_chat_run(
         insufficiency_policy=payload.answer_policy.insufficiency_policy,
         retrieval_mode=payload.retrieval.mode,
         top_k=payload.retrieval.top_k,
-        rerank=payload.retrieval.rerank,
+        rerank_mode=payload.retrieval.rerank_mode,
         workflow_mode=payload.workflow.mode,
         model_profile_revision_id=payload.model_profile_revision_id,
     )
@@ -419,10 +420,7 @@ def _run_response(value: ChatRun) -> ChatRunResponse:
         final_context_url=f"{_status_url(value.id)}/final-context",
         effective_answer_policy=_policy_response(value),
         workflow=_workflow_response(value),
-        retrieval={
-            key: value.retrieval_strategy[key]
-            for key in ("profile_version", "strategy", "top_k", "rerank")
-        },
+        retrieval=_retrieval_response(value),
         model=_model_response(value),
         query_context=_query_context_response(value),
         attempt=value.attempt,
@@ -433,6 +431,18 @@ def _run_response(value: ChatRun) -> ChatRunResponse:
         updated_at=value.updated_at,
         completed_at=value.completed_at,
     )
+
+
+def _retrieval_response(value: ChatRun) -> dict[str, object]:
+    strategy, top_k, rerank_mode = parse_retrieval_snapshot(
+        value.retrieval_strategy
+    )
+    return {
+        "profile_version": value.retrieval_strategy["profile_version"],
+        "strategy": strategy.value,
+        "top_k": top_k,
+        "rerank_mode": rerank_mode.value,
+    }
 
 
 def _model_response(value: ChatRun) -> dict[str, object]:

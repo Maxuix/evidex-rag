@@ -219,6 +219,12 @@ def _retrieval_diagnostics(state: ChatPipelineState) -> dict[str, int]:
         "cross_modal_candidate_count": debug.cross_modal_candidate_count,
         "hydrated_relation_count": debug.hydrated_relation_count,
         "evidence_group_count": debug.evidence_group_count,
+        "model_rerank_candidate_count": getattr(
+            debug, "model_rerank_candidate_count", None
+        ),
+        "model_rerank_window_count": getattr(
+            debug, "model_rerank_window_count", None
+        ),
     }
     return {key: value for key, value in values.items() if value is not None}
 

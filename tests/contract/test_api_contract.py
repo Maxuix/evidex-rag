@@ -251,13 +251,13 @@ class StubRetrievalService:
                 SimpleNamespace(
                     mode="vector",
                     strategy="exact_vector",
-                    profile_version="exact_vector_v1",
+                    profile_version="exact_vector_v2",
                     enabled=True,
                 ),
                 SimpleNamespace(
                     mode="hybrid",
                     strategy="hybrid",
-                    profile_version="hybrid_fts_rrf_v1",
+                    profile_version="hybrid_fts_rrf_v2",
                     enabled=False,
                 ),
             ),
@@ -987,13 +987,13 @@ class RetrievalApiContractTests(unittest.IsolatedAsyncioTestCase):
                     {
                         "mode": "vector",
                         "strategy": "exact_vector",
-                        "profile_version": "exact_vector_v1",
+                        "profile_version": "exact_vector_v2",
                         "enabled": True,
                     },
                     {
                         "mode": "hybrid",
                         "strategy": "hybrid",
-                        "profile_version": "hybrid_fts_rrf_v1",
+                        "profile_version": "hybrid_fts_rrf_v2",
                         "enabled": False,
                     },
                 ],
@@ -1043,6 +1043,7 @@ class RetrievalApiContractTests(unittest.IsolatedAsyncioTestCase):
             (ErrorCode.CAPABILITY_NOT_ENABLED, 409, False),
             (ErrorCode.EMBEDDING_PROVIDER_UNAVAILABLE, 503, True),
             (ErrorCode.EMBEDDING_RESPONSE_INVALID, 502, False),
+            (ErrorCode.LOCAL_RERANKER_UNAVAILABLE, 503, False),
             (ErrorCode.EMBEDDING_SPACE_MISMATCH, 503, False),
             (ErrorCode.RETRIEVAL_DEADLINE_EXCEEDED, 503, True),
             (ErrorCode.INTERNAL_SERVER_ERROR, 500, False),
@@ -1957,7 +1958,11 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
             headers={"idempotency-key": str(uuid4())},
             json_body={
                 **_chat_run_request(chat.session.id),
-                "retrieval": {"mode": "hybrid", "top_k": 10, "rerank": True},
+                "retrieval": {
+                    "mode": "hybrid",
+                    "top_k": 10,
+                    "rerank_mode": "classic",
+                },
             },
         )
         self.assertEqual(disabled_hybrid.status, 409)

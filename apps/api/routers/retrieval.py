@@ -63,7 +63,7 @@ async def query_retrieval(
             query=payload.query,
             top_k=payload.top_k,
             strategy=payload.strategy,
-            rerank=payload.rerank,
+            rerank_mode=payload.rerank_mode,
             include_debug=payload.include_debug,
         ),
     )

@@ -9,7 +9,12 @@ from uuid import UUID
 from pydantic import Field, field_validator, model_validator
 from pydantic_core import PydanticCustomError
 
-from rag_kb.domain import AnswerStyle, ChatWorkflowMode, InsufficiencyPolicy
+from rag_kb.domain import (
+    AnswerStyle,
+    ChatWorkflowMode,
+    InsufficiencyPolicy,
+    RerankMode,
+)
 from rag_kb.schemas.common import OpaqueCursor, PublicSchema
 
 
@@ -107,7 +112,18 @@ class AnswerPolicyOverrides(PublicSchema):
 class ChatRetrievalRequest(PublicSchema):
     mode: Literal["vector", "hybrid"] = "vector"
     top_k: Annotated[int, Field(ge=1, le=100)] = 10
-    rerank: bool | None = None
+    rerank_mode: RerankMode | None = None
+
+    @model_validator(mode="after")
+    def require_supported_rerank_combination(self) -> "ChatRetrievalRequest":
+        if self.mode == "hybrid" and self.rerank_mode is RerankMode.NONE:
+            raise ValueError("hybrid retrieval requires reranking")
+        if (
+            self.rerank_mode is RerankMode.LOCAL_MINILM_V1
+            and self.top_k > 20
+        ):
+            raise ValueError("local reranking supports top_k up to 20")
+        return self
 
 
 class ChatWorkflowRequest(PublicSchema):
@@ -228,10 +244,15 @@ class ChatRunErrorResponse(PublicSchema):
 
 
 class ChatRunRetrievalResponse(PublicSchema):
-    profile_version: Literal["exact_vector_v1", "hybrid_fts_rrf_v1"]
+    profile_version: Literal[
+        "exact_vector_v1",
+        "hybrid_fts_rrf_v1",
+        "exact_vector_v2",
+        "hybrid_fts_rrf_v2",
+    ]
     strategy: Literal["exact_vector", "hybrid"]
     top_k: Annotated[int, Field(ge=1, le=100)]
-    rerank: bool
+    rerank_mode: RerankMode
 
 
 class ChatRunQueryContextResponse(PublicSchema):

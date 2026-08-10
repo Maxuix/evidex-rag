@@ -21,6 +21,7 @@ import type {
   ModelProfile,
   ModelSettings,
   ParsingPreset,
+  RerankMode,
   RetrievalEvidencePack,
 } from "./api/types";
 
@@ -977,7 +978,9 @@ function RetrievalDebugger({
   const [query, setQuery] = useState("");
   const [topK, setTopK] = useState(knowledgeBase.retrieval_defaults.top_k);
   const [strategy, setStrategy] = useState<"exact_vector" | "hybrid">("exact_vector");
-  const [rerank, setRerank] = useState(knowledgeBase.retrieval_defaults.rerank);
+  const [rerankMode, setRerankMode] = useState<RerankMode>(
+    knowledgeBase.retrieval_defaults.rerank_mode,
+  );
   const [result, setResult] = useState<RetrievalEvidencePack | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -987,7 +990,12 @@ function RetrievalDebugger({
     setResult(null);
     setError(null);
     setTopK(knowledgeBase.retrieval_defaults.top_k);
-  }, [knowledgeBase.id, knowledgeBase.retrieval_defaults.top_k]);
+    setRerankMode(knowledgeBase.retrieval_defaults.rerank_mode);
+  }, [
+    knowledgeBase.id,
+    knowledgeBase.retrieval_defaults.rerank_mode,
+    knowledgeBase.retrieval_defaults.top_k,
+  ]);
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -1000,7 +1008,7 @@ function RetrievalDebugger({
         query.trim(),
         topK,
         strategy,
-        rerank,
+        rerankMode,
       ));
     } catch (caught) {
       setError(managementError(caught));
@@ -1029,18 +1037,38 @@ function RetrievalDebugger({
         <div className="debug-controls">
           <label>
             Top K
-            <input type="number" min={1} max={100} value={topK} onChange={(event) => setTopK(Number(event.target.value))} />
+            <input
+              type="number"
+              min={1}
+              max={rerankMode === "local_minilm_v1" ? 20 : 100}
+              value={topK}
+              onChange={(event) => setTopK(Number(event.target.value))}
+            />
           </label>
           <label>
             检索策略
-            <select value={strategy} onChange={(event) => setStrategy(event.target.value as "exact_vector" | "hybrid")}>
+            <select value={strategy} onChange={(event) => {
+              const next = event.target.value as "exact_vector" | "hybrid";
+              setStrategy(next);
+              if (next === "hybrid" && rerankMode === "none") {
+                setRerankMode("classic");
+              }
+            }}>
               <option value="exact_vector">精确向量</option>
               <option value="hybrid" disabled={!hybridEnabled}>混合检索{hybridEnabled ? "" : "（未启用）"}</option>
             </select>
           </label>
-          <label className="checkbox-field">
-            <input type="checkbox" checked={rerank} onChange={(event) => setRerank(event.target.checked)} />
-            重排
+          <label>
+            精排方式
+            <select value={rerankMode} onChange={(event) => {
+              const next = event.target.value as RerankMode;
+              setRerankMode(next);
+              if (next === "local_minilm_v1" && topK > 20) setTopK(20);
+            }}>
+              <option value="none" disabled={strategy === "hybrid"}>不精排</option>
+              <option value="classic">经典精排</option>
+              <option value="local_minilm_v1">本地 MiniLM</option>
+            </select>
           </label>
           <button className="primary-button" type="submit" disabled={!query.trim() || loading}>
             {loading ? "检索中…" : "运行测试"}
@@ -1054,6 +1082,12 @@ function RetrievalDebugger({
             <strong>{result.evidence.length} 个结果</strong>
             <span>策略 {result.strategy === "hybrid" ? "混合检索" : "精确向量"}</span>
             {result.debug ? <span>候选 {result.debug.text_candidate_count ?? 0} / {result.debug.lexical_candidate_count ?? 0}</span> : null}
+            {result.debug?.model_rerank_candidate_count !== null
+              && result.debug?.model_rerank_candidate_count !== undefined ? (
+                <span>
+                  模型精排 {result.debug.model_rerank_candidate_count} 个候选 / {result.debug.model_rerank_window_count ?? 0} 个窗口
+                </span>
+              ) : null}
           </div>
           {result.evidence.length ? result.evidence.map((evidence) => (
             <article className="debug-result" key={evidence.index_chunk_id}>
@@ -1062,6 +1096,11 @@ function RetrievalDebugger({
                 <header>
                   <strong>{modalityLabel(evidence.modality)} · Chunk #{evidence.ordinal + 1}</strong>
                   <span>{evidence.score_kind} {evidence.score.toFixed(5)}</span>
+                  {evidence.model_rerank_score !== null ? (
+                    <span>
+                      MiniLM #{evidence.model_rerank_rank} {evidence.model_rerank_score.toFixed(5)} · {evidence.model_rerank_window_count} 窗口
+                    </span>
+                  ) : null}
                 </header>
                 <p>{evidence.text || "该结果没有文本表示。"}</p>
                 <small>文档 {evidence.document_id.slice(0, 8)} · {evidence.matched_representations.join(" / ")}</small>

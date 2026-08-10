@@ -18,6 +18,7 @@ from rag_kb.domain import (
     ErrorCode,
     InsufficiencyPolicy,
     Page,
+    RerankMode,
     RetrievalStrategy,
     RetrievalExecutionError,
     resolve_p1_policy,
@@ -278,6 +279,57 @@ class ChatCreationServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(simple["request_hash"], agent["request_hash"])
         self.assertNotEqual(agent["request_hash"], auto["request_hash"])
 
+    async def test_local_reranker_is_frozen_for_simple_and_rejected_for_agent(
+        self,
+    ) -> None:
+        workspace_id = uuid4()
+        kb_id = uuid4()
+        chat = _ChatRepository(kb_id=kb_id)
+        service = ChatService(
+            _Factory(workspace_id, chat, kb_id),
+            SingleWorkspaceAccessPolicy(workspace_id),
+            model_configuration={"resolved_model": "fixed-model"},
+            retrieval_profile_factory=_profile_factory,
+            agent_enabled=True,
+        )
+
+        with self.assertRaises(RetrievalExecutionError) as failure:
+            await service.create_run(
+                AuthContext("principal", "client", workspace_id),
+                uuid4(),
+                session_id=uuid4(),
+                kb_id=kb_id,
+                message="query",
+                answer_style=None,
+                insufficiency_policy=None,
+                retrieval_mode="vector",
+                top_k=5,
+                rerank_mode=RerankMode.LOCAL_MINILM_V1,
+                workflow_mode=ChatWorkflowMode.AGENT,
+            )
+        self.assertEqual(
+            failure.exception.code,
+            ErrorCode.CAPABILITY_NOT_ENABLED,
+        )
+        self.assertNotIn("idempotency", chat.events)
+
+        created = await service.create_run(
+            AuthContext("principal", "client", workspace_id),
+            uuid4(),
+            session_id=uuid4(),
+            kb_id=kb_id,
+            message="query",
+            answer_style=None,
+            insufficiency_policy=None,
+            retrieval_mode="vector",
+            top_k=5,
+            rerank_mode=RerankMode.LOCAL_MINILM_V1,
+        )
+        self.assertEqual(
+            created["retrieval_strategy"]["rerank_mode"],
+            "local_minilm_v1",
+        )
+
     async def test_disabled_hybrid_run_uses_capability_error(self) -> None:
         workspace_id = uuid4()
         kb_id = uuid4()
@@ -310,10 +362,10 @@ class ChatCreationServiceTests(unittest.IsolatedAsyncioTestCase):
         kb_id = uuid4()
         chat = _ChatRepository(kb_id=kb_id)
 
-        def profile_factory(strategy, top_k, rerank):
+        def profile_factory(strategy, top_k, rerank_mode):
             self.assertIs(strategy, RetrievalStrategy.HYBRID)
             return replace(
-                exact_profile(top_k=top_k, rerank=rerank),
+                exact_profile(top_k=top_k, rerank_mode=rerank_mode),
                 profile_version=HYBRID_PROFILE_VERSION,
                 strategy=RetrievalStrategy.HYBRID,
                 lexical_analyzer_version="lexical_simple_cjk_bigram_v1",
@@ -343,7 +395,7 @@ class ChatCreationServiceTests(unittest.IsolatedAsyncioTestCase):
             insufficiency_policy=None,
             retrieval_mode="hybrid",
             top_k=4,
-            rerank=True,
+            rerank_mode=RerankMode.CLASSIC,
         )
 
         snapshot = created["retrieval_strategy"]
@@ -353,7 +405,7 @@ class ChatCreationServiceTests(unittest.IsolatedAsyncioTestCase):
                 "profile_version": HYBRID_PROFILE_VERSION,
                 "strategy": "hybrid",
                 "top_k": 4,
-                "rerank": True,
+                "rerank_mode": "classic",
             },
         )
 
@@ -511,10 +563,10 @@ class _CompileOnlySession:
         return SimpleNamespace(all=lambda: [])
 
 
-def _profile_factory(strategy, top_k, rerank):
+def _profile_factory(strategy, top_k, rerank_mode):
     if strategy is not RetrievalStrategy.EXACT_VECTOR:
         raise ValueError("test factory only supports exact retrieval")
-    return exact_profile(top_k=top_k, rerank=rerank)
+    return exact_profile(top_k=top_k, rerank_mode=rerank_mode)
 
 
 class _KnowledgeBases:

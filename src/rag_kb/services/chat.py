@@ -30,6 +30,7 @@ from rag_kb.domain import (
     Page,
     ResourceNotFoundError,
     ResourceStateConflictError,
+    RerankMode,
     RetrievalStrategy,
     canonical_request_hash,
     initial_chat_workflow,
@@ -61,7 +62,7 @@ class ChatService:
         agent_enabled: bool = False,
         auto_enabled: bool = False,
         retrieval_profile_factory: Callable[
-            [RetrievalStrategy, int, bool], RetrievalExecutionProfile
+            [RetrievalStrategy, int, RerankMode], RetrievalExecutionProfile
         ],
         context_strategy: str = "recent_completed_turns_v1",
         context_max_turns: int = 6,
@@ -73,7 +74,9 @@ class ChatService:
         self._access_policy = access_policy
         self._model_configuration = dict(model_configuration)
         self._allow_legacy_model_configuration = allow_legacy_model_configuration
-        self._default_rerank = default_rerank
+        self._default_rerank_mode = (
+            RerankMode.CLASSIC if default_rerank else RerankMode.NONE
+        )
         self._hybrid_enabled = hybrid_enabled
         self._agent_enabled = agent_enabled
         self._auto_enabled = auto_enabled
@@ -215,7 +218,7 @@ class ChatService:
         insufficiency_policy: InsufficiencyPolicy | None,
         retrieval_mode: str,
         top_k: int,
-        rerank: bool | None = None,
+        rerank_mode: RerankMode | None = None,
         workflow_mode: ChatWorkflowMode = ChatWorkflowMode.SIMPLE,
         model_profile_revision_id: UUID | None = None,
     ) -> ChatRun:
@@ -237,6 +240,30 @@ class ChatService:
                 ErrorCode.CAPABILITY_NOT_ENABLED,
                 diagnostic={"capability": "hybrid"},
             )
+        resolved_rerank_mode = (
+            self._default_rerank_mode
+            if rerank_mode is None
+            else RerankMode(rerank_mode)
+        )
+        if retrieval_mode == "hybrid" and resolved_rerank_mode is RerankMode.NONE:
+            raise ResourceStateConflictError(
+                "hybrid retrieval requires reranking"
+            )
+        if (
+            resolved_rerank_mode is RerankMode.LOCAL_MINILM_V1
+            and workflow_mode is not ChatWorkflowMode.SIMPLE
+        ):
+            raise RetrievalExecutionError(
+                ErrorCode.CAPABILITY_NOT_ENABLED,
+                diagnostic={"capability": "local_reranker_simple_only"},
+            )
+        if (
+            resolved_rerank_mode is RerankMode.LOCAL_MINILM_V1
+            and top_k > 20
+        ):
+            raise ResourceStateConflictError(
+                "local reranking supports top_k up to 20"
+            )
         normalized_message = message.strip()
         if not normalized_message:
             raise ValueError("message must contain non-whitespace characters")
@@ -252,11 +279,10 @@ class ChatService:
             requested_policy["answer_style"] = answer_style.value
         if insufficiency_policy is not None:
             requested_policy["insufficiency_policy"] = insufficiency_policy.value
-        resolved_rerank = self._default_rerank if rerank is None else rerank
         requested_retrieval = {
             "mode": retrieval_mode,
             "top_k": top_k,
-            "rerank": resolved_rerank,
+            "rerank_mode": resolved_rerank_mode.value,
         }
         strategy = (
             RetrievalStrategy.HYBRID
@@ -264,7 +290,7 @@ class ChatService:
             else RetrievalStrategy.EXACT_VECTOR
         )
         retrieval_strategy = self._retrieval_profile_factory(
-            strategy, top_k, resolved_rerank
+            strategy, top_k, resolved_rerank_mode
         ).as_dict()
         workflow_configuration, workflow_state = initial_chat_workflow(
             workflow_mode
