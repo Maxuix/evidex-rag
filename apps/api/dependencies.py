@@ -26,6 +26,7 @@ from rag_kb.adapters.model_api.multimodal_embeddings import (
 from rag_kb.adapters.model_api.unconfigured import UnconfiguredEmbeddingModelAdapter
 from rag_kb.adapters.model_secrets.local import LocalModelSecretStore
 from rag_kb.adapters.vector_store.pgvector import PgVectorStore
+from rag_kb.answering.wire_schemas import WireRetrievalAgentAction
 from rag_kb.auth import DevelopmentAuthProvider, SingleWorkspaceAccessPolicy
 from rag_kb.config import (
     Settings,
@@ -43,6 +44,7 @@ from rag_kb.domain import (
     AdmissionLimits,
     ChatModelMessage,
     ChatModelRequest,
+    ChatOutputSchema,
     EmbeddingSpaceDefinition,
     EmbeddingDimensionRequestMode,
     EmbeddingDimensionSelectionSource,
@@ -376,12 +378,37 @@ async def _validate_model_profile(
             ),
             reasoning_effort=parameters.get("reasoning_effort", "off"),
         )
-        await adapter.complete(
+        response = await adapter.complete(
             ChatModelRequest(
-                messages=(ChatModelMessage("user", "Return an empty JSON object."),),
-                max_output_tokens=16,
+                messages=(
+                    ChatModelMessage(
+                        "system",
+                        "Return only the exact JSON object supplied by the user, "
+                        "with no markdown or additional fields.",
+                    ),
+                    ChatModelMessage(
+                        "user",
+                        '{"version":"retrieval_agent_action_v1",'
+                        '"action":"search","objective":"validation probe",'
+                        '"queries":[{"query":"validation",'
+                        '"based_on_observation_ids":[]}],'
+                        '"proposed_reason":null,'
+                        '"selected_evidence_keys":[]}',
+                    ),
+                ),
+                output_schema=ChatOutputSchema.RETRIEVAL_AGENT_ACTION_V1,
+                max_output_tokens=768,
+                thinking_enabled=False,
             )
         )
+        try:
+            WireRetrievalAgentAction.model_validate_json(response.content)
+        except ValueError as error:
+            raise ModelProfileValidationError(
+                "provider_validation_failed"
+            ) from error
+        if response.model != revision.model:
+            raise ModelProfileValidationError("provider_validation_failed")
         return None
 
     configured_dimension = parameters.get("dimension", "auto")

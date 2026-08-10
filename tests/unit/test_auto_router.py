@@ -109,6 +109,7 @@ class AutoWorkflowRouterTests(unittest.IsolatedAsyncioTestCase):
                         message.content for message in candidate.messages
                     ).lower(),
                 )
+                self.assertIs(candidate.thinking_enabled, False)
         for field in ("version", "mode", "reason_codes"):
             self.assertIn(field, request.messages[0].content)
 

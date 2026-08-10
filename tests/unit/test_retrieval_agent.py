@@ -180,6 +180,7 @@ class RetrievalAgentTests(unittest.IsolatedAsyncioTestCase):
                     "json",
                     "\n".join(message.content for message in request.messages).lower(),
                 )
+                self.assertIs(request.thinking_enabled, False)
         action_prompt = action.messages[0].content
         for field in (
             "version",
@@ -202,6 +203,33 @@ class RetrievalAgentTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn(field, verification_prompt)
         self.assertIn("concise answer-target topic labels", verification_prompt)
         self.assertIn("same language as answer_target", verification_prompt)
+
+    async def test_truncated_agent_action_retries_with_more_output_budget(
+        self,
+    ) -> None:
+        context = _agent_context()
+        truncated = replace(
+            _response('{"_response_truncated":true}'),
+            finish_reason="length",
+        )
+        model = _Model(truncated, truncated)
+
+        with self.assertRaises(ChatPipelineExecutionError) as raised:
+            await _service(model, _Retriever(())).research(
+                context, _query_context(context)
+            )
+
+        self.assertEqual(
+            raised.exception.diagnostic,
+            {"check": "retrieval_agent_action_truncated"},
+        )
+        self.assertEqual(
+            [request.max_output_tokens for request in model.requests],
+            [768, 1536],
+        )
+        self.assertTrue(
+            all(request.thinking_enabled is False for request in model.requests)
+        )
 
     async def test_retrieval_failure_retains_completed_agent_usage(self) -> None:
         context = _agent_context()

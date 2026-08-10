@@ -23,6 +23,7 @@ from rag_kb.domain import (
     ChatModelMessage,
     ChatModelOperation,
     ChatModelRequest,
+    ChatModelResponse,
     ChatOutputSchema,
     ChatPipelineExecutionError,
     ChatPipelinePhase,
@@ -425,6 +426,7 @@ class RetrievalAgentService:
                 request,
                 response.content,
                 schema=ChatOutputSchema.RETRIEVAL_AGENT_ACTION_V1,
+                retry_after_truncation=_response_was_truncated(response),
             )
             try:
                 repaired = await complete_model(
@@ -451,7 +453,14 @@ class RetrievalAgentService:
                 raise ChatPipelineExecutionError(
                     ErrorCode.CHAT_RESPONSE_INVALID,
                     phase=ChatPipelinePhase.RETRIEVE_EVIDENCE,
-                    diagnostic={"check": "retrieval_agent_action"},
+                    diagnostic={
+                        "check": (
+                            "retrieval_agent_action_truncated"
+                            if _response_was_truncated(response)
+                            or _response_was_truncated(repaired)
+                            else "retrieval_agent_action"
+                        )
+                    },
                     model_calls=(first_call, repair_call),
                 ) from error
 
@@ -482,6 +491,7 @@ class RetrievalAgentService:
                 request,
                 response.content,
                 schema=ChatOutputSchema.RESEARCH_RESULT_VERIFICATION_V1,
+                retry_after_truncation=_response_was_truncated(response),
             )
             try:
                 repaired = await complete_model(
@@ -508,7 +518,14 @@ class RetrievalAgentService:
                 raise ChatPipelineExecutionError(
                     ErrorCode.CHAT_RESPONSE_INVALID,
                     phase=ChatPipelinePhase.RETRIEVE_EVIDENCE,
-                    diagnostic={"check": "research_result_verification"},
+                    diagnostic={
+                        "check": (
+                            "research_result_verification_truncated"
+                            if _response_was_truncated(response)
+                            or _response_was_truncated(repaired)
+                            else "research_result_verification"
+                        )
+                    },
                     model_calls=(first_call, repair_call),
                 ) from error
 
@@ -681,6 +698,7 @@ def _agent_request(
         output_schema=ChatOutputSchema.RETRIEVAL_AGENT_ACTION_V1,
         max_output_tokens=768,
         model_profile_revision_id=_model_profile_revision_id(context),
+        thinking_enabled=False,
     )
 
 
@@ -727,6 +745,7 @@ def _verification_request(
         output_schema=ChatOutputSchema.RESEARCH_RESULT_VERIFICATION_V1,
         max_output_tokens=1024,
         model_profile_revision_id=_model_profile_revision_id(context),
+        thinking_enabled=False,
     )
 
 
@@ -735,7 +754,11 @@ def _repair_request(
     invalid_content: str,
     *,
     schema: ChatOutputSchema,
+    retry_after_truncation: bool = False,
 ) -> ChatModelRequest:
+    output_limit = original.max_output_tokens
+    if retry_after_truncation and output_limit is not None:
+        output_limit = min(8192, output_limit * 2)
     return ChatModelRequest(
         messages=original.messages
         + (
@@ -752,9 +775,14 @@ def _repair_request(
             ),
         ),
         output_schema=schema,
-        max_output_tokens=original.max_output_tokens,
+        max_output_tokens=output_limit,
         model_profile_revision_id=original.model_profile_revision_id,
+        thinking_enabled=original.thinking_enabled,
     )
+
+
+def _response_was_truncated(response: ChatModelResponse) -> bool:
+    return response.finish_reason == "length"
 
 
 def _model_profile_revision_id(context: ChatExecutionContext) -> UUID | None:

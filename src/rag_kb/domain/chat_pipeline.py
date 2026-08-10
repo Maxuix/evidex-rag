@@ -164,6 +164,7 @@ class ChatModelRequest:
     output_schema: ChatOutputSchema | None = None
     max_output_tokens: int | None = None
     model_profile_revision_id: UUID | None = None
+    thinking_enabled: bool | None = None
 
     def __post_init__(self) -> None:
         if not self.messages:
@@ -176,6 +177,10 @@ class ChatModelRequest:
             )
         ):
             raise ValueError("chat model output token limit is invalid")
+        if self.thinking_enabled is not None and not isinstance(
+            self.thinking_enabled, bool
+        ):
+            raise ValueError("chat model thinking override is invalid")
 
 
 @dataclass(frozen=True, slots=True)

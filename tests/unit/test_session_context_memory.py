@@ -172,6 +172,7 @@ class QueryContextualizerTests(unittest.IsolatedAsyncioTestCase):
             payload["task"], "best_effort_retrieval_query_rewrite"
         )
         self.assertEqual(model.requests[0].max_output_tokens, 256)
+        self.assertIs(model.requests[0].thinking_enabled, False)
         self.assertIn(
             injection,
             payload["conversation_context"][0]["user"]["untrusted_content"],
@@ -206,6 +207,9 @@ class QueryContextualizerTests(unittest.IsolatedAsyncioTestCase):
             value.standalone_query, "Explain the prior topic more clearly."
         )
         self.assertEqual(len(model.requests), 2)
+        self.assertTrue(
+            all(request.thinking_enabled is False for request in model.requests)
+        )
         self.assertEqual(
             [call.operation.value for call in value.model_calls],
             ["contextualize_query", "contextualize_query"],

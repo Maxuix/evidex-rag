@@ -82,7 +82,9 @@ class LangChainChatModelAdapter:
         self._structured_output_method = (
             "json_schema" if structured_output_mode == "json_schema" else "json_mode"
         )
-        self._structured_models: dict[tuple[object, int | None], Any] = {}
+        self._structured_models: dict[
+            tuple[object, int | None, bool | None], Any
+        ] = {}
         self._max_visual_images = max_visual_images
         self._max_visual_image_bytes = max_visual_image_bytes
         self._max_visual_total_bytes = max_visual_total_bytes
@@ -196,27 +198,26 @@ class LangChainChatModelAdapter:
 
     async def _invoke(self, request: ChatModelRequest, messages: list[Any]) -> Any:
         output_limit = self._output_limit(request)
+        model = _model_with_request_options(
+            self._model,
+            max_tokens=output_limit,
+            thinking_enabled=request.thinking_enabled,
+        )
         if request.output_schema is None:
-            invoke_arguments = (
-                {"max_tokens": output_limit}
-                if output_limit is not None
-                else {}
-            )
-            return await self._model.ainvoke(messages, **invoke_arguments)
+            return await model.ainvoke(messages)
         schema = OUTPUT_SCHEMAS.get(request.output_schema)
         if schema is None:
             raise ChatModelExecutionError(
                 ErrorCode.CHAT_RESPONSE_INVALID,
                 diagnostic={"check": "output_schema"},
             )
-        cache_key = (request.output_schema, output_limit)
+        cache_key = (
+            request.output_schema,
+            output_limit,
+            request.thinking_enabled,
+        )
         runnable = self._structured_models.get(cache_key)
         if runnable is None:
-            model = (
-                _model_with_output_limit(self._model, output_limit)
-                if output_limit is not None
-                else self._model
-            )
             runnable = model.with_structured_output(
                 schema,
                 method=self._structured_output_method,
@@ -241,10 +242,10 @@ class LangChainChatModelAdapter:
                     diagnostic={"check": "output_schema"},
                 )
         output_limit = self._output_limit(request)
-        model = (
-            _model_with_output_limit(self._model, output_limit)
-            if output_limit is not None
-            else self._model
+        model = _model_with_request_options(
+            self._model,
+            max_tokens=output_limit,
+            thinking_enabled=request.thinking_enabled,
         )
         combined = None
         content_bytes = 0
@@ -288,13 +289,34 @@ class LangChainChatModelAdapter:
         return min(request.max_output_tokens, self._max_tokens)
 
 
-def _model_with_output_limit(model: Any, max_tokens: int) -> Any:
+def _model_with_request_options(
+    model: Any,
+    *,
+    max_tokens: int | None,
+    thinking_enabled: bool | None,
+) -> Any:
+    if max_tokens is None and thinking_enabled is None:
+        return model
     model_copy = getattr(model, "model_copy", None)
     if callable(model_copy):
         extra_body = dict(getattr(model, "extra_body", None) or {})
-        extra_body["max_tokens"] = max_tokens
+        if max_tokens is not None:
+            extra_body["max_tokens"] = max_tokens
+        if thinking_enabled is not None:
+            extra_body["enable_thinking"] = thinking_enabled
+            if not thinking_enabled:
+                extra_body.pop("reasoning_effort", None)
         return model_copy(update={"extra_body": extra_body})
-    return model.bind(max_tokens=max_tokens)
+    arguments: dict[str, Any] = {}
+    if max_tokens is not None:
+        arguments["max_tokens"] = max_tokens
+    if thinking_enabled is not None:
+        extra_body = dict(getattr(model, "extra_body", None) or {})
+        extra_body["enable_thinking"] = thinking_enabled
+        if not thinking_enabled:
+            extra_body.pop("reasoning_effort", None)
+        arguments["extra_body"] = extra_body
+    return model.bind(**arguments)
 
 
 def _truncated_response(error: openai.LengthFinishReasonError) -> ChatModelResponse:

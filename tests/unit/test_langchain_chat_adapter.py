@@ -178,6 +178,80 @@ class LangChainChatAdapterTests(unittest.IsolatedAsyncioTestCase):
             '{"claims":[],"missing_aspects":[],"outcome":"answered"}',
         )
 
+    async def test_request_can_disable_profile_thinking_for_controller_json(
+        self,
+    ) -> None:
+        def respond(request: httpx.Request) -> httpx.Response:
+            payload = json.loads(request.content)
+            self.assertEqual(payload["max_tokens"], 768)
+            self.assertIs(payload["enable_thinking"], False)
+            self.assertNotIn("reasoning_effort", payload)
+            return httpx.Response(
+                200,
+                json={
+                    "id": "controller-completion",
+                    "object": "chat.completion",
+                    "created": 1,
+                    "model": "resolved-model",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {
+                                "role": "assistant",
+                                "content": json.dumps(
+                                    {
+                                        "version": "retrieval_agent_action_v1",
+                                        "action": "search",
+                                        "objective": "find evidence",
+                                        "queries": [
+                                            {
+                                                "query": "validation",
+                                                "based_on_observation_ids": [],
+                                            }
+                                        ],
+                                        "proposed_reason": None,
+                                        "selected_evidence_keys": [],
+                                    }
+                                ),
+                            },
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {},
+                },
+            )
+
+        async_client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+        try:
+            model = ChatOpenAI(
+                model="configured-model",
+                api_key="probe-key",
+                base_url="https://provider.invalid/v1",
+                max_retries=0,
+                include_response_headers=True,
+                use_responses_api=False,
+                http_async_client=async_client,
+                model_kwargs={"response_format": {"type": "json_object"}},
+                extra_body={
+                    "max_tokens": 2048,
+                    "enable_thinking": True,
+                    "reasoning_effort": "medium",
+                },
+            )
+            response = await _adapter(model).complete(
+                ChatModelRequest(
+                    (ChatModelMessage("user", "plan retrieval"),),
+                    output_schema=ChatOutputSchema.RETRIEVAL_AGENT_ACTION_V1,
+                    max_output_tokens=768,
+                    thinking_enabled=False,
+                )
+            )
+        finally:
+            await async_client.aclose()
+
+        self.assertEqual(response.finish_reason, "stop")
+        self.assertIn('"action":"search"', response.content)
+
     async def test_streaming_aggregates_chunks_and_canonicalizes_schema(self) -> None:
         model = _FakeStreamingChatModel(
             AIMessageChunk(

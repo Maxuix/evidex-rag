@@ -243,6 +243,7 @@ def _route_request(
         output_schema=ChatOutputSchema.AUTO_ROUTE_V1,
         max_output_tokens=256,
         model_profile_revision_id=_model_profile_revision_id(context),
+        thinking_enabled=False,
     )
 
 
@@ -268,6 +269,7 @@ def _repair_route_request(
         output_schema=ChatOutputSchema.AUTO_ROUTE_V1,
         max_output_tokens=256,
         model_profile_revision_id=original.model_profile_revision_id,
+        thinking_enabled=original.thinking_enabled,
     )
 
 

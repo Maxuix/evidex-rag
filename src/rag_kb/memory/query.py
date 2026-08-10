@@ -197,6 +197,7 @@ def build_contextualization_request(
         output_schema=ChatOutputSchema.CONTEXTUAL_QUERY_V2,
         max_output_tokens=_QUERY_OUTPUT_TOKENS,
         model_profile_revision_id=_model_profile_revision_id(context),
+        thinking_enabled=False,
     )
 
 
@@ -219,6 +220,7 @@ def build_contextualization_repair_request(
         output_schema=ChatOutputSchema.CONTEXTUAL_QUERY_V2,
         max_output_tokens=_QUERY_OUTPUT_TOKENS,
         model_profile_revision_id=_model_profile_revision_id(context),
+        thinking_enabled=False,
     )
 
 
