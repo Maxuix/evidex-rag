@@ -83,7 +83,11 @@ _RRF_K = 60
 
 class _AgentActionFailureReason(StrEnum):
     WIRE_SCHEMA_INVALID = "wire_schema_invalid"
-    ACTION_SHAPE_INVALID = "action_shape_invalid"
+    RELEVANT_PAYLOAD_MISSING = "relevant_payload_missing"
+    IRRELEVANT_FIELD_NONEMPTY = "irrelevant_field_nonempty"
+    CALCULATION_SHAPE_INVALID = "calculation_shape_invalid"
+    SOURCE_KEY_SHAPE_INVALID = "source_key_shape_invalid"
+    ACTION_VERSION_INCOMPATIBLE = "action_version_incompatible"
 
 
 class _AgentActionValidationError(ValueError):
@@ -153,6 +157,35 @@ _AGENT_ACTION_SHAPE_HINTS = {
         "must be an array."
     ),
 }
+_AGENT_ACTION_REPAIR_HINTS = {
+    _AgentActionFailureReason.WIRE_SCHEMA_INVALID: _AGENT_ACTION_SCHEMA_HINT,
+    _AgentActionFailureReason.IRRELEVANT_FIELD_NONEMPTY: (
+        "Set every field that is irrelevant to the chosen action to null or an "
+        "empty array; do not include another action's payload."
+    ),
+    _AgentActionFailureReason.CALCULATION_SHAPE_INVALID: (
+        "For action=calculate, calculation must contain exactly a non-empty "
+        "expression and source_evidence_keys."
+    ),
+    _AgentActionFailureReason.SOURCE_KEY_SHAPE_INVALID: (
+        "source_evidence_keys must be a unique array of 1-4 non-empty Evidence keys."
+    ),
+    _AgentActionFailureReason.ACTION_VERSION_INCOMPATIBLE: (
+        "Use retrieval_agent_action_v2 and one compatible action: search, calculate, "
+        "or finish."
+    ),
+}
+_AGENT_ACTION_V1_KEYS = frozenset(
+    {
+        "version",
+        "action",
+        "objective",
+        "queries",
+        "proposed_reason",
+        "selected_evidence_keys",
+    }
+)
+_AGENT_ACTION_V2_KEYS = _AGENT_ACTION_V1_KEYS | {"calculation"}
 _AGENT_EVIDENCE_LIMIT = 20
 _PER_QUERY_FUSION_QUOTA = 2
 _ADJACENCY_ANCHOR_LIMIT = 2
@@ -806,29 +839,50 @@ def evidence_key(value: Evidence) -> str:
 
 def _parse_agent_action(content: str) -> RetrievalAgentAction:
     try:
-        wire_v2 = WireRetrievalAgentActionV2.model_validate_json(content)
-    except ValueError:
-        try:
-            wire = WireRetrievalAgentAction.model_validate_json(content)
-        except ValueError as v1_error:
-            raise _agent_action_validation_error(content) from v1_error
+        payload = json.loads(content)
+    except (TypeError, ValueError) as error:
+        raise _AgentActionValidationError(
+            _AgentActionFailureReason.WIRE_SCHEMA_INVALID,
+            _AGENT_ACTION_SCHEMA_HINT,
+        ) from error
+    if not isinstance(payload, Mapping):
+        raise _AgentActionValidationError(
+            _AgentActionFailureReason.WIRE_SCHEMA_INVALID,
+            _AGENT_ACTION_SCHEMA_HINT,
+        )
+    normalized = _normalize_agent_action_payload(payload)
+    version = normalized.get("version")
+    wire_v1: WireRetrievalAgentAction | None = None
+    wire_v2: WireRetrievalAgentActionV2 | None = None
+    try:
+        if version == "retrieval_agent_action_v2":
+            wire_v2 = WireRetrievalAgentActionV2.model_validate(normalized)
+        elif version == "retrieval_agent_action_v1":
+            wire_v1 = WireRetrievalAgentAction.model_validate(normalized)
+        else:
+            raise ValueError("unsupported action version")
+    except ValueError as error:
+        raise _agent_action_validation_error(payload) from error
+    if version == "retrieval_agent_action_v1":
+        assert wire_v1 is not None
         return RetrievalAgentAction(
-            action=RetrievalAgentActionKind(wire.action),
-            objective=wire.objective,
+            action=RetrievalAgentActionKind(wire_v1.action),
+            objective=wire_v1.objective,
             queries=tuple(
                 RetrievalAgentQuery(
                     query=item.query.strip(),
                     based_on_observation_ids=tuple(item.based_on_observation_ids),
                 )
-                for item in wire.queries
+                for item in wire_v1.queries
             ),
             proposed_reason=(
-                RetrievalAgentProposedReason(wire.proposed_reason)
-                if wire.proposed_reason is not None
+                RetrievalAgentProposedReason(wire_v1.proposed_reason)
+                if wire_v1.proposed_reason is not None
                 else None
             ),
-            selected_evidence_keys=tuple(wire.selected_evidence_keys),
+            selected_evidence_keys=tuple(wire_v1.selected_evidence_keys),
         )
+    assert wire_v2 is not None
     return RetrievalAgentAction(
         action=RetrievalAgentActionKind(wire_v2.action),
         objective=wire_v2.objective,
@@ -856,20 +910,138 @@ def _parse_agent_action(content: str) -> RetrievalAgentAction:
     )
 
 
-def _agent_action_validation_error(content: str) -> _AgentActionValidationError:
-    try:
-        payload = json.loads(content)
-    except (TypeError, ValueError):
-        return _AgentActionValidationError(
+def _normalize_agent_action_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    normalized = dict(payload)
+    version = normalized.get("version")
+    action = normalized.get("action")
+    allowed_actions = {
+        "retrieval_agent_action_v1": frozenset({"search", "finish"}),
+        "retrieval_agent_action_v2": frozenset({"search", "calculate", "finish"}),
+    }
+    if version not in allowed_actions or action not in allowed_actions[version]:
+        raise _AgentActionValidationError(
+            _AgentActionFailureReason.ACTION_VERSION_INCOMPATIBLE,
+            _AGENT_ACTION_REPAIR_HINTS[
+                _AgentActionFailureReason.ACTION_VERSION_INCOMPATIBLE
+            ],
+        )
+    allowed_keys = (
+        _AGENT_ACTION_V2_KEYS
+        if version == "retrieval_agent_action_v2"
+        else _AGENT_ACTION_V1_KEYS
+    )
+    if not set(normalized) <= allowed_keys:
+        raise _AgentActionValidationError(
             _AgentActionFailureReason.WIRE_SCHEMA_INVALID,
             _AGENT_ACTION_SCHEMA_HINT,
         )
-    action = payload.get("action") if isinstance(payload, Mapping) else None
-    if action in _AGENT_ACTION_SHAPE_HINTS:
-        return _AgentActionValidationError(
-            _AgentActionFailureReason.ACTION_SHAPE_INVALID,
-            _AGENT_ACTION_SHAPE_HINTS[action],
+
+    irrelevant_fields = {
+        "search": ("proposed_reason", "selected_evidence_keys", "calculation"),
+        "calculate": (
+            "objective",
+            "queries",
+            "proposed_reason",
+            "selected_evidence_keys",
+        ),
+        "finish": ("objective", "queries", "calculation"),
+    }[action]
+    for field in irrelevant_fields:
+        if field in normalized and not _empty_agent_field(normalized[field]):
+            raise _AgentActionValidationError(
+                _AgentActionFailureReason.IRRELEVANT_FIELD_NONEMPTY,
+                _AGENT_ACTION_REPAIR_HINTS[
+                    _AgentActionFailureReason.IRRELEVANT_FIELD_NONEMPTY
+                ],
+            )
+
+    if action == "search" and (
+        _empty_agent_field(normalized.get("objective"))
+        or _empty_agent_field(normalized.get("queries"))
+    ):
+        raise _AgentActionValidationError(
+            _AgentActionFailureReason.RELEVANT_PAYLOAD_MISSING,
+            _AGENT_ACTION_SHAPE_HINTS["search"],
         )
+    if action == "calculate":
+        calculation = normalized.get("calculation")
+        if _empty_agent_field(calculation):
+            raise _AgentActionValidationError(
+                _AgentActionFailureReason.RELEVANT_PAYLOAD_MISSING,
+                _AGENT_ACTION_SHAPE_HINTS["calculate"],
+            )
+        _validate_calculation_payload(calculation)
+    if action == "finish" and _empty_agent_field(
+        normalized.get("proposed_reason")
+    ):
+        raise _AgentActionValidationError(
+            _AgentActionFailureReason.RELEVANT_PAYLOAD_MISSING,
+            _AGENT_ACTION_SHAPE_HINTS["finish"],
+        )
+
+    canonical_empty = {
+        "objective": None,
+        "queries": [],
+        "proposed_reason": None,
+        "selected_evidence_keys": [],
+        "calculation": None,
+    }
+    for field in irrelevant_fields:
+        if field in allowed_keys:
+            normalized[field] = canonical_empty[field]
+    return normalized
+
+
+def _empty_agent_field(value: object) -> bool:
+    return (
+        value is None
+        or (isinstance(value, str) and not value.strip())
+        or value == []
+        or value == {}
+    )
+
+
+def _validate_calculation_payload(value: object) -> None:
+    if not isinstance(value, Mapping) or set(value) != {
+        "expression",
+        "source_evidence_keys",
+    }:
+        raise _AgentActionValidationError(
+            _AgentActionFailureReason.CALCULATION_SHAPE_INVALID,
+            _AGENT_ACTION_REPAIR_HINTS[
+                _AgentActionFailureReason.CALCULATION_SHAPE_INVALID
+            ],
+        )
+    expression = value.get("expression")
+    if not isinstance(expression, str) or not expression.strip():
+        raise _AgentActionValidationError(
+            _AgentActionFailureReason.CALCULATION_SHAPE_INVALID,
+            _AGENT_ACTION_REPAIR_HINTS[
+                _AgentActionFailureReason.CALCULATION_SHAPE_INVALID
+            ],
+        )
+    source_keys = value.get("source_evidence_keys")
+    if (
+        not isinstance(source_keys, list)
+        or not 1 <= len(source_keys) <= 4
+        or any(not isinstance(item, str) or not item.strip() for item in source_keys)
+        or len(source_keys) != len(set(source_keys))
+    ):
+        raise _AgentActionValidationError(
+            _AgentActionFailureReason.SOURCE_KEY_SHAPE_INVALID,
+            _AGENT_ACTION_REPAIR_HINTS[
+                _AgentActionFailureReason.SOURCE_KEY_SHAPE_INVALID
+            ],
+        )
+
+
+def _agent_action_validation_error(
+    payload: Mapping[str, Any],
+) -> _AgentActionValidationError:
+    try:
+        _normalize_agent_action_payload(payload)
+    except _AgentActionValidationError as error:
+        return error
     return _AgentActionValidationError(
         _AgentActionFailureReason.WIRE_SCHEMA_INVALID,
         _AGENT_ACTION_SCHEMA_HINT,

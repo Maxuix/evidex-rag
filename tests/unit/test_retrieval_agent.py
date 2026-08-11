@@ -28,12 +28,14 @@ from rag_kb.retrieval.agent import (
     WORKFLOW_STATE_ARTIFACT,
     RetrievalAgentService,
     _AgentActionFailureReason,
+    _AgentActionValidationError,
     _VerificationFailureReason,
     _VerificationValidationError,
     _agent_request,
     _expand_verification_evidence,
     _fused_evidence,
     _repair_request,
+    _parse_agent_action,
     _parse_verification,
     _round_robin_document_requests,
     _verification_request,
@@ -217,6 +219,110 @@ def _adjacent(anchor, *, offset: int, text: str, chunk_id=None):
 
 
 class RetrievalAgentTests(unittest.IsolatedAsyncioTestCase):
+    def test_agent_action_failure_reasons_are_specific_and_content_safe(self) -> None:
+        base = json.loads(
+            _search("find fact", [{"query": "fact", "based_on_observation_ids": []}])
+        )
+        cases = (
+            (
+                {**base, "objective": None},
+                _AgentActionFailureReason.RELEVANT_PAYLOAD_MISSING,
+            ),
+            (
+                {**base, "selected_evidence_keys": ["chunk:hidden"]},
+                _AgentActionFailureReason.IRRELEVANT_FIELD_NONEMPTY,
+            ),
+            (
+                {
+                    **json.loads(_calculate("1 + 1", ("chunk:source",))),
+                    "calculation": {"expression": "1 + 1"},
+                },
+                _AgentActionFailureReason.CALCULATION_SHAPE_INVALID,
+            ),
+            (
+                {
+                    **json.loads(_calculate("1 + 1", ("chunk:source",))),
+                    "calculation": {
+                        "expression": "1 + 1",
+                        "source_evidence_keys": ["chunk:source", "chunk:source"],
+                    },
+                },
+                _AgentActionFailureReason.SOURCE_KEY_SHAPE_INVALID,
+            ),
+            (
+                {**base, "version": "retrieval_agent_action_v1", "action": "calculate"},
+                _AgentActionFailureReason.ACTION_VERSION_INCOMPATIBLE,
+            ),
+            (
+                {**base, "unknown_hidden_field": "PRIVATE"},
+                _AgentActionFailureReason.WIRE_SCHEMA_INVALID,
+            ),
+        )
+        for payload, reason in cases:
+            with self.subTest(reason=reason), self.assertRaises(
+                _AgentActionValidationError
+            ) as raised:
+                _parse_agent_action(json.dumps(payload))
+            self.assertIs(raised.exception.reason, reason)
+            self.assertNotIn("chunk:hidden", raised.exception.validation_hint)
+
+    def test_agent_action_normalizes_only_empty_irrelevant_fields(self) -> None:
+        search = json.loads(
+            _search("find fact", [{"query": "fact", "based_on_observation_ids": []}])
+        )
+        search.update({
+            "proposed_reason": "",
+            "selected_evidence_keys": None,
+            "calculation": {},
+        })
+        self.assertEqual(_parse_agent_action(json.dumps(search)).action.value, "search")
+
+        calculate = json.loads(_calculate("1 + 1", ("chunk:source",)))
+        calculate.update({
+            "objective": "",
+            "queries": None,
+            "proposed_reason": "",
+            "selected_evidence_keys": None,
+        })
+        parsed_calculation = _parse_agent_action(json.dumps(calculate))
+        self.assertEqual(parsed_calculation.action.value, "calculate")
+        self.assertEqual(
+            parsed_calculation.calculation_source_evidence_keys,
+            ("chunk:source",),
+        )
+
+        finish = json.loads(_finish(("chunk:allowed",)))
+        finish.update({"objective": "", "queries": None, "calculation": {}})
+        self.assertEqual(_parse_agent_action(json.dumps(finish)).action.value, "finish")
+
+    def test_agent_action_never_normalizes_nonempty_hidden_actions(self) -> None:
+        search = json.loads(
+            _search("find fact", [{"query": "fact", "based_on_observation_ids": []}])
+        )
+        search["calculation"] = {
+            "expression": "1 + 1",
+            "source_evidence_keys": ["chunk:hidden"],
+        }
+        calculate = json.loads(_calculate("1 + 1", ("chunk:source",)))
+        calculate["queries"] = [
+            {"query": "hidden search", "based_on_observation_ids": []}
+        ]
+        finish = json.loads(_finish(("chunk:allowed",)))
+        finish["calculation"] = {
+            "expression": "1 + 1",
+            "source_evidence_keys": ["chunk:hidden"],
+        }
+
+        for payload in (search, calculate, finish):
+            with self.subTest(action=payload["action"]), self.assertRaises(
+                _AgentActionValidationError
+            ) as raised:
+                _parse_agent_action(json.dumps(payload))
+            self.assertIs(
+                raised.exception.reason,
+                _AgentActionFailureReason.IRRELEVANT_FIELD_NONEMPTY,
+            )
+
     def test_table_projection_preserves_bounded_identity_and_ignores_metadata(
         self,
     ) -> None:
@@ -702,7 +808,7 @@ class RetrievalAgentTests(unittest.IsolatedAsyncioTestCase):
             {
                 "check": (
                     "retrieval_agent_action_"
-                    f"{_AgentActionFailureReason.ACTION_SHAPE_INVALID.value}"
+                    f"{_AgentActionFailureReason.RELEVANT_PAYLOAD_MISSING.value}"
                 )
             },
         )
