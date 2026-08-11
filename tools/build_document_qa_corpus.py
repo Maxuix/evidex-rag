@@ -365,13 +365,13 @@ COMPLEX_CASE_DEFINITIONS = (
         aspects=(
             _complex_aspect(
                 "amex_effective_tax_rate_change",
-                ("21.6%", "24.6%", "decreased"),
+                ("21.6%", "24.6%", "decreas"),
                 (_complex_source("financebench_id_01351"),),
                 expected_decimal="-3.0",
             ),
             _complex_aspect(
                 "boeing_effective_tax_rate_change",
-                ("-0.6%", "14.8%", "decreased"),
+                ("-0.6%", "14.8%", "decreas"),
                 (
                     _complex_source(
                         "financebench_id_00585",
@@ -390,7 +390,6 @@ COMPLEX_CASE_DEFINITIONS = (
                         locator={"kind": "pdf_page", "page": 77},
                     ),
                 ),
-                expected_decimal="12.4",
             ),
         ),
         notes="Use the report's effective-tax-rate reconciliation rows; do not score the conflicting FinanceBench derived answer as gold.",

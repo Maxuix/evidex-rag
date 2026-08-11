@@ -65,6 +65,13 @@ class AgentComplexEvaluationToolTests(unittest.TestCase):
                 "government contracts at 40 percent. The 24 percentage-point "
                 "difference is not directly comparable, and Boeing is cyclical."
             ),
+            "complex-02": (
+                "American Express's effective tax rate was 24.6% in 2021 and "
+                "21.6% in 2022, a decrease of 3.0 percentage points. Boeing's "
+                "effective tax rate was 14.8% in 2021 and -0.6% in 2022, a "
+                "decrease of 15.4 percentage points. Boeing's change in magnitude "
+                "was larger."
+            ),
             "complex-07": (
                 "Other was 2.95 percent of sales. Fixed Price rose from 1,146.2 "
                 "to 1,452.4, offsetting Other so total sales were highest."
