@@ -27,7 +27,7 @@ from rag_kb.adapters.model_api.multimodal_embeddings import (
 )
 from rag_kb.adapters.model_secrets.local import LocalModelSecretStore
 from rag_kb.adapters.vector_store.pgvector import PgVectorStore
-from rag_kb.answering.wire_schemas import WireRetrievalAgentAction
+from rag_kb.answering.wire_schemas import WireRetrievalAgentActionV2
 from rag_kb.auth import DevelopmentAuthProvider, SingleWorkspaceAccessPolicy
 from rag_kb.config import (
     Settings,
@@ -355,12 +355,12 @@ async def _validate_model_profile(
                     ),
                     ChatModelMessage(
                         "user",
-                        '{"version":"retrieval_agent_action_v1",'
+                        '{"version":"retrieval_agent_action_v2",'
                         '"action":"search","objective":"validation probe",'
                         '"queries":[{"query":"validation",'
                         '"based_on_observation_ids":[]}],'
                         '"proposed_reason":null,'
-                        '"selected_evidence_keys":[]}',
+                        '"selected_evidence_keys":[],"calculation":null}',
                     ),
                 ),
                 output_schema=ChatOutputSchema.RETRIEVAL_AGENT_ACTION_V1,
@@ -369,7 +369,7 @@ async def _validate_model_profile(
             )
         )
         try:
-            WireRetrievalAgentAction.model_validate_json(response.content)
+            WireRetrievalAgentActionV2.model_validate_json(response.content)
         except ValueError as error:
             raise ModelProfileValidationError(
                 "provider_validation_failed"

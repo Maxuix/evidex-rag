@@ -58,6 +58,7 @@ class ChatModelOperation(StrEnum):
 
 class RetrievalAgentActionKind(StrEnum):
     SEARCH = "search"
+    CALCULATE = "calculate"
     FINISH = "finish"
 
 
@@ -92,6 +93,8 @@ class RetrievalAgentAction:
     queries: tuple[RetrievalAgentQuery, ...] = ()
     proposed_reason: RetrievalAgentProposedReason | None = None
     selected_evidence_keys: tuple[str, ...] = ()
+    calculation_expression: str | None = None
+    calculation_source_evidence_keys: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.action is RetrievalAgentActionKind.SEARCH:
@@ -102,17 +105,40 @@ class RetrievalAgentAction:
                 or not 1 <= len(self.queries) <= 3
                 or self.proposed_reason is not None
                 or self.selected_evidence_keys
+                or self.calculation_expression is not None
+                or self.calculation_source_evidence_keys
             ):
                 raise ValueError("Agent search action is invalid")
-        elif (
-            self.objective is not None
-            or self.queries
-            or self.proposed_reason is None
-        ):
-            raise ValueError("Agent finish action is invalid")
+        elif self.action is RetrievalAgentActionKind.CALCULATE:
+            if (
+                self.objective is not None
+                or self.queries
+                or self.proposed_reason is not None
+                or self.selected_evidence_keys
+                or self.calculation_expression is None
+                or not self.calculation_expression.strip()
+                or len(self.calculation_expression) > 512
+                or not 1 <= len(self.calculation_source_evidence_keys) <= 4
+            ):
+                raise ValueError("Agent calculation action is invalid")
+        elif self.action is RetrievalAgentActionKind.FINISH:
+            if (
+                self.objective is not None
+                or self.queries
+                or self.proposed_reason is None
+                or self.calculation_expression is not None
+                or self.calculation_source_evidence_keys
+            ):
+                raise ValueError("Agent finish action is invalid")
+        else:
+            raise ValueError("Agent action kind is invalid")
         _require_bounded_unique_strings(
             self.selected_evidence_keys,
             field="Agent selected evidence",
+        )
+        _require_bounded_unique_strings(
+            self.calculation_source_evidence_keys,
+            field="Agent calculation source evidence",
         )
 
 

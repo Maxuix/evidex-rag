@@ -47,6 +47,10 @@ from rag_kb.domain import (
 )
 from rag_kb.ports.chat_preview import ChatPreviewSink
 from rag_kb.ports.model_api import ChatModelAdapter
+from rag_kb.retrieval.calculator import (
+    CALCULATION_FACTS_ARTIFACT,
+    DecimalCalculationFact,
+)
 
 
 class AnswerStructureValidationStep:
@@ -130,6 +134,7 @@ class AnswerStructureValidationStep:
                 issues=initial_issues,
                 query_context=state.query_context,
                 visual_content=answering.visual_content,
+                calculation_facts=_calculation_facts(state),
             )
             response = await complete_model(
                 self._model,
@@ -502,3 +507,16 @@ def _context_error(check: str) -> ChatPipelineExecutionError:
         phase=ChatPipelinePhase.VALIDATE_STRUCTURE,
         diagnostic={"check": check},
     )
+
+
+def _calculation_facts(
+    state: ChatPipelineState,
+) -> tuple[DecimalCalculationFact, ...]:
+    value = state.artifacts.get(CALCULATION_FACTS_ARTIFACT, ())
+    if (
+        not isinstance(value, tuple)
+        or len(value) > 4
+        or any(not isinstance(item, DecimalCalculationFact) for item in value)
+    ):
+        raise _context_error("calculation_facts")
+    return value

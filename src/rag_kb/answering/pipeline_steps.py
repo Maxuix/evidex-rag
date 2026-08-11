@@ -48,6 +48,10 @@ from rag_kb.domain import (
 )
 from rag_kb.ports.chat_preview import ChatPreviewSink
 from rag_kb.ports.model_api import ChatModelAdapter
+from rag_kb.retrieval.calculator import (
+    CALCULATION_FACTS_ARTIFACT,
+    DecimalCalculationFact,
+)
 from rag_kb.retrieval.eligibility import EvidenceEligibilityPolicy
 
 
@@ -261,6 +265,7 @@ class AnswerGenerationStep:
                 query_context=state.query_context,
                 expected_outcome=route,
                 visual_content=answering.visual_content,
+                calculation_facts=_calculation_facts(state),
             )
             if self._preview_sink.enabled:
                 projector = PartialAnswerPreviewProjector(
@@ -395,6 +400,21 @@ def _workflow_model_calls(
     ):
         raise _context_error(
             ChatPipelinePhase.ASSESS_EVIDENCE, "workflow_model_calls"
+        )
+    return value
+
+
+def _calculation_facts(
+    state: ChatPipelineState,
+) -> tuple[DecimalCalculationFact, ...]:
+    value = state.artifacts.get(CALCULATION_FACTS_ARTIFACT, ())
+    if (
+        not isinstance(value, tuple)
+        or len(value) > 4
+        or any(not isinstance(item, DecimalCalculationFact) for item in value)
+    ):
+        raise _context_error(
+            ChatPipelinePhase.GENERATE_OR_REFUSE, "calculation_facts"
         )
     return value
 

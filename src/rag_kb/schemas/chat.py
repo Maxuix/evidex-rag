@@ -171,6 +171,12 @@ class ChatResearchResultResponse(PublicSchema):
     complete_scan_document_count: Annotated[int, Field(ge=0, le=4)] = 0
     scope_rejection_count: Annotated[int, Field(ge=0, le=4)] = 0
     scope_downgrade_reason: str | None = None
+    calculation_call_count: Annotated[int, Field(ge=0, le=4)] = 0
+    calculation_success_count: Annotated[int, Field(ge=0, le=4)] = 0
+    calculation_rejection_reasons: tuple[
+        Annotated[str, Field(min_length=1, max_length=64)], ...
+    ] = ()
+    calculation_elapsed_ms: Annotated[int, Field(ge=0, le=120_000)] = 0
 
 
 class ChatSearchTraceStepResponse(PublicSchema):
@@ -196,6 +202,12 @@ class ChatSearchTraceResponse(PublicSchema):
     complete_scan_document_count: Annotated[int, Field(ge=0, le=4)] = 0
     scope_rejection_count: Annotated[int, Field(ge=0, le=4)] = 0
     scope_downgrade_reason: str | None = None
+    calculation_call_count: Annotated[int, Field(ge=0, le=4)] = 0
+    calculation_success_count: Annotated[int, Field(ge=0, le=4)] = 0
+    calculation_rejection_reasons: tuple[
+        Annotated[str, Field(min_length=1, max_length=64)], ...
+    ] = ()
+    calculation_elapsed_ms: Annotated[int, Field(ge=0, le=120_000)] = 0
 
 
 class ChatWorkflowResponse(PublicSchema):

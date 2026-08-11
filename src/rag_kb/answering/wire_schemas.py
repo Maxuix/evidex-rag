@@ -70,6 +70,69 @@ class WireRetrievalAgentAction(BaseModel):
         return self
 
 
+class WireRetrievalAgentCalculation(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    expression: str = Field(min_length=1, max_length=512)
+    source_evidence_keys: list[str] = Field(min_length=1, max_length=4)
+
+    @model_validator(mode="after")
+    def validate_source_keys(self) -> "WireRetrievalAgentCalculation":
+        if len(self.source_evidence_keys) != len(set(self.source_evidence_keys)):
+            raise ValueError("calculation source evidence keys must be unique")
+        return self
+
+
+class WireRetrievalAgentActionV2(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    version: Literal["retrieval_agent_action_v2"]
+    action: Literal["search", "calculate", "finish"]
+    objective: str | None = Field(default=None, max_length=1024)
+    queries: list[WireRetrievalAgentQuery] = Field(default_factory=list, max_length=3)
+    proposed_reason: Literal[
+        "sufficient",
+        "partial",
+        "no_evidence",
+        "no_progress",
+        "budget_exhausted",
+        "conflict_unresolved",
+        "premise_unsupported",
+    ] | None = None
+    selected_evidence_keys: list[str] = Field(default_factory=list, max_length=100)
+    calculation: WireRetrievalAgentCalculation | None = None
+
+    @model_validator(mode="after")
+    def validate_action_shape(self) -> "WireRetrievalAgentActionV2":
+        if self.action == "search":
+            if (
+                self.objective is None
+                or not self.objective.strip()
+                or not self.queries
+                or self.proposed_reason is not None
+                or self.selected_evidence_keys
+                or self.calculation is not None
+            ):
+                raise ValueError("search action fields are inconsistent")
+        elif self.action == "calculate":
+            if (
+                self.objective is not None
+                or self.queries
+                or self.proposed_reason is not None
+                or self.selected_evidence_keys
+                or self.calculation is None
+            ):
+                raise ValueError("calculate action fields are inconsistent")
+        elif (
+            self.objective is not None
+            or self.queries
+            or self.proposed_reason is None
+            or self.calculation is not None
+        ):
+            raise ValueError("finish action fields are inconsistent")
+        return self
+
+
 class WireResearchAspect(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -110,6 +173,7 @@ OUTPUT_SCHEMAS: dict[ChatOutputSchema, type[BaseModel]] = {
     ChatOutputSchema.ANSWER_V1: WireAnswer,
     ChatOutputSchema.CONTEXTUAL_QUERY_V2: WireContextualQuery,
     ChatOutputSchema.RETRIEVAL_AGENT_ACTION_V1: WireRetrievalAgentAction,
+    ChatOutputSchema.RETRIEVAL_AGENT_ACTION_V2: WireRetrievalAgentActionV2,
     ChatOutputSchema.RESEARCH_RESULT_VERIFICATION_V1: (
         WireResearchResultVerification
     ),

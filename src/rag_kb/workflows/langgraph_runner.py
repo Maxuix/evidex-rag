@@ -34,6 +34,7 @@ from rag_kb.retrieval.agent import (
     AgentResearchOutcome,
     RetrievalAgentService,
 )
+from rag_kb.retrieval.calculator import CALCULATION_FACTS_ARTIFACT
 from rag_kb.services.chat_execution import (
     ChatEvidenceRetriever,
     ChatExecutionContextLoader,
@@ -282,6 +283,7 @@ class LangGraphRunner:
                 artifacts={
                     WORKFLOW_STATE_ARTIFACT: outcome.workflow_state,
                     WORKFLOW_MODEL_CALLS_ARTIFACT: outcome.model_calls,
+                    CALCULATION_FACTS_ARTIFACT: outcome.calculation_facts,
                 },
             ),
         }

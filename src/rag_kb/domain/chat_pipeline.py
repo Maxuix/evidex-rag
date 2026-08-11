@@ -40,6 +40,7 @@ class ChatOutputSchema(StrEnum):
     ANSWER_V1 = "answer_v1"
     CONTEXTUAL_QUERY_V2 = "contextual_query_v2"
     RETRIEVAL_AGENT_ACTION_V1 = "retrieval_agent_action_v1"
+    RETRIEVAL_AGENT_ACTION_V2 = "retrieval_agent_action_v2"
     RESEARCH_RESULT_VERIFICATION_V1 = "research_result_verification_v1"
     AUTO_ROUTE_V1 = "auto_route_v1"
 

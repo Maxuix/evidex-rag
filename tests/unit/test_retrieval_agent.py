@@ -117,12 +117,13 @@ def _query_context(context):
 def _search(objective: str, queries) -> str:
     return json.dumps(
         {
-            "version": "retrieval_agent_action_v1",
+            "version": "retrieval_agent_action_v2",
             "action": "search",
             "objective": objective,
             "queries": queries,
             "proposed_reason": None,
             "selected_evidence_keys": [],
+            "calculation": None,
         }
     )
 
@@ -130,12 +131,30 @@ def _search(objective: str, queries) -> str:
 def _finish(keys, reason: str = "sufficient") -> str:
     return json.dumps(
         {
-            "version": "retrieval_agent_action_v1",
+            "version": "retrieval_agent_action_v2",
             "action": "finish",
             "objective": None,
             "queries": [],
             "proposed_reason": reason,
             "selected_evidence_keys": list(keys),
+            "calculation": None,
+        }
+    )
+
+
+def _calculate(expression: str, source_evidence_keys) -> str:
+    return json.dumps(
+        {
+            "version": "retrieval_agent_action_v2",
+            "action": "calculate",
+            "objective": None,
+            "queries": [],
+            "proposed_reason": None,
+            "selected_evidence_keys": [],
+            "calculation": {
+                "expression": expression,
+                "source_evidence_keys": list(source_evidence_keys),
+            },
         }
     )
 
@@ -317,6 +336,7 @@ class RetrievalAgentTests(unittest.IsolatedAsyncioTestCase):
             "queries",
             "proposed_reason",
             "selected_evidence_keys",
+            "calculation",
         ):
             self.assertIn(field, action_prompt)
         verification_prompt = verification.messages[0].content
@@ -475,6 +495,56 @@ class RetrievalAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(
             evidence_key(distinct.evidence[0]),
             {evidence_key(item) for item in fused},
+        )
+
+    async def test_decimal_action_is_bounded_and_reaches_verifier_and_answer_state(
+        self,
+    ) -> None:
+        context = _agent_context(decision_rounds=4)
+        pack = _pack(
+            context,
+            "Revenue 229,104,123.45 and R&D costs 262,106,374.56.",
+        )
+        key = evidence_key(pack.evidence[0])
+        model = _Model(
+            _response(
+                _search(
+                    "find both amounts",
+                    [{"query": "amounts", "based_on_observation_ids": []}],
+                )
+            ),
+            _response(
+                _calculate("229104123.45 + 262106374.56", (key,)),
+                request_id="calculate",
+            ),
+            _response(_finish((key,)), request_id="finish"),
+            _response(_verification(status="sufficient", keys=(key,)), request_id="verify"),
+        )
+
+        outcome = await _service(model, _Retriever((pack,))).research(
+            context, _query_context(context)
+        )
+
+        self.assertEqual(len(outcome.calculation_facts), 1)
+        self.assertEqual(outcome.calculation_facts[0].result, "491210498.01")
+        assert outcome.workflow_state.search_trace is not None
+        self.assertEqual(
+            outcome.workflow_state.search_trace.calculation_call_count,
+            1,
+        )
+        self.assertEqual(
+            outcome.workflow_state.search_trace.calculation_success_count,
+            1,
+        )
+        controller_payload = json.loads(model.requests[1].messages[1].content.split("\n", 1)[1])
+        self.assertEqual(
+            controller_payload["validated_calculations"][0]["result"],
+            "491210498.01",
+        )
+        verifier_payload = json.loads(model.requests[-1].messages[1].content.split("\n", 1)[1])
+        self.assertEqual(
+            verifier_payload["validated_calculations"][0]["source_evidence_keys"],
+            [key],
         )
 
     async def test_finish_verifies_neighbors_and_retains_only_selected_one(

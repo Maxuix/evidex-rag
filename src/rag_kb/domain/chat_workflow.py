@@ -148,6 +148,10 @@ class ResearchResult:
     complete_scan_document_count: int = 0
     scope_rejection_count: int = 0
     scope_downgrade_reason: str | None = None
+    calculation_call_count: int = 0
+    calculation_success_count: int = 0
+    calculation_rejection_reasons: tuple[str, ...] = ()
+    calculation_elapsed_ms: int = 0
 
     def __post_init__(self) -> None:
         if self.version != RESEARCH_RESULT_VERSION:
@@ -196,6 +200,12 @@ class ResearchResult:
             self.scope_rejection_count,
             self.scope_downgrade_reason,
         )
+        _validate_calculation_facts(
+            self.calculation_call_count,
+            self.calculation_success_count,
+            self.calculation_rejection_reasons,
+            self.calculation_elapsed_ms,
+        )
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -212,6 +222,12 @@ class ResearchResult:
             "complete_scan_document_count": self.complete_scan_document_count,
             "scope_rejection_count": self.scope_rejection_count,
             "scope_downgrade_reason": self.scope_downgrade_reason,
+            "calculation_call_count": self.calculation_call_count,
+            "calculation_success_count": self.calculation_success_count,
+            "calculation_rejection_reasons": list(
+                self.calculation_rejection_reasons
+            ),
+            "calculation_elapsed_ms": self.calculation_elapsed_ms,
         }
 
 
@@ -266,6 +282,10 @@ class SearchTrace:
     complete_scan_document_count: int = 0
     scope_rejection_count: int = 0
     scope_downgrade_reason: str | None = None
+    calculation_call_count: int = 0
+    calculation_success_count: int = 0
+    calculation_rejection_reasons: tuple[str, ...] = ()
+    calculation_elapsed_ms: int = 0
 
     def __post_init__(self) -> None:
         if self.version != SEARCH_TRACE_VERSION:
@@ -293,6 +313,12 @@ class SearchTrace:
             self.scope_rejection_count,
             self.scope_downgrade_reason,
         )
+        _validate_calculation_facts(
+            self.calculation_call_count,
+            self.calculation_success_count,
+            self.calculation_rejection_reasons,
+            self.calculation_elapsed_ms,
+        )
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -309,6 +335,12 @@ class SearchTrace:
             "complete_scan_document_count": self.complete_scan_document_count,
             "scope_rejection_count": self.scope_rejection_count,
             "scope_downgrade_reason": self.scope_downgrade_reason,
+            "calculation_call_count": self.calculation_call_count,
+            "calculation_success_count": self.calculation_success_count,
+            "calculation_rejection_reasons": list(
+                self.calculation_rejection_reasons
+            ),
+            "calculation_elapsed_ms": self.calculation_elapsed_ms,
         }
 
 
@@ -472,9 +504,17 @@ def _hydrate_research_result(value: Any) -> ResearchResult:
         "scope_rejection_count",
         "scope_downgrade_reason",
     }
+    calculation_fields = {
+        "calculation_call_count",
+        "calculation_success_count",
+        "calculation_rejection_reasons",
+        "calculation_elapsed_ms",
+    }
     if not isinstance(value, Mapping) or set(value) not in (
         legacy_fields,
+        legacy_fields | calculation_fields,
         scope_fields,
+        scope_fields | calculation_fields,
     ):
         raise ValueError("research result fields are invalid")
     aspects = value["aspects"]
@@ -515,6 +555,14 @@ def _hydrate_research_result(value: Any) -> ResearchResult:
             if value.get("scope_downgrade_reason") is not None
             else None
         ),
+        calculation_call_count=_strict_int(value.get("calculation_call_count", 0)),
+        calculation_success_count=_strict_int(
+            value.get("calculation_success_count", 0)
+        ),
+        calculation_rejection_reasons=_string_tuple(
+            value.get("calculation_rejection_reasons", ())
+        ),
+        calculation_elapsed_ms=_strict_int(value.get("calculation_elapsed_ms", 0)),
     )
 
 
@@ -545,6 +593,12 @@ def _hydrate_search_trace(value: Any) -> SearchTrace:
         "scope_rejection_count",
         "scope_downgrade_reason",
     }
+    calculation_fields = {
+        "calculation_call_count",
+        "calculation_success_count",
+        "calculation_rejection_reasons",
+        "calculation_elapsed_ms",
+    }
     if not isinstance(value, Mapping):
         raise ValueError("search trace fields are invalid")
     fields = frozenset(value)
@@ -553,6 +607,10 @@ def _hydrate_search_trace(value: Any) -> SearchTrace:
         frozenset(current_fields),
         frozenset(scope_legacy_fields),
         frozenset(scope_fields),
+        frozenset(legacy_fields | calculation_fields),
+        frozenset(current_fields | calculation_fields),
+        frozenset(scope_legacy_fields | calculation_fields),
+        frozenset(scope_fields | calculation_fields),
     }:
         raise ValueError("search trace fields are invalid")
     raw_steps = value["steps"]
@@ -605,6 +663,14 @@ def _hydrate_search_trace(value: Any) -> SearchTrace:
             if value.get("scope_downgrade_reason") is not None
             else None
         ),
+        calculation_call_count=_strict_int(value.get("calculation_call_count", 0)),
+        calculation_success_count=_strict_int(
+            value.get("calculation_success_count", 0)
+        ),
+        calculation_rejection_reasons=_string_tuple(
+            value.get("calculation_rejection_reasons", ())
+        ),
+        calculation_elapsed_ms=_strict_int(value.get("calculation_elapsed_ms", 0)),
     )
 
 
@@ -636,6 +702,28 @@ def _validate_scope_facts(
         not isinstance(downgrade_reason, str) or len(downgrade_reason) > 256
     ):
         raise ValueError("document scope downgrade reason is invalid")
+
+
+def _validate_calculation_facts(
+    call_count: int,
+    success_count: int,
+    rejection_reasons: tuple[str, ...],
+    elapsed_ms: int,
+) -> None:
+    if any(
+        isinstance(value, bool) or not isinstance(value, int) or value < 0
+        for value in (call_count, success_count, elapsed_ms)
+    ):
+        raise ValueError("calculation counters are invalid")
+    if call_count > 4 or success_count > call_count:
+        raise ValueError("calculation counters exceed the bound")
+    if elapsed_ms > 120_000:
+        raise ValueError("calculation elapsed time exceeds the bound")
+    _bounded_unique_strings(
+        rejection_reasons,
+        maximum=4,
+        field="calculation rejection reasons",
+    )
 
 
 def _string_tuple(value: Any) -> tuple[str, ...]:
