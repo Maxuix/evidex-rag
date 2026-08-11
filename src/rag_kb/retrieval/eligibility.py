@@ -27,6 +27,8 @@ class EvidenceEligibilityPolicy:
     def usable(self, item: Evidence) -> bool:
         if item.score is None:
             return False
+        if item.source_metadata.get("evidence_type") == "complete_scan":
+            return item.modality in {"text", "table"}
         if item.score_kind is EvidenceScoreKind.ADJACENCY:
             return False
         if item.score_kind is EvidenceScoreKind.RECIPROCAL_RANK_FUSION:

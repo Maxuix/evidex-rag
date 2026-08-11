@@ -201,6 +201,80 @@ class RelatedVisualEvidence:
 
 
 @dataclass(frozen=True, slots=True)
+class RetrievalScopeCandidate:
+    document_id: UUID
+    document_version_id: UUID | None
+    indexed_document_version_id: UUID | None
+    display_name: str
+    original_filename: str
+    source_status: str
+    build_status: str | None
+    serving_status: str | None
+
+    @property
+    def eligible(self) -> bool:
+        return (
+            self.document_version_id is not None
+            and self.indexed_document_version_id is not None
+            and self.source_status == "available"
+            and self.build_status == "ready"
+            and self.serving_status == "serving"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class RetrievalScopeResolution:
+    status: str
+    required_names: tuple[str, ...] = ()
+    resolved: tuple[RetrievalScopeCandidate, ...] = ()
+    unresolved_names: tuple[str, ...] = ()
+    ambiguous_names: tuple[str, ...] = ()
+
+    @property
+    def document_ids(self) -> tuple[UUID, ...]:
+        if self.status != "resolved":
+            return ()
+        return tuple(item.document_id for item in self.resolved)
+
+    @property
+    def indexed_document_version_ids(self) -> tuple[UUID, ...]:
+        if self.status != "resolved":
+            return ()
+        return tuple(
+            item.indexed_document_version_id
+            for item in self.resolved
+            if item.indexed_document_version_id is not None
+        )
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "version": "document_scope_v1",
+            "status": self.status,
+            "required_names": list(self.required_names),
+            "resolved": [
+                {
+                    "document_id": str(item.document_id),
+                    "document_version_id": (
+                        str(item.document_version_id)
+                        if item.document_version_id is not None
+                        else None
+                    ),
+                    "indexed_document_version_id": (
+                        str(item.indexed_document_version_id)
+                        if item.indexed_document_version_id is not None
+                        else None
+                    ),
+                    "display_name": item.display_name,
+                    "original_filename": item.original_filename,
+                }
+                for item in self.resolved
+            ],
+            "unresolved_names": list(self.unresolved_names),
+            "ambiguous_names": list(self.ambiguous_names),
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class RetrievalRequest:
     knowledge_base_id: UUID
     query: str
@@ -208,6 +282,7 @@ class RetrievalRequest:
     strategy: RetrievalStrategy = RetrievalStrategy.EXACT_VECTOR
     rerank_mode: RerankMode = RerankMode.NONE
     include_debug: bool = False
+    document_ids: tuple[UUID, ...] = ()
 
     def __post_init__(self) -> None:
         normalized = self.query.strip()
@@ -228,6 +303,10 @@ class RetrievalRequest:
             and self.top_k > 20
         ):
             raise ValueError("local reranking supports top_k up to 20")
+        document_ids = tuple(dict.fromkeys(self.document_ids))
+        if len(document_ids) > 32:
+            raise ValueError("document scope is too large")
+        object.__setattr__(self, "document_ids", document_ids)
         object.__setattr__(self, "query", normalized)
 
     @property
@@ -244,6 +323,7 @@ class RetrievalQueryPlan:
     distance_metric: str = "cosine"
     candidate_count: int | None = None
     rerank_mode: RerankMode = RerankMode.NONE
+    document_ids: tuple[UUID, ...] = ()
 
     def __post_init__(self) -> None:
         if not 1 <= self.top_k <= 100:
@@ -261,6 +341,10 @@ class RetrievalQueryPlan:
             and self.top_k > 20
         ):
             raise ValueError("local reranking supports top_k up to 20")
+        document_ids = tuple(dict.fromkeys(self.document_ids))
+        if len(document_ids) > 32:
+            raise ValueError("document scope is too large")
+        object.__setattr__(self, "document_ids", document_ids)
         if self.strategy is RetrievalStrategy.EXACT_VECTOR:
             if self.distance_metric != "cosine":
                 raise ValueError("exact-vector retrieval uses cosine distance")

@@ -59,6 +59,7 @@ from rag_kb.domain import (
     PendingFileMutation,
     ResourceNameConflictError,
     ResourceStateConflictError,
+    RetrievalScopeCandidate,
     SourceFileCleanup,
     SourceFileReference,
 )
@@ -629,6 +630,79 @@ class SqlAlchemyDocumentRepository:
         return DocumentDetail(
             document=_document(document_row, version_row),
             index=summary,
+        )
+
+    async def list_retrieval_scope(
+        self, *, kb_id: UUID, index_revision_id: UUID
+    ) -> tuple[RetrievalScopeCandidate, ...]:
+        self._ensure_active()
+        rows = (
+            await self._session.execute(
+                select(DocumentRow, DocumentVersionRow, IndexedDocumentVersionRow)
+                .join(
+                    KnowledgeBaseRow,
+                    and_(
+                        KnowledgeBaseRow.id == DocumentRow.kb_id,
+                        KnowledgeBaseRow.workspace_id == DocumentRow.workspace_id,
+                    ),
+                )
+                .outerjoin(
+                    DocumentVersionRow,
+                    and_(
+                        DocumentVersionRow.id == DocumentRow.current_version_id,
+                        DocumentVersionRow.document_id == DocumentRow.id,
+                        DocumentVersionRow.kb_id == DocumentRow.kb_id,
+                        DocumentVersionRow.workspace_id == DocumentRow.workspace_id,
+                    ),
+                )
+                .outerjoin(
+                    IndexedDocumentVersionRow,
+                    and_(
+                        IndexedDocumentVersionRow.document_id == DocumentRow.id,
+                        IndexedDocumentVersionRow.document_version_id
+                        == DocumentRow.current_version_id,
+                        IndexedDocumentVersionRow.index_revision_id
+                        == index_revision_id,
+                        IndexedDocumentVersionRow.kb_id == DocumentRow.kb_id,
+                        IndexedDocumentVersionRow.workspace_id
+                        == DocumentRow.workspace_id,
+                    ),
+                )
+                .where(
+                    DocumentRow.workspace_id == self._workspace_id,
+                    DocumentRow.kb_id == kb_id,
+                    DocumentRow.deleted_at.is_(None),
+                    KnowledgeBaseRow.deleted_at.is_(None),
+                )
+                .order_by(DocumentRow.id)
+            )
+        ).all()
+        return tuple(
+            RetrievalScopeCandidate(
+                document_id=document.id,
+                document_version_id=(version.id if version is not None else None),
+                indexed_document_version_id=(
+                    target.id if target is not None else None
+                ),
+                display_name=document.display_name,
+                original_filename=(
+                    version.original_filename if version is not None else ""
+                ),
+                source_status=(
+                    _enum_value(version.source_status)
+                    if version is not None
+                    else "unavailable"
+                ),
+                build_status=(
+                    _enum_value(target.build_status) if target is not None else None
+                ),
+                serving_status=(
+                    _enum_value(target.serving_status)
+                    if target is not None
+                    else None
+                ),
+            )
+            for document, version, target in rows
         )
 
     async def inspect_chunks(
@@ -1757,3 +1831,7 @@ def _cursor_values(item: KnowledgeBase | Document, field: str) -> tuple[str, str
     value = getattr(item, field)
     rendered = value.isoformat() if isinstance(value, datetime) else str(value)
     return rendered, str(item.id)
+
+
+def _enum_value(value: Any) -> str:
+    return str(getattr(value, "value", value))

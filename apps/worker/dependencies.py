@@ -354,7 +354,7 @@ def build_worker_dependencies(
         ChatContextualizedQueryStore(unit_of_work),
     )
     session_context_selector = ConversationContextSelector()
-    evidence_retriever = ChatEvidenceRetriever(retrieval_service)
+    evidence_retriever = ChatEvidenceRetriever(retrieval_service, unit_of_work)
     adaptive_evidence_assessor = AdaptiveEvidenceAssessmentStep(
         resolved_settings.retrieval.min_cosine_similarity,
         resolved_settings.retrieval.min_rerank_score,

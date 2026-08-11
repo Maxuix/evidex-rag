@@ -239,7 +239,10 @@ class PgVectorStore:
             "semantic_analysis",
         } or not representation_kinds:
             raise ValueError("space role and representation allowlist are required")
-        statement = self._statement(expected_space.dimension)
+        statement = self._statement(
+            expected_space.dimension,
+            document_ids=plan.document_ids,
+        )
         parameters = {
             "workspace_id": plan.workspace_id,
             "knowledge_base_id": plan.knowledge_base_id,
@@ -298,7 +301,11 @@ class PgVectorStore:
             )
 
     @staticmethod
-    def _statement(dimension: int = 1024):
+    def _statement(
+        dimension: int = 1024,
+        *,
+        document_ids: tuple | list = (),
+    ):
         vector_record = VectorRecord
         query_vector = bindparam(
             "query_embedding",
@@ -306,6 +313,11 @@ class PgVectorStore:
         )
         distance = vector_record.embedding.cosine_distance(query_vector).label(
             "cosine_distance"
+        )
+        scope_filter = (
+            IndexedDocumentVersion.document_id.in_(document_ids)
+            if document_ids
+            else true()
         )
         hits = (
             select(
@@ -394,6 +406,7 @@ class PgVectorStore:
                 Document.deleted_at.is_(None),
                 IndexChunk.excluded_at.is_(None),
                 DocumentVersion.source_status == DocumentSourceStatus.AVAILABLE,
+                scope_filter,
                 vector_record.embedding_space_id
                 == IndexRevisionEmbeddingSpace.embedding_space_id,
                 vector_record.embedding_dimension

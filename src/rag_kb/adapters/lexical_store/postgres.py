@@ -78,33 +78,43 @@ class PgLexicalStore:
                 )
                 if active_revision_id is None:
                     return None
+                scope_statement = (
+                    "SELECT target.id "
+                    "FROM indexed_document_version target "
+                    "JOIN document doc ON doc.id = target.document_id "
+                    " AND doc.kb_id = target.kb_id "
+                    " AND doc.workspace_id = target.workspace_id "
+                    "JOIN document_version version "
+                    " ON version.id = target.document_version_id "
+                    " AND version.document_id = target.document_id "
+                    " AND version.kb_id = target.kb_id "
+                    " AND version.workspace_id = target.workspace_id "
+                    "WHERE target.workspace_id = :workspace_id "
+                    " AND target.kb_id = :kb_id "
+                    " AND target.index_revision_id = :revision_id "
+                    " AND target.build_status = 'ready' "
+                    " AND target.serving_status = 'serving' "
+                    " AND doc.deleted_at IS NULL "
+                    " AND version.source_status = 'available'"
+                )
+                scope_parameters = {
+                    "workspace_id": plan.workspace_id,
+                    "kb_id": plan.knowledge_base_id,
+                    "revision_id": active_revision_id,
+                }
+                if plan.document_ids:
+                    scope_statement += " AND target.document_id IN :document_ids"
+                    scope_parameters["document_ids"] = list(plan.document_ids)
+                scope_statement += " ORDER BY target.id"
+                scope_query = text(scope_statement)
+                if plan.document_ids:
+                    scope_query = scope_query.bindparams(
+                        bindparam("document_ids", expanding=True)
+                    )
                 scope_rows = (
                     await session.execute(
-                        text(
-                            "SELECT target.id "
-                            "FROM indexed_document_version target "
-                            "JOIN document doc ON doc.id = target.document_id "
-                            " AND doc.kb_id = target.kb_id "
-                            " AND doc.workspace_id = target.workspace_id "
-                            "JOIN document_version version "
-                            " ON version.id = target.document_version_id "
-                            " AND version.document_id = target.document_id "
-                            " AND version.kb_id = target.kb_id "
-                            " AND version.workspace_id = target.workspace_id "
-                            "WHERE target.workspace_id = :workspace_id "
-                            " AND target.kb_id = :kb_id "
-                            " AND target.index_revision_id = :revision_id "
-                            " AND target.build_status = 'ready' "
-                            " AND target.serving_status = 'serving' "
-                            " AND doc.deleted_at IS NULL "
-                            " AND version.source_status = 'available' "
-                            "ORDER BY target.id"
-                        ),
-                        {
-                            "workspace_id": plan.workspace_id,
-                            "kb_id": plan.knowledge_base_id,
-                            "revision_id": active_revision_id,
-                        },
+                        scope_query,
+                        scope_parameters,
                     )
                 ).scalars().all()
                 target_ids = tuple(scope_rows)

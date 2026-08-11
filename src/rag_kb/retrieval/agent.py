@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 import json
 import re
@@ -59,7 +60,7 @@ from rag_kb.domain import (
 )
 from rag_kb.ports.model_api import ChatModelAdapter
 from rag_kb.retrieval.eligibility import EvidenceEligibilityPolicy
-from rag_kb.services.chat_execution import ChatEvidenceRetriever
+from rag_kb.services.chat_execution import ChatEvidenceRetriever, RuntimeDocumentScope
 from rag_kb.services.chat_progress import (
     ChatProgressReporter,
     bounded_progress_text,
@@ -136,6 +137,17 @@ class RetrievalAgentService:
         trace_steps: list[SearchTraceStep] = []
         query_rankings: list[tuple[Evidence, ...]] = []
         evidence_pool: dict[str, Evidence] = {}
+        load_scope = getattr(self._retriever, "load_document_scope", None)
+        document_scope = (
+            await load_scope(context)
+            if load_scope is not None
+            else RuntimeDocumentScope(status="all")
+        )
+        if document_scope.evidence:
+            query_rankings.append(document_scope.evidence)
+            evidence_pool.update(
+                {evidence_key(item): item for item in document_scope.evidence}
+            )
         executed_queries: set[str] = set()
         decision_rounds = 0
         retrieval_calls = 0
@@ -143,6 +155,8 @@ class RetrievalAgentService:
         verifier_continuations = 0
         no_progress_rounds = 0
         control_feedback: list[str] = []
+        if document_scope.rejected:
+            control_feedback.append("explicit_document_scope_rejected")
         adjacency_cache: dict[UUID, tuple[Evidence, ...]] = {}
         adjacency_loaded_keys: set[str] = set()
         forced_reason: RetrievalAgentProposedReason | None = None
@@ -736,6 +750,7 @@ def _agent_request(
     payload = {
         "answer_target": context.query,
         "standalone_retrieval_query": query_context.standalone_query,
+        "document_scope": _document_scope_payload(context),
         "projection_focus": list(
             _controller_projection_focus(
                 context,
@@ -820,6 +835,7 @@ def _verification_request(
     )
     payload = {
         "answer_target": context.query,
+        "document_scope": _document_scope_payload(context),
         "projection_focus": list(projection_focus),
         "selected_evidence_allowlist": project_agent_evidence(
             evidence,
@@ -937,6 +953,43 @@ def _controller_projection_focus(
         values.extend(observation.queries)
     values.extend(control_feedback[-4:])
     return tuple(dict.fromkeys(item.strip() for item in values if item.strip()))
+
+
+def _document_scope_payload(context: ChatExecutionContext) -> dict[str, Any]:
+    raw = context.retrieval_strategy.get("document_scope")
+    if not isinstance(raw, Mapping):
+        return {
+            "status": "all",
+            "required_documents": [],
+            "unresolved_names": [],
+            "ambiguous_names": [],
+        }
+    resolved = raw.get("resolved", ())
+    documents = []
+    if isinstance(resolved, (list, tuple)):
+        for item in resolved[:4]:
+            if not isinstance(item, Mapping):
+                continue
+            documents.append(
+                {
+                    "document_id": str(item.get("document_id", "")),
+                    "display_name": str(item.get("display_name", ""))[:256],
+                    "original_filename": str(
+                        item.get("original_filename", "")
+                    )[:256],
+                }
+            )
+    return {
+        "status": str(raw.get("status", "unresolved")),
+        "required_names": [str(item)[:256] for item in raw.get("required_names", ())][:4],
+        "required_documents": documents,
+        "unresolved_names": [
+            str(item)[:256] for item in raw.get("unresolved_names", ())
+        ][:4],
+        "ambiguous_names": [
+            str(item)[:256] for item in raw.get("ambiguous_names", ())
+        ][:4],
+    }
 
 
 def project_agent_evidence(

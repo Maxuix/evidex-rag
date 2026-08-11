@@ -37,6 +37,7 @@ from rag_kb.domain import (
     resolve_p1_policy,
 )
 from rag_kb.retrieval.profile import RetrievalExecutionProfile
+from rag_kb.retrieval.document_scope import resolve_document_scope
 from rag_kb.memory import (
     ConversationContextSelector,
     serialize_contextualized_query,
@@ -346,6 +347,17 @@ class ChatService:
                 requested_policy=requested_policy,
                 knowledge_base_defaults=knowledge_base.answer_policy_defaults,
             ).as_dict()
+            retrieval_strategy_snapshot = dict(retrieval_strategy)
+            document_repository = getattr(uow, "documents", None)
+            list_scope = getattr(document_repository, "list_retrieval_scope", None)
+            if list_scope is not None:
+                candidates = await list_scope(
+                    kb_id=kb_id,
+                    index_revision_id=knowledge_base.active_index_revision_id,
+                )
+                retrieval_strategy_snapshot["document_scope"] = (
+                    resolve_document_scope(normalized_message, candidates).as_dict()
+                )
             recent_turns = await uow.chat.list_completed_turns(
                 session_id=session_id,
                 principal_id=context.principal_id,
@@ -374,7 +386,7 @@ class ChatService:
                 message=normalized_message,
                 requested_policy=requested_policy,
                 effective_policy=effective_policy,
-                retrieval_strategy=retrieval_strategy,
+                retrieval_strategy=retrieval_strategy_snapshot,
                 model_configuration=model_configuration,
                 workflow_configuration=workflow_configuration.as_dict(),
                 workflow_state=workflow_state.as_dict(),

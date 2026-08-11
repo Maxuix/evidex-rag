@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
+from collections.abc import Mapping
 from typing import Protocol
+from uuid import UUID
 
 from rag_kb.auth import AuthContext
 from rag_kb.domain import (
@@ -18,6 +21,7 @@ from rag_kb.domain import (
     ErrorCode,
     Evidence,
     EvidencePack,
+    EvidenceScoreKind,
     ResourceNotFoundError,
     RetrievalRequest,
     RetrievalExecutionError,
@@ -36,6 +40,20 @@ from rag_kb.uow import (
 
 class ChatPipelineStep(Protocol):
     async def run(self, state: ChatPipelineState) -> ChatPipelineState: ...
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeDocumentScope:
+    status: str
+    document_ids: tuple[UUID, ...] = ()
+    evidence: tuple[Evidence, ...] = ()
+    complete_scan_document_count: int = 0
+    scope_rejection_count: int = 0
+    downgrade_reason: str | None = None
+
+    @property
+    def rejected(self) -> bool:
+        return self.status in {"ambiguous", "unresolved"}
 
 
 class ChatRunCoordinator:
@@ -152,8 +170,147 @@ class ChatWorkflowStateStore:
 
 
 class ChatEvidenceRetriever:
-    def __init__(self, retrieval: RetrievalService) -> None:
+    def __init__(
+        self,
+        retrieval: RetrievalService,
+        unit_of_work: UnitOfWorkFactory | None = None,
+    ) -> None:
         self._retrieval = retrieval
+        self._unit_of_work = unit_of_work
+
+    async def load_document_scope(
+        self, context: ChatExecutionContext
+    ) -> RuntimeDocumentScope:
+        raw_scope = context.retrieval_strategy.get("document_scope")
+        if not isinstance(raw_scope, Mapping):
+            return RuntimeDocumentScope(status="all")
+        status = str(raw_scope.get("status", "unresolved"))
+        if status != "resolved":
+            return RuntimeDocumentScope(
+                status=status,
+                scope_rejection_count=1,
+                downgrade_reason=(
+                    "explicit_document_scope_" + status
+                ),
+            )
+        raw_resolved = raw_scope.get("resolved")
+        if not isinstance(raw_resolved, (list, tuple)) or not raw_resolved:
+            return RuntimeDocumentScope(
+                status="unresolved",
+                scope_rejection_count=1,
+                downgrade_reason="resolved_scope_without_targets",
+            )
+        try:
+            document_ids = tuple(
+                dict.fromkeys(UUID(str(item["document_id"])) for item in raw_resolved)
+            )
+        except (KeyError, TypeError, ValueError):
+            return RuntimeDocumentScope(
+                status="unresolved",
+                scope_rejection_count=1,
+                downgrade_reason="invalid_frozen_document_scope",
+            )
+        if not 1 <= len(document_ids) <= 4:
+            return RuntimeDocumentScope(
+                status="unresolved",
+                scope_rejection_count=1,
+                downgrade_reason="document_scope_bound",
+            )
+        if self._unit_of_work is None:
+            return RuntimeDocumentScope(
+                status="resolved",
+                document_ids=document_ids,
+                downgrade_reason="complete_scan_unavailable",
+            )
+
+        resolved_by_id = {
+            UUID(str(item["document_id"])): item
+            for item in raw_resolved
+            if isinstance(item, Mapping) and item.get("document_id") is not None
+        }
+
+        async def inspect(uow: UnitOfWork) -> tuple[Evidence, ...]:
+            all_evidence: list[Evidence] = []
+            for document_id in document_ids:
+                facts = resolved_by_id.get(document_id)
+                if facts is None:
+                    continue
+                inspection = await uow.documents.inspect_chunks(
+                    document_id,
+                    limit=8,
+                    after=None,
+                )
+                if inspection is None:
+                    continue
+                if (
+                    inspection.document_id != document_id
+                    or inspection.index_revision_id != context.index_revision_id
+                    or str(inspection.document_version_id)
+                    != str(facts.get("document_version_id"))
+                    or str(inspection.indexed_document_version_id)
+                    != str(facts.get("indexed_document_version_id"))
+                    or inspection.total_chunks > 8
+                    or inspection.next_values is not None
+                    or any(
+                        item.modality not in {"text", "table"}
+                        or item.excluded_at is not None
+                        for item in inspection.items
+                    )
+                ):
+                    continue
+                for item in inspection.items:
+                    all_evidence.append(
+                        Evidence(
+                            rank=len(all_evidence) + 1,
+                            index_chunk_id=item.id,
+                            indexed_document_version_id=(
+                                inspection.indexed_document_version_id
+                            ),
+                            document_id=inspection.document_id,
+                            document_version_id=inspection.document_version_id,
+                            index_revision_id=inspection.index_revision_id,
+                            ordinal=item.ordinal,
+                            text=item.content,
+                            source_location=item.source_location,
+                            hierarchy=item.hierarchy,
+                            source_metadata={
+                                **item.source_metadata,
+                                "evidence_type": "complete_scan",
+                            },
+                            score=1.0,
+                            vector_similarity=1.0,
+                            modality=item.modality,
+                            evidence_group_key=item.evidence_group_key,
+                            matched_representations=("complete_scan",),
+                            document_display_name=str(
+                                facts.get("display_name") or "document"
+                            ),
+                            document_original_filename=str(
+                                facts.get("original_filename") or "document"
+                            ),
+                        )
+                    )
+            if sum(len(item.text) for item in all_evidence) > 32_000:
+                return ()
+            return tuple(all_evidence)
+
+        evidence = await execute_in_transaction(
+            self._unit_of_work,
+            inspect,
+            purpose=UnitOfWorkPurpose.READ_SNAPSHOT,
+        )
+        complete_documents = len(
+            {item.document_id for item in evidence}
+        )
+        return RuntimeDocumentScope(
+            status="resolved",
+            document_ids=document_ids,
+            evidence=evidence,
+            complete_scan_document_count=complete_documents,
+            downgrade_reason=(
+                None if complete_documents == len(document_ids) else "complete_scan_incomplete"
+            ),
+        )
 
     async def retrieve(
         self,
@@ -185,6 +342,7 @@ class ChatEvidenceRetriever:
         top_k_override: int | None = None,
     ) -> EvidencePack:
         try:
+            scope = _runtime_document_scope(context)
             strategy, top_k, rerank_mode = parse_retrieval_snapshot(
                 context.retrieval_strategy,
             )
@@ -199,6 +357,7 @@ class ChatEvidenceRetriever:
                 strategy=strategy,
                 rerank_mode=rerank_mode,
                 include_debug=True,
+                document_ids=scope.document_ids,
             )
         except (KeyError, TypeError, ValueError) as error:
             raise ChatPipelineExecutionError(
@@ -207,6 +366,13 @@ class ChatEvidenceRetriever:
                 diagnostic={"check": "retrieval_snapshot"},
             ) from error
         try:
+            if scope.rejected:
+                return EvidencePack(
+                    knowledge_base_id=context.knowledge_base_id,
+                    index_revision_id=context.index_revision_id,
+                    strategy=strategy,
+                    evidence=(),
+                )
             pack = await self._retrieval.retrieve(
                 AuthContext(
                     principal_id=context.principal_id,
@@ -287,3 +453,40 @@ class ChatEvidenceRetriever:
                 diagnostic={"check": "adjacency_frozen_scope"},
             )
         return evidence
+
+
+def _runtime_document_scope(context: ChatExecutionContext) -> RuntimeDocumentScope:
+    raw_scope = context.retrieval_strategy.get("document_scope")
+    if not isinstance(raw_scope, Mapping):
+        return RuntimeDocumentScope(status="all")
+    status = str(raw_scope.get("status", "unresolved"))
+    if status != "resolved":
+        return RuntimeDocumentScope(
+            status=status,
+            scope_rejection_count=1,
+            downgrade_reason="explicit_document_scope_" + status,
+        )
+    raw_resolved = raw_scope.get("resolved")
+    if not isinstance(raw_resolved, (list, tuple)):
+        return RuntimeDocumentScope(
+            status="unresolved",
+            scope_rejection_count=1,
+            downgrade_reason="invalid_frozen_document_scope",
+        )
+    try:
+        document_ids = tuple(
+            dict.fromkeys(UUID(str(item["document_id"])) for item in raw_resolved)
+        )
+    except (KeyError, TypeError, ValueError):
+        return RuntimeDocumentScope(
+            status="unresolved",
+            scope_rejection_count=1,
+            downgrade_reason="invalid_frozen_document_scope",
+        )
+    if not 1 <= len(document_ids) <= 4:
+        return RuntimeDocumentScope(
+            status="unresolved",
+            scope_rejection_count=1,
+            downgrade_reason="document_scope_bound",
+        )
+    return RuntimeDocumentScope(status="resolved", document_ids=document_ids)

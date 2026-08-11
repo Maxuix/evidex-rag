@@ -434,6 +434,7 @@ class RetrievalService:
                 else None
             ),
             rerank_mode=request.rerank_mode,
+            document_ids=request.document_ids,
         )
         embedding_provider, cross_provider = await self._embedding_providers(plan)
         multimodal = cross_provider is not None
@@ -462,6 +463,7 @@ class RetrievalService:
                     if plan.rerank
                     else RerankMode.CLASSIC
                 ),
+                document_ids=plan.document_ids,
             )
             result, cross_result = await _gather_cancel_on_error(
                 self._search_text(plan, query_embedding, embedding_provider),
@@ -591,6 +593,7 @@ class RetrievalService:
             top_k=request.top_k,
             candidate_count=dense_count,
             rerank_mode=request.rerank_mode,
+            document_ids=request.document_ids,
         )
         embedding_provider, cross_provider = await self._embedding_providers(plan)
         multimodal = cross_provider is not None
@@ -1566,6 +1569,10 @@ class RetrievalService:
                 or hit.build_status != "ready"
                 or hit.serving_status != "serving"
                 or not hit.is_current_serving_version
+                or (
+                    plan.document_ids
+                    and hit.document_id not in plan.document_ids
+                )
             ):
                 raise RetrievalExecutionError(
                     ErrorCode.INTERNAL_SERVER_ERROR,
@@ -1668,6 +1675,10 @@ class RetrievalService:
                 or hit.serving_status != "serving"
                 or not hit.is_current_serving_version
                 or hit.lexical_rank is None
+                or (
+                    plan.document_ids
+                    and hit.document_id not in plan.document_ids
+                )
             ):
                 raise RetrievalExecutionError(
                     ErrorCode.INTERNAL_SERVER_ERROR,
