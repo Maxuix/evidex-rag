@@ -981,7 +981,7 @@ def _build_financebench(
         for row in _read_jsonl(sources["financebench_documents"])
     }
     for source_name, document_id, source_key in FINANCE_DOCUMENTS:
-        relative = Path("documents") / "pdf" / f"{document_id}.pdf"
+        relative = Path("documents") / "pdf" / f"{source_name}.pdf"
         target = root / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(sources[source_key], target)

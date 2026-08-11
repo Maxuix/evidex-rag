@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 import re
 import time
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
@@ -73,6 +73,7 @@ def main() -> int:
         api = _validated_api_base(arguments.api)
         _validate_options(arguments)
         cases = load_complex_cases(arguments.corpus_root)
+        document_identity_map = load_document_identity_map(arguments.corpus_root)
     except (ValueError, RuntimeError) as error:
         parser.error(str(error))
 
@@ -94,6 +95,7 @@ def main() -> int:
         parallelism=arguments.parallelism,
         timeout_seconds=arguments.timeout_seconds,
         poll_seconds=arguments.poll_seconds,
+        document_identity_map=document_identity_map,
     )
     report = {
         "schema_version": "agent_complex_qa_evaluation_v1",
@@ -108,6 +110,7 @@ def main() -> int:
             "timeout_seconds": arguments.timeout_seconds,
             "poll_seconds": arguments.poll_seconds,
             "case_count": len(cases),
+            "document_identity_mapping": "manifest_filename_v1",
         },
         "cases": results,
         "summary": summarize_results(results),
@@ -150,6 +153,30 @@ def load_complex_cases(root: Path) -> list[dict[str, Any]]:
     return values
 
 
+def load_document_identity_map(root: Path) -> dict[str, str]:
+    """Map generated corpus filenames to stable logical document IDs."""
+
+    manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+    documents = manifest.get("documents")
+    if not isinstance(documents, list):
+        raise RuntimeError("corpus manifest documents are missing")
+    result: dict[str, str] = {}
+    for document in documents:
+        if not isinstance(document, dict):
+            raise RuntimeError("corpus manifest document is invalid")
+        document_id = document.get("document_id")
+        if not isinstance(document_id, str) or not document_id:
+            raise RuntimeError("corpus manifest document ID is invalid")
+        aliases = [document_id, document.get("path")]
+        source_url = document.get("source_url")
+        if isinstance(source_url, str) and source_url:
+            aliases.append(urlparse(source_url).path)
+        for alias in aliases:
+            if isinstance(alias, str) and alias:
+                result[_normalize_document_identity(alias)] = document_id
+    return result
+
+
 def evaluate_cases(
     api: str,
     kb_id: str,
@@ -161,6 +188,7 @@ def evaluate_cases(
     parallelism: int,
     timeout_seconds: float,
     poll_seconds: float,
+    document_identity_map: Mapping[str, str],
 ) -> list[dict[str, Any]]:
     def run(case: dict[str, Any]) -> dict[str, Any]:
         return _evaluate_one(
@@ -172,6 +200,7 @@ def evaluate_cases(
             top_k=top_k,
             timeout_seconds=timeout_seconds,
             poll_seconds=poll_seconds,
+            document_identity_map=document_identity_map,
         )
 
     if parallelism == 1:
@@ -195,6 +224,7 @@ def _evaluate_one(
     top_k: int,
     timeout_seconds: float,
     poll_seconds: float,
+    document_identity_map: Mapping[str, str],
 ) -> dict[str, Any]:
     case_id = str(case["case_id"])
     question = str(case["question"])
@@ -244,7 +274,11 @@ def _evaluate_one(
             "usage": None,
             "timing": None,
         }
-    scored = score_complex_case(case, safe)
+    scored = score_complex_case(
+        case,
+        safe,
+        document_identity_map=document_identity_map,
+    )
     return {
         "case_id": case_id,
         "question": question,
@@ -280,13 +314,18 @@ def _wait_for_terminal(
         time.sleep(poll_seconds)
 
 
-def score_complex_case(case: dict[str, Any], run: dict[str, Any]) -> dict[str, Any]:
+def score_complex_case(
+    case: dict[str, Any],
+    run: dict[str, Any],
+    *,
+    document_identity_map: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
     answer = str(run.get("answer") or "")
     workflow = run.get("workflow")
     citations = run.get("citations")
     citations = citations if isinstance(citations, list) else []
     cited_documents = {
-        str(item.get("document_id"))
+        _citation_document_id(item, document_identity_map)
         for item in citations
         if isinstance(item, dict) and item.get("document_id")
     }
@@ -581,6 +620,27 @@ def _default_output(strategy: str) -> Path:
 
 def _normalize(value: str) -> str:
     return " ".join(value.casefold().split())
+
+
+def _citation_document_id(
+    citation: dict[str, Any],
+    document_identity_map: Mapping[str, str] | None,
+) -> str:
+    raw_id = str(citation.get("document_id"))
+    if not document_identity_map:
+        return raw_id
+    for key in ("document_original_filename", "document_display_name", "document_id"):
+        value = citation.get(key)
+        if not isinstance(value, str) or not value:
+            continue
+        mapped = document_identity_map.get(_normalize_document_identity(value))
+        if mapped is not None:
+            return mapped
+    return raw_id
+
+
+def _normalize_document_identity(value: str) -> str:
+    return value.replace("\\", "/").rsplit("/", 1)[-1].strip().casefold()
 
 
 if __name__ == "__main__":

@@ -64,6 +64,39 @@ class AgentComplexEvaluationToolTests(unittest.TestCase):
         self.assertFalse(score["strict_correct"])
         self.assertEqual(score["forbidden_citation_document_ids"], ["unrelated"])
 
+    def test_scoring_maps_runtime_citation_filename_to_corpus_document_id(self) -> None:
+        case = {
+            "case_id": "complex-filename-map",
+            "required_citation_document_ids": ["doc-a"],
+            "forbid_unrelated_citations": True,
+            "aspects": [
+                {
+                    "aspect_id": "fact",
+                    "answer_variants": ["answer"],
+                    "expected_decimal": None,
+                }
+            ],
+        }
+
+        score = score_complex_case(
+            case,
+            {
+                "status": "completed",
+                "answer": "The answer is grounded.",
+                "workflow": {"requested_mode": "agent", "resolved_mode": "agent"},
+                "citations": [
+                    {
+                        "document_id": "runtime-uuid",
+                        "document_original_filename": "DOC-A.pdf",
+                    }
+                ],
+            },
+            document_identity_map={"doc-a.pdf": "doc-a"},
+        )
+
+        self.assertTrue(score["strict_correct"])
+        self.assertEqual(score["cited_document_ids"], ["doc-a"])
+
     def test_negative_change_accepts_signed_or_qualified_decrease(self) -> None:
         case = {
             "case_id": "complex-negative",
