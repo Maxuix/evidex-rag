@@ -177,6 +177,10 @@ class ChatResearchResultResponse(PublicSchema):
         Annotated[str, Field(min_length=1, max_length=64)], ...
     ] = ()
     calculation_elapsed_ms: Annotated[int, Field(ge=0, le=120_000)] = 0
+    degradation_reason: Annotated[
+        str,
+        Field(min_length=1, max_length=128, pattern=r"^[a-z0-9_]+$"),
+    ] | None = None
 
 
 class ChatSearchTraceStepResponse(PublicSchema):

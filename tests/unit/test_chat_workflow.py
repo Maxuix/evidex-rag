@@ -19,6 +19,7 @@ from rag_kb.domain import (
     hydrate_chat_workflow_state,
     initial_chat_workflow,
 )
+from rag_kb.schemas import ChatResearchResultResponse
 
 
 class ChatWorkflowContractTests(unittest.TestCase):
@@ -51,6 +52,11 @@ class ChatWorkflowContractTests(unittest.TestCase):
             ),
         )
         self.assertEqual(hydrate_chat_workflow_state(state.as_dict()), state)
+        public = ChatResearchResultResponse.model_validate(result.as_dict())
+        self.assertEqual(
+            public.degradation_reason,
+            "retrieval_agent_action_wire_schema_invalid",
+        )
 
         legacy = state.as_dict()
         assert legacy["research_result"] is not None
