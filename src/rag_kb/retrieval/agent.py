@@ -81,6 +81,22 @@ WORKFLOW_MODEL_CALLS_ARTIFACT = "chat_workflow_model_calls"
 _RRF_K = 60
 
 
+class _AgentActionFailureReason(StrEnum):
+    WIRE_SCHEMA_INVALID = "wire_schema_invalid"
+    ACTION_SHAPE_INVALID = "action_shape_invalid"
+
+
+class _AgentActionValidationError(ValueError):
+    def __init__(
+        self,
+        reason: _AgentActionFailureReason,
+        validation_hint: str,
+    ) -> None:
+        self.reason = reason
+        self.validation_hint = validation_hint
+        super().__init__(reason.value)
+
+
 class _VerificationFailureReason(StrEnum):
     WIRE_SCHEMA_INVALID = "wire_schema_invalid"
     EVIDENCE_NOT_ALLOWED = "evidence_not_allowed"
@@ -90,8 +106,13 @@ class _VerificationFailureReason(StrEnum):
 
 
 class _VerificationValidationError(ValueError):
-    def __init__(self, reason: _VerificationFailureReason) -> None:
+    def __init__(
+        self,
+        reason: _VerificationFailureReason,
+        validation_hint: str | None = None,
+    ) -> None:
         self.reason = reason
+        self.validation_hint = validation_hint
         super().__init__(reason.value)
 
 
@@ -110,6 +131,26 @@ _VERIFICATION_REPAIR_HINTS = {
     ),
     _VerificationFailureReason.STATUS_SEMANTICS_INVALID: (
         "Make status, aspect statuses, evidence_keys, missing_aspects, and conflicts semantically consistent."
+    ),
+}
+_AGENT_ACTION_SCHEMA_HINT = (
+    "Use retrieval_agent_action_v2 with exactly the seven required keys and exact field types."
+)
+_AGENT_ACTION_SHAPE_HINTS = {
+    "search": (
+        "For action=search, objective must be a non-empty string, queries must contain "
+        "1-3 query objects, and proposed_reason, selected_evidence_keys, and calculation "
+        "must be null/empty."
+    ),
+    "calculate": (
+        "For action=calculate, objective must be null, queries and selected_evidence_keys "
+        "must be empty, proposed_reason must be null, and calculation must contain only "
+        "expression and source_evidence_keys."
+    ),
+    "finish": (
+        "For action=finish, objective and calculation must be null, queries must be "
+        "empty, proposed_reason must be an allowed finish reason, and selected_evidence_keys "
+        "must be an array."
     ),
 }
 _AGENT_EVIDENCE_LIMIT = 20
@@ -624,12 +665,13 @@ class RetrievalAgentService:
             raise error.retain_model_calls((first_call,))
         try:
             return _parse_agent_action(response.content), (first_call,)
-        except (TypeError, ValueError):
+        except _AgentActionValidationError as first_error:
             repair = _repair_request(
                 request,
                 response.content,
                 schema=ChatOutputSchema.RETRIEVAL_AGENT_ACTION_V2,
                 retry_after_truncation=_response_was_truncated(response, request),
+                validation_hint=first_error.validation_hint,
             )
             try:
                 repaired = await complete_model(
@@ -652,7 +694,7 @@ class RetrievalAgentService:
                     first_call,
                     repair_call,
                 )
-            except (TypeError, ValueError, ChatPipelineExecutionError) as error:
+            except _AgentActionValidationError as error:
                 raise ChatPipelineExecutionError(
                     ErrorCode.CHAT_RESPONSE_INVALID,
                     phase=ChatPipelinePhase.RETRIEVE_EVIDENCE,
@@ -661,11 +703,13 @@ class RetrievalAgentService:
                             "retrieval_agent_action_truncated"
                             if _response_was_truncated(response, request)
                             or _response_was_truncated(repaired, repair)
-                            else "retrieval_agent_action"
+                            else f"retrieval_agent_action_{error.reason.value}"
                         )
                     },
                     model_calls=(first_call, repair_call),
                 ) from error
+            except ChatPipelineExecutionError as error:
+                raise error.retain_model_calls((first_call, repair_call))
 
     async def _verify(
         self,
@@ -707,7 +751,10 @@ class RetrievalAgentService:
                 response.content,
                 schema=ChatOutputSchema.RESEARCH_RESULT_VERIFICATION_V1,
                 retry_after_truncation=_response_was_truncated(response, request),
-                validation_hint=_VERIFICATION_REPAIR_HINTS[first_error.reason],
+                validation_hint=(
+                    first_error.validation_hint
+                    or _VERIFICATION_REPAIR_HINTS[first_error.reason]
+                ),
             )
             try:
                 repaired = await complete_model(
@@ -761,7 +808,10 @@ def _parse_agent_action(content: str) -> RetrievalAgentAction:
     try:
         wire_v2 = WireRetrievalAgentActionV2.model_validate_json(content)
     except ValueError:
-        wire = WireRetrievalAgentAction.model_validate_json(content)
+        try:
+            wire = WireRetrievalAgentAction.model_validate_json(content)
+        except ValueError as v1_error:
+            raise _agent_action_validation_error(content) from v1_error
         return RetrievalAgentAction(
             action=RetrievalAgentActionKind(wire.action),
             objective=wire.objective,
@@ -803,6 +853,26 @@ def _parse_agent_action(content: str) -> RetrievalAgentAction:
             if wire_v2.calculation is not None
             else ()
         ),
+    )
+
+
+def _agent_action_validation_error(content: str) -> _AgentActionValidationError:
+    try:
+        payload = json.loads(content)
+    except (TypeError, ValueError):
+        return _AgentActionValidationError(
+            _AgentActionFailureReason.WIRE_SCHEMA_INVALID,
+            _AGENT_ACTION_SCHEMA_HINT,
+        )
+    action = payload.get("action") if isinstance(payload, Mapping) else None
+    if action in _AGENT_ACTION_SHAPE_HINTS:
+        return _AgentActionValidationError(
+            _AgentActionFailureReason.ACTION_SHAPE_INVALID,
+            _AGENT_ACTION_SHAPE_HINTS[action],
+        )
+    return _AgentActionValidationError(
+        _AgentActionFailureReason.WIRE_SCHEMA_INVALID,
+        _AGENT_ACTION_SCHEMA_HINT,
     )
 
 
@@ -865,38 +935,71 @@ def _parse_verification(
         not supported_keys or result.missing_aspects or result.conflicts
     ):
         raise _VerificationValidationError(
-            _VerificationFailureReason.STATUS_SEMANTICS_INVALID
+            _VerificationFailureReason.STATUS_SEMANTICS_INVALID,
+            _verification_status_hint(result.status),
         )
     all_keys = {key for item in aspects for key in item.evidence_keys}
     if result.status is ResearchStatus.SUFFICIENT and any(
         item.status is not ResearchAspectStatus.SUPPORTED for item in aspects
     ):
         raise _VerificationValidationError(
-            _VerificationFailureReason.STATUS_SEMANTICS_INVALID
+            _VerificationFailureReason.STATUS_SEMANTICS_INVALID,
+            _verification_status_hint(result.status),
         )
     if result.status is ResearchStatus.PARTIAL and (
         not supported_keys or not result.missing_aspects or result.conflicts
     ):
         raise _VerificationValidationError(
-            _VerificationFailureReason.STATUS_SEMANTICS_INVALID
+            _VerificationFailureReason.STATUS_SEMANTICS_INVALID,
+            _verification_status_hint(result.status),
         )
     if result.status is ResearchStatus.NO_EVIDENCE and (
         all_keys or not result.missing_aspects or result.conflicts
     ):
         raise _VerificationValidationError(
-            _VerificationFailureReason.STATUS_SEMANTICS_INVALID
+            _VerificationFailureReason.STATUS_SEMANTICS_INVALID,
+            _verification_status_hint(result.status),
         )
     if result.status is ResearchStatus.CONFLICT and (
         not all_keys or not result.conflicts
     ):
         raise _VerificationValidationError(
-            _VerificationFailureReason.STATUS_SEMANTICS_INVALID
+            _VerificationFailureReason.STATUS_SEMANTICS_INVALID,
+            _verification_status_hint(result.status),
         )
     if result.status is ResearchStatus.PREMISE_UNSUPPORTED and not all_keys:
         raise _VerificationValidationError(
-            _VerificationFailureReason.STATUS_SEMANTICS_INVALID
+            _VerificationFailureReason.STATUS_SEMANTICS_INVALID,
+            _verification_status_hint(result.status),
         )
     return result
+
+
+def _verification_status_hint(status: ResearchStatus) -> str:
+    if status is ResearchStatus.SUFFICIENT:
+        return (
+            "For status=sufficient, every aspect status must be supported, at least one "
+            "allowed evidence key must be used, missing_aspects=[], and conflicts=[]."
+        )
+    if status is ResearchStatus.PARTIAL:
+        return (
+            "For status=partial, at least one supported/partial aspect must use allowed "
+            "evidence, missing_aspects must be non-empty, and conflicts=[]."
+        )
+    if status is ResearchStatus.NO_EVIDENCE:
+        return (
+            "For status=no_evidence, every evidence_keys array must be empty, "
+            "missing_aspects must be non-empty, and conflicts=[]."
+        )
+    if status is ResearchStatus.CONFLICT:
+        return (
+            "For status=conflict, at least one allowed evidence key and one conflicts "
+            "entry are required."
+        )
+    return (
+        "For status=premise_unsupported, at least one allowed evidence key directly "
+        "contradicting the premise is required."
+    )
 
 
 def _apply_verification_gate(

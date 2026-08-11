@@ -27,6 +27,7 @@ from rag_kb.domain import (
 from rag_kb.retrieval.agent import (
     WORKFLOW_STATE_ARTIFACT,
     RetrievalAgentService,
+    _AgentActionFailureReason,
     _VerificationFailureReason,
     _VerificationValidationError,
     _agent_request,
@@ -386,6 +387,34 @@ class RetrievalAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("selected evidence allowlist", repair_prompt)
         self.assertNotIn("PRIVATE", repair_prompt)
 
+    async def test_verifier_semantics_repair_receives_status_specific_hint(self) -> None:
+        context = _agent_context()
+        pack = _pack(context, "allowed fact")
+        key = evidence_key(pack.evidence[0])
+        invalid = json.loads(_verification(status="sufficient", keys=(key,)))
+        invalid["missing_aspects"] = ["PRIVATE"]
+        model = _Model(
+            _response(
+                _search("find fact", [{"query": "fact", "based_on_observation_ids": []}])
+            ),
+            _response(_finish((key,)), request_id="finish"),
+            _response(json.dumps(invalid), request_id="verify-invalid"),
+            _response(
+                _verification(status="sufficient", keys=(key,)),
+                request_id="verify-repaired",
+            ),
+        )
+
+        outcome = await _service(model, _Retriever((pack,))).research(
+            context, _query_context(context)
+        )
+
+        assert outcome.workflow_state.research_result is not None
+        repair_prompt = model.requests[-1].messages[-1].content
+        self.assertIn("For status=sufficient", repair_prompt)
+        self.assertIn("missing_aspects=[]", repair_prompt)
+        self.assertNotIn("PRIVATE", repair_prompt)
+
     async def test_verifier_second_failure_reports_safe_subreason(self) -> None:
         context = _agent_context()
         pack = _pack(context, "allowed fact")
@@ -627,6 +656,57 @@ class RetrievalAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(
             all(request.thinking_enabled is False for request in model.requests)
         )
+
+    async def test_agent_action_repair_receives_action_specific_hint(self) -> None:
+        context = _agent_context()
+        pack = _pack(context, "allowed fact")
+        key = evidence_key(pack.evidence[0])
+        invalid = json.loads(
+            _search("find fact", [{"query": "fact", "based_on_observation_ids": []}])
+        )
+        invalid["objective"] = None
+        model = _Model(
+            _response(json.dumps(invalid), request_id="invalid-action"),
+            _response(
+                _search("find fact", [{"query": "fact", "based_on_observation_ids": []}]),
+                request_id="repaired-action",
+            ),
+            _response(_finish((key,)), request_id="finish"),
+            _response(_verification(status="sufficient", keys=(key,))),
+        )
+
+        outcome = await _service(model, _Retriever((pack,))).research(
+            context, _query_context(context)
+        )
+
+        assert outcome.workflow_state.research_result is not None
+        repair_prompt = model.requests[1].messages[-1].content
+        self.assertIn("For action=search", repair_prompt)
+        self.assertIn("objective must be a non-empty string", repair_prompt)
+
+    async def test_agent_action_second_failure_reports_safe_subreason(self) -> None:
+        context = _agent_context()
+        invalid = json.loads(
+            _search("PRIVATE", [{"query": "PRIVATE", "based_on_observation_ids": []}])
+        )
+        invalid["objective"] = None
+        model = _Model(_response(json.dumps(invalid)), _response(json.dumps(invalid)))
+
+        with self.assertRaises(ChatPipelineExecutionError) as raised:
+            await _service(model, _Retriever(())).research(
+                context, _query_context(context)
+            )
+
+        self.assertEqual(
+            raised.exception.diagnostic,
+            {
+                "check": (
+                    "retrieval_agent_action_"
+                    f"{_AgentActionFailureReason.ACTION_SHAPE_INVALID.value}"
+                )
+            },
+        )
+        self.assertNotIn("PRIVATE", repr(raised.exception.diagnostic))
 
     async def test_agent_action_infers_truncation_when_usage_hits_request_cap(
         self,
