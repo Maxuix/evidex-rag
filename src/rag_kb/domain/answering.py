@@ -193,6 +193,7 @@ class AnswerValidationIssue(StrEnum):
     CITATIONS_REQUIRED = "citations_required"
     CITATION_DUPLICATE = "citation_duplicate"
     CITATION_NOT_ALLOWED = "citation_not_allowed"
+    REQUIRED_DOCUMENT_CITATIONS_MISSING = "required_document_citations_missing"
     RENDER_LIMIT_EXCEEDED = "render_limit_exceeded"
 
 

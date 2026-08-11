@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from uuid import UUID
 
 from pydantic import ValidationError
 
@@ -19,6 +20,7 @@ from rag_kb.answering.preview import (
 from rag_kb.answering.prompt_builder import (
     allowed_answer_outcomes,
     build_repair_request,
+    required_answer_document_ids,
     serialize_final_llm_context,
 )
 from rag_kb.answering.wire_schemas import WireAnswer
@@ -85,6 +87,7 @@ class AnswerStructureValidationStep:
             insufficiency=InsufficiencyPolicy(
                 context.effective_policy["insufficiency_policy"]
             ),
+            required_document_ids=required_answer_document_ids(context),
         )
         calls = answering.model_calls
         artifacts = state.artifacts
@@ -164,6 +167,7 @@ class AnswerStructureValidationStep:
                 insufficiency=InsufficiencyPolicy(
                     context.effective_policy["insufficiency_policy"]
                 ),
+                required_document_ids=required_answer_document_ids(context),
             )
             if validated is not None and rendered is not None:
                 record = AnswerValidationRecord(
@@ -219,6 +223,7 @@ def _validate_and_render(
     *,
     current_query: str,
     insufficiency: InsufficiencyPolicy,
+    required_document_ids: tuple[UUID, ...],
 ) -> tuple[
     ValidatedAnswer | None,
     RenderedAnswer | None,
@@ -270,6 +275,9 @@ def _validate_and_render(
             add(AnswerValidationIssue.MISSING_ASPECTS_FORBIDDEN)
 
     allowed = evidence.citation_ids & frozenset(assessment.usable_citation_ids)
+    evidence_documents = {
+        item.citation_id: item.document_id for item in evidence.items
+    }
     claims: list[AnswerClaim] = []
     for wire_claim in parsed.claims:
         text = wire_claim.text.strip()
@@ -288,6 +296,20 @@ def _validate_and_render(
                 )
             except ValueError:
                 add(AnswerValidationIssue.SCHEMA_INVALID)
+
+    if (
+        outcome is AnswerOutcome.ANSWERED
+        and assessment.coverage is EvidenceCoverage.SUFFICIENT
+        and len(required_document_ids) > 1
+    ):
+        used_documents = {
+            evidence_documents[citation_id]
+            for wire_claim in parsed.claims
+            for citation_id in wire_claim.citation_ids
+            if citation_id in allowed
+        }
+        if not set(required_document_ids) <= used_documents:
+            add(AnswerValidationIssue.REQUIRED_DOCUMENT_CITATIONS_MISSING)
 
     if issues:
         return None, None, tuple(issues)

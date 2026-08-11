@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from uuid import UUID
 
 from rag_kb.domain import (
@@ -78,6 +79,46 @@ this exception and follow allowed_outcomes."""
 FINAL_LLM_CONTEXT_VERSION = "final_llm_context_v1"
 
 
+def required_answer_document_ids(
+    context: ChatExecutionContext,
+) -> tuple[UUID, ...]:
+    raw_scope = context.retrieval_strategy.get("document_scope")
+    if not isinstance(raw_scope, Mapping) or raw_scope.get("status") != "resolved":
+        return ()
+    resolved = raw_scope.get("resolved")
+    if not isinstance(resolved, (list, tuple)):
+        return ()
+    document_ids: list[UUID] = []
+    try:
+        for item in resolved:
+            if not isinstance(item, Mapping):
+                return ()
+            document_id = UUID(str(item["document_id"]))
+            if document_id not in document_ids:
+                document_ids.append(document_id)
+    except (KeyError, TypeError, ValueError):
+        return ()
+    return tuple(document_ids)
+
+
+def _citation_policy(required_document_ids: tuple[UUID, ...]) -> dict[str, object]:
+    policy: dict[str, object] = {
+        "required": True,
+        "granularity": "claim_level",
+        "applies_to": "substantive_claims_only",
+    }
+    if len(required_document_ids) > 1:
+        policy.update(
+            {
+                "required_document_ids": [
+                    str(document_id) for document_id in required_document_ids
+                ],
+                "required_document_coverage": "claim_citations",
+            }
+        )
+    return policy
+
+
 def build_evidence_envelope(pack: EvidencePack) -> EvidenceEnvelope:
     return EvidenceEnvelope(
         knowledge_base_id=pack.knowledge_base_id,
@@ -133,6 +174,7 @@ def build_generation_request(
         context.effective_policy["insufficiency_policy"]
     )
     allowed_outcomes = allowed_answer_outcomes(expected_outcome, insufficiency)
+    required_document_ids = required_answer_document_ids(context)
     payload = {
         **_query_payload(context, query_context),
         "evidence_scope": _scope(evidence),
@@ -141,11 +183,7 @@ def build_generation_request(
         "insufficiency_policy": insufficiency.value,
         "answer_style": context.effective_policy["answer_style"],
         "grounding_policy": "evidence_only",
-        "citation_policy": {
-            "required": True,
-            "granularity": "claim_level",
-            "applies_to": "substantive_claims_only",
-        },
+        "citation_policy": _citation_policy(required_document_ids),
         "supported_aspects": list(assessment.supported_aspects),
         "missing_aspects": list(assessment.missing_aspects),
         "validated_calculations": [item.as_dict() for item in calculation_facts],
@@ -205,6 +243,7 @@ def build_repair_request(
         context.effective_policy["insufficiency_policy"]
     )
     allowed_outcomes = allowed_answer_outcomes(expected_outcome, insufficiency)
+    required_document_ids = required_answer_document_ids(context)
     payload = {
         **_query_payload(context, query_context),
         "evidence_scope": _scope(evidence),
@@ -213,11 +252,7 @@ def build_repair_request(
         "insufficiency_policy": insufficiency.value,
         "answer_style": context.effective_policy["answer_style"],
         "grounding_policy": "evidence_only",
-        "citation_policy": {
-            "required": True,
-            "granularity": "claim_level",
-            "applies_to": "substantive_claims_only",
-        },
+        "citation_policy": _citation_policy(required_document_ids),
         "required_missing_aspects": list(assessment.missing_aspects),
         "validation_issues": [issue.value for issue in issues],
         "untrusted_original_draft": raw_draft,

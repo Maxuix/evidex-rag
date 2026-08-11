@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from dataclasses import replace
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -222,7 +223,131 @@ def _answered() -> str:
     )
 
 
+def _scoped_state(raw_json: str, *, partial: bool = False) -> ChatPipelineState:
+    state = _state(
+        raw_json,
+        expected=AnswerOutcome.PARTIAL if partial else AnswerOutcome.ANSWERED,
+        partial=partial,
+    )
+    assert state.context is not None
+    assert state.evidence_pack is not None
+    document_ids = [item.document_id for item in state.evidence_pack.evidence]
+    return replace(
+        state,
+        context=replace(
+            state.context,
+            retrieval_strategy={
+                **state.context.retrieval_strategy,
+                "document_scope": {
+                    "status": "resolved",
+                    "resolved": [
+                        {"document_id": str(document_id)}
+                        for document_id in document_ids
+                    ],
+                },
+            },
+        ),
+    )
+
+
 class StructureValidationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_answered_multi_document_scope_repairs_missing_claim_citation(
+        self,
+    ) -> None:
+        incomplete = _answered()
+        repaired = json.dumps(
+            {
+                "outcome": "answered",
+                "claims": [
+                    {"text": "Policy A applies.", "citation_ids": ["cite_1"]},
+                    {"text": "Friday is the deadline.", "citation_ids": ["cite_2"]},
+                ],
+                "missing_aspects": [],
+            }
+        )
+
+        model = _Model(_response(repaired))
+        result = await AnswerStructureValidationStep(model).run(
+            _scoped_state(incomplete)
+        )
+
+        assert result.answering is not None
+        assert result.answering.validation is not None
+        self.assertIn(
+            AnswerValidationIssue.REQUIRED_DOCUMENT_CITATIONS_MISSING,
+            result.answering.validation.initial_issues,
+        )
+        self.assertTrue(result.answering.validation.repair_succeeded)
+        payload = json.loads(model.requests[0].messages[1].content)
+        required_ids = payload["citation_policy"]["required_document_ids"]
+        self.assertEqual(len(required_ids), 2)
+        self.assertNotIn("Guide", repr(required_ids))
+
+    async def test_answered_multi_document_scope_accepts_claim_coverage(self) -> None:
+        raw = json.dumps(
+            {
+                "outcome": "answered",
+                "claims": [
+                    {
+                        "text": "The policy and deadline are documented.",
+                        "citation_ids": ["cite_1", "cite_2"],
+                    }
+                ],
+                "missing_aspects": [],
+            }
+        )
+        model = _Model()
+
+        result = await AnswerStructureValidationStep(model).run(_scoped_state(raw))
+
+        assert result.answering is not None
+        assert result.answering.validation is not None
+        self.assertEqual(result.answering.validation.initial_issues, ())
+        self.assertEqual(model.requests, [])
+
+    async def test_partial_multi_document_scope_may_report_a_missing_document(
+        self,
+    ) -> None:
+        raw = json.dumps(
+            {
+                "outcome": "partial",
+                "claims": [
+                    {"text": "Policy A applies.", "citation_ids": ["cite_1"]}
+                ],
+                "missing_aspects": ["exception deadline"],
+            }
+        )
+
+        result = await AnswerStructureValidationStep(_Model()).run(
+            _scoped_state(raw, partial=True)
+        )
+
+        assert result.answering is not None
+        assert result.answering.validation is not None
+        self.assertNotIn(
+            AnswerValidationIssue.REQUIRED_DOCUMENT_CITATIONS_MISSING,
+            result.answering.validation.initial_issues,
+        )
+
+    async def test_multi_document_citation_repair_failure_uses_safe_fallback(
+        self,
+    ) -> None:
+        model = _Model(_response(_answered()))
+
+        result = await AnswerStructureValidationStep(model).run(
+            _scoped_state(_answered())
+        )
+
+        assert result.answering is not None
+        assert result.answering.validation is not None
+        assert result.answering.validated is not None
+        self.assertEqual(result.answering.validated.outcome, AnswerOutcome.REFUSED)
+        self.assertIn(
+            AnswerValidationIssue.REQUIRED_DOCUMENT_CITATIONS_MISSING,
+            result.answering.validation.repair_issues,
+        )
+        self.assertTrue(result.answering.validation.safe_fallback)
+
     async def test_partial_policy_accepts_model_assessed_partial_coverage(
         self,
     ) -> None:
