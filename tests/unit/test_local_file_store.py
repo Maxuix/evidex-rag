@@ -18,6 +18,7 @@ from rag_kb.auth import AuthContext
 from rag_kb.domain import (
     Document,
     DocumentMutationResult,
+    DuplicateDocumentError,
     FileLocation,
     IndexAssetIdentity,
     InvalidStorageIdentityError,
@@ -205,6 +206,39 @@ class SourceFileServiceTests(unittest.TestCase):
 
             asyncio.run(scenario())
             self.assertEqual(events, ["reserved", "activated"])
+
+    def test_duplicate_document_rejection_discards_only_new_staged_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            staging = root / "staging"
+            final = root / "final"
+            staging.mkdir()
+            final.mkdir()
+            store = LocalFileStore(staging, final)
+            context = AuthContext("principal", "client", WORKSPACE)
+            existing_id = UUID("01900000-0000-7000-8000-000000000099")
+
+            class Documents:
+                async def reserve_version(self, *args, **kwargs):
+                    del args, kwargs
+                    raise DuplicateDocumentError(existing_id)
+
+            async def scenario() -> None:
+                with self.assertRaises(DuplicateDocumentError) as raised:
+                    await SourceFileService(Documents(), store).store_and_activate(  # type: ignore[arg-type]
+                        context,
+                        IDEMPOTENCY_KEY,
+                        kb_id=KB_ID,
+                        document_id=None,
+                        display_name="Guide",
+                        original_filename="guide.md",
+                        media_type="text/markdown",
+                        source=io.BytesIO(b"duplicate source"),
+                    )
+                self.assertEqual(raised.exception.existing_document_id, existing_id)
+                self.assertEqual(await store.list_files(), ())
+
+            asyncio.run(scenario())
 
     def test_markdown_snapshot_replay_does_not_fetch_remote_media_again(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

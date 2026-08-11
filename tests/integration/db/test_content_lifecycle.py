@@ -13,6 +13,7 @@ from rag_kb.document_processing.profiles import index_profile
 from rag_kb.domain import (
     ChunkingPreset,
     DocumentSource,
+    DuplicateDocumentError,
     EmbeddingSpaceDefinition,
     IdempotencyKeyReusedError,
     IndexProfileDefinition,
@@ -493,6 +494,57 @@ class ContentLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 name="bravo",
                 retrieval_defaults=None,
             )
+
+    async def test_new_document_same_checksum_is_rejected_but_new_version_is_allowed(
+        self,
+    ) -> None:
+        kb = await self._create_kb()
+        source = _source("9")
+        first_key = uuid4()
+        first = await self.documents.reserve_version(
+            self.context,
+            first_key,
+            kb_id=kb.id,
+            document_id=None,
+            display_name="first.txt",
+            source=source,
+        )
+
+        replay = await self.documents.reserve_version(
+            self.context,
+            first_key,
+            kb_id=kb.id,
+            document_id=None,
+            display_name="first.txt",
+            source=source,
+        )
+        self.assertEqual(replay.document.id, first.document.id)
+        await self.documents.activate_reserved_version(
+            self.context,
+            first_key,
+            document_id=first.document.id,
+        )
+
+        with self.assertRaises(DuplicateDocumentError) as raised:
+            await self.documents.reserve_version(
+                self.context,
+                uuid4(),
+                kb_id=kb.id,
+                document_id=None,
+                display_name="second.txt",
+                source=source,
+            )
+        self.assertEqual(raised.exception.existing_document_id, first.document.id)
+
+        new_version = await self.documents.reserve_version(
+            self.context,
+            uuid4(),
+            kb_id=kb.id,
+            document_id=first.document.id,
+            display_name="first-v2.txt",
+            source=source,
+        )
+        self.assertEqual(new_version.document.id, first.document.id)
 
     async def _create_kb(self):
         return await self.knowledge_bases.create(

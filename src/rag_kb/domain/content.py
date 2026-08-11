@@ -241,6 +241,14 @@ class ResourceNameConflictError(ContentLifecycleError):
     pass
 
 
+class DuplicateDocumentError(ResourceNameConflictError):
+    """A new document has the same current content as an existing document."""
+
+    def __init__(self, existing_document_id: UUID) -> None:
+        self.existing_document_id = existing_document_id
+        super().__init__("document content already exists")
+
+
 class ResourceStateConflictError(ContentLifecycleError):
     pass
 

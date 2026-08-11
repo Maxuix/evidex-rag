@@ -48,6 +48,7 @@ from rag_kb.domain import (
     DocumentMutationResult,
     DocumentSource,
     DocumentVersion,
+    DuplicateDocumentError,
     EmbeddingSpaceRole,
     EmbeddingSpaceDefinition,
     EmbeddingRoleSummary,
@@ -934,6 +935,14 @@ class SqlAlchemyDocumentRepository:
         source: DocumentSource,
     ) -> DocumentMutationResult:
         self._ensure_active()
+        await self._session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+            {
+                "key": (
+                    f"document-content:{self._workspace_id}:{kb_id}"
+                )
+            },
+        )
         kb_exists = await self._session.scalar(
             select(KnowledgeBaseRow.id).where(
                 KnowledgeBaseRow.workspace_id == self._workspace_id,
@@ -945,6 +954,37 @@ class SqlAlchemyDocumentRepository:
         if kb_exists is None:
             raise ResourceStateConflictError("knowledge base is unavailable")
         if document_id is None:
+            duplicate = await self._session.scalar(
+                select(DocumentRow.id)
+                .join(
+                    DocumentVersionRow,
+                    DocumentVersionRow.document_id == DocumentRow.id,
+                )
+                .where(
+                    DocumentRow.workspace_id == self._workspace_id,
+                    DocumentRow.kb_id == kb_id,
+                    DocumentRow.deleted_at.is_(None),
+                    or_(
+                        and_(
+                            DocumentRow.current_version_id.is_not(None),
+                            DocumentVersionRow.source_status
+                            == DocumentSourceStatus.AVAILABLE,
+                            DocumentVersionRow.checksum_sha256
+                            == source.checksum_sha256,
+                        ),
+                        and_(
+                            DocumentRow.current_version_id.is_(None),
+                            DocumentVersionRow.source_status
+                            == DocumentSourceStatus.UNAVAILABLE,
+                            DocumentVersionRow.checksum_sha256
+                            == source.checksum_sha256,
+                        ),
+                    ),
+                )
+                .order_by(DocumentRow.id)
+            )
+            if duplicate is not None:
+                raise DuplicateDocumentError(duplicate)
             document = DocumentRow(
                 workspace_id=self._workspace_id,
                 kb_id=kb_id,
