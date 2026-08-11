@@ -27,10 +27,13 @@ from rag_kb.domain import (
 from rag_kb.retrieval.agent import (
     WORKFLOW_STATE_ARTIFACT,
     RetrievalAgentService,
+    _VerificationFailureReason,
+    _VerificationValidationError,
     _agent_request,
     _expand_verification_evidence,
     _fused_evidence,
     _repair_request,
+    _parse_verification,
     _round_robin_document_requests,
     _verification_request,
     _apply_verification_gate,
@@ -212,6 +215,137 @@ def _adjacent(anchor, *, offset: int, text: str, chunk_id=None):
 
 
 class RetrievalAgentTests(unittest.IsolatedAsyncioTestCase):
+    def test_verifier_validation_classifies_safe_failure_reasons(self) -> None:
+        allowed_key = "chunk:allowed"
+        base = json.loads(_verification(status="sufficient", keys=(allowed_key,)))
+        cases = {
+            _VerificationFailureReason.WIRE_SCHEMA_INVALID: "not-json PRIVATE",
+            _VerificationFailureReason.EVIDENCE_NOT_ALLOWED: json.dumps(
+                {
+                    **base,
+                    "aspects": [
+                        {
+                            "aspect": "question",
+                            "status": "supported",
+                            "evidence_keys": ["chunk:PRIVATE"],
+                        }
+                    ],
+                }
+            ),
+            _VerificationFailureReason.SUPPORTED_EVIDENCE_REQUIRED: json.dumps(
+                {
+                    **base,
+                    "aspects": [
+                        {
+                            "aspect": "question",
+                            "status": "supported",
+                            "evidence_keys": [],
+                        }
+                    ],
+                }
+            ),
+            _VerificationFailureReason.DUPLICATE_LIST_ITEMS: json.dumps(
+                {
+                    **base,
+                    "status": "partial",
+                    "missing_aspects": ["PRIVATE", "PRIVATE"],
+                }
+            ),
+            _VerificationFailureReason.STATUS_SEMANTICS_INVALID: json.dumps(
+                {**base, "missing_aspects": ["PRIVATE"]}
+            ),
+        }
+
+        for expected, content in cases.items():
+            with self.subTest(expected=expected):
+                with self.assertRaises(_VerificationValidationError) as raised:
+                    _parse_verification(content, frozenset({allowed_key}))
+                self.assertIs(raised.exception.reason, expected)
+                self.assertNotIn("PRIVATE", str(raised.exception))
+
+    async def test_verifier_repair_receives_fixed_reason_hint(self) -> None:
+        context = _agent_context()
+        pack = _pack(context, "allowed fact")
+        key = evidence_key(pack.evidence[0])
+        invalid = json.loads(_verification(status="sufficient", keys=(key,)))
+        invalid["aspects"][0]["evidence_keys"] = ["chunk:PRIVATE"]
+        model = _Model(
+            _response(
+                _search("find fact", [{"query": "fact", "based_on_observation_ids": []}])
+            ),
+            _response(_finish((key,)), request_id="finish"),
+            _response(json.dumps(invalid), request_id="verify-invalid"),
+            _response(
+                _verification(status="sufficient", keys=(key,)),
+                request_id="verify-repaired",
+            ),
+        )
+
+        outcome = await _service(model, _Retriever((pack,))).research(
+            context, _query_context(context)
+        )
+
+        assert outcome.workflow_state.research_result is not None
+        self.assertIs(
+            outcome.workflow_state.research_result.status,
+            ResearchStatus.SUFFICIENT,
+        )
+        repair_prompt = model.requests[-1].messages[-1].content
+        self.assertIn("selected evidence allowlist", repair_prompt)
+        self.assertNotIn("PRIVATE", repair_prompt)
+
+    async def test_verifier_second_failure_reports_safe_subreason(self) -> None:
+        context = _agent_context()
+        pack = _pack(context, "allowed fact")
+        key = evidence_key(pack.evidence[0])
+        model = _Model(
+            _response(
+                _search("find fact", [{"query": "fact", "based_on_observation_ids": []}])
+            ),
+            _response(_finish((key,)), request_id="finish"),
+            _response("PRIVATE first invalid", request_id="verify-invalid"),
+            _response("PRIVATE second invalid", request_id="verify-repair-invalid"),
+        )
+
+        with self.assertRaises(ChatPipelineExecutionError) as raised:
+            await _service(model, _Retriever((pack,))).research(
+                context, _query_context(context)
+            )
+
+        self.assertEqual(
+            raised.exception.diagnostic,
+            {"check": "research_result_verification_wire_schema_invalid"},
+        )
+        self.assertNotIn("PRIVATE", repr(raised.exception.diagnostic))
+
+    async def test_verifier_truncation_takes_diagnostic_priority(self) -> None:
+        context = _agent_context()
+        pack = _pack(context, "allowed fact")
+        key = evidence_key(pack.evidence[0])
+        truncated = replace(
+            _response("PRIVATE invalid", request_id="verify-truncated"),
+            finish_reason="length",
+        )
+        model = _Model(
+            _response(
+                _search("find fact", [{"query": "fact", "based_on_observation_ids": []}])
+            ),
+            _response(_finish((key,)), request_id="finish"),
+            truncated,
+            _response("PRIVATE invalid again", request_id="verify-repair-invalid"),
+        )
+
+        with self.assertRaises(ChatPipelineExecutionError) as raised:
+            await _service(model, _Retriever((pack,))).research(
+                context, _query_context(context)
+            )
+
+        self.assertEqual(
+            raised.exception.diagnostic,
+            {"check": "research_result_verification_truncated"},
+        )
+        self.assertEqual(model.requests[-1].max_output_tokens, 2048)
+
     def test_scoped_search_prioritizes_uncovered_documents(self) -> None:
         first, second, third = (uuid4() for _ in range(3))
 

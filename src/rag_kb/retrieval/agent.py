@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
+from enum import StrEnum
 import json
 import re
 import time
@@ -78,6 +79,39 @@ from rag_kb.services.chat_progress import (
 WORKFLOW_STATE_ARTIFACT = "chat_workflow_state"
 WORKFLOW_MODEL_CALLS_ARTIFACT = "chat_workflow_model_calls"
 _RRF_K = 60
+
+
+class _VerificationFailureReason(StrEnum):
+    WIRE_SCHEMA_INVALID = "wire_schema_invalid"
+    EVIDENCE_NOT_ALLOWED = "evidence_not_allowed"
+    SUPPORTED_EVIDENCE_REQUIRED = "supported_evidence_required"
+    DUPLICATE_LIST_ITEMS = "duplicate_list_items"
+    STATUS_SEMANTICS_INVALID = "status_semantics_invalid"
+
+
+class _VerificationValidationError(ValueError):
+    def __init__(self, reason: _VerificationFailureReason) -> None:
+        self.reason = reason
+        super().__init__(reason.value)
+
+
+_VERIFICATION_REPAIR_HINTS = {
+    _VerificationFailureReason.WIRE_SCHEMA_INVALID: (
+        "Use the exact verification schema, field types, and enum values."
+    ),
+    _VerificationFailureReason.EVIDENCE_NOT_ALLOWED: (
+        "Every evidence_keys entry must come from the selected evidence allowlist."
+    ),
+    _VerificationFailureReason.SUPPORTED_EVIDENCE_REQUIRED: (
+        "Every supported or partial aspect must include at least one allowed evidence key."
+    ),
+    _VerificationFailureReason.DUPLICATE_LIST_ITEMS: (
+        "Remove duplicate entries from missing_aspects and conflicts."
+    ),
+    _VerificationFailureReason.STATUS_SEMANTICS_INVALID: (
+        "Make status, aspect statuses, evidence_keys, missing_aspects, and conflicts semantically consistent."
+    ),
+}
 _AGENT_EVIDENCE_LIMIT = 20
 _PER_QUERY_FUSION_QUOTA = 2
 _ADJACENCY_ANCHOR_LIMIT = 2
@@ -667,12 +701,13 @@ class RetrievalAgentService:
                 parsed,
                 selected_evidence,
             ), (first_call,)
-        except (TypeError, ValueError):
+        except _VerificationValidationError as first_error:
             repair = _repair_request(
                 request,
                 response.content,
                 schema=ChatOutputSchema.RESEARCH_RESULT_VERIFICATION_V1,
                 retry_after_truncation=_response_was_truncated(response, request),
+                validation_hint=_VERIFICATION_REPAIR_HINTS[first_error.reason],
             )
             try:
                 repaired = await complete_model(
@@ -697,7 +732,7 @@ class RetrievalAgentService:
                     parsed,
                     selected_evidence,
                 ), (first_call, repair_call)
-            except (TypeError, ValueError, ChatPipelineExecutionError) as error:
+            except _VerificationValidationError as error:
                 raise ChatPipelineExecutionError(
                     ErrorCode.CHAT_RESPONSE_INVALID,
                     phase=ChatPipelinePhase.RETRIEVE_EVIDENCE,
@@ -706,11 +741,16 @@ class RetrievalAgentService:
                             "research_result_verification_truncated"
                             if _response_was_truncated(response, request)
                             or _response_was_truncated(repaired, repair)
-                            else "research_result_verification"
+                            else (
+                                "research_result_verification_"
+                                f"{error.reason.value}"
+                            )
                         )
                     },
                     model_calls=(first_call, repair_call),
                 ) from error
+            except ChatPipelineExecutionError as error:
+                raise error.retain_model_calls((first_call, repair_call))
 
 
 def evidence_key(value: Evidence) -> str:
@@ -770,33 +810,51 @@ def _parse_verification(
     content: str,
     allowed_evidence: frozenset[str],
 ) -> ResearchResultVerification:
-    wire = WireResearchResultVerification.model_validate_json(content)
-    aspects = tuple(
-        ResearchAspect(
-            aspect=item.aspect.strip(),
-            status=ResearchAspectStatus(item.status),
-            evidence_keys=tuple(item.evidence_keys),
+    try:
+        wire = WireResearchResultVerification.model_validate_json(content)
+        aspects = tuple(
+            ResearchAspect(
+                aspect=item.aspect.strip(),
+                status=ResearchAspectStatus(item.status),
+                evidence_keys=tuple(item.evidence_keys),
+            )
+            for item in wire.aspects
         )
-        for item in wire.aspects
-    )
+    except (TypeError, ValueError) as error:
+        raise _VerificationValidationError(
+            _VerificationFailureReason.WIRE_SCHEMA_INVALID
+        ) from error
     if any(not set(item.evidence_keys) <= allowed_evidence for item in aspects):
-        raise ValueError("verifier referenced evidence outside its allowlist")
+        raise _VerificationValidationError(
+            _VerificationFailureReason.EVIDENCE_NOT_ALLOWED
+        )
     if any(
         item.status in {ResearchAspectStatus.SUPPORTED, ResearchAspectStatus.PARTIAL}
         and not item.evidence_keys
         for item in aspects
     ):
-        raise ValueError("supported verifier aspects require evidence")
+        raise _VerificationValidationError(
+            _VerificationFailureReason.SUPPORTED_EVIDENCE_REQUIRED
+        )
     if len(wire.missing_aspects) != len(set(wire.missing_aspects)):
-        raise ValueError("verifier missing aspects must be unique")
+        raise _VerificationValidationError(
+            _VerificationFailureReason.DUPLICATE_LIST_ITEMS
+        )
     if len(wire.conflicts) != len(set(wire.conflicts)):
-        raise ValueError("verifier conflicts must be unique")
-    result = ResearchResultVerification(
-        status=ResearchStatus(wire.status),
-        aspects=aspects,
-        missing_aspects=tuple(wire.missing_aspects),
-        conflicts=tuple(wire.conflicts),
-    )
+        raise _VerificationValidationError(
+            _VerificationFailureReason.DUPLICATE_LIST_ITEMS
+        )
+    try:
+        result = ResearchResultVerification(
+            status=ResearchStatus(wire.status),
+            aspects=aspects,
+            missing_aspects=tuple(wire.missing_aspects),
+            conflicts=tuple(wire.conflicts),
+        )
+    except (TypeError, ValueError) as error:
+        raise _VerificationValidationError(
+            _VerificationFailureReason.WIRE_SCHEMA_INVALID
+        ) from error
     supported_keys = {
         key
         for item in aspects
@@ -806,26 +864,38 @@ def _parse_verification(
     if result.status is ResearchStatus.SUFFICIENT and (
         not supported_keys or result.missing_aspects or result.conflicts
     ):
-        raise ValueError("sufficient verifier result is inconsistent")
+        raise _VerificationValidationError(
+            _VerificationFailureReason.STATUS_SEMANTICS_INVALID
+        )
     all_keys = {key for item in aspects for key in item.evidence_keys}
     if result.status is ResearchStatus.SUFFICIENT and any(
         item.status is not ResearchAspectStatus.SUPPORTED for item in aspects
     ):
-        raise ValueError("sufficient verifier aspects are inconsistent")
+        raise _VerificationValidationError(
+            _VerificationFailureReason.STATUS_SEMANTICS_INVALID
+        )
     if result.status is ResearchStatus.PARTIAL and (
         not supported_keys or not result.missing_aspects or result.conflicts
     ):
-        raise ValueError("partial verifier result is inconsistent")
+        raise _VerificationValidationError(
+            _VerificationFailureReason.STATUS_SEMANTICS_INVALID
+        )
     if result.status is ResearchStatus.NO_EVIDENCE and (
         all_keys or not result.missing_aspects or result.conflicts
     ):
-        raise ValueError("no-evidence verifier result is inconsistent")
+        raise _VerificationValidationError(
+            _VerificationFailureReason.STATUS_SEMANTICS_INVALID
+        )
     if result.status is ResearchStatus.CONFLICT and (
         not all_keys or not result.conflicts
     ):
-        raise ValueError("conflict verifier result is inconsistent")
+        raise _VerificationValidationError(
+            _VerificationFailureReason.STATUS_SEMANTICS_INVALID
+        )
     if result.status is ResearchStatus.PREMISE_UNSUPPORTED and not all_keys:
-        raise ValueError("unsupported premise requires contradictory evidence")
+        raise _VerificationValidationError(
+            _VerificationFailureReason.STATUS_SEMANTICS_INVALID
+        )
     return result
 
 
@@ -1129,6 +1199,7 @@ def _repair_request(
     *,
     schema: ChatOutputSchema,
     retry_after_truncation: bool = False,
+    validation_hint: str | None = None,
 ) -> ChatModelRequest:
     output_limit = original.max_output_tokens
     if retry_after_truncation and output_limit is not None:
@@ -1145,6 +1216,7 @@ def _repair_request(
                 content=(
                     f"The prior object was invalid. Return exactly one JSON object "
                     f"conforming to {schema.value}, with no extra fields or prose."
+                    + (f" Correction constraint: {validation_hint}" if validation_hint else "")
                 ),
             ),
         ),
