@@ -18,6 +18,7 @@ from rag_kb.adapters.model_api.langchain_mapping import (
     to_langchain_messages,
 )
 from rag_kb.answering.wire_schemas import OUTPUT_SCHEMAS
+from rag_kb.config.settings import provider_retry_budget_seconds
 from rag_kb.domain import (
     ChatModelExecutionError,
     ChatModelRequest,
@@ -77,6 +78,10 @@ class LangChainChatModelAdapter:
         ):
             raise ValueError("chat visual input limits are invalid")
         self._timeout_seconds = timeout_seconds
+        self._total_budget_seconds = provider_retry_budget_seconds(
+            timeout_seconds,
+            max_retries,
+        )
         self._max_tokens = max_tokens
         self._semaphore = asyncio.Semaphore(max_concurrency)
         self._structured_output_method = (
@@ -167,7 +172,7 @@ class LangChainChatModelAdapter:
     ) -> Any:
         async with self._semaphore:
             try:
-                async with asyncio.timeout(self._timeout_seconds):
+                async with asyncio.timeout(self._total_budget_seconds):
                     return await operation()
             except TimeoutError as error:
                 raise ChatModelExecutionError(

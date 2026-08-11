@@ -39,6 +39,7 @@ from rag_kb.config import (
     load_settings,
     validate_startup_environment,
 )
+from rag_kb.config.settings import provider_retry_budget_seconds
 from rag_kb.db import (
     DatabaseProcess,
     DatabaseResources,
@@ -231,7 +232,11 @@ def build_worker_dependencies(
         model_secret_store,
     )
     chat_model_adapter = RoutingChatModelAdapter(
-        _chat_model_loader(unit_of_work, model_secret_store),
+        _chat_model_loader(
+            unit_of_work,
+            model_secret_store,
+            chat_deadline_seconds=resolved_settings.job_poller.chat_deadline_seconds,
+        ),
         legacy_fallback=legacy_chat_model_adapter,
     )
     indexing_pipeline = IndexingPipeline(
@@ -466,6 +471,8 @@ def _worker_id() -> str:
 def _chat_model_loader(
     unit_of_work: SqlAlchemyUnitOfWorkFactory,
     secret_store: LocalModelSecretStore,
+    *,
+    chat_deadline_seconds: float,
 ):
     async def load(revision_id):
         async def resolve(uow: UnitOfWork):
@@ -493,6 +500,14 @@ def _chat_model_loader(
             resolve,
             purpose=UnitOfWorkPurpose.REQUEST,
         )
+        if chat_deadline_seconds <= provider_retry_budget_seconds(
+            bundle.provider_revision.timeout_seconds,
+            bundle.provider_revision.max_retries,
+        ):
+            raise ChatModelExecutionError(
+                ErrorCode.CHAT_PROVIDER_UNAVAILABLE,
+                diagnostic={"check": "chat_retry_budget"},
+            )
         try:
             api_key = await asyncio.to_thread(
                 secret_store.read,

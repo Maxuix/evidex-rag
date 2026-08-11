@@ -85,13 +85,14 @@ def _adapter(
     *,
     timeout_seconds: float = 1.0,
     max_concurrency: int = 1,
+    max_retries: int = 2,
 ) -> LangChainChatModelAdapter:
     return LangChainChatModelAdapter(
         base_url="https://provider.invalid/v1",
         api_key="secret",
         model="configured-model",
         timeout_seconds=timeout_seconds,
-        max_retries=2,
+        max_retries=max_retries,
         max_concurrency=max_concurrency,
         chat_model=model,  # type: ignore[arg-type]
     )
@@ -715,8 +716,10 @@ class LangChainChatAdapterTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0.02)
                 return _message()
 
+        adapter = _adapter(_SlowModel(), timeout_seconds=0.001)
+        adapter._total_budget_seconds = 0.005  # noqa: SLF001 - boundary probe
         with self.assertRaises(ChatModelExecutionError) as timeout:
-            await _adapter(_SlowModel(), timeout_seconds=0.001).complete(_request())
+            await adapter.complete(_request())
         self.assertEqual(timeout.exception.code, ErrorCode.CHAT_PROVIDER_UNAVAILABLE)
         self.assertEqual(timeout.exception.diagnostic, {"check": "total_timeout"})
 
@@ -742,6 +745,32 @@ class LangChainChatAdapterTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("sensitive", rendered)
             self.assertNotIn("secret.invalid", rendered)
             self.assertEqual(len(model.calls), 1)
+
+    async def test_sdk_retry_window_is_not_cut_off_at_single_request_timeout(self) -> None:
+        class _SlowButWithinBudget:
+            async def ainvoke(self, messages: list[object]) -> AIMessage:
+                await asyncio.sleep(0.02)
+                return _message()
+
+        adapter = _adapter(
+            _SlowButWithinBudget(),
+            timeout_seconds=0.001,
+            max_retries=1,
+        )
+        response = await adapter.complete(_request())
+        self.assertEqual(response.model, "resolved-model")
+
+    async def test_total_budget_timeout_has_stable_diagnostic(self) -> None:
+        class _NeverCompletes:
+            async def ainvoke(self, messages: list[object]) -> AIMessage:
+                await asyncio.sleep(0.05)
+                return _message()
+
+        adapter = _adapter(_NeverCompletes(), timeout_seconds=0.001, max_retries=0)
+        adapter._total_budget_seconds = 0.005  # noqa: SLF001 - boundary probe
+        with self.assertRaises(ChatModelExecutionError) as raised:
+            await adapter.complete(_request())
+        self.assertEqual(raised.exception.diagnostic, {"check": "total_timeout"})
 
     async def test_invalid_visible_response_metadata_fails_closed(self) -> None:
         cases = (

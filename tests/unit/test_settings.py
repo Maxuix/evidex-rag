@@ -32,6 +32,7 @@ from rag_kb.config.settings import (
     Settings,
     embedding_retry_budget_seconds,
     load_settings,
+    provider_retry_budget_seconds,
 )
 from rag_kb.db import DatabaseProcess
 from rag_kb.workflows.langgraph_runner import LangGraphRunner
@@ -116,7 +117,7 @@ class SettingsTests(unittest.TestCase):
             settings.parser.docling_artifacts_path,
             Path("/opt/rag-kb/docling-artifacts"),
         )
-        self.assertEqual(settings.job_poller.chat_deadline_seconds, 120)
+        self.assertEqual(settings.job_poller.chat_deadline_seconds, 300)
         self.assertEqual(settings.database.required_api_connections, 3)
         self.assertEqual(settings.database.api_statement_timeout_ms, 30_000)
         self.assertEqual(settings.database.worker_statement_timeout_ms, 60_000)
@@ -299,6 +300,14 @@ class SettingsTests(unittest.TestCase):
                         "job_poller": {"chat_deadline_seconds": 10},
                     },
                 )
+            with self.assertRaises(ValidationError):
+                Settings(
+                    _env_file=None,
+                    **{
+                        **payload,
+                        "job_poller": {"chat_deadline_seconds": 211},
+                    },
+                )
 
     def test_nested_environment_surface_loads_without_global_state(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -437,6 +446,8 @@ class SettingsTests(unittest.TestCase):
                         )
 
     def test_retrieval_deadline_exceeds_embedding_retry_budgets(self) -> None:
+        self.assertEqual(provider_retry_budget_seconds(30, 2), 211)
+        self.assertEqual(provider_retry_budget_seconds(60, 1), 121)
         self.assertEqual(embedding_retry_budget_seconds(30, 2), 211)
         self.assertEqual(embedding_retry_budget_seconds(30, 0), 31)
         self.assertEqual(embedding_retry_budget_seconds(2.5, 3), 191)

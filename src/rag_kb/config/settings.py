@@ -33,17 +33,26 @@ _MAX_PROVIDER_RETRY_AFTER_SECONDS = 60
 _PROVIDER_TIMEOUT_SCHEDULING_MARGIN_SECONDS = 1
 
 
-def embedding_retry_budget_seconds(
+def provider_retry_budget_seconds(
     timeout_seconds: float,
     max_retries: int,
 ) -> float:
-    """Return the bounded embedding-adapter budget for root validation."""
+    """Return the bounded budget for one provider SDK logical call."""
 
     return (
         timeout_seconds * (max_retries + 1)
         + _MAX_PROVIDER_RETRY_AFTER_SECONDS * max_retries
         + _PROVIDER_TIMEOUT_SCHEDULING_MARGIN_SECONDS
     )
+
+
+def embedding_retry_budget_seconds(
+    timeout_seconds: float,
+    max_retries: int,
+) -> float:
+    """Backward-compatible name for embedding budget validation."""
+
+    return provider_retry_budget_seconds(timeout_seconds, max_retries)
 
 
 class StrictSettingsModel(BaseModel):
@@ -198,7 +207,7 @@ class JobPollerSettings(StrictSettingsModel):
     max_attempts: PositiveInt = 3
     retry_base_delay_seconds: PositiveFloat = 5.0
     retry_max_delay_seconds: PositiveFloat = 60.0
-    chat_deadline_seconds: PositiveFloat = 120.0
+    chat_deadline_seconds: PositiveFloat = 300.0
     reconciliation_batch_size: PositiveInt = 100
 
     @model_validator(mode="after")
@@ -554,6 +563,15 @@ class Settings(BaseSettings):
                     self.model_provider.embedding.max_retries,
                 )
             )
+        if self.model_provider is not None:
+            chat_budget = provider_retry_budget_seconds(
+                self.model_provider.chat.timeout_seconds,
+                self.model_provider.chat.max_retries,
+            )
+            if self.job_poller.chat_deadline_seconds <= chat_budget:
+                raise ValueError(
+                    "chat deadline must exceed the chat provider retry budget"
+                )
         if (
             self.model_provider is not None
             and self.model_provider.multimodal_embedding is not None
