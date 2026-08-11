@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, replace
 import json
+import re
 from typing import Any
 from uuid import UUID
 
@@ -73,6 +74,10 @@ _AGENT_EVIDENCE_LIMIT = 20
 _PER_QUERY_FUSION_QUOTA = 2
 _ADJACENCY_ANCHOR_LIMIT = 2
 _ADJACENCY_NEIGHBOR_LIMIT = 4
+_AGENT_EVIDENCE_TOTAL_LIMIT = 24_000
+_AGENT_EVIDENCE_ITEM_LIMIT = 2_400
+_PROJECTION_WINDOW = 600
+_PROJECTION_MARKER = "\n[… omitted by bounded evidence projection …]\n"
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,6 +146,7 @@ class RetrievalAgentService:
         adjacency_cache: dict[UUID, tuple[Evidence, ...]] = {}
         adjacency_loaded_keys: set[str] = set()
         forced_reason: RetrievalAgentProposedReason | None = None
+        verifier_focus: tuple[str, ...] = ()
 
         while decision_rounds < budget.decision_rounds:
             decision_rounds += 1
@@ -313,11 +319,18 @@ class RetrievalAgentService:
                 verification, verification_calls = await self._verify(
                     context,
                     selected_evidence=verification_evidence,
+                    focus=(
+                        query_context.standalone_query or context.query,
+                        *verifier_focus,
+                    ),
                 )
             except ChatPipelineExecutionError as error:
                 raise _with_prior_model_calls(error, calls)
             verifier_calls += 1
             calls.extend(verification_calls)
+            verifier_focus = tuple(
+                verification.missing_aspects + verification.conflicts
+            )
             if (
                 _verification_needs_more(verification)
                 and verifier_continuations < budget.verifier_continuations
@@ -413,6 +426,10 @@ class RetrievalAgentService:
             verification, verification_calls = await self._verify(
                 context,
                 selected_evidence=verification_evidence,
+                focus=(
+                    query_context.standalone_query or context.query,
+                    *verifier_focus,
+                ),
             )
         except ChatPipelineExecutionError as error:
             raise _with_prior_model_calls(error, calls)
@@ -530,8 +547,13 @@ class RetrievalAgentService:
         context: ChatExecutionContext,
         *,
         selected_evidence: tuple[Evidence, ...],
+        focus: tuple[str, ...] = (),
     ) -> tuple[ResearchResultVerification, tuple[ChatModelCallRecord, ...]]:
-        request = _verification_request(context, selected_evidence)
+        request = _verification_request(
+            context,
+            selected_evidence,
+            focus=focus,
+        )
         response = await complete_model(
             self._model, request, phase=ChatPipelinePhase.RETRIEVE_EVIDENCE
         )
@@ -714,6 +736,14 @@ def _agent_request(
     payload = {
         "answer_target": context.query,
         "standalone_retrieval_query": query_context.standalone_query,
+        "projection_focus": list(
+            _controller_projection_focus(
+                context,
+                query_context,
+                observations,
+                control_feedback or (),
+            )
+        ),
         "remaining": {
             "decision_rounds": max(0, budget.decision_rounds - decision_rounds),
             "retrieval_calls": max(0, budget.retrieval_calls - retrieval_calls),
@@ -732,7 +762,16 @@ def _agent_request(
         "control_feedback": list((control_feedback or [])[-4:]),
         "selection_limit": _frozen_top_k(context),
         "evidence_pool": [
-            _agent_evidence(item) for item in evidence[:_AGENT_EVIDENCE_LIMIT]
+            item
+            for item in project_agent_evidence(
+                evidence[:_AGENT_EVIDENCE_LIMIT],
+                _controller_projection_focus(
+                    context,
+                    query_context,
+                    observations,
+                    control_feedback or (),
+                ),
+            )
         ],
     }
     return ChatModelRequest(
@@ -773,10 +812,19 @@ def _agent_request(
 def _verification_request(
     context: ChatExecutionContext,
     evidence: tuple[Evidence, ...],
+    *,
+    focus: tuple[str, ...] = (),
 ) -> ChatModelRequest:
+    projection_focus = tuple(
+        item.strip() for item in (context.query, *focus) if item and item.strip()
+    )
     payload = {
         "answer_target": context.query,
-        "selected_evidence_allowlist": [_agent_evidence(item) for item in evidence],
+        "projection_focus": list(projection_focus),
+        "selected_evidence_allowlist": project_agent_evidence(
+            evidence,
+            projection_focus,
+        ),
     }
     return ChatModelRequest(
         messages=(
@@ -874,12 +922,239 @@ def _model_profile_revision_id(context: ChatExecutionContext) -> UUID | None:
     return UUID(value) if isinstance(value, str) else None
 
 
-def _agent_evidence(item: Evidence) -> dict[str, Any]:
+def _controller_projection_focus(
+    context: ChatExecutionContext,
+    query_context: ContextualizedQuery,
+    observations: list[RetrievalToolObservation],
+    control_feedback: tuple[str, ...],
+) -> tuple[str, ...]:
+    values: list[str] = [
+        context.query,
+        query_context.standalone_query or context.query,
+    ]
+    for observation in observations[-4:]:
+        values.append(observation.objective)
+        values.extend(observation.queries)
+    values.extend(control_feedback[-4:])
+    return tuple(dict.fromkeys(item.strip() for item in values if item.strip()))
+
+
+def project_agent_evidence(
+    evidence: tuple[Evidence, ...],
+    focus: tuple[str, ...],
+    *,
+    total_limit: int = _AGENT_EVIDENCE_TOTAL_LIMIT,
+    item_limit: int = _AGENT_EVIDENCE_ITEM_LIMIT,
+) -> tuple[dict[str, Any], ...]:
+    """Project untrusted evidence into bounded model-facing excerpts.
+
+    The returned dictionaries contain only a transient projection.  The
+    original Evidence objects, citation text, and persisted workflow facts
+    remain untouched.
+    """
+
+    if total_limit < 1 or item_limit < 1:
+        raise ValueError("evidence projection limits must be positive")
+    projected: list[dict[str, Any]] = []
+    used = 0
+    for item in evidence:
+        remaining = total_limit - used
+        if remaining <= 0:
+            break
+        excerpt_limit = min(item_limit, remaining)
+        excerpt = project_evidence_text(
+            item.text,
+            focus,
+            max_chars=excerpt_limit,
+        )
+        if not excerpt:
+            continue
+        projected.append(_agent_evidence(item, excerpt=excerpt))
+        used += len(excerpt)
+    return tuple(projected)
+
+
+def project_evidence_text(
+    text: str,
+    focus: tuple[str, ...],
+    *,
+    max_chars: int = _AGENT_EVIDENCE_ITEM_LIMIT,
+) -> str:
+    """Select deterministic, query-related raw windows from one Chunk."""
+
+    if max_chars < 1:
+        raise ValueError("projection max_chars must be positive")
+    if len(text) <= max_chars:
+        return text
+    if max_chars <= len(_PROJECTION_MARKER) + 8:
+        return text[:max_chars]
+
+    terms = _projection_terms(focus)
+    line_spans = tuple(_line_spans(text))
+    table_lines = tuple(
+        index for index, (start, end) in enumerate(line_spans)
+        if "|" in text[start:end]
+    )
+    if len(table_lines) >= 2:
+        spans = _table_projection_spans(
+            text,
+            line_spans,
+            table_lines,
+            terms,
+            max_chars,
+        )
+    else:
+        spans = _text_projection_spans(text, terms, max_chars)
+    return _join_projection_spans(text, spans, max_chars)
+
+
+def _projection_terms(focus: tuple[str, ...]) -> tuple[str, ...]:
+    terms: list[str] = []
+    for value in focus:
+        normalized = value.casefold().strip()
+        if not normalized:
+            continue
+        terms.append(normalized)
+        terms.extend(
+            token.casefold()
+            for token in re.findall(r"[\w][\w.-]*", normalized, flags=re.UNICODE)
+            if len(token) > 1
+        )
+        cjk = "".join(re.findall(r"[\u3400-\u9fff]", normalized))
+        terms.extend(cjk[index : index + 2] for index in range(max(0, len(cjk) - 1)))
+    return tuple(dict.fromkeys(item for item in terms if item))
+
+
+def _line_spans(text: str) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+    start = 0
+    for value in text.splitlines(keepends=True):
+        end = start + len(value)
+        spans.append((start, end))
+        start = end
+    if start < len(text):
+        spans.append((start, len(text)))
+    return spans or [(0, len(text))]
+
+
+def _focus_score(value: str, terms: tuple[str, ...]) -> int:
+    normalized = value.casefold()
+    return sum(normalized.count(term) * max(1, len(term)) for term in terms)
+
+
+def _text_projection_spans(
+    text: str,
+    terms: tuple[str, ...],
+    max_chars: int,
+) -> tuple[tuple[int, int], ...]:
+    header_end = min(
+        len(text),
+        next((end for start, end in _line_spans(text) if end > 0), 180),
+        240,
+    )
+    window_size = min(_PROJECTION_WINDOW, max_chars)
+    windows = tuple(
+        (start, min(start + window_size, len(text)))
+        for start in range(0, len(text), window_size)
+    )
+    ranked = sorted(
+        windows,
+        key=lambda span: (-_focus_score(text[span[0] : span[1]], terms), span[0]),
+    )
+    if not terms or not any(_focus_score(text[start:end], terms) for start, end in windows):
+        if len(windows) <= 3:
+            chosen = windows
+        else:
+            chosen = tuple(
+                dict.fromkeys(
+                    (windows[0], windows[len(windows) // 2], windows[-1])
+                )
+            )
+    else:
+        chosen = ranked[:3]
+    spans = [(0, header_end)]
+    spans.extend(chosen)
+    return tuple(spans)
+
+
+def _table_projection_spans(
+    text: str,
+    line_spans: tuple[tuple[int, int], ...],
+    table_lines: tuple[int, ...],
+    terms: tuple[str, ...],
+    max_chars: int,
+) -> tuple[tuple[int, int], ...]:
+    del max_chars
+    first_table = table_lines[0]
+    header_indices = set(table_lines[:2])
+    spans: list[tuple[int, int]] = []
+    if first_table > 0:
+        spans.append(line_spans[0])
+    spans.extend(line_spans[index] for index in table_lines[:2])
+    data_lines = [index for index in table_lines if index not in header_indices]
+    ranked = sorted(
+        data_lines,
+        key=lambda index: (
+            -_focus_score(
+                text[line_spans[index][0] : line_spans[index][1]],
+                terms,
+            ),
+            index,
+        ),
+    )
+    matching = [
+        index
+        for index in ranked
+        if _focus_score(text[line_spans[index][0] : line_spans[index][1]], terms) > 0
+    ]
+    selected = matching[:2]
+    if not selected and data_lines:
+        selected = [data_lines[0], data_lines[len(data_lines) // 2], data_lines[-1]]
+    table_position = {value: position for position, value in enumerate(table_lines)}
+    for index in selected:
+        position = table_position[index]
+        for neighbor_position in (position - 1, position, position + 1):
+            if 0 <= neighbor_position < len(table_lines):
+                spans.append(line_spans[table_lines[neighbor_position]])
+    return tuple(spans)
+
+
+def _join_projection_spans(
+    text: str,
+    spans: tuple[tuple[int, int], ...],
+    max_chars: int,
+) -> str:
+    ordered: list[tuple[int, int]] = []
+    for start, end in sorted(spans):
+        if end <= start:
+            continue
+        if ordered and start <= ordered[-1][1]:
+            ordered[-1] = (ordered[-1][0], max(ordered[-1][1], end))
+        else:
+            ordered.append((start, end))
+    parts: list[str] = []
+    for start, end in ordered:
+        if parts:
+            parts.append(_PROJECTION_MARKER)
+        parts.append(text[start:end])
+    rendered = "".join(parts)
+    if len(rendered) <= max_chars:
+        return rendered
+    # Keep mandatory first/header content and the highest ranked raw windows
+    # within the hard cap.  This fallback never rewrites source characters.
+    return rendered[:max_chars]
+
+
+def _agent_evidence(
+    item: Evidence,
+    *,
+    excerpt: str | None = None,
+) -> dict[str, Any]:
     return {
         "evidence_key": evidence_key(item),
         "document_display_name": item.document_display_name or "document",
         "ordinal": item.ordinal,
-        "untrusted_excerpt": item.text[:1200],
+        "untrusted_excerpt": item.text[:1200] if excerpt is None else excerpt,
         "score": item.score,
         "score_kind": item.score_kind.value,
         "vector_similarity": item.vector_similarity,

@@ -30,6 +30,8 @@ from rag_kb.retrieval.agent import (
     _repair_request,
     _verification_request,
     evidence_key,
+    project_agent_evidence,
+    project_evidence_text,
 )
 from tests.unit.test_answering import _Model, _context, _pack, _response
 
@@ -182,6 +184,54 @@ def _adjacent(anchor, *, offset: int, text: str, chunk_id=None):
 
 
 class RetrievalAgentTests(unittest.IsolatedAsyncioTestCase):
+    def test_projection_keeps_late_focus_windows(self) -> None:
+        text = (
+            "Document title\n"
+            + "\n".join(f"background line {index:03d}" for index in range(180))
+            + "\nlate-target-1208 late-target-1238 late-target-1260"
+            + "\n" + "x" * 500
+            + "\nlate-target-1364 late-target-1385 late-target-1800"
+        )
+        projected = project_evidence_text(
+            text,
+            ("late-target-1208", "late-target-1364"),
+        )
+        self.assertIn("late-target-1208", projected)
+        self.assertIn("late-target-1364", projected)
+        self.assertLessEqual(len(projected), 2400)
+
+    def test_projection_keeps_table_header_late_row_and_decimal_text(self) -> None:
+        table = (
+            "Report title\n"
+            "| Metric | 2022 | 2021 |\n"
+            "| --- | ---: | ---: |\n"
+            + "\n".join(f"| Noise {index} | 0 | 0 |" for index in range(110))
+            + "\n| Total (loan) | 828.8 | 885.3 |\n"
+        )
+        projected = project_evidence_text(table, ("Total (loan)", "828.8"))
+        self.assertIn("| Metric | 2022 | 2021 |", projected)
+        self.assertIn("| Total (loan) | 828.8 | 885.3 |", projected)
+        self.assertIn("828.8", projected)
+        self.assertLessEqual(len(projected), 2400)
+
+    def test_projection_is_deterministic_and_has_total_budget(self) -> None:
+        context = _agent_context()
+        pack = _pack(context, *(f"target-{index}" for index in range(20)))
+        evidence = tuple(
+            replace(
+                item,
+                text=(f"Evidence {index} target-{index} " + "x" * 5000),
+            )
+            for index, item in enumerate(pack.evidence)
+        )
+        first = project_agent_evidence(evidence, ("target-12", "decimal"))
+        second = project_agent_evidence(evidence, ("target-12", "decimal"))
+        self.assertEqual(first, second)
+        excerpts = [item["untrusted_excerpt"] for item in first]
+        self.assertLessEqual(sum(len(item) for item in excerpts), 24_000)
+        self.assertTrue(all(len(item) <= 2_400 for item in excerpts))
+        self.assertIn("target-12", excerpts[12])
+
     async def test_json_mode_requests_explicitly_require_json(self) -> None:
         context = _agent_context()
         configuration, _ = initial_chat_workflow(ChatWorkflowMode.AGENT)
