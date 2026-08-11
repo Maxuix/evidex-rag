@@ -630,6 +630,17 @@ class RetrievalAgentTests(unittest.IsolatedAsyncioTestCase):
             (("q1", (second,)), ("q2", (third,)), ("q3", (first,))),
         )
 
+    def test_single_scoped_query_covers_all_uncovered_documents(self) -> None:
+        first, second = (uuid4() for _ in range(2))
+
+        requests = _round_robin_document_requests(
+            ("single query",),
+            document_ids=(first, second),
+            covered_document_ids=frozenset(),
+        )
+
+        self.assertEqual(requests, (("single query", (first, second)),))
+
     def test_verifier_gate_downgrades_sufficient_when_required_doc_is_missing(self) -> None:
         context = _agent_context()
         first_document = uuid4()

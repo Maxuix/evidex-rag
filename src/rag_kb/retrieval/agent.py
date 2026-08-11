@@ -2684,6 +2684,10 @@ def _round_robin_document_requests(
         for document_id in ordered_documents
         if document_id not in covered_document_ids
     ]
+    if len(queries) == 1:
+        candidates = tuple(uncovered or ordered_documents)
+        return ((queries[0], candidates),)
+
     cursor = 0
     requests: list[tuple[str, tuple[UUID, ...]]] = []
     for query in queries:
