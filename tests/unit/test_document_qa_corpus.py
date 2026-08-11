@@ -8,6 +8,7 @@ import unittest
 
 from tools.build_document_qa_corpus import (
     CASE_SCHEMA,
+    COMPLEX_CASE_DEFINITIONS,
     CORPUS_SCHEMA,
     _acceptable_answers,
     _cfqa_acceptable_answers,
@@ -18,6 +19,38 @@ from tools.build_document_qa_corpus import (
 
 
 class DocumentQaCorpusTests(unittest.TestCase):
+    def test_complex_questions_use_serving_logical_filenames(self) -> None:
+        cases = {item["case_id"]: item for item in COMPLEX_CASE_DEFINITIONS}
+
+        self.assertIn(
+            "financebench-amd-2022-10k.pdf",
+            cases["complex-01"]["question"],
+        )
+        for case_id in ("complex-01", "complex-02", "complex-03"):
+            self.assertIn(
+                "financebench-boeing-2022-10k.pdf",
+                cases[case_id]["question"],
+            )
+        for case_id in ("complex-02", "complex-03", "complex-04"):
+            self.assertIn(
+                "financebench-american-express-2022-10k.pdf",
+                cases[case_id]["question"],
+            )
+        for case_id in ("complex-04", "complex-05"):
+            self.assertIn(
+                "cfqa-fenghuo-electronics-2022-annual-report.pdf",
+                cases[case_id]["question"],
+            )
+
+    def test_complex_05_names_the_source_table_rows(self) -> None:
+        case = next(
+            item for item in COMPLEX_CASE_DEFINITIONS
+            if item["case_id"] == "complex-05"
+        )
+
+        for label in ("原材料", "管理费用", "研发费用", "合并利润表"):
+            self.assertIn(label, case["question"])
+
     def test_cfqa_document_path_uses_source_filename_not_logical_id(self) -> None:
         self.assertEqual(
             _cfqa_document_relative_path().as_posix(),

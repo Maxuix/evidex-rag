@@ -302,7 +302,8 @@ COMPLEX_CASE_DEFINITIONS = (
     _complex_case(
         "complex-01",
         (
-            "Using AMD_2022_10K.pdf and BOEING_2022_10K.pdf, compare the FY2022 "
+            "Using financebench-amd-2022-10k.pdf and "
+            "financebench-boeing-2022-10k.pdf, compare the FY2022 "
             "customer-concentration evidence. Report AMD's single-customer "
             "percentage and Boeing's U.S.-government-contract percentage, state "
             "the numerical difference, explain why the two percentages are not "
@@ -349,7 +350,8 @@ COMPLEX_CASE_DEFINITIONS = (
     _complex_case(
         "complex-02",
         (
-            "Using AMERICANEXPRESS_2022_10K.pdf and BOEING_2022_10K.pdf, report "
+            "Using financebench-american-express-2022-10k.pdf and "
+            "financebench-boeing-2022-10k.pdf, report "
             "the issuer-disclosed effective tax rates for 2021 and 2022 for "
             "each company, calculate each year-over-year change in percentage "
             "points, and state which company's change in magnitude was larger."
@@ -396,7 +398,8 @@ COMPLEX_CASE_DEFINITIONS = (
     _complex_case(
         "complex-03",
         (
-            "Using AMERICANEXPRESS_2022_10K.pdf and BOEING_2022_10K.pdf, assess "
+            "Using financebench-american-express-2022-10k.pdf and "
+            "financebench-boeing-2022-10k.pdf, assess "
             "whether gross margin is a comparable performance measure. State "
             "what the AmEx report says about gross margin and calculate Boeing's "
             "2021 and 2022 gross margins from gross profit divided by revenue, "
@@ -433,8 +436,8 @@ COMPLEX_CASE_DEFINITIONS = (
     _complex_case(
         "complex-04",
         (
-            "Using AMERICANEXPRESS_2022_10K.pdf and "
-            "fenghuo-electronics-2022-annual-report.pdf, list AmEx's reported "
+            "Using financebench-american-express-2022-10k.pdf and "
+            "cfqa-fenghuo-electronics-2022-annual-report.pdf, list AmEx's reported "
             "geographies and state exactly what the Fenghuo source discloses "
             "about overseas investment or foreign assets. Do not turn an "
             "unavailable disclosure into a stronger conclusion."
@@ -462,10 +465,11 @@ COMPLEX_CASE_DEFINITIONS = (
     _complex_case(
         "complex-05",
         (
-            "For Fenghuo's 2022 annual report, compare raw-material cost with "
-            "the management expense and R&D expense rows in the consolidated "
-            "income statement. Report the two amounts and the exact difference, "
-            "retaining cents."
+            "Using cfqa-fenghuo-electronics-2022-annual-report.pdf, compare the "
+            "raw-material cost (原材料) with the management expense (管理费用) and "
+            "R&D expense (研发费用) rows in the consolidated income statement "
+            "(合并利润表). Report the two amounts and the exact difference, retaining "
+            "cents."
         ),
         language="en",
         reasoning_type="financial_decimal_calculation",
