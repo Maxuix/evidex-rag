@@ -486,6 +486,41 @@ class SettingsTests(unittest.TestCase):
                     },
                 )
 
+    def test_slow_chat_candidate_has_a_bounded_worker_deadline(self) -> None:
+        self.assertEqual(provider_retry_budget_seconds(60, 1), 181)
+        self.assertGreater(420, provider_retry_budget_seconds(60, 1))
+        self.assertLessEqual(300, provider_retry_budget_seconds(60, 2))
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            payload = valid_payload(root)
+            providers = copy.deepcopy(payload["model_provider"])
+            assert isinstance(providers, dict)
+            chat = providers["chat"]
+            assert isinstance(chat, dict)
+            chat.update({"timeout_seconds": 60, "max_retries": 2})
+            with self.assertRaises(ValidationError):
+                Settings(
+                    _env_file=None,
+                    **{
+                        **payload,
+                        "model_provider": providers,
+                        "job_poller": {"chat_deadline_seconds": 300},
+                    },
+                )
+
+            chat["max_retries"] = 1
+            accepted = Settings(
+                _env_file=None,
+                **{
+                    **payload,
+                    "model_provider": providers,
+                    "job_poller": {"chat_deadline_seconds": 420},
+                },
+            )
+            self.assertEqual(accepted.job_poller.chat_deadline_seconds, 420)
+
+
     def test_fixed_embedding_space_rejects_in_place_changes(self) -> None:
         changes = {
             "dimension": 1536,

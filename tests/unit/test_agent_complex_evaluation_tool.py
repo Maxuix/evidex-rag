@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 from decimal import Decimal
 from pathlib import Path
@@ -8,6 +9,7 @@ import unittest
 
 from tools.evaluate_agent_complex_qa import (
     _extract_decimal_values,
+    _validate_options,
     _validated_api_base,
     load_document_identity_map,
     score_complex_case,
@@ -16,6 +18,22 @@ from tools.evaluate_agent_complex_qa import (
 
 
 class AgentComplexEvaluationToolTests(unittest.TestCase):
+    def test_evaluation_parallelism_is_fixed_at_one(self) -> None:
+        base = {
+            "top_k": 10,
+            "parallelism": 1,
+            "timeout_seconds": 900.0,
+            "poll_seconds": 1.0,
+            "strategy": "exact_vector",
+            "rerank_mode": "classic",
+        }
+        _validate_options(argparse.Namespace(**base))
+        for parallelism in (0, 2, 3):
+            with self.subTest(parallelism=parallelism), self.assertRaises(ValueError):
+                _validate_options(
+                    argparse.Namespace(**{**base, "parallelism": parallelism})
+                )
+
     def test_loopback_api_validation_rejects_credentials_and_query(self) -> None:
         self.assertEqual(
             _validated_api_base("http://127.0.0.1:8000/api/v1/"),

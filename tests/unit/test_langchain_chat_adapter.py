@@ -723,7 +723,7 @@ class LangChainChatAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(timeout.exception.code, ErrorCode.CHAT_PROVIDER_UNAVAILABLE)
         self.assertEqual(timeout.exception.diagnostic, {"check": "total_timeout"})
 
-        for status, retryable in ((429, True), (400, False)):
+        for status, retryable in ((429, True), (400, False), (403, False)):
             request = httpx.Request("POST", "https://secret.invalid/v1")
             response = httpx.Response(status, request=request)
             provider_error = openai.APIStatusError(

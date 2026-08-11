@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from decimal import Decimal, InvalidOperation
 from datetime import datetime, timezone
 import json
@@ -130,8 +129,8 @@ def main() -> int:
 def _validate_options(arguments: argparse.Namespace) -> None:
     if not 1 <= arguments.top_k <= 100:
         raise ValueError("--top-k must be between 1 and 100")
-    if not 1 <= arguments.parallelism <= 3:
-        raise ValueError("--parallelism must be between 1 and 3")
+    if arguments.parallelism != 1:
+        raise ValueError("--parallelism must be 1 for bounded provider evaluation")
     if arguments.timeout_seconds <= 0 or arguments.poll_seconds <= 0:
         raise ValueError("timeouts and polling interval must be positive")
     if arguments.strategy == "hybrid" and arguments.rerank_mode == "none":
@@ -209,15 +208,9 @@ def evaluate_cases(
             document_identity_map=document_identity_map,
         )
 
-    if parallelism == 1:
-        return [run(case) for case in cases]
-    results: dict[str, dict[str, Any]] = {}
-    with ThreadPoolExecutor(max_workers=parallelism) as executor:
-        futures = {executor.submit(run, case): str(case["case_id"]) for case in cases}
-        for future in as_completed(futures):
-            result = future.result()
-            results[str(result["case_id"])] = result
-    return [results[str(case["case_id"])] for case in cases]
+    if parallelism != 1:
+        raise ValueError("evaluation parallelism must be 1")
+    return [run(case) for case in cases]
 
 
 def _evaluate_one(
