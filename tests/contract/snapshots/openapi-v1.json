@@ -3188,6 +3188,80 @@
               "premise_unsupported"
             ],
             "title": "Termination Reason"
+          },
+          "scope_status": {
+            "type": "string",
+            "enum": [
+              "all",
+              "resolved",
+              "ambiguous",
+              "unresolved"
+            ],
+            "title": "Scope Status",
+            "default": "all"
+          },
+          "resolved_document_count": {
+            "type": "integer",
+            "maximum": 4.0,
+            "minimum": 0.0,
+            "title": "Resolved Document Count",
+            "default": 0
+          },
+          "complete_scan_document_count": {
+            "type": "integer",
+            "maximum": 4.0,
+            "minimum": 0.0,
+            "title": "Complete Scan Document Count",
+            "default": 0
+          },
+          "scope_rejection_count": {
+            "type": "integer",
+            "maximum": 4.0,
+            "minimum": 0.0,
+            "title": "Scope Rejection Count",
+            "default": 0
+          },
+          "scope_downgrade_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope Downgrade Reason"
+          },
+          "calculation_call_count": {
+            "type": "integer",
+            "maximum": 4.0,
+            "minimum": 0.0,
+            "title": "Calculation Call Count",
+            "default": 0
+          },
+          "calculation_success_count": {
+            "type": "integer",
+            "maximum": 4.0,
+            "minimum": 0.0,
+            "title": "Calculation Success Count",
+            "default": 0
+          },
+          "calculation_rejection_reasons": {
+            "items": {
+              "type": "string",
+              "maxLength": 64,
+              "minLength": 1
+            },
+            "type": "array",
+            "title": "Calculation Rejection Reasons",
+            "default": []
+          },
+          "calculation_elapsed_ms": {
+            "type": "integer",
+            "maximum": 120000.0,
+            "minimum": 0.0,
+            "title": "Calculation Elapsed Ms",
+            "default": 0
           }
         },
         "additionalProperties": false,
@@ -3873,6 +3947,80 @@
             "maximum": 100.0,
             "minimum": 0.0,
             "title": "Adjacency Selected Count",
+            "default": 0
+          },
+          "scope_status": {
+            "type": "string",
+            "enum": [
+              "all",
+              "resolved",
+              "ambiguous",
+              "unresolved"
+            ],
+            "title": "Scope Status",
+            "default": "all"
+          },
+          "resolved_document_count": {
+            "type": "integer",
+            "maximum": 4.0,
+            "minimum": 0.0,
+            "title": "Resolved Document Count",
+            "default": 0
+          },
+          "complete_scan_document_count": {
+            "type": "integer",
+            "maximum": 4.0,
+            "minimum": 0.0,
+            "title": "Complete Scan Document Count",
+            "default": 0
+          },
+          "scope_rejection_count": {
+            "type": "integer",
+            "maximum": 4.0,
+            "minimum": 0.0,
+            "title": "Scope Rejection Count",
+            "default": 0
+          },
+          "scope_downgrade_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope Downgrade Reason"
+          },
+          "calculation_call_count": {
+            "type": "integer",
+            "maximum": 4.0,
+            "minimum": 0.0,
+            "title": "Calculation Call Count",
+            "default": 0
+          },
+          "calculation_success_count": {
+            "type": "integer",
+            "maximum": 4.0,
+            "minimum": 0.0,
+            "title": "Calculation Success Count",
+            "default": 0
+          },
+          "calculation_rejection_reasons": {
+            "items": {
+              "type": "string",
+              "maxLength": 64,
+              "minLength": 1
+            },
+            "type": "array",
+            "title": "Calculation Rejection Reasons",
+            "default": []
+          },
+          "calculation_elapsed_ms": {
+            "type": "integer",
+            "maximum": 120000.0,
+            "minimum": 0.0,
+            "title": "Calculation Elapsed Ms",
             "default": 0
           }
         },
