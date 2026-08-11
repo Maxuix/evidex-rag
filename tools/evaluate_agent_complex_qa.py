@@ -168,7 +168,12 @@ def load_document_identity_map(root: Path) -> dict[str, str]:
         document_id = document.get("document_id")
         if not isinstance(document_id, str) or not document_id:
             raise RuntimeError("corpus manifest document ID is invalid")
-        aliases = [document_id, document.get("path")]
+        path = document.get("path")
+        aliases = [document_id, path]
+        if isinstance(path, str) and path:
+            suffix = Path(path).suffix
+            if suffix:
+                aliases.append(document_id + suffix)
         source_url = document.get("source_url")
         if isinstance(source_url, str) and source_url:
             aliases.append(urlparse(source_url).path)

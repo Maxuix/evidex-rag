@@ -1,11 +1,15 @@
 from __future__ import annotations
 
-import unittest
+import json
 from decimal import Decimal
+from pathlib import Path
+import tempfile
+import unittest
 
 from tools.evaluate_agent_complex_qa import (
     _extract_decimal_values,
     _validated_api_base,
+    load_document_identity_map,
     score_complex_case,
     summarize_results,
 )
@@ -96,6 +100,27 @@ class AgentComplexEvaluationToolTests(unittest.TestCase):
 
         self.assertTrue(score["strict_correct"])
         self.assertEqual(score["cited_document_ids"], ["doc-a"])
+
+    def test_identity_map_accepts_logical_document_filename_alias(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "manifest.json").write_text(
+                json.dumps(
+                    {
+                        "documents": [
+                            {
+                                "document_id": "doc-a",
+                                "path": "documents/pdf/doc-a.pdf",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            identity_map = load_document_identity_map(root)
+
+        self.assertEqual(identity_map["doc-a.pdf"], "doc-a")
 
     def test_negative_change_accepts_signed_or_qualified_decrease(self) -> None:
         case = {
