@@ -143,18 +143,26 @@ def parse_retrieval_snapshot(
 ) -> tuple[RetrievalStrategy, int, RerankMode]:
     """Validate one persisted local ChatRun retrieval preset."""
 
-    legacy = set(value) == {
+    legacy_fields = {
         "profile_version",
         "strategy",
         "top_k",
         "rerank",
     }
-    current = set(value) == {
+    current_fields = {
         "profile_version",
         "strategy",
         "top_k",
         "rerank_mode",
     }
+    metadata_fields = {"document_scope"}
+    snapshot_fields = set(value)
+    legacy = legacy_fields <= snapshot_fields and not (
+        snapshot_fields - legacy_fields - metadata_fields
+    )
+    current = current_fields <= snapshot_fields and not (
+        snapshot_fields - current_fields - metadata_fields
+    )
     if not legacy and not current:
         raise ValueError("retrieval snapshot fields are invalid")
     strategy = RetrievalStrategy(value["strategy"])
