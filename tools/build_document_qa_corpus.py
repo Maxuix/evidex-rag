@@ -462,8 +462,9 @@ COMPLEX_CASE_DEFINITIONS = (
         "complex-05",
         (
             "For Fenghuo's 2022 annual report, compare raw-material cost with "
-            "the sum of management expense and R&D expense. Report the two "
-            "amounts and the exact difference, retaining cents."
+            "the management expense and R&D expense rows in the consolidated "
+            "income statement. Report the two amounts and the exact difference, "
+            "retaining cents."
         ),
         language="en",
         reasoning_type="financial_decimal_calculation",
@@ -1044,6 +1045,12 @@ def _build_financebench(
             )
 
 
+def _cfqa_document_relative_path() -> Path:
+    """Keep the physical filename aligned with the pinned source manifest."""
+
+    return Path("documents") / "pdf" / SOURCE_BY_KEY["cfqa_fenghuo_pdf"].filename
+
+
 def _build_cfqa(
     root: Path,
     sources: dict[str, Path],
@@ -1051,7 +1058,7 @@ def _build_cfqa(
     cases: list[dict[str, object]],
 ) -> None:
     document_id = "cfqa-fenghuo-electronics-2022-annual-report"
-    relative = Path("documents") / "pdf" / f"{document_id}.pdf"
+    relative = _cfqa_document_relative_path()
     target = root / relative
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(sources["cfqa_fenghuo_pdf"], target)

@@ -242,6 +242,14 @@ class RetrievalAgentService:
                         self._retriever,
                         context,
                         tuple(item.query for item in valid_queries),
+                        document_ids=(
+                            document_scope.document_ids
+                            if document_scope.status == "resolved"
+                            else ()
+                        ),
+                        covered_document_ids=frozenset(
+                            item.document_id for item in evidence_pool.values()
+                        ),
                     )
                 except ChatPipelineExecutionError as error:
                     raise _with_prior_model_calls(error, calls)
@@ -1914,15 +1922,34 @@ async def _retrieve_parallel(
     retriever: ChatEvidenceRetriever,
     context: ChatExecutionContext,
     queries: tuple[str, ...],
+    *,
+    document_ids: tuple[UUID, ...] = (),
+    covered_document_ids: frozenset[UUID] = frozenset(),
 ) -> tuple[EvidencePack, ...]:
     results: list[EvidencePack | None] = [None] * len(queries)
+    requests = _round_robin_document_requests(
+        queries,
+        document_ids=document_ids,
+        covered_document_ids=covered_document_ids,
+    )
 
-    async def retrieve(index: int, query: str) -> None:
-        results[index] = await retriever.retrieve_query(context, query)
+    async def retrieve(
+        index: int,
+        query: str,
+        scoped_document_ids: tuple[UUID, ...],
+    ) -> None:
+        if scoped_document_ids:
+            results[index] = await retriever.retrieve_query(
+                context,
+                query,
+                document_ids=scoped_document_ids,
+            )
+        else:
+            results[index] = await retriever.retrieve_query(context, query)
 
     tasks = [
-        asyncio.create_task(retrieve(index, query))
-        for index, query in enumerate(queries)
+        asyncio.create_task(retrieve(index, query, scoped_document_ids))
+        for index, (query, scoped_document_ids) in enumerate(requests)
     ]
     try:
         await asyncio.gather(*tasks)
@@ -1933,6 +1960,47 @@ async def _retrieve_parallel(
         await asyncio.gather(*tasks, return_exceptions=True)
         raise
     return tuple(item for item in results if item is not None)
+
+
+def _round_robin_document_requests(
+    queries: tuple[str, ...],
+    *,
+    document_ids: tuple[UUID, ...],
+    covered_document_ids: frozenset[UUID],
+) -> tuple[tuple[str, tuple[UUID, ...]], ...]:
+    """Bind scoped queries to uncovered documents within the existing budget."""
+
+    ordered_documents = tuple(dict.fromkeys(document_ids))
+    if len(ordered_documents) <= 1:
+        return tuple((query, ()) for query in queries)
+
+    uncovered = [
+        document_id
+        for document_id in ordered_documents
+        if document_id not in covered_document_ids
+    ]
+    cursor = 0
+    requests: list[tuple[str, tuple[UUID, ...]]] = []
+    for query in queries:
+        candidates = uncovered or list(ordered_documents)
+        selected = next(
+            (
+                document_id
+                for offset in range(len(ordered_documents))
+                for document_id in (
+                    ordered_documents[
+                        (cursor + offset) % len(ordered_documents)
+                    ],
+                )
+                if document_id in candidates
+            ),
+            candidates[0],
+        )
+        if selected in uncovered:
+            uncovered.remove(selected)
+        cursor = (ordered_documents.index(selected) + 1) % len(ordered_documents)
+        requests.append((query, (selected,)))
+    return tuple(requests)
 
 
 def _frozen_top_k(context: ChatExecutionContext) -> int:

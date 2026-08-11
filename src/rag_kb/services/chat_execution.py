@@ -340,6 +340,7 @@ class ChatEvidenceRetriever:
         query: str,
         *,
         top_k_override: int | None = None,
+        document_ids: tuple[UUID, ...] = (),
     ) -> EvidencePack:
         try:
             scope = _runtime_document_scope(context)
@@ -350,6 +351,14 @@ class ChatEvidenceRetriever:
                 if not 1 <= top_k_override <= top_k:
                     raise ValueError
                 top_k = top_k_override
+            requested_document_ids = tuple(dict.fromkeys(document_ids))
+            if requested_document_ids:
+                if scope.status != "resolved" or not set(
+                    requested_document_ids
+                ) <= set(scope.document_ids):
+                    raise ValueError
+            else:
+                requested_document_ids = scope.document_ids
             request = RetrievalRequest(
                 knowledge_base_id=context.knowledge_base_id,
                 query=query,
@@ -357,7 +366,7 @@ class ChatEvidenceRetriever:
                 strategy=strategy,
                 rerank_mode=rerank_mode,
                 include_debug=True,
-                document_ids=scope.document_ids,
+                document_ids=requested_document_ids,
             )
         except (KeyError, TypeError, ValueError) as error:
             raise ChatPipelineExecutionError(

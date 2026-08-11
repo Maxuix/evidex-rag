@@ -11,12 +11,19 @@ from tools.build_document_qa_corpus import (
     CORPUS_SCHEMA,
     _acceptable_answers,
     _cfqa_acceptable_answers,
+    _cfqa_document_relative_path,
     _markdown_row,
     validate_corpus,
 )
 
 
 class DocumentQaCorpusTests(unittest.TestCase):
+    def test_cfqa_document_path_uses_source_filename_not_logical_id(self) -> None:
+        self.assertEqual(
+            _cfqa_document_relative_path().as_posix(),
+            "documents/pdf/fenghuo-electronics-2022-annual-report.pdf",
+        )
+
     def test_markdown_row_escapes_pipe_backslash_and_newline(self) -> None:
         self.assertEqual(
             _markdown_row(["a|b", "c\\d", "line\nbreak"]),

@@ -31,6 +31,7 @@ from rag_kb.retrieval.agent import (
     _expand_verification_evidence,
     _fused_evidence,
     _repair_request,
+    _round_robin_document_requests,
     _verification_request,
     _apply_verification_gate,
     evidence_key,
@@ -47,7 +48,9 @@ class _Retriever:
         self.queries: list[str] = []
         self.adjacency_calls: list[tuple[object, ...]] = []
 
-    async def retrieve_query(self, context, query, *, top_k_override=None):
+    async def retrieve_query(
+        self, context, query, *, top_k_override=None, document_ids=()
+    ):
         del context, top_k_override
         self.queries.append(query)
         if not self.packs:
@@ -63,8 +66,10 @@ class _Retriever:
 
 
 class _FailingRetriever:
-    async def retrieve_query(self, context, query, *, top_k_override=None):
-        del context, query, top_k_override
+    async def retrieve_query(
+        self, context, query, *, top_k_override=None, document_ids=()
+    ):
+        del context, query, top_k_override, document_ids
         raise ChatPipelineExecutionError(
             ErrorCode.CHAT_REVISION_MISMATCH,
             phase=ChatPipelinePhase.RETRIEVE_EVIDENCE,
@@ -207,6 +212,20 @@ def _adjacent(anchor, *, offset: int, text: str, chunk_id=None):
 
 
 class RetrievalAgentTests(unittest.IsolatedAsyncioTestCase):
+    def test_scoped_search_prioritizes_uncovered_documents(self) -> None:
+        first, second, third = (uuid4() for _ in range(3))
+
+        requests = _round_robin_document_requests(
+            ("q1", "q2", "q3"),
+            document_ids=(first, second, third),
+            covered_document_ids=frozenset({first}),
+        )
+
+        self.assertEqual(
+            requests,
+            (("q1", (second,)), ("q2", (third,)), ("q3", (first,))),
+        )
+
     def test_verifier_gate_downgrades_sufficient_when_required_doc_is_missing(self) -> None:
         context = _agent_context()
         first_document = uuid4()
