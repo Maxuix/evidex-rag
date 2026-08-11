@@ -31,6 +31,16 @@ _LEGACY_DEFAULT = sa.text(
 
 
 def upgrade() -> None:
+    # knowledge_base has a deferred constraint trigger. Change the column default
+    # before touching rows so PostgreSQL does not see pending trigger events when
+    # ALTER TABLE runs later in the same migration transaction.
+    op.alter_column(
+        "knowledge_base",
+        "retrieval_defaults",
+        existing_type=postgresql.JSONB(astext_type=sa.Text()),
+        existing_nullable=False,
+        server_default=_CURRENT_DEFAULT,
+    )
     op.execute(
         sa.text(
             """
@@ -50,16 +60,16 @@ def upgrade() -> None:
             """
         )
     )
+
+
+def downgrade() -> None:
     op.alter_column(
         "knowledge_base",
         "retrieval_defaults",
         existing_type=postgresql.JSONB(astext_type=sa.Text()),
         existing_nullable=False,
-        server_default=_CURRENT_DEFAULT,
+        server_default=_LEGACY_DEFAULT,
     )
-
-
-def downgrade() -> None:
     op.execute(
         sa.text(
             """
@@ -77,11 +87,4 @@ def downgrade() -> None:
              WHERE retrieval_defaults ? 'rerank_mode'
             """
         )
-    )
-    op.alter_column(
-        "knowledge_base",
-        "retrieval_defaults",
-        existing_type=postgresql.JSONB(astext_type=sa.Text()),
-        existing_nullable=False,
-        server_default=_LEGACY_DEFAULT,
     )

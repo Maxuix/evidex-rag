@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 import os
 import unittest
 from uuid import UUID
 
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
 import asyncpg
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -215,6 +218,134 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(decoded["rerank_mode"], "classic")
         self.assertNotIn("rerank", decoded)
         self.assertIn("rerank_mode", column_default)
+
+    async def test_local_rerank_migration_round_trips_existing_rows(self) -> None:
+        assert MIGRATION_DSN is not None
+        connection = await asyncpg.connect(MIGRATION_DSN)
+        try:
+            _, _, classic_kb_id = await self.create_foundation(
+                connection, suffix="rerank-migration-classic"
+            )
+            _, _, none_kb_id = await self.create_foundation(
+                connection, suffix="rerank-migration-none"
+            )
+            await connection.execute(
+                """
+                UPDATE knowledge_base
+                   SET retrieval_defaults = $2::jsonb
+                 WHERE id = $1
+                """,
+                none_kb_id,
+                json.dumps(
+                    {
+                        "strategy": "exact_vector",
+                        "top_k": 10,
+                        "rerank_mode": "none",
+                    }
+                ),
+            )
+        finally:
+            await connection.close()
+
+        migration = importlib.import_module(
+            "rag_kb.db.migrations.versions.0008_local_rerank_mode"
+        )
+        engine = create_async_engine(
+            MIGRATION_DSN.replace("postgresql://", "postgresql+asyncpg://", 1)
+        )
+        try:
+            async with engine.begin() as migration_connection:
+                await migration_connection.run_sync(
+                    lambda sync_connection: self._invoke_migration(
+                        sync_connection,
+                        migration,
+                        "downgrade",
+                    )
+                )
+
+            connection = await asyncpg.connect(MIGRATION_DSN)
+            try:
+                legacy_rows = await connection.fetch(
+                    """
+                    SELECT id, retrieval_defaults
+                      FROM knowledge_base
+                     WHERE id = ANY($1::uuid[])
+                    """,
+                    [classic_kb_id, none_kb_id],
+                )
+                legacy_default = await connection.fetchval(
+                    """
+                    SELECT column_default
+                      FROM information_schema.columns
+                     WHERE table_schema = 'public'
+                       AND table_name = 'knowledge_base'
+                       AND column_name = 'retrieval_defaults'
+                    """
+                )
+            finally:
+                await connection.close()
+
+            legacy_by_id = {
+                row["id"]: json.loads(row["retrieval_defaults"])
+                for row in legacy_rows
+            }
+            self.assertTrue(legacy_by_id[classic_kb_id]["rerank"])
+            self.assertFalse(legacy_by_id[none_kb_id]["rerank"])
+            self.assertTrue(
+                all("rerank_mode" not in value for value in legacy_by_id.values())
+            )
+            self.assertIn("rerank", legacy_default)
+
+            async with engine.begin() as migration_connection:
+                await migration_connection.run_sync(
+                    lambda sync_connection: self._invoke_migration(
+                        sync_connection,
+                        migration,
+                        "upgrade",
+                    )
+                )
+
+            connection = await asyncpg.connect(MIGRATION_DSN)
+            try:
+                current_rows = await connection.fetch(
+                    """
+                    SELECT id, retrieval_defaults
+                      FROM knowledge_base
+                     WHERE id = ANY($1::uuid[])
+                    """,
+                    [classic_kb_id, none_kb_id],
+                )
+                current_default = await connection.fetchval(
+                    """
+                    SELECT column_default
+                      FROM information_schema.columns
+                     WHERE table_schema = 'public'
+                       AND table_name = 'knowledge_base'
+                       AND column_name = 'retrieval_defaults'
+                    """
+                )
+            finally:
+                await connection.close()
+        finally:
+            await engine.dispose()
+
+        current_by_id = {
+            row["id"]: json.loads(row["retrieval_defaults"])
+            for row in current_rows
+        }
+        self.assertEqual(current_by_id[classic_kb_id]["rerank_mode"], "classic")
+        self.assertEqual(current_by_id[none_kb_id]["rerank_mode"], "none")
+        self.assertTrue(all("rerank" not in value for value in current_by_id.values()))
+        self.assertIn("rerank_mode", current_default)
+
+    @staticmethod
+    def _invoke_migration(sync_connection, migration, direction: str) -> None:
+        previous_op = migration.op
+        migration.op = Operations(MigrationContext.configure(sync_connection))
+        try:
+            getattr(migration, direction)()
+        finally:
+            migration.op = previous_op
 
     async def test_chat_workflow_migration_has_bounded_simple_defaults(self) -> None:
         connection = await asyncpg.connect(MIGRATION_DSN)
