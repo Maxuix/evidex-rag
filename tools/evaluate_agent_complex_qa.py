@@ -26,6 +26,7 @@ from tools.build_document_qa_corpus import (
 DEFAULT_CORPUS_ROOT = Path(__file__).resolve().parents[1] / "evaluation" / "document-qa-v1"
 DEFAULT_OUTPUT_ROOT = Path(__file__).resolve().parents[1] / ".runtime" / "evaluations"
 TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
+PREFLIGHT_CASE_IDS = ("complex-04", "complex-02", "complex-05")
 _NUMBER_RE = re.compile(
     r"(?<![\w])(?P<value>\(?\s*[+-]?\s*\$?\s*\d[\d,]*(?:\.\d+)?\s*\)?)(?P<percent>\s*%)?"
 )
@@ -63,6 +64,17 @@ def main() -> int:
     parser.add_argument("--corpus-root", type=Path, default=DEFAULT_CORPUS_ROOT)
     parser.add_argument("--output", type=Path)
     parser.add_argument(
+        "--preflight",
+        action="store_true",
+        help="run the fixed complex-04, complex-02, complex-05 provider preflight",
+    )
+    parser.add_argument("--provider-revision-id")
+    parser.add_argument("--profile-revision-id")
+    parser.add_argument("--provider-timeout-seconds", type=float)
+    parser.add_argument("--provider-max-retries", type=int)
+    parser.add_argument("--worker-chat-deadline-seconds", type=float)
+    parser.add_argument("--code-commit")
+    parser.add_argument(
         "--case-id",
         action="append",
         dest="case_ids",
@@ -77,12 +89,19 @@ def main() -> int:
     except (ValueError, RuntimeError) as error:
         parser.error(str(error))
 
-    requested = set(arguments.case_ids or ())
+    requested = tuple(arguments.case_ids or ())
+    if arguments.preflight:
+        if requested:
+            parser.error("--preflight cannot be combined with --case-id")
+        requested = PREFLIGHT_CASE_IDS
     if requested:
-        unknown = requested - {str(case["case_id"]) for case in cases}
+        unknown = set(requested) - {str(case["case_id"]) for case in cases}
         if unknown:
             parser.error(f"unknown complex case: {sorted(unknown)}")
-        cases = [case for case in cases if case["case_id"] in requested]
+        by_id = {str(case["case_id"]): case for case in cases}
+        cases = [by_id[case_id] for case_id in requested]
+
+    corpus = validate_corpus(arguments.corpus_root)
 
     started = time.perf_counter()
     results = evaluate_cases(
@@ -111,6 +130,14 @@ def main() -> int:
             "poll_seconds": arguments.poll_seconds,
             "case_count": len(cases),
             "document_identity_mapping": "manifest_filename_v1",
+            "corpus_sha256": corpus["dataset_sha256"],
+            "provider_revision_id": arguments.provider_revision_id,
+            "profile_revision_id": arguments.profile_revision_id,
+            "provider_timeout_seconds": arguments.provider_timeout_seconds,
+            "provider_max_retries": arguments.provider_max_retries,
+            "worker_chat_deadline_seconds": arguments.worker_chat_deadline_seconds,
+            "code_commit": arguments.code_commit,
+            "preflight": arguments.preflight,
         },
         "cases": results,
         "summary": summarize_results(results),
@@ -133,6 +160,15 @@ def _validate_options(arguments: argparse.Namespace) -> None:
         raise ValueError("--parallelism must be 1 for bounded provider evaluation")
     if arguments.timeout_seconds <= 0 or arguments.poll_seconds <= 0:
         raise ValueError("timeouts and polling interval must be positive")
+    provider_timeout = getattr(arguments, "provider_timeout_seconds", None)
+    provider_retries = getattr(arguments, "provider_max_retries", None)
+    worker_deadline = getattr(arguments, "worker_chat_deadline_seconds", None)
+    if provider_timeout is not None and provider_timeout <= 0:
+        raise ValueError("provider timeout must be positive")
+    if provider_retries is not None and provider_retries < 0:
+        raise ValueError("provider retries must not be negative")
+    if worker_deadline is not None and worker_deadline <= 0:
+        raise ValueError("worker chat deadline must be positive")
     if arguments.strategy == "hybrid" and arguments.rerank_mode == "none":
         raise ValueError("hybrid retrieval requires classic reranking")
 
@@ -210,7 +246,69 @@ def evaluate_cases(
 
     if parallelism != 1:
         raise ValueError("evaluation parallelism must be 1")
-    return [run(case) for case in cases]
+    results: list[dict[str, Any]] = []
+    for index, case in enumerate(cases):
+        result = run(case)
+        results.append(result)
+        if _is_nonretryable_provider_403(result):
+            results.extend(
+                _not_run_result(
+                    remaining,
+                    reason="provider_nonretryable_403",
+                    document_identity_map=document_identity_map,
+                )
+                for remaining in cases[index + 1 :]
+            )
+            break
+    return results
+
+
+def _not_run_result(
+    case: Mapping[str, Any],
+    *,
+    reason: str,
+    document_identity_map: Mapping[str, str],
+) -> dict[str, Any]:
+    safe = {
+        "status": "not_run",
+        "answer": None,
+        "citations": [],
+        "workflow": None,
+        "retrieval": None,
+        "error": None,
+        "usage": None,
+        "timing": None,
+    }
+    return {
+        "case_id": str(case["case_id"]),
+        "question": str(case["question"]),
+        **safe,
+        "research_result": None,
+        "search_trace": None,
+        "score": score_complex_case(
+            dict(case),
+            safe,
+            document_identity_map=document_identity_map,
+        ),
+        "elapsed_seconds": 0.0,
+        "not_run_reason": reason,
+    }
+
+
+def _is_nonretryable_provider_403(value: Mapping[str, Any]) -> bool:
+    error = value.get("error")
+    if (
+        isinstance(error, Mapping)
+        and error.get("http_status") == 403
+        and error.get("retryable") is not True
+    ):
+        return True
+    return any(
+        isinstance(item.get("diagnostic"), Mapping)
+        and item["diagnostic"].get("http_status") == 403
+        and item["diagnostic"].get("retryable") is not True
+        for item in _attempts(value)
+    )
 
 
 def _evaluate_one(
@@ -442,6 +540,9 @@ def summarize_results(results: Iterable[dict[str, Any]]) -> dict[str, Any]:
     ]
     return {
         "cases": len(values),
+        "requested_cases": len(values),
+        "attempted_cases": sum(item.get("status") != "not_run" for item in values),
+        "not_run_cases": sum(item.get("status") == "not_run" for item in values),
         "completed": len(completed),
         "at_least_partial": len(partial),
         "strict_correct": len(strict),
@@ -627,8 +728,10 @@ def _safe_error(value: object) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
     result: dict[str, Any] = {}
-    for key in ("code", "retryable"):
+    for key in ("code", "retryable", "http_status"):
         if key in value and isinstance(value[key], (str, bool)):
+            result[key] = value[key]
+        elif key == "http_status" and isinstance(value.get(key), int):
             result[key] = value[key]
     return result or None
 

@@ -6,10 +6,12 @@ from decimal import Decimal
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from tools.evaluate_agent_complex_qa import (
     _extract_decimal_values,
     _validate_options,
+    evaluate_cases,
     _validated_api_base,
     load_document_identity_map,
     score_complex_case,
@@ -19,6 +21,43 @@ from tools.build_document_qa_corpus import COMPLEX_CASE_DEFINITIONS
 
 
 class AgentComplexEvaluationToolTests(unittest.TestCase):
+    def test_batch_stops_after_nonretryable_403_and_marks_remaining_not_run(
+        self,
+    ) -> None:
+        cases = [
+            {"case_id": case_id, "question": case_id, "aspects": []}
+            for case_id in ("complex-04", "complex-02", "complex-05")
+        ]
+        failed = {
+            "case_id": "complex-04",
+            "status": "failed",
+            "error": {"http_status": 403, "retryable": False},
+            "score": {},
+        }
+
+        with patch(
+            "tools.evaluate_agent_complex_qa._evaluate_one",
+            return_value=failed,
+        ) as evaluate:
+            results = evaluate_cases(
+                "http://127.0.0.1:8000/api/v1",
+                "kb-id",
+                cases,
+                strategy="exact_vector",
+                rerank_mode="classic",
+                top_k=10,
+                parallelism=1,
+                timeout_seconds=900,
+                poll_seconds=1,
+                document_identity_map={},
+            )
+
+        self.assertEqual(evaluate.call_count, 1)
+        self.assertEqual([item["status"] for item in results], ["failed", "not_run", "not_run"])
+        self.assertTrue(
+            all(item.get("not_run_reason") == "provider_nonretryable_403" for item in results[1:])
+        )
+
     def test_revised_complex_aspects_accept_semantic_and_decimal_variants(self) -> None:
         answers = {
             "complex-01": (
@@ -299,6 +338,9 @@ class AgentComplexEvaluationToolTests(unittest.TestCase):
         self.assertEqual(summary["max_elapsed_seconds"], 4.0)
         self.assertEqual(summary["chat_run_retry_cases"], 0)
         self.assertEqual(summary["total_timeout_cases"], 0)
+        self.assertEqual(summary["requested_cases"], 1)
+        self.assertEqual(summary["attempted_cases"], 1)
+        self.assertEqual(summary["not_run_cases"], 0)
 
 
 if __name__ == "__main__":
