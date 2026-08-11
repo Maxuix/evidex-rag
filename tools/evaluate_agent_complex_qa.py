@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 import re
+from statistics import median
 import time
 from typing import Any, Iterable, Mapping
 from urllib.error import HTTPError, URLError
@@ -357,18 +358,49 @@ def score_complex_case(
         and workflow.get("resolved_mode") == "agent"
     )
     status_ok = run.get("status") == "completed"
+    research = _research_result(workflow)
+    research_status = research.get("status") if isinstance(research, dict) else None
+    complete_scan_count = (
+        research.get("complete_scan_document_count", 0)
+        if isinstance(research, dict)
+        else 0
+    )
+    if (
+        isinstance(complete_scan_count, bool)
+        or not isinstance(complete_scan_count, int)
+        or complete_scan_count < 0
+    ):
+        complete_scan_count = 0
+    requires_complete_scan = any(
+        bool(aspect.get("requires_complete_scan"))
+        for aspect in case.get("aspects", ())
+        if isinstance(aspect, dict)
+    )
+    not_mentioned_without_complete_scan = bool(
+        requires_complete_scan
+        and _contains_not_mentioned(answer)
+        and complete_scan_count == 0
+    )
     coverage = (
         len(required_documents & cited_documents) / len(required_documents)
         if required_documents
         else 1.0
     )
     all_aspects = bool(aspects) and all(item["matched"] for item in aspects)
+    sufficient_precision_ok = (
+        coverage == 1.0
+        and not forbidden
+        and not not_mentioned_without_complete_scan
+        if research_status == "sufficient"
+        else None
+    )
     strict = bool(
         status_ok
         and workflow_mode_ok
         and all_aspects
         and coverage == 1.0
         and not forbidden
+        and not not_mentioned_without_complete_scan
     )
     return {
         "strict_correct": strict,
@@ -384,7 +416,9 @@ def score_complex_case(
         "required_document_citation_coverage": round(coverage, 6),
         "cited_document_ids": sorted(cited_documents),
         "forbidden_citation_document_ids": forbidden,
-        "research_status": _research_status(workflow),
+        "research_status": research_status,
+        "sufficient_precision_ok": sufficient_precision_ok,
+        "not_mentioned_without_complete_scan": not_mentioned_without_complete_scan,
         "evaluation_group": case.get("evaluation_group", "evidence_only"),
     }
 
@@ -401,6 +435,12 @@ def summarize_results(results: Iterable[dict[str, Any]]) -> dict[str, Any]:
     domain = [
         item for item in values
         if item.get("score", {}).get("evaluation_group") == "domain_inference"
+    ]
+    elapsed = [
+        float(item["elapsed_seconds"])
+        for item in values
+        if isinstance(item.get("elapsed_seconds"), (int, float))
+        and not isinstance(item.get("elapsed_seconds"), bool)
     ]
     return {
         "cases": len(values),
@@ -423,6 +463,29 @@ def summarize_results(results: Iterable[dict[str, Any]]) -> dict[str, Any]:
             item.get("score", {}).get("strict_correct") for item in domain
         ),
         "domain_inference_cases": len(domain),
+        "sufficient_cases": sum(
+            item.get("score", {}).get("research_status") == "sufficient"
+            for item in values
+        ),
+        "sufficient_precision_cases": sum(
+            item.get("score", {}).get("sufficient_precision_ok") is True
+            for item in values
+        ),
+        "scope_outside_reference_cases": sum(
+            bool(item.get("score", {}).get("forbidden_citation_document_ids"))
+            for item in values
+        ),
+        "not_mentioned_without_complete_scan_cases": sum(
+            bool(item.get("score", {}).get("not_mentioned_without_complete_scan"))
+            for item in values
+        ),
+        "chat_run_retry_cases": sum(_has_chat_run_retry(item) for item in values),
+        "total_timeout_cases": sum(_has_total_timeout(item) for item in values),
+        "total_tokens": sum(_total_tokens(item) for item in values),
+        "median_elapsed_seconds": (
+            round(float(median(elapsed)), 3) if elapsed else None
+        ),
+        "max_elapsed_seconds": round(max(elapsed), 3) if elapsed else None,
     }
 
 
@@ -487,6 +550,41 @@ def _search_trace(workflow: object) -> dict[str, Any] | None:
 def _research_status(workflow: object) -> str | None:
     result = _research_result(workflow)
     return result.get("status") if isinstance(result, dict) else None
+
+
+def _contains_not_mentioned(value: str) -> bool:
+    normalized = value.casefold().replace("-", "_")
+    return any(
+        marker in normalized
+        for marker in ("not_mentioned", "not mentioned", "未提及", "未提到")
+    )
+
+
+def _attempts(value: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    timing = value.get("timing")
+    attempts = timing.get("attempts") if isinstance(timing, Mapping) else None
+    if not isinstance(attempts, Mapping):
+        return []
+    return [item for item in attempts.values() if isinstance(item, Mapping)]
+
+
+def _has_chat_run_retry(value: Mapping[str, Any]) -> bool:
+    return len(_attempts(value)) > 1
+
+
+def _has_total_timeout(value: Mapping[str, Any]) -> bool:
+    return any(
+        isinstance(item.get("diagnostic"), Mapping)
+        and item["diagnostic"].get("check") == "total_timeout"
+        for item in _attempts(value)
+    )
+
+
+def _total_tokens(value: Mapping[str, Any]) -> int:
+    usage = value.get("usage")
+    totals = usage.get("totals") if isinstance(usage, Mapping) else None
+    total = totals.get("total_tokens") if isinstance(totals, Mapping) else 0
+    return total if isinstance(total, int) and not isinstance(total, bool) and total >= 0 else 0
 
 
 def _safe_run_snapshot(run: dict[str, Any]) -> dict[str, Any]:

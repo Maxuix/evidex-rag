@@ -155,6 +155,68 @@ class AgentComplexEvaluationToolTests(unittest.TestCase):
         self.assertEqual(summary["evidence_only_strict_correct"], 1)
         self.assertEqual(summary["domain_inference_cases"], 1)
 
+    def test_scoring_rejects_not_mentioned_without_complete_scan(self) -> None:
+        case = {
+            "case_id": "complex-absence",
+            "required_citation_document_ids": ["doc-a"],
+            "forbid_unrelated_citations": True,
+            "aspects": [
+                {
+                    "aspect_id": "absence",
+                    "answer_variants": ["not mentioned"],
+                    "answer_match": "any",
+                    "requires_complete_scan": True,
+                }
+            ],
+        }
+        run = {
+            "status": "completed",
+            "answer": "The statement is not mentioned.",
+            "workflow": {
+                "requested_mode": "agent",
+                "resolved_mode": "agent",
+                "research_result": {
+                    "status": "sufficient",
+                    "complete_scan_document_count": 0,
+                },
+            },
+            "citations": [{"document_id": "doc-a"}],
+        }
+
+        score = score_complex_case(case, run)
+
+        self.assertTrue(score["not_mentioned_without_complete_scan"])
+        self.assertFalse(score["strict_correct"])
+
+    def test_summary_reports_sufficient_precision_and_runtime_budget_facts(self) -> None:
+        result = {
+            "score": {
+                "strict_correct": False,
+                "at_least_partial": True,
+                "terminal_completed": True,
+                "evaluation_group": "evidence_only",
+                "required_document_citation_coverage": 1.0,
+                "forbidden_citation_document_ids": [],
+                "research_status": "sufficient",
+                "sufficient_precision_ok": True,
+                "not_mentioned_without_complete_scan": False,
+            },
+            "status": "completed",
+            "elapsed_seconds": 4.0,
+            "usage": {"totals": {"total_tokens": 12}},
+            "timing": {"attempts": {"1": {"diagnostic": {}}}},
+        }
+
+        summary = summarize_results([result])
+
+        self.assertEqual(summary["sufficient_cases"], 1)
+        self.assertEqual(summary["sufficient_precision_cases"], 1)
+        self.assertEqual(summary["total_tokens"], 12)
+        self.assertEqual(summary["median_elapsed_seconds"], 4.0)
+        self.assertEqual(summary["max_elapsed_seconds"], 4.0)
+        self.assertEqual(summary["chat_run_retry_cases"], 0)
+        self.assertEqual(summary["total_timeout_cases"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
