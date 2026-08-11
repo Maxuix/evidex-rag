@@ -89,6 +89,29 @@ class AgentComplexEvaluationToolTests(unittest.TestCase):
         )
         self.assertTrue(score["strict_correct"])
 
+    def test_aspect_answer_match_any_accepts_one_synonym(self) -> None:
+        score = score_complex_case(
+            {
+                "case_id": "complex-synonym",
+                "required_citation_document_ids": [],
+                "forbid_unrelated_citations": True,
+                "aspects": [
+                    {
+                        "aspect_id": "label",
+                        "answer_variants": ["not_mentioned", "not mentioned"],
+                        "answer_match": "any",
+                    }
+                ],
+            },
+            {
+                "status": "completed",
+                "answer": "The result is not mentioned.",
+                "workflow": {"requested_mode": "agent", "resolved_mode": "agent"},
+                "citations": [],
+            },
+        )
+        self.assertTrue(score["strict_correct"])
+
     def test_summary_separates_domain_inference(self) -> None:
         results = [
             {"score": {"strict_correct": True, "at_least_partial": True, "terminal_completed": True, "evaluation_group": "evidence_only", "required_document_citation_coverage": 1.0, "forbidden_citation_document_ids": []}},

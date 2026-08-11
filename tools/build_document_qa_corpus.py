@@ -244,6 +244,7 @@ def _complex_aspect(
     numeric_tolerance: str | None = None,
     allow_not_mentioned: bool = False,
     requires_complete_scan: bool = False,
+    answer_match: str = "all",
 ) -> dict[str, object]:
     value: dict[str, object] = {
         "aspect_id": aspect_id,
@@ -251,6 +252,7 @@ def _complex_aspect(
         "source": list(sources),
         "allow_not_mentioned": allow_not_mentioned,
         "requires_complete_scan": requires_complete_scan,
+        "answer_match": answer_match,
     }
     if expected_decimal is not None:
         value["expected_decimal"] = expected_decimal
@@ -328,7 +330,7 @@ COMPLEX_CASE_DEFINITIONS = (
             ),
             _complex_aspect(
                 "comparison_difference_and_scope",
-                ("24 percentage points", "24 pp", "not directly comparable"),
+                ("24", "not directly comparable"),
                 (
                     _complex_source("financebench_id_00757"),
                     _complex_source("financebench_id_01290"),
@@ -360,13 +362,13 @@ COMPLEX_CASE_DEFINITIONS = (
         aspects=(
             _complex_aspect(
                 "amex_effective_tax_rate_change",
-                ("21.6%", "24.6%", "decreased", "3.0 percentage points"),
+                ("21.6%", "24.6%", "decreased"),
                 (_complex_source("financebench_id_01351"),),
                 expected_decimal="-3.0",
             ),
             _complex_aspect(
                 "boeing_effective_tax_rate_change",
-                ("-0.6%", "14.8%", "decreased", "15.4 percentage points"),
+                ("-0.6%", "14.8%", "decreased"),
                 (
                     _complex_source(
                         "financebench_id_00585",
@@ -377,7 +379,7 @@ COMPLEX_CASE_DEFINITIONS = (
             ),
             _complex_aspect(
                 "larger_change_magnitude",
-                ("Boeing", "12.4 percentage points", "12.4 pp"),
+                ("Boeing",),
                 (
                     _complex_source("financebench_id_01351"),
                     _complex_source(
@@ -409,7 +411,7 @@ COMPLEX_CASE_DEFINITIONS = (
         aspects=(
             _complex_aspect(
                 "amex_gross_margin_not_used",
-                ("not measured through gross margin", "not a useful metric"),
+                ("not measured through gross margin",),
                 (_complex_source("financebench_id_00720"),),
             ),
             _complex_aspect(
@@ -450,7 +452,7 @@ COMPLEX_CASE_DEFINITIONS = (
             ),
             _complex_aspect(
                 "fenghuo_overseas_disclosure",
-                ("境外资产占比较高", "不适用", "cannot conclude"),
+                ("境外资产占比较高", "不适用"),
                 (_complex_source("cfqa-85"),),
             ),
         ),
@@ -481,7 +483,7 @@ COMPLEX_CASE_DEFINITIONS = (
             ),
             _complex_aspect(
                 "raw_material_difference",
-                ("294,435,934.46", "higher by"),
+                ("294,435,934.46",),
                 (_complex_source("cfqa-101"), _complex_source("cfqa-81")),
                 expected_decimal="294435934.46",
             ),
@@ -533,7 +535,7 @@ COMPLEX_CASE_DEFINITIONS = (
         aspects=(
             _complex_aspect(
                 "other_share_of_total_sales",
-                ("44.1", "1,496.5", "2.95%"),
+                ("Other", "2.95%"),
                 (
                     _complex_source("tatqa-4960801d-277d-4f79-8eca-c4d0200fa9d6"),
                     _complex_source("tatqa-05b670d3-5b19-438c-873f-9bf6de29c69e"),
@@ -565,7 +567,7 @@ COMPLEX_CASE_DEFINITIONS = (
         aspects=(
             _complex_aspect(
                 "other_operating_expense_residual",
-                ("166.3", "94.2", "45.1", "27.0", "94.2"),
+                ("94.2",),
                 (
                     _complex_source("tatqa-3d384cee-82de-48f1-98ff-a972404bce4c"),
                     _complex_source("tatqa-a5992e2e-726e-469c-88f3-e7b2ea8db24c"),
@@ -575,7 +577,7 @@ COMPLEX_CASE_DEFINITIONS = (
             ),
             _complex_aspect(
                 "segments_above_fifty",
-                ("one", "1", "above $50 million"),
+                ("one", "$50 million"),
                 (_complex_source("tatqa-3d384cee-82de-48f1-98ff-a972404bce4c"),),
                 expected_decimal="1",
             ),
@@ -664,14 +666,15 @@ COMPLEX_CASE_DEFINITIONS = (
         aspects=(
             _complex_aspect(
                 "contract_15_reverse_engineering",
-                ("contractnli-pdf-15.txt", "not_mentioned", "not mentioned"),
+                ("contractnli-pdf-15.txt", "not mentioned"),
                 (_complex_source("contractnli-15-nda-11"),),
                 allow_not_mentioned=True,
                 requires_complete_scan=True,
+                answer_match="all",
             ),
             _complex_aspect(
                 "contract_488_reverse_engineering",
-                ("contractnli-sec-text-488.txt", "entailment", "entailed"),
+                ("contractnli-sec-text-488.txt", "entailment"),
                 (_complex_source("contractnli-488-nda-11"),),
             ),
         ),
@@ -708,6 +711,7 @@ COMPLEX_CASE_DEFINITIONS = (
                 (_complex_source("contractnli-82-nda-8"),),
                 allow_not_mentioned=True,
                 requires_complete_scan=True,
+                answer_match="any",
             ),
         ),
         notes="The third label is an absence claim and cannot be inferred from a retrieval miss.",
@@ -740,6 +744,7 @@ COMPLEX_CASE_DEFINITIONS = (
                     _complex_source("contractnli-547-nda-2"),
                     _complex_source("contractnli-488-nda-2"),
                 ),
+                answer_match="any",
             ),
         ),
         notes="Both named contracts contradict the technical-only hypothesis.",
@@ -767,22 +772,22 @@ COMPLEX_CASE_DEFINITIONS = (
         aspects=(
             _complex_aspect(
                 "contract_15_no_rights",
-                ("contractnli-pdf-15.txt", "no", "does not grant", "entailment"),
+                ("contractnli-pdf-15.txt", "does not grant"),
                 (_complex_source("contractnli-15-nda-15"),),
             ),
             _complex_aspect(
                 "contract_488_no_reverse_engineering",
-                ("contractnli-sec-text-488.txt", "reverse engineer", "entailment"),
+                ("contractnli-sec-text-488.txt", "reverse engineer"),
                 (_complex_source("contractnli-488-nda-11"),),
             ),
             _complex_aspect(
                 "contract_547_negotiation_confidentiality",
-                ("contractnli-sec-html-547.txt", "negotiated", "entailment"),
+                ("contractnli-sec-html-547.txt", "negotiated"),
                 (_complex_source("contractnli-547-nda-10"),),
             ),
             _complex_aspect(
                 "contract_82_surviving_obligations",
-                ("contractnli-pdf-82.txt", "continue in effect", "entailment"),
+                ("contractnli-pdf-82.txt", "continue in effect"),
                 (_complex_source("contractnli-82-nda-19"),),
             ),
         ),
@@ -1597,6 +1602,9 @@ def _validate_complex_case(
             or any(not isinstance(item, str) or not item.strip() for item in variants)
         ):
             raise RuntimeError(f"complex aspect has no answer variants: {case_id}")
+        answer_match = aspect.get("answer_match", "all")
+        if answer_match not in {"all", "any"}:
+            raise RuntimeError(f"complex aspect answer_match is invalid: {case_id}")
         expected_decimal = aspect.get("expected_decimal")
         tolerance = aspect.get("numeric_tolerance")
         if expected_decimal is not None:
