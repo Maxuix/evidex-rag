@@ -29,8 +29,8 @@ class ModelProviderCreate(PublicSchema):
     protocol: ModelProviderProtocol
     base_url: AnyHttpUrl
     api_key: SecretStr
-    timeout_seconds: Annotated[float, Field(gt=0, le=600)] = 30.0
-    max_retries: Annotated[int, Field(ge=0, le=10)] = 2
+    timeout_seconds: Annotated[float, Field(gt=0, le=600)] = 60.0
+    max_retries: Annotated[int, Field(ge=0, le=10)] = 1
     max_concurrency: Annotated[int, Field(ge=1, le=32)] = 2
 
     @field_validator("name")

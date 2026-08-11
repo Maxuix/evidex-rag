@@ -301,13 +301,13 @@ class LangChainEmbeddingAdapterTests(unittest.IsolatedAsyncioTestCase):
     async def test_timeout_and_status_errors_are_stable_and_content_safe(self) -> None:
         with (
             patch(
-                "rag_kb.adapters.model_api.langchain_embeddings."
-                "_MAX_RETRY_AFTER_SECONDS",
+                "rag_kb.config.settings."
+                "_MAX_PROVIDER_RETRY_AFTER_SECONDS",
                 0.001,
             ),
             patch(
-                "rag_kb.adapters.model_api.langchain_embeddings."
-                "_TIMEOUT_SCHEDULING_MARGIN_SECONDS",
+                "rag_kb.config.settings."
+                "_PROVIDER_TIMEOUT_SCHEDULING_MARGIN_SECONDS",
                 0.001,
             ),
             self.assertRaises(IndexingExecutionError) as timeout,

@@ -6849,14 +6849,14 @@
             "maximum": 600.0,
             "exclusiveMinimum": 0.0,
             "title": "Timeout Seconds",
-            "default": 30.0
+            "default": 60.0
           },
           "max_retries": {
             "type": "integer",
             "maximum": 10.0,
             "minimum": 0.0,
             "title": "Max Retries",
-            "default": 2
+            "default": 1
           },
           "max_concurrency": {
             "type": "integer",

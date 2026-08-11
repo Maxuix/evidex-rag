@@ -9,6 +9,7 @@ from langchain_core.embeddings import Embeddings
 from langchain_openai import OpenAIEmbeddings
 import openai
 
+from rag_kb.config.settings import provider_retry_budget_seconds
 from rag_kb.domain import (
     EmbeddingBatch,
     EmbeddingSpaceDefinition,
@@ -22,8 +23,6 @@ from rag_kb.domain import (
 
 
 _RETRYABLE_STATUSES = frozenset({408, 409, 429, 500, 502, 503, 504})
-_MAX_RETRY_AFTER_SECONDS = 60
-_TIMEOUT_SCHEDULING_MARGIN_SECONDS = 1
 
 
 class LangChainEmbeddingModelAdapter:
@@ -49,10 +48,9 @@ class LangChainEmbeddingModelAdapter:
             raise ValueError("embedding provider retries must be non-negative")
         self._embedding_space = embedding_space
         self._max_batch_size = max_batch_size
-        self._total_timeout_seconds = (
-            timeout_seconds * (max_retries + 1)
-            + _MAX_RETRY_AFTER_SECONDS * max_retries
-            + _TIMEOUT_SCHEDULING_MARGIN_SECONDS
+        self._total_timeout_seconds = provider_retry_budget_seconds(
+            timeout_seconds,
+            max_retries,
         )
         self._semaphore = asyncio.Semaphore(max_concurrency)
         model_arguments: dict[str, object] = {

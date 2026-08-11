@@ -207,7 +207,7 @@ class JobPollerSettings(StrictSettingsModel):
     max_attempts: PositiveInt = 3
     retry_base_delay_seconds: PositiveFloat = 5.0
     retry_max_delay_seconds: PositiveFloat = 60.0
-    chat_deadline_seconds: PositiveFloat = 300.0
+    chat_deadline_seconds: PositiveFloat = 420.0
     reconciliation_batch_size: PositiveInt = 100
 
     @model_validator(mode="after")
@@ -356,6 +356,9 @@ class ProviderSettings(StrictSettingsModel):
 
 
 class ChatProviderSettings(ProviderSettings):
+    timeout_seconds: PositiveFloat = 60.0
+    max_retries: NonNegativeInt = 1
+    max_concurrency: PositiveInt = 2
     logical_endpoint_identity: ClassVar[str] = "alibaba-model-studio-beijing-chat"
     provider_identity: ClassVar[str] = "alibaba-cloud-model-studio-qwen"
     model: ClassVar[str] = "qwen3.7-plus"

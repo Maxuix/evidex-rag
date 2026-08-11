@@ -117,7 +117,7 @@ class SettingsTests(unittest.TestCase):
             settings.parser.docling_artifacts_path,
             Path("/opt/rag-kb/docling-artifacts"),
         )
-        self.assertEqual(settings.job_poller.chat_deadline_seconds, 300)
+        self.assertEqual(settings.job_poller.chat_deadline_seconds, 420)
         self.assertEqual(settings.database.required_api_connections, 3)
         self.assertEqual(settings.database.api_statement_timeout_ms, 30_000)
         self.assertEqual(settings.database.worker_statement_timeout_ms, 60_000)
@@ -152,6 +152,9 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.maintenance.task_retention_seconds, 604_800)
         self.assertEqual(settings.model_provider.chat.temperature, 0.1)
         self.assertEqual(settings.model_provider.chat.max_tokens, 2048)
+        self.assertEqual(settings.model_provider.chat.timeout_seconds, 60)
+        self.assertEqual(settings.model_provider.chat.max_retries, 1)
+        self.assertEqual(settings.model_provider.chat.max_concurrency, 2)
         self.assertIsNone(settings.observability.log_directory)
 
         self.assertNotIn("session_context", Settings.model_fields)
@@ -305,7 +308,7 @@ class SettingsTests(unittest.TestCase):
                     _env_file=None,
                     **{
                         **payload,
-                        "job_poller": {"chat_deadline_seconds": 211},
+                        "job_poller": {"chat_deadline_seconds": 181},
                     },
                 )
 
@@ -446,8 +449,10 @@ class SettingsTests(unittest.TestCase):
                         )
 
     def test_retrieval_deadline_exceeds_embedding_retry_budgets(self) -> None:
+        self.assertEqual(provider_retry_budget_seconds(30, 0), 31)
         self.assertEqual(provider_retry_budget_seconds(30, 2), 211)
         self.assertEqual(provider_retry_budget_seconds(60, 1), 181)
+        self.assertEqual(provider_retry_budget_seconds(60, 2), 301)
         self.assertEqual(embedding_retry_budget_seconds(30, 2), 211)
         self.assertEqual(embedding_retry_budget_seconds(30, 0), 31)
         self.assertEqual(embedding_retry_budget_seconds(2.5, 3), 191)
@@ -519,6 +524,39 @@ class SettingsTests(unittest.TestCase):
                 },
             )
             self.assertEqual(accepted.job_poller.chat_deadline_seconds, 420)
+
+            chat["max_retries"] = 2
+            with self.assertRaisesRegex(
+                ValidationError,
+                "chat deadline must exceed the chat provider retry budget",
+            ):
+                Settings(
+                    _env_file=None,
+                    **{
+                        **payload,
+                        "model_provider": providers,
+                        "job_poller": {"chat_deadline_seconds": 301},
+                    },
+                )
+            boundary_accepted = Settings(
+                _env_file=None,
+                **{
+                    **payload,
+                    "model_provider": providers,
+                    "job_poller": {"chat_deadline_seconds": 301.001},
+                },
+            )
+            self.assertEqual(
+                boundary_accepted.job_poller.chat_deadline_seconds,
+                301.001,
+            )
+
+    def test_example_environment_uses_universal_chat_deadline(self) -> None:
+        example = (PROJECT_ROOT / ".env.example").read_text(encoding="utf-8")
+        self.assertIn(
+            "RAG_KB__JOB_POLLER__CHAT_DEADLINE_SECONDS=420",
+            example,
+        )
 
 
     def test_fixed_embedding_space_rejects_in_place_changes(self) -> None:

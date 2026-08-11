@@ -9,6 +9,10 @@ import type {
   ModelSettings,
 } from "./api/types";
 
+const DEFAULT_PROVIDER_TIMEOUT_SECONDS = 60;
+const DEFAULT_PROVIDER_MAX_RETRIES = 1;
+const DEFAULT_PROVIDER_MAX_CONCURRENCY = 2;
+
 type SettingsSection = "providers" | "chat" | "embedding";
 type ProviderMutation = {
   name: string;
@@ -301,9 +305,9 @@ function ProviderForm({
         <label className="settings-field"><span>Base URL / Endpoint</span><input required name="base_url" type="url" defaultValue={initial?.base_url} placeholder="http://127.0.0.1:11434/v1" /></label>
         <label className="settings-field"><span>API Key</span><input required={!initial} name="api_key" type="password" autoComplete="new-password" placeholder={initial ? "留空表示不更换" : undefined} /></label>
         <div className="settings-field-row">
-          <label className="settings-field"><span>超时（秒）</span><input required name="timeout_seconds" type="number" min="1" max="600" defaultValue={initial?.timeout_seconds ?? 30} /></label>
-          <label className="settings-field"><span>重试</span><input required name="max_retries" type="number" min="0" max="10" defaultValue={initial?.max_retries ?? 2} /></label>
-          <label className="settings-field"><span>并发</span><input required name="max_concurrency" type="number" min="1" max="32" defaultValue={initial?.max_concurrency ?? 2} /></label>
+          <label className="settings-field"><span>超时（秒）</span><input required name="timeout_seconds" type="number" min="1" max="600" defaultValue={initial?.timeout_seconds ?? DEFAULT_PROVIDER_TIMEOUT_SECONDS} /></label>
+          <label className="settings-field"><span>重试</span><input required name="max_retries" type="number" min="0" max="10" defaultValue={initial?.max_retries ?? DEFAULT_PROVIDER_MAX_RETRIES} /></label>
+          <label className="settings-field"><span>并发</span><input required name="max_concurrency" type="number" min="1" max="32" defaultValue={initial?.max_concurrency ?? DEFAULT_PROVIDER_MAX_CONCURRENCY} /></label>
         </div>
         {initial ? <label className="settings-check"><input name="enabled" type="checkbox" defaultChecked={initial.enabled} />启用此提供商</label> : null}
         <div className="settings-form-actions">

@@ -6,11 +6,13 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import AsyncMock, Mock, patch
 from uuid import uuid4
 
 import httpx
 from pydantic import ValidationError
 
+from apps.worker.dependencies import _chat_model_loader
 from rag_kb.adapters.model_api.model_catalog import (
     OpenAICompatibleModelCatalogAdapter,
     parse_model_catalog,
@@ -19,6 +21,7 @@ from rag_kb.adapters.model_api.routing_chat import RoutingChatModelAdapter
 from rag_kb.adapters.model_secrets.local import LocalModelSecretStore
 from rag_kb.db.models import ModelProfileRevision as ModelProfileRevisionRow
 from rag_kb.domain import (
+    ChatModelExecutionError,
     ChatModelMessage,
     ChatModelRequest,
     ChatModelResponse,
@@ -40,7 +43,7 @@ from rag_kb.domain import (
     derive_embedding_execution_mode,
     select_automatic_embedding_dimension,
 )
-from rag_kb.schemas.model_settings import ModelProfileCreate
+from rag_kb.schemas.model_settings import ModelProfileCreate, ModelProviderCreate
 from rag_kb.services.model_settings import (
     _require_parameters,
     embedding_capability_fingerprint,
@@ -63,6 +66,137 @@ class _ChatModel:
 
 
 class ModelSettingsTests(unittest.TestCase):
+    def test_provider_create_defaults_are_chat_friendly_and_ui_aligned(self) -> None:
+        provider = ModelProviderCreate.model_validate({
+            "name": "Any compatible provider",
+            "protocol": "openai_compatible",
+            "base_url": "https://provider.invalid/v1",
+            "api_key": "secret",
+        })
+        self.assertEqual(provider.timeout_seconds, 60)
+        self.assertEqual(provider.max_retries, 1)
+        self.assertEqual(provider.max_concurrency, 2)
+
+        source = (
+            Path(__file__).resolve().parents[2]
+            / "apps"
+            / "web-chat"
+            / "src"
+            / "ModelSettingsDialog.tsx"
+        ).read_text(encoding="utf-8")
+        self.assertIn("DEFAULT_PROVIDER_TIMEOUT_SECONDS = 60", source)
+        self.assertIn("DEFAULT_PROVIDER_MAX_RETRIES = 1", source)
+        self.assertIn("DEFAULT_PROVIDER_MAX_CONCURRENCY = 2", source)
+
+    def test_dynamic_chat_retry_budget_is_provider_name_independent(self) -> None:
+        now = datetime.now(UTC)
+
+        def bundle(
+            provider_name: str,
+            *,
+            timeout: float,
+            retries: int,
+        ) -> ModelProfileBundle:
+            workspace_id = uuid4()
+            provider_id = uuid4()
+            profile_id = uuid4()
+            provider_revision = ModelProviderRevision(
+                id=uuid4(),
+                workspace_id=workspace_id,
+                provider_id=provider_id,
+                revision=1,
+                protocol=ModelProviderProtocol.OPENAI_COMPATIBLE,
+                base_url="https://provider.invalid/v1",
+                secret_reference=str(uuid4()),
+                timeout_seconds=timeout,
+                max_retries=retries,
+                max_concurrency=2,
+                configuration_fingerprint="sha256:provider",
+                created_at=now,
+            )
+            return ModelProfileBundle(
+                profile=ModelProfile(
+                    id=profile_id,
+                    workspace_id=workspace_id,
+                    provider_id=provider_id,
+                    name=f"{provider_name} chat",
+                    kind=ModelKind.CHAT,
+                    enabled=True,
+                    created_at=now,
+                    updated_at=now,
+                ),
+                current_revision=ModelProfileRevision(
+                    id=uuid4(),
+                    workspace_id=workspace_id,
+                    profile_id=profile_id,
+                    provider_revision_id=provider_revision.id,
+                    revision=1,
+                    model="chat-model",
+                    configuration={"type": "chat"},
+                    configuration_fingerprint="sha256:profile",
+                    capability_fingerprint="sha256:capability",
+                    compatibility_fingerprint=None,
+                    validation_status=ModelValidationStatus.VALID,
+                    validation_error_code=None,
+                    validation_snapshot=None,
+                    validated_at=now,
+                    created_at=now,
+                ),
+                provider=ModelProvider(
+                    id=provider_id,
+                    workspace_id=workspace_id,
+                    name=provider_name,
+                    enabled=True,
+                    created_at=now,
+                    updated_at=now,
+                ),
+                provider_revision=provider_revision,
+            )
+
+        async def scenario() -> None:
+            for provider_name in ("Mimo-shaped name", "unrelated provider"):
+                invalid = bundle(provider_name, timeout=60, retries=2)
+                with patch(
+                    "apps.worker.dependencies.execute_in_transaction",
+                    new=AsyncMock(return_value=invalid),
+                ):
+                    loader = _chat_model_loader(
+                        Mock(),
+                        Mock(),
+                        chat_deadline_seconds=301,
+                    )
+                    with self.assertRaises(ChatModelExecutionError) as raised:
+                        await loader(invalid.current_revision.id)
+                self.assertEqual(
+                    raised.exception.diagnostic,
+                    {"check": "chat_retry_budget"},
+                )
+
+            accepted = bundle("any provider", timeout=60, retries=1)
+            secret_store = Mock()
+            secret_store.read.return_value = "secret"
+            with (
+                patch(
+                    "apps.worker.dependencies.execute_in_transaction",
+                    new=AsyncMock(return_value=accepted),
+                ),
+                patch(
+                    "apps.worker.dependencies.LangChainChatModelAdapter",
+                    return_value="adapter",
+                ),
+            ):
+                loader = _chat_model_loader(
+                    Mock(),
+                    secret_store,
+                    chat_deadline_seconds=420,
+                )
+                self.assertEqual(
+                    await loader(accepted.current_revision.id),
+                    "adapter",
+                )
+
+        asyncio.run(scenario())
+
     def test_validation_snapshot_none_is_bound_as_sql_null(self) -> None:
         column_type = ModelProfileRevisionRow.__table__.c.validation_snapshot.type
         self.assertTrue(column_type.none_as_null)
