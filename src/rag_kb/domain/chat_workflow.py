@@ -143,6 +143,11 @@ class ResearchResult:
     conflicts: tuple[str, ...]
     termination_reason: ResearchTerminationReason
     version: str = RESEARCH_RESULT_VERSION
+    scope_status: str = "all"
+    resolved_document_count: int = 0
+    complete_scan_document_count: int = 0
+    scope_rejection_count: int = 0
+    scope_downgrade_reason: str | None = None
 
     def __post_init__(self) -> None:
         if self.version != RESEARCH_RESULT_VERSION:
@@ -184,6 +189,13 @@ class ResearchResult:
             and not self.selected_evidence_keys
         ):
             raise ValueError("unsupported premise requires contradictory evidence")
+        _validate_scope_facts(
+            self.scope_status,
+            self.resolved_document_count,
+            self.complete_scan_document_count,
+            self.scope_rejection_count,
+            self.scope_downgrade_reason,
+        )
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -195,6 +207,11 @@ class ResearchResult:
             "missing_aspects": list(self.missing_aspects),
             "conflicts": list(self.conflicts),
             "termination_reason": self.termination_reason.value,
+            "scope_status": self.scope_status,
+            "resolved_document_count": self.resolved_document_count,
+            "complete_scan_document_count": self.complete_scan_document_count,
+            "scope_rejection_count": self.scope_rejection_count,
+            "scope_downgrade_reason": self.scope_downgrade_reason,
         }
 
 
@@ -244,6 +261,11 @@ class SearchTrace:
     adjacency_loaded_count: int = 0
     adjacency_selected_count: int = 0
     version: str = SEARCH_TRACE_VERSION
+    scope_status: str = "all"
+    resolved_document_count: int = 0
+    complete_scan_document_count: int = 0
+    scope_rejection_count: int = 0
+    scope_downgrade_reason: str | None = None
 
     def __post_init__(self) -> None:
         if self.version != SEARCH_TRACE_VERSION:
@@ -264,6 +286,13 @@ class SearchTrace:
             raise ValueError("search trace counters are invalid")
         if self.adjacency_selected_count > self.adjacency_loaded_count:
             raise ValueError("selected adjacency count exceeds loaded count")
+        _validate_scope_facts(
+            self.scope_status,
+            self.resolved_document_count,
+            self.complete_scan_document_count,
+            self.scope_rejection_count,
+            self.scope_downgrade_reason,
+        )
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -275,6 +304,11 @@ class SearchTrace:
             "evidence_count": self.evidence_count,
             "adjacency_loaded_count": self.adjacency_loaded_count,
             "adjacency_selected_count": self.adjacency_selected_count,
+            "scope_status": self.scope_status,
+            "resolved_document_count": self.resolved_document_count,
+            "complete_scan_document_count": self.complete_scan_document_count,
+            "scope_rejection_count": self.scope_rejection_count,
+            "scope_downgrade_reason": self.scope_downgrade_reason,
         }
 
 
@@ -421,7 +455,7 @@ def hydrate_chat_workflow_state(
 
 
 def _hydrate_research_result(value: Any) -> ResearchResult:
-    if not isinstance(value, Mapping) or set(value) != {
+    legacy_fields = {
         "version",
         "status",
         "selected_evidence_keys",
@@ -430,7 +464,18 @@ def _hydrate_research_result(value: Any) -> ResearchResult:
         "missing_aspects",
         "conflicts",
         "termination_reason",
-    }:
+    }
+    scope_fields = legacy_fields | {
+        "scope_status",
+        "resolved_document_count",
+        "complete_scan_document_count",
+        "scope_rejection_count",
+        "scope_downgrade_reason",
+    }
+    if not isinstance(value, Mapping) or set(value) not in (
+        legacy_fields,
+        scope_fields,
+    ):
         raise ValueError("research result fields are invalid")
     aspects = value["aspects"]
     if not isinstance(aspects, (list, tuple)):
@@ -459,6 +504,17 @@ def _hydrate_research_result(value: Any) -> ResearchResult:
         missing_aspects=_string_tuple(value["missing_aspects"]),
         conflicts=_string_tuple(value["conflicts"]),
         termination_reason=ResearchTerminationReason(value["termination_reason"]),
+        scope_status=str(value.get("scope_status", "all")),
+        resolved_document_count=_strict_int(value.get("resolved_document_count", 0)),
+        complete_scan_document_count=_strict_int(
+            value.get("complete_scan_document_count", 0)
+        ),
+        scope_rejection_count=_strict_int(value.get("scope_rejection_count", 0)),
+        scope_downgrade_reason=(
+            str(value["scope_downgrade_reason"])
+            if value.get("scope_downgrade_reason") is not None
+            else None
+        ),
     )
 
 
@@ -475,10 +531,29 @@ def _hydrate_search_trace(value: Any) -> SearchTrace:
         "adjacency_loaded_count",
         "adjacency_selected_count",
     }
+    scope_fields = current_fields | {
+        "scope_status",
+        "resolved_document_count",
+        "complete_scan_document_count",
+        "scope_rejection_count",
+        "scope_downgrade_reason",
+    }
+    scope_legacy_fields = legacy_fields | {
+        "scope_status",
+        "resolved_document_count",
+        "complete_scan_document_count",
+        "scope_rejection_count",
+        "scope_downgrade_reason",
+    }
     if not isinstance(value, Mapping):
         raise ValueError("search trace fields are invalid")
     fields = frozenset(value)
-    if fields not in {frozenset(legacy_fields), frozenset(current_fields)}:
+    if fields not in {
+        frozenset(legacy_fields),
+        frozenset(current_fields),
+        frozenset(scope_legacy_fields),
+        frozenset(scope_fields),
+    }:
         raise ValueError("search trace fields are invalid")
     raw_steps = value["steps"]
     if not isinstance(raw_steps, (list, tuple)):
@@ -519,6 +594,17 @@ def _hydrate_search_trace(value: Any) -> SearchTrace:
         adjacency_selected_count=_strict_int(
             value.get("adjacency_selected_count", 0)
         ),
+        scope_status=str(value.get("scope_status", "all")),
+        resolved_document_count=_strict_int(value.get("resolved_document_count", 0)),
+        complete_scan_document_count=_strict_int(
+            value.get("complete_scan_document_count", 0)
+        ),
+        scope_rejection_count=_strict_int(value.get("scope_rejection_count", 0)),
+        scope_downgrade_reason=(
+            str(value["scope_downgrade_reason"])
+            if value.get("scope_downgrade_reason") is not None
+            else None
+        ),
     )
 
 
@@ -526,6 +612,30 @@ def _strict_int(value: Any) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError("workflow counter must be an integer")
     return value
+
+
+def _validate_scope_facts(
+    status: str,
+    resolved_count: int,
+    complete_scan_count: int,
+    rejection_count: int,
+    downgrade_reason: str | None,
+) -> None:
+    if status not in {"all", "resolved", "ambiguous", "unresolved"}:
+        raise ValueError("document scope status is invalid")
+    if any(
+        isinstance(value, bool) or not isinstance(value, int) or value < 0
+        for value in (resolved_count, complete_scan_count, rejection_count)
+    ):
+        raise ValueError("document scope counters are invalid")
+    if complete_scan_count > resolved_count:
+        raise ValueError("complete scan count exceeds resolved documents")
+    if resolved_count > 4 or rejection_count > 4:
+        raise ValueError("document scope counters exceed the bound")
+    if downgrade_reason is not None and (
+        not isinstance(downgrade_reason, str) or len(downgrade_reason) > 256
+    ):
+        raise ValueError("document scope downgrade reason is invalid")
 
 
 def _string_tuple(value: Any) -> tuple[str, ...]:

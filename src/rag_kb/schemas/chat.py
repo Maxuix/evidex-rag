@@ -166,6 +166,11 @@ class ChatResearchResultResponse(PublicSchema):
         "conflict_unresolved",
         "premise_unsupported",
     ]
+    scope_status: Literal["all", "resolved", "ambiguous", "unresolved"] = "all"
+    resolved_document_count: Annotated[int, Field(ge=0, le=4)] = 0
+    complete_scan_document_count: Annotated[int, Field(ge=0, le=4)] = 0
+    scope_rejection_count: Annotated[int, Field(ge=0, le=4)] = 0
+    scope_downgrade_reason: str | None = None
 
 
 class ChatSearchTraceStepResponse(PublicSchema):
@@ -186,6 +191,11 @@ class ChatSearchTraceResponse(PublicSchema):
     evidence_count: Annotated[int, Field(ge=0, le=100)]
     adjacency_loaded_count: Annotated[int, Field(ge=0, le=100)] = 0
     adjacency_selected_count: Annotated[int, Field(ge=0, le=100)] = 0
+    scope_status: Literal["all", "resolved", "ambiguous", "unresolved"] = "all"
+    resolved_document_count: Annotated[int, Field(ge=0, le=4)] = 0
+    complete_scan_document_count: Annotated[int, Field(ge=0, le=4)] = 0
+    scope_rejection_count: Annotated[int, Field(ge=0, le=4)] = 0
+    scope_downgrade_reason: str | None = None
 
 
 class ChatWorkflowResponse(PublicSchema):

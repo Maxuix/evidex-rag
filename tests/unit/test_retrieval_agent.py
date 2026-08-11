@@ -14,6 +14,9 @@ from rag_kb.domain import (
     ChatWorkflowMode,
     ContextualizedQuery,
     EvidenceCoverage,
+    ResearchAspect,
+    ResearchAspectStatus,
+    ResearchResultVerification,
     EvidenceScoreKind,
     ErrorCode,
     QueryContextStatus,
@@ -29,6 +32,7 @@ from rag_kb.retrieval.agent import (
     _fused_evidence,
     _repair_request,
     _verification_request,
+    _apply_verification_gate,
     evidence_key,
     project_agent_evidence,
     project_evidence_text,
@@ -184,6 +188,42 @@ def _adjacent(anchor, *, offset: int, text: str, chunk_id=None):
 
 
 class RetrievalAgentTests(unittest.IsolatedAsyncioTestCase):
+    def test_verifier_gate_downgrades_sufficient_when_required_doc_is_missing(self) -> None:
+        context = _agent_context()
+        first_document = uuid4()
+        second_document = uuid4()
+        context = replace(
+            context,
+            retrieval_strategy={
+                **context.retrieval_strategy,
+                "document_scope": {
+                    "status": "resolved",
+                    "resolved": [
+                        {"document_id": str(first_document)},
+                        {"document_id": str(second_document)},
+                    ],
+                },
+            },
+        )
+        evidence = replace(_pack(context, "one fact").evidence[0], document_id=first_document)
+        verification = ResearchResultVerification(
+            status=ResearchStatus.SUFFICIENT,
+            aspects=(
+                ResearchAspect(
+                    aspect="question",
+                    status=ResearchAspectStatus.SUPPORTED,
+                    evidence_keys=(evidence_key(evidence),),
+                ),
+            ),
+            missing_aspects=(),
+            conflicts=(),
+        )
+
+        gated = _apply_verification_gate(context, verification, (evidence,))
+
+        self.assertIs(gated.status, ResearchStatus.PARTIAL)
+        self.assertIn("required_document_not_covered", gated.missing_aspects)
+
     def test_projection_keeps_late_focus_windows(self) -> None:
         text = (
             "Document title\n"
