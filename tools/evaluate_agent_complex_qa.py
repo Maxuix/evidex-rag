@@ -250,11 +250,11 @@ def evaluate_cases(
     for index, case in enumerate(cases):
         result = run(case)
         results.append(result)
-        if _is_nonretryable_provider_403(result):
+        if _is_nonretryable_provider_auth_failure(result):
             results.extend(
                 _not_run_result(
                     remaining,
-                    reason="provider_nonretryable_403",
+                    reason="provider_nonretryable_auth_failure",
                     document_identity_map=document_identity_map,
                 )
                 for remaining in cases[index + 1 :]
@@ -295,17 +295,17 @@ def _not_run_result(
     }
 
 
-def _is_nonretryable_provider_403(value: Mapping[str, Any]) -> bool:
+def _is_nonretryable_provider_auth_failure(value: Mapping[str, Any]) -> bool:
     error = value.get("error")
     if (
         isinstance(error, Mapping)
-        and error.get("http_status") == 403
+        and error.get("http_status") in {401, 403}
         and error.get("retryable") is not True
     ):
         return True
     return any(
         isinstance(item.get("diagnostic"), Mapping)
-        and item["diagnostic"].get("http_status") == 403
+        and item["diagnostic"].get("http_status") in {401, 403}
         and item["diagnostic"].get("retryable") is not True
         for item in _attempts(value)
     )
