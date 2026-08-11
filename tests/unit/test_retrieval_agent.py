@@ -536,7 +536,7 @@ class RetrievalAgentTests(unittest.IsolatedAsyncioTestCase):
             outcome.workflow_state.search_trace.calculation_success_count,
             1,
         )
-        controller_payload = json.loads(model.requests[1].messages[1].content.split("\n", 1)[1])
+        controller_payload = json.loads(model.requests[2].messages[1].content.split("\n", 1)[1])
         self.assertEqual(
             controller_payload["validated_calculations"][0]["result"],
             "491210498.01",

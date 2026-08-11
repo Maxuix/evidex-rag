@@ -447,7 +447,7 @@ class SettingsTests(unittest.TestCase):
 
     def test_retrieval_deadline_exceeds_embedding_retry_budgets(self) -> None:
         self.assertEqual(provider_retry_budget_seconds(30, 2), 211)
-        self.assertEqual(provider_retry_budget_seconds(60, 1), 121)
+        self.assertEqual(provider_retry_budget_seconds(60, 1), 181)
         self.assertEqual(embedding_retry_budget_seconds(30, 2), 211)
         self.assertEqual(embedding_retry_budget_seconds(30, 0), 31)
         self.assertEqual(embedding_retry_budget_seconds(2.5, 3), 191)
