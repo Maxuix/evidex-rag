@@ -15,9 +15,49 @@ from tools.evaluate_agent_complex_qa import (
     score_complex_case,
     summarize_results,
 )
+from tools.build_document_qa_corpus import COMPLEX_CASE_DEFINITIONS
 
 
 class AgentComplexEvaluationToolTests(unittest.TestCase):
+    def test_revised_complex_aspects_accept_semantic_and_decimal_variants(self) -> None:
+        answers = {
+            "complex-01": (
+                "AMD reported one customer at 16 percent; Boeing reported U.S. "
+                "government contracts at 40 percent. The 24 percentage-point "
+                "difference is not directly comparable, and Boeing is cyclical."
+            ),
+            "complex-07": (
+                "Other was 2.95 percent of sales. Fixed Price rose from 1,146.2 "
+                "to 1,452.4, offsetting Other so total sales were highest."
+            ),
+            "complex-08": (
+                "The residual was 94.2, and only 1 segment exceeded $50 million."
+            ),
+        }
+        cases = {
+            str(case["case_id"]): case
+            for case in COMPLEX_CASE_DEFINITIONS
+            if case["case_id"] in answers
+        }
+
+        for case_id, answer in answers.items():
+            case = cases[case_id]
+            run = {
+                "status": "completed",
+                "answer": answer,
+                "workflow": {
+                    "requested_mode": "agent",
+                    "resolved_mode": "agent",
+                },
+                "citations": [
+                    {"document_id": document_id}
+                    for document_id in case["required_citation_document_ids"]
+                ],
+            }
+            with self.subTest(case_id=case_id):
+                score = score_complex_case(case, run)
+                self.assertTrue(score["strict_correct"], score["aspects"])
+
     def test_evaluation_parallelism_is_fixed_at_one(self) -> None:
         base = {
             "top_k": 10,

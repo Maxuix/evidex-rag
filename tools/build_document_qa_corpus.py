@@ -318,19 +318,19 @@ COMPLEX_CASE_DEFINITIONS = (
         aspects=(
             _complex_aspect(
                 "amd_single_customer_share",
-                ("one customer", "16%"),
+                ("one customer",),
                 (_complex_source("financebench_id_00757"),),
                 expected_decimal="16",
             ),
             _complex_aspect(
                 "boeing_government_contract_share",
-                ("U.S. government", "40%"),
+                ("U.S. government",),
                 (_complex_source("financebench_id_01290"),),
                 expected_decimal="40",
             ),
             _complex_aspect(
                 "comparison_difference_and_scope",
-                ("24", "not directly comparable"),
+                ("not directly comparable",),
                 (
                     _complex_source("financebench_id_00757"),
                     _complex_source("financebench_id_01290"),
@@ -341,6 +341,7 @@ COMPLEX_CASE_DEFINITIONS = (
                 "boeing_cyclicality",
                 ("cyclicality", "cyclical"),
                 (_complex_source("financebench_id_00464"),),
+                answer_match="any",
             ),
         ),
         notes="The two percentages use different business definitions; only the arithmetic difference is comparable.",
@@ -536,7 +537,7 @@ COMPLEX_CASE_DEFINITIONS = (
         aspects=(
             _complex_aspect(
                 "other_share_of_total_sales",
-                ("Other", "2.95%"),
+                ("Other",),
                 (
                     _complex_source("tatqa-4960801d-277d-4f79-8eca-c4d0200fa9d6"),
                     _complex_source("tatqa-05b670d3-5b19-438c-873f-9bf6de29c69e"),
@@ -578,7 +579,7 @@ COMPLEX_CASE_DEFINITIONS = (
             ),
             _complex_aspect(
                 "segments_above_fifty",
-                ("one", "$50 million"),
+                ("$50 million",),
                 (_complex_source("tatqa-3d384cee-82de-48f1-98ff-a972404bce4c"),),
                 expected_decimal="1",
             ),
