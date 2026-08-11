@@ -41,6 +41,7 @@ from rag_kb.retrieval.agent import (
     project_agent_evidence,
     project_evidence_text,
 )
+from rag_kb.retrieval.calculator import evaluate_decimal_expression
 from tests.unit.test_answering import _Model, _context, _pack, _response
 
 
@@ -215,6 +216,97 @@ def _adjacent(anchor, *, offset: int, text: str, chunk_id=None):
 
 
 class RetrievalAgentTests(unittest.IsolatedAsyncioTestCase):
+    def test_table_projection_preserves_bounded_identity_and_ignores_metadata(
+        self,
+    ) -> None:
+        context = _agent_context()
+        base = _pack(context, "placeholder").evidence[0]
+        table = (
+            "| 项目 | 2022年度 | 2021年度 |\n"
+            "| --- | ---: | ---: |\n"
+            "| 管理费用 | 229,129,291.07 | 200,000,000.00 |\n"
+            "| 研发费用 | 262,081,206.94 | 210,000,000.00 |\n"
+        )
+        common = {
+            "modality": "table",
+            "text": table,
+            "source_location": {
+                "surface_type": "page",
+                "surface_start": 15,
+                "surface_end": 15,
+                "surface_label": "15",
+                "url": "PRIVATE",
+            },
+        }
+        common_metadata = {
+            "reporting_period": "2022年度",
+            "secret_payload": "PRIVATE",
+        }
+        consolidated = replace(
+            base,
+            **common,
+            hierarchy={"titles": [{"depth": 2, "text": "合并利润表"}]},
+            source_metadata={
+                **common_metadata,
+                "consolidation_scope": "合并",
+            },
+        )
+        parent = replace(
+            base,
+            index_chunk_id=uuid4(),
+            ordinal=base.ordinal + 1,
+            **common,
+            hierarchy={"titles": [{"depth": 2, "text": "母公司利润表"}]},
+            source_metadata={
+                **common_metadata,
+                "consolidation_scope": "母公司",
+            },
+        )
+
+        projected = project_agent_evidence(
+            (consolidated, parent),
+            ("管理费用", "研发费用", "合并利润表", "2022年度"),
+        )
+
+        identities = [item["table_identity"] for item in projected]
+        self.assertEqual(identities[0]["titles"], ["合并利润表"])
+        self.assertEqual(identities[1]["titles"], ["母公司利润表"])
+        self.assertEqual(identities[0]["reporting_period"], "2022年度")
+        self.assertEqual(identities[0]["consolidation_scope"], "合并")
+        self.assertEqual(identities[0]["location"]["surface_start"], 15)
+        self.assertEqual(identities[0]["ordinal"], consolidated.ordinal)
+        self.assertIn("| 项目 | 2022年度 | 2021年度 |", identities[0]["column_headers"])
+        self.assertIn("管理费用", " ".join(identities[0]["target_row_neighbors"]))
+        self.assertNotIn("PRIVATE", repr(projected))
+        for item in projected:
+            content = item["untrusted_excerpt"] + json.dumps(
+                item["table_identity"], ensure_ascii=False
+            )
+            self.assertLessEqual(len(content), 2_400)
+
+    def test_complex_05_consolidated_operands_produce_exact_decimals(self) -> None:
+        context = _agent_context()
+        evidence = _pack(
+            context,
+            "原材料 785,646,432.47",
+            "合并利润表 管理费用 229,129,291.07 研发费用 262,081,206.94",
+        ).evidence
+        keys = tuple(evidence_key(item) for item in evidence)
+
+        total = evaluate_decimal_expression(
+            "229129291.07 + 262081206.94",
+            source_evidence_keys=(keys[1],),
+            evidence={key: item for key, item in zip(keys, evidence, strict=True)},
+        )
+        difference = evaluate_decimal_expression(
+            "785646432.47 - (229129291.07 + 262081206.94)",
+            source_evidence_keys=keys,
+            evidence={key: item for key, item in zip(keys, evidence, strict=True)},
+        )
+
+        self.assertEqual(total.result, "491210498.01")
+        self.assertEqual(difference.result, "294435934.46")
+
     def test_verifier_validation_classifies_safe_failure_reasons(self) -> None:
         allowed_key = "chunk:allowed"
         base = json.loads(_verification(status="sufficient", keys=(allowed_key,)))
@@ -504,6 +596,8 @@ class RetrievalAgentTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn(field, verification_prompt)
         self.assertIn("concise answer-target topic labels", verification_prompt)
         self.assertIn("same language as answer_target", verification_prompt)
+        self.assertIn("table_identity title", action_prompt)
+        self.assertIn("table_identity title", verification_prompt)
         self.assertIn("no_progress is server-owned", action_prompt)
         self.assertIn('"selection_limit":3', action.messages[1].content)
 
