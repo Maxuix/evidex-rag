@@ -520,6 +520,14 @@ class RetrievalAgentService:
                     evidence_pool=evidence_pool,
                     adjacency_cache=adjacency_cache,
                 )
+                verification_evidence = _extend_scoped_verification_evidence(
+                    verification_evidence,
+                    fused_evidence=_fused_evidence(
+                        query_rankings,
+                        top_k=_frozen_top_k(context),
+                    ),
+                    document_scope=document_scope,
+                )
                 adjacency_loaded_keys.update(
                     evidence_key(item)
                     for values in adjacency_cache.values()
@@ -2217,6 +2225,20 @@ def _select_evidence(
         item
         for item in _fused_evidence(rankings, top_k=100)
         if evidence_key(item) in selected
+    )
+
+
+def _extend_scoped_verification_evidence(
+    selected_evidence: tuple[Evidence, ...],
+    *,
+    fused_evidence: tuple[Evidence, ...],
+    document_scope: RuntimeDocumentScope,
+) -> tuple[Evidence, ...]:
+    if document_scope.status != "resolved" or not selected_evidence:
+        return selected_evidence
+    selected_keys = {evidence_key(item) for item in selected_evidence}
+    return selected_evidence + tuple(
+        item for item in fused_evidence if evidence_key(item) not in selected_keys
     )
 
 

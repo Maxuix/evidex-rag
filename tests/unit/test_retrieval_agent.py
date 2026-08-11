@@ -46,6 +46,7 @@ from rag_kb.retrieval.agent import (
     project_evidence_text,
 )
 from rag_kb.retrieval.calculator import evaluate_decimal_expression
+from rag_kb.services.chat_execution import RuntimeDocumentScope
 from tests.unit.test_answering import _Model, _context, _pack, _response
 
 
@@ -71,6 +72,19 @@ class _Retriever:
         if self.adjacency_results:
             return self.adjacency_results.pop(0)
         return ()
+
+
+class _ScopedRetriever(_Retriever):
+    def __init__(self, packs, document_ids) -> None:
+        super().__init__(packs)
+        self.document_ids = tuple(document_ids)
+
+    async def load_document_scope(self, context):
+        del context
+        return RuntimeDocumentScope(
+            status="resolved",
+            document_ids=self.document_ids,
+        )
 
 
 class _FailingRetriever:
@@ -640,6 +654,49 @@ class RetrievalAgentTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(requests, (("single query", (first, second)),))
+
+    async def test_resolved_scope_verifier_sees_unselected_fused_candidate(
+        self,
+    ) -> None:
+        context = _agent_context()
+        first_document, second_document = (uuid4() for _ in range(2))
+        pack = _pack(context, "selected candidate", "unselected candidate")
+        pack = replace(
+            pack,
+            evidence=tuple(
+                replace(item, document_id=document_id)
+                for item, document_id in zip(
+                    pack.evidence,
+                    (first_document, second_document),
+                    strict=True,
+                )
+            ),
+        )
+        first_key, second_key = tuple(evidence_key(item) for item in pack.evidence)
+        model = _Model(
+            _response(
+                _search(
+                    "find both candidates",
+                    [{"query": "both candidates", "based_on_observation_ids": []}],
+                )
+            ),
+            _response(_finish((first_key,)), request_id="finish"),
+            _response(
+                _verification(status="sufficient", keys=(first_key, second_key)),
+                request_id="verify",
+            ),
+        )
+
+        outcome = await _service(
+            model,
+            _ScopedRetriever((pack,), (first_document, second_document)),
+        ).research(context, _query_context(context))
+
+        assert outcome.workflow_state.research_result is not None
+        self.assertEqual(
+            outcome.workflow_state.research_result.selected_evidence_keys,
+            (first_key, second_key),
+        )
 
     def test_verifier_gate_downgrades_sufficient_when_required_doc_is_missing(self) -> None:
         context = _agent_context()
