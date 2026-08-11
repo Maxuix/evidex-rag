@@ -309,7 +309,33 @@ class RetrievalAgentService:
                     calculation_facts=tuple(calculation_facts),
                 )
             except ChatPipelineExecutionError as error:
-                raise _with_prior_model_calls(error, calls)
+                combined_error = _with_prior_model_calls(error, calls)
+                degradation_reason = _safe_degradation_reason(
+                    combined_error,
+                    prefix="retrieval_agent_action_",
+                )
+                if degradation_reason is None:
+                    raise combined_error
+                return _safe_degraded_outcome(
+                    context,
+                    persisted_state,
+                    query_rankings,
+                    degradation_reason=degradation_reason,
+                    trace_steps=trace_steps,
+                    decision_rounds=decision_rounds,
+                    retrieval_calls=retrieval_calls,
+                    verifier_calls=verifier_calls,
+                    adjacency_loaded_count=len(adjacency_loaded_keys),
+                    document_scope=document_scope,
+                    calculation_facts=tuple(calculation_facts),
+                    calculation_call_count=calculation_call_count,
+                    calculation_success_count=calculation_success_count,
+                    calculation_rejection_reasons=tuple(
+                        calculation_rejection_reasons
+                    ),
+                    calculation_elapsed_ms=calculation_elapsed_ms,
+                    model_calls=combined_error.model_calls,
+                )
             calls.extend(action_calls)
 
             if action.action is RetrievalAgentActionKind.SEARCH:
@@ -509,7 +535,33 @@ class RetrievalAgentService:
                     calculation_facts=tuple(calculation_facts),
                 )
             except ChatPipelineExecutionError as error:
-                raise _with_prior_model_calls(error, calls)
+                combined_error = _with_prior_model_calls(error, calls)
+                degradation_reason = _safe_degradation_reason(
+                    combined_error,
+                    prefix="research_result_verification_",
+                )
+                if degradation_reason is None:
+                    raise combined_error
+                return _safe_degraded_outcome(
+                    context,
+                    persisted_state,
+                    query_rankings,
+                    degradation_reason=degradation_reason,
+                    trace_steps=trace_steps,
+                    decision_rounds=decision_rounds,
+                    retrieval_calls=retrieval_calls,
+                    verifier_calls=verifier_calls + 1,
+                    adjacency_loaded_count=len(adjacency_loaded_keys),
+                    document_scope=document_scope,
+                    calculation_facts=tuple(calculation_facts),
+                    calculation_call_count=calculation_call_count,
+                    calculation_success_count=calculation_success_count,
+                    calculation_rejection_reasons=tuple(
+                        calculation_rejection_reasons
+                    ),
+                    calculation_elapsed_ms=calculation_elapsed_ms,
+                    model_calls=combined_error.model_calls,
+                )
             verifier_calls += 1
             calls.extend(verification_calls)
             verifier_focus = tuple(
@@ -623,7 +675,33 @@ class RetrievalAgentService:
                 calculation_facts=tuple(calculation_facts),
             )
         except ChatPipelineExecutionError as error:
-            raise _with_prior_model_calls(error, calls)
+            combined_error = _with_prior_model_calls(error, calls)
+            degradation_reason = _safe_degradation_reason(
+                combined_error,
+                prefix="research_result_verification_",
+            )
+            if degradation_reason is None:
+                raise combined_error
+            return _safe_degraded_outcome(
+                context,
+                persisted_state,
+                query_rankings,
+                degradation_reason=degradation_reason,
+                trace_steps=trace_steps,
+                decision_rounds=decision_rounds,
+                retrieval_calls=retrieval_calls,
+                verifier_calls=verifier_calls + 1,
+                adjacency_loaded_count=len(adjacency_loaded_keys),
+                document_scope=document_scope,
+                calculation_facts=tuple(calculation_facts),
+                calculation_call_count=calculation_call_count,
+                calculation_success_count=calculation_success_count,
+                calculation_rejection_reasons=tuple(
+                    calculation_rejection_reasons
+                ),
+                calculation_elapsed_ms=calculation_elapsed_ms,
+                model_calls=combined_error.model_calls,
+            )
         verifier_calls += 1
         calls.extend(verification_calls)
         if progress is not None:
@@ -2293,6 +2371,7 @@ def _outcome(
     calculation_rejection_reasons: tuple[str, ...],
     calculation_elapsed_ms: int,
     model_calls: tuple[ChatModelCallRecord, ...],
+    degradation_reason: str | None = None,
 ) -> AgentResearchOutcome:
     fused = _final_evidence(
         rankings,
@@ -2391,6 +2470,7 @@ def _outcome(
         complete_scan_document_count=document_scope.complete_scan_document_count,
         scope_rejection_count=document_scope.scope_rejection_count,
         scope_downgrade_reason=document_scope.downgrade_reason,
+        degradation_reason=degradation_reason,
         calculation_call_count=calculation_call_count,
         calculation_success_count=calculation_success_count,
         calculation_rejection_reasons=calculation_rejection_reasons,
@@ -2441,6 +2521,76 @@ def _outcome(
         model_calls=model_calls,
         calculation_facts=calculation_facts,
     )
+
+
+def _safe_degraded_outcome(
+    context: ChatExecutionContext,
+    persisted_state: ChatWorkflowState,
+    rankings: list[tuple[Evidence, ...]],
+    *,
+    degradation_reason: str,
+    trace_steps: list[SearchTraceStep],
+    decision_rounds: int,
+    retrieval_calls: int,
+    verifier_calls: int,
+    adjacency_loaded_count: int,
+    document_scope: RuntimeDocumentScope,
+    calculation_facts: tuple[DecimalCalculationFact, ...],
+    calculation_call_count: int,
+    calculation_success_count: int,
+    calculation_rejection_reasons: tuple[str, ...],
+    calculation_elapsed_ms: int,
+    model_calls: tuple[ChatModelCallRecord, ...],
+) -> AgentResearchOutcome:
+    missing_aspect = "reliable_research_result"
+    return _outcome(
+        context,
+        persisted_state,
+        rankings,
+        ResearchResultVerification(
+            status=ResearchStatus.NO_EVIDENCE,
+            aspects=(
+                ResearchAspect(
+                    aspect=missing_aspect,
+                    status=ResearchAspectStatus.MISSING,
+                    evidence_keys=(),
+                ),
+            ),
+            missing_aspects=(missing_aspect,),
+            conflicts=(),
+        ),
+        RetrievalAgentProposedReason.NO_EVIDENCE,
+        adjacent_evidence=(),
+        trace_steps=trace_steps,
+        decision_rounds=decision_rounds,
+        retrieval_calls=retrieval_calls,
+        verifier_calls=verifier_calls,
+        adjacency_loaded_count=adjacency_loaded_count,
+        document_scope=document_scope,
+        calculation_facts=calculation_facts,
+        calculation_call_count=calculation_call_count,
+        calculation_success_count=calculation_success_count,
+        calculation_rejection_reasons=calculation_rejection_reasons,
+        calculation_elapsed_ms=calculation_elapsed_ms,
+        model_calls=model_calls,
+        degradation_reason=degradation_reason,
+    )
+
+
+def _safe_degradation_reason(
+    error: ChatPipelineExecutionError,
+    *,
+    prefix: str,
+) -> str | None:
+    check = error.diagnostic.get("check")
+    if (
+        error.code is ErrorCode.CHAT_RESPONSE_INVALID
+        and error.phase is ChatPipelinePhase.RETRIEVE_EVIDENCE
+        and isinstance(check, str)
+        and check.startswith(prefix)
+    ):
+        return check
+    return None
 
 
 def _termination_reason(

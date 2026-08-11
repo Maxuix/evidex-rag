@@ -22,6 +22,55 @@ from rag_kb.domain import (
 
 
 class ChatWorkflowContractTests(unittest.TestCase):
+    def test_safe_research_degradation_round_trips_and_rejects_content(self) -> None:
+        result = ResearchResult(
+            status=ResearchStatus.NO_EVIDENCE,
+            selected_evidence_keys=(),
+            aspects=(
+                ResearchAspect(
+                    aspect="reliable_research_result",
+                    status=ResearchAspectStatus.MISSING,
+                ),
+            ),
+            covered_aspects=(),
+            missing_aspects=("reliable_research_result",),
+            conflicts=(),
+            termination_reason=ResearchTerminationReason.NO_EVIDENCE,
+            degradation_reason="retrieval_agent_action_wire_schema_invalid",
+        )
+        state = ChatWorkflowState(
+            resolved_mode=ChatResolvedMode.AGENT,
+            route_status=ChatRouteStatus.NOT_APPLICABLE,
+            research_result=result,
+            search_trace=SearchTrace(
+                steps=(),
+                decision_rounds=1,
+                retrieval_calls=0,
+                verifier_calls=0,
+                evidence_count=0,
+            ),
+        )
+        self.assertEqual(hydrate_chat_workflow_state(state.as_dict()), state)
+
+        legacy = state.as_dict()
+        assert legacy["research_result"] is not None
+        legacy["research_result"].pop("degradation_reason")
+        hydrated = hydrate_chat_workflow_state(legacy)
+        assert hydrated.research_result is not None
+        self.assertIsNone(hydrated.research_result.degradation_reason)
+
+        with self.assertRaises(ValueError):
+            ResearchResult(
+                status=ResearchStatus.NO_EVIDENCE,
+                selected_evidence_keys=(),
+                aspects=result.aspects,
+                covered_aspects=(),
+                missing_aspects=result.missing_aspects,
+                conflicts=(),
+                termination_reason=ResearchTerminationReason.NO_EVIDENCE,
+                degradation_reason="PRIVATE model output",
+            )
+
     def test_initial_modes_are_deterministic_and_round_trip(self) -> None:
         expected = {
             ChatWorkflowMode.SIMPLE: (

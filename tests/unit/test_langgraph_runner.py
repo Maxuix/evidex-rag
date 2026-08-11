@@ -176,6 +176,73 @@ def _build(
 
 
 class LangGraphRunnerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_safe_agent_degradation_completes_with_refusal(self) -> None:
+        base = _context(insufficiency="partial_answer")
+        configuration, initial = initial_chat_workflow(ChatWorkflowMode.AGENT)
+        context = replace(
+            base,
+            workflow_configuration=configuration.as_dict(),
+            workflow_state=initial.as_dict(),
+        )
+        pack = _pack(context)
+        research_result = ResearchResult(
+            status=ResearchStatus.NO_EVIDENCE,
+            selected_evidence_keys=(),
+            aspects=(
+                ResearchAspect(
+                    aspect="reliable_research_result",
+                    status=ResearchAspectStatus.MISSING,
+                ),
+            ),
+            covered_aspects=(),
+            missing_aspects=("reliable_research_result",),
+            conflicts=(),
+            termination_reason=ResearchTerminationReason.NO_EVIDENCE,
+            degradation_reason="research_result_verification_wire_schema_invalid",
+        )
+        workflow_state = ChatWorkflowState(
+            resolved_mode=ChatResolvedMode.AGENT,
+            route_status=ChatRouteStatus.NOT_APPLICABLE,
+            research_result=research_result,
+            search_trace=SearchTrace(
+                steps=(),
+                decision_rounds=1,
+                retrieval_calls=0,
+                verifier_calls=1,
+                evidence_count=0,
+            ),
+        )
+
+        class Router:
+            async def resolve(self, value, query_context):
+                del value, query_context
+                return initial, ()
+
+        class Agent:
+            async def research(self, value, query_context, **kwargs):
+                del value, query_context, kwargs
+                return AgentResearchOutcome(pack, workflow_state, ())
+
+        runner, model, persister = _build(
+            context=context,
+            pack=pack,
+            workflow_router=Router(),
+            retrieval_agent=Agent(),
+            adaptive_assessor=AdaptiveEvidenceAssessmentStep(0.6),
+        )
+
+        output = await runner.execute(ChatExecutionCommand(context.lease))
+
+        self.assertEqual(persister.calls, 1)
+        self.assertTrue(output.artifacts["persisted"])
+        self.assertEqual(model.requests, [])
+        assert output.answering is not None
+        assert output.answering.draft is not None
+        self.assertEqual(
+            output.answering.draft.control_reason.value,
+            "no_usable_evidence",
+        )
+
     async def test_simple_run_reports_full_stage_progress_and_delivery_is_best_effort(
         self,
     ) -> None:

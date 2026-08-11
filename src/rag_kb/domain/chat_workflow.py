@@ -148,6 +148,7 @@ class ResearchResult:
     complete_scan_document_count: int = 0
     scope_rejection_count: int = 0
     scope_downgrade_reason: str | None = None
+    degradation_reason: str | None = None
     calculation_call_count: int = 0
     calculation_success_count: int = 0
     calculation_rejection_reasons: tuple[str, ...] = ()
@@ -200,6 +201,7 @@ class ResearchResult:
             self.scope_rejection_count,
             self.scope_downgrade_reason,
         )
+        _validate_degradation_reason(self.degradation_reason)
         _validate_calculation_facts(
             self.calculation_call_count,
             self.calculation_success_count,
@@ -222,6 +224,7 @@ class ResearchResult:
             "complete_scan_document_count": self.complete_scan_document_count,
             "scope_rejection_count": self.scope_rejection_count,
             "scope_downgrade_reason": self.scope_downgrade_reason,
+            "degradation_reason": self.degradation_reason,
             "calculation_call_count": self.calculation_call_count,
             "calculation_success_count": self.calculation_success_count,
             "calculation_rejection_reasons": list(
@@ -510,7 +513,11 @@ def _hydrate_research_result(value: Any) -> ResearchResult:
         "calculation_rejection_reasons",
         "calculation_elapsed_ms",
     }
-    if not isinstance(value, Mapping) or set(value) not in (
+    if not isinstance(value, Mapping):
+        raise ValueError("research result fields are invalid")
+    supplied_fields = set(value)
+    supplied_fields.discard("degradation_reason")
+    if supplied_fields not in (
         legacy_fields,
         legacy_fields | calculation_fields,
         scope_fields,
@@ -553,6 +560,11 @@ def _hydrate_research_result(value: Any) -> ResearchResult:
         scope_downgrade_reason=(
             str(value["scope_downgrade_reason"])
             if value.get("scope_downgrade_reason") is not None
+            else None
+        ),
+        degradation_reason=(
+            str(value["degradation_reason"])
+            if value.get("degradation_reason") is not None
             else None
         ),
         calculation_call_count=_strict_int(value.get("calculation_call_count", 0)),
@@ -724,6 +736,21 @@ def _validate_calculation_facts(
         maximum=4,
         field="calculation rejection reasons",
     )
+
+
+def _validate_degradation_reason(value: str | None) -> None:
+    if value is None:
+        return
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > 128
+        or any(
+            character not in "abcdefghijklmnopqrstuvwxyz0123456789_"
+            for character in value
+        )
+    ):
+        raise ValueError("research degradation reason is invalid")
 
 
 def _string_tuple(value: Any) -> tuple[str, ...]:

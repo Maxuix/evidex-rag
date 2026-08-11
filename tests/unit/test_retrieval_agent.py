@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from rag_kb.answering.pipeline_steps import AdaptiveEvidenceAssessmentStep
 from rag_kb.domain import (
+    ChatModelExecutionError,
     ChatModelOperation,
     ChatPipelineExecutionError,
     ChatPipelinePhase,
@@ -91,6 +92,20 @@ class _Progress:
     async def show(self, stage, activity, *, facts=None, completed=()) -> None:
         del completed
         self.events.append((stage, activity, facts))
+
+
+class _ProviderFailingModel:
+    def __init__(self, diagnostic: dict[str, object]) -> None:
+        self.diagnostic = diagnostic
+        self.calls = 0
+
+    async def complete(self, request):
+        del request
+        self.calls += 1
+        raise ChatModelExecutionError(
+            ErrorCode.CHAT_PROVIDER_UNAVAILABLE,
+            diagnostic=self.diagnostic,
+        )
 
 
 def _agent_context(
@@ -219,6 +234,28 @@ def _adjacent(anchor, *, offset: int, text: str, chunk_id=None):
 
 
 class RetrievalAgentTests(unittest.IsolatedAsyncioTestCase):
+    async def test_provider_timeout_and_403_do_not_enter_schema_degradation(
+        self,
+    ) -> None:
+        context = _agent_context()
+        for diagnostic in (
+            {"check": "total_timeout"},
+            {"check": "http_status", "http_status": 403, "retryable": False},
+        ):
+            with self.subTest(diagnostic=diagnostic):
+                model = _ProviderFailingModel(diagnostic)
+                with self.assertRaises(ChatPipelineExecutionError) as raised:
+                    await _service(model, _Retriever(())).research(
+                        context,
+                        _query_context(context),
+                    )
+                self.assertIs(
+                    raised.exception.code,
+                    ErrorCode.CHAT_PROVIDER_UNAVAILABLE,
+                )
+                self.assertEqual(raised.exception.diagnostic, diagnostic)
+                self.assertEqual(model.calls, 1)
+
     def test_agent_action_failure_reasons_are_specific_and_content_safe(self) -> None:
         base = json.loads(
             _search("find fact", [{"query": "fact", "based_on_observation_ids": []}])
@@ -534,16 +571,20 @@ class RetrievalAgentTests(unittest.IsolatedAsyncioTestCase):
             _response("PRIVATE second invalid", request_id="verify-repair-invalid"),
         )
 
-        with self.assertRaises(ChatPipelineExecutionError) as raised:
-            await _service(model, _Retriever((pack,))).research(
-                context, _query_context(context)
-            )
-
-        self.assertEqual(
-            raised.exception.diagnostic,
-            {"check": "research_result_verification_wire_schema_invalid"},
+        outcome = await _service(model, _Retriever((pack,))).research(
+            context, _query_context(context)
         )
-        self.assertNotIn("PRIVATE", repr(raised.exception.diagnostic))
+
+        result = outcome.workflow_state.research_result
+        assert result is not None
+        self.assertEqual(
+            result.degradation_reason,
+            "research_result_verification_wire_schema_invalid",
+        )
+        self.assertIs(result.status, ResearchStatus.NO_EVIDENCE)
+        self.assertEqual(result.selected_evidence_keys, ())
+        self.assertEqual(len(outcome.model_calls), 4)
+        self.assertNotIn("PRIVATE", repr(result.as_dict()))
 
     async def test_verifier_truncation_takes_diagnostic_priority(self) -> None:
         context = _agent_context()
@@ -562,15 +603,17 @@ class RetrievalAgentTests(unittest.IsolatedAsyncioTestCase):
             _response("PRIVATE invalid again", request_id="verify-repair-invalid"),
         )
 
-        with self.assertRaises(ChatPipelineExecutionError) as raised:
-            await _service(model, _Retriever((pack,))).research(
-                context, _query_context(context)
-            )
-
-        self.assertEqual(
-            raised.exception.diagnostic,
-            {"check": "research_result_verification_truncated"},
+        outcome = await _service(model, _Retriever((pack,))).research(
+            context, _query_context(context)
         )
+
+        result = outcome.workflow_state.research_result
+        assert result is not None
+        self.assertEqual(
+            result.degradation_reason,
+            "research_result_verification_truncated",
+        )
+        self.assertIs(result.status, ResearchStatus.NO_EVIDENCE)
         self.assertEqual(model.requests[-1].max_output_tokens, 2048)
 
     def test_scoped_search_prioritizes_uncovered_documents(self) -> None:
@@ -746,15 +789,18 @@ class RetrievalAgentTests(unittest.IsolatedAsyncioTestCase):
         )
         model = _Model(truncated, truncated)
 
-        with self.assertRaises(ChatPipelineExecutionError) as raised:
-            await _service(model, _Retriever(())).research(
-                context, _query_context(context)
-            )
-
-        self.assertEqual(
-            raised.exception.diagnostic,
-            {"check": "retrieval_agent_action_truncated"},
+        outcome = await _service(model, _Retriever(())).research(
+            context, _query_context(context)
         )
+
+        result = outcome.workflow_state.research_result
+        assert result is not None
+        self.assertEqual(
+            result.degradation_reason,
+            "retrieval_agent_action_truncated",
+        )
+        self.assertIs(result.status, ResearchStatus.NO_EVIDENCE)
+        self.assertEqual(len(outcome.model_calls), 2)
         self.assertEqual(
             [request.max_output_tokens for request in model.requests],
             [768, 1536],
@@ -798,21 +844,22 @@ class RetrievalAgentTests(unittest.IsolatedAsyncioTestCase):
         invalid["objective"] = None
         model = _Model(_response(json.dumps(invalid)), _response(json.dumps(invalid)))
 
-        with self.assertRaises(ChatPipelineExecutionError) as raised:
-            await _service(model, _Retriever(())).research(
-                context, _query_context(context)
-            )
-
-        self.assertEqual(
-            raised.exception.diagnostic,
-            {
-                "check": (
-                    "retrieval_agent_action_"
-                    f"{_AgentActionFailureReason.RELEVANT_PAYLOAD_MISSING.value}"
-                )
-            },
+        outcome = await _service(model, _Retriever(())).research(
+            context, _query_context(context)
         )
-        self.assertNotIn("PRIVATE", repr(raised.exception.diagnostic))
+
+        result = outcome.workflow_state.research_result
+        assert result is not None
+        self.assertEqual(
+            result.degradation_reason,
+            (
+                "retrieval_agent_action_"
+                f"{_AgentActionFailureReason.RELEVANT_PAYLOAD_MISSING.value}"
+            ),
+        )
+        self.assertIs(result.status, ResearchStatus.NO_EVIDENCE)
+        self.assertEqual(result.selected_evidence_keys, ())
+        self.assertNotIn("PRIVATE", repr(result.as_dict()))
 
     async def test_agent_action_infers_truncation_when_usage_hits_request_cap(
         self,
@@ -825,14 +872,15 @@ class RetrievalAgentTests(unittest.IsolatedAsyncioTestCase):
         )
         model = _Model(capped, capped)
 
-        with self.assertRaises(ChatPipelineExecutionError) as raised:
-            await _service(model, _Retriever(())).research(
-                context, _query_context(context)
-            )
+        outcome = await _service(model, _Retriever(())).research(
+            context, _query_context(context)
+        )
 
+        result = outcome.workflow_state.research_result
+        assert result is not None
         self.assertEqual(
-            raised.exception.diagnostic,
-            {"check": "retrieval_agent_action_truncated"},
+            result.degradation_reason,
+            "retrieval_agent_action_truncated",
         )
         self.assertEqual(
             [request.max_output_tokens for request in model.requests],
