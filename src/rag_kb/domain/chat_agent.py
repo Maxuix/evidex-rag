@@ -1,4 +1,4 @@
-"""Bounded facts for the single native tool-calling Chat agent."""
+"""Loop guard and diagnostics for the single native tool-calling Chat agent."""
 
 from __future__ import annotations
 
@@ -8,32 +8,23 @@ from types import MappingProxyType
 from typing import Any
 
 
-CHAT_AGENT_VERSION = "native_tool_calling_agent_v1"
+CHAT_AGENT_VERSION = "native_tool_calling_agent_v2"
 
 
 @dataclass(frozen=True, slots=True)
 class ChatAgentBudget:
-    model_rounds: int = 8
-    retrieval_calls: int = 6
-    calculation_calls: int = 4
-    evidence_refs: int = 20
+    max_model_rounds: int = 8
 
     def __post_init__(self) -> None:
         if (
-            not 2 <= self.model_rounds <= 12
-            or not 1 <= self.retrieval_calls <= 12
-            or not 0 <= self.calculation_calls <= 4
-            or not 1 <= self.evidence_refs <= 100
+            isinstance(self.max_model_rounds, bool)
+            or not isinstance(self.max_model_rounds, int)
+            or not 1 <= self.max_model_rounds <= 12
         ):
             raise ValueError("chat agent budget is invalid")
 
     def as_dict(self) -> dict[str, int]:
-        return {
-            "model_rounds": self.model_rounds,
-            "retrieval_calls": self.retrieval_calls,
-            "calculation_calls": self.calculation_calls,
-            "evidence_refs": self.evidence_refs,
-        }
+        return {"max_model_rounds": self.max_model_rounds}
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,10 +73,10 @@ class ChatAgentTrace:
         if (
             self.version != CHAT_AGENT_VERSION
             or len(self.events) > 32
-            or not 0 <= self.model_rounds <= self.budget.model_rounds
-            or not 0 <= self.retrieval_calls <= self.budget.retrieval_calls
-            or not 0 <= self.calculation_calls <= self.budget.calculation_calls
-            or not 0 <= self.evidence_ref_count <= self.budget.evidence_refs
+            or not 0 <= self.model_rounds <= self.budget.max_model_rounds + 1
+            or self.retrieval_calls < 0
+            or self.calculation_calls < 0
+            or self.evidence_ref_count < 0
             or self.outcome not in {"answered", "partial", "refused"}
         ):
             raise ValueError("chat agent trace is invalid")

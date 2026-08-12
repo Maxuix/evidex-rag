@@ -116,13 +116,8 @@ class ChatExecutionContext:
     contextualized_query: ContextualizedQuery | None = None
     agent_configuration: Mapping[str, Any] = field(
         default_factory=lambda: {
-            "version": "native_tool_calling_agent_v1",
-            "budget": {
-                "model_rounds": 8,
-                "retrieval_calls": 6,
-                "calculation_calls": 4,
-                "evidence_refs": 20,
-            },
+            "version": "native_tool_calling_agent_v2",
+            "budget": {"max_model_rounds": 8},
         }
     )
 

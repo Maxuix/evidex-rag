@@ -108,8 +108,6 @@ class EvidenceEnvelope:
         expected = [f"cite_{rank}" for rank in range(1, len(self.items) + 1)]
         if [item.citation_id for item in self.items] != expected:
             raise ValueError("prompt evidence must have contiguous citation identifiers")
-        if len(self.items) > 104:
-            raise ValueError("prompt evidence exceeds the retrieval limit")
 
     @property
     def citation_ids(self) -> frozenset[str]:
@@ -124,7 +122,7 @@ class EvidenceAssessment:
     missing_aspects: tuple[str, ...]
 
     def __post_init__(self) -> None:
-        _require_bounded_unique_strings(
+        _require_unique_strings(
             self.usable_citation_ids, field="usable citation identifiers"
         )
         _require_bounded_unique_strings(
@@ -240,7 +238,6 @@ class AnswerClaim:
             raise ValueError("answer claim text is invalid")
         if (
             not self.citation_ids
-            or len(self.citation_ids) > 100
             or len(self.citation_ids) != len(set(self.citation_ids))
             or any(not value.strip() for value in self.citation_ids)
         ):
@@ -453,5 +450,12 @@ class ChatAnsweringState:
 def _require_bounded_unique_strings(values: tuple[str, ...], *, field: str) -> None:
     if len(values) > 100 or len(values) != len(set(values)):
         raise ValueError(f"{field} must be unique and bounded")
+    if any(not value.strip() or len(value) > 1000 for value in values):
+        raise ValueError(f"{field} contain invalid values")
+
+
+def _require_unique_strings(values: tuple[str, ...], *, field: str) -> None:
+    if len(values) != len(set(values)):
+        raise ValueError(f"{field} must be unique")
     if any(not value.strip() or len(value) > 1000 for value in values):
         raise ValueError(f"{field} contain invalid values")

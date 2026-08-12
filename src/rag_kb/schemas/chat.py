@@ -121,10 +121,7 @@ class ChatRetrievalRequest(PublicSchema):
 
 
 class ChatAgentBudgetResponse(PublicSchema):
-    model_rounds: Annotated[int, Field(ge=2, le=12)]
-    retrieval_calls: Annotated[int, Field(ge=1, le=12)]
-    calculation_calls: Annotated[int, Field(ge=0, le=4)]
-    evidence_refs: Annotated[int, Field(ge=1, le=100)]
+    max_model_rounds: Annotated[int, Field(ge=1, le=12)]
 
 
 class ChatAgentTraceEventResponse(PublicSchema):
@@ -136,7 +133,7 @@ class ChatAgentTraceEventResponse(PublicSchema):
 
 
 class ChatAgentTraceResponse(PublicSchema):
-    version: Literal["native_tool_calling_agent_v1"]
+    version: Literal["native_tool_calling_agent_v2"]
     events: tuple[ChatAgentTraceEventResponse, ...]
     budget: ChatAgentBudgetResponse
     usage: dict[str, Annotated[int, Field(ge=0)]]
@@ -144,7 +141,7 @@ class ChatAgentTraceResponse(PublicSchema):
 
 
 class ChatAgentResponse(PublicSchema):
-    version: Literal["native_tool_calling_agent_v1"]
+    version: Literal["native_tool_calling_agent_v2"]
     budget: ChatAgentBudgetResponse
     trace: ChatAgentTraceResponse | None = None
 

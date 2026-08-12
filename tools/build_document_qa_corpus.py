@@ -242,12 +242,16 @@ def _complex_aspect(
     *,
     expected_decimal: str | None = None,
     numeric_tolerance: str | None = None,
+    allow_not_mentioned: bool = False,
+    requires_complete_scan: bool = False,
     answer_match: str = "all",
 ) -> dict[str, object]:
     value: dict[str, object] = {
         "aspect_id": aspect_id,
         "answer_variants": list(answer_variants),
         "source": list(sources),
+        "allow_not_mentioned": allow_not_mentioned,
+        "requires_complete_scan": requires_complete_scan,
         "answer_match": answer_match,
     }
     if expected_decimal is not None:
@@ -268,6 +272,8 @@ def _complex_case(
     required_document_ids: tuple[str, ...],
     aspects: tuple[dict[str, object], ...],
     evaluation_group: str = "evidence_only",
+    requires_complete_scan: bool = False,
+    allow_not_mentioned: bool = False,
     notes: str,
 ) -> dict[str, object]:
     return {
@@ -281,6 +287,8 @@ def _complex_case(
         "forbid_unrelated_citations": True,
         "aspects": list(aspects),
         "evaluation_group": evaluation_group,
+        "requires_complete_scan": requires_complete_scan,
+        "allow_not_mentioned": allow_not_mentioned,
         "notes": notes,
     }
 
@@ -363,14 +371,14 @@ COMPLEX_CASE_DEFINITIONS = (
             ),
             _complex_aspect(
                 "boeing_effective_tax_rate_change",
-                ("-0.6%", "14.8%", "decreas"),
+                ("-0.6%", "14.7%", "decreas"),
                 (
                     _complex_source(
                         "financebench_id_00585",
                         locator={"kind": "pdf_page", "page": 77},
                     ),
                 ),
-                expected_decimal="-15.4",
+                expected_decimal="-15.3",
             ),
             _complex_aspect(
                 "larger_change_magnitude",
@@ -406,7 +414,7 @@ COMPLEX_CASE_DEFINITIONS = (
         aspects=(
             _complex_aspect(
                 "amex_gross_margin_not_used",
-                ("not measured through gross margin",),
+                ("does not present", "gross profit", "gross margin"),
                 (_complex_source("financebench_id_00720"),),
             ),
             _complex_aspect(
@@ -422,7 +430,11 @@ COMPLEX_CASE_DEFINITIONS = (
                 expected_decimal="5.3",
             ),
         ),
-        notes="The gross-margin comparability conclusion is a bounded domain inference, not a directly stated AmEx fact.",
+        notes=(
+            "The AmEx source fact is limited to the absence of a gross-profit or "
+            "gross-margin subtotal in the consolidated income statement. The "
+            "comparability conclusion is a bounded domain inference."
+        ),
     ),
     _complex_case(
         "complex-04",
@@ -434,7 +446,7 @@ COMPLEX_CASE_DEFINITIONS = (
             "unavailable disclosure into a stronger conclusion."
         ),
         language="en",
-        reasoning_type="cross_document_comparison_and_qualification",
+        reasoning_type="cross_document_scope_and_qualification",
         required_document_ids=(
             "financebench-american-express-2022-10k",
             "cfqa-fenghuo-electronics-2022-annual-report",
@@ -475,13 +487,24 @@ COMPLEX_CASE_DEFINITIONS = (
             _complex_aspect(
                 "management_plus_rd",
                 ("491,210,498.01", "229,129,291.07", "262,081,206.94"),
-                (_complex_source("cfqa-81"),),
+                (
+                    _complex_source(
+                        "cfqa-81",
+                        locator={"kind": "pdf_page", "page": 64},
+                    ),
+                ),
                 expected_decimal="491210498.01",
             ),
             _complex_aspect(
                 "raw_material_difference",
                 ("294,435,934.46",),
-                (_complex_source("cfqa-101"), _complex_source("cfqa-81")),
+                (
+                    _complex_source("cfqa-101"),
+                    _complex_source(
+                        "cfqa-81",
+                        locator={"kind": "pdf_page", "page": 64},
+                    ),
+                ),
                 expected_decimal="294435934.46",
             ),
         ),
@@ -564,13 +587,13 @@ COMPLEX_CASE_DEFINITIONS = (
         aspects=(
             _complex_aspect(
                 "other_operating_expense_residual",
-                ("94.2",),
+                ("27.0",),
                 (
                     _complex_source("tatqa-3d384cee-82de-48f1-98ff-a972404bce4c"),
                     _complex_source("tatqa-a5992e2e-726e-469c-88f3-e7b2ea8db24c"),
                     _complex_source("tatqa-ce6dd8c2-37c9-4c55-80d5-89ab35ae254f"),
                 ),
-                expected_decimal="94.2",
+                expected_decimal="27.0",
             ),
             _complex_aspect(
                 "segments_above_fifty",
@@ -579,7 +602,7 @@ COMPLEX_CASE_DEFINITIONS = (
                 expected_decimal="1",
             ),
         ),
-        notes="The residual is 166.3 - 45.1 - 27.0; it is not a new source fact.",
+        notes="The residual is 166.3 - 94.2 - 45.1; it is not a new source fact.",
     ),
     _complex_case(
         "complex-09",
@@ -650,31 +673,47 @@ COMPLEX_CASE_DEFINITIONS = (
     _complex_case(
         "complex-11",
         (
-            "For contractnli-sec-text-488.txt, classify whether the "
-            "reverse-engineering statement is entailed and cite the supporting evidence."
+            "Compare the reverse-engineering statement separately in "
+            "contractnli-pdf-15.txt and contractnli-sec-text-488.txt. State the "
+            "NLI label for each named contract and do not treat the absence in "
+            "one contract as evidence from the other."
         ),
         language="en",
-        reasoning_type="contract_nli",
-        required_document_ids=("contractnli-sec-text-488",),
+        reasoning_type="scoped_contract_nli_comparison",
+        required_document_ids=("contractnli-pdf-15", "contractnli-sec-text-488"),
+        requires_complete_scan=True,
+        allow_not_mentioned=True,
         aspects=(
+            _complex_aspect(
+                "contract_15_reverse_engineering",
+                ("contractnli-pdf-15.txt", "not mentioned"),
+                (_complex_source("contractnli-15-nda-11"),),
+                allow_not_mentioned=True,
+                requires_complete_scan=True,
+                answer_match="all",
+            ),
             _complex_aspect(
                 "contract_488_reverse_engineering",
                 ("contractnli-sec-text-488.txt", "entailment"),
                 (_complex_source("contractnli-488-nda-11"),),
             ),
         ),
-        notes="This case requires positive retrieved evidence for the classification.",
+        notes="The not-mentioned label is valid only with a complete serving-document scan.",
     ),
     _complex_case(
         "complex-12",
         (
-            "For contractnli-pdf-82.txt, classify these two statements in "
+            "For contractnli-pdf-82.txt only, classify these three statements in "
             "order: obligations may survive termination; the recipient may retain "
-            "confidential information after return or destruction."
+            "confidential information after return or destruction; and the "
+            "recipient must notify the disclosing party when disclosure is legally "
+            "required. Use not_mentioned only after the complete document scan."
         ),
         language="en",
         reasoning_type="scoped_contract_nli_three_way",
         required_document_ids=("contractnli-pdf-82",),
+        requires_complete_scan=True,
+        allow_not_mentioned=True,
         aspects=(
             _complex_aspect(
                 "contract_82_survival",
@@ -686,8 +725,16 @@ COMPLEX_CASE_DEFINITIONS = (
                 ("contradiction", "contradicted"),
                 (_complex_source("contractnli-82-nda-20"),),
             ),
+            _complex_aspect(
+                "contract_82_legal_notice",
+                ("not_mentioned", "not mentioned"),
+                (_complex_source("contractnli-82-nda-8"),),
+                allow_not_mentioned=True,
+                requires_complete_scan=True,
+                answer_match="any",
+            ),
         ),
-        notes="Both labels require positive retrieved evidence.",
+        notes="The third label is an absence claim and cannot be inferred from a retrieval miss.",
     ),
     _complex_case(
         "complex-13",
@@ -745,7 +792,10 @@ COMPLEX_CASE_DEFINITIONS = (
         aspects=(
             _complex_aspect(
                 "contract_15_no_rights",
-                ("contractnli-pdf-15.txt", "does not grant"),
+                (
+                    "contractnli-pdf-15.txt",
+                    "no explicit or implied transfer of ownership",
+                ),
                 (_complex_source("contractnli-15-nda-15"),),
             ),
             _complex_aspect(
@@ -755,16 +805,33 @@ COMPLEX_CASE_DEFINITIONS = (
             ),
             _complex_aspect(
                 "contract_547_negotiation_confidentiality",
-                ("contractnli-sec-html-547.txt", "negotiated"),
+                (
+                    "contractnli-sec-html-547.txt",
+                    "made available",
+                    "inspected",
+                ),
                 (_complex_source("contractnli-547-nda-10"),),
             ),
             _complex_aspect(
                 "contract_82_surviving_obligations",
-                ("contractnli-pdf-82.txt", "continue in effect"),
+                (
+                    "contractnli-pdf-82.txt",
+                    "continue in effect",
+                    "decision not to proceed",
+                ),
                 (_complex_source("contractnli-82-nda-19"),),
             ),
         ),
-        notes="Citation coverage is exact: all four named files are required and unrelated documents are forbidden.",
+        notes=(
+            "Citation coverage is exact: all four named files are required and "
+            "unrelated documents are forbidden. The source for contract 15 proves "
+            "only that ownership of disclosed drawings, documents, software, and "
+            "their copyright is not transferred; it does not prove that no rights "
+            "of any kind are granted. The source for contract 547 protects only the "
+            "fact that Confidential Information was made available or inspected; "
+            "it does not state that an agreement or negotiations occurred. Judge "
+            "any broader wording as unsupported rather than expanding the evidence."
+        ),
     ),
 )
 
@@ -1203,15 +1270,15 @@ def _build_contractnli(
                 start, end = document["spans"][span_index]
                 quote = document["text"][start:end]
                 spans.append({"start": start, "end": end, "quote": quote})
-            if choice == "NotMentioned":
-                continue
             canonical = {
                 "Entailment": "entailment",
                 "Contradiction": "contradiction",
+                "NotMentioned": "not_mentioned",
             }[choice]
             aliases = {
                 "entailment": ["entailment", "entailed", "supported"],
                 "contradiction": ["contradiction", "contradicted"],
+                "not_mentioned": ["not_mentioned", "not mentioned", "unknown"],
             }[canonical]
             hypothesis = labels[label_id]["hypothesis"]
             cases.append(
@@ -1231,13 +1298,13 @@ def _build_contractnli(
                     "gold": {
                         "answer": canonical,
                         "acceptable_answers": aliases,
-                        "answerable": True,
+                        "answerable": canonical != "not_mentioned",
                         "scale": None,
                         "numeric_tolerance": None,
                     },
                     "question_type": "document_nli",
                     "evidence": {
-                        "kind": "text_spans",
+                        "kind": "absence" if not spans else "text_spans",
                         "spans": spans,
                     },
                     "justification": labels[label_id]["short_description"],
@@ -1602,9 +1669,18 @@ def _validate_complex_case(
                 raise RuntimeError(f"invalid complex tolerance: {case_id}") from None
         elif tolerance is not None:
             raise RuntimeError(f"complex tolerance has no decimal: {case_id}")
+        if not isinstance(aspect.get("allow_not_mentioned"), bool):
+            raise RuntimeError(f"complex absence flag is invalid: {case_id}")
+        if not isinstance(aspect.get("requires_complete_scan"), bool):
+            raise RuntimeError(f"complex scan flag is invalid: {case_id}")
         source = aspect.get("source")
         if not isinstance(source, list) or not source:
             raise RuntimeError(f"complex aspect has no source: {case_id}")
+        aspect_requires_scan = aspect.get("requires_complete_scan") is True
+        if aspect_requires_scan and value.get("requires_complete_scan") is not True:
+            raise RuntimeError(
+                f"complex scan aspect is not enabled at case level: {case_id}"
+            )
         for reference in source:
             if not isinstance(reference, dict):
                 raise RuntimeError(f"invalid complex source reference: {case_id}")
@@ -1629,10 +1705,30 @@ def _validate_complex_case(
                 case_id=case_id,
             )
             if base_case.get("evidence", {}).get("kind") == "absence":
-                raise RuntimeError(f"absence source is unsupported: {case_id}")
+                if (
+                    aspect.get("allow_not_mentioned") is not True
+                    or not aspect_requires_scan
+                    or value.get("allow_not_mentioned") is not True
+                    or value.get("requires_complete_scan") is not True
+                    or base_case.get("gold", {}).get("answerable") is not False
+                    or base_case.get("evidence", {}).get("spans")
+                ):
+                    raise RuntimeError(f"invalid offline absence source: {case_id}")
     declared_sources = value.get("source_case_ids")
     if not isinstance(declared_sources, list) or set(declared_sources) != referenced_source_cases:
         raise RuntimeError(f"complex source case index mismatch: {case_id}")
+    if not isinstance(value.get("requires_complete_scan"), bool):
+        raise RuntimeError(f"complex case scan flag is invalid: {case_id}")
+    if not isinstance(value.get("allow_not_mentioned"), bool):
+        raise RuntimeError(f"complex case absence flag is invalid: {case_id}")
+    if value.get("requires_complete_scan") is True and not any(
+        aspect.get("requires_complete_scan") is True for aspect in aspects
+    ):
+        raise RuntimeError(f"complex case scan flag has no scan aspect: {case_id}")
+    if value.get("allow_not_mentioned") is True and not any(
+        aspect.get("allow_not_mentioned") is True for aspect in aspects
+    ):
+        raise RuntimeError(f"complex case absence flag has no absence aspect: {case_id}")
 
 
 def _validate_complex_locator(
@@ -1655,7 +1751,7 @@ def _validate_complex_locator(
         pages = manifest_pages.get(document_id)
         if not isinstance(page, int) or not isinstance(pages, int) or not 1 <= page <= pages:
             raise RuntimeError(f"complex PDF locator is invalid: {case_id}")
-        if evidence_kind != "pdf_pages":
+        if evidence_kind not in {"pdf_pages", "pdf_page_alternatives"}:
             raise RuntimeError(f"complex PDF locator has mismatched source kind: {case_id}")
         return
     if kind == "markdown_section":
@@ -1719,6 +1815,11 @@ def _validate_evidence(
                 raise RuntimeError(f"invalid evidence span: {case['case_id']}")
             if text[start:end] != span["quote"]:
                 raise RuntimeError(f"evidence quote mismatch: {case['case_id']}")
+    elif kind == "absence":
+        if evidence.get("spans"):
+            raise RuntimeError(f"absence case contains spans: {case['case_id']}")
+        if case["gold"].get("answerable") is not False:
+            raise RuntimeError(f"absence case is marked answerable: {case['case_id']}")
     else:
         raise RuntimeError(f"unknown evidence kind {kind}: {case['case_id']}")
 

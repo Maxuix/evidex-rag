@@ -5,7 +5,7 @@ import importlib
 import json
 import os
 import unittest
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
@@ -157,7 +157,7 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
                     "UPDATE alembic_version SET version_num = 'runtime-mutation'"
                 )
             revision = await runtime.fetchval("SELECT version_num FROM alembic_version")
-            self.assertEqual(revision, "0010_drop_legacy_workflow")
+            self.assertEqual(revision, "0011_native_agent_round_limit")
         finally:
             await runtime.close()
 
@@ -378,7 +378,7 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(columns, [])
         self.assertEqual(constraints, [])
 
-    async def test_native_agent_columns_are_bounded_and_preserve_legacy_rows(self) -> None:
+    async def test_native_agent_columns_use_only_the_round_limit_v2(self) -> None:
         connection = await asyncpg.connect(MIGRATION_DSN)
         try:
             columns = await connection.fetch(
@@ -396,7 +396,7 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
                 SELECT conname, pg_get_constraintdef(oid) AS definition
                 FROM pg_constraint
                 WHERE conrelid = 'public.chat_run'::regclass
-                  AND conname LIKE '%ck_chat_run_agent_%_v1'
+                  AND conname LIKE '%ck_chat_run_agent_%_v2'
                 ORDER BY conname
                 """
             )
@@ -409,9 +409,430 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(columns[0]["is_nullable"], "NO")
         self.assertEqual(columns[1]["is_nullable"], "YES")
-        self.assertIn("native_tool_calling_agent_v1", columns[0]["column_default"])
+        self.assertIn("native_tool_calling_agent_v2", columns[0]["column_default"])
+        self.assertIn("max_model_rounds", columns[0]["column_default"])
+        self.assertNotIn("retrieval_calls", columns[0]["column_default"])
+        self.assertNotIn("calculation_calls", columns[0]["column_default"])
+        self.assertNotIn("evidence_refs", columns[0]["column_default"])
         self.assertEqual(len(constraints), 2)
+        self.assertEqual(
+            [row["conname"] for row in constraints],
+            [
+                "ck_chat_run_agent_configuration_v2",
+                "ck_chat_run_agent_trace_v2",
+            ],
+        )
         self.assertTrue(all("pg_column_size" in row["definition"] for row in constraints))
+
+    async def test_native_agent_round_limit_migration_preserves_trace_facts(
+        self,
+    ) -> None:
+        assert MIGRATION_DSN is not None
+        connection = await asyncpg.connect(MIGRATION_DSN)
+        original_events = [
+            {
+                "tool": "search_knowledge_base",
+                "status": "ok",
+                "tool_call_id": "search-1",
+                "refs": ["ev_1", "ev_2"],
+                "count": 2,
+            },
+            {
+                "tool": "submit_answer",
+                "status": "salvaged",
+                "tool_call_id": "submit-1",
+                "refs": ["ev_1"],
+                "count": 1,
+            },
+        ]
+        original_trace_usage = {
+            "model_rounds": 8,
+            "retrieval_calls": 5,
+            "calculation_calls": 3,
+            "evidence_refs": 9,
+        }
+        original_run_usage = {"totals": {"input_tokens": 11, "output_tokens": 7}}
+        original_timing = {"attempts": {"1": {"result": "completed"}}}
+
+        async def create_run(
+            *, suffix: str, max_model_rounds: int, trace: dict | None
+        ) -> UUID:
+            session_id = await connection.fetchval(
+                """
+                INSERT INTO chat_session (
+                    workspace_id, kb_id, principal_id, title
+                ) VALUES ($1, $2, $3, $4)
+                RETURNING id
+                """,
+                workspace_id,
+                kb_id,
+                f"principal-{suffix}",
+                f"session-{suffix}",
+            )
+            user_message_id = await connection.fetchval(
+                """
+                INSERT INTO chat_message (
+                    workspace_id, session_id, role, content
+                ) VALUES ($1, $2, 'user', $3)
+                RETURNING id
+                """,
+                workspace_id,
+                session_id,
+                f"question-{suffix}",
+            )
+            configuration = {
+                "version": "native_tool_calling_agent_v2",
+                "budget": {"max_model_rounds": max_model_rounds},
+            }
+            return await connection.fetchval(
+                """
+                INSERT INTO chat_run (
+                    workspace_id, kb_id, session_id, user_message_id,
+                    index_revision_id, status, principal_id, client_id,
+                    endpoint, idempotency_key, request_hash, requested_policy,
+                    effective_policy, retrieval_strategy, model_configuration,
+                    agent_configuration, agent_trace, conversation_context,
+                    usage, timing, attempt, completed_at
+                ) VALUES (
+                    $1, $2, $3, $4, $5, 'completed', $6, 'schema-client',
+                    'POST /api/v1/chat/runs', $7, $8,
+                    '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb,
+                    $9::jsonb, $10::jsonb, '{}'::jsonb,
+                    $11::jsonb, $12::jsonb, 1, now()
+                )
+                RETURNING id
+                """,
+                workspace_id,
+                kb_id,
+                session_id,
+                user_message_id,
+                revision_id,
+                f"principal-{suffix}",
+                uuid4(),
+                "sha256:" + suffix[0] * 64,
+                json.dumps(configuration),
+                json.dumps(trace) if trace is not None else None,
+                json.dumps(original_run_usage),
+                json.dumps(original_timing),
+            )
+
+        try:
+            workspace_id, embedding_space_id, kb_id = await self.create_foundation(
+                connection, suffix="agent-round-migration"
+            )
+            revision_id = await self.create_revision(
+                connection,
+                workspace_id,
+                embedding_space_id,
+                kb_id,
+            )
+            traced_run_id = await create_run(
+                suffix="traced",
+                max_model_rounds=8,
+                trace={
+                    "version": "native_tool_calling_agent_v2",
+                    "events": original_events,
+                    "budget": {"max_model_rounds": 8},
+                    "usage": original_trace_usage,
+                    "outcome": "partial",
+                },
+            )
+            null_trace_run_id = await create_run(
+                suffix="null-trace",
+                max_model_rounds=6,
+                trace=None,
+            )
+        finally:
+            await connection.close()
+
+        migration = importlib.import_module(
+            "rag_kb.db.migrations.versions.0011_native_agent_round_limit"
+        )
+        engine = create_async_engine(
+            MIGRATION_DSN.replace("postgresql://", "postgresql+asyncpg://", 1)
+        )
+        downgraded = False
+        try:
+            async with engine.begin() as migration_connection:
+                await migration_connection.run_sync(
+                    lambda sync_connection: self._invoke_migration(
+                        sync_connection,
+                        migration,
+                        "downgrade",
+                    )
+                )
+            downgraded = True
+
+            connection = await asyncpg.connect(MIGRATION_DSN)
+            try:
+                downgraded_rows = await connection.fetch(
+                    """
+                    SELECT id, agent_configuration, agent_trace, usage, timing
+                      FROM chat_run
+                     WHERE id = ANY($1::uuid[])
+                    """,
+                    [traced_run_id, null_trace_run_id],
+                )
+            finally:
+                await connection.close()
+
+            downgraded_by_id = {row["id"]: row for row in downgraded_rows}
+            traced_configuration = json.loads(
+                downgraded_by_id[traced_run_id]["agent_configuration"]
+            )
+            traced_trace = json.loads(
+                downgraded_by_id[traced_run_id]["agent_trace"]
+            )
+            self.assertEqual(
+                traced_configuration["version"], "native_tool_calling_agent_v1"
+            )
+            self.assertEqual(traced_trace["version"], "native_tool_calling_agent_v1")
+            self.assertEqual(traced_trace["budget"], traced_configuration["budget"])
+            self.assertEqual(traced_trace["events"], original_events)
+            self.assertEqual(traced_trace["usage"], original_trace_usage)
+            self.assertEqual(traced_trace["outcome"], "partial")
+            self.assertIsNone(downgraded_by_id[null_trace_run_id]["agent_trace"])
+
+            async with engine.begin() as migration_connection:
+                await migration_connection.run_sync(
+                    lambda sync_connection: self._invoke_migration(
+                        sync_connection,
+                        migration,
+                        "upgrade",
+                    )
+                )
+            downgraded = False
+
+            connection = await asyncpg.connect(MIGRATION_DSN)
+            try:
+                upgraded_rows = await connection.fetch(
+                    """
+                    SELECT id, agent_configuration, agent_trace, usage, timing
+                      FROM chat_run
+                     WHERE id = ANY($1::uuid[])
+                    """,
+                    [traced_run_id, null_trace_run_id],
+                )
+                upgraded_by_id = {row["id"]: row for row in upgraded_rows}
+                traced_configuration = json.loads(
+                    upgraded_by_id[traced_run_id]["agent_configuration"]
+                )
+                traced_trace = json.loads(upgraded_by_id[traced_run_id]["agent_trace"])
+                self.assertEqual(
+                    traced_configuration,
+                    {
+                        "version": "native_tool_calling_agent_v2",
+                        "budget": {"max_model_rounds": 8},
+                    },
+                )
+                self.assertEqual(traced_trace["version"], "native_tool_calling_agent_v2")
+                self.assertEqual(traced_trace["budget"], traced_configuration["budget"])
+                self.assertEqual(traced_trace["events"], original_events)
+                self.assertEqual(traced_trace["usage"], original_trace_usage)
+                self.assertEqual(traced_trace["outcome"], "partial")
+                self.assertEqual(
+                    json.loads(upgraded_by_id[traced_run_id]["usage"]),
+                    original_run_usage,
+                )
+                self.assertEqual(
+                    json.loads(upgraded_by_id[traced_run_id]["timing"]),
+                    original_timing,
+                )
+                null_configuration = json.loads(
+                    upgraded_by_id[null_trace_run_id]["agent_configuration"]
+                )
+                self.assertEqual(
+                    null_configuration["budget"], {"max_model_rounds": 6}
+                )
+                self.assertIsNone(upgraded_by_id[null_trace_run_id]["agent_trace"])
+
+                invalid_configurations = (
+                    {"version": "native_tool_calling_agent_v2"},
+                    {
+                        "version": "native_tool_calling_agent_v2",
+                        "budget": {
+                            "model_rounds": 8,
+                            "retrieval_calls": 6,
+                            "calculation_calls": 4,
+                            "evidence_refs": 20,
+                        },
+                    },
+                    {
+                        "version": "native_tool_calling_agent_v2",
+                        "budget": {"max_model_rounds": 8.5},
+                    },
+                )
+                for value in invalid_configurations:
+                    with self.subTest(agent_configuration=value), self.assertRaises(
+                        asyncpg.CheckViolationError
+                    ):
+                        await connection.execute(
+                            """
+                            UPDATE chat_run
+                               SET agent_configuration = $2::jsonb
+                             WHERE id = $1
+                            """,
+                            traced_run_id,
+                            json.dumps(value),
+                        )
+
+                trace_without_budget = {
+                    key: value
+                    for key, value in traced_trace.items()
+                    if key != "budget"
+                }
+                invalid_traces = (
+                    trace_without_budget,
+                    {
+                        **traced_trace,
+                        "budget": {
+                            "model_rounds": 8,
+                            "retrieval_calls": 6,
+                            "calculation_calls": 4,
+                            "evidence_refs": 20,
+                        },
+                    },
+                    {**traced_trace, "budget": {"max_model_rounds": 7}},
+                )
+                for value in invalid_traces:
+                    with self.subTest(agent_trace=value), self.assertRaises(
+                        asyncpg.CheckViolationError
+                    ):
+                        await connection.execute(
+                            """
+                            UPDATE chat_run
+                               SET agent_trace = $2::jsonb
+                             WHERE id = $1
+                            """,
+                            traced_run_id,
+                            json.dumps(value),
+                        )
+            finally:
+                await connection.close()
+        finally:
+            if downgraded:
+                async with engine.begin() as migration_connection:
+                    await migration_connection.run_sync(
+                        lambda sync_connection: self._invoke_migration(
+                            sync_connection,
+                            migration,
+                            "upgrade",
+                        )
+                    )
+            await engine.dispose()
+
+    async def test_native_agent_round_limit_downgrade_rejects_forced_round_usage(
+        self,
+    ) -> None:
+        assert MIGRATION_DSN is not None
+        connection = await asyncpg.connect(MIGRATION_DSN)
+        try:
+            workspace_id, embedding_space_id, kb_id = await self.create_foundation(
+                connection, suffix="agent-round-downgrade-guard"
+            )
+            revision_id = await self.create_revision(
+                connection,
+                workspace_id,
+                embedding_space_id,
+                kb_id,
+            )
+            session_id = await connection.fetchval(
+                """
+                INSERT INTO chat_session (
+                    workspace_id, kb_id, principal_id, title
+                ) VALUES ($1, $2, 'principal-guard', 'session-guard')
+                RETURNING id
+                """,
+                workspace_id,
+                kb_id,
+            )
+            user_message_id = await connection.fetchval(
+                """
+                INSERT INTO chat_message (
+                    workspace_id, session_id, role, content
+                ) VALUES ($1, $2, 'user', 'question-guard')
+                RETURNING id
+                """,
+                workspace_id,
+                session_id,
+            )
+            await connection.execute(
+                """
+                INSERT INTO chat_run (
+                    workspace_id, kb_id, session_id, user_message_id,
+                    index_revision_id, status, principal_id, client_id,
+                    endpoint, idempotency_key, request_hash, requested_policy,
+                    effective_policy, retrieval_strategy, model_configuration,
+                    agent_configuration, agent_trace, conversation_context,
+                    usage, timing, attempt, completed_at
+                ) VALUES (
+                    $1, $2, $3, $4, $5, 'completed', 'principal-guard',
+                    'schema-client', 'POST /api/v1/chat/runs', $6, $7,
+                    '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb,
+                    $8::jsonb, $9::jsonb, '{}'::jsonb,
+                    '{}'::jsonb, '{}'::jsonb, 1, now()
+                )
+                """,
+                workspace_id,
+                kb_id,
+                session_id,
+                user_message_id,
+                revision_id,
+                uuid4(),
+                "sha256:" + "f" * 64,
+                json.dumps(
+                    {
+                        "version": "native_tool_calling_agent_v2",
+                        "budget": {"max_model_rounds": 8},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "version": "native_tool_calling_agent_v2",
+                        "events": [],
+                        "budget": {"max_model_rounds": 8},
+                        "usage": {
+                            "model_rounds": 9,
+                            "retrieval_calls": 0,
+                            "calculation_calls": 0,
+                            "evidence_refs": 0,
+                        },
+                        "outcome": "refused",
+                    }
+                ),
+            )
+        finally:
+            await connection.close()
+
+        migration = importlib.import_module(
+            "rag_kb.db.migrations.versions.0011_native_agent_round_limit"
+        )
+        engine = create_async_engine(
+            MIGRATION_DSN.replace("postgresql://", "postgresql+asyncpg://", 1)
+        )
+        try:
+            with self.assertRaisesRegex(
+                Exception, "native Agent v2 usage cannot be represented"
+            ):
+                async with engine.begin() as migration_connection:
+                    await migration_connection.run_sync(
+                        lambda sync_connection: self._invoke_migration(
+                            sync_connection,
+                            migration,
+                            "downgrade",
+                        )
+                    )
+        finally:
+            await engine.dispose()
+
+        connection = await asyncpg.connect(MIGRATION_DSN)
+        try:
+            self.assertEqual(
+                await connection.fetchval("SELECT version_num FROM alembic_version"),
+                "0011_native_agent_round_limit",
+            )
+        finally:
+            await connection.close()
 
     async def test_same_kb_selector_and_deferred_active_rule(self) -> None:
         connection = await asyncpg.connect(MIGRATION_DSN)

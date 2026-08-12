@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Run and deterministically score the pinned Agent complex-QA benchmark."""
+"""Run or semantically rescore the pinned Agent complex-QA benchmark."""
 
 from __future__ import annotations
 
 import argparse
+import asyncio
 from decimal import Decimal, InvalidOperation
 from datetime import datetime, timezone
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -15,16 +17,38 @@ from typing import Any, Iterable, Mapping
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from tools.build_document_qa_corpus import (
     COMPLEX_CASES_FILENAME,
     validate_corpus,
 )
+from tools.agent_complex_qa_judge import (
+    ComplexQaLlmJudge,
+    JUDGE_PROMPT_VERSION,
+    JUDGE_SCHEMA_VERSION,
+    build_judge_packet,
+    judge_packet_sha256,
+    load_frozen_judge_runtime,
+    semantic_score,
+)
+from rag_kb.domain import ChatModelExecutionError
 
 
 DEFAULT_CORPUS_ROOT = Path(__file__).resolve().parents[1] / "evaluation" / "document-qa-v1"
 DEFAULT_OUTPUT_ROOT = Path(__file__).resolve().parents[1] / ".runtime" / "evaluations"
+DEFAULT_JUDGE_CACHE_ROOT = DEFAULT_OUTPUT_ROOT / ".judge-cache"
+RESCORE_CORPUS_COMPATIBILITY = {
+    (
+        "f54689e2b336b90af6fca5a421fe74e44b73ffc56d48118680d1de3360550ae6",
+        "625c7fabde8324be13b001936af37434f38bde24239364d44fa3cc5d1a9fec73",
+    ): {
+        "migration": "complex-reference-corrections-v1",
+        "artifact_sha256": (
+            "676e1bb103324c8d98dec489a9c01f70407d41606605cfeba221cf1066c07713"
+        ),
+    },
+}
 TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
 PREFLIGHT_CASE_IDS = ("complex-04", "complex-02", "complex-05")
 _NUMBER_RE = re.compile(
@@ -46,7 +70,7 @@ _NEGATIVE_WORDS = (
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--api", default="http://127.0.0.1:8000/api/v1")
-    parser.add_argument("--kb-id", required=True)
+    parser.add_argument("--kb-id")
     parser.add_argument(
         "--strategy",
         choices=("exact_vector", "hybrid"),
@@ -63,6 +87,19 @@ def main() -> int:
     parser.add_argument("--poll-seconds", type=float, default=1.0)
     parser.add_argument("--corpus-root", type=Path, default=DEFAULT_CORPUS_ROOT)
     parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--rescore-input",
+        type=Path,
+        help="rejudge an existing evaluation artifact without calling the answer model",
+    )
+    parser.add_argument("--judge-profile-revision-id", required=True)
+    parser.add_argument(
+        "--judge-cache-dir",
+        type=Path,
+        default=DEFAULT_JUDGE_CACHE_ROOT,
+        help="content-addressed cache for completed per-case judgements",
+    )
+    parser.add_argument("--env-file", type=Path, default=Path(".env"))
     parser.add_argument(
         "--preflight",
         action="store_true",
@@ -86,6 +123,8 @@ def main() -> int:
         _validate_options(arguments)
         cases = load_complex_cases(arguments.corpus_root)
         document_identity_map = load_document_identity_map(arguments.corpus_root)
+        document_paths = load_document_paths(arguments.corpus_root)
+        judge_profile_revision_id = UUID(arguments.judge_profile_revision_id)
     except (ValueError, RuntimeError) as error:
         parser.error(str(error))
 
@@ -95,6 +134,8 @@ def main() -> int:
             parser.error("--preflight cannot be combined with --case-id")
         requested = PREFLIGHT_CASE_IDS
     if requested:
+        if arguments.rescore_input is not None:
+            parser.error("--rescore-input cannot be combined with --case-id")
         unknown = set(requested) - {str(case["case_id"]) for case in cases}
         if unknown:
             parser.error(f"unknown complex case: {sorted(unknown)}")
@@ -102,25 +143,62 @@ def main() -> int:
         cases = [by_id[case_id] for case_id in requested]
 
     corpus = validate_corpus(arguments.corpus_root)
+    output = arguments.output or (
+        _default_rescore_output()
+        if arguments.rescore_input is not None
+        else _default_output(arguments.strategy)
+    )
+    if (
+        arguments.rescore_input is not None
+        and output.resolve() == arguments.rescore_input.resolve()
+    ):
+        parser.error("--output must not overwrite --rescore-input")
 
     started = time.perf_counter()
-    results = evaluate_cases(
-        api,
-        arguments.kb_id,
-        cases,
-        strategy=arguments.strategy,
-        rerank_mode=arguments.rerank_mode,
-        top_k=arguments.top_k,
-        parallelism=arguments.parallelism,
-        timeout_seconds=arguments.timeout_seconds,
-        poll_seconds=arguments.poll_seconds,
-        document_identity_map=document_identity_map,
-        profile_revision_id=arguments.profile_revision_id,
-    )
-    report = {
-        "schema_version": "native_agent_complex_qa_evaluation_v2",
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "config": {
+    source_artifact_sha256: str | None = None
+    source_corpus_sha256: str | None = None
+    source_corpus_compatibility: str | None = None
+    if arguments.rescore_input is not None:
+        source_report, source_artifact_sha256 = load_evaluation_artifact(
+            arguments.rescore_input,
+            cases=cases,
+            corpus_sha256=str(corpus["dataset_sha256"]),
+            compatible_corpus_transitions={
+                transition: frozenset({str(details["artifact_sha256"])})
+                for transition, details in RESCORE_CORPUS_COMPATIBILITY.items()
+            },
+        )
+        source_config = source_report.get("config")
+        assert isinstance(source_config, dict)
+        source_corpus_sha256 = str(source_config["corpus_sha256"])
+        transition = (
+            source_corpus_sha256,
+            str(corpus["dataset_sha256"]),
+        )
+        compatibility = RESCORE_CORPUS_COMPATIBILITY.get(transition)
+        source_corpus_compatibility = (
+            str(compatibility["migration"])
+            if compatibility is not None
+            else None
+        )
+        results = [dict(item) for item in source_report["cases"]]
+        base_config = dict(source_report.get("config") or {})
+    else:
+        assert arguments.kb_id is not None
+        results = evaluate_cases(
+            api,
+            arguments.kb_id,
+            cases,
+            strategy=arguments.strategy,
+            rerank_mode=arguments.rerank_mode,
+            top_k=arguments.top_k,
+            parallelism=arguments.parallelism,
+            timeout_seconds=arguments.timeout_seconds,
+            poll_seconds=arguments.poll_seconds,
+            document_identity_map=document_identity_map,
+            profile_revision_id=arguments.profile_revision_id,
+        )
+        base_config = {
             "api": api,
             "knowledge_base_id": arguments.kb_id,
             "strategy": arguments.strategy,
@@ -139,17 +217,58 @@ def main() -> int:
             "worker_chat_deadline_seconds": arguments.worker_chat_deadline_seconds,
             "code_commit": arguments.code_commit,
             "preflight": arguments.preflight,
+        }
+        answer_checkpoint = _answer_checkpoint_path(output)
+        _atomic_write_json(
+            answer_checkpoint,
+            {
+                "schema_version": "native_agent_complex_qa_evaluation_v2",
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "config": base_config,
+                "cases": results,
+                "elapsed_seconds": round(time.perf_counter() - started, 3),
+            },
+        )
+        print(f"answer checkpoint: {answer_checkpoint}", flush=True)
+    try:
+        results, judge_config = asyncio.run(
+            judge_results_with_profile(
+                results,
+                cases=cases,
+                corpus_root=arguments.corpus_root,
+                document_identity_map=document_identity_map,
+                document_paths=document_paths,
+                profile_revision_id=judge_profile_revision_id,
+                env_file=arguments.env_file,
+                cache_dir=arguments.judge_cache_dir,
+            )
+        )
+    except ChatModelExecutionError as error:
+        parser.error(
+            "LLM Judge failed: "
+            f"{error.code.value} diagnostic="
+            f"{json.dumps(error.diagnostic, sort_keys=True)}"
+        )
+    except (OSError, RuntimeError, ValueError) as error:
+        parser.error(f"LLM Judge failed: {error}")
+    report = {
+        "schema_version": "native_agent_complex_qa_evaluation_v3",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "config": {
+            **base_config,
+            "case_count": len(cases),
+            "corpus_sha256": corpus["dataset_sha256"],
+            "rescore_only": arguments.rescore_input is not None,
+            "source_artifact_sha256": source_artifact_sha256,
+            "source_corpus_sha256": source_corpus_sha256,
+            "source_corpus_compatibility": source_corpus_compatibility,
+            "judge": judge_config,
         },
         "cases": results,
         "summary": summarize_results(results),
         "elapsed_seconds": round(time.perf_counter() - started, 3),
     }
-    output = arguments.output or _default_output(arguments.strategy)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(
-        json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    _atomic_write_json(output, report)
     print(json.dumps(report["summary"], ensure_ascii=False, indent=2, sort_keys=True))
     return 0 if report["summary"]["completed"] == report["summary"]["cases"] else 1
 
@@ -172,6 +291,13 @@ def _validate_options(arguments: argparse.Namespace) -> None:
         raise ValueError("worker chat deadline must be positive")
     if arguments.strategy == "hybrid" and arguments.rerank_mode == "none":
         raise ValueError("hybrid retrieval requires classic reranking")
+    if hasattr(arguments, "rescore_input") or hasattr(arguments, "kb_id"):
+        rescore_input = getattr(arguments, "rescore_input", None)
+        kb_id = getattr(arguments, "kb_id", None)
+        if rescore_input is None and not kb_id:
+            raise ValueError("--kb-id is required unless --rescore-input is used")
+        if rescore_input is not None and getattr(arguments, "preflight", False):
+            raise ValueError("--rescore-input cannot be combined with --preflight")
 
 
 def load_complex_cases(root: Path) -> list[dict[str, Any]]:
@@ -217,6 +343,359 @@ def load_document_identity_map(root: Path) -> dict[str, str]:
             if isinstance(alias, str) and alias:
                 result[_normalize_document_identity(alias)] = document_id
     return result
+
+
+def load_document_paths(root: Path) -> dict[str, str]:
+    manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+    documents = manifest.get("documents")
+    if not isinstance(documents, list):
+        raise RuntimeError("corpus manifest documents are missing")
+    result: dict[str, str] = {}
+    for document in documents:
+        if not isinstance(document, dict):
+            raise RuntimeError("corpus manifest document is invalid")
+        document_id = document.get("document_id")
+        path = document.get("path")
+        if (
+            not isinstance(document_id, str)
+            or not document_id
+            or not isinstance(path, str)
+            or not path
+            or document_id in result
+        ):
+            raise RuntimeError("corpus manifest document path is invalid")
+        result[document_id] = path
+    return result
+
+
+def load_reference_cases(root: Path) -> dict[str, dict[str, Any]]:
+    path = root / "cases.jsonl"
+    values = [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    result: dict[str, dict[str, Any]] = {}
+    for value in values:
+        case_id = value.get("case_id") if isinstance(value, dict) else None
+        if not isinstance(case_id, str) or not case_id or case_id in result:
+            raise RuntimeError("reference corpus case IDs are invalid")
+        result[case_id] = value
+    return result
+
+
+def load_evaluation_artifact(
+    path: Path,
+    *,
+    cases: list[dict[str, Any]],
+    corpus_sha256: str,
+    compatible_corpus_transitions: Mapping[
+        tuple[str, str], frozenset[str]
+    ] | None = None,
+) -> tuple[dict[str, Any], str]:
+    if not path.is_file():
+        raise ValueError(f"evaluation artifact is missing: {path}")
+    raw = path.read_bytes()
+    try:
+        report = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError("evaluation artifact is not valid JSON") from error
+    if (
+        not isinstance(report, dict)
+        or report.get("schema_version") != "native_agent_complex_qa_evaluation_v2"
+    ):
+        raise ValueError("evaluation artifact must use the v2 pre-Judge schema")
+    config = report.get("config")
+    artifact_sha256 = hashlib.sha256(raw).hexdigest()
+    source_corpus_sha256 = (
+        config.get("corpus_sha256") if isinstance(config, dict) else None
+    )
+    compatible_artifacts = (
+        compatible_corpus_transitions or {}
+    ).get((str(source_corpus_sha256), corpus_sha256), frozenset())
+    if (
+        not isinstance(source_corpus_sha256, str)
+        or (
+            source_corpus_sha256 != corpus_sha256
+            and artifact_sha256 not in compatible_artifacts
+        )
+    ):
+        raise ValueError("evaluation artifact corpus hash does not match")
+    raw_results = report.get("cases")
+    if not isinstance(raw_results, list):
+        raise ValueError("evaluation artifact cases are missing")
+    expected = {str(case["case_id"]): case for case in cases}
+    found: dict[str, dict[str, Any]] = {}
+    for result in raw_results:
+        case_id = result.get("case_id") if isinstance(result, dict) else None
+        if not isinstance(case_id, str) or case_id in found:
+            raise ValueError("evaluation artifact case IDs are invalid")
+        case = expected.get(case_id)
+        if case is None or result.get("question") != case.get("question"):
+            raise ValueError("evaluation artifact case does not match the corpus")
+        score = result.get("score")
+        scored_aspects = score.get("aspects") if isinstance(score, dict) else None
+        if not isinstance(scored_aspects, list):
+            raise ValueError("evaluation artifact scored aspects are invalid")
+        expected_aspects = {
+            str(item["aspect_id"])
+            for item in case.get("aspects", ())
+            if isinstance(item, dict)
+        }
+        found_aspects = {
+            str(item["aspect_id"])
+            for item in scored_aspects
+            if isinstance(item, dict) and isinstance(item.get("aspect_id"), str)
+        }
+        if found_aspects != expected_aspects or len(scored_aspects) != len(
+            expected_aspects
+        ):
+            raise ValueError("evaluation artifact aspect IDs do not match the corpus")
+        found[case_id] = result
+    if set(found) != set(expected):
+        raise ValueError("evaluation artifact case set does not match the requested corpus")
+    report["cases"] = [found[str(case["case_id"])] for case in cases]
+    return report, artifact_sha256
+
+
+async def judge_results_with_profile(
+    results: list[dict[str, Any]],
+    *,
+    cases: list[dict[str, Any]],
+    corpus_root: Path,
+    document_identity_map: Mapping[str, str],
+    document_paths: Mapping[str, str],
+    profile_revision_id: UUID,
+    env_file: Path,
+    cache_dir: Path | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    runtime = await load_frozen_judge_runtime(
+        profile_revision_id,
+        env_file=env_file,
+    )
+    try:
+        judge = ComplexQaLlmJudge(
+            runtime.model,
+            profile_revision_id=runtime.profile_revision_id,
+            expected_model=runtime.model_name,
+            max_output_tokens=runtime.max_output_tokens,
+        )
+        judged = await apply_llm_judgements(
+            results,
+            cases=cases,
+            corpus_root=corpus_root,
+            document_identity_map=document_identity_map,
+            document_paths=document_paths,
+            judge=judge,
+            cache_dir=cache_dir,
+        )
+        return judged, runtime.config()
+    finally:
+        await runtime.close()
+
+
+async def apply_llm_judgements(
+    results: list[dict[str, Any]],
+    *,
+    cases: list[dict[str, Any]],
+    corpus_root: Path,
+    document_identity_map: Mapping[str, str],
+    document_paths: Mapping[str, str],
+    judge: ComplexQaLlmJudge,
+    cache_dir: Path | None = None,
+) -> list[dict[str, Any]]:
+    case_by_id = {str(case["case_id"]): case for case in cases}
+    reference_cases = load_reference_cases(corpus_root)
+    judged: list[dict[str, Any]] = []
+    for original in results:
+        result = dict(original)
+        case_id = result.get("case_id")
+        case = case_by_id.get(str(case_id))
+        if case is None or result.get("question") != case.get("question"):
+            raise ValueError("evaluation result does not match the Judge corpus")
+        legacy_score = result.get("score")
+        if not isinstance(legacy_score, dict):
+            raise ValueError("evaluation result has no legacy score")
+        result["legacy_score"] = _safe_json_value(legacy_score)
+        if result.get("status") != "completed":
+            judgement = {
+                "schema_version": JUDGE_SCHEMA_VERSION,
+                "status": "not_judged",
+                "reason": "run_not_completed",
+                "prompt_version": JUDGE_PROMPT_VERSION,
+                "input_sha256": None,
+                "disputed_aspect_ids": [],
+                "aspects": [],
+                "calls": {"judge_a": None, "judge_b": None, "judge_c": None},
+            }
+            semantic = {
+                "semantic_strict_correct": False,
+                "semantic_at_least_partial": False,
+                "semantic_grounding_supported": False,
+                "semantic_aspect_accuracy": 0.0,
+            }
+        else:
+            packet = build_judge_packet(
+                case,
+                result,
+                reference_cases=reference_cases,
+                citation_document_id=lambda citation: _citation_document_id(
+                    dict(citation),
+                    document_identity_map,
+                ),
+                corpus_root=corpus_root,
+                document_paths=document_paths,
+            )
+            input_sha256 = judge_packet_sha256(packet)
+            judgement = _load_cached_judgement(
+                cache_dir,
+                case=case,
+                input_sha256=input_sha256,
+                profile_revision_id=judge.profile_revision_id,
+            )
+            if judgement is None:
+                judgement = await judge.judge(packet)
+                _store_cached_judgement(
+                    cache_dir,
+                    case_id=str(case_id),
+                    judgement=judgement,
+                )
+                print(f"judge {case_id}: completed", flush=True)
+            else:
+                print(f"judge {case_id}: cache_hit", flush=True)
+            semantic = semantic_score(judgement)
+        result["judge"] = judgement
+        result["score"] = {
+            **semantic,
+            "terminal_completed": result.get("status") == "completed",
+            "judge_status": judgement["status"],
+            "aspects": judgement["aspects"],
+            "judge_disagreement_count": len(judgement["disputed_aspect_ids"]),
+            "agent_protocol_ok": legacy_score.get("agent_protocol_ok"),
+            "required_document_citation_coverage": legacy_score.get(
+                "required_document_citation_coverage", 0.0
+            ),
+            "cited_document_ids": legacy_score.get("cited_document_ids", []),
+            "forbidden_citation_document_ids": legacy_score.get(
+                "forbidden_citation_document_ids", []
+            ),
+            "agent_outcome": legacy_score.get("agent_outcome"),
+            "answered_precision_ok": legacy_score.get("answered_precision_ok"),
+            "evaluation_group": case.get("evaluation_group", "evidence_only"),
+        }
+        judged.append(result)
+    return judged
+
+
+def _load_cached_judgement(
+    cache_dir: Path | None,
+    *,
+    case: Mapping[str, Any],
+    input_sha256: str,
+    profile_revision_id: UUID,
+) -> dict[str, Any] | None:
+    if cache_dir is None:
+        return None
+    case_id = str(case["case_id"])
+    path = _judge_cache_path(
+        cache_dir,
+        case_id,
+        input_sha256,
+        profile_revision_id=profile_revision_id,
+    )
+    if not path.is_file():
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    judgement = value.get("judgement") if isinstance(value, dict) else None
+    expected_aspects = [
+        str(item["aspect_id"])
+        for item in case.get("aspects", ())
+        if isinstance(item, Mapping) and isinstance(item.get("aspect_id"), str)
+    ]
+    aspects = judgement.get("aspects") if isinstance(judgement, dict) else None
+    actual_aspects = [
+        str(item.get("aspect_id"))
+        for item in aspects or ()
+        if isinstance(item, Mapping)
+    ]
+    if (
+        not isinstance(value, dict)
+        or value.get("case_id") != case_id
+        or not isinstance(judgement, dict)
+        or judgement.get("schema_version") != JUDGE_SCHEMA_VERSION
+        or judgement.get("status") != "judged"
+        or judgement.get("prompt_version") != JUDGE_PROMPT_VERSION
+        or judgement.get("profile_revision_id") != str(profile_revision_id)
+        or judgement.get("input_sha256") != input_sha256
+        or not isinstance(aspects, list)
+        or actual_aspects != expected_aspects
+    ):
+        return None
+    try:
+        semantic_score(judgement)
+    except ValueError:
+        return None
+    return judgement
+
+
+def _store_cached_judgement(
+    cache_dir: Path | None,
+    *,
+    case_id: str,
+    judgement: Mapping[str, Any],
+) -> None:
+    if cache_dir is None:
+        return
+    input_sha256 = judgement.get("input_sha256")
+    if not isinstance(input_sha256, str) or re.fullmatch(r"[0-9a-f]{64}", input_sha256) is None:
+        raise ValueError("Judge result input hash is invalid")
+    try:
+        profile_revision_id = UUID(str(judgement.get("profile_revision_id")))
+    except ValueError as error:
+        raise ValueError("Judge result profile revision is invalid") from error
+    path = _judge_cache_path(
+        cache_dir,
+        case_id,
+        input_sha256,
+        profile_revision_id=profile_revision_id,
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.parent / f".{path.name}.{uuid4().hex}.tmp"
+    try:
+        temporary.write_text(
+            json.dumps(
+                {"case_id": case_id, "judgement": _safe_json_value(judgement)},
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        temporary.replace(path)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _judge_cache_path(
+    cache_dir: Path,
+    case_id: str,
+    input_sha256: str,
+    *,
+    profile_revision_id: UUID | None = None,
+) -> Path:
+    if re.fullmatch(r"complex-[0-9]{2}", case_id) is None:
+        raise ValueError("Judge cache case ID is invalid")
+    if re.fullmatch(r"[0-9a-f]{64}", input_sha256) is None:
+        raise ValueError("Judge cache input hash is invalid")
+    profile = str(profile_revision_id) if profile_revision_id is not None else "legacy"
+    return cache_dir / profile / f"{case_id}-{input_sha256}.json"
 
 
 def evaluate_cases(
@@ -451,9 +930,10 @@ def score_complex_case(
                 "expected_decimal": aspect.get("expected_decimal"),
             }
         )
-    agent_protocol_ok = isinstance(agent, dict) and (
-        agent.get("version") == "native_tool_calling_agent_v1"
-    )
+    agent_protocol_ok = isinstance(agent, dict) and agent.get("version") in {
+        "native_tool_calling_agent_v1",
+        "native_tool_calling_agent_v2",
+    }
     status_ok = run.get("status") == "completed"
     trace = agent.get("trace") if isinstance(agent, dict) else None
     agent_outcome = trace.get("outcome") if isinstance(trace, dict) else None
@@ -498,8 +978,22 @@ def score_complex_case(
 
 def summarize_results(results: Iterable[dict[str, Any]]) -> dict[str, Any]:
     values = list(results)
-    strict = [item for item in values if item.get("score", {}).get("strict_correct")]
-    partial = [item for item in values if item.get("score", {}).get("at_least_partial")]
+    strict = [
+        item
+        for item in values
+        if _primary_score_flag(
+            item.get("score"),
+            semantic="semantic_strict_correct",
+        )
+    ]
+    partial = [
+        item
+        for item in values
+        if _primary_score_flag(
+            item.get("score"),
+            semantic="semantic_at_least_partial",
+        )
+    ]
     completed = [item for item in values if item.get("score", {}).get("terminal_completed")]
     evidence_only = [
         item for item in values
@@ -523,6 +1017,31 @@ def summarize_results(results: Iterable[dict[str, Any]]) -> dict[str, Any]:
         "completed": len(completed),
         "at_least_partial": len(partial),
         "strict_correct": len(strict),
+        "semantic_strict_correct": len(strict),
+        "semantic_at_least_partial": len(partial),
+        "legacy_strict_correct": sum(
+            _legacy_score_flag(item, "strict_correct") for item in values
+        ),
+        "legacy_at_least_partial": sum(
+            _legacy_score_flag(item, "at_least_partial") for item in values
+        ),
+        "semantic_grounding_supported": sum(
+            item.get("score", {}).get("semantic_grounding_supported") is True
+            for item in values
+        ),
+        "judge_disagreement_aspects": sum(
+            int(item.get("score", {}).get("judge_disagreement_count", 0))
+            for item in values
+            if isinstance(
+                item.get("score", {}).get("judge_disagreement_count", 0), int
+            )
+            and not isinstance(
+                item.get("score", {}).get("judge_disagreement_count", 0), bool
+            )
+        ),
+        "judge_calls": sum(_judge_call_count(item) for item in values),
+        "judge_attempts": sum(_judge_attempt_count(item) for item in values),
+        "judge_total_tokens": sum(_judge_total_tokens(item) for item in values),
         "required_document_citation_coverage_100": sum(
             item.get("score", {}).get("required_document_citation_coverage") == 1.0
             for item in values
@@ -532,11 +1051,19 @@ def summarize_results(results: Iterable[dict[str, Any]]) -> dict[str, Any]:
             for item in values
         ),
         "evidence_only_strict_correct": sum(
-            item.get("score", {}).get("strict_correct") for item in evidence_only
+            _primary_score_flag(
+                item.get("score"),
+                semantic="semantic_strict_correct",
+            )
+            for item in evidence_only
         ),
         "evidence_only_cases": len(evidence_only),
         "domain_inference_strict_correct": sum(
-            item.get("score", {}).get("strict_correct") for item in domain
+            _primary_score_flag(
+                item.get("score"),
+                semantic="semantic_strict_correct",
+            )
+            for item in domain
         ),
         "domain_inference_cases": len(domain),
         "answered_cases": sum(
@@ -559,6 +1086,74 @@ def summarize_results(results: Iterable[dict[str, Any]]) -> dict[str, Any]:
         ),
         "max_elapsed_seconds": round(max(elapsed), 3) if elapsed else None,
     }
+
+
+def _primary_score_flag(
+    score: object,
+    *,
+    semantic: str,
+) -> bool:
+    if not isinstance(score, Mapping):
+        return False
+    return score.get(semantic) is True
+
+
+def _legacy_score_flag(value: Mapping[str, Any], field: str) -> bool:
+    score = value.get("legacy_score")
+    return isinstance(score, Mapping) and score.get(field) is True
+
+
+def _atomic_write_json(path: Path, value: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.parent / f".{path.name}.{uuid4().hex}.tmp"
+    try:
+        temporary.write_text(
+            json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        temporary.replace(path)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _judge_call_count(value: Mapping[str, Any]) -> int:
+    judge = value.get("judge")
+    calls = judge.get("calls") if isinstance(judge, Mapping) else None
+    if not isinstance(calls, Mapping):
+        return 0
+    return sum(call is not None for call in calls.values())
+
+
+def _judge_attempt_count(value: Mapping[str, Any]) -> int:
+    judge = value.get("judge")
+    calls = judge.get("calls") if isinstance(judge, Mapping) else None
+    if not isinstance(calls, Mapping):
+        return 0
+    total = 0
+    for call in calls.values():
+        candidate = (
+            call.get("transport_attempts") if isinstance(call, Mapping) else None
+        )
+        if isinstance(candidate, int) and not isinstance(candidate, bool) and candidate > 0:
+            total += candidate
+    return total
+
+
+def _judge_total_tokens(value: Mapping[str, Any]) -> int:
+    judge = value.get("judge")
+    calls = judge.get("calls") if isinstance(judge, Mapping) else None
+    if not isinstance(calls, Mapping):
+        return 0
+    total = 0
+    for call in calls.values():
+        usage = call.get("usage") if isinstance(call, Mapping) else None
+        candidate = usage.get("total_tokens") if isinstance(usage, Mapping) else None
+        if isinstance(candidate, int) and not isinstance(candidate, bool) and candidate >= 0:
+            total += candidate
+    return total
 
 
 def _match_aspect_text(answer: str, aspect: dict[str, Any]) -> bool:
@@ -767,6 +1362,15 @@ def _validated_api_base(value: str) -> str:
 def _default_output(strategy: str) -> Path:
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     return DEFAULT_OUTPUT_ROOT / f"agent-complex-qa-{timestamp}-{strategy}.json"
+
+
+def _default_rescore_output() -> Path:
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return DEFAULT_OUTPUT_ROOT / f"agent-complex-qa-{timestamp}-llm-judge.json"
+
+
+def _answer_checkpoint_path(output: Path) -> Path:
+    return output.with_name(f"{output.stem}.answers.json")
 
 
 def _normalize(value: str) -> str:

@@ -5,7 +5,7 @@ from __future__ import annotations
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-EXPECTED_REVISION = "0010_drop_legacy_workflow"
+EXPECTED_REVISION = "0011_native_agent_round_limit"
 
 
 class DatabaseReadinessError(RuntimeError):

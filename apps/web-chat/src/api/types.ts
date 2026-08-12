@@ -326,15 +326,12 @@ export interface ChatAgentTraceEvent {
 }
 
 export interface ChatAgent {
-  version: "native_tool_calling_agent_v1";
+  version: "native_tool_calling_agent_v2";
   budget: {
-    model_rounds: number;
-    retrieval_calls: number;
-    calculation_calls: number;
-    evidence_refs: number;
+    max_model_rounds: number;
   };
   trace: {
-    version: "native_tool_calling_agent_v1";
+    version: "native_tool_calling_agent_v2";
     events: ChatAgentTraceEvent[];
     budget: ChatAgent["budget"];
     usage: Record<string, number>;

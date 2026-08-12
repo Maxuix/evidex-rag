@@ -1,8 +1,6 @@
-"""Bounded prompt evidence projection and deterministic answer rendering."""
+"""Prompt evidence construction and deterministic answer rendering."""
 
 from __future__ import annotations
-
-import re
 
 from rag_kb.domain import (
     AnswerControlReason,
@@ -14,9 +12,6 @@ from rag_kb.domain import (
     RenderedCitation,
     ValidatedAnswer,
 )
-
-
-_OMITTED = "\n[… omitted by bounded evidence projection …]\n"
 
 
 def build_evidence_envelope(pack: EvidencePack) -> EvidenceEnvelope:
@@ -53,55 +48,6 @@ def build_evidence_envelope(pack: EvidencePack) -> EvidenceEnvelope:
             for item in pack.evidence
         ),
     )
-
-
-def project_evidence_text(
-    text: str,
-    focus: tuple[str, ...],
-    *,
-    max_chars: int = 2400,
-) -> str:
-    """Keep deterministic query-related windows within one hard character bound."""
-
-    if max_chars < 1:
-        raise ValueError("projection max_chars must be positive")
-    if len(text) <= max_chars:
-        return text
-    terms = tuple(
-        dict.fromkeys(
-            token.casefold()
-            for value in focus
-            for token in re.findall(r"[\w\u3400-\u9fff]{2,}", value)
-        )
-    )[:32]
-    lowered = text.casefold()
-    positions = sorted(
-        {
-            position
-            for term in terms
-            if (position := lowered.find(term)) >= 0
-        }
-    )
-    if not positions:
-        return text[:max_chars]
-    marker_budget = len(_OMITTED)
-    window = max(80, (max_chars - marker_budget * 2) // min(3, len(positions)))
-    spans: list[tuple[int, int]] = []
-    for position in positions:
-        start = max(0, position - window // 2)
-        end = min(len(text), start + window)
-        if spans and start <= spans[-1][1]:
-            spans[-1] = (spans[-1][0], max(spans[-1][1], end))
-        else:
-            spans.append((start, end))
-        if len(spans) == 3:
-            break
-    pieces: list[str] = []
-    for index, (start, end) in enumerate(spans):
-        if index:
-            pieces.append(_OMITTED)
-        pieces.append(text[start:end])
-    return "".join(pieces)[:max_chars]
 
 
 def render_validated_answer(

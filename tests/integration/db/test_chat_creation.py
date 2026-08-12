@@ -124,6 +124,13 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first.status, "queued")
         self.assertEqual(first.assistant_status, "generating")
         self.assertEqual(first.assistant_content, "")
+        self.assertEqual(
+            first.agent_configuration,
+            {
+                "version": "native_tool_calling_agent_v2",
+                "budget": {"max_model_rounds": 8},
+            },
+        )
         self.assertEqual(first.effective_policy["grounding_policy"], "evidence_only")
         self.assertEqual(first.effective_policy["answer_style"], "summary")
         self.assertEqual(first.index_revision_id, kb.active_index_revision_id)

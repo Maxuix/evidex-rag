@@ -13,6 +13,8 @@ from rag_kb.domain import (
     AnswerOutcome,
     AnswerValidationRecord,
     ChatAnsweringState,
+    ChatAgentBudget,
+    ChatAgentTrace,
     ChatExecutionContext,
     ChatModelCallRecord,
     ChatModelOperation,
@@ -102,6 +104,38 @@ class ChatTerminalServiceTests(unittest.IsolatedAsyncioTestCase):
             repository.success.finished_at, observed + timedelta(seconds=2)
         )
         self.assertIsNone(repository.success.agent_trace)
+
+    async def test_success_persists_current_agent_trace_v2(self) -> None:
+        observed = datetime(2026, 7, 15, 8, 0, tzinfo=UTC)
+        state = replace(
+            _completed_state(observed),
+            artifacts={
+                "chat_agent_trace": ChatAgentTrace(
+                    events=(),
+                    budget=ChatAgentBudget(max_model_rounds=1),
+                    model_rounds=2,
+                    retrieval_calls=7,
+                    calculation_calls=5,
+                    evidence_ref_count=105,
+                    outcome="refused",
+                )
+            },
+        )
+        repository = _Repository(ChatTerminalWriteStatus.APPLIED)
+
+        await ChatResultPersistenceStep(_Factory(repository)).run(state)
+
+        self.assertEqual(
+            repository.success.agent_trace["version"],
+            "native_tool_calling_agent_v2",
+        )
+        self.assertEqual(
+            repository.success.agent_trace["budget"],
+            {"max_model_rounds": 1},
+        )
+        self.assertEqual(
+            repository.success.agent_trace["usage"]["evidence_refs"], 105
+        )
 
     async def test_success_persists_final_llm_context_snapshot(self) -> None:
         observed = datetime(2026, 7, 15, 8, 0, tzinfo=UTC)

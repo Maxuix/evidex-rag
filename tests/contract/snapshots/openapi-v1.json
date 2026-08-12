@@ -39,36 +39,15 @@
       "ChatAgentBudgetResponse": {
         "additionalProperties": false,
         "properties": {
-          "calculation_calls": {
-            "maximum": 4.0,
-            "minimum": 0.0,
-            "title": "Calculation Calls",
-            "type": "integer"
-          },
-          "evidence_refs": {
-            "maximum": 100.0,
-            "minimum": 1.0,
-            "title": "Evidence Refs",
-            "type": "integer"
-          },
-          "model_rounds": {
-            "maximum": 12.0,
-            "minimum": 2.0,
-            "title": "Model Rounds",
-            "type": "integer"
-          },
-          "retrieval_calls": {
+          "max_model_rounds": {
             "maximum": 12.0,
             "minimum": 1.0,
-            "title": "Retrieval Calls",
+            "title": "Max Model Rounds",
             "type": "integer"
           }
         },
         "required": [
-          "model_rounds",
-          "retrieval_calls",
-          "calculation_calls",
-          "evidence_refs"
+          "max_model_rounds"
         ],
         "title": "ChatAgentBudgetResponse",
         "type": "object"
@@ -90,7 +69,7 @@
             ]
           },
           "version": {
-            "const": "native_tool_calling_agent_v1",
+            "const": "native_tool_calling_agent_v2",
             "title": "Version",
             "type": "string"
           }
@@ -187,7 +166,7 @@
             "type": "object"
           },
           "version": {
-            "const": "native_tool_calling_agent_v1",
+            "const": "native_tool_calling_agent_v2",
             "title": "Version",
             "type": "string"
           }

@@ -1378,19 +1378,38 @@ class ChatRun(Base):
         ),
         CheckConstraint("attempt >= 0", name="chat_run_attempt_nonnegative"),
         CheckConstraint(
-            "jsonb_typeof(agent_configuration) = 'object' "
-            "AND agent_configuration->>'version' = 'native_tool_calling_agent_v1' "
+            "(jsonb_typeof(agent_configuration) = 'object' "
+            "AND (agent_configuration - ARRAY['version', 'budget']::text[]) = '{}'::jsonb "
+            "AND agent_configuration->>'version' = 'native_tool_calling_agent_v2' "
             "AND jsonb_typeof(agent_configuration->'budget') = 'object' "
-            "AND pg_column_size(agent_configuration) <= 4096",
-            name=conv("ck_chat_run_agent_configuration_v1"),
+            "AND (agent_configuration->'budget') ? 'max_model_rounds' "
+            "AND ((agent_configuration->'budget') - 'max_model_rounds'::text) "
+            "= '{}'::jsonb "
+            "AND CASE WHEN "
+            "jsonb_typeof(agent_configuration->'budget'->'max_model_rounds') "
+            "= 'number' AND (agent_configuration->'budget'->>'max_model_rounds') "
+            "~ '^(0|[1-9][0-9]*)$' THEN "
+            "(agent_configuration->'budget'->>'max_model_rounds')::integer "
+            "BETWEEN 1 AND 12 ELSE FALSE END "
+            "AND pg_column_size(agent_configuration) <= 4096) IS TRUE",
+            name=conv("ck_chat_run_agent_configuration_v2"),
         ),
         CheckConstraint(
-            "agent_trace IS NULL OR (jsonb_typeof(agent_trace) = 'object' "
-            "AND agent_trace->>'version' = 'native_tool_calling_agent_v1' "
+            "agent_trace IS NULL OR ((jsonb_typeof(agent_trace) = 'object' "
+            "AND (agent_trace - ARRAY['version', 'events', 'budget', 'usage', "
+            "'outcome']::text[]) = '{}'::jsonb "
+            "AND agent_trace->>'version' = 'native_tool_calling_agent_v2' "
             "AND jsonb_typeof(agent_trace->'events') = 'array' "
             "AND jsonb_array_length(agent_trace->'events') <= 32 "
-            "AND pg_column_size(agent_trace) <= 65536)",
-            name=conv("ck_chat_run_agent_trace_v1"),
+            "AND jsonb_typeof(agent_trace->'budget') = 'object' "
+            "AND (agent_trace->'budget') ? 'max_model_rounds' "
+            "AND ((agent_trace->'budget') - 'max_model_rounds'::text) "
+            "= '{}'::jsonb "
+            "AND agent_trace->'budget' = agent_configuration->'budget' "
+            "AND jsonb_typeof(agent_trace->'usage') = 'object' "
+            "AND agent_trace->>'outcome' IN ('answered', 'partial', 'refused') "
+            "AND pg_column_size(agent_trace) <= 65536) IS TRUE)",
+            name=conv("ck_chat_run_agent_trace_v2"),
         ),
         Index("ix_chat_run_claim", "status", "next_attempt_at", "created_at"),
         Index(
@@ -1430,10 +1449,9 @@ class ChatRun(Base):
         nullable=False,
         server_default=text(
             "jsonb_build_object("
-            "'version', 'native_tool_calling_agent_v1', "
+            "'version', 'native_tool_calling_agent_v2', "
             "'budget', jsonb_build_object("
-            "'model_rounds', 8, 'retrieval_calls', 6, "
-            "'calculation_calls', 4, 'evidence_refs', 20))"
+            "'max_model_rounds', 8))"
         ),
     )
     agent_trace: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
