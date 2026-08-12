@@ -1,4 +1,4 @@
-"""Immutable contracts for one claimed LangGraph chat execution."""
+"""Immutable contracts for one claimed native tool-calling execution."""
 
 from __future__ import annotations
 
@@ -22,7 +22,6 @@ from rag_kb.domain.memory import (
     ConversationContextSnapshot,
     empty_context_snapshot,
 )
-from rag_kb.domain.chat_workflow import ChatWorkflowMode, initial_chat_workflow
 
 
 class ChatPipelinePhase(StrEnum):
@@ -36,13 +35,40 @@ class ChatPipelinePhase(StrEnum):
     PERSIST_RESULT = "persist_result"
 
 
-class ChatOutputSchema(StrEnum):
-    ANSWER_V1 = "answer_v1"
-    CONTEXTUAL_QUERY_V2 = "contextual_query_v2"
-    RETRIEVAL_AGENT_ACTION_V1 = "retrieval_agent_action_v1"
-    RETRIEVAL_AGENT_ACTION_V2 = "retrieval_agent_action_v2"
-    RESEARCH_RESULT_VERIFICATION_V1 = "research_result_verification_v1"
-    AUTO_ROUTE_V1 = "auto_route_v1"
+class ChatToolChoice(StrEnum):
+    AUTO = "auto"
+    REQUIRED = "required"
+    NONE = "none"
+
+
+@dataclass(frozen=True, slots=True)
+class ChatToolDefinition:
+    name: str
+    description: str
+    input_schema: Mapping[str, Any]
+
+    def __post_init__(self) -> None:
+        if (
+            not self.name.strip()
+            or len(self.name) > 64
+            or not self.description.strip()
+            or len(self.description) > 1024
+            or self.input_schema.get("type") != "object"
+        ):
+            raise ValueError("chat tool definition is invalid")
+        object.__setattr__(self, "input_schema", _frozen_mapping(self.input_schema))
+
+
+@dataclass(frozen=True, slots=True)
+class ChatToolCall:
+    id: str
+    name: str
+    arguments: Mapping[str, Any]
+
+    def __post_init__(self) -> None:
+        if not self.id.strip() or len(self.id) > 128 or not self.name.strip():
+            raise ValueError("chat tool call is invalid")
+        object.__setattr__(self, "arguments", _frozen_mapping(self.arguments))
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,15 +114,16 @@ class ChatExecutionContext:
         default_factory=empty_context_snapshot
     )
     contextualized_query: ContextualizedQuery | None = None
-    workflow_configuration: Mapping[str, Any] = field(
-        default_factory=lambda: initial_chat_workflow(ChatWorkflowMode.SIMPLE)[
-            0
-        ].as_dict()
-    )
-    workflow_state: Mapping[str, Any] = field(
-        default_factory=lambda: initial_chat_workflow(ChatWorkflowMode.SIMPLE)[
-            1
-        ].as_dict()
+    agent_configuration: Mapping[str, Any] = field(
+        default_factory=lambda: {
+            "version": "native_tool_calling_agent_v1",
+            "budget": {
+                "model_rounds": 8,
+                "retrieval_calls": 6,
+                "calculation_calls": 4,
+                "evidence_refs": 20,
+            },
+        }
     )
 
     def __post_init__(self) -> None:
@@ -120,12 +147,7 @@ class ChatExecutionContext:
             self, "model_configuration", _frozen_mapping(self.model_configuration)
         )
         object.__setattr__(
-            self,
-            "workflow_configuration",
-            _frozen_mapping(self.workflow_configuration),
-        )
-        object.__setattr__(
-            self, "workflow_state", _frozen_mapping(self.workflow_state)
+            self, "agent_configuration", _frozen_mapping(self.agent_configuration)
         )
 
 
@@ -146,26 +168,43 @@ class ChatModelMessage:
     role: str
     content: str
     visual_content: tuple[ChatModelVisualContent, ...] = ()
+    tool_calls: tuple[ChatToolCall, ...] = ()
+    tool_call_id: str | None = None
 
     def __post_init__(self) -> None:
-        if self.role not in {"system", "user", "assistant"}:
+        if self.role not in {"system", "user", "assistant", "tool", "evidence"}:
             raise ValueError("unsupported chat model message role")
-        if not self.content:
+        if not self.content and not (self.role == "assistant" and self.tool_calls):
             raise ValueError("chat model message content must not be empty")
-        if self.visual_content and self.role != "user":
-            raise ValueError("visual content is allowed only on user messages")
+        if self.visual_content and self.role not in {"user", "evidence"}:
+            raise ValueError("visual content is allowed only on evidence messages")
+        if self.tool_calls and self.role != "assistant":
+            raise ValueError("tool calls are allowed only on assistant messages")
+        if self.tool_call_id is not None and (
+            self.role != "tool" or not self.tool_call_id.strip()
+        ):
+            raise ValueError("tool call identifier is allowed only on tool results")
+        if self.role == "tool" and self.tool_call_id is None:
+            raise ValueError("tool result requires a tool call identifier")
+        if self.role != "tool" and self.tool_call_id is not None:
+            raise ValueError("non-tool message cannot carry a tool call identifier")
         asset_ids = [item.asset_id for item in self.visual_content]
         if len(asset_ids) != len(set(asset_ids)):
             raise ValueError("chat model message visual assets must be unique")
+        call_ids = [item.id for item in self.tool_calls]
+        if len(call_ids) != len(set(call_ids)):
+            raise ValueError("chat model tool call identifiers must be unique")
 
 
 @dataclass(frozen=True, slots=True)
 class ChatModelRequest:
     messages: tuple[ChatModelMessage, ...]
-    output_schema: ChatOutputSchema | None = None
     max_output_tokens: int | None = None
     model_profile_revision_id: UUID | None = None
     thinking_enabled: bool | None = None
+    tools: tuple[ChatToolDefinition, ...] = ()
+    tool_choice: ChatToolChoice | str | None = None
+    parallel_tool_calls: bool = False
 
     def __post_init__(self) -> None:
         if not self.messages:
@@ -182,6 +221,17 @@ class ChatModelRequest:
             self.thinking_enabled, bool
         ):
             raise ValueError("chat model thinking override is invalid")
+        tool_names = [item.name for item in self.tools]
+        if len(tool_names) != len(set(tool_names)):
+            raise ValueError("chat model tools must be unique")
+        if self.tool_choice is not None:
+            choice = str(self.tool_choice)
+            if choice not in {item.value for item in ChatToolChoice} and choice not in tool_names:
+                raise ValueError("chat model tool choice is invalid")
+            if not self.tools and choice != ChatToolChoice.NONE.value:
+                raise ValueError("chat model tool choice requires tools")
+        if self.parallel_tool_calls:
+            raise ValueError("parallel chat tool calls are not supported")
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,10 +241,11 @@ class ChatModelResponse:
     finish_reason: str | None
     provider_request_id: str | None
     usage: Mapping[str, int]
+    tool_calls: tuple[ChatToolCall, ...] = ()
 
     def __post_init__(self) -> None:
-        if not self.content or not self.model:
-            raise ValueError("chat model response content and model are required")
+        if (not self.content and not self.tool_calls) or not self.model:
+            raise ValueError("chat model response content or tool calls and model are required")
         if any(
             isinstance(value, bool) or not isinstance(value, int) or value < 0
             for value in self.usage.values()

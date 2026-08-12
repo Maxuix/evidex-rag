@@ -40,19 +40,16 @@ from rag_kb.domain import (
     ChatCitation,
     ChatMessage,
     ChatProgressActivity,
-    ChatProgressDecision,
     ChatProgressFacts,
     ChatProgressSnapshot,
     ChatProgressStage,
     ChatProgressUpdate,
-    ChatResolvedMode,
     ChatPreviewDelta,
     ChatPreviewReset,
     ChatPreviewResetReason,
     ChatRun,
     ChatSession,
     ChatSessionBusyError,
-    ChatWorkflowMode,
     ContextualizedQuery,
     Document,
     DocumentChunk,
@@ -81,7 +78,6 @@ from rag_kb.domain import (
     RetrievalQueryPlan,
     RetrievalStrategy,
     canonical_request_hash,
-    initial_chat_workflow,
 )
 from rag_kb.memory import (
     empty_conversation_context,
@@ -873,7 +869,6 @@ class CommonContractTests(unittest.TestCase):
                 "/api/v1/index-assets/{asset_id}/content",
                 "/api/v1/retrieval/query",
                 "/api/v1/retrieval/capabilities",
-                "/api/v1/chat/capabilities",
                 "/api/v1/chat/sessions",
                 "/api/v1/chat/sessions/{session_id}/messages",
                 "/api/v1/chat/runs",
@@ -1334,19 +1329,6 @@ class _FakeChatService:
         self.session = _chat_session_value()
         self.run = _chat_run_value(self.session)
         self.create_run_calls: list[dict[str, object]] = []
-        self.agent_enabled = True
-        self.auto_enabled = True
-
-    def workflow_capabilities_snapshot(self):
-        return {
-            "version": "chat_workflow_v1",
-            "default_mode": "simple",
-            "modes": (
-                {"mode": "simple", "enabled": True},
-                {"mode": "agent", "enabled": self.agent_enabled},
-                {"mode": "auto", "enabled": self.auto_enabled},
-            ),
-        }
 
     async def create_session(self, context, *, kb_id, title):
         del context
@@ -1372,17 +1354,6 @@ class _FakeChatService:
 
     async def create_run(self, context, key, **values):
         del context
-        workflow_mode = values["workflow_mode"]
-        if workflow_mode is ChatWorkflowMode.AGENT and not self.agent_enabled:
-            raise RetrievalExecutionError(
-                ErrorCode.CAPABILITY_NOT_ENABLED,
-                diagnostic={"capability": "chat_agent"},
-            )
-        if workflow_mode is ChatWorkflowMode.AUTO and not self.auto_enabled:
-            raise RetrievalExecutionError(
-                ErrorCode.CAPABILITY_NOT_ENABLED,
-                diagnostic={"capability": "chat_auto"},
-            )
         if values["retrieval_mode"] == "hybrid":
             raise RetrievalExecutionError(
                 ErrorCode.CAPABILITY_NOT_ENABLED,
@@ -1418,9 +1389,6 @@ class _FakeChatService:
             context_hash=snapshot.content_hash,
             rewrite_source=QueryRewriteSource.ORIGINAL,
         )
-        workflow_configuration, workflow_state = initial_chat_workflow(
-            workflow_mode
-        )
         self.run = dataclass_replace(
             self.run,
             effective_policy=policy,
@@ -1430,8 +1398,6 @@ class _FakeChatService:
             ).as_dict(),
             conversation_context=serialize_conversation_context(snapshot),
             contextualized_query=serialize_contextualized_query(original),
-            workflow_configuration=workflow_configuration.as_dict(),
-            workflow_state=workflow_state.as_dict(),
         )
         return self.run
 
@@ -1983,18 +1949,8 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(created.headers["location"], body["status_url"])
         self.assertEqual(body["status"], "queued")
         self.assertEqual(body["assistant_status"], "generating")
-        self.assertEqual(
-            body["workflow"],
-            {
-                "version": "chat_workflow_v1",
-                "requested_mode": "simple",
-                "resolved_mode": "simple",
-                "route_status": "not_applicable",
-                "route_reason_codes": [],
-                "research_result": None,
-                "search_trace": None,
-            },
-        )
+        self.assertEqual(body["agent"]["version"], "native_tool_calling_agent_v1")
+        self.assertIsNone(body["agent"]["trace"])
         self.assertEqual(
             body["query_context"],
             {
@@ -2052,75 +2008,6 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(listed.json()["items"][0]["id"], str(chat.session.id))
         self.assertEqual(filtered.json()["items"][0]["id"], str(chat.session.id))
-
-    async def test_chat_workflow_capabilities_and_requested_modes_are_public(self) -> None:
-        chat = self.dependencies.chat_service
-        capabilities = await request(
-            self.app, "GET", f"{API_PREFIX}/chat/capabilities"
-        )
-        self.assertEqual(capabilities.status, 200)
-        self.assertEqual(
-            capabilities.json(),
-            {
-                "version": "chat_workflow_v1",
-                "default_mode": "simple",
-                "modes": [
-                    {"mode": "simple", "enabled": True},
-                    {"mode": "agent", "enabled": True},
-                    {"mode": "auto", "enabled": True},
-                ],
-            },
-        )
-
-        expected = {
-            "agent": ("agent", "not_applicable"),
-            "auto": ("pending", "pending"),
-        }
-        for mode, (resolved, route_status) in expected.items():
-            with self.subTest(mode=mode):
-                response = await request(
-                    self.app,
-                    "POST",
-                    f"{API_PREFIX}/chat/runs",
-                    headers={"idempotency-key": str(uuid4())},
-                    json_body={
-                        **_chat_run_request(chat.session.id),
-                        "workflow": {"mode": mode},
-                    },
-                )
-                self.assertEqual(response.status, 202)
-                self.assertEqual(response.json()["workflow"]["requested_mode"], mode)
-                self.assertEqual(response.json()["workflow"]["resolved_mode"], resolved)
-                self.assertEqual(
-                    response.json()["workflow"]["route_status"], route_status
-                )
-
-        chat.agent_enabled = False
-        disabled = await request(
-            self.app,
-            "POST",
-            f"{API_PREFIX}/chat/runs",
-            headers={"idempotency-key": str(uuid4())},
-            json_body={
-                **_chat_run_request(chat.session.id),
-                "workflow": {"mode": "agent"},
-            },
-        )
-        self.assertEqual(disabled.status, 409)
-        self.assertEqual(disabled.json()["code"], "CAPABILITY_NOT_ENABLED")
-        self.assertNotIn("chat_agent", disabled.body.decode())
-
-        invalid = await request(
-            self.app,
-            "POST",
-            f"{API_PREFIX}/chat/runs",
-            headers={"idempotency-key": str(uuid4())},
-            json_body={
-                **_chat_run_request(chat.session.id),
-                "workflow": {"mode": "unbounded"},
-            },
-        )
-        self.assertEqual(invalid.status, 422)
 
     async def test_chat_final_context_returns_messages_and_authorized_media(self) -> None:
         chat = self.dependencies.chat_service
@@ -2317,17 +2204,13 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
                 1,
                 ChatProgressUpdate(
                     ChatProgressStage.RETRIEVE_EVIDENCE,
-                    ChatProgressActivity.AGENT_SEARCH,
+                    ChatProgressActivity.SEARCH_KNOWLEDGE_BASE,
                     completed_stages=(
                         ChatProgressStage.UNDERSTAND_QUERY,
-                        ChatProgressStage.SELECT_WORKFLOW,
                     ),
-                    requested_mode=ChatWorkflowMode.AGENT,
-                    resolved_mode=ChatResolvedMode.AGENT,
                     facts=ChatProgressFacts(
                         objective="查找负责人",
                         queries=("负责人",),
-                        decision=ChatProgressDecision.SEARCH_EVIDENCE,
                     ),
                 ),
             ),
@@ -2350,7 +2233,7 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(streamed.status, 200)
-        self.assertIn(b"event: workflow.progress", streamed.body)
+        self.assertIn(b"event: agent.progress", streamed.body)
         self.assertIn(b"event: answer.preview.delta", streamed.body)
         self.assertIn(b"event: answer.preview.reset", streamed.body)
         self.assertNotIn(b"event: answer.completed", streamed.body)
@@ -2367,27 +2250,18 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
                     "attempt": 1,
                     "seq": 1,
                     "active_stage": "retrieve_evidence",
-                    "activity": "agent_search",
-                    "completed_stages": [
-                        "understand_query",
-                        "select_workflow",
-                    ],
+                    "activity": "search_knowledge_base",
+                    "completed_stages": ["understand_query"],
                     "status": "active",
-                    "requested_mode": "agent",
-                    "resolved_mode": "agent",
                     "facts": {
                         "objective": "查找负责人",
                         "queries": ["负责人"],
                         "evidence_count": None,
                         "new_evidence_count": None,
                         "retrieval_calls": None,
-                        "route_status": None,
-                        "route_reason_codes": [],
-                        "research_status": None,
                         "covered_aspects": [],
                         "missing_aspects": [],
                         "conflict_count": None,
-                        "decision": "search_evidence",
                     },
                 },
                 {

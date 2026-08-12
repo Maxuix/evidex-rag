@@ -20,6 +20,18 @@ from tools.evaluate_agent_complex_qa import (
 from tools.build_document_qa_corpus import COMPLEX_CASE_DEFINITIONS
 
 
+def _agent(*, complete_scan_document_count: int = 0) -> dict[str, object]:
+    return {
+        "version": "native_tool_calling_agent_v1",
+        "trace": {
+            "outcome": "answered",
+            "usage": {
+                "complete_scan_document_count": complete_scan_document_count,
+            },
+        },
+    }
+
+
 class AgentComplexEvaluationToolTests(unittest.TestCase):
     def test_batch_stops_after_nonretryable_auth_failure_and_marks_remaining_not_run(
         self,
@@ -99,10 +111,7 @@ class AgentComplexEvaluationToolTests(unittest.TestCase):
             run = {
                 "status": "completed",
                 "answer": answer,
-                "workflow": {
-                    "requested_mode": "agent",
-                    "resolved_mode": "agent",
-                },
+                "agent": _agent(),
                 "citations": [
                     {"document_id": document_id}
                     for document_id in case["required_citation_document_ids"]
@@ -165,7 +174,7 @@ class AgentComplexEvaluationToolTests(unittest.TestCase):
         run = {
             "status": "completed",
             "answer": "The total is $1,234.50.",
-            "workflow": {"requested_mode": "agent", "resolved_mode": "agent"},
+            "agent": _agent(),
             "citations": [
                 {"document_id": "doc-a"},
                 {"document_id": "doc-b"},
@@ -199,7 +208,7 @@ class AgentComplexEvaluationToolTests(unittest.TestCase):
             {
                 "status": "completed",
                 "answer": "The answer is grounded.",
-                "workflow": {"requested_mode": "agent", "resolved_mode": "agent"},
+                "agent": _agent(),
                 "citations": [
                     {
                         "document_id": "runtime-uuid",
@@ -253,7 +262,7 @@ class AgentComplexEvaluationToolTests(unittest.TestCase):
             {
                 "status": "completed",
                 "answer": "The rate decreased by 3.0 percentage points.",
-                "workflow": {"requested_mode": "agent", "resolved_mode": "agent"},
+                "agent": _agent(),
                 "citations": [],
             },
         )
@@ -276,7 +285,7 @@ class AgentComplexEvaluationToolTests(unittest.TestCase):
             {
                 "status": "completed",
                 "answer": "The result is not mentioned.",
-                "workflow": {"requested_mode": "agent", "resolved_mode": "agent"},
+                "agent": _agent(),
                 "citations": [],
             },
         )
@@ -309,14 +318,7 @@ class AgentComplexEvaluationToolTests(unittest.TestCase):
         run = {
             "status": "completed",
             "answer": "The statement is not mentioned.",
-            "workflow": {
-                "requested_mode": "agent",
-                "resolved_mode": "agent",
-                "research_result": {
-                    "status": "sufficient",
-                    "complete_scan_document_count": 0,
-                },
-            },
+            "agent": _agent(complete_scan_document_count=0),
             "citations": [{"document_id": "doc-a"}],
         }
 
@@ -325,7 +327,7 @@ class AgentComplexEvaluationToolTests(unittest.TestCase):
         self.assertTrue(score["not_mentioned_without_complete_scan"])
         self.assertFalse(score["strict_correct"])
 
-    def test_summary_reports_sufficient_precision_and_runtime_budget_facts(self) -> None:
+    def test_summary_reports_answered_precision_and_runtime_budget_facts(self) -> None:
         result = {
             "score": {
                 "strict_correct": False,
@@ -334,8 +336,8 @@ class AgentComplexEvaluationToolTests(unittest.TestCase):
                 "evaluation_group": "evidence_only",
                 "required_document_citation_coverage": 1.0,
                 "forbidden_citation_document_ids": [],
-                "research_status": "sufficient",
-                "sufficient_precision_ok": True,
+                "agent_outcome": "answered",
+                "answered_precision_ok": True,
                 "not_mentioned_without_complete_scan": False,
             },
             "status": "completed",
@@ -346,8 +348,8 @@ class AgentComplexEvaluationToolTests(unittest.TestCase):
 
         summary = summarize_results([result])
 
-        self.assertEqual(summary["sufficient_cases"], 1)
-        self.assertEqual(summary["sufficient_precision_cases"], 1)
+        self.assertEqual(summary["answered_cases"], 1)
+        self.assertEqual(summary["answered_precision_cases"], 1)
         self.assertEqual(summary["total_tokens"], 12)
         self.assertEqual(summary["median_elapsed_seconds"], 4.0)
         self.assertEqual(summary["max_elapsed_seconds"], 4.0)

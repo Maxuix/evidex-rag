@@ -5,7 +5,7 @@ from __future__ import annotations
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-EXPECTED_REVISION = "0008_local_rerank_mode"
+EXPECTED_REVISION = "0010_drop_legacy_workflow"
 
 
 class DatabaseReadinessError(RuntimeError):

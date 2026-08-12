@@ -6,7 +6,6 @@ import type {
   ChatProgressSnapshot,
   ChatRun,
   ChatRunCreate,
-  ChatWorkflowCapabilities,
   RetrievalCapabilities,
   ChatSession,
   ChatTerminalEvent,
@@ -244,10 +243,6 @@ export class ApiClient {
     return this.request("/retrieval/capabilities");
   }
 
-  getChatWorkflowCapabilities(): Promise<ChatWorkflowCapabilities> {
-    return this.request("/chat/capabilities");
-  }
-
   getModelSettings(): Promise<ModelSettings> {
     return this.request("/model-settings");
   }
@@ -439,7 +434,7 @@ export class ApiClient {
     source.addEventListener("run.failed", failed);
     source.addEventListener("answer.preview.delta", previewDelta);
     source.addEventListener("answer.preview.reset", previewReset);
-    source.addEventListener("workflow.progress", progress);
+    source.addEventListener("agent.progress", progress);
     source.addEventListener("open", open);
     source.addEventListener("error", error);
     return () => {
@@ -447,7 +442,7 @@ export class ApiClient {
       source.removeEventListener("run.failed", failed);
       source.removeEventListener("answer.preview.delta", previewDelta);
       source.removeEventListener("answer.preview.reset", previewReset);
-      source.removeEventListener("workflow.progress", progress);
+      source.removeEventListener("agent.progress", progress);
       source.removeEventListener("open", open);
       source.removeEventListener("error", error);
       source.close();
@@ -640,8 +635,6 @@ function parseProgressSnapshot(event: Event): ChatProgressSnapshot | null {
       "activity",
       "completed_stages",
       "status",
-      "requested_mode",
-      "resolved_mode",
       "facts",
     ])
     || typeof value.run_id !== "string"
@@ -650,7 +643,6 @@ function parseProgressSnapshot(event: Event): ChatProgressSnapshot | null {
   ) return null;
   const stages = new Set([
     "understand_query",
-    "select_workflow",
     "retrieve_evidence",
     "assess_evidence",
     "prepare_visual_evidence",
@@ -660,11 +652,10 @@ function parseProgressSnapshot(event: Event): ChatProgressSnapshot | null {
   ]);
   const activities = new Set([
     "load_context",
-    "contextualize_query",
-    "route_decision",
-    "simple_search",
-    "agent_decision",
-    "agent_search",
+    "tool_decision",
+    "search_knowledge_base",
+    "calculate",
+    "submit_answer",
     "retrieval_complete",
     "verify_coverage",
     "research_complete",
@@ -681,10 +672,6 @@ function parseProgressSnapshot(event: Event): ChatProgressSnapshot | null {
     || !activities.has(value.activity)
     || !isStringArray(value.completed_stages, 8, stages)
     || !["active", "completed"].includes(String(value.status))
-    || ![null, "simple", "agent", "auto"].includes(
-      value.requested_mode as null | string,
-    )
-    || !["pending", "simple", "agent"].includes(String(value.resolved_mode))
     || !isProgressFacts(value.facts)
   ) return null;
   return value as unknown as ChatProgressSnapshot;
@@ -695,59 +682,24 @@ function isProgressFacts(value: unknown): value is ChatProgressSnapshot["facts"]
     return false;
   }
   const facts = value as Record<string, unknown>;
-  const reasons = new Set([
-    "single_lookup",
-    "direct_summary",
-    "multi_view_required",
-    "multi_hop_required",
-    "evidence_uncertain",
-    "router_invalid",
-    "router_unavailable",
-  ]);
-  const researchStatuses = [
-    null,
-    "sufficient",
-    "partial",
-    "no_evidence",
-    "conflict",
-    "premise_unsupported",
-  ];
-  const decisions = [
-    null,
-    "select_simple",
-    "select_agent",
-    "search_evidence",
-    "continue_search",
-    "finish_research",
-  ];
   return hasExactKeys(facts, [
     "objective",
     "queries",
     "evidence_count",
     "new_evidence_count",
     "retrieval_calls",
-    "route_status",
-    "route_reason_codes",
-    "research_status",
     "covered_aspects",
     "missing_aspects",
     "conflict_count",
-    "decision",
   ])
     && isNullableBoundedString(facts.objective)
     && isStringArray(facts.queries, 3)
     && isNullableCounter(facts.evidence_count)
     && isNullableCounter(facts.new_evidence_count)
     && isNullableCounter(facts.retrieval_calls)
-    && [null, "not_applicable", "pending", "resolved", "fallback"].includes(
-      facts.route_status as null | string,
-    )
-    && isStringArray(facts.route_reason_codes, 6, reasons)
-    && researchStatuses.includes(facts.research_status as null | string)
     && isStringArray(facts.covered_aspects, 6)
     && isStringArray(facts.missing_aspects, 6)
-    && isNullableCounter(facts.conflict_count)
-    && decisions.includes(facts.decision as null | string);
+    && isNullableCounter(facts.conflict_count);
 }
 
 function isStringArray(

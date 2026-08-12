@@ -101,17 +101,7 @@ class ChatTerminalServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             repository.success.finished_at, observed + timedelta(seconds=2)
         )
-        self.assertEqual(
-            repository.success.workflow_state["resolved_mode"], "simple"
-        )
-        self.assertEqual(
-            _serialized_validation(repository.success)["workflow"],
-            {
-                "resolved_mode": "simple",
-                "route_status": "not_applicable",
-                "termination_reason": None,
-            },
-        )
+        self.assertIsNone(repository.success.agent_trace)
 
     async def test_success_persists_final_llm_context_snapshot(self) -> None:
         observed = datetime(2026, 7, 15, 8, 0, tzinfo=UTC)
@@ -302,7 +292,7 @@ def _lease(observed: datetime, *, attempt: int = 1) -> ChatRunLease:
 
 def _call() -> ChatModelCallRecord:
     return ChatModelCallRecord(
-        operation=ChatModelOperation.ASSESS_EVIDENCE,
+        operation=ChatModelOperation.AGENT_ROUND,
         model="fixed-model",
         provider_request_id="request-1",
         usage={"input_tokens": 4, "output_tokens": 2},

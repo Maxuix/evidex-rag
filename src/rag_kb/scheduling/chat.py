@@ -18,7 +18,6 @@ from rag_kb.domain import (
 )
 from rag_kb.observability import get_logger, log_event, log_exception
 from rag_kb.scheduling.indexing import RetryPolicy
-from rag_kb.workflows.contracts import GraphRunner
 
 
 Clock = Callable[[], datetime]
@@ -39,13 +38,17 @@ class FailureSettler(Protocol):
     ) -> Any: ...
 
 
+class ChatRunner(Protocol):
+    async def execute(self, command: ChatExecutionCommand) -> Any: ...
+
+
 class ChatRunScheduler:
     """Execute one claimed ChatRun at a time through lease-owned services."""
 
     def __init__(
         self,
         coordinator: ChatCoordinator,
-        runner: GraphRunner,
+        runner: ChatRunner,
         failure_settler: FailureSettler,
         *,
         worker_id: str,

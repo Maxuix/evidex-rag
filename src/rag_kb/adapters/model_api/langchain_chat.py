@@ -4,20 +4,18 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from dataclasses import replace
 import json
 from typing import Any
 
 import openai
-from pydantic import BaseModel
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_openai import ChatOpenAI
 
 from rag_kb.adapters.model_api.langchain_mapping import (
     from_langchain_message,
+    to_plain_json,
     to_langchain_messages,
 )
-from rag_kb.answering.wire_schemas import OUTPUT_SCHEMAS
 from rag_kb.config.settings import provider_retry_budget_seconds
 from rag_kb.domain import (
     ChatModelExecutionError,
@@ -49,7 +47,6 @@ class LangChainChatModelAdapter:
         top_p: float | None = None,
         sampling_top_k: int | None = None,
         max_tokens: int = 2048,
-        structured_output_mode: str = "json_object",
         thinking_enabled: bool = False,
         reasoning_effort: str = "off",
         max_visual_images: int = 4,
@@ -69,8 +66,6 @@ class LangChainChatModelAdapter:
             raise ValueError("chat sampling top_k is invalid")
         if reasoning_effort not in {"off", "low", "medium", "high"}:
             raise ValueError("chat reasoning effort is invalid")
-        if structured_output_mode not in {"json_object", "json_schema"}:
-            raise ValueError("unsupported structured output mode")
         if (
             max_visual_images < 1
             or max_visual_image_bytes < 1
@@ -84,12 +79,6 @@ class LangChainChatModelAdapter:
         )
         self._max_tokens = max_tokens
         self._semaphore = asyncio.Semaphore(max_concurrency)
-        self._structured_output_method = (
-            "json_schema" if structured_output_mode == "json_schema" else "json_mode"
-        )
-        self._structured_models: dict[
-            tuple[object, int | None, bool | None], Any
-        ] = {}
         self._max_visual_images = max_visual_images
         self._max_visual_image_bytes = max_visual_image_bytes
         self._max_visual_total_bytes = max_visual_total_bytes
@@ -112,7 +101,6 @@ class LangChainChatModelAdapter:
             include_response_headers=True,
             use_responses_api=False,
             extra_body=extra_body,
-            model_kwargs={"response_format": {"type": "json_object"}},
         )
 
     async def complete(self, request: ChatModelRequest) -> ChatModelResponse:
@@ -208,29 +196,28 @@ class LangChainChatModelAdapter:
             max_tokens=output_limit,
             thinking_enabled=request.thinking_enabled,
         )
-        if request.output_schema is None:
+        if request.tools:
+            tools = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": item.name,
+                        "description": item.description,
+                        "parameters": to_plain_json(item.input_schema),
+                    },
+                }
+                for item in request.tools
+            ]
+            choice = request.tool_choice
+            if choice is not None and str(choice) not in {"auto", "required", "none"}:
+                choice = {"type": "function", "function": {"name": str(choice)}}
+            model = model.bind_tools(
+                tools,
+                tool_choice=choice,
+                parallel_tool_calls=False,
+            )
             return await model.ainvoke(messages)
-        schema = OUTPUT_SCHEMAS.get(request.output_schema)
-        if schema is None:
-            raise ChatModelExecutionError(
-                ErrorCode.CHAT_RESPONSE_INVALID,
-                diagnostic={"check": "output_schema"},
-            )
-        cache_key = (
-            request.output_schema,
-            output_limit,
-            request.thinking_enabled,
-        )
-        runnable = self._structured_models.get(cache_key)
-        if runnable is None:
-            runnable = model.with_structured_output(
-                schema,
-                method=self._structured_output_method,
-                include_raw=True,
-            )
-            self._structured_models[cache_key] = runnable
-        result = await runnable.ainvoke(messages)
-        return _structured_message(result, schema)
+        return await model.ainvoke(messages)
 
     async def _stream(
         self,
@@ -238,14 +225,11 @@ class LangChainChatModelAdapter:
         messages: list[Any],
         on_content_delta: ChatModelContentDeltaHandler,
     ) -> ChatModelResponse:
-        schema = None
-        if request.output_schema is not None:
-            schema = OUTPUT_SCHEMAS.get(request.output_schema)
-            if schema is None:
-                raise ChatModelExecutionError(
-                    ErrorCode.CHAT_RESPONSE_INVALID,
-                    diagnostic={"check": "output_schema"},
-                )
+        if request.tools:
+            raise ChatModelExecutionError(
+                ErrorCode.CHAT_RESPONSE_INVALID,
+                diagnostic={"check": "tool_streaming_unsupported"},
+            )
         output_limit = self._output_limit(request)
         model = _model_with_request_options(
             self._model,
@@ -274,19 +258,7 @@ class LangChainChatModelAdapter:
                 diagnostic={"check": "stream_empty"},
             )
         mapped = from_langchain_message(combined)
-        if schema is None:
-            return mapped
-        try:
-            parsed = schema.model_validate_json(mapped.content)
-        except ValueError:
-            return mapped
-        canonical = json.dumps(
-            parsed.model_dump(mode="json"),
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-        )
-        return replace(mapped, content=canonical)
+        return mapped
 
     def _output_limit(self, request: ChatModelRequest) -> int | None:
         if request.max_output_tokens is None:
@@ -353,6 +325,7 @@ def _truncated_response(error: openai.LengthFinishReasonError) -> ChatModelRespo
 def _request_content_bytes(request: ChatModelRequest) -> int:
     return sum(
         len(message.role.encode("utf-8")) + len(message.content.encode("utf-8"))
+        + sum(len(call.name.encode("utf-8")) + len(json.dumps(dict(call.arguments)).encode("utf-8")) for call in message.tool_calls)
         for message in request.messages
     )
 
@@ -369,28 +342,3 @@ def _validated_response(response: Any) -> ChatModelResponse:
             diagnostic={"check": "response_content_size"},
         )
     return mapped
-
-
-def _structured_message(value: object, schema: type[BaseModel]) -> ChatModelResponse:
-    if not isinstance(value, dict):
-        raise ChatModelExecutionError(
-            ErrorCode.CHAT_RESPONSE_INVALID,
-            diagnostic={"check": "structured_result"},
-        )
-    raw = value.get("raw")
-    parsed = value.get("parsed")
-    mapped = from_langchain_message(raw)
-    if parsed is None:
-        return mapped
-    if not isinstance(parsed, schema):
-        raise ChatModelExecutionError(
-            ErrorCode.CHAT_RESPONSE_INVALID,
-            diagnostic={"check": "structured_schema"},
-        )
-    canonical = json.dumps(
-        parsed.model_dump(mode="json"),
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    )
-    return replace(mapped, content=canonical)

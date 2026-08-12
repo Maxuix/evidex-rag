@@ -17,7 +17,6 @@ from rag_kb.domain.chat_preview import (
     CHAT_PROGRESS_VERSION,
     CHAT_PREVIEW_VERSION,
     ChatProgressActivity,
-    ChatProgressDecision,
     ChatProgressFacts,
     ChatProgressSnapshot,
     ChatProgressStage,
@@ -27,13 +26,6 @@ from rag_kb.domain.chat_preview import (
     ChatPreviewEvent,
     ChatPreviewReset,
     ChatPreviewResetReason,
-)
-from rag_kb.domain.chat_workflow import (
-    ChatResolvedMode,
-    ChatRouteReason,
-    ChatRouteStatus,
-    ChatWorkflowMode,
-    ResearchStatus,
 )
 from rag_kb.observability import get_logger, log_exception
 
@@ -637,7 +629,7 @@ def serialize_preview_event(event: ChatPreviewEvent) -> str:
         facts = update.facts
         payload = {
             "version": CHAT_PROGRESS_VERSION,
-            "event": "workflow.progress",
+            "event": "agent.progress",
             "run_id": str(event.run_id),
             "attempt": event.attempt,
             "seq": event.seq,
@@ -645,37 +637,15 @@ def serialize_preview_event(event: ChatPreviewEvent) -> str:
             "activity": update.activity.value,
             "completed_stages": [item.value for item in update.completed_stages],
             "status": update.status.value,
-            "requested_mode": (
-                update.requested_mode.value
-                if update.requested_mode is not None
-                else None
-            ),
-            "resolved_mode": update.resolved_mode.value,
             "facts": {
                 "objective": facts.objective,
                 "queries": list(facts.queries),
                 "evidence_count": facts.evidence_count,
                 "new_evidence_count": facts.new_evidence_count,
                 "retrieval_calls": facts.retrieval_calls,
-                "route_status": (
-                    facts.route_status.value
-                    if facts.route_status is not None
-                    else None
-                ),
-                "route_reason_codes": [
-                    item.value for item in facts.route_reason_codes
-                ],
-                "research_status": (
-                    facts.research_status.value
-                    if facts.research_status is not None
-                    else None
-                ),
                 "covered_aspects": list(facts.covered_aspects),
                 "missing_aspects": list(facts.missing_aspects),
                 "conflict_count": facts.conflict_count,
-                "decision": (
-                    facts.decision.value if facts.decision is not None else None
-                ),
             },
         }
     encoded = json.dumps(
@@ -750,7 +720,7 @@ def parse_preview_payload(payload: str) -> ChatPreviewEvent:
     }:
         raise ValueError("invalid chat preview version")
     event_type = value.get("event")
-    if event_type == "workflow.progress":
+    if event_type == "agent.progress":
         return _parse_progress_payload(value)
     expected_keys = {
         "version",
@@ -795,8 +765,6 @@ def _parse_progress_payload(value: dict[str, Any]) -> ChatProgressSnapshot:
         "activity",
         "completed_stages",
         "status",
-        "requested_mode",
-        "resolved_mode",
         "facts",
     }
     if value.get("version") != CHAT_PROGRESS_VERSION or set(value) != expected_keys:
@@ -810,16 +778,9 @@ def _parse_progress_payload(value: dict[str, Any]) -> ChatProgressSnapshot:
         active_stage = ChatProgressStage(value.get("active_stage"))
         activity = ChatProgressActivity(value.get("activity"))
         status = ChatProgressStatus(value.get("status"))
-        resolved_mode = ChatResolvedMode(value.get("resolved_mode"))
     except (AttributeError, TypeError, ValueError) as error:
         raise ValueError("invalid chat progress enum or run ID") from error
-    requested_value = value.get("requested_mode")
     try:
-        requested_mode = (
-            ChatWorkflowMode(requested_value)
-            if requested_value is not None
-            else None
-        )
         completed = _enum_tuple(
             value.get("completed_stages"), ChatProgressStage
         )
@@ -832,13 +793,9 @@ def _parse_progress_payload(value: dict[str, Any]) -> ChatProgressSnapshot:
         "evidence_count",
         "new_evidence_count",
         "retrieval_calls",
-        "route_status",
-        "route_reason_codes",
-        "research_status",
         "covered_aspects",
         "missing_aspects",
         "conflict_count",
-        "decision",
     }:
         raise ValueError("invalid chat progress facts")
     objective = facts_value.get("objective")
@@ -854,28 +811,12 @@ def _parse_progress_payload(value: dict[str, Any]) -> ChatProgressSnapshot:
         if item is not None and type(item) is not int:
             raise ValueError("invalid chat progress counter")
     try:
-        route_status_value = facts_value.get("route_status")
-        research_status_value = facts_value.get("research_status")
-        decision_value = facts_value.get("decision")
         facts = ChatProgressFacts(
             objective=objective,
             queries=_string_tuple(facts_value.get("queries")),
             evidence_count=facts_value.get("evidence_count"),
             new_evidence_count=facts_value.get("new_evidence_count"),
             retrieval_calls=facts_value.get("retrieval_calls"),
-            route_status=(
-                ChatRouteStatus(route_status_value)
-                if route_status_value is not None
-                else None
-            ),
-            route_reason_codes=_enum_tuple(
-                facts_value.get("route_reason_codes"), ChatRouteReason
-            ),
-            research_status=(
-                ResearchStatus(research_status_value)
-                if research_status_value is not None
-                else None
-            ),
             covered_aspects=_string_tuple(
                 facts_value.get("covered_aspects")
             ),
@@ -883,19 +824,12 @@ def _parse_progress_payload(value: dict[str, Any]) -> ChatProgressSnapshot:
                 facts_value.get("missing_aspects")
             ),
             conflict_count=facts_value.get("conflict_count"),
-            decision=(
-                ChatProgressDecision(decision_value)
-                if decision_value is not None
-                else None
-            ),
         )
         update = ChatProgressUpdate(
             active_stage=active_stage,
             activity=activity,
             completed_stages=completed,
             status=status,
-            requested_mode=requested_mode,
-            resolved_mode=resolved_mode,
             facts=facts,
         )
         return ChatProgressSnapshot(run_id, attempt, seq, update)

@@ -41,14 +41,13 @@ PURE_INITIALIZERS = tuple(
     SOURCE_ROOT / "indexing" / "__init__.py",
     SOURCE_ROOT / "scheduling" / "__init__.py",
     SOURCE_ROOT / "services" / "__init__.py",
-    SOURCE_ROOT / "workflows" / "__init__.py",
 )
 ISOLATED_IMPORTS = (
     "rag_kb.ports.files",
     "rag_kb.ports.retrieval",
     "rag_kb.services.files",
     "rag_kb.retrieval.service",
-    "rag_kb.workflows.contracts",
+    "rag_kb.answering.agent",
     "rag_kb.scheduling.chat",
 )
 FORBIDDEN_RUNTIME_ROOTS = {
@@ -61,7 +60,6 @@ FORBIDDEN_RUNTIME_ROOTS = {
     "marko",
     "docling",
     "docling_core",
-    "langgraph",
 }
 
 

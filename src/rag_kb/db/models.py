@@ -1378,24 +1378,19 @@ class ChatRun(Base):
         ),
         CheckConstraint("attempt >= 0", name="chat_run_attempt_nonnegative"),
         CheckConstraint(
-            "jsonb_typeof(workflow_configuration) = 'object' "
-            "AND workflow_configuration->>'version' = 'chat_workflow_v1' "
-            "AND workflow_configuration->>'requested_mode' IN "
-            "('simple','agent','auto') "
-            "AND jsonb_typeof(workflow_configuration->'budget') = 'object' "
-            "AND pg_column_size(workflow_configuration) <= 65536",
-            name=conv("ck_chat_run_workflow_configuration_v1"),
+            "jsonb_typeof(agent_configuration) = 'object' "
+            "AND agent_configuration->>'version' = 'native_tool_calling_agent_v1' "
+            "AND jsonb_typeof(agent_configuration->'budget') = 'object' "
+            "AND pg_column_size(agent_configuration) <= 4096",
+            name=conv("ck_chat_run_agent_configuration_v1"),
         ),
         CheckConstraint(
-            "jsonb_typeof(workflow_state) = 'object' "
-            "AND workflow_state->>'version' = 'chat_workflow_v1' "
-            "AND workflow_state->>'resolved_mode' IN "
-            "('pending','simple','agent') "
-            "AND workflow_state->>'route_status' IN "
-            "('not_applicable','pending','resolved','fallback') "
-            "AND jsonb_typeof(workflow_state->'route_reason_codes') = 'array' "
-            "AND pg_column_size(workflow_state) <= 65536",
-            name=conv("ck_chat_run_workflow_state_v1"),
+            "agent_trace IS NULL OR (jsonb_typeof(agent_trace) = 'object' "
+            "AND agent_trace->>'version' = 'native_tool_calling_agent_v1' "
+            "AND jsonb_typeof(agent_trace->'events') = 'array' "
+            "AND jsonb_array_length(agent_trace->'events') <= 32 "
+            "AND pg_column_size(agent_trace) <= 65536)",
+            name=conv("ck_chat_run_agent_trace_v1"),
         ),
         Index("ix_chat_run_claim", "status", "next_attempt_at", "created_at"),
         Index(
@@ -1430,32 +1425,18 @@ class ChatRun(Base):
     effective_policy: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     retrieval_strategy: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     model_configuration: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
-    workflow_configuration: Mapped[dict[str, Any]] = mapped_column(
+    agent_configuration: Mapped[dict[str, Any]] = mapped_column(
         JSONB,
         nullable=False,
         server_default=text(
             "jsonb_build_object("
-            "'version', 'chat_workflow_v1', "
-            "'requested_mode', 'simple', "
+            "'version', 'native_tool_calling_agent_v1', "
             "'budget', jsonb_build_object("
-            "'decision_rounds', 4, 'retrieval_calls', 6, "
-            "'parallel_queries', 3, 'verifier_continuations', 1, "
-            "'no_progress_rounds', 1))"
+            "'model_rounds', 8, 'retrieval_calls', 6, "
+            "'calculation_calls', 4, 'evidence_refs', 20))"
         ),
     )
-    workflow_state: Mapped[dict[str, Any]] = mapped_column(
-        JSONB,
-        nullable=False,
-        server_default=text(
-            "jsonb_build_object("
-            "'version', 'chat_workflow_v1', "
-            "'resolved_mode', 'simple', "
-            "'route_status', 'not_applicable', "
-            "'route_reason_codes', '[]'::jsonb, "
-            "'research_result', 'null'::jsonb, "
-            "'search_trace', 'null'::jsonb)"
-        ),
-    )
+    agent_trace: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     conversation_context: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     contextualized_query: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     attempt: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))

@@ -115,9 +115,10 @@ def main() -> int:
         timeout_seconds=arguments.timeout_seconds,
         poll_seconds=arguments.poll_seconds,
         document_identity_map=document_identity_map,
+        profile_revision_id=arguments.profile_revision_id,
     )
     report = {
-        "schema_version": "agent_complex_qa_evaluation_v1",
+        "schema_version": "native_agent_complex_qa_evaluation_v2",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "config": {
             "api": api,
@@ -230,6 +231,7 @@ def evaluate_cases(
     timeout_seconds: float,
     poll_seconds: float,
     document_identity_map: Mapping[str, str],
+    profile_revision_id: str | None = None,
 ) -> list[dict[str, Any]]:
     def run(case: dict[str, Any]) -> dict[str, Any]:
         return _evaluate_one(
@@ -242,6 +244,7 @@ def evaluate_cases(
             timeout_seconds=timeout_seconds,
             poll_seconds=poll_seconds,
             document_identity_map=document_identity_map,
+            profile_revision_id=profile_revision_id,
         )
 
     if parallelism != 1:
@@ -273,7 +276,7 @@ def _not_run_result(
         "status": "not_run",
         "answer": None,
         "citations": [],
-        "workflow": None,
+        "agent": None,
         "retrieval": None,
         "error": None,
         "usage": None,
@@ -283,8 +286,6 @@ def _not_run_result(
         "case_id": str(case["case_id"]),
         "question": str(case["question"]),
         **safe,
-        "research_result": None,
-        "search_trace": None,
         "score": score_complex_case(
             dict(case),
             safe,
@@ -322,6 +323,7 @@ def _evaluate_one(
     timeout_seconds: float,
     poll_seconds: float,
     document_identity_map: Mapping[str, str],
+    profile_revision_id: str | None = None,
 ) -> dict[str, Any]:
     case_id = str(case["case_id"])
     question = str(case["question"])
@@ -336,21 +338,23 @@ def _evaluate_one(
             },
         )
         session_id = _required_string(session, "id")
+        run_payload: dict[str, object] = {
+            "session_id": session_id,
+            "knowledge_base_id": kb_id,
+            "message": question,
+            "retrieval": {
+                "mode": "hybrid" if strategy == "hybrid" else "vector",
+                "top_k": top_k,
+                "rerank_mode": rerank_mode,
+            },
+        }
+        if profile_revision_id is not None:
+            run_payload["model_profile_revision_id"] = profile_revision_id
         created = _json_request(
             f"{api}/chat/runs",
             method="POST",
             headers={"Idempotency-Key": str(uuid4())},
-            payload={
-                "session_id": session_id,
-                "knowledge_base_id": kb_id,
-                "message": question,
-                "workflow": {"mode": "agent"},
-                "retrieval": {
-                    "mode": "hybrid" if strategy == "hybrid" else "vector",
-                    "top_k": top_k,
-                    "rerank_mode": rerank_mode,
-                },
-            },
+            payload=run_payload,
         )
         run_id = _required_string(created, "run_id")
         terminal = _wait_for_terminal(
@@ -365,7 +369,7 @@ def _evaluate_one(
             "status": "failed",
             "answer": None,
             "citations": [],
-            "workflow": None,
+            "agent": None,
             "retrieval": None,
             "error": {"code": error.code, "http_status": error.http_status},
             "usage": None,
@@ -381,9 +385,7 @@ def _evaluate_one(
         "question": question,
         "answer": safe.get("answer"),
         "citations": safe.get("citations", []),
-        "research_result": _research_result(safe.get("workflow")),
-        "search_trace": _search_trace(safe.get("workflow")),
-        "workflow": safe.get("workflow"),
+        "agent": safe.get("agent"),
         "retrieval": safe.get("retrieval"),
         "status": safe.get("status"),
         "error": safe.get("error"),
@@ -418,7 +420,7 @@ def score_complex_case(
     document_identity_map: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     answer = str(run.get("answer") or "")
-    workflow = run.get("workflow")
+    agent = run.get("agent")
     citations = run.get("citations")
     citations = citations if isinstance(citations, list) else []
     cited_documents = {
@@ -449,16 +451,16 @@ def score_complex_case(
                 "expected_decimal": aspect.get("expected_decimal"),
             }
         )
-    workflow_mode_ok = isinstance(workflow, dict) and (
-        workflow.get("requested_mode") == "agent"
-        and workflow.get("resolved_mode") == "agent"
+    agent_protocol_ok = isinstance(agent, dict) and (
+        agent.get("version") == "native_tool_calling_agent_v1"
     )
     status_ok = run.get("status") == "completed"
-    research = _research_result(workflow)
-    research_status = research.get("status") if isinstance(research, dict) else None
+    trace = agent.get("trace") if isinstance(agent, dict) else None
+    usage = trace.get("usage") if isinstance(trace, dict) else None
+    agent_outcome = trace.get("outcome") if isinstance(trace, dict) else None
     complete_scan_count = (
-        research.get("complete_scan_document_count", 0)
-        if isinstance(research, dict)
+        usage.get("complete_scan_document_count", 0)
+        if isinstance(usage, dict)
         else 0
     )
     if (
@@ -483,16 +485,16 @@ def score_complex_case(
         else 1.0
     )
     all_aspects = bool(aspects) and all(item["matched"] for item in aspects)
-    sufficient_precision_ok = (
+    answered_precision_ok = (
         coverage == 1.0
         and not forbidden
         and not not_mentioned_without_complete_scan
-        if research_status == "sufficient"
+        if agent_outcome == "answered"
         else None
     )
     strict = bool(
         status_ok
-        and workflow_mode_ok
+        and agent_protocol_ok
         and all_aspects
         and coverage == 1.0
         and not forbidden
@@ -502,7 +504,7 @@ def score_complex_case(
         "strict_correct": strict,
         "at_least_partial": bool(status_ok and any(item["matched"] for item in aspects)),
         "terminal_completed": status_ok,
-        "workflow_mode_ok": workflow_mode_ok,
+        "agent_protocol_ok": agent_protocol_ok,
         "aspect_accuracy": (
             round(sum(item["matched"] for item in aspects) / len(aspects), 6)
             if aspects
@@ -512,8 +514,8 @@ def score_complex_case(
         "required_document_citation_coverage": round(coverage, 6),
         "cited_document_ids": sorted(cited_documents),
         "forbidden_citation_document_ids": forbidden,
-        "research_status": research_status,
-        "sufficient_precision_ok": sufficient_precision_ok,
+        "agent_outcome": agent_outcome,
+        "answered_precision_ok": answered_precision_ok,
         "not_mentioned_without_complete_scan": not_mentioned_without_complete_scan,
         "evaluation_group": case.get("evaluation_group", "evidence_only"),
     }
@@ -562,12 +564,12 @@ def summarize_results(results: Iterable[dict[str, Any]]) -> dict[str, Any]:
             item.get("score", {}).get("strict_correct") for item in domain
         ),
         "domain_inference_cases": len(domain),
-        "sufficient_cases": sum(
-            item.get("score", {}).get("research_status") == "sufficient"
+        "answered_cases": sum(
+            item.get("score", {}).get("agent_outcome") == "answered"
             for item in values
         ),
-        "sufficient_precision_cases": sum(
-            item.get("score", {}).get("sufficient_precision_ok") is True
+        "answered_precision_cases": sum(
+            item.get("score", {}).get("answered_precision_ok") is True
             for item in values
         ),
         "scope_outside_reference_cases": sum(
@@ -638,19 +640,6 @@ def _extract_decimal_values(text: str) -> tuple[Decimal, ...]:
     return tuple(values)
 
 
-def _research_result(workflow: object) -> dict[str, Any] | None:
-    return workflow.get("research_result") if isinstance(workflow, dict) else None
-
-
-def _search_trace(workflow: object) -> dict[str, Any] | None:
-    return workflow.get("search_trace") if isinstance(workflow, dict) else None
-
-
-def _research_status(workflow: object) -> str | None:
-    result = _research_result(workflow)
-    return result.get("status") if isinstance(result, dict) else None
-
-
 def _contains_not_mentioned(value: str) -> bool:
     normalized = value.casefold().replace("-", "_")
     return any(
@@ -716,7 +705,7 @@ def _safe_run_snapshot(run: dict[str, Any]) -> dict[str, Any]:
         "status": run.get("status"),
         "answer": run.get("answer"),
         "citations": safe_citations,
-        "workflow": _safe_json_value(run.get("workflow")),
+        "agent": _safe_json_value(run.get("agent")),
         "retrieval": _safe_json_value(run.get("retrieval")),
         "error": _safe_error(run.get("error")),
         "usage": _safe_json_value(run.get("usage")),

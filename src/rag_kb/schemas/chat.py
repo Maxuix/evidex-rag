@@ -9,18 +9,12 @@ from uuid import UUID
 from pydantic import Field, field_validator, model_validator
 from pydantic_core import PydanticCustomError
 
-from rag_kb.domain import (
-    AnswerStyle,
-    ChatWorkflowMode,
-    InsufficiencyPolicy,
-    RerankMode,
-)
+from rag_kb.domain import AnswerStyle, InsufficiencyPolicy, RerankMode
 from rag_kb.schemas.common import OpaqueCursor, PublicSchema
 
 
 ChatProgressStageValue = Literal[
     "understand_query",
-    "select_workflow",
     "retrieve_evidence",
     "assess_evidence",
     "prepare_visual_evidence",
@@ -126,113 +120,33 @@ class ChatRetrievalRequest(PublicSchema):
         return self
 
 
-class ChatWorkflowRequest(PublicSchema):
-    mode: ChatWorkflowMode = ChatWorkflowMode.SIMPLE
+class ChatAgentBudgetResponse(PublicSchema):
+    model_rounds: Annotated[int, Field(ge=2, le=12)]
+    retrieval_calls: Annotated[int, Field(ge=1, le=12)]
+    calculation_calls: Annotated[int, Field(ge=0, le=4)]
+    evidence_refs: Annotated[int, Field(ge=1, le=100)]
 
 
-class ChatWorkflowCapabilityResponse(PublicSchema):
-    mode: ChatWorkflowMode
-    enabled: bool
+class ChatAgentTraceEventResponse(PublicSchema):
+    tool: Literal["search_knowledge_base", "calculate", "submit_answer", "protocol"]
+    status: Literal["ok", "rejected", "salvaged", "refused"]
+    tool_call_id: Annotated[str, Field(min_length=1, max_length=128)]
+    refs: tuple[Annotated[str, Field(min_length=1, max_length=128)], ...] = ()
+    count: Annotated[int, Field(ge=0)] = 0
 
 
-class ChatWorkflowCapabilitiesResponse(PublicSchema):
-    version: Literal["chat_workflow_v1"]
-    default_mode: Literal["simple"]
-    modes: tuple[ChatWorkflowCapabilityResponse, ...]
+class ChatAgentTraceResponse(PublicSchema):
+    version: Literal["native_tool_calling_agent_v1"]
+    events: tuple[ChatAgentTraceEventResponse, ...]
+    budget: ChatAgentBudgetResponse
+    usage: dict[str, Annotated[int, Field(ge=0)]]
+    outcome: Literal["answered", "partial", "refused"]
 
 
-class ChatResearchAspectResponse(PublicSchema):
-    aspect: Annotated[str, Field(min_length=1, max_length=1024)]
-    status: Literal["supported", "partial", "missing", "conflict"]
-    evidence_keys: tuple[Annotated[str, Field(min_length=1, max_length=1024)], ...]
-
-
-class ChatResearchResultResponse(PublicSchema):
-    version: Literal["research_result_v1"]
-    status: Literal[
-        "sufficient", "partial", "no_evidence", "conflict", "premise_unsupported"
-    ]
-    selected_evidence_keys: tuple[str, ...]
-    aspects: tuple[ChatResearchAspectResponse, ...]
-    covered_aspects: tuple[str, ...]
-    missing_aspects: tuple[str, ...]
-    conflicts: tuple[str, ...]
-    termination_reason: Literal[
-        "sufficient",
-        "partial",
-        "no_evidence",
-        "no_progress",
-        "budget_exhausted",
-        "conflict_unresolved",
-        "premise_unsupported",
-    ]
-    scope_status: Literal["all", "resolved", "ambiguous", "unresolved"] = "all"
-    resolved_document_count: Annotated[int, Field(ge=0, le=4)] = 0
-    complete_scan_document_count: Annotated[int, Field(ge=0, le=4)] = 0
-    scope_rejection_count: Annotated[int, Field(ge=0, le=4)] = 0
-    scope_downgrade_reason: str | None = None
-    calculation_call_count: Annotated[int, Field(ge=0, le=4)] = 0
-    calculation_success_count: Annotated[int, Field(ge=0, le=4)] = 0
-    calculation_rejection_reasons: tuple[
-        Annotated[str, Field(min_length=1, max_length=64)], ...
-    ] = ()
-    calculation_elapsed_ms: Annotated[int, Field(ge=0, le=120_000)] = 0
-    degradation_reason: Annotated[
-        str,
-        Field(min_length=1, max_length=128, pattern=r"^[a-z0-9_]+$"),
-    ] | None = None
-
-
-class ChatSearchTraceStepResponse(PublicSchema):
-    observation_id: str
-    objective: str
-    queries: tuple[str, ...]
-    based_on_observation_ids: tuple[str, ...]
-    result: Literal["evidence_found", "no_evidence", "verification_gap"]
-    new_evidence_count: Annotated[int, Field(ge=0, le=100)]
-
-
-class ChatSearchTraceResponse(PublicSchema):
-    version: Literal["search_trace_v1"]
-    steps: tuple[ChatSearchTraceStepResponse, ...]
-    decision_rounds: Annotated[int, Field(ge=0, le=8)]
-    retrieval_calls: Annotated[int, Field(ge=0, le=12)]
-    verifier_calls: Annotated[int, Field(ge=0, le=4)]
-    evidence_count: Annotated[int, Field(ge=0, le=100)]
-    adjacency_loaded_count: Annotated[int, Field(ge=0, le=100)] = 0
-    adjacency_selected_count: Annotated[int, Field(ge=0, le=100)] = 0
-    scope_status: Literal["all", "resolved", "ambiguous", "unresolved"] = "all"
-    resolved_document_count: Annotated[int, Field(ge=0, le=4)] = 0
-    complete_scan_document_count: Annotated[int, Field(ge=0, le=4)] = 0
-    scope_rejection_count: Annotated[int, Field(ge=0, le=4)] = 0
-    scope_downgrade_reason: str | None = None
-    calculation_call_count: Annotated[int, Field(ge=0, le=4)] = 0
-    calculation_success_count: Annotated[int, Field(ge=0, le=4)] = 0
-    calculation_rejection_reasons: tuple[
-        Annotated[str, Field(min_length=1, max_length=64)], ...
-    ] = ()
-    calculation_elapsed_ms: Annotated[int, Field(ge=0, le=120_000)] = 0
-
-
-class ChatWorkflowResponse(PublicSchema):
-    version: Literal["chat_workflow_v1"]
-    requested_mode: ChatWorkflowMode
-    resolved_mode: Literal["pending", "simple", "agent"]
-    route_status: Literal["not_applicable", "pending", "resolved", "fallback"]
-    route_reason_codes: tuple[
-        Literal[
-            "single_lookup",
-            "direct_summary",
-            "multi_view_required",
-            "multi_hop_required",
-            "evidence_uncertain",
-            "router_invalid",
-            "router_unavailable",
-        ],
-        ...,
-    ] = ()
-    research_result: ChatResearchResultResponse | None = None
-    search_trace: ChatSearchTraceResponse | None = None
+class ChatAgentResponse(PublicSchema):
+    version: Literal["native_tool_calling_agent_v1"]
+    budget: ChatAgentBudgetResponse
+    trace: ChatAgentTraceResponse | None = None
 
 
 class ChatRunCreate(PublicSchema):
@@ -240,7 +154,6 @@ class ChatRunCreate(PublicSchema):
     knowledge_base_id: UUID
     message: Annotated[str, Field(min_length=1, max_length=32768)]
     answer_policy: AnswerPolicyOverrides = AnswerPolicyOverrides()
-    workflow: ChatWorkflowRequest = ChatWorkflowRequest()
     retrieval: ChatRetrievalRequest = ChatRetrievalRequest()
     model_profile_revision_id: UUID | None = None
 
@@ -379,7 +292,7 @@ class ChatRunResponse(PublicSchema):
     events_url: str
     final_context_url: str
     effective_answer_policy: EffectiveAnswerPolicyResponse
-    workflow: ChatWorkflowResponse
+    agent: ChatAgentResponse
     retrieval: ChatRunRetrievalResponse
     model: ChatRunModelResponse
     query_context: ChatRunQueryContextResponse
@@ -427,33 +340,12 @@ class ChatAnswerPreviewResetEvent(PublicSchema):
     ]
 
 
-class ChatWorkflowProgressFacts(PublicSchema):
+class ChatAgentProgressFacts(PublicSchema):
     objective: Annotated[str, Field(max_length=160)] | None
     queries: Annotated[tuple[Annotated[str, Field(max_length=160)], ...], Field(max_length=3)]
     evidence_count: Annotated[int, Field(ge=0, le=1000)] | None
     new_evidence_count: Annotated[int, Field(ge=0, le=1000)] | None
     retrieval_calls: Annotated[int, Field(ge=0, le=1000)] | None
-    route_status: Literal[
-        "not_applicable", "pending", "resolved", "fallback"
-    ] | None
-    route_reason_codes: Annotated[
-        tuple[
-            Literal[
-                "single_lookup",
-                "direct_summary",
-                "multi_view_required",
-                "multi_hop_required",
-                "evidence_uncertain",
-                "router_invalid",
-                "router_unavailable",
-            ],
-            ...,
-        ],
-        Field(max_length=6),
-    ]
-    research_status: Literal[
-        "sufficient", "partial", "no_evidence", "conflict", "premise_unsupported"
-    ] | None
     covered_aspects: Annotated[
         tuple[Annotated[str, Field(max_length=160)], ...], Field(max_length=6)
     ]
@@ -461,27 +353,19 @@ class ChatWorkflowProgressFacts(PublicSchema):
         tuple[Annotated[str, Field(max_length=160)], ...], Field(max_length=6)
     ]
     conflict_count: Annotated[int, Field(ge=0, le=1000)] | None
-    decision: Literal[
-        "select_simple",
-        "select_agent",
-        "search_evidence",
-        "continue_search",
-        "finish_research",
-    ] | None
 
 
-class ChatWorkflowProgressEvent(PublicSchema):
+class ChatAgentProgressEvent(PublicSchema):
     run_id: UUID
     attempt: Annotated[int, Field(ge=1)]
     seq: Annotated[int, Field(ge=1)]
     active_stage: ChatProgressStageValue
     activity: Literal[
         "load_context",
-        "contextualize_query",
-        "route_decision",
-        "simple_search",
-        "agent_decision",
-        "agent_search",
+        "tool_decision",
+        "search_knowledge_base",
+        "calculate",
+        "submit_answer",
         "retrieval_complete",
         "verify_coverage",
         "research_complete",
@@ -495,6 +379,4 @@ class ChatWorkflowProgressEvent(PublicSchema):
         tuple[ChatProgressStageValue, ...], Field(max_length=8)
     ]
     status: Literal["active", "completed"]
-    requested_mode: Literal["simple", "agent", "auto"] | None
-    resolved_mode: Literal["pending", "simple", "agent"]
-    facts: ChatWorkflowProgressFacts
+    facts: ChatAgentProgressFacts

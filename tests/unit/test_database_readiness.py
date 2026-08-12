@@ -36,7 +36,7 @@ class _Engine:
 class DatabaseReadinessTests(unittest.IsolatedAsyncioTestCase):
     async def test_current_revision_is_ready(self) -> None:
         await check_database_ready(  # type: ignore[arg-type]
-            _Engine("0008_local_rerank_mode")
+            _Engine("0010_drop_legacy_workflow")
         )
 
     async def test_missing_or_stale_revision_is_rejected(self) -> None:

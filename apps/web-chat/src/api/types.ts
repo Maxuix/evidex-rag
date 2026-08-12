@@ -317,80 +317,29 @@ export interface RetrievalCapabilities {
   modes: RetrievalCapability[];
 }
 
-export type ChatWorkflowMode = "simple" | "agent" | "auto";
-
-export interface ChatWorkflowCapability {
-  mode: ChatWorkflowMode;
-  enabled: boolean;
+export interface ChatAgentTraceEvent {
+  tool: "search_knowledge_base" | "calculate" | "submit_answer" | "protocol";
+  status: "ok" | "rejected" | "salvaged" | "refused";
+  tool_call_id: string;
+  refs: string[];
+  count: number;
 }
 
-export interface ChatWorkflowCapabilities {
-  version: "chat_workflow_v1";
-  default_mode: "simple";
-  modes: ChatWorkflowCapability[];
-}
-
-export interface ChatResearchResult {
-  version: "research_result_v1";
-  status:
-    | "sufficient"
-    | "partial"
-    | "no_evidence"
-    | "conflict"
-    | "premise_unsupported";
-  selected_evidence_keys: string[];
-  aspects: Array<{
-    aspect: string;
-    status: "supported" | "partial" | "missing" | "conflict";
-    evidence_keys: string[];
-  }>;
-  covered_aspects: string[];
-  missing_aspects: string[];
-  conflicts: string[];
-  termination_reason:
-    | "sufficient"
-    | "partial"
-    | "no_evidence"
-    | "no_progress"
-    | "budget_exhausted"
-    | "conflict_unresolved"
-    | "premise_unsupported";
-}
-
-export interface ChatSearchTrace {
-  version: "search_trace_v1";
-  steps: Array<{
-    observation_id: string;
-    objective: string;
-    queries: string[];
-    based_on_observation_ids: string[];
-    result: "evidence_found" | "no_evidence" | "verification_gap";
-    new_evidence_count: number;
-  }>;
-  decision_rounds: number;
-  retrieval_calls: number;
-  verifier_calls: number;
-  evidence_count: number;
-  adjacency_loaded_count: number;
-  adjacency_selected_count: number;
-}
-
-export interface ChatWorkflow {
-  version: "chat_workflow_v1";
-  requested_mode: ChatWorkflowMode;
-  resolved_mode: "pending" | "simple" | "agent";
-  route_status: "not_applicable" | "pending" | "resolved" | "fallback";
-  route_reason_codes: Array<
-    | "single_lookup"
-    | "direct_summary"
-    | "multi_view_required"
-    | "multi_hop_required"
-    | "evidence_uncertain"
-    | "router_invalid"
-    | "router_unavailable"
-  >;
-  research_result: ChatResearchResult | null;
-  search_trace: ChatSearchTrace | null;
+export interface ChatAgent {
+  version: "native_tool_calling_agent_v1";
+  budget: {
+    model_rounds: number;
+    retrieval_calls: number;
+    calculation_calls: number;
+    evidence_refs: number;
+  };
+  trace: {
+    version: "native_tool_calling_agent_v1";
+    events: ChatAgentTraceEvent[];
+    budget: ChatAgent["budget"];
+    usage: Record<string, number>;
+    outcome: "answered" | "partial" | "refused";
+  } | null;
 }
 
 export interface ChatRun {
@@ -408,7 +357,7 @@ export interface ChatRun {
     answer_style: "concise" | "summary";
     insufficiency_policy: "refuse" | "partial_answer";
   };
-  workflow: ChatWorkflow;
+  agent: ChatAgent;
   retrieval: ChatRunRetrieval;
   model: {
     profile_revision_id: UUID | null;
@@ -435,9 +384,6 @@ export interface ChatRunCreate {
   answer_policy: {
     answer_style: "concise" | "summary";
     insufficiency_policy: "refuse" | "partial_answer";
-  };
-  workflow: {
-    mode: ChatWorkflowMode;
   };
   retrieval: {
     mode: "vector" | "hybrid";
@@ -570,7 +516,6 @@ export interface ChatPreviewResetEvent {
 
 export type ChatProgressStage =
   | "understand_query"
-  | "select_workflow"
   | "retrieve_evidence"
   | "assess_evidence"
   | "prepare_visual_evidence"
@@ -580,11 +525,10 @@ export type ChatProgressStage =
 
 export type ChatProgressActivity =
   | "load_context"
-  | "contextualize_query"
-  | "route_decision"
-  | "simple_search"
-  | "agent_decision"
-  | "agent_search"
+  | "tool_decision"
+  | "search_knowledge_base"
+  | "calculate"
+  | "submit_answer"
   | "retrieval_complete"
   | "verify_coverage"
   | "research_complete"
@@ -600,19 +544,9 @@ export interface ChatProgressFacts {
   evidence_count: number | null;
   new_evidence_count: number | null;
   retrieval_calls: number | null;
-  route_status: "not_applicable" | "pending" | "resolved" | "fallback" | null;
-  route_reason_codes: ChatWorkflow["route_reason_codes"];
-  research_status: ChatResearchResult["status"] | null;
   covered_aspects: string[];
   missing_aspects: string[];
   conflict_count: number | null;
-  decision:
-    | "select_simple"
-    | "select_agent"
-    | "search_evidence"
-    | "continue_search"
-    | "finish_research"
-    | null;
 }
 
 export interface ChatProgressSnapshot {
@@ -623,8 +557,6 @@ export interface ChatProgressSnapshot {
   activity: ChatProgressActivity;
   completed_stages: ChatProgressStage[];
   status: "active" | "completed";
-  requested_mode: ChatWorkflowMode | null;
-  resolved_mode: "pending" | "simple" | "agent";
   facts: ChatProgressFacts;
 }
 

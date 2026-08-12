@@ -23,12 +23,11 @@ from rag_kb.domain import (
     ChatProgressSnapshot,
     ChatRun,
     ChatSession,
-    hydrate_chat_workflow_configuration,
-    hydrate_chat_workflow_state,
 )
 from rag_kb.services.chat_delivery import ChatSseSubscription
 from rag_kb.schemas import (
     ChatAnswerCompletedEvent,
+    ChatAgentResponse,
     ChatAnswerPreviewEvent,
     ChatAnswerPreviewResetEvent,
     ChatCitationAssetResponse,
@@ -41,9 +40,7 @@ from rag_kb.schemas import (
     ChatRunFailedEvent,
     ChatRunResponse,
     ChatRunQueryContextResponse,
-    ChatWorkflowCapabilitiesResponse,
-    ChatWorkflowResponse,
-    ChatWorkflowProgressEvent,
+    ChatAgentProgressEvent,
     ChatSessionCreate,
     ChatSessionPage,
     ChatSessionResponse,
@@ -61,21 +58,6 @@ from rag_kb.retrieval.profile import parse_retrieval_snapshot
 router = APIRouter(prefix="/chat", tags=["chat"])
 SessionSort = Literal["created_at", "-created_at", "updated_at", "-updated_at"]
 MessageSort = Literal["created_at", "-created_at"]
-
-
-@router.get(
-    "/capabilities",
-    response_model=ChatWorkflowCapabilitiesResponse,
-    responses=problem_responses(500),
-)
-async def chat_workflow_capabilities(
-    request: Request,
-    context: Annotated[AuthContext, Depends(get_auth_context)],
-) -> ChatWorkflowCapabilitiesResponse:
-    del context
-    return ChatWorkflowCapabilitiesResponse.model_validate(
-        request.app.state.dependencies.chat_service.workflow_capabilities_snapshot()
-    )
 
 
 @router.post(
@@ -177,7 +159,6 @@ async def create_chat_run(
         retrieval_mode=payload.retrieval.mode,
         top_k=payload.retrieval.top_k,
         rerank_mode=payload.retrieval.rerank_mode,
-        workflow_mode=payload.workflow.mode,
         model_profile_revision_id=payload.model_profile_revision_id,
     )
     response.headers["Location"] = _status_url(value.id)
@@ -307,8 +288,8 @@ async def stream_chat_run_events(
             update = value.update
             facts = update.facts
             yield ServerSentEvent(
-                event="workflow.progress",
-                data=ChatWorkflowProgressEvent(
+                event="agent.progress",
+                data=ChatAgentProgressEvent(
                     run_id=value.run_id,
                     attempt=value.attempt,
                     seq=value.seq,
@@ -318,39 +299,15 @@ async def stream_chat_run_events(
                         item.value for item in update.completed_stages
                     ),
                     status=update.status.value,
-                    requested_mode=(
-                        update.requested_mode.value
-                        if update.requested_mode is not None
-                        else None
-                    ),
-                    resolved_mode=update.resolved_mode.value,
                     facts={
                         "objective": facts.objective,
                         "queries": facts.queries,
                         "evidence_count": facts.evidence_count,
                         "new_evidence_count": facts.new_evidence_count,
                         "retrieval_calls": facts.retrieval_calls,
-                        "route_status": (
-                            facts.route_status.value
-                            if facts.route_status is not None
-                            else None
-                        ),
-                        "route_reason_codes": tuple(
-                            item.value for item in facts.route_reason_codes
-                        ),
-                        "research_status": (
-                            facts.research_status.value
-                            if facts.research_status is not None
-                            else None
-                        ),
                         "covered_aspects": facts.covered_aspects,
                         "missing_aspects": facts.missing_aspects,
                         "conflict_count": facts.conflict_count,
-                        "decision": (
-                            facts.decision.value
-                            if facts.decision is not None
-                            else None
-                        ),
                     },
                 ),
             )
@@ -419,7 +376,7 @@ def _run_response(value: ChatRun) -> ChatRunResponse:
         events_url=f"{_status_url(value.id)}/events",
         final_context_url=f"{_status_url(value.id)}/final-context",
         effective_answer_policy=_policy_response(value),
-        workflow=_workflow_response(value),
+        agent=_agent_response(value),
         retrieval=_retrieval_response(value),
         model=_model_response(value),
         query_context=_query_context_response(value),
@@ -558,24 +515,20 @@ def _policy_response(value: ChatRun) -> EffectiveAnswerPolicyResponse:
     return EffectiveAnswerPolicyResponse.model_validate(value.effective_policy)
 
 
-def _workflow_response(value: ChatRun) -> ChatWorkflowResponse:
+def _agent_response(value: ChatRun) -> ChatAgentResponse:
     try:
-        configuration = hydrate_chat_workflow_configuration(
-            value.workflow_configuration
-        )
-        state = hydrate_chat_workflow_state(value.workflow_state)
-        return ChatWorkflowResponse.model_validate(
+        return ChatAgentResponse.model_validate(
             {
-                **state.as_dict(),
-                "requested_mode": configuration.requested_mode.value,
+                **value.agent_configuration,
+                "trace": value.agent_trace,
             }
         )
-    except (TypeError, ValueError) as error:
+    except ValueError as error:
         raise ApiProblem(
             code=ErrorCode.CHAT_CONTEXT_INVALID,
             status=500,
-            title="Chat workflow invalid",
-            detail="The persisted ChatRun workflow is invalid.",
+            title="Chat agent state invalid",
+            detail="The persisted ChatRun agent state is invalid.",
         ) from error
 
 

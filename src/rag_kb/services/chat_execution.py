@@ -1,4 +1,4 @@
-"""Application services for claimed LangGraph chat execution."""
+"""Application services for claimed native Agent execution."""
 
 from __future__ import annotations
 
@@ -16,7 +16,6 @@ from rag_kb.domain import (
     ChatPipelinePhase,
     ChatPipelineState,
     ChatRunLease,
-    ChatWorkflowState,
     ContextualizedQuery,
     ErrorCode,
     Evidence,
@@ -144,25 +143,6 @@ class ChatContextualizedQueryStore:
     ) -> ContextualizedQuery | None:
         async def persist(uow: UnitOfWork) -> ContextualizedQuery | None:
             return await uow.chat.save_contextualized_query(
-                context.lease, value
-            )
-
-        return await execute_in_transaction(self._unit_of_work, persist)
-
-
-class ChatWorkflowStateStore:
-    """Persist an Auto resolution using the active lease/attempt CAS."""
-
-    def __init__(self, unit_of_work: UnitOfWorkFactory) -> None:
-        self._unit_of_work = unit_of_work
-
-    async def persist_resolution(
-        self,
-        context: ChatExecutionContext,
-        value: ChatWorkflowState,
-    ) -> ChatWorkflowState | None:
-        async def persist(uow: UnitOfWork) -> ChatWorkflowState | None:
-            return await uow.chat.save_workflow_resolution(
                 context.lease, value
             )
 

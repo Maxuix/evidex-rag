@@ -16,8 +16,6 @@ import type {
   ChatRun,
   ChatRunCreate,
   ChatSession,
-  ChatWorkflowCapabilities,
-  ChatWorkflowMode,
   KnowledgeBase,
   ModelSettings,
   RerankMode,
@@ -90,12 +88,6 @@ export function App() {
     useState(false);
   const [retrievalCapabilitiesError, setRetrievalCapabilitiesError] =
     useState<unknown | null>(null);
-  const [workflowCapabilities, setWorkflowCapabilities] =
-    useState<ChatWorkflowCapabilities | null>(null);
-  const [workflowCapabilitiesLoading, setWorkflowCapabilitiesLoading] =
-    useState(false);
-  const [workflowCapabilitiesError, setWorkflowCapabilitiesError] =
-    useState<unknown | null>(null);
 
   useEffect(() => {
     void loadRuntimeConfig()
@@ -114,23 +106,6 @@ export function App() {
       if (!cancelled) setRetrievalCapabilitiesError(error);
     }).finally(() => {
       if (!cancelled) setRetrievalCapabilitiesLoading(false);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [client]);
-
-  useEffect(() => {
-    if (!client) return;
-    let cancelled = false;
-    setWorkflowCapabilitiesLoading(true);
-    setWorkflowCapabilitiesError(null);
-    void client.getChatWorkflowCapabilities().then((value) => {
-      if (!cancelled) setWorkflowCapabilities(value);
-    }).catch((error) => {
-      if (!cancelled) setWorkflowCapabilitiesError(error);
-    }).finally(() => {
-      if (!cancelled) setWorkflowCapabilitiesLoading(false);
     });
     return () => {
       cancelled = true;
@@ -161,9 +136,6 @@ export function App() {
       retrievalCapabilities={retrievalCapabilities}
       retrievalCapabilitiesLoading={retrievalCapabilitiesLoading}
       retrievalCapabilitiesError={retrievalCapabilitiesError}
-      workflowCapabilities={workflowCapabilities}
-      workflowCapabilitiesLoading={workflowCapabilitiesLoading}
-      workflowCapabilitiesError={workflowCapabilitiesError}
     />
   );
 }
@@ -173,17 +145,11 @@ function KnowledgeChat({
   retrievalCapabilities,
   retrievalCapabilitiesLoading,
   retrievalCapabilitiesError,
-  workflowCapabilities,
-  workflowCapabilitiesLoading,
-  workflowCapabilitiesError,
 }: {
   client: ApiClient;
   retrievalCapabilities: RetrievalCapabilities | null;
   retrievalCapabilitiesLoading: boolean;
   retrievalCapabilitiesError: unknown | null;
-  workflowCapabilities: ChatWorkflowCapabilities | null;
-  workflowCapabilitiesLoading: boolean;
-  workflowCapabilitiesError: unknown | null;
 }) {
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
   const [knowledgeBaseCursor, setKnowledgeBaseCursor] = useState<string | null>(null);
@@ -207,7 +173,6 @@ function KnowledgeChat({
   const [draft, setDraft] = useState("");
   const [retrievalMode, setRetrievalMode] = useState<"vector" | "hybrid">("vector");
   const [rerankMode, setRerankMode] = useState<RerankMode>("classic");
-  const [workflowMode, setWorkflowMode] = useState<ChatWorkflowMode>("simple");
   const [modelSettings, setModelSettings] = useState<ModelSettings | null>(null);
   const [modelSettingsLoading, setModelSettingsLoading] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -252,12 +217,6 @@ function KnowledgeChat({
   ) || messages.some((item) => item.assistant_status === "generating");
   const hybridEnabled = retrievalCapabilities?.modes.some(
     (item) => item.mode === "hybrid" && item.enabled,
-  ) ?? false;
-  const agentEnabled = workflowCapabilities?.modes.some(
-    (item) => item.mode === "agent" && item.enabled,
-  ) ?? false;
-  const autoEnabled = workflowCapabilities?.modes.some(
-    (item) => item.mode === "auto" && item.enabled,
   ) ?? false;
   const chatModels = modelSettings?.profiles.filter((profile) => (
     profile.kind === "chat"
@@ -373,7 +332,6 @@ function KnowledgeChat({
   useEffect(() => {
     storeKnowledgeBaseId(selectedKnowledgeBaseId || null);
     setRetrievalMode("vector");
-    setWorkflowMode("simple");
     setSessions([]);
     setSelectedSessionId(null);
     setMessages([]);
@@ -397,18 +355,6 @@ function KnowledgeChat({
     selectedKnowledgeBase?.id,
     selectedKnowledgeBase?.retrieval_defaults.rerank_mode,
   ]);
-
-  useEffect(() => {
-    if (
-      (workflowMode === "agent" && !agentEnabled)
-      || (workflowMode === "auto" && !autoEnabled)
-    ) {
-      setWorkflowMode("simple");
-    }
-    if (workflowMode !== "simple" && rerankMode === "local_minilm_v1") {
-      setRerankMode("classic");
-    }
-  }, [agentEnabled, autoEnabled, rerankMode, workflowMode]);
 
   useEffect(() => {
     messageGeneration.current += 1;
@@ -629,9 +575,6 @@ function KnowledgeChat({
               selectedKnowledgeBase.answer_policy_defaults.insufficiency_policy
             ),
           },
-          workflow: {
-            mode: workflowMode,
-          },
           retrieval: {
             mode: retrievalMode,
             top_k: selectedKnowledgeBase.retrieval_defaults.top_k,
@@ -680,27 +623,11 @@ function KnowledgeChat({
     setRetrievalMode(next);
   };
 
-  const changeWorkflowMode = (next: ChatWorkflowMode) => {
-    if (next === "agent" && !agentEnabled) return;
-    if (next === "auto" && !autoEnabled) return;
-    if (pendingRun) {
-      setPendingRun(null);
-      setSubmissionError(null);
-    }
-    if (next !== "simple" && rerankMode === "local_minilm_v1") {
-      setRerankMode("classic");
-    }
-    setWorkflowMode(next);
-  };
-
   const changeRerankMode = (next: RerankMode) => {
     if (next === "none" && retrievalMode === "hybrid") return;
     if (
       next === "local_minilm_v1"
-      && (
-        workflowMode !== "simple"
-        || (selectedKnowledgeBase?.retrieval_defaults.top_k ?? 100) > 20
-      )
+      && (selectedKnowledgeBase?.retrieval_defaults.top_k ?? 100) > 20
     ) return;
     if (pendingRun) {
       setPendingRun(null);
@@ -1094,40 +1021,6 @@ function KnowledgeChat({
                   <span className="composer-model-chevron" aria-hidden="true">⌄</span>
                 </label>
                 <ComposerOptionMenu
-                  kind="workflow"
-                  label="回答工作流"
-                  value={workflowMode}
-                  disabled={submitting || sessionBusy}
-                  options={[
-                    {
-                      value: "simple",
-                      label: "Simple",
-                      description: "单次检索，速度最快。",
-                    },
-                    {
-                      value: "agent",
-                      label: "Agent",
-                      description: agentEnabled
-                        ? "多视角、多跳检索，通常更慢。"
-                        : workflowCapabilitiesLoading
-                          ? "能力状态加载中。"
-                          : "当前服务未启用 Agent。",
-                      disabled: !agentEnabled,
-                    },
-                    {
-                      value: "auto",
-                      label: "Auto",
-                      description: autoEnabled
-                        ? "自动判断问题复杂度并选择工作流。"
-                        : workflowCapabilitiesError || !workflowCapabilities
-                          ? "能力状态不可用。"
-                          : "当前服务未启用 Auto。",
-                      disabled: !autoEnabled,
-                    },
-                  ]}
-                  onChange={changeWorkflowMode}
-                />
-                <ComposerOptionMenu
                   kind="retrieval"
                   label="检索模式"
                   value={retrievalMode}
@@ -1175,13 +1068,10 @@ function KnowledgeChat({
                     {
                       value: "local_minilm_v1",
                       label: "本地 MiniLM",
-                      description: workflowMode !== "simple"
-                        ? "首版仅支持 Simple 工作流。"
-                        : (selectedKnowledgeBase?.retrieval_defaults.top_k ?? 100) > 20
+                      description: (selectedKnowledgeBase?.retrieval_defaults.top_k ?? 100) > 20
                           ? "本地模型要求知识库 Top K 不超过 20。"
                           : "本机离线 CrossEncoder 精排，相关性更强但更慢。",
-                      disabled: workflowMode !== "simple"
-                        || (selectedKnowledgeBase?.retrieval_defaults.top_k ?? 100) > 20,
+                      disabled: (selectedKnowledgeBase?.retrieval_defaults.top_k ?? 100) > 20,
                     },
                   ]}
                   onChange={changeRerankMode}
@@ -1258,7 +1148,7 @@ function ComposerOptionMenu<T extends string>({
   disabled,
   onChange,
 }: {
-  kind: "workflow" | "retrieval" | "rerank";
+  kind: "retrieval" | "rerank";
   label: string;
   value: T;
   options: readonly ComposerMenuOption<T>[];
@@ -1346,7 +1236,7 @@ function ComposerModelIcon() {
 }
 
 function ComposerMenuIcon({ kind }: {
-  kind: "workflow" | "retrieval" | "rerank";
+  kind: "retrieval" | "rerank";
 }) {
   if (kind === "retrieval") {
     return (
@@ -1403,7 +1293,7 @@ function Message({
     <article className="message assistant-message">
       <div className="assistant-mark" aria-hidden="true">K</div>
       <div className="assistant-content">
-        {run ? <WorkflowSummary workflow={run.workflow} model={run.model} /> : null}
+        {run ? <AgentSummary agent={run.agent} model={run.model} /> : null}
         {run ? (
           <ExecutionTrace
             run={run}
@@ -1452,38 +1342,19 @@ function Message({
   );
 }
 
-function WorkflowSummary({ workflow, model }: {
-  workflow: ChatRun["workflow"];
+function AgentSummary({ agent, model }: {
+  agent: ChatRun["agent"];
   model: ChatRun["model"];
 }) {
-  const requested = workflowModeLabel(workflow.requested_mode);
-  const resolved = workflow.resolved_mode === "pending"
-    ? "路由中"
-    : workflowModeLabel(workflow.resolved_mode);
-  const modeLabel = workflow.requested_mode === "auto"
-    ? `Auto → ${resolved}`
-    : requested;
-  const result = workflow.research_result;
-  const trace = workflow.search_trace;
-  const fallback = workflow.route_status === "fallback"
-    ? workflow.route_reason_codes.includes("router_invalid")
-      ? "路由结果无效，已回退"
-      : "路由服务不可用，已回退"
-    : null;
+  const trace = agent.trace;
   return (
-    <div className="workflow-summary" aria-label={`回答工作流：${modeLabel}`}>
-      <span className="workflow-badge">{modeLabel}</span>
+    <div className="workflow-summary" aria-label="原生 Tool-Calling Agent">
+      <span className="workflow-badge">Native Agent</span>
       <span className="workflow-badge">{model.profile_name || model.model}</span>
-      {fallback ? <span>{fallback}</span> : null}
-      {result && trace ? (
+      {trace ? (
         <span>
-          {researchStatusLabel(result.status)} · {terminationLabel(
-            result.termination_reason,
-          )} · 检索 {trace.retrieval_calls} 次 · 证据 {trace.evidence_count} 项
-          {result.missing_aspects.length
-            ? ` · 待补 ${result.missing_aspects.length} 项`
-            : ""}
-          {result.conflicts.length ? ` · 冲突 ${result.conflicts.length} 项` : ""}
+          {trace.outcome === "answered" ? "已回答" : trace.outcome === "partial" ? "部分回答" : "已拒答"}
+          {` · 模型 ${trace.usage.model_rounds ?? 0} 轮 · 检索 ${trace.usage.retrieval_calls ?? 0} 次`}
         </span>
       ) : null}
     </div>
@@ -1492,7 +1363,6 @@ function WorkflowSummary({ workflow, model }: {
 
 const PROGRESS_STAGES: ChatProgressStage[] = [
   "understand_query",
-  "select_workflow",
   "retrieve_evidence",
   "assess_evidence",
   "prepare_visual_evidence",
@@ -1609,14 +1479,6 @@ function ExecutionTrace({
             ) : null}
           </div>
           <p>{activityDescription(viewedSnapshot.activity)}</p>
-          {viewedSnapshot.requested_mode === "auto"
-            && viewedSnapshot.resolved_mode !== "pending" ? (
-              <div className="trace-route-choice">
-                Auto 已选择 <strong>{workflowModeLabel(
-                  viewedSnapshot.resolved_mode,
-                )}</strong>
-              </div>
-            ) : null}
           <ProgressFacts facts={viewedSnapshot.facts} />
         </div>
       ) : !terminal && !disconnected ? (
@@ -1624,23 +1486,16 @@ function ExecutionTrace({
           正在等待第一个执行节点…
         </div>
       ) : null}
-      {viewedStage === "retrieve_evidence"
-        && run.workflow.search_trace?.steps.length ? (
+      {terminal && run.agent.trace?.events.length ? (
         <div className="trace-search-history">
-          <h4>检索决策记录</h4>
-          {run.workflow.search_trace.steps.map((step) => (
-            <div className="trace-search-step" key={step.observation_id}>
+          <h4>工具调用记录</h4>
+          {run.agent.trace.events.map((event, index) => (
+            <div className="trace-search-step" key={`${event.tool_call_id}-${index}`}>
               <div>
-                <strong>{step.objective}</strong>
-                <span>{searchResultLabel(step.result)} · 新增证据 {
-                  step.new_evidence_count
-                } 项</span>
+                <strong>{toolLabel(event.tool)}</strong>
+                <span>{event.status} · {event.count} 项</span>
               </div>
-              {step.queries.length ? (
-                <ul>
-                  {step.queries.map((query) => <li key={query}>{query}</li>)}
-                </ul>
-              ) : null}
+              {event.refs.length ? <span>{event.refs.join("、")}</span> : null}
             </div>
           ))}
         </div>
@@ -1692,25 +1547,18 @@ function stageProgress(
     activity: stageActivity(run, stage),
     completed_stages: overview?.completed_stages ?? [],
     status: complete ? "completed" : "active",
-    requested_mode: run.workflow.requested_mode,
-    resolved_mode: run.workflow.resolved_mode,
     facts: stageFacts(run, stage),
   };
 }
 
 function stageActivity(
-  run: ChatRun,
+  _run: ChatRun,
   stage: ChatProgressStage,
 ): ChatProgressSnapshot["activity"] {
-  if (stage === "retrieve_evidence") {
-    if (run.workflow.research_result) return "research_complete";
-    if (run.workflow.search_trace?.steps.length) return "retrieval_complete";
-    return "simple_search";
-  }
+  if (stage === "retrieve_evidence") return "search_knowledge_base";
   const activities: Record<Exclude<ChatProgressStage, "retrieve_evidence">,
     ChatProgressSnapshot["activity"]> = {
-      understand_query: "contextualize_query",
-      select_workflow: "route_decision",
+      understand_query: "tool_decision",
       assess_evidence: "assess_evidence",
       prepare_visual_evidence: "prepare_visual_evidence",
       generate_answer: "generate_answer",
@@ -1724,51 +1572,25 @@ function stageFacts(
   run: ChatRun,
   stage: ChatProgressStage,
 ): ChatProgressSnapshot["facts"] {
-  const result = run.workflow.research_result;
-  const trace = run.workflow.search_trace;
-  const lastSearch = trace?.steps.at(-1);
+  const trace = run.agent.trace;
   const facts: ChatProgressSnapshot["facts"] = {
     objective: null,
     queries: [],
     evidence_count: null,
     new_evidence_count: null,
     retrieval_calls: null,
-    route_status: run.workflow.route_status,
-    route_reason_codes: run.workflow.route_reason_codes,
-    research_status: null,
     covered_aspects: [],
     missing_aspects: [],
     conflict_count: null,
-    decision: null,
   };
-  if (stage === "select_workflow" && run.workflow.resolved_mode !== "pending") {
-    facts.decision = run.workflow.resolved_mode === "agent"
-      ? "select_agent"
-      : "select_simple";
-  }
   if (stage === "retrieve_evidence") {
-    facts.objective = lastSearch?.objective ?? null;
-    facts.queries = lastSearch?.queries ?? [];
-    facts.evidence_count = trace?.evidence_count ?? null;
-    facts.new_evidence_count = lastSearch?.new_evidence_count ?? null;
-    facts.retrieval_calls = trace?.retrieval_calls ?? null;
-    facts.research_status = result?.status ?? null;
-    facts.decision = result ? "finish_research" : null;
-  }
-  if (stage === "assess_evidence") {
-    facts.evidence_count = trace?.evidence_count ?? null;
-    facts.retrieval_calls = trace?.retrieval_calls ?? null;
-    facts.research_status = result?.status ?? null;
-    facts.covered_aspects = result?.covered_aspects.slice(0, 6) ?? [];
-    facts.missing_aspects = result?.missing_aspects.slice(0, 6) ?? [];
-    facts.conflict_count = result?.conflicts.length ?? null;
-    facts.decision = result ? "finish_research" : null;
+    facts.evidence_count = trace?.usage.evidence_refs ?? null;
+    facts.retrieval_calls = trace?.usage.retrieval_calls ?? null;
   }
   return facts;
 }
 
 function ProgressFacts({ facts }: { facts: ChatProgressSnapshot["facts"] }) {
-  const routeReasons = facts.route_reason_codes.map(routeReasonLabel);
   return (
     <div className="trace-facts">
       {facts.objective ? (
@@ -1780,12 +1602,6 @@ function ProgressFacts({ facts }: { facts: ChatProgressSnapshot["facts"] }) {
           <ul>{facts.queries.map((query) => <li key={query}>{query}</li>)}</ul>
         </div>
       ) : null}
-      {routeReasons.length ? (
-        <div><span>路由依据</span><strong>{routeReasons.join("、")}</strong></div>
-      ) : null}
-      {facts.decision ? (
-        <div><span>当前决定</span><strong>{decisionLabel(facts.decision)}</strong></div>
-      ) : null}
       {facts.evidence_count !== null ? (
         <div><span>可用证据</span><strong>{facts.evidence_count} 项</strong></div>
       ) : null}
@@ -1794,12 +1610,6 @@ function ProgressFacts({ facts }: { facts: ChatProgressSnapshot["facts"] }) {
       ) : null}
       {facts.new_evidence_count !== null ? (
         <div><span>本轮新增</span><strong>{facts.new_evidence_count} 项</strong></div>
-      ) : null}
-      {facts.research_status ? (
-        <div>
-          <span>研究结论</span>
-          <strong>{researchStatusLabel(facts.research_status)}</strong>
-        </div>
       ) : null}
       {facts.covered_aspects.length ? (
         <div><span>已覆盖</span><strong>{facts.covered_aspects.join("、")}</strong></div>
@@ -1823,8 +1633,6 @@ function completedProgress(run: ChatRun): ChatProgressSnapshot {
     activity: "persist_result",
     completed_stages: [...PROGRESS_STAGES],
     status: "completed",
-    requested_mode: run.workflow.requested_mode,
-    resolved_mode: run.workflow.resolved_mode,
     facts: stageFacts(run, "persist_result"),
   };
 }
@@ -1832,7 +1640,6 @@ function completedProgress(run: ChatRun): ChatProgressSnapshot {
 function progressStageLabel(stage: ChatProgressStage): string {
   const labels: Record<ChatProgressStage, string> = {
     understand_query: "理解问题",
-    select_workflow: "选择工作流",
     retrieve_evidence: "检索证据",
     assess_evidence: "评估证据",
     prepare_visual_evidence: "准备素材",
@@ -1846,14 +1653,13 @@ function progressStageLabel(stage: ChatProgressStage): string {
 function activityLabel(activity: ChatProgressSnapshot["activity"]): string {
   const labels: Record<ChatProgressSnapshot["activity"], string> = {
     load_context: "读取对话上下文",
-    contextualize_query: "理解并改写问题",
-    route_decision: "判断问题复杂度",
-    simple_search: "执行单次检索",
-    agent_decision: "规划下一步检索",
-    agent_search: "执行 Agent 查询",
+    tool_decision: "选择下一项工具",
+    search_knowledge_base: "检索知识库",
+    calculate: "执行受控计算",
+    submit_answer: "提交最终回答",
     retrieval_complete: "整理本轮检索结果",
-    verify_coverage: "Verifier 检查覆盖度",
-    research_complete: "研究阶段结束",
+    verify_coverage: "检查证据覆盖度",
+    research_complete: "检索阶段结束",
     assess_evidence: "评估证据是否足够",
     prepare_visual_evidence: "准备可引用的视觉证据",
     generate_answer: "基于证据生成回答",
@@ -1866,89 +1672,32 @@ function activityLabel(activity: ChatProgressSnapshot["activity"]): string {
 function activityDescription(activity: ChatProgressSnapshot["activity"]): string {
   const descriptions: Record<ChatProgressSnapshot["activity"], string> = {
     load_context: "读取本次问题、会话上下文与冻结配置。",
-    contextualize_query: "把当前问题整理成可独立检索的查询。",
-    route_decision: "根据问题是否需要多视角或多跳信息选择 Simple / Agent。",
-    simple_search: "使用冻结的检索配置查找最相关证据。",
-    agent_decision: "根据已有观察决定继续搜索还是进入覆盖度验证。",
-    agent_search: "按受控目标执行最多三条并行查询。",
+    tool_decision: "Agent 根据已冻结的运行范围选择固定工具。",
+    search_knowledge_base: "使用冻结的检索配置查找并发放稳定证据引用。",
+    calculate: "只基于已发放证据执行 Decimal 计算。",
+    submit_answer: "提交逐 claim 回答并进入确定性引用校验。",
     retrieval_complete: "合并并去重本轮结果，只统计可用证据。",
-    verify_coverage: "独立检查证据覆盖、缺口与冲突，并决定是否继续检索。",
-    research_complete: "检索决策已结束，固定用于回答的证据集合。",
-    assess_evidence: "依据回答策略判断充分、部分覆盖或拒答。",
+    verify_coverage: "检查当前回答所用证据的覆盖、缺口与冲突。",
+    research_complete: "检索工具阶段已结束，进入回答提交与确定性校验。",
+    assess_evidence: "依据已发放证据与回答策略判断充分、部分覆盖或拒答。",
     prepare_visual_evidence: "选择与文字证据相关的图片或表格素材。",
-    generate_answer: "只使用已选证据组织回答和引用。",
-    validate_answer: "检查回答结构、引用编号和证据约束。",
+    generate_answer: "Agent 通过 submit_answer 提交逐 claim 回答和引用。",
+    validate_answer: "服务端逐 claim 检查引用编号和证据约束。",
     persist_result: "把最终回答和可核验事实写入本地数据库。",
   };
   return descriptions[activity];
 }
 
-function decisionLabel(decision: NonNullable<
-  ChatProgressSnapshot["facts"]["decision"]
->): string {
-  return {
-    select_simple: "选择 Simple",
-    select_agent: "选择 Agent",
-    search_evidence: "继续执行检索",
-    continue_search: "覆盖仍不足，继续检索",
-    finish_research: "证据研究结束，进入回答",
-  }[decision];
-}
-
-function routeReasonLabel(reason: ChatRun["workflow"]["route_reason_codes"][number]) {
-  return {
-    single_lookup: "单点查询",
-    direct_summary: "直接总结",
-    multi_view_required: "需要多视角",
-    multi_hop_required: "需要多跳检索",
-    evidence_uncertain: "证据不确定",
-    router_invalid: "路由结果无效，已回退",
-    router_unavailable: "路由不可用，已回退",
-  }[reason];
-}
-
-function searchResultLabel(result: ChatSearchResult): string {
-  return {
-    evidence_found: "找到新证据",
-    no_evidence: "未找到新证据",
-    verification_gap: "根据覆盖缺口继续",
-  }[result];
-}
-
-type ChatSearchResult = "evidence_found" | "no_evidence" | "verification_gap";
-
-function workflowModeLabel(mode: ChatWorkflowMode): string {
-  if (mode === "agent") return "Agent";
-  if (mode === "auto") return "Auto";
-  return "Simple";
-}
-
-function researchStatusLabel(status: NonNullable<
-  ChatRun["workflow"]["research_result"]
->["status"]): string {
-  const labels: Record<string, string> = {
-    sufficient: "研究充分",
-    partial: "部分覆盖",
-    no_evidence: "未找到证据",
-    conflict: "证据冲突",
-    premise_unsupported: "前提无依据",
+function toolLabel(
+  tool: "search_knowledge_base" | "calculate" | "submit_answer" | "protocol",
+): string {
+  const labels = {
+    search_knowledge_base: "检索知识库",
+    calculate: "受控计算",
+    submit_answer: "提交回答",
+    protocol: "协议校验",
   };
-  return labels[String(status)] ?? "研究完成";
-}
-
-function terminationLabel(reason: NonNullable<
-  ChatRun["workflow"]["research_result"]
->["termination_reason"]): string {
-  const labels: Record<string, string> = {
-    sufficient: "覆盖完成",
-    partial: "部分完成",
-    no_evidence: "无证据",
-    no_progress: "无新增证据",
-    budget_exhausted: "达到检索上限",
-    conflict_unresolved: "冲突未解决",
-    premise_unsupported: "问题前提不成立",
-  };
-  return labels[reason] ?? reason;
+  return labels[tool];
 }
 
 function Welcome({

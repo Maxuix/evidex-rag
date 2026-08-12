@@ -157,7 +157,7 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
                     "UPDATE alembic_version SET version_num = 'runtime-mutation'"
                 )
             revision = await runtime.fetchval("SELECT version_num FROM alembic_version")
-            self.assertEqual(revision, "0008_local_rerank_mode")
+            self.assertEqual(revision, "0010_drop_legacy_workflow")
         finally:
             await runtime.close()
 
@@ -347,7 +347,7 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
         finally:
             migration.op = previous_op
 
-    async def test_chat_workflow_migration_has_bounded_simple_defaults(self) -> None:
+    async def test_legacy_chat_workflow_columns_are_removed(self) -> None:
         connection = await asyncpg.connect(MIGRATION_DSN)
         try:
             columns = await connection.fetch(
@@ -375,16 +375,43 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await connection.close()
 
+        self.assertEqual(columns, [])
+        self.assertEqual(constraints, [])
+
+    async def test_native_agent_columns_are_bounded_and_preserve_legacy_rows(self) -> None:
+        connection = await asyncpg.connect(MIGRATION_DSN)
+        try:
+            columns = await connection.fetch(
+                """
+                SELECT column_name, is_nullable, column_default
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'chat_run'
+                  AND column_name IN ('agent_configuration', 'agent_trace')
+                ORDER BY column_name
+                """
+            )
+            constraints = await connection.fetch(
+                """
+                SELECT conname, pg_get_constraintdef(oid) AS definition
+                FROM pg_constraint
+                WHERE conrelid = 'public.chat_run'::regclass
+                  AND conname LIKE '%ck_chat_run_agent_%_v1'
+                ORDER BY conname
+                """
+            )
+        finally:
+            await connection.close()
+
         self.assertEqual(
             [row["column_name"] for row in columns],
-            ["workflow_configuration", "workflow_state"],
+            ["agent_configuration", "agent_trace"],
         )
-        self.assertTrue(all(row["is_nullable"] == "NO" for row in columns))
-        self.assertTrue(all("chat_workflow_v1" in row["column_default"] for row in columns))
+        self.assertEqual(columns[0]["is_nullable"], "NO")
+        self.assertEqual(columns[1]["is_nullable"], "YES")
+        self.assertIn("native_tool_calling_agent_v1", columns[0]["column_default"])
         self.assertEqual(len(constraints), 2)
-        self.assertTrue(
-            all("pg_column_size" in row["definition"] for row in constraints)
-        )
+        self.assertTrue(all("pg_column_size" in row["definition"] for row in constraints))
 
     async def test_same_kb_selector_and_deferred_active_rule(self) -> None:
         connection = await asyncpg.connect(MIGRATION_DSN)

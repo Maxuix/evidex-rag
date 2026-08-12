@@ -30,11 +30,6 @@ from rag_kb.domain import (
     ChatTerminalSuccessCommand,
     ChatTerminalWriteStatus,
     ChatSessionBusyError,
-    ChatResolvedMode,
-    ChatRouteReason,
-    ChatRouteStatus,
-    ChatWorkflowMode,
-    ChatWorkflowState,
     EmbeddingSpaceDefinition,
     ErrorCode,
     EvidenceAssessment,
@@ -56,7 +51,6 @@ from rag_kb.services.chat_delivery import ChatTerminalWatcher
 from rag_kb.services.chat_execution import (
     ChatExecutionContextLoader,
     ChatRunCoordinator,
-    ChatWorkflowStateStore,
 )
 from rag_kb.services.chat_terminal import (
     ChatFailureSettlementService,
@@ -108,8 +102,6 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
             retrieval_profile_factory=lambda _strategy, top_k, rerank_mode: (
                 exact_profile(top_k=top_k, rerank_mode=rerank_mode)
             ),
-            agent_enabled=True,
-            auto_enabled=True,
         )
 
     async def asyncTearDown(self) -> None:
@@ -376,7 +368,14 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(execution_context.query, "How should RUN-ORD-14 be handled?")
         self.assertEqual(execution_context.index_revision_id, run.index_revision_id)
         self.assertEqual(execution_context.effective_policy, run.effective_policy)
-        self.assertEqual(execution_context.retrieval_strategy, run.retrieval_strategy)
+        self.assertEqual(
+            execution_context.retrieval_strategy["profile_version"],
+            run.retrieval_strategy["profile_version"],
+        )
+        self.assertEqual(
+            execution_context.retrieval_strategy["strategy"],
+            run.retrieval_strategy["strategy"],
+        )
         self.assertEqual(execution_context.model_configuration, run.model_configuration)
         self.assertEqual(self.database.engine.pool.checkedout(), 0)
 
@@ -406,52 +405,6 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(persisted["attempt"], 1)
         self.assertEqual(persisted["claimed_by"], lease.claimed_by)
         self.assertEqual(persisted["heartbeat_at"], heartbeat_at)
-
-    async def test_auto_resolution_is_attempt_owned_and_reused(self) -> None:
-        kb = await self._create_kb("auto-resolution")
-        session = await self.chat.create_session(self.context, kb_id=kb.id, title=None)
-        run = await self.chat.create_run(
-            self.context,
-            uuid4(),
-            session_id=session.id,
-            kb_id=kb.id,
-            message="Compare the procedures.",
-            answer_style=AnswerStyle.SUMMARY,
-            insufficiency_policy=InsufficiencyPolicy.PARTIAL_ANSWER,
-            retrieval_mode="vector",
-            top_k=8,
-            workflow_mode=ChatWorkflowMode.AUTO,
-        )
-        self.assertEqual(run.workflow_configuration["requested_mode"], "auto")
-        self.assertEqual(run.workflow_state["resolved_mode"], "pending")
-
-        lease = await ChatRunCoordinator(self.factory).claim(
-            worker_id="worker-auto",
-            observed_at=datetime.now(UTC),
-            max_attempts=3,
-        )
-        context = await ChatExecutionContextLoader(self.factory).load(
-            ChatExecutionCommand(lease)
-        )
-        resolved = ChatWorkflowState(
-            resolved_mode=ChatResolvedMode.AGENT,
-            route_status=ChatRouteStatus.RESOLVED,
-            route_reason_codes=(ChatRouteReason.MULTI_VIEW_REQUIRED,),
-        )
-        store = ChatWorkflowStateStore(self.factory)
-        self.assertEqual(await store.persist_resolution(context, resolved), resolved)
-
-        competing = ChatWorkflowState(
-            resolved_mode=ChatResolvedMode.SIMPLE,
-            route_status=ChatRouteStatus.RESOLVED,
-            route_reason_codes=(ChatRouteReason.SINGLE_LOOKUP,),
-        )
-        self.assertEqual(await store.persist_resolution(context, competing), resolved)
-        stale = replace(context, lease=replace(lease, attempt=lease.attempt + 1))
-        self.assertIsNone(await store.persist_resolution(stale, competing))
-
-        authoritative = await self.chat.get_run(self.context, run.id)
-        self.assertEqual(authoritative.workflow_state, resolved.as_dict())
 
     async def test_terminal_success_is_atomic_and_lost_response_replay_is_exact(
         self,
@@ -1064,7 +1017,7 @@ def _model_configuration() -> dict[str, str]:
 
 def _model_call(request_id: str) -> ChatModelCallRecord:
     return ChatModelCallRecord(
-        operation=ChatModelOperation.ASSESS_EVIDENCE,
+        operation=ChatModelOperation.AGENT_ROUND,
         model="chat-model",
         provider_request_id=request_id,
         usage={"input_tokens": 4, "output_tokens": 2},

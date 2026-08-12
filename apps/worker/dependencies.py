@@ -26,12 +26,8 @@ from rag_kb.adapters.model_api.unconfigured import (
 from rag_kb.adapters.model_secrets.local import LocalModelSecretStore
 from rag_kb.adapters.parser.docling.parser import DoclingParser
 from rag_kb.adapters.vector_store.pgvector import PgVectorStore
-from rag_kb.answering.pipeline_steps import (
-    AdaptiveEvidenceAssessmentStep,
-    AnswerGenerationStep,
-    CosineEvidenceAssessmentStep,
-)
-from rag_kb.answering.structure_validator import AnswerStructureValidationStep
+from rag_kb.answering.agent import NativeToolCallingAgent
+from rag_kb.answering.runner import NativeAgentRunner
 from rag_kb.auth import DevelopmentAuthProvider, SingleWorkspaceAccessPolicy
 from rag_kb.config import (
     Settings,
@@ -54,7 +50,6 @@ from rag_kb.domain import (
     ParserLimits,
 )
 from rag_kb.indexing.pipeline import IndexingPipeline
-from rag_kb.memory import ConversationContextSelector, SessionQueryContextualizer
 from rag_kb.ports.files import IndexAssetStore
 from rag_kb.ports.model_api import (
     ChatModelAdapter,
@@ -62,17 +57,13 @@ from rag_kb.ports.model_api import (
     MultimodalEmbeddingAdapter,
 )
 from rag_kb.retrieval.service import RetrievalService
-from rag_kb.retrieval.agent import RetrievalAgentService
-from rag_kb.retrieval.router import AutoWorkflowRouter
-from rag_kb.scheduling.chat import ChatRunScheduler
+from rag_kb.scheduling.chat import ChatRunner, ChatRunScheduler
 from rag_kb.scheduling.indexing import IndexingJobScheduler, RetryPolicy
 from rag_kb.services.assets import IndexAssetService
 from rag_kb.services.chat_execution import (
     ChatEvidenceRetriever,
-    ChatContextualizedQueryStore,
     ChatExecutionContextLoader,
     ChatRunCoordinator,
-    ChatWorkflowStateStore,
 )
 from rag_kb.services.chat_terminal import (
     ChatFailureSettlementService,
@@ -86,8 +77,6 @@ from rag_kb.services.content import (
 from rag_kb.services.files import FileReconciliationService
 from rag_kb.uow import UnitOfWork, UnitOfWorkPurpose, execute_in_transaction
 from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWorkFactory
-from rag_kb.workflows.contracts import GraphRunner
-from rag_kb.workflows.langgraph_runner import LangGraphRunner
 
 
 @dataclass(frozen=True)
@@ -110,18 +99,11 @@ class WorkerDependencies:
     vector_store: PgVectorStore
     retrieval_service: RetrievalService
     chat_model_adapter: ChatModelAdapter
-    query_contextualizer: SessionQueryContextualizer
-    session_context_selector: ConversationContextSelector
-    evidence_assessor: CosineEvidenceAssessmentStep
-    adaptive_evidence_assessor: AdaptiveEvidenceAssessmentStep
-    retrieval_agent: RetrievalAgentService
-    workflow_router: AutoWorkflowRouter
+    agent: NativeToolCallingAgent
     visual_evidence_preparer: VisualEvidencePreparationStep
-    answer_generator: AnswerGenerationStep
-    structure_validator: AnswerStructureValidationStep
     result_persister: ChatResultPersistenceStep
     failure_settler: ChatFailureSettlementService
-    chat_runner: GraphRunner
+    chat_runner: ChatRunner
     chat_scheduler: ChatRunScheduler
     indexing_pipeline: IndexingPipeline
     indexing_scheduler: IndexingJobScheduler
@@ -219,7 +201,6 @@ def build_worker_dependencies(
             max_visual_images=chat_settings.max_visual_images,
             max_visual_image_bytes=chat_settings.max_visual_image_bytes,
             max_visual_total_bytes=chat_settings.max_visual_total_bytes,
-            structured_output_mode=chat_settings.structured_output_mode,
         )
         if chat_settings is not None
         else UnconfiguredChatModelAdapter()
@@ -309,11 +290,6 @@ def build_worker_dependencies(
         multimodal_embedding_model_resolver=dynamic_embeddings.multimodal,
         text_reranker=LocalMiniLmReranker(),
     )
-    evidence_assessor = CosineEvidenceAssessmentStep(
-        resolved_settings.retrieval.min_cosine_similarity,
-        resolved_settings.retrieval.min_rerank_score,
-        resolved_settings.retrieval.cross_modal_min_cosine_similarity,
-    )
     index_asset_service = IndexAssetService(
         unit_of_work,
         access_policy,
@@ -336,15 +312,6 @@ def build_worker_dependencies(
         if chat_delivery.preview_enabled
         else None
     )
-    answer_generator = AnswerGenerationStep(
-        chat_model_adapter,
-        preview_sink=chat_preview_sink,
-        preview_max_visible_bytes=chat_delivery.preview_max_total_bytes,
-    )
-    structure_validator = AnswerStructureValidationStep(
-        chat_model_adapter,
-        preview_sink=chat_preview_sink,
-    )
     result_persister = ChatResultPersistenceStep(unit_of_work)
     failure_settler = ChatFailureSettlementService(
         unit_of_work,
@@ -354,45 +321,23 @@ def build_worker_dependencies(
     )
     chat_coordinator = ChatRunCoordinator(unit_of_work)
     context_loader = ChatExecutionContextLoader(unit_of_work)
-    query_contextualizer = SessionQueryContextualizer(
-        chat_model_adapter,
-        ChatContextualizedQueryStore(unit_of_work),
-    )
-    session_context_selector = ConversationContextSelector()
     evidence_retriever = ChatEvidenceRetriever(retrieval_service, unit_of_work)
-    adaptive_evidence_assessor = AdaptiveEvidenceAssessmentStep(
-        resolved_settings.retrieval.min_cosine_similarity,
-        resolved_settings.retrieval.min_rerank_score,
-        resolved_settings.retrieval.cross_modal_min_cosine_similarity,
-    )
-    retrieval_agent = RetrievalAgentService(
+    agent = NativeToolCallingAgent(
         chat_model_adapter,
         evidence_retriever,
+        visual_evidence_preparer,
         min_cosine_similarity=resolved_settings.retrieval.min_cosine_similarity,
         min_rerank_score=resolved_settings.retrieval.min_rerank_score,
         cross_modal_min_cosine_similarity=(
             resolved_settings.retrieval.cross_modal_min_cosine_similarity
         ),
     )
-    workflow_router = AutoWorkflowRouter(
-        chat_model_adapter,
-        evidence_retriever,
-        ChatWorkflowStateStore(unit_of_work),
-    )
-    chat_runner = LangGraphRunner(
+    chat_runner = NativeAgentRunner(
         context_loader,
-        evidence_retriever,
-        evidence_assessor,
-        answer_generator,
-        structure_validator,
+        agent,
         result_persister,
-        visual_evidence_preparer=visual_evidence_preparer,
-        query_contextualizer=query_contextualizer,
-        retrieval_agent=retrieval_agent,
-        workflow_router=workflow_router,
-        adaptive_evidence_assessor=adaptive_evidence_assessor,
-        progress_sink=chat_preview_sink,
         deadline_seconds=poller.chat_deadline_seconds,
+        progress_sink=chat_preview_sink,
     )
     chat_scheduler = ChatRunScheduler(
         chat_coordinator,
@@ -445,15 +390,8 @@ def build_worker_dependencies(
         vector_store=vector_store,
         retrieval_service=retrieval_service,
         chat_model_adapter=chat_model_adapter,
-        query_contextualizer=query_contextualizer,
-        session_context_selector=session_context_selector,
-        evidence_assessor=evidence_assessor,
-        adaptive_evidence_assessor=adaptive_evidence_assessor,
-        retrieval_agent=retrieval_agent,
-        workflow_router=workflow_router,
+        agent=agent,
         visual_evidence_preparer=visual_evidence_preparer,
-        answer_generator=answer_generator,
-        structure_validator=structure_validator,
         result_persister=result_persister,
         failure_settler=failure_settler,
         chat_runner=chat_runner,
@@ -530,9 +468,6 @@ def _chat_model_loader(
             top_p=parameters.get("top_p", 0.9),
             sampling_top_k=parameters.get("sampling_top_k", 40),
             max_tokens=parameters.get("max_output_tokens", 4096),
-            structured_output_mode=parameters.get(
-                "structured_output_mode", "json_object"
-            ),
             reasoning_effort=parameters.get("reasoning_effort", "off"),
             thinking_enabled=parameters.get("reasoning_effort", "off") != "off",
         )

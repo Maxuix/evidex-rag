@@ -9,9 +9,6 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
-from rag_kb.domain.chat_workflow import ChatWorkflowMode, initial_chat_workflow
-
-
 class AnswerStyle(StrEnum):
     CONCISE = "concise"
     SUMMARY = "summary"
@@ -246,13 +243,15 @@ class ChatRun:
     conversation_context: dict[str, Any]
     contextualized_query: dict[str, Any] | None = None
     final_llm_context: dict[str, Any] | None = None
-    workflow_configuration: dict[str, Any] = field(
-        default_factory=lambda: initial_chat_workflow(ChatWorkflowMode.SIMPLE)[
-            0
-        ].as_dict()
+    agent_configuration: dict[str, Any] = field(
+        default_factory=lambda: {
+            "version": "native_tool_calling_agent_v1",
+            "budget": {
+                "model_rounds": 8,
+                "retrieval_calls": 6,
+                "calculation_calls": 4,
+                "evidence_refs": 20,
+            },
+        }
     )
-    workflow_state: dict[str, Any] = field(
-        default_factory=lambda: initial_chat_workflow(ChatWorkflowMode.SIMPLE)[
-            1
-        ].as_dict()
-    )
+    agent_trace: dict[str, Any] | None = None

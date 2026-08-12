@@ -6,13 +6,6 @@ from dataclasses import dataclass
 from enum import StrEnum
 from uuid import UUID
 
-from rag_kb.domain.chat_workflow import (
-    ChatResolvedMode,
-    ChatRouteReason,
-    ChatRouteStatus,
-    ChatWorkflowMode,
-    ResearchStatus,
-)
 
 
 CHAT_PREVIEW_VERSION = "chat_preview_v1"
@@ -29,7 +22,6 @@ class ChatPreviewResetReason(StrEnum):
 
 class ChatProgressStage(StrEnum):
     UNDERSTAND_QUERY = "understand_query"
-    SELECT_WORKFLOW = "select_workflow"
     RETRIEVE_EVIDENCE = "retrieve_evidence"
     ASSESS_EVIDENCE = "assess_evidence"
     PREPARE_VISUAL_EVIDENCE = "prepare_visual_evidence"
@@ -40,11 +32,10 @@ class ChatProgressStage(StrEnum):
 
 class ChatProgressActivity(StrEnum):
     LOAD_CONTEXT = "load_context"
-    CONTEXTUALIZE_QUERY = "contextualize_query"
-    ROUTE_DECISION = "route_decision"
-    SIMPLE_SEARCH = "simple_search"
-    AGENT_DECISION = "agent_decision"
-    AGENT_SEARCH = "agent_search"
+    TOOL_DECISION = "tool_decision"
+    SEARCH_KNOWLEDGE_BASE = "search_knowledge_base"
+    CALCULATE = "calculate"
+    SUBMIT_ANSWER = "submit_answer"
     RETRIEVAL_COMPLETE = "retrieval_complete"
     VERIFY_COVERAGE = "verify_coverage"
     RESEARCH_COMPLETE = "research_complete"
@@ -53,14 +44,6 @@ class ChatProgressActivity(StrEnum):
     GENERATE_ANSWER = "generate_answer"
     VALIDATE_ANSWER = "validate_answer"
     PERSIST_RESULT = "persist_result"
-
-
-class ChatProgressDecision(StrEnum):
-    SELECT_SIMPLE = "select_simple"
-    SELECT_AGENT = "select_agent"
-    SEARCH_EVIDENCE = "search_evidence"
-    CONTINUE_SEARCH = "continue_search"
-    FINISH_RESEARCH = "finish_research"
 
 
 class ChatProgressStatus(StrEnum):
@@ -77,13 +60,9 @@ class ChatProgressFacts:
     evidence_count: int | None = None
     new_evidence_count: int | None = None
     retrieval_calls: int | None = None
-    route_status: ChatRouteStatus | None = None
-    route_reason_codes: tuple[ChatRouteReason, ...] = ()
-    research_status: ResearchStatus | None = None
     covered_aspects: tuple[str, ...] = ()
     missing_aspects: tuple[str, ...] = ()
     conflict_count: int | None = None
-    decision: ChatProgressDecision | None = None
 
     def __post_init__(self) -> None:
         if self.objective is not None:
@@ -97,11 +76,6 @@ class ChatProgressFacts:
                 raise ValueError(f"{name} exceed their bound or are duplicated")
             for value in values:
                 _validate_progress_text(value, name)
-        if (
-            len(self.route_reason_codes) > MAX_PROGRESS_LIST_ITEMS
-            or len(self.route_reason_codes) != len(set(self.route_reason_codes))
-        ):
-            raise ValueError("progress route reasons are invalid")
         for name, value in (
             ("evidence_count", self.evidence_count),
             ("new_evidence_count", self.new_evidence_count),
@@ -122,8 +96,6 @@ class ChatProgressUpdate:
     activity: ChatProgressActivity
     completed_stages: tuple[ChatProgressStage, ...] = ()
     status: ChatProgressStatus = ChatProgressStatus.ACTIVE
-    requested_mode: ChatWorkflowMode | None = None
-    resolved_mode: ChatResolvedMode = ChatResolvedMode.PENDING
     facts: ChatProgressFacts = ChatProgressFacts()
 
     def __post_init__(self) -> None:

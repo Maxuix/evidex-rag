@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 from uuid import UUID
 
 from rag_kb.domain import (
@@ -13,10 +12,6 @@ from rag_kb.domain import (
     ChatProgressStage,
     ChatProgressStatus,
     ChatProgressUpdate,
-    ChatResolvedMode,
-    ChatRouteReason,
-    ChatRouteStatus,
-    ChatWorkflowMode,
 )
 from rag_kb.ports.chat_preview import ChatPreviewSink
 
@@ -34,19 +29,7 @@ class ChatProgressReporter:
         self._attempt = attempt
         self._sink = sink
         self._completed: list[ChatProgressStage] = []
-        self._requested_mode: ChatWorkflowMode | None = None
-        self._resolved_mode = ChatResolvedMode.PENDING
         self._active_stage = ChatProgressStage.UNDERSTAND_QUERY
-        self._route_status: ChatRouteStatus | None = None
-        self._route_reason_codes: tuple[ChatRouteReason, ...] = ()
-
-    def configure(
-        self,
-        requested_mode: ChatWorkflowMode,
-        resolved_mode: ChatResolvedMode = ChatResolvedMode.PENDING,
-    ) -> None:
-        self._requested_mode = requested_mode
-        self._resolved_mode = resolved_mode
 
     async def show(
         self,
@@ -61,21 +44,11 @@ class ChatProgressReporter:
                 self._completed.append(item)
         self._active_stage = stage
         visible_facts = facts or ChatProgressFacts()
-        if visible_facts.route_status is not None:
-            self._route_status = visible_facts.route_status
-            self._route_reason_codes = visible_facts.route_reason_codes
-        visible_facts = replace(
-            visible_facts,
-            route_status=self._route_status,
-            route_reason_codes=self._route_reason_codes,
-        )
         await self._emit(
             ChatProgressUpdate(
                 active_stage=stage,
                 activity=activity,
                 completed_stages=tuple(self._completed),
-                requested_mode=self._requested_mode,
-                resolved_mode=self._resolved_mode,
                 facts=visible_facts,
             )
         )
@@ -89,12 +62,7 @@ class ChatProgressReporter:
                 activity=activity,
                 completed_stages=tuple(self._completed),
                 status=ChatProgressStatus.COMPLETED,
-                requested_mode=self._requested_mode,
-                resolved_mode=self._resolved_mode,
-                facts=ChatProgressFacts(
-                    route_status=self._route_status,
-                    route_reason_codes=self._route_reason_codes,
-                ),
+                facts=ChatProgressFacts(),
             )
         )
 

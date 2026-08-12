@@ -24,6 +24,7 @@ from rag_kb.adapters.model_api.unconfigured import (
     UnconfiguredChatModelAdapter,
     UnconfiguredEmbeddingModelAdapter,
 )
+from rag_kb.answering.runner import NativeAgentRunner
 from rag_kb.adapters.model_api.langchain_embeddings import (
     LangChainEmbeddingModelAdapter,
 )
@@ -35,7 +36,6 @@ from rag_kb.config.settings import (
     provider_retry_budget_seconds,
 )
 from rag_kb.db import DatabaseProcess
-from rag_kb.workflows.langgraph_runner import LangGraphRunner
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -145,9 +145,6 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.chat_delivery.preview_flush_interval_ms, 250)
         self.assertEqual(settings.chat_delivery.preview_max_total_bytes, 65_536)
         self.assertEqual(settings.chat_delivery.preview_queue_size, 64)
-        self.assertTrue(settings.chat_workflow.agent_enabled)
-        self.assertTrue(settings.chat_workflow.auto_enabled)
-
         self.assertEqual(settings.maintenance.batch_size, 100)
         self.assertEqual(settings.maintenance.task_retention_seconds, 604_800)
         self.assertEqual(settings.model_provider.chat.temperature, 0.1)
@@ -173,34 +170,6 @@ class SettingsTests(unittest.TestCase):
                     Path(directory),
                     observability={"log_directory": ".runtime/logs"},
                 )
-
-    def test_auto_workflow_requires_agent_capability(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            with self.assertRaisesRegex(
-                ValidationError, "Auto workflow requires Agent capability"
-            ):
-                build_settings(
-                    Path(directory),
-                    chat_workflow={
-                        "agent_enabled": False,
-                        "auto_enabled": True,
-                    },
-                )
-
-    def test_removed_configuration_is_rejected(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            for group, override in (
-                ("session_context", {"max_turns": 7}),
-                ("file_admission", {"max_bytes": 1}),
-                ("parser", {"max_file_size": 1}),
-                ("vector_store", {"hnsw_enabled": True}),
-                ("delivery_reliability", {"outbox_delivery_enabled": True}),
-            ):
-                with self.subTest(group=group), self.assertRaises(
-                    ValidationError
-                ):
-                    build_settings(root, **{group: override})
 
     def test_maintenance_retention_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -251,26 +220,6 @@ class SettingsTests(unittest.TestCase):
                         "chat_delivery": {"preview_enabled": True},
                     },
                 )
-
-    def test_removed_lane_tuning_is_rejected(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            payload = valid_payload(Path(directory))
-            for field in (
-                "chat_concurrency",
-                "indexing_concurrency",
-                "chat_weight",
-                "indexing_weight",
-                "aging_seconds",
-                "chat_start_target_seconds",
-            ):
-                with self.subTest(field=field), self.assertRaises(ValidationError):
-                    Settings(
-                        _env_file=None,
-                        **{
-                            **payload,
-                            "job_poller": {field: 1},
-                        },
-                    )
 
     def test_worker_heartbeat_retry_and_deadline_budget_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -346,19 +295,6 @@ class SettingsTests(unittest.TestCase):
             settings.model_provider.embedding.model,
             "qwen3.7-text-embedding",
         )
-
-    def test_removed_ai_implementation_switches_fail_closed(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            for override in (
-                {"model_adapter_backend": "langchain"},
-                {"chat_workflow_backend": "langgraph"},
-                {"workflow": {"runner": "direct"}},
-            ):
-                with self.subTest(override=override), self.assertRaises(
-                    ValidationError
-                ):
-                    build_settings(root, **override)
 
     def test_checked_in_environment_example_parses(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
@@ -550,14 +486,6 @@ class SettingsTests(unittest.TestCase):
                 boundary_accepted.job_poller.chat_deadline_seconds,
                 301.001,
             )
-
-    def test_example_environment_uses_universal_chat_deadline(self) -> None:
-        example = (PROJECT_ROOT / ".env.example").read_text(encoding="utf-8")
-        self.assertIn(
-            "RAG_KB__JOB_POLLER__CHAT_DEADLINE_SECONDS=420",
-            example,
-        )
-
 
     def test_fixed_embedding_space_rejects_in_place_changes(self) -> None:
         changes = {
@@ -800,14 +728,7 @@ class StartupValidationTests(unittest.TestCase):
                     worker.chat_preview_sink,
                     PgNotifyPreviewSink,
                 )
-                self.assertIs(
-                    worker.answer_generator._preview_sink,
-                    worker.chat_preview_sink,
-                )
-                self.assertIs(
-                    worker.structure_validator._preview_sink,
-                    worker.chat_preview_sink,
-                )
+                self.assertIs(worker.chat_runner._progress_sink, worker.chat_preview_sink)
             finally:
                 asyncio.run(api.close())
                 asyncio.run(worker.close())
@@ -830,9 +751,8 @@ class StartupValidationTests(unittest.TestCase):
                 worker.embedding_provider,
                 LangChainEmbeddingModelAdapter,
             )
-            self.assertIsInstance(worker.chat_runner, LangGraphRunner)
+            self.assertIsInstance(worker.chat_runner, NativeAgentRunner)
             self.assertIs(worker.chat_scheduler._runner, worker.chat_runner)
-            self.assertIsNone(worker.chat_runner._graph.checkpointer)
             asyncio.run(worker.close())
 
     def test_missing_storage_fails_without_provisioning(self) -> None:
@@ -876,14 +796,6 @@ class StartupValidationTests(unittest.TestCase):
                 api.retrieval_service.hybrid_request_enabled(),
             )
             self.assertEqual(
-                api.chat_service._agent_enabled,
-                settings.chat_workflow.agent_enabled,
-            )
-            self.assertEqual(
-                api.chat_service._auto_enabled,
-                settings.chat_workflow.auto_enabled,
-            )
-            self.assertEqual(
                 worker.retrieval_service.hybrid_request_enabled(),
                 settings.retrieval.hybrid_enabled,
             )
@@ -895,10 +807,7 @@ class StartupValidationTests(unittest.TestCase):
                 worker.unit_of_work().workspace_id,
                 worker_context.workspace_id,
             )
-            self.assertEqual(
-                worker.evidence_assessor._min_cosine_similarity,
-                settings.retrieval.min_cosine_similarity,
-            )
+            self.assertEqual(worker.agent._eligibility.min_cosine_similarity, settings.retrieval.min_cosine_similarity)
             self.assertEqual(
                 api.retrieval_service._deadline_seconds,
                 settings.retrieval.deadline_seconds,
@@ -907,14 +816,7 @@ class StartupValidationTests(unittest.TestCase):
                 worker.retrieval_service._deadline_seconds,
                 settings.retrieval.deadline_seconds,
             )
-            self.assertIs(
-                worker.answer_generator._model,
-                worker.chat_model_adapter,
-            )
-            self.assertIs(
-                worker.structure_validator._model,
-                worker.chat_model_adapter,
-            )
+            self.assertIs(worker.agent._model, worker.chat_model_adapter)
             self.assertIs(
                 worker.result_persister._unit_of_work,
                 worker.unit_of_work,
@@ -923,23 +825,12 @@ class StartupValidationTests(unittest.TestCase):
                 worker.failure_settler._unit_of_work,
                 worker.unit_of_work,
             )
-            self.assertIs(
-                worker.chat_runner._evidence_retriever._retrieval,
-                worker.retrieval_service,
-            )
-            self.assertIs(
-                worker.chat_runner._retrieval_agent,
-                worker.retrieval_agent,
-            )
-            self.assertIs(
-                worker.chat_runner._workflow_router,
-                worker.workflow_router,
-            )
+            self.assertIs(worker.agent._retriever._retrieval, worker.retrieval_service)
             self.assertIs(
                 worker.chat_scheduler._runner,
                 worker.chat_runner,
             )
-            self.assertIsInstance(worker.chat_runner, LangGraphRunner)
+            self.assertIsInstance(worker.chat_runner, NativeAgentRunner)
             self.assertIsInstance(
                 worker.chat_model_adapter,
                 RoutingChatModelAdapter,

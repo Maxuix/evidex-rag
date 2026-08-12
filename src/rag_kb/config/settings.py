@@ -240,17 +240,6 @@ class ChatDeliverySettings(StrictSettingsModel):
     preview_queue_size: Annotated[int, Field(ge=8, le=256)] = 64
 
 
-class ChatWorkflowSettings(StrictSettingsModel):
-    agent_enabled: bool = True
-    auto_enabled: bool = True
-
-    @model_validator(mode="after")
-    def require_agent_for_auto(self) -> Self:
-        if self.auto_enabled and not self.agent_enabled:
-            raise ValueError("Auto workflow requires Agent capability")
-        return self
-
-
 class FileStoreSettings(StrictSettingsModel):
     root_path: Path = Path("/var/lib/rag-kb/sources")
     staging_path: Path = Path("/var/lib/rag-kb/sources/staging")
@@ -506,7 +495,6 @@ class Settings(BaseSettings):
     database: DatabaseSettings
     job_poller: JobPollerSettings = Field(default_factory=JobPollerSettings)
     chat_delivery: ChatDeliverySettings = Field(default_factory=ChatDeliverySettings)
-    chat_workflow: ChatWorkflowSettings = Field(default_factory=ChatWorkflowSettings)
     file_store: FileStoreSettings = Field(default_factory=FileStoreSettings)
     maintenance: MaintenanceSettings = Field(default_factory=MaintenanceSettings)
     parser: ParserSettings = Field(default_factory=ParserSettings)

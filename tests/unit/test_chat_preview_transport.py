@@ -17,15 +17,10 @@ from rag_kb.adapters.chat_preview.pg_notify import (
 )
 from rag_kb.domain import (
     ChatProgressActivity,
-    ChatProgressDecision,
     ChatProgressFacts,
     ChatProgressSnapshot,
     ChatProgressStage,
     ChatProgressUpdate,
-    ChatResolvedMode,
-    ChatRouteReason,
-    ChatRouteStatus,
-    ChatWorkflowMode,
     ChatPreviewDelta,
     ChatPreviewReset,
     ChatPreviewResetReason,
@@ -180,20 +175,14 @@ class ChatPreviewPayloadTests(unittest.TestCase):
             4,
             ChatProgressUpdate(
                 active_stage=ChatProgressStage.RETRIEVE_EVIDENCE,
-                activity=ChatProgressActivity.AGENT_SEARCH,
+                activity=ChatProgressActivity.SEARCH_KNOWLEDGE_BASE,
                 completed_stages=(
                     ChatProgressStage.UNDERSTAND_QUERY,
-                    ChatProgressStage.SELECT_WORKFLOW,
                 ),
-                requested_mode=ChatWorkflowMode.AUTO,
-                resolved_mode=ChatResolvedMode.AGENT,
                 facts=ChatProgressFacts(
                     objective="查找负责人与期限",
                     queries=("负责人", "截止日期"),
                     evidence_count=3,
-                    route_status=ChatRouteStatus.RESOLVED,
-                    route_reason_codes=(ChatRouteReason.MULTI_VIEW_REQUIRED,),
-                    decision=ChatProgressDecision.SEARCH_EVIDENCE,
                 ),
             ),
         )
@@ -211,7 +200,7 @@ class ChatPreviewPayloadTests(unittest.TestCase):
             1,
             ChatProgressUpdate(
                 ChatProgressStage.RETRIEVE_EVIDENCE,
-                ChatProgressActivity.AGENT_DECISION,
+                ChatProgressActivity.TOOL_DECISION,
             ),
         )
         payload = json.loads(serialize_preview_event(event))
@@ -267,8 +256,8 @@ class ChatPreviewTransportTests(unittest.IsolatedAsyncioTestCase):
             ChatProgressActivity.LOAD_CONTEXT,
         )
         second = ChatProgressUpdate(
-            ChatProgressStage.SELECT_WORKFLOW,
-            ChatProgressActivity.ROUTE_DECISION,
+            ChatProgressStage.RETRIEVE_EVIDENCE,
+            ChatProgressActivity.TOOL_DECISION,
             completed_stages=(ChatProgressStage.UNDERSTAND_QUERY,),
         )
         try:

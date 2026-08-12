@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
+import hashlib
 from pathlib import Path
+from uuid import uuid4
 
 from apps.model_asset_runtime import (
     assemble_model_asset_runtime,
@@ -27,7 +30,6 @@ from rag_kb.adapters.model_api.multimodal_embeddings import (
 )
 from rag_kb.adapters.model_secrets.local import LocalModelSecretStore
 from rag_kb.adapters.vector_store.pgvector import PgVectorStore
-from rag_kb.answering.wire_schemas import WireRetrievalAgentActionV2
 from rag_kb.auth import DevelopmentAuthProvider, SingleWorkspaceAccessPolicy
 from rag_kb.config import (
     Settings,
@@ -45,7 +47,8 @@ from rag_kb.domain import (
     AdmissionLimits,
     ChatModelMessage,
     ChatModelRequest,
-    ChatOutputSchema,
+    ChatModelVisualContent,
+    ChatToolDefinition,
     EmbeddingDimensionRequestMode,
     EmbeddingDimensionSelectionSource,
     EmbeddingInputCapability,
@@ -250,8 +253,6 @@ def build_api_dependencies(
         ),
         default_rerank=resolved_settings.retrieval.rerank_enabled,
         hybrid_enabled=retrieval_service.hybrid_request_enabled(),
-        agent_enabled=resolved_settings.chat_workflow.agent_enabled,
-        auto_enabled=resolved_settings.chat_workflow.auto_enabled,
         retrieval_profile_factory=lambda strategy, top_k, rerank_mode: (
             retrieval_service.execution_profile(
                 strategy=strategy,
@@ -340,41 +341,102 @@ async def _validate_model_profile(
             top_p=parameters.get("top_p", 0.9),
             sampling_top_k=parameters.get("sampling_top_k", 40),
             max_tokens=parameters.get("max_output_tokens", 4096),
-            structured_output_mode=parameters.get(
-                "structured_output_mode", "json_object"
-            ),
             reasoning_effort=parameters.get("reasoning_effort", "off"),
         )
-        response = await adapter.complete(
+        search_tool = ChatToolDefinition(
+            name="search_knowledge_base",
+            description="Return bounded knowledge-base evidence.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "queries": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 1,
+                        "maxItems": 3,
+                    }
+                },
+                "required": ["queries"],
+                "additionalProperties": False,
+            },
+        )
+        submit_tool = ChatToolDefinition(
+            name="submit_answer",
+            description="Submit the final claim payload.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "outcome": {"type": "string", "enum": ["refused"]},
+                    "claims": {"type": "array", "maxItems": 0},
+                    "unanswered": {"type": "array", "maxItems": 0},
+                },
+                "required": ["outcome", "claims", "unanswered"],
+                "additionalProperties": False,
+            },
+        )
+        first = await adapter.complete(
             ChatModelRequest(
                 messages=(
                     ChatModelMessage(
                         "system",
-                        "Return only the exact JSON object supplied by the user, "
-                        "with no markdown or additional fields.",
+                        "Call search_knowledge_base exactly once with the query validation.",
                     ),
-                    ChatModelMessage(
-                        "user",
-                        '{"version":"retrieval_agent_action_v2",'
-                        '"action":"search","objective":"validation probe",'
-                        '"queries":[{"query":"validation",'
-                        '"based_on_observation_ids":[]}],'
-                        '"proposed_reason":null,'
-                        '"selected_evidence_keys":[],"calculation":null}',
-                    ),
+                    ChatModelMessage("user", "Validate native tool calling."),
                 ),
-                output_schema=ChatOutputSchema.RETRIEVAL_AGENT_ACTION_V1,
+                tools=(search_tool, submit_tool),
+                tool_choice="search_knowledge_base",
                 max_output_tokens=768,
                 thinking_enabled=False,
             )
         )
-        try:
-            WireRetrievalAgentActionV2.model_validate_json(response.content)
-        except ValueError as error:
-            raise ModelProfileValidationError(
-                "provider_validation_failed"
-            ) from error
-        if response.model != revision.model:
+        if (
+            first.model != revision.model
+            or len(first.tool_calls) != 1
+            or first.tool_calls[0].name != "search_knowledge_base"
+        ):
+            raise ModelProfileValidationError("provider_validation_failed")
+        png = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwC"
+            "AAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+        )
+        call = first.tool_calls[0]
+        second = await adapter.complete(
+            ChatModelRequest(
+                messages=(
+                    ChatModelMessage("user", "Validate native tool calling."),
+                    ChatModelMessage("assistant", first.content, tool_calls=(call,)),
+                    ChatModelMessage(
+                        "tool",
+                        '{"status":"ok","evidence_refs":["ev_validation"]}',
+                        tool_call_id=call.id,
+                    ),
+                    ChatModelMessage(
+                        "evidence",
+                        "The attached server evidence is bound to ev_validation.",
+                        visual_content=(
+                            ChatModelVisualContent(
+                                citation_ids=("cite_1",),
+                                asset_id=uuid4(),
+                                media_type="image/png",
+                                checksum_sha256=hashlib.sha256(png).hexdigest(),
+                                content=png,
+                                width=1,
+                                height=1,
+                            ),
+                        ),
+                    ),
+                ),
+                tools=(search_tool, submit_tool),
+                tool_choice="submit_answer",
+                max_output_tokens=768,
+                thinking_enabled=False,
+            )
+        )
+        if (
+            second.model != revision.model
+            or len(second.tool_calls) != 1
+            or second.tool_calls[0].name != "submit_answer"
+        ):
             raise ModelProfileValidationError("provider_validation_failed")
         return None
 

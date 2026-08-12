@@ -9,12 +9,10 @@ from uuid import UUID
 from rag_kb.auth import AccessPolicy, AuthContext
 from rag_kb.domain import (
     AnswerStyle,
-    CHAT_WORKFLOW_VERSION,
     ChatMessage,
     ChatRun,
     ChatSession,
     ChatSessionBusyError,
-    ChatWorkflowMode,
     ContextualizedQuery,
     ErrorCode,
     ModelKind,
@@ -33,7 +31,6 @@ from rag_kb.domain import (
     RerankMode,
     RetrievalStrategy,
     canonical_request_hash,
-    initial_chat_workflow,
     resolve_p1_policy,
 )
 from rag_kb.retrieval.profile import RetrievalExecutionProfile
@@ -60,8 +57,6 @@ class ChatService:
         model_configuration: dict[str, Any],
         default_rerank: bool = False,
         hybrid_enabled: bool = False,
-        agent_enabled: bool = False,
-        auto_enabled: bool = False,
         retrieval_profile_factory: Callable[
             [RetrievalStrategy, int, RerankMode], RetrievalExecutionProfile
         ],
@@ -79,8 +74,6 @@ class ChatService:
             RerankMode.CLASSIC if default_rerank else RerankMode.NONE
         )
         self._hybrid_enabled = hybrid_enabled
-        self._agent_enabled = agent_enabled
-        self._auto_enabled = auto_enabled
         self._retrieval_profile_factory = retrieval_profile_factory
         if (
             context_strategy != "recent_completed_turns_v1"
@@ -95,23 +88,6 @@ class ChatService:
             tokenizer=context_tokenizer,
         )
         self._context_max_turns = context_max_turns
-
-    def workflow_capabilities_snapshot(self) -> dict[str, Any]:
-        return {
-            "version": CHAT_WORKFLOW_VERSION,
-            "default_mode": ChatWorkflowMode.SIMPLE.value,
-            "modes": (
-                {"mode": ChatWorkflowMode.SIMPLE.value, "enabled": True},
-                {
-                    "mode": ChatWorkflowMode.AGENT.value,
-                    "enabled": self._agent_enabled,
-                },
-                {
-                    "mode": ChatWorkflowMode.AUTO.value,
-                    "enabled": self._auto_enabled,
-                },
-            ),
-        }
 
     async def create_session(
         self,
@@ -220,20 +196,9 @@ class ChatService:
         retrieval_mode: str,
         top_k: int,
         rerank_mode: RerankMode | None = None,
-        workflow_mode: ChatWorkflowMode = ChatWorkflowMode.SIMPLE,
         model_profile_revision_id: UUID | None = None,
     ) -> ChatRun:
         self._authorize(context)
-        if workflow_mode is ChatWorkflowMode.AGENT and not self._agent_enabled:
-            raise RetrievalExecutionError(
-                ErrorCode.CAPABILITY_NOT_ENABLED,
-                diagnostic={"capability": "chat_agent"},
-            )
-        if workflow_mode is ChatWorkflowMode.AUTO and not self._auto_enabled:
-            raise RetrievalExecutionError(
-                ErrorCode.CAPABILITY_NOT_ENABLED,
-                diagnostic={"capability": "chat_auto"},
-            )
         if retrieval_mode not in {"vector", "hybrid"}:
             raise ResourceStateConflictError("retrieval mode is unsupported")
         if retrieval_mode == "hybrid" and not self._hybrid_enabled:
@@ -249,14 +214,6 @@ class ChatService:
         if retrieval_mode == "hybrid" and resolved_rerank_mode is RerankMode.NONE:
             raise ResourceStateConflictError(
                 "hybrid retrieval requires reranking"
-            )
-        if (
-            resolved_rerank_mode is RerankMode.LOCAL_MINILM_V1
-            and workflow_mode is not ChatWorkflowMode.SIMPLE
-        ):
-            raise RetrievalExecutionError(
-                ErrorCode.CAPABILITY_NOT_ENABLED,
-                diagnostic={"capability": "local_reranker_simple_only"},
             )
         if (
             resolved_rerank_mode is RerankMode.LOCAL_MINILM_V1
@@ -293,16 +250,12 @@ class ChatService:
         retrieval_strategy = self._retrieval_profile_factory(
             strategy, top_k, resolved_rerank_mode
         ).as_dict()
-        workflow_configuration, workflow_state = initial_chat_workflow(
-            workflow_mode
-        )
         request_hash = canonical_request_hash(
             {
                 "session_id": str(session_id),
                 "knowledge_base_id": str(kb_id),
                 "message": normalized_message,
                 "answer_policy": requested_policy,
-                "workflow": {"mode": workflow_mode.value},
                 "retrieval": requested_retrieval,
                 "model_profile_revision_id": (
                     str(model_profile_revision_id)
@@ -388,8 +341,6 @@ class ChatService:
                 effective_policy=effective_policy,
                 retrieval_strategy=retrieval_strategy_snapshot,
                 model_configuration=model_configuration,
-                workflow_configuration=workflow_configuration.as_dict(),
-                workflow_state=workflow_state.as_dict(),
                 conversation_context=serialize_conversation_context(
                     conversation_context
                 ),

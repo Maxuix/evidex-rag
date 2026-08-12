@@ -30,8 +30,8 @@ bottom-right model settings in Web Chat to add, validate, and select Chat and
 Embedding models. The commented `MODEL_PROVIDER` example is only an optional
 fallback for historical runs and Embedding Spaces.
 
-Chat model integration defaults to LangChain and the fixed evidence-only chat
-workflow defaults to a checkpoint-free LangGraph `StateGraph`. PostgreSQL
+Chat model integration uses the LangChain adapter, and the single evidence-only
+Chat path is a bounded native tool-calling Agent loop. PostgreSQL
 `ChatRun` remains the durable execution state, while the existing pgvector and
 embedding adapters remain responsible for indexing and retrieval. These
 implementations have no runtime rollback switches; strict configuration rejects
@@ -39,13 +39,13 @@ the retired backend keys. See the
 [local development guide](docs/release/local-development-guide.md) for the
 supported settings.
 
-The checked-in local development profile explicitly enables Chat answer
-preview with `RAG_KB__CHAT_DELIVERY__PREVIEW_ENABLED=true`; the Settings
-fallback remains disabled for deployments that do not opt in. Preview is
-ephemeral, unvalidated plain text sent before the authoritative terminal
-answer. It is not replayed or persisted, may be lost, and uses one additional
-PostgreSQL connection in each of the API and Worker processes. The UI always
-labels it as unvalidated and replaces it with the committed answer.
+The checked-in local development profile explicitly enables best-effort live
+Agent progress with the historically named
+`RAG_KB__CHAT_DELIVERY__PREVIEW_ENABLED=true`; the Settings default remains
+disabled for deployments that do not opt in. Progress is content-safe,
+ephemeral, and non-replayed; the authoritative answer still comes only from the
+terminal ChatRun. Enabling it uses one additional PostgreSQL connection in each
+of the API and Worker processes.
 
 Exact-vector retrieval remains the default. To evaluate the optional hybrid
 path, explicitly set `RAG_KB__RETRIEVAL__HYBRID_ENABLED=true`; normal indexing
@@ -62,6 +62,11 @@ PYTHONPATH=src:. .venv/bin/python tools/smoke_local.py
 
 These are the default project checks. No quality, security, load, recovery,
 compatibility, or release matrix is part of the normal workflow.
+The suite is intentionally layered: basic tests protect import and architecture
+boundaries, unit/contract tests protect behavior and public schemas, and
+database integration tests own migration and catalog invariants. Redundant
+source-shape, ORM inventory, retired-setting, and example-file snapshot tests
+are not kept as parallel gates.
 
 ## Useful Commands
 
@@ -95,6 +100,8 @@ configuration, sample import, and troubleshooting.
 ## Project Documentation
 
 - [Current architecture and local-first boundaries](docs/Enterprise-knowledge-base-design.md)
+- [Architecture detail index](docs/architecture/README.md)
+- [Native Tool-Calling Agent](docs/architecture/native-tool-calling-agent.md)
 - [Current execution tracker](docs/implementation-plans/EXECUTION-TRACKER.md)
 - [Implementation-plan workflow and template](docs/implementation-plans/README.md)
 

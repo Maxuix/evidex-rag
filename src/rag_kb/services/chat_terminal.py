@@ -15,10 +15,8 @@ from rag_kb.domain import (
     ChatTerminalSuccessCommand,
     ChatTerminalWriteStatus,
     ErrorCode,
-    ChatWorkflowState,
-    hydrate_chat_workflow_state,
 )
-from rag_kb.retrieval.agent import WORKFLOW_STATE_ARTIFACT
+from rag_kb.answering.agent import AGENT_TRACE_ARTIFACT
 from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, execute_in_transaction
 
 
@@ -62,7 +60,7 @@ class ChatResultPersistenceStep:
             visual_image_count=len(answering.visual_content),
             visual_total_bytes=answering.visual_total_bytes,
             final_llm_context=_final_llm_context(state),
-            workflow_state=_workflow_state(state),
+            agent_trace=_agent_trace(state),
         )
 
         async def persist(uow: UnitOfWork) -> ChatTerminalWriteStatus:
@@ -89,25 +87,18 @@ class ChatResultPersistenceStep:
         return state
 
 
-def _workflow_state(state: ChatPipelineState) -> dict[str, Any]:
-    value = state.artifacts.get(WORKFLOW_STATE_ARTIFACT)
+def _agent_trace(state: ChatPipelineState) -> dict[str, Any] | None:
+    value = state.artifacts.get(AGENT_TRACE_ARTIFACT)
     if value is None:
-        assert state.context is not None
-        try:
-            value = hydrate_chat_workflow_state(state.context.workflow_state)
-        except (TypeError, ValueError) as error:
-            raise ChatPipelineExecutionError(
-                ErrorCode.CHAT_CONTEXT_INVALID,
-                phase=ChatPipelinePhase.PERSIST_RESULT,
-                diagnostic={"check": "workflow_state"},
-            ) from error
-    if not isinstance(value, ChatWorkflowState):
+        return None
+    as_dict = getattr(value, "as_dict", None)
+    if not callable(as_dict):
         raise ChatPipelineExecutionError(
             ErrorCode.CHAT_CONTEXT_INVALID,
             phase=ChatPipelinePhase.PERSIST_RESULT,
-            diagnostic={"check": "workflow_state"},
+            diagnostic={"check": "agent_trace"},
         )
-    return value.as_dict()
+    return as_dict()
 
 
 class ChatFailureSettlementService:
