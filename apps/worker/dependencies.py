@@ -321,7 +321,7 @@ def build_worker_dependencies(
     )
     chat_coordinator = ChatRunCoordinator(unit_of_work)
     context_loader = ChatExecutionContextLoader(unit_of_work)
-    evidence_retriever = ChatEvidenceRetriever(retrieval_service, unit_of_work)
+    evidence_retriever = ChatEvidenceRetriever(retrieval_service)
     agent = NativeToolCallingAgent(
         chat_model_adapter,
         evidence_retriever,

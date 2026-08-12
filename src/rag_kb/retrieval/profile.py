@@ -155,13 +155,12 @@ def parse_retrieval_snapshot(
         "top_k",
         "rerank_mode",
     }
-    metadata_fields = {"document_scope"}
     snapshot_fields = set(value)
     legacy = legacy_fields <= snapshot_fields and not (
-        snapshot_fields - legacy_fields - metadata_fields
+        snapshot_fields - legacy_fields
     )
     current = current_fields <= snapshot_fields and not (
-        snapshot_fields - current_fields - metadata_fields
+        snapshot_fields - current_fields
     )
     if not legacy and not current:
         raise ValueError("retrieval snapshot fields are invalid")

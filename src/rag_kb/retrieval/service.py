@@ -434,7 +434,6 @@ class RetrievalService:
                 else None
             ),
             rerank_mode=request.rerank_mode,
-            document_ids=request.document_ids,
         )
         embedding_provider, cross_provider = await self._embedding_providers(plan)
         multimodal = cross_provider is not None
@@ -463,7 +462,6 @@ class RetrievalService:
                     if plan.rerank
                     else RerankMode.CLASSIC
                 ),
-                document_ids=plan.document_ids,
             )
             result, cross_result = await _gather_cancel_on_error(
                 self._search_text(plan, query_embedding, embedding_provider),
@@ -593,7 +591,6 @@ class RetrievalService:
             top_k=request.top_k,
             candidate_count=dense_count,
             rerank_mode=request.rerank_mode,
-            document_ids=request.document_ids,
         )
         embedding_provider, cross_provider = await self._embedding_providers(plan)
         multimodal = cross_provider is not None
@@ -1500,11 +1497,11 @@ class RetrievalService:
                 diagnostic={"check": "local_reranker_inference"},
             ) from error
         score_by_id = {item.index_chunk_id: item for item in scores}
-        document_ids = {item.index_chunk_id for item in documents}
+        chunk_ids = {item.index_chunk_id for item in documents}
         if (
             len(scores) != len(documents)
             or len(score_by_id) != len(scores)
-            or set(score_by_id) != document_ids
+            or set(score_by_id) != chunk_ids
         ):
             raise RetrievalExecutionError(
                 ErrorCode.LOCAL_RERANKER_UNAVAILABLE,
@@ -1569,10 +1566,6 @@ class RetrievalService:
                 or hit.build_status != "ready"
                 or hit.serving_status != "serving"
                 or not hit.is_current_serving_version
-                or (
-                    plan.document_ids
-                    and hit.document_id not in plan.document_ids
-                )
             ):
                 raise RetrievalExecutionError(
                     ErrorCode.INTERNAL_SERVER_ERROR,
@@ -1675,10 +1668,6 @@ class RetrievalService:
                 or hit.serving_status != "serving"
                 or not hit.is_current_serving_version
                 or hit.lexical_rank is None
-                or (
-                    plan.document_ids
-                    and hit.document_id not in plan.document_ids
-                )
             ):
                 raise RetrievalExecutionError(
                     ErrorCode.INTERNAL_SERVER_ERROR,

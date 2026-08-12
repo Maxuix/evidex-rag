@@ -18,7 +18,6 @@ from rag_kb.domain import (
     EvidenceScoreKind,
     RetrievalStrategy,
 )
-from rag_kb.services.chat_execution import RuntimeDocumentScope
 from rag_kb.services.chat_visuals import VisualEvidencePreparationStep
 
 
@@ -41,22 +40,17 @@ class _Model:
 
 
 class _Retriever:
-    def __init__(self, pack: EvidencePack, *, scope: RuntimeDocumentScope | None = None) -> None:
+    def __init__(self, pack: EvidencePack) -> None:
         self.pack = pack
-        self.scope = scope or RuntimeDocumentScope(status="all")
         self.queries = []
 
-    async def load_document_scope(self, context):
-        del context
-        return self.scope
-
-    async def retrieve_query(self, context, query, *, top_k_override=None, document_ids=()):
-        del context, top_k_override, document_ids
+    async def retrieve_query(self, context, query, *, top_k_override=None):
+        del context, top_k_override
         self.queries.append(query)
         return self.pack
 
 
-def _context(*, document_id=None) -> ChatExecutionContext:
+def _context() -> ChatExecutionContext:
     run_id = uuid4()
     workspace_id = uuid4()
     retrieval = {
@@ -65,11 +59,6 @@ def _context(*, document_id=None) -> ChatExecutionContext:
         "top_k": 3,
         "rerank_mode": "none",
     }
-    if document_id is not None:
-        retrieval["document_scope"] = {
-            "status": "resolved",
-            "resolved": [{"document_id": str(document_id)}],
-        }
     return ChatExecutionContext(
         lease=ChatRunLease(run_id, workspace_id, "worker", 1, datetime.now(UTC)),
         run_id=run_id,
@@ -232,6 +221,40 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(model.requests[-1].tool_choice, "submit_answer")
         self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.REFUSED)
         self.assertEqual(state.answering.rendered.citations, ())
+
+    async def test_query_budget_rejects_a_batch_before_any_retrieval(self) -> None:
+        context = _context()
+        budget = ChatAgentBudget(
+            model_rounds=2,
+            retrieval_calls=2,
+            calculation_calls=0,
+        )
+        context = replace(
+            context,
+            agent_configuration={
+                "version": "native_tool_calling_agent_v1",
+                "budget": budget.as_dict(),
+            },
+        )
+        retriever = _Retriever(_pack(context))
+        model = _Model(
+            ChatToolCall(
+                "search-1",
+                "search_knowledge_base",
+                {"queries": ["one", "two", "three"]},
+            ),
+            ChatToolCall(
+                "submit-1",
+                "submit_answer",
+                {"outcome": "refused", "claims": [], "unanswered": []},
+            ),
+        )
+
+        state = await _agent(model, retriever, budget=budget).run(context)
+
+        self.assertEqual(retriever.queries, [])
+        self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.REFUSED)
+        self.assertEqual(state.artifacts[AGENT_TRACE_ARTIFACT].retrieval_calls, 0)
 
 
 if __name__ == "__main__":

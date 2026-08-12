@@ -456,29 +456,7 @@ def score_complex_case(
     )
     status_ok = run.get("status") == "completed"
     trace = agent.get("trace") if isinstance(agent, dict) else None
-    usage = trace.get("usage") if isinstance(trace, dict) else None
     agent_outcome = trace.get("outcome") if isinstance(trace, dict) else None
-    complete_scan_count = (
-        usage.get("complete_scan_document_count", 0)
-        if isinstance(usage, dict)
-        else 0
-    )
-    if (
-        isinstance(complete_scan_count, bool)
-        or not isinstance(complete_scan_count, int)
-        or complete_scan_count < 0
-    ):
-        complete_scan_count = 0
-    requires_complete_scan = any(
-        bool(aspect.get("requires_complete_scan"))
-        for aspect in case.get("aspects", ())
-        if isinstance(aspect, dict)
-    )
-    not_mentioned_without_complete_scan = bool(
-        requires_complete_scan
-        and _contains_not_mentioned(answer)
-        and complete_scan_count == 0
-    )
     coverage = (
         len(required_documents & cited_documents) / len(required_documents)
         if required_documents
@@ -488,7 +466,6 @@ def score_complex_case(
     answered_precision_ok = (
         coverage == 1.0
         and not forbidden
-        and not not_mentioned_without_complete_scan
         if agent_outcome == "answered"
         else None
     )
@@ -498,7 +475,6 @@ def score_complex_case(
         and all_aspects
         and coverage == 1.0
         and not forbidden
-        and not not_mentioned_without_complete_scan
     )
     return {
         "strict_correct": strict,
@@ -516,7 +492,6 @@ def score_complex_case(
         "forbidden_citation_document_ids": forbidden,
         "agent_outcome": agent_outcome,
         "answered_precision_ok": answered_precision_ok,
-        "not_mentioned_without_complete_scan": not_mentioned_without_complete_scan,
         "evaluation_group": case.get("evaluation_group", "evidence_only"),
     }
 
@@ -574,10 +549,6 @@ def summarize_results(results: Iterable[dict[str, Any]]) -> dict[str, Any]:
         ),
         "scope_outside_reference_cases": sum(
             bool(item.get("score", {}).get("forbidden_citation_document_ids"))
-            for item in values
-        ),
-        "not_mentioned_without_complete_scan_cases": sum(
-            bool(item.get("score", {}).get("not_mentioned_without_complete_scan"))
             for item in values
         ),
         "chat_run_retry_cases": sum(_has_chat_run_retry(item) for item in values),
@@ -638,14 +609,6 @@ def _extract_decimal_values(text: str) -> tuple[Decimal, ...]:
             values.append(value)
         values.append(value)
     return tuple(values)
-
-
-def _contains_not_mentioned(value: str) -> bool:
-    normalized = value.casefold().replace("-", "_")
-    return any(
-        marker in normalized
-        for marker in ("not_mentioned", "not mentioned", "未提及", "未提到")
-    )
 
 
 def _attempts(value: Mapping[str, Any]) -> list[Mapping[str, Any]]:

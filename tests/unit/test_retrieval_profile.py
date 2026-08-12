@@ -67,20 +67,3 @@ class RetrievalExecutionProfileTests(unittest.TestCase):
                 (KeyError, ValueError)
             ):
                 parse_retrieval_snapshot(snapshot)
-
-    def test_document_scope_metadata_does_not_break_snapshot_parsing(self) -> None:
-        snapshot = {
-            **exact_profile(top_k=7).as_dict(),
-            "document_scope": {
-                "status": "resolved",
-                "resolved": [
-                    {"document_id": "00000000-0000-0000-0000-000000000001"}
-                ],
-            },
-        }
-
-        strategy, top_k, rerank_mode = parse_retrieval_snapshot(snapshot)
-
-        self.assertEqual(strategy.value, "exact_vector")
-        self.assertEqual(top_k, 7)
-        self.assertIs(rerank_mode, RerankMode.CLASSIC)

@@ -59,21 +59,6 @@ class RetrievalContractTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             RetrievalRequest(KB_ID, "query", top_k=101)
 
-    def test_document_scope_is_deduplicated_and_bounded(self) -> None:
-        document_id = UUID("01900000-0000-7000-8000-000000000817")
-        request = RetrievalRequest(
-            KB_ID,
-            "query",
-            document_ids=(document_id, document_id),
-        )
-        self.assertEqual(request.document_ids, (document_id,))
-        with self.assertRaises(ValueError):
-            RetrievalRequest(
-                KB_ID,
-                "query",
-                document_ids=tuple(UUID(int=index + 1) for index in range(33)),
-            )
-
     def test_pgvector_statement_is_one_exact_filtered_snapshot_shape(self) -> None:
         statement = PgVectorStore._statement()  # noqa: SLF001 - SQL contract
         sql = str(statement.compile(dialect=postgresql.dialect()))
@@ -93,13 +78,6 @@ class RetrievalContractTests(unittest.TestCase):
         self.assertIn("ORDER BY cosine_distance ASC, index_chunk.id ASC", sql)
         self.assertIn("LIMIT %(top_k)s", sql)
         self.assertNotIn("hnsw", sql.lower())
-
-        scoped = str(
-            PgVectorStore._statement(
-                document_ids=(UUID("01900000-0000-7000-8000-000000000817"),)
-            ).compile(dialect=postgresql.dialect())
-        )
-        self.assertIn("indexed_document_version.document_id IN", scoped)
 
         cross_modal = str(
             PgVectorStore._statement(768).compile(dialect=postgresql.dialect())

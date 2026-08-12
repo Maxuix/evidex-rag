@@ -19,7 +19,6 @@ from rag_kb.domain import (
     KnowledgeBase,
     Page,
     PendingFileMutation,
-    RetrievalScopeCandidate,
     SourceFileCleanup,
     SourceFileReference,
 )
@@ -67,10 +66,6 @@ class DocumentRepository(Protocol):
     async def get(self, document_id: UUID) -> Document | None: ...
 
     async def get_detail(self, document_id: UUID) -> DocumentDetail | None: ...
-
-    async def list_retrieval_scope(
-        self, *, kb_id: UUID, index_revision_id: UUID
-    ) -> tuple[RetrievalScopeCandidate, ...]: ...
 
     async def inspect_chunks(
         self,

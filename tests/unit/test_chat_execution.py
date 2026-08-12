@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import unittest
-from dataclasses import replace
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -56,45 +55,6 @@ def _context() -> ChatExecutionContext:
 
 
 class ChatExecutionServiceTests(unittest.IsolatedAsyncioTestCase):
-    async def test_scoped_subquery_uses_only_a_frozen_document_subset(self) -> None:
-        first, second = uuid4(), uuid4()
-        base_context = _context()
-        context = replace(
-            base_context,
-            retrieval_strategy={
-                **base_context.retrieval_strategy,
-                "document_scope": {
-                    "status": "resolved",
-                    "resolved": [
-                        {"document_id": str(first)},
-                        {"document_id": str(second)},
-                    ],
-                },
-            },
-        )
-
-        class Retrieval:
-            request = None
-
-            async def retrieve(self, auth, request):
-                del auth
-                self.request = request
-                return EvidencePack(
-                    knowledge_base_id=request.knowledge_base_id,
-                    index_revision_id=context.index_revision_id,
-                    strategy=RetrievalStrategy.EXACT_VECTOR,
-                )
-
-        retrieval = Retrieval()
-        retriever = ChatEvidenceRetriever(retrieval)  # type: ignore[arg-type]
-        await retriever.retrieve_query(context, "scoped query", document_ids=(second,))
-
-        assert retrieval.request is not None
-        self.assertEqual(retrieval.request.document_ids, (second,))
-
-        with self.assertRaises(ChatPipelineExecutionError):
-            await retriever.retrieve_query(context, "outside", document_ids=(uuid4(),))
-
     async def test_retrieval_uses_only_the_standalone_query(self) -> None:
         context = _context()
 
@@ -153,7 +113,7 @@ class ChatExecutionServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(raised.exception.code, ErrorCode.CHAT_REVISION_MISMATCH)
 
-    async def test_adjacent_retrieval_reuses_frozen_chat_scope(self) -> None:
+    async def test_adjacent_retrieval_reuses_frozen_chat_context(self) -> None:
         context = _context()
         anchor = Evidence(
             rank=1,

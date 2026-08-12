@@ -75,7 +75,6 @@ class ChatAgentTrace:
     retrieval_calls: int
     calculation_calls: int
     evidence_ref_count: int
-    complete_scan_document_count: int
     outcome: str
     version: str = CHAT_AGENT_VERSION
 
@@ -87,7 +86,6 @@ class ChatAgentTrace:
             or not 0 <= self.retrieval_calls <= self.budget.retrieval_calls
             or not 0 <= self.calculation_calls <= self.budget.calculation_calls
             or not 0 <= self.evidence_ref_count <= self.budget.evidence_refs
-            or not 0 <= self.complete_scan_document_count <= self.budget.evidence_refs
             or self.outcome not in {"answered", "partial", "refused"}
         ):
             raise ValueError("chat agent trace is invalid")
@@ -102,7 +100,6 @@ class ChatAgentTrace:
                 "retrieval_calls": self.retrieval_calls,
                 "calculation_calls": self.calculation_calls,
                 "evidence_refs": self.evidence_ref_count,
-                "complete_scan_document_count": self.complete_scan_document_count,
             },
             "outcome": self.outcome,
         }

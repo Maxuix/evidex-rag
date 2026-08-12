@@ -20,14 +20,12 @@ from tools.evaluate_agent_complex_qa import (
 from tools.build_document_qa_corpus import COMPLEX_CASE_DEFINITIONS
 
 
-def _agent(*, complete_scan_document_count: int = 0) -> dict[str, object]:
+def _agent() -> dict[str, object]:
     return {
         "version": "native_tool_calling_agent_v1",
         "trace": {
             "outcome": "answered",
-            "usage": {
-                "complete_scan_document_count": complete_scan_document_count,
-            },
+            "usage": {},
         },
     }
 
@@ -277,14 +275,14 @@ class AgentComplexEvaluationToolTests(unittest.TestCase):
                 "aspects": [
                     {
                         "aspect_id": "label",
-                        "answer_variants": ["not_mentioned", "not mentioned"],
+                        "answer_variants": ["entailment", "entailed"],
                         "answer_match": "any",
                     }
                 ],
             },
             {
                 "status": "completed",
-                "answer": "The result is not mentioned.",
+                "answer": "The statement is entailed.",
                 "agent": _agent(),
                 "citations": [],
             },
@@ -301,32 +299,6 @@ class AgentComplexEvaluationToolTests(unittest.TestCase):
         self.assertEqual(summary["evidence_only_strict_correct"], 1)
         self.assertEqual(summary["domain_inference_cases"], 1)
 
-    def test_scoring_rejects_not_mentioned_without_complete_scan(self) -> None:
-        case = {
-            "case_id": "complex-absence",
-            "required_citation_document_ids": ["doc-a"],
-            "forbid_unrelated_citations": True,
-            "aspects": [
-                {
-                    "aspect_id": "absence",
-                    "answer_variants": ["not mentioned"],
-                    "answer_match": "any",
-                    "requires_complete_scan": True,
-                }
-            ],
-        }
-        run = {
-            "status": "completed",
-            "answer": "The statement is not mentioned.",
-            "agent": _agent(complete_scan_document_count=0),
-            "citations": [{"document_id": "doc-a"}],
-        }
-
-        score = score_complex_case(case, run)
-
-        self.assertTrue(score["not_mentioned_without_complete_scan"])
-        self.assertFalse(score["strict_correct"])
-
     def test_summary_reports_answered_precision_and_runtime_budget_facts(self) -> None:
         result = {
             "score": {
@@ -338,7 +310,6 @@ class AgentComplexEvaluationToolTests(unittest.TestCase):
                 "forbidden_citation_document_ids": [],
                 "agent_outcome": "answered",
                 "answered_precision_ok": True,
-                "not_mentioned_without_complete_scan": False,
             },
             "status": "completed",
             "elapsed_seconds": 4.0,

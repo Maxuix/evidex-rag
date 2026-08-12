@@ -102,15 +102,8 @@ class PgLexicalStore:
                     "kb_id": plan.knowledge_base_id,
                     "revision_id": active_revision_id,
                 }
-                if plan.document_ids:
-                    scope_statement += " AND target.document_id IN :document_ids"
-                    scope_parameters["document_ids"] = list(plan.document_ids)
                 scope_statement += " ORDER BY target.id"
                 scope_query = text(scope_statement)
-                if plan.document_ids:
-                    scope_query = scope_query.bindparams(
-                        bindparam("document_ids", expanding=True)
-                    )
                 scope_rows = (
                     await session.execute(
                         scope_query,
