@@ -12,6 +12,7 @@ from uuid import uuid4
 import httpx
 from pydantic import ValidationError
 
+from apps.api.routers.model_settings import _profile_response
 from apps.worker.dependencies import _chat_model_loader
 from rag_kb.adapters.model_api.model_catalog import (
     OpenAICompatibleModelCatalogAdapter,
@@ -66,6 +67,52 @@ class _ChatModel:
 
 
 class ModelSettingsTests(unittest.TestCase):
+    def test_profile_response_ignores_retired_chat_configuration_fields(self) -> None:
+        now = datetime.now(UTC)
+        workspace_id = uuid4()
+        provider_id = uuid4()
+        profile_id = uuid4()
+        provider_revision_id = uuid4()
+        profile = ModelProfile(
+            id=profile_id,
+            workspace_id=workspace_id,
+            provider_id=provider_id,
+            name="Chat",
+            kind=ModelKind.CHAT,
+            enabled=True,
+            created_at=now,
+            updated_at=now,
+        )
+        revision = ModelProfileRevision(
+            id=uuid4(),
+            workspace_id=workspace_id,
+            profile_id=profile_id,
+            provider_revision_id=provider_revision_id,
+            revision=1,
+            model="chat-model",
+            configuration={
+                "type": "chat",
+                "temperature": 0.45,
+                "api_mode": "responses",
+                "tool_choice_mode": "auto",
+            },
+            configuration_fingerprint="sha256:profile",
+            capability_fingerprint="sha256:capability",
+            compatibility_fingerprint=None,
+            validation_status=ModelValidationStatus.VALID,
+            validation_error_code=None,
+            validation_snapshot=None,
+            validated_at=now,
+            created_at=now,
+        )
+
+        response = _profile_response(Mock(profile=profile, current_revision=revision))
+
+        self.assertEqual(response.parameters.type, "chat")
+        self.assertEqual(response.parameters.temperature, 0.45)
+        self.assertNotIn("api_mode", response.parameters.model_dump(mode="json"))
+        self.assertNotIn("tool_choice_mode", response.parameters.model_dump(mode="json"))
+
     def test_provider_create_defaults_are_chat_friendly_and_ui_aligned(self) -> None:
         provider = ModelProviderCreate.model_validate({
             "name": "Any compatible provider",

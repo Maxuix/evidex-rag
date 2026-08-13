@@ -249,7 +249,13 @@ def _profile_response(value: ModelProfileBundle) -> ModelProfileResponse:
     profile = value.profile
     revision = value.current_revision
     parameters = (
-        ChatModelParameters.model_validate(revision.configuration)
+        ChatModelParameters.model_validate(
+            {
+                key: item
+                for key, item in revision.configuration.items()
+                if key in ChatModelParameters.model_fields
+            }
+        )
         if profile.kind.value == "chat"
         else EmbeddingModelParameters.model_validate(
             {
