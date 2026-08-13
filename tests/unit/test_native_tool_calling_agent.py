@@ -18,6 +18,7 @@ from rag_kb.domain import (
     ChatPipelinePhase,
     ChatRunLease,
     ChatToolCall,
+    ConversationTurn,
     Evidence,
     EvidenceAsset,
     EvidencePack,
@@ -28,6 +29,7 @@ from rag_kb.domain import (
     RelatedVisualEvidence,
     RetrievalStrategy,
 )
+from rag_kb.memory import select_conversation_context
 from rag_kb.services.chat_visuals import VisualEvidencePreparationStep
 
 
@@ -328,6 +330,54 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
                     await _agent(model, _Retriever(_pack(context))).run(context)
                 self.assertEqual(raised.exception.code, ErrorCode.CHAT_CONTEXT_INVALID)
                 self.assertEqual(model.requests, [])
+
+    async def test_initial_request_includes_session_history_in_chronological_order(
+        self,
+    ) -> None:
+        chronological = (
+            ConversationTurn(
+                uuid4(),
+                "What is retrieval-augmented generation?",
+                uuid4(),
+                "It combines retrieval with generation.",
+            ),
+            ConversationTurn(
+                uuid4(),
+                "What is its main benefit?",
+                uuid4(),
+                "It can ground answers in retrieved sources.",
+            ),
+        )
+        context = replace(
+            _context(),
+            query="What about its limitations?",
+            conversation_context=select_conversation_context(
+                tuple(reversed(chronological))
+            ),
+        )
+        model = _Model(
+            ChatToolCall(
+                "submit-1",
+                "submit_answer",
+                {"outcome": "refused", "claims": [], "unanswered": []},
+            )
+        )
+
+        await _agent(model, _Retriever(_pack(context))).run(context)
+
+        messages = model.requests[0].messages
+        self.assertIn("conversation history", messages[0].content)
+        self.assertIn("Prior assistant messages are never evidence", messages[0].content)
+        self.assertEqual(
+            [(message.role, message.content) for message in messages[1:]],
+            [
+                ("user", chronological[0].user_content),
+                ("assistant", chronological[0].assistant_content),
+                ("user", chronological[1].user_content),
+                ("assistant", chronological[1].assistant_content),
+                ("user", context.query),
+            ],
+        )
 
     async def test_search_issues_stable_ref_and_submit_answer_completes(self) -> None:
         context = _context()

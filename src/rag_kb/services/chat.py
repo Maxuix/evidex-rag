@@ -307,17 +307,13 @@ class ChatService:
                 limit=self._context_max_turns + 1,
             )
             conversation_context = self._context_selector.select(recent_turns)
-            original_query = (
-                ContextualizedQuery(
-                    version=CONTEXTUAL_QUERY_VERSION,
-                    status=QueryContextStatus.ORIGINAL,
-                    original_query=normalized_message,
-                    standalone_query=normalized_message,
-                    context_hash=conversation_context.content_hash,
-                    rewrite_source=QueryRewriteSource.ORIGINAL,
-                )
-                if not conversation_context.turns
-                else None
+            original_query = ContextualizedQuery(
+                version=CONTEXTUAL_QUERY_VERSION,
+                status=QueryContextStatus.ORIGINAL,
+                original_query=normalized_message,
+                standalone_query=normalized_message,
+                context_hash=conversation_context.content_hash,
+                rewrite_source=QueryRewriteSource.ORIGINAL,
             )
             return await uow.chat.create_run(
                 scope=scope,
@@ -333,11 +329,7 @@ class ChatService:
                 conversation_context=serialize_conversation_context(
                     conversation_context
                 ),
-                contextualized_query=(
-                    serialize_contextualized_query(original_query)
-                    if original_query is not None
-                    else None
-                ),
+                contextualized_query=serialize_contextualized_query(original_query),
             )
 
         return await execute_in_transaction(self._unit_of_work, persist)

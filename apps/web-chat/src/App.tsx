@@ -1259,7 +1259,6 @@ function Message({
     <article className="message assistant-message">
       <div className="assistant-mark" aria-hidden="true">K</div>
       <div className="assistant-content">
-        {run ? <AgentSummary agent={run.agent} model={run.model} /> : null}
         {run ? (
           <ExecutionTrace
             run={run}
@@ -1292,34 +1291,6 @@ function Message({
   );
 }
 
-function AgentSummary({ agent, model }: {
-  agent: ChatRun["agent"];
-  model: ChatRun["model"];
-}) {
-  const trace = agent.trace;
-  return (
-    <div className="workflow-summary" aria-label="原生 Tool-Calling Agent">
-      <span className="workflow-badge">Native Agent</span>
-      <span className="workflow-badge">{model.profile_name || model.model}</span>
-      {trace ? (
-        <span>
-          {trace.outcome === "answered" ? "已回答" : trace.outcome === "partial" ? "部分回答" : "已拒答"}
-          {` · 模型 ${trace.usage.model_rounds ?? 0} 轮 · 检索 ${trace.usage.retrieval_calls ?? 0} 次`}
-        </span>
-      ) : null}
-    </div>
-  );
-}
-
-const PROGRESS_STAGES: ChatProgressStage[] = [
-  "understand_query",
-  "retrieve_evidence",
-  "prepare_visual_evidence",
-  "generate_answer",
-  "validate_answer",
-  "persist_result",
-];
-
 function ExecutionTrace({
   run,
   progress,
@@ -1329,316 +1300,397 @@ function ExecutionTrace({
   progress: ChatProgressState | null;
   generating: boolean;
 }) {
-  const [selectedStage, setSelectedStage] = useState<ChatProgressStage | null>(null);
-  useEffect(() => setSelectedStage(null), [run.run_id]);
-
   const terminal = isTerminal(run);
-  const overview = run.status === "completed"
-    ? completedProgress(run)
-    : progress?.snapshot ?? null;
+  const [expanded, setExpanded] = useState(false);
+  useEffect(() => setExpanded(false), [run.run_id]);
+
   const disconnected = generating && progress?.mode === "disconnected";
-  const activeStage = overview?.active_stage ?? null;
-  const availableStages = new Set<ChatProgressStage>([
-    ...(overview?.completed_stages ?? []),
-    ...Object.keys(progress?.stageRecords ?? {}) as ChatProgressStage[],
-  ]);
-  if (activeStage) availableStages.add(activeStage);
-  const archivedStage = selectedStage
-    && selectedStage !== activeStage
-    && availableStages.has(selectedStage)
-    ? selectedStage
-    : null;
-  const viewedStage = archivedStage ?? activeStage;
-  const viewedSnapshot = viewedStage
-    ? stageProgress(run, progress, overview, viewedStage)
-    : null;
-  const followingCurrent = archivedStage === null;
-  const showViewedSnapshot = Boolean(
-    viewedSnapshot
-    && (!disconnected || !followingCurrent || terminal),
-  );
+  const metrics = answerProcessMetrics(run);
   const content = (
     <div className="execution-trace-body">
       {disconnected ? (
-        <div className="trace-connection-note" role="status">
-          实时轨迹连接已中断，回答仍在后台运行；当前节点暂不确定。
+        <div className="answer-process-notice" role="status">
+          实时进度连接已中断，回答仍在后台运行；这里保留最后一次确认的状态。
         </div>
       ) : null}
-      {run.status === "failed" || run.status === "cancelled" ? (
-        <div className="trace-connection-note terminal">
-          执行在完成前中止；这里只保留已确认的工作流状态。
-        </div>
-      ) : null}
-      <div className="trace-stage-rail" aria-label="回答执行阶段">
-        {PROGRESS_STAGES.map((stage, index) => {
-          const complete = overview?.completed_stages.includes(stage) ?? false;
-          const active = Boolean(
-            overview
-            && !disconnected
-            && overview.status === "active"
-            && overview.active_stage === stage,
-          );
-          const available = availableStages.has(stage);
-          const selected = viewedStage === stage;
-          return (
-            <div className="trace-stage-wrap" key={stage}>
-              <button
-                type="button"
-                className={`trace-stage${complete ? " complete" : ""}${
-                active ? " active" : ""
-              }${selected ? " selected" : ""}`}
-                disabled={!available}
-                aria-pressed={selected}
-                aria-label={complete
-                  ? `查看${progressStageLabel(stage)}阶段记录`
-                  : active
-                    ? `${progressStageLabel(stage)}，当前阶段`
-                    : progressStageLabel(stage)}
-                onClick={() => setSelectedStage(stage === activeStage ? null : stage)}
-              >
-                <span aria-hidden="true">{complete ? "✓" : index + 1}</span>
-                <strong>{progressStageLabel(stage)}</strong>
-              </button>
-              {index < PROGRESS_STAGES.length - 1 ? (
-                <span className={`trace-arrow${complete ? " complete" : ""}`}>
-                  →
-                </span>
-              ) : null}
-            </div>
-          );
-        })}
-      </div>
-      {showViewedSnapshot && viewedSnapshot && viewedStage ? (
-        <div
-          className="trace-current"
-          key={`${viewedStage}-${viewedSnapshot.activity}-${viewedSnapshot.seq}`}
-          aria-live={followingCurrent && !terminal ? "polite" : "off"}
-        >
-          <div className="trace-current-heading">
-            <div>
-              <span>{followingCurrent
-                ? viewedSnapshot.status === "completed" ? "执行完成" : "当前阶段"
-                : "阶段记录"}</span>
-              <strong>{activityLabel(viewedSnapshot.activity)}</strong>
-            </div>
-            {!followingCurrent && !terminal ? (
-              <button type="button" onClick={() => setSelectedStage(null)}>
-                返回当前阶段
-              </button>
-            ) : null}
-          </div>
-          <p>{activityDescription(viewedSnapshot.activity)}</p>
-          <ProgressFacts facts={viewedSnapshot.facts} />
-        </div>
-      ) : !terminal && !disconnected ? (
-        <div className="trace-current waiting" aria-live="polite">
-          正在等待第一个执行节点…
-        </div>
-      ) : null}
-      {terminal && run.agent.trace?.events.length ? (
-        <div className="trace-search-history">
-          <h4>工具调用记录</h4>
-          {run.agent.trace.events.map((event, index) => (
-            <div className="trace-search-step" key={`${event.tool_call_id}-${index}`}>
-              <div>
-                <strong>{toolLabel(event.tool)}</strong>
-                <span>{event.status} · {event.count} 项</span>
-              </div>
-              {event.refs.length ? <span>{event.refs.join("、")}</span> : null}
-            </div>
-          ))}
-        </div>
-      ) : null}
+      {run.status === "completed" ? (
+        <CompletedAnswerProcess run={run} metrics={metrics} />
+      ) : (
+        <ActiveAnswerProcess
+          run={run}
+          snapshot={progress?.snapshot ?? null}
+          disconnected={disconnected}
+        />
+      )}
+      {terminal ? <AnswerProcessTechnicalDetails run={run} metrics={metrics} /> : null}
     </div>
   );
   if (terminal) {
     return (
-      <details className="execution-trace terminal-trace">
-        <summary>
-          <span>执行轨迹</span>
-          <strong>{run.status === "completed" ? "已完成" : "未完成"}</strong>
-        </summary>
-        {content}
-      </details>
+      <section className={`execution-trace terminal-trace${expanded ? " expanded" : ""}`}>
+        <button
+          className="answer-process-toggle"
+          type="button"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((value) => !value)}
+        >
+          <span>回答过程</span>
+          <strong className={run.status === "completed" ? "complete" : "incomplete"}>
+            {run.status === "completed" ? "已完成" : "未完成"}
+          </strong>
+        </button>
+        {expanded ? content : null}
+      </section>
     );
   }
   return (
-    <section className="execution-trace" aria-label="实时执行轨迹">
+    <section className="execution-trace" aria-label="实时回答过程">
       <header>
-        <span>执行轨迹</span>
-        <strong>决策过程 · 实时</strong>
+        <span>回答过程</span>
+        <strong className="active">进行中</strong>
       </header>
       {content}
     </section>
   );
 }
 
-function stageProgress(
-  run: ChatRun,
-  progress: ChatProgressState | null,
-  overview: ChatProgressSnapshot | null,
-  stage: ChatProgressStage,
-): ChatProgressSnapshot {
-  const recorded = progress?.stageRecords[stage];
-  const complete = overview?.completed_stages.includes(stage) ?? false;
-  if (recorded) {
-    return {
-      ...recorded,
-      completed_stages: overview?.completed_stages ?? recorded.completed_stages,
-      status: complete ? "completed" : recorded.status,
-    };
-  }
-  return {
-    run_id: run.run_id,
-    attempt: run.attempt,
-    seq: overview?.seq ?? 0,
-    active_stage: stage,
-    activity: stageActivity(run, stage),
-    completed_stages: overview?.completed_stages ?? [],
-    status: complete ? "completed" : "active",
-    facts: stageFacts(run, stage),
-  };
+interface AnswerProcessMetrics {
+  retrievalCalls: number;
+  candidateCount: number;
+  citationCount: number;
+  calculationCalls: number;
+  modelRounds: number;
 }
 
-function stageActivity(
-  _run: ChatRun,
-  stage: ChatProgressStage,
-): ChatProgressSnapshot["activity"] {
-  if (stage === "retrieve_evidence") return "search_knowledge_base";
-  const activities: Record<Exclude<ChatProgressStage, "retrieve_evidence">,
-    ChatProgressSnapshot["activity"]> = {
-      understand_query: "tool_decision",
-      prepare_visual_evidence: "prepare_visual_evidence",
-      generate_answer: "generate_answer",
-      validate_answer: "validate_answer",
-      persist_result: "persist_result",
-    };
-  return activities[stage];
+interface AnswerProcessStep {
+  key: string;
+  title: string;
+  description: string;
+  meta: string;
 }
 
-function stageFacts(
-  run: ChatRun,
-  stage: ChatProgressStage,
-): ChatProgressSnapshot["facts"] {
-  const trace = run.agent.trace;
-  const facts: ChatProgressSnapshot["facts"] = {
-    objective: null,
-    queries: [],
-    evidence_count: null,
-    new_evidence_count: null,
-    retrieval_calls: null,
-    covered_aspects: [],
-    missing_aspects: [],
-    conflict_count: null,
-  };
-  if (stage === "retrieve_evidence") {
-    facts.evidence_count = trace?.usage.evidence_refs ?? null;
-    facts.retrieval_calls = trace?.usage.retrieval_calls ?? null;
-  }
-  return facts;
-}
-
-function ProgressFacts({ facts }: { facts: ChatProgressSnapshot["facts"] }) {
+function CompletedAnswerProcess({
+  run,
+  metrics,
+}: {
+  run: ChatRun;
+  metrics: AnswerProcessMetrics;
+}) {
+  const summary = completedAnswerSummary(run, metrics);
+  const steps = completedAnswerSteps(run, metrics);
   return (
-    <div className="trace-facts">
-      {facts.objective ? (
-        <div><span>检索目标</span><strong>{facts.objective}</strong></div>
-      ) : null}
-      {facts.queries.length ? (
-        <div>
-          <span>查询</span>
-          <ul>{facts.queries.map((query) => <li key={query}>{query}</li>)}</ul>
-        </div>
-      ) : null}
-      {facts.evidence_count !== null ? (
-        <div><span>可用证据</span><strong>{facts.evidence_count} 项</strong></div>
-      ) : null}
-      {facts.retrieval_calls !== null ? (
-        <div><span>检索次数</span><strong>{facts.retrieval_calls} 次</strong></div>
-      ) : null}
-      {facts.new_evidence_count !== null ? (
-        <div><span>本轮新增</span><strong>{facts.new_evidence_count} 项</strong></div>
-      ) : null}
-      {facts.covered_aspects.length ? (
-        <div><span>已覆盖</span><strong>{facts.covered_aspects.join("、")}</strong></div>
-      ) : null}
-      {facts.missing_aspects.length ? (
-        <div><span>仍缺少</span><strong>{facts.missing_aspects.join("、")}</strong></div>
-      ) : null}
-      {facts.conflict_count ? (
-        <div><span>冲突</span><strong>{facts.conflict_count} 项</strong></div>
-      ) : null}
-    </div>
+    <>
+      <section className="answer-process-summary" aria-labelledby={`answer-summary-${run.run_id}`}>
+        <h3 id={`answer-summary-${run.run_id}`}>{summary.title}</h3>
+        <p>{summary.description}</p>
+      </section>
+      <AnswerProcessMetricList metrics={metrics} />
+      <h3 className="answer-process-section-title">本次回答经历了什么</h3>
+      <ol className="answer-process-steps">
+        {steps.map((step, index) => (
+          <li key={step.key}>
+            <span className="answer-process-step-number" aria-hidden="true">
+              {index + 1}
+            </span>
+            <div>
+              <h4>{step.title}</h4>
+              <p>{step.description}</p>
+              <span className="answer-process-step-meta">{step.meta}</span>
+            </div>
+          </li>
+        ))}
+      </ol>
+    </>
   );
 }
 
-function completedProgress(run: ChatRun): ChatProgressSnapshot {
+function AnswerProcessMetricList({ metrics }: { metrics: AnswerProcessMetrics }) {
+  return (
+    <ul className="answer-process-metrics" aria-label="本次回答摘要">
+      <li className="retrieval"><span>检索</span><strong>{metrics.retrievalCalls} 次</strong></li>
+      <li className="candidate"><span>候选资料</span><strong>{metrics.candidateCount} 条</strong></li>
+      <li className="citation"><span>最终引用</span><strong>{metrics.citationCount} 条</strong></li>
+    </ul>
+  );
+}
+
+function ActiveAnswerProcess({
+  run,
+  snapshot,
+  disconnected,
+}: {
+  run: ChatRun;
+  snapshot: ChatProgressSnapshot | null;
+  disconnected: boolean;
+}) {
+  const failed = run.status === "failed" || run.status === "cancelled";
+  const activity = liveActivityView(snapshot?.activity ?? "load_context");
+  const meta = liveProgressMeta(snapshot);
+  return (
+    <>
+      <section className={`answer-process-summary${failed ? " failed" : ""}`}>
+        <h3>{failed
+          ? run.status === "cancelled" ? "这次回答已停止" : "这次回答未能完成"
+          : "正在查找资料并整理回答"}</h3>
+        <p>{failed
+          ? "这里只展示停止前已确认的状态；未完成的步骤不会被标记为完成。"
+          : "进度会随着已确认的工作更新，不会预先补齐尚未发生的步骤。"}</p>
+      </section>
+      <div
+        className={`answer-process-live-step${failed ? " failed" : ""}`}
+        aria-live={failed || disconnected ? "off" : "polite"}
+      >
+        <span className="answer-process-step-number" aria-hidden="true">
+          {activity.step}
+        </span>
+        <div>
+          <span className="answer-process-live-label">
+            {failed ? "最后确认的状态" : disconnected ? "最后收到的进度" : "当前进度"}
+          </span>
+          <h4>{activity.title}</h4>
+          <p>{activity.description}</p>
+          {meta ? <span className="answer-process-step-meta">{meta}</span> : null}
+        </div>
+      </div>
+    </>
+  );
+}
+
+function AnswerProcessTechnicalDetails({
+  run,
+  metrics,
+}: {
+  run: ChatRun;
+  metrics: AnswerProcessMetrics;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const modelName = run.model.profile_name || run.model.model;
+  const hiddenDiagnosticCount = run.agent.trace?.events.filter(
+    (event) => event.tool === "protocol" || event.status !== "ok",
+  ).length ?? 0;
+  return (
+    <>
+      <section className={`answer-process-technical${expanded ? " expanded" : ""}`}>
+        <button
+          type="button"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((value) => !value)}
+        >
+          <span>查看技术详情</span>
+          <small>
+            {modelName} · 模型 {metrics.modelRounds} 轮 · 诊断信息已{expanded ? "展开" : "收起"}
+          </small>
+        </button>
+        {expanded ? (
+          <dl>
+            <div><dt>Agent</dt><dd>Native Tool-Calling</dd></div>
+            <div><dt>模型</dt><dd>{modelName}</dd></div>
+            <div><dt>检索调用</dt><dd>{metrics.retrievalCalls} 次</dd></div>
+            <div><dt>计算调用</dt><dd>{metrics.calculationCalls} 次</dd></div>
+            {hiddenDiagnosticCount > 0 ? (
+              <div><dt>校验调整</dt><dd>{hiddenDiagnosticCount} 次</dd></div>
+            ) : null}
+          </dl>
+        ) : null}
+      </section>
+      <p className="answer-process-privacy-note">
+        默认隐藏工具 ID、event ref 与协议状态；这些内部标记不会作为回答结果展示。
+      </p>
+    </>
+  );
+}
+
+function answerProcessMetrics(run: ChatRun): AnswerProcessMetrics {
+  const trace = run.agent.trace;
+  const searchEvents = trace?.events.filter(
+    (event) => event.tool === "search_knowledge_base" && event.status === "ok",
+  ) ?? [];
+  const eventCandidateCount = Math.max(0, ...searchEvents.map((event) => event.count));
   return {
-    run_id: run.run_id,
-    attempt: run.attempt,
-    seq: 1,
-    active_stage: "persist_result",
-    activity: "persist_result",
-    completed_stages: [...PROGRESS_STAGES],
-    status: "completed",
-    facts: stageFacts(run, "persist_result"),
+    retrievalCalls: safeUsageCount(run, "retrieval_calls", searchEvents.length),
+    candidateCount: safeUsageCount(run, "evidence_refs", eventCandidateCount),
+    citationCount: run.citations.length,
+    calculationCalls: safeUsageCount(
+      run,
+      "calculation_calls",
+      trace?.events.filter(
+        (event) => event.tool === "calculate" && event.status === "ok",
+      ).length ?? 0,
+    ),
+    modelRounds: safeUsageCount(run, "model_rounds", 0),
   };
 }
 
-function progressStageLabel(stage: ChatProgressStage): string {
-  const labels: Record<ChatProgressStage, string> = {
-    understand_query: "理解问题",
-    retrieve_evidence: "检索证据",
-    prepare_visual_evidence: "准备素材",
-    generate_answer: "生成回答",
-    validate_answer: "校验回答",
-    persist_result: "保存结果",
-  };
-  return labels[stage];
+function safeUsageCount(run: ChatRun, key: string, fallback: number): number {
+  const value = run.agent.trace?.usage[key];
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.max(0, Math.trunc(value))
+    : fallback;
 }
 
-function activityLabel(activity: ChatProgressSnapshot["activity"]): string {
-  const labels: Record<ChatProgressSnapshot["activity"], string> = {
-    load_context: "读取对话上下文",
-    tool_decision: "选择下一项工具",
-    search_knowledge_base: "检索知识库",
-    calculate: "执行受控计算",
-    submit_answer: "提交最终回答",
-    retrieval_complete: "整理本轮检索结果",
-    prepare_visual_evidence: "准备可引用的视觉证据",
-    generate_answer: "基于证据生成回答",
-    validate_answer: "校验结构与引用",
-    persist_result: "保存最终回答",
+function completedAnswerSummary(
+  run: ChatRun,
+  metrics: AnswerProcessMetrics,
+): { title: string; description: string } {
+  const outcome = run.agent.trace?.outcome ?? (run.answer ? "answered" : "refused");
+  if (outcome === "refused") {
+    return {
+      title: "这次回答没有找到足够可靠的支持材料",
+      description: metrics.retrievalCalls > 0
+        ? `系统检索了 ${metrics.retrievalCalls} 次，但没有用不可靠的候选内容拼凑答案。`
+        : "系统没有生成缺少可靠依据的推测性回答。",
+    };
+  }
+  if (outcome === "partial") {
+    return {
+      title: `这次回答只保留了有可靠来源的部分内容，并使用 ${metrics.citationCount} 条来源`,
+      description: candidateSummaryDescription(metrics),
+    };
+  }
+  return {
+    title: metrics.retrievalCalls > 0
+      ? `这次回答查找了 ${metrics.retrievalCalls} 次资料，最终使用 ${metrics.citationCount} 条来源`
+      : `这次回答已经完成，最终使用 ${metrics.citationCount} 条来源`,
+    description: candidateSummaryDescription(metrics),
   };
-  return labels[activity];
 }
 
-function activityDescription(activity: ChatProgressSnapshot["activity"]): string {
-  const descriptions: Record<ChatProgressSnapshot["activity"], string> = {
-    load_context: "读取本次问题、会话上下文与冻结配置。",
-    tool_decision: "Agent 根据已冻结的运行范围选择固定工具。",
-    search_knowledge_base: "使用冻结的检索配置查找并发放稳定证据引用。",
-    calculate: "只基于已发放证据执行 Decimal 计算。",
-    submit_answer: "提交逐 claim 回答并进入确定性引用校验。",
-    retrieval_complete: "合并并去重本轮结果，只统计可用证据。",
-    prepare_visual_evidence: "选择与文字证据相关的图片或表格素材。",
-    generate_answer: "Agent 通过 submit_answer 提交逐 claim 回答和引用。",
-    validate_answer: "服务端逐 claim 检查引用编号和证据约束。",
-    persist_result: "把最终回答和可核验事实写入本地数据库。",
-  };
-  return descriptions[activity];
+function candidateSummaryDescription(metrics: AnswerProcessMetrics): string {
+  if (metrics.retrievalCalls === 0) {
+    return "本次没有调用知识库检索；最终引用数量仍以回答实际采用的来源为准。";
+  }
+  if (metrics.candidateCount === 0) {
+    return "这次检索没有产生可用候选资料，因此不会把内部调用记录当作引用展示。";
+  }
+  return `检索到的 ${metrics.candidateCount} 条内容只是候选资料；只有经过整理并被最终回答采用的来源才会显示为引用。`;
 }
 
-function toolLabel(
-  tool: "search_knowledge_base" | "calculate" | "submit_answer" | "protocol",
-): string {
-  const labels = {
-    search_knowledge_base: "检索知识库",
-    calculate: "受控计算",
-    submit_answer: "提交回答",
-    protocol: "协议校验",
+function completedAnswerSteps(
+  run: ChatRun,
+  metrics: AnswerProcessMetrics,
+): AnswerProcessStep[] {
+  const outcome = run.agent.trace?.outcome ?? (run.answer ? "answered" : "refused");
+  const searchTitle = metrics.retrievalCalls > 1
+    ? `查找资料 · 第 1–${metrics.retrievalCalls} 次`
+    : metrics.retrievalCalls === 1 ? "查找资料 · 1 次" : "评估可用资料";
+  const searchDescription = metrics.retrievalCalls > 0
+    ? `共找到 ${metrics.candidateCount} 条候选内容；系统会继续筛选，候选资料不等于最终引用。`
+    : "本次没有调用知识库检索，也不会虚构检索阶段或候选数量。";
+  const verificationDescription = outcome === "refused"
+    ? "没有足够可靠的来源支持结论，因此没有生成推测性回答。"
+    : metrics.citationCount > 0
+      ? `最终回答实际采用 ${metrics.citationCount} 条来源；未采用的候选内容不会显示为引用。`
+      : "回答没有附带来源；界面不会把候选内容误标为最终引用。";
+  const resultDescription = outcome === "refused"
+    ? "本次以说明资料不足结束，没有输出无依据的结论。"
+    : outcome === "partial"
+      ? `已生成部分回答，并附上实际采用的 ${metrics.citationCount} 条来源。`
+      : `回答已生成，并附上实际采用的 ${metrics.citationCount} 条来源。`;
+  return [
+    {
+      key: "understand",
+      title: "理解问题",
+      description: "结合本次问题与会话上下文，确定需要查找和核对的知识范围。",
+      meta: "输入已就绪",
+    },
+    {
+      key: "search",
+      title: searchTitle,
+      description: searchDescription,
+      meta: metrics.retrievalCalls > 0
+        ? `${metrics.retrievalCalls} 次检索 · ${metrics.candidateCount} 条候选资料`
+        : "未调用知识库检索",
+    },
+    {
+      key: "verify",
+      title: "整理并核验回答",
+      description: verificationDescription,
+      meta: metrics.citationCount > 0
+        ? `${metrics.citationCount} 条最终引用来源`
+        : "没有最终引用来源",
+    },
+    {
+      key: "result",
+      title: "完成结果",
+      description: resultDescription,
+      meta: outcome === "refused"
+        ? "完成 · 未生成推测性结论"
+        : `完成 · 最终引用 ${metrics.citationCount} 条`,
+    },
+  ];
+}
+
+function liveActivityView(
+  activity: ChatProgressSnapshot["activity"],
+): { step: number; title: string; description: string } {
+  const views: Record<ChatProgressSnapshot["activity"], {
+    step: number;
+    title: string;
+    description: string;
+  }> = {
+    load_context: {
+      step: 1,
+      title: "理解问题",
+      description: "正在读取本次问题与会话上下文。",
+    },
+    tool_decision: {
+      step: 1,
+      title: "确定下一步",
+      description: "正在判断是否需要查找资料、核对计算或整理回答。",
+    },
+    search_knowledge_base: {
+      step: 2,
+      title: "查找资料",
+      description: "正在知识库中查找与问题相关的候选内容。",
+    },
+    retrieval_complete: {
+      step: 2,
+      title: "整理候选资料",
+      description: "正在合并并去除重复的检索结果。",
+    },
+    prepare_visual_evidence: {
+      step: 2,
+      title: "核对可引用素材",
+      description: "正在确认与文字证据相关的图片或表格。",
+    },
+    calculate: {
+      step: 3,
+      title: "核对计算",
+      description: "正在基于已找到的资料检查计算结果。",
+    },
+    submit_answer: {
+      step: 3,
+      title: "整理并核验回答",
+      description: "正在提交回答并核对来源是否有效。",
+    },
+    generate_answer: {
+      step: 3,
+      title: "整理回答",
+      description: "正在根据可用资料生成回答。",
+    },
+    validate_answer: {
+      step: 3,
+      title: "核验回答",
+      description: "正在检查回答内容与引用来源。",
+    },
+    persist_result: {
+      step: 4,
+      title: "完成结果",
+      description: "正在保存最终回答和引用来源。",
+    },
   };
-  return labels[tool];
+  return views[activity];
+}
+
+function liveProgressMeta(snapshot: ChatProgressSnapshot | null): string | null {
+  if (!snapshot) return null;
+  const facts = snapshot.facts;
+  if (facts.retrieval_calls !== null && facts.evidence_count !== null) {
+    return `${facts.retrieval_calls} 次检索 · ${facts.evidence_count} 条候选资料`;
+  }
+  if (facts.retrieval_calls !== null) return `已检索 ${facts.retrieval_calls} 次`;
+  if (facts.evidence_count !== null) return `已找到 ${facts.evidence_count} 条候选资料`;
+  return null;
 }
 
 function Welcome({
