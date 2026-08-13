@@ -10,9 +10,7 @@ from rag_kb.adapters.chat_preview.pg_notify import (
     MAX_NOTIFY_PAYLOAD_BYTES,
     PgNotifyPreviewBroker,
     PgNotifyPreviewSink,
-    _MAX_STOPPED_ATTEMPTS,
     parse_preview_payload,
-    serialize_preview_delta_payloads,
     serialize_preview_event,
 )
 from rag_kb.domain import (
@@ -21,9 +19,6 @@ from rag_kb.domain import (
     ChatProgressSnapshot,
     ChatProgressStage,
     ChatProgressUpdate,
-    ChatPreviewDelta,
-    ChatPreviewReset,
-    ChatPreviewResetReason,
 )
 
 
@@ -99,61 +94,29 @@ async def _yield_without_delay(delay: float) -> None:
     await asyncio.sleep(0)
 
 
+def _progress(
+    run_id,
+    *,
+    attempt: int = 1,
+    seq: int = 1,
+    update: ChatProgressUpdate | None = None,
+) -> ChatProgressSnapshot:
+    return ChatProgressSnapshot(
+        run_id,
+        attempt,
+        seq,
+        update
+        or ChatProgressUpdate(
+            ChatProgressStage.UNDERSTAND_QUERY,
+            ChatProgressActivity.LOAD_CONTEXT,
+        ),
+    )
+
+
 class ChatPreviewPayloadTests(unittest.TestCase):
-    def test_delta_and_reset_round_trip_through_strict_payload(self) -> None:
-        run_id = uuid4()
-        events = (
-            ChatPreviewDelta(run_id, 2, 3, "中文 delta"),
-            ChatPreviewReset(
-                run_id,
-                2,
-                4,
-                ChatPreviewResetReason.VALIDATION_REPAIR,
-            ),
-        )
-
-        for event in events:
-            with self.subTest(event=event):
-                payload = serialize_preview_event(event)
-                self.assertLessEqual(
-                    len(payload.encode("utf-8")),
-                    MAX_NOTIFY_PAYLOAD_BYTES,
-                )
-                self.assertEqual(parse_preview_payload(payload), event)
-
-    def test_large_unicode_delta_is_split_without_cutting_code_points(self) -> None:
-        run_id = uuid4()
-        delta = "回答🙂" * 2_000
-
-        payloads = serialize_preview_delta_payloads(
-            run_id=run_id,
-            attempt=1,
-            starting_seq=1,
-            delta=delta,
-        )
-        events = tuple(parse_preview_payload(payload) for payload in payloads)
-
-        self.assertGreater(len(events), 1)
-        self.assertEqual(
-            "".join(event.delta for event in events),  # type: ignore[attr-defined]
-            delta,
-        )
-        self.assertEqual(
-            [event.seq for event in events],
-            list(range(1, len(events) + 1)),
-        )
-        self.assertTrue(
-            all(
-                len(payload.encode("utf-8")) <= MAX_NOTIFY_PAYLOAD_BYTES
-                for payload in payloads
-            )
-        )
-
     def test_unknown_extra_or_invalid_sequence_fields_fail_closed(self) -> None:
         payload = json.loads(
-            serialize_preview_event(
-                ChatPreviewDelta(uuid4(), 1, 1, "safe")
-            )
+            serialize_preview_event(_progress(uuid4()))
         )
         cases = (
             {**payload, "extra": "forbidden"},
@@ -212,20 +175,20 @@ class ChatPreviewPayloadTests(unittest.TestCase):
 
 
 class ChatPreviewTransportTests(unittest.IsolatedAsyncioTestCase):
-    async def test_sink_batches_delta_and_uses_one_dedicated_connection(self) -> None:
+    async def test_sink_publishes_progress_and_uses_one_dedicated_connection(
+        self,
+    ) -> None:
         connection = _Connection()
         connector = _Connector(connection)
-        sink = PgNotifyPreviewSink(
-            _DSN,
-            flush_interval_ms=10,
-            max_total_bytes=1024,
-            connect=connector,
-        )
+        sink = PgNotifyPreviewSink(_DSN, connect=connector)
         run_id = uuid4()
+        update = ChatProgressUpdate(
+            ChatProgressStage.UNDERSTAND_QUERY,
+            ChatProgressActivity.LOAD_CONTEXT,
+        )
         try:
             self.assertTrue(await sink.start())
-            await sink.emit_delta(run_id=run_id, attempt=1, delta="你")
-            await sink.emit_delta(run_id=run_id, attempt=1, delta="好")
+            await sink.emit_progress(run_id=run_id, attempt=1, update=update)
             await asyncio.sleep(0.03)
         finally:
             await sink.close()
@@ -238,7 +201,7 @@ class ChatPreviewTransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(channel, CHAT_PREVIEW_CHANNEL)
         self.assertEqual(
             parse_preview_payload(payload),
-            ChatPreviewDelta(run_id, 1, 1, "你好"),
+            _progress(run_id, update=update),
         )
         self.assertTrue(connection.closed)
 
@@ -246,8 +209,6 @@ class ChatPreviewTransportTests(unittest.IsolatedAsyncioTestCase):
         connection = _Connection()
         sink = PgNotifyPreviewSink(
             _DSN,
-            flush_interval_ms=10,
-            max_total_bytes=1024,
             connect=_Connector(connection),
         )
         run_id = uuid4()
@@ -272,84 +233,22 @@ class ChatPreviewTransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item.seq for item in events], [1, 2])
         self.assertEqual(events[1].update, second)
 
-    async def test_sink_truncates_at_total_limit_without_splitting_unicode(
-        self,
-    ) -> None:
-        connection = _Connection()
-        sink = PgNotifyPreviewSink(
-            _DSN,
-            flush_interval_ms=10,
-            max_total_bytes=4,
-            connect=_Connector(connection),
-        )
-        run_id = uuid4()
-        try:
-            await sink.start()
-            await sink.emit_delta(run_id=run_id, attempt=1, delta="中文")
-            await sink.emit_delta(run_id=run_id, attempt=1, delta="ignored")
-            await asyncio.sleep(0.03)
-        finally:
-            await sink.close()
-
-        event = parse_preview_payload(connection.executions[0][2])
-        self.assertEqual(event, ChatPreviewDelta(run_id, 1, 1, "中"))
-
     async def test_sink_connection_failure_is_best_effort(self) -> None:
         sink = PgNotifyPreviewSink(
             _DSN,
-            flush_interval_ms=5,
-            max_total_bytes=1024,
             connect=_Connector(error=OSError("database unavailable")),
         )
         try:
             self.assertFalse(await sink.start())
-            await sink.emit_delta(
+            await sink.emit_progress(
                 run_id=uuid4(),
                 attempt=1,
-                delta="still does not fail generation",
+                update=ChatProgressUpdate(
+                    ChatProgressStage.UNDERSTAND_QUERY,
+                    ChatProgressActivity.LOAD_CONTEXT,
+                ),
             )
             await asyncio.sleep(0.02)
-        finally:
-            await sink.close()
-
-    async def test_sink_bounds_stopped_attempt_tombstones(self) -> None:
-        sink = PgNotifyPreviewSink(
-            _DSN,
-            flush_interval_ms=10,
-            max_total_bytes=1024,
-            command_queue_size=_MAX_STOPPED_ATTEMPTS + 2,
-            connect=_Connector(error=OSError("database unavailable")),
-        )
-        run_ids = tuple(uuid4() for _ in range(_MAX_STOPPED_ATTEMPTS + 1))
-        try:
-            for run_id in run_ids:
-                await sink.emit_reset(
-                    run_id=run_id,
-                    attempt=1,
-                    reason=ChatPreviewResetReason.GENERATION_FAILED,
-                )
-
-            self.assertEqual(
-                len(sink._stopped_keys),  # type: ignore[attr-defined]
-                _MAX_STOPPED_ATTEMPTS,
-            )
-            self.assertNotIn(
-                (run_ids[0], 1),
-                sink._stopped_keys,  # type: ignore[attr-defined]
-            )
-            self.assertIn(
-                (run_ids[-1], 1),
-                sink._stopped_keys,  # type: ignore[attr-defined]
-            )
-            await sink.emit_reset(
-                run_id=run_ids[-1],
-                attempt=1,
-                reason=ChatPreviewResetReason.GENERATION_FAILED,
-            )
-            self.assertEqual(
-                len(sink._stopped_keys),  # type: ignore[attr-defined]
-                _MAX_STOPPED_ATTEMPTS,
-            )
         finally:
             await sink.close()
 
@@ -368,23 +267,19 @@ class ChatPreviewTransportTests(unittest.IsolatedAsyncioTestCase):
         try:
             self.assertTrue(await broker.start())
             connection.notify(
-                serialize_preview_event(
-                    ChatPreviewDelta(run_id, 1, 1, "first")
-                )
+                serialize_preview_event(_progress(run_id, seq=1))
             )
             connection.notify(
-                serialize_preview_event(
-                    ChatPreviewDelta(run_id, 1, 2, "dropped")
-                )
+                serialize_preview_event(_progress(run_id, seq=2))
             )
 
             self.assertEqual(
                 await asyncio.wait_for(first.next_event(), timeout=0.1),
-                ChatPreviewDelta(run_id, 1, 1, "first"),
+                _progress(run_id, seq=1),
             )
             self.assertEqual(
                 await asyncio.wait_for(second.next_event(), timeout=0.1),
-                ChatPreviewDelta(run_id, 1, 1, "first"),
+                _progress(run_id, seq=1),
             )
             with self.assertRaises(TimeoutError):
                 await asyncio.wait_for(other.next_event(), timeout=0.01)
@@ -438,9 +333,7 @@ class ChatPreviewTransportTests(unittest.IsolatedAsyncioTestCase):
                 )
             await subscription.close()
             connection.notify(
-                serialize_preview_event(
-                    ChatPreviewDelta(run_id, 1, 1, "ignored")
-                )
+                serialize_preview_event(_progress(run_id))
             )
         finally:
             await broker.close()

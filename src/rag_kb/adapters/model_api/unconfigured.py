@@ -12,7 +12,6 @@ from rag_kb.domain import (
     IndexingExecutionError,
     IndexingPhase,
 )
-from rag_kb.ports.model_api import ChatModelContentDeltaHandler
 
 
 class UnconfiguredChatModelAdapter:
@@ -21,14 +20,6 @@ class UnconfiguredChatModelAdapter:
             ErrorCode.CHAT_PROVIDER_UNAVAILABLE,
             diagnostic={"check": "chat_model_not_configured"},
         )
-
-    async def complete_streaming(
-        self,
-        request: ChatModelRequest,
-        *,
-        on_content_delta: ChatModelContentDeltaHandler,
-    ) -> ChatModelResponse:
-        return await self.complete(request)
 
 
 class UnconfiguredEmbeddingModelAdapter:

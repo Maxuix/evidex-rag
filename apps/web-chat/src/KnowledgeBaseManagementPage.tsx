@@ -1313,7 +1313,7 @@ function jobFailure(job: IndexingJob): string {
     EMBEDDING_SPACE_MISMATCH: "Embedding 空间不兼容",
     INDEX_PERSISTENCE_FAILED: "索引写入失败",
     INDEX_INCOMPLETE: "索引完整性校验失败",
-    INDEXING_DEADLINE_EXCEEDED: "索引处理超时",
+
   };
   const legacyTimeLimit = job.error.detail.limit_name;
   if (

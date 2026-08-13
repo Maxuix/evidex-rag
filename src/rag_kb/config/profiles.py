@@ -7,4 +7,3 @@ class DeploymentProfile(StrEnum):
     """Known profiles; only development is currently executable."""
 
     DEVELOPMENT = "development"
-    DEPARTMENT = "department"

@@ -810,7 +810,7 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
         )
         first_error = ChatPipelineExecutionError(
             ErrorCode.CHAT_PROVIDER_UNAVAILABLE,
-            phase=ChatPipelinePhase.ASSESS_EVIDENCE,
+            phase=ChatPipelinePhase.GENERATE_OR_REFUSE,
             diagnostic={"http_status": 503, "raw_content": "must not persist"},
             model_calls=(_model_call("request-attempt-1"),),
         )
@@ -840,7 +840,7 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 second_lease,
                 ChatPipelineExecutionError(
                     ErrorCode.CHAT_PIPELINE_DEADLINE_EXCEEDED,
-                    phase=ChatPipelinePhase.VALIDATE_STRUCTURE,
+                    phase=ChatPipelinePhase.PERSIST_RESULT,
                     diagnostic={"check": "task_deadline"},
                     model_calls=(_model_call("request-attempt-2"),),
                 ),

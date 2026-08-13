@@ -6,7 +6,13 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from rag_kb.auth import AuthContext
-from rag_kb.domain import ChatPreviewDelta, ChatRun
+from rag_kb.domain import (
+    ChatProgressActivity,
+    ChatProgressSnapshot,
+    ChatProgressStage,
+    ChatProgressUpdate,
+    ChatRun,
+)
 from rag_kb.memory import empty_conversation_context, serialize_conversation_context
 from rag_kb.services.chat_delivery import (
     ChatEventWatcher,
@@ -130,7 +136,15 @@ class ChatEventWatcherTests(unittest.IsolatedAsyncioTestCase):
                 preview=preview,
             )
         )
-        event = ChatPreviewDelta(RUN_ID, 1, 1, "draft")
+        event = ChatProgressSnapshot(
+            RUN_ID,
+            1,
+            1,
+            ChatProgressUpdate(
+                ChatProgressStage.UNDERSTAND_QUERY,
+                ChatProgressActivity.LOAD_CONTEXT,
+            ),
+        )
 
         await preview.queue.put(event)
         await preview.delivered.wait()
@@ -143,7 +157,17 @@ class ChatEventWatcherTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_immediate_terminal_discards_pending_preview(self) -> None:
         preview = _PreviewSubscription()
-        await preview.queue.put(ChatPreviewDelta(RUN_ID, 1, 1, "stale"))
+        await preview.queue.put(
+            ChatProgressSnapshot(
+                RUN_ID,
+                1,
+                1,
+                ChatProgressUpdate(
+                    ChatProgressStage.UNDERSTAND_QUERY,
+                    ChatProgressActivity.LOAD_CONTEXT,
+                ),
+            )
+        )
         watcher = ChatEventWatcher(
             ChatTerminalWatcher(
                 _Chat(),  # type: ignore[arg-type]
@@ -239,11 +263,11 @@ class _ControlledTerminalWatcher:
 
 class _PreviewSubscription:
     def __init__(self) -> None:
-        self.queue: asyncio.Queue[ChatPreviewDelta] = asyncio.Queue()
+        self.queue: asyncio.Queue[ChatProgressSnapshot] = asyncio.Queue()
         self.discarded = False
         self.delivered = asyncio.Event()
 
-    async def next_event(self) -> ChatPreviewDelta:
+    async def next_event(self) -> ChatProgressSnapshot:
         event = await self.queue.get()
         self.delivered.set()
         return event
@@ -258,7 +282,7 @@ class _PreviewSubscription:
 
 
 class _FailedPreviewSubscription(_PreviewSubscription):
-    async def next_event(self) -> ChatPreviewDelta:
+    async def next_event(self) -> ChatProgressSnapshot:
         raise RuntimeError("preview unavailable")
 
 

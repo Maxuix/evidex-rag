@@ -13,7 +13,6 @@ from rag_kb.domain import (
     ChatPipelinePhase,
     ChatPipelineState,
     ChatRunLease,
-    ContextualizedQuery,
     ErrorCode,
     Evidence,
     EvidencePack,
@@ -113,50 +112,12 @@ class ChatExecutionContextLoader:
         return context
 
 
-class ChatContextualizedQueryStore:
-    """Persist a query artifact using the active ChatRun lease."""
-
-    def __init__(self, unit_of_work: UnitOfWorkFactory) -> None:
-        self._unit_of_work = unit_of_work
-
-    async def persist(
-        self,
-        context: ChatExecutionContext,
-        value: ContextualizedQuery,
-    ) -> ContextualizedQuery | None:
-        async def persist(uow: UnitOfWork) -> ContextualizedQuery | None:
-            return await uow.chat.save_contextualized_query(
-                context.lease, value
-            )
-
-        return await execute_in_transaction(self._unit_of_work, persist)
-
-
 class ChatEvidenceRetriever:
     def __init__(self, retrieval: RetrievalService) -> None:
         self._retrieval = retrieval
 
-    async def retrieve(
-        self,
-        context: ChatExecutionContext,
-        query_context: ContextualizedQuery | None = None,
-    ) -> EvidencePack:
-        try:
-            if query_context is None:
-                query = context.query
-            elif query_context.standalone_query is None:
-                raise ValueError
-            else:
-                query = query_context.standalone_query
-            return await self.retrieve_query(context, query)
-        except ChatPipelineExecutionError:
-            raise
-        except (KeyError, TypeError, ValueError) as error:
-            raise ChatPipelineExecutionError(
-                ErrorCode.CHAT_CONTEXT_INVALID,
-                phase=ChatPipelinePhase.RETRIEVE_EVIDENCE,
-                diagnostic={"check": "retrieval_snapshot"},
-            ) from error
+    async def retrieve(self, context: ChatExecutionContext) -> EvidencePack:
+        return await self.retrieve_query(context, context.query)
 
     async def retrieve_query(
         self,

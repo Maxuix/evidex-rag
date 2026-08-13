@@ -44,9 +44,6 @@ from rag_kb.domain import (
     ChatProgressSnapshot,
     ChatProgressStage,
     ChatProgressUpdate,
-    ChatPreviewDelta,
-    ChatPreviewReset,
-    ChatPreviewResetReason,
     ChatRun,
     ChatSession,
     ChatSessionBusyError,
@@ -2194,7 +2191,7 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
             0,
         )
 
-    async def test_sse_delivers_progress_preview_and_reset_before_terminal(
+    async def test_sse_delivers_progress_before_terminal(
         self,
     ) -> None:
         chat = self.dependencies.chat_service
@@ -2215,13 +2212,6 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
                     ),
                 ),
             ),
-            ChatPreviewDelta(chat.run.id, 1, 1, "未验证片段"),
-            ChatPreviewReset(
-                chat.run.id,
-                1,
-                2,
-                ChatPreviewResetReason.VALIDATION_REPAIR,
-            ),
         )
         broker = _PreviewBroker(subscription)
         self.dependencies.chat_preview_broker = broker
@@ -2235,8 +2225,8 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(streamed.status, 200)
         self.assertIn(b"event: agent.progress", streamed.body)
-        self.assertIn(b"event: answer.preview.delta", streamed.body)
-        self.assertIn(b"event: answer.preview.reset", streamed.body)
+        self.assertNotIn(b"event: answer.preview.delta", streamed.body)
+        self.assertNotIn(b"event: answer.preview.reset", streamed.body)
         self.assertNotIn(b"event: answer.completed", streamed.body)
         data = [
             json.loads(line.removeprefix(b"data: "))
@@ -2264,18 +2254,6 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
                         "missing_aspects": [],
                         "conflict_count": None,
                     },
-                },
-                {
-                    "run_id": str(chat.run.id),
-                    "attempt": 1,
-                    "seq": 1,
-                    "delta": "未验证片段",
-                },
-                {
-                    "run_id": str(chat.run.id),
-                    "attempt": 1,
-                    "seq": 2,
-                    "reason": "validation_repair",
                 },
             ],
         )

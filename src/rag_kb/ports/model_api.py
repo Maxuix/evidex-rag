@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
 from typing import Protocol, runtime_checkable
 
 from rag_kb.domain import (
@@ -17,19 +16,9 @@ from rag_kb.domain import (
 )
 
 
-ChatModelContentDeltaHandler = Callable[[str], Awaitable[None]]
-
-
 @runtime_checkable
 class ChatModelAdapter(Protocol):
     async def complete(self, request: ChatModelRequest) -> ChatModelResponse: ...
-
-    async def complete_streaming(
-        self,
-        request: ChatModelRequest,
-        *,
-        on_content_delta: ChatModelContentDeltaHandler,
-    ) -> ChatModelResponse: ...
 
 
 @runtime_checkable

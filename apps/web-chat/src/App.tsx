@@ -11,8 +11,6 @@ import type {
   ChatMessage,
   ChatProgressSnapshot,
   ChatProgressStage,
-  ChatPreviewDeltaEvent,
-  ChatPreviewResetEvent,
   ChatRun,
   ChatRunCreate,
   ChatSession,
@@ -53,14 +51,6 @@ interface EvidenceSelection {
   run: ChatRun | null;
   runId: string;
   ordinal: number;
-}
-
-interface ChatPreviewState {
-  runId: string | null;
-  attempt: number;
-  lastSeq: number;
-  content: string;
-  mode: "idle" | "streaming" | "verifying" | "discarded";
 }
 
 interface ChatProgressState {
@@ -183,9 +173,6 @@ function KnowledgeChat({
   const [submissionError, setSubmissionError] = useState<string | null>(null);
   const [currentRun, setCurrentRun] = useState<ChatRun | null>(null);
   const [deliveryMode, setDeliveryMode] = useState<"idle" | "sse" | "polling">("idle");
-  const [preview, setPreview] = useState<ChatPreviewState>(
-    () => emptyPreview(null),
-  );
   const [progress, setProgress] = useState<ChatProgressState>(
     () => emptyProgress(null),
   );
@@ -423,7 +410,6 @@ function KnowledgeChat({
   ]);
 
   useEffect(() => {
-    setPreview(emptyPreview(currentRun?.run_id ?? null));
     setProgress(emptyProgress(currentRun?.run_id ?? null));
   }, [currentRun?.run_id]);
 
@@ -434,7 +420,6 @@ function KnowledgeChat({
     }
     setRunCache((current) => ({ ...current, [currentRun.run_id]: currentRun }));
     if (isTerminal(currentRun)) {
-      setPreview(emptyPreview(currentRun.run_id));
       setDeliveryMode("idle");
       if (currentRun.session_id === selectedSessionId) {
         void loadMessages(currentRun.session_id);
@@ -463,7 +448,6 @@ function KnowledgeChat({
       polling = true;
       closeStream?.();
       closeStream = null;
-      setPreview((current) => discardPreview(current, currentRun.run_id));
       setProgress((current) => disconnectProgress(current, currentRun.run_id));
       setDeliveryMode("polling");
       void poll();
@@ -471,7 +455,6 @@ function KnowledgeChat({
     const settle = async (statusUrl: string) => {
       closeStream?.();
       closeStream = null;
-      setPreview(emptyPreview(currentRun.run_id));
       try {
         const next = await client.getChatRun(statusUrl);
         if (!cancelled) setCurrentRun(next);
@@ -483,17 +466,8 @@ function KnowledgeChat({
       open: () => !cancelled && setDeliveryMode("sse"),
       completed: (event) => void settle(event.status_url),
       failed: (event) => void settle(event.status_url),
-      previewDelta: (event) => setPreview(
-        (current) => applyPreviewDelta(current, currentRun.run_id, event),
-      ),
-      previewReset: (event) => setPreview(
-        (current) => applyPreviewReset(current, currentRun.run_id, event),
-      ),
       progress: (event) => setProgress(
         (current) => applyProgress(current, currentRun.run_id, event),
-      ),
-      previewInvalid: () => setPreview(
-        (current) => discardPreview(current, currentRun.run_id),
       ),
       progressInvalid: () => setProgress(
         (current) => disconnectProgress(current, currentRun.run_id),
@@ -919,12 +893,6 @@ function KnowledgeChat({
                   key={message.id}
                   message={message}
                   run={message.run_id ? runCache[message.run_id] ?? null : null}
-                  preview={
-                    message.run_id
-                    && message.run_id === currentRun?.run_id
-                    ? preview
-                    : null
-                  }
                   progress={
                     message.run_id
                     && message.run_id === currentRun?.run_id
@@ -1269,13 +1237,11 @@ function ComposerMenuIcon({ kind }: {
 function Message({
   message,
   run,
-  preview,
   progress,
   onCitation,
 }: {
   message: ChatMessage;
   run: ChatRun | null;
-  preview: ChatPreviewState | null;
   progress: ChatProgressState | null;
   onCitation: (ordinal: number, trigger: HTMLButtonElement) => void;
 }) {
@@ -1301,23 +1267,7 @@ function Message({
             generating={generating}
           />
         ) : null}
-        {generating && preview?.mode === "streaming" && preview.content ? (
-          <div className="answer-preview" aria-live="polite">
-            <div className="preview-label">
-              <span>未验证预览</span>
-              <span>最终回答可能调整</span>
-            </div>
-            <div className="preview-copy">
-              {preview.content}
-              <span className="preview-cursor" aria-hidden="true" />
-            </div>
-          </div>
-        ) : generating && preview?.mode === "verifying" ? (
-          <div className="thinking" aria-live="polite">
-            <span /><span /><span />
-            <strong>正在校验最终回答</strong>
-          </div>
-        ) : generating ? (
+        {generating ? (
           <div className="thinking" aria-live="polite">
             <span /><span /><span />
             <strong>正在查找资料并整理回答</strong>
@@ -1364,7 +1314,6 @@ function AgentSummary({ agent, model }: {
 const PROGRESS_STAGES: ChatProgressStage[] = [
   "understand_query",
   "retrieve_evidence",
-  "assess_evidence",
   "prepare_visual_evidence",
   "generate_answer",
   "validate_answer",
@@ -1559,7 +1508,6 @@ function stageActivity(
   const activities: Record<Exclude<ChatProgressStage, "retrieve_evidence">,
     ChatProgressSnapshot["activity"]> = {
       understand_query: "tool_decision",
-      assess_evidence: "assess_evidence",
       prepare_visual_evidence: "prepare_visual_evidence",
       generate_answer: "generate_answer",
       validate_answer: "validate_answer",
@@ -1641,7 +1589,6 @@ function progressStageLabel(stage: ChatProgressStage): string {
   const labels: Record<ChatProgressStage, string> = {
     understand_query: "理解问题",
     retrieve_evidence: "检索证据",
-    assess_evidence: "评估证据",
     prepare_visual_evidence: "准备素材",
     generate_answer: "生成回答",
     validate_answer: "校验回答",
@@ -1658,9 +1605,6 @@ function activityLabel(activity: ChatProgressSnapshot["activity"]): string {
     calculate: "执行受控计算",
     submit_answer: "提交最终回答",
     retrieval_complete: "整理本轮检索结果",
-    verify_coverage: "检查证据覆盖度",
-    research_complete: "检索阶段结束",
-    assess_evidence: "评估证据是否足够",
     prepare_visual_evidence: "准备可引用的视觉证据",
     generate_answer: "基于证据生成回答",
     validate_answer: "校验结构与引用",
@@ -1677,9 +1621,6 @@ function activityDescription(activity: ChatProgressSnapshot["activity"]): string
     calculate: "只基于已发放证据执行 Decimal 计算。",
     submit_answer: "提交逐 claim 回答并进入确定性引用校验。",
     retrieval_complete: "合并并去重本轮结果，只统计可用证据。",
-    verify_coverage: "检查当前回答所用证据的覆盖、缺口与冲突。",
-    research_complete: "检索工具阶段已结束，进入回答提交与确定性校验。",
-    assess_evidence: "依据已发放证据与回答策略判断充分、部分覆盖或拒答。",
     prepare_visual_evidence: "选择与文字证据相关的图片或表格素材。",
     generate_answer: "Agent 通过 submit_answer 提交逐 claim 回答和引用。",
     validate_answer: "服务端逐 claim 检查引用编号和证据约束。",
@@ -1763,100 +1704,6 @@ function mergeMessages(left: ChatMessage[], right: ChatMessage[]): ChatMessage[]
 
 function isTerminal(run: ChatRun): boolean {
   return ["completed", "failed", "cancelled"].includes(run.status);
-}
-
-function emptyPreview(runId: string | null): ChatPreviewState {
-  return {
-    runId,
-    attempt: 0,
-    lastSeq: 0,
-    content: "",
-    mode: "idle",
-  };
-}
-
-function applyPreviewDelta(
-  current: ChatPreviewState,
-  activeRunId: string,
-  event: ChatPreviewDeltaEvent,
-): ChatPreviewState {
-  if (event.run_id !== activeRunId) return current;
-  const base = current.runId === activeRunId
-    ? current
-    : emptyPreview(activeRunId);
-  if (event.attempt < base.attempt) return base;
-  if (event.attempt > base.attempt) {
-    return event.seq === 1
-      ? {
-        runId: activeRunId,
-        attempt: event.attempt,
-        lastSeq: 1,
-        content: event.delta,
-        mode: "streaming",
-      }
-      : discardPreview(base, activeRunId, event.attempt);
-  }
-  if (base.mode === "discarded") return base;
-  if (base.attempt === 0) {
-    return event.seq === 1
-      ? {
-        runId: activeRunId,
-        attempt: event.attempt,
-        lastSeq: 1,
-        content: event.delta,
-        mode: "streaming",
-      }
-      : discardPreview(base, activeRunId, event.attempt);
-  }
-  if (event.seq !== base.lastSeq + 1) {
-    return discardPreview(base, activeRunId, event.attempt);
-  }
-  return {
-    ...base,
-    lastSeq: event.seq,
-    content: base.content + event.delta,
-    mode: "streaming",
-  };
-}
-
-function applyPreviewReset(
-  current: ChatPreviewState,
-  activeRunId: string,
-  event: ChatPreviewResetEvent,
-): ChatPreviewState {
-  if (event.run_id !== activeRunId) return current;
-  const base = current.runId === activeRunId
-    ? current
-    : emptyPreview(activeRunId);
-  if (event.attempt < base.attempt) return base;
-  if (event.attempt === base.attempt && base.mode === "discarded") return base;
-  const expected = event.attempt > base.attempt
-    ? event.seq === 1
-    : event.seq === base.lastSeq + 1;
-  if (!expected) {
-    return discardPreview(base, activeRunId, event.attempt);
-  }
-  return {
-    runId: activeRunId,
-    attempt: event.attempt,
-    lastSeq: event.seq,
-    content: "",
-    mode: "verifying",
-  };
-}
-
-function discardPreview(
-  current: ChatPreviewState,
-  runId: string,
-  attempt = current.attempt,
-): ChatPreviewState {
-  return {
-    runId,
-    attempt,
-    lastSeq: current.lastSeq,
-    content: "",
-    mode: "discarded",
-  };
 }
 
 function emptyProgress(runId: string | null): ChatProgressState {

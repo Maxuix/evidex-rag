@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass
-from types import MappingProxyType
 from typing import Any
 
 
@@ -94,9 +92,3 @@ class ChatAgentTrace:
             },
             "outcome": self.outcome,
         }
-
-
-def frozen_agent_trace(value: Mapping[str, Any]) -> Mapping[str, Any]:
-    """Make a shallow immutable trace payload for domain transport."""
-
-    return MappingProxyType(dict(value))

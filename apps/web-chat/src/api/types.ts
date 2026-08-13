@@ -497,24 +497,9 @@ export interface ChatTerminalEvent {
   status_url: string;
 }
 
-export interface ChatPreviewDeltaEvent {
-  run_id: UUID;
-  attempt: number;
-  seq: number;
-  delta: string;
-}
-
-export interface ChatPreviewResetEvent {
-  run_id: UUID;
-  attempt: number;
-  seq: number;
-  reason: "generation_failed" | "validation_repair" | "preview_invalid";
-}
-
 export type ChatProgressStage =
   | "understand_query"
   | "retrieve_evidence"
-  | "assess_evidence"
   | "prepare_visual_evidence"
   | "generate_answer"
   | "validate_answer"
@@ -527,9 +512,6 @@ export type ChatProgressActivity =
   | "calculate"
   | "submit_answer"
   | "retrieval_complete"
-  | "verify_coverage"
-  | "research_complete"
-  | "assess_evidence"
   | "prepare_visual_evidence"
   | "generate_answer"
   | "validate_answer"

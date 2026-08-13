@@ -18,8 +18,6 @@ from apps.api.security import get_auth_context
 from rag_kb.auth import AuthContext
 from rag_kb.domain import (
     ChatMessage,
-    ChatPreviewDelta,
-    ChatPreviewReset,
     ChatProgressSnapshot,
     ChatRun,
     ChatSession,
@@ -28,8 +26,6 @@ from rag_kb.services.chat_delivery import ChatSseSubscription
 from rag_kb.schemas import (
     ChatAnswerCompletedEvent,
     ChatAgentResponse,
-    ChatAnswerPreviewEvent,
-    ChatAnswerPreviewResetEvent,
     ChatCitationAssetResponse,
     ChatCitationResponse,
     ChatRunFinalContextResponse,
@@ -264,27 +260,7 @@ async def stream_chat_run_events(
         disconnected=request.is_disconnected,
         preview=subscription.preview,
     ):
-        if isinstance(value, ChatPreviewDelta):
-            yield ServerSentEvent(
-                event="answer.preview.delta",
-                data=ChatAnswerPreviewEvent(
-                    run_id=value.run_id,
-                    attempt=value.attempt,
-                    seq=value.seq,
-                    delta=value.delta,
-                ),
-            )
-        elif isinstance(value, ChatPreviewReset):
-            yield ServerSentEvent(
-                event="answer.preview.reset",
-                data=ChatAnswerPreviewResetEvent(
-                    run_id=value.run_id,
-                    attempt=value.attempt,
-                    seq=value.seq,
-                    reason=value.reason.value,
-                ),
-            )
-        elif isinstance(value, ChatProgressSnapshot):
+        if isinstance(value, ChatProgressSnapshot):
             update = value.update
             facts = update.facts
             yield ServerSentEvent(

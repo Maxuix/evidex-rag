@@ -105,7 +105,6 @@ from rag_kb.domain.chat_pipeline import (
 )
 from rag_kb.domain.chat_preview import (
     CHAT_PROGRESS_VERSION,
-    CHAT_PREVIEW_VERSION,
     MAX_PROGRESS_LIST_ITEMS,
     MAX_PROGRESS_TEXT_LENGTH,
     ChatLiveEvent,
@@ -115,10 +114,7 @@ from rag_kb.domain.chat_preview import (
     ChatProgressStage,
     ChatProgressStatus,
     ChatProgressUpdate,
-    ChatPreviewDelta,
     ChatPreviewEvent,
-    ChatPreviewReset,
-    ChatPreviewResetReason,
 )
 from rag_kb.domain.chat_terminal import (
     ChatFailureSettlementCommand,
@@ -295,7 +291,6 @@ __all__ = [
     "ChatPipelineState",
     "ChatRunLease",
     "CHAT_PROGRESS_VERSION",
-    "CHAT_PREVIEW_VERSION",
     "MAX_PROGRESS_LIST_ITEMS",
     "MAX_PROGRESS_TEXT_LENGTH",
     "ChatLiveEvent",
@@ -305,10 +300,7 @@ __all__ = [
     "ChatProgressStage",
     "ChatProgressStatus",
     "ChatProgressUpdate",
-    "ChatPreviewDelta",
     "ChatPreviewEvent",
-    "ChatPreviewReset",
-    "ChatPreviewResetReason",
     "ContextualizedQuery",
     "ConversationContextSnapshot",
     "ConversationTurn",

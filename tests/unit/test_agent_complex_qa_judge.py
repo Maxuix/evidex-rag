@@ -46,10 +46,6 @@ class _FakeChatModelAdapter:
             raise value
         return value
 
-    async def complete_streaming(self, request, *, on_content_delta):
-        del request, on_content_delta
-        raise AssertionError("offline Judge must not use streaming")
-
 
 def _assessment(
     aspect_id: str | int,

@@ -5,8 +5,6 @@ from __future__ import annotations
 from uuid import UUID
 
 from rag_kb.domain import (
-    MAX_PROGRESS_LIST_ITEMS,
-    MAX_PROGRESS_TEXT_LENGTH,
     ChatProgressActivity,
     ChatProgressFacts,
     ChatProgressStage,
@@ -78,29 +76,3 @@ class ChatProgressReporter:
         except Exception:
             # Live progress is explicitly non-authoritative.
             return
-
-
-def bounded_progress_text(value: str | None) -> str | None:
-    if value is None:
-        return None
-    normalized = " ".join(value.split())
-    if not normalized:
-        return None
-    if len(normalized) <= MAX_PROGRESS_TEXT_LENGTH:
-        return normalized
-    return normalized[: MAX_PROGRESS_TEXT_LENGTH - 1].rstrip() + "…"
-
-
-def bounded_progress_values(
-    values: tuple[str, ...] | list[str],
-    *,
-    maximum: int = MAX_PROGRESS_LIST_ITEMS,
-) -> tuple[str, ...]:
-    output: list[str] = []
-    for value in values:
-        bounded = bounded_progress_text(value)
-        if bounded and bounded not in output:
-            output.append(bounded)
-        if len(output) >= maximum:
-            break
-    return tuple(output)

@@ -306,8 +306,6 @@ def build_worker_dependencies(
     chat_preview_sink = (
         PgNotifyPreviewSink(
             database_settings.runtime_dsn.get_secret_value(),
-            flush_interval_ms=chat_delivery.preview_flush_interval_ms,
-            max_total_bytes=chat_delivery.preview_max_total_bytes,
         )
         if chat_delivery.preview_enabled
         else None

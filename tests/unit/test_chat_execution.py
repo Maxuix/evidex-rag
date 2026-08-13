@@ -5,10 +5,7 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 from rag_kb.domain import (
-    CONTEXTUAL_QUERY_VERSION,
     ChatExecutionContext,
-    ChatModelCallRecord,
-    ChatModelOperation,
     ChatPipelineExecutionError,
     ChatRunLease,
     ErrorCode,
@@ -18,9 +15,6 @@ from rag_kb.domain import (
     RetrievalDebug,
     RetrievalQueryPlan,
     RetrievalStrategy,
-    ContextualizedQuery,
-    QueryContextStatus,
-    QueryRewriteSource,
 )
 from rag_kb.services.chat_execution import ChatEvidenceRetriever
 from rag_kb.retrieval.profile import exact_profile
@@ -55,47 +49,6 @@ def _context() -> ChatExecutionContext:
 
 
 class ChatExecutionServiceTests(unittest.IsolatedAsyncioTestCase):
-    async def test_retrieval_uses_only_the_standalone_query(self) -> None:
-        context = _context()
-
-        class Retrieval:
-            request = None
-
-            async def retrieve(self, auth, request):
-                del auth
-                self.request = request
-                return EvidencePack(
-                    knowledge_base_id=request.knowledge_base_id,
-                    index_revision_id=context.index_revision_id,
-                    strategy=RetrievalStrategy.EXACT_VECTOR,
-                )
-
-        retrieval = Retrieval()
-        query_context = ContextualizedQuery(
-            version=CONTEXTUAL_QUERY_VERSION,
-            status=QueryContextStatus.CONTEXTUALIZED,
-            original_query=context.query,
-            standalone_query="A fully standalone retrieval query",
-            context_hash=context.conversation_context.content_hash,
-            model_calls=(
-                ChatModelCallRecord(
-                    operation=ChatModelOperation.CONTEXTUALIZE_QUERY,
-                    model="fixed-model",
-                    provider_request_id="context-call",
-                    usage={},
-                ),
-            ),
-            created_at=datetime.now(UTC),
-            origin_attempt=1,
-            rewrite_source=QueryRewriteSource.MODEL,
-        )
-
-        await ChatEvidenceRetriever(retrieval).retrieve(context, query_context)  # type: ignore[arg-type]
-
-        self.assertEqual(
-            retrieval.request.query, "A fully standalone retrieval query"
-        )
-
     async def test_retrieval_fails_closed_when_active_revision_moved(self) -> None:
         context = _context()
 

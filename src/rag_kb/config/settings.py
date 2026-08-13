@@ -233,10 +233,6 @@ class ChatDeliverySettings(StrictSettingsModel):
     max_connection_duration_seconds: PositiveFloat = 600.0
     max_connections_per_principal_run: PositiveInt = 2
     preview_enabled: bool = False
-    preview_flush_interval_ms: Annotated[int, Field(ge=100, le=2000)] = 250
-    preview_max_total_bytes: Annotated[
-        int, Field(ge=4096, le=262_144)
-    ] = 65_536
     preview_queue_size: Annotated[int, Field(ge=8, le=256)] = 64
 
 

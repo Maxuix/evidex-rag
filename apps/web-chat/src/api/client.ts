@@ -1,8 +1,6 @@
 import type {
   ApiProblem,
   ChatMessage,
-  ChatPreviewDeltaEvent,
-  ChatPreviewResetEvent,
   ChatProgressSnapshot,
   ChatRun,
   ChatRunCreate,
@@ -398,10 +396,7 @@ export class ApiClient {
     handlers: {
       completed: (event: ChatTerminalEvent) => void;
       failed: (event: ChatTerminalEvent) => void;
-      previewDelta: (event: ChatPreviewDeltaEvent) => void;
-      previewReset: (event: ChatPreviewResetEvent) => void;
       progress: (event: ChatProgressSnapshot) => void;
-      previewInvalid: () => void;
       progressInvalid: () => void;
       error: () => void;
       open?: () => void;
@@ -416,14 +411,6 @@ export class ApiClient {
       const value = parseSseData(event);
       value ? handlers.failed(value) : handlers.error();
     };
-    const previewDelta = (event: Event) => {
-      const value = parsePreviewDelta(event);
-      value ? handlers.previewDelta(value) : handlers.previewInvalid();
-    };
-    const previewReset = (event: Event) => {
-      const value = parsePreviewReset(event);
-      value ? handlers.previewReset(value) : handlers.previewInvalid();
-    };
     const progress = (event: Event) => {
       const value = parseProgressSnapshot(event);
       value ? handlers.progress(value) : handlers.progressInvalid();
@@ -432,16 +419,12 @@ export class ApiClient {
     const error = () => handlers.error();
     source.addEventListener("answer.completed", completed);
     source.addEventListener("run.failed", failed);
-    source.addEventListener("answer.preview.delta", previewDelta);
-    source.addEventListener("answer.preview.reset", previewReset);
     source.addEventListener("agent.progress", progress);
     source.addEventListener("open", open);
     source.addEventListener("error", error);
     return () => {
       source.removeEventListener("answer.completed", completed);
       source.removeEventListener("run.failed", failed);
-      source.removeEventListener("answer.preview.delta", previewDelta);
-      source.removeEventListener("answer.preview.reset", previewReset);
       source.removeEventListener("agent.progress", progress);
       source.removeEventListener("open", open);
       source.removeEventListener("error", error);
@@ -590,39 +573,6 @@ function parseSseData(event: Event): ChatTerminalEvent | null {
   }
 }
 
-function parsePreviewDelta(event: Event): ChatPreviewDeltaEvent | null {
-  const value = parseJsonObject(event);
-  if (
-    !value
-    || !hasExactKeys(value, ["run_id", "attempt", "seq", "delta"])
-    || typeof value.run_id !== "string"
-    || !isPositiveInteger(value.attempt)
-    || !isPositiveInteger(value.seq)
-    || typeof value.delta !== "string"
-    || value.delta.length === 0
-  ) return null;
-  return value as unknown as ChatPreviewDeltaEvent;
-}
-
-function parsePreviewReset(event: Event): ChatPreviewResetEvent | null {
-  const value = parseJsonObject(event);
-  const reasons = new Set([
-    "generation_failed",
-    "validation_repair",
-    "preview_invalid",
-  ]);
-  if (
-    !value
-    || !hasExactKeys(value, ["run_id", "attempt", "seq", "reason"])
-    || typeof value.run_id !== "string"
-    || !isPositiveInteger(value.attempt)
-    || !isPositiveInteger(value.seq)
-    || typeof value.reason !== "string"
-    || !reasons.has(value.reason)
-  ) return null;
-  return value as unknown as ChatPreviewResetEvent;
-}
-
 function parseProgressSnapshot(event: Event): ChatProgressSnapshot | null {
   const value = parseJsonObject(event);
   if (
@@ -644,7 +594,6 @@ function parseProgressSnapshot(event: Event): ChatProgressSnapshot | null {
   const stages = new Set([
     "understand_query",
     "retrieve_evidence",
-    "assess_evidence",
     "prepare_visual_evidence",
     "generate_answer",
     "validate_answer",
@@ -657,9 +606,6 @@ function parseProgressSnapshot(event: Event): ChatProgressSnapshot | null {
     "calculate",
     "submit_answer",
     "retrieval_complete",
-    "verify_coverage",
-    "research_complete",
-    "assess_evidence",
     "prepare_visual_evidence",
     "generate_answer",
     "validate_answer",

@@ -61,10 +61,6 @@ class _ChatModel:
     async def complete(self, request: ChatModelRequest) -> ChatModelResponse:
         return ChatModelResponse(self.model, self.model, None, None, {})
 
-    async def complete_streaming(self, request, *, on_content_delta):
-        await on_content_delta(self.model)
-        return await self.complete(request)
-
 
 class ModelSettingsTests(unittest.TestCase):
     def test_profile_response_ignores_retired_chat_configuration_fields(self) -> None:

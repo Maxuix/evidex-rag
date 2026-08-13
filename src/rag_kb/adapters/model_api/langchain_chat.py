@@ -23,8 +23,6 @@ from rag_kb.domain import (
     ChatModelResponse,
     ErrorCode,
 )
-from rag_kb.ports.model_api import ChatModelContentDeltaHandler
-
 
 _MAX_REQUEST_CONTENT_BYTES = 1024 * 1024
 _MAX_RESPONSE_CONTENT_BYTES = 2 * 1024 * 1024
@@ -109,22 +107,6 @@ class LangChainChatModelAdapter:
             lambda: self._invoke(
                 request,
                 to_langchain_messages(request.messages),
-            )
-        )
-        return _validated_response(response)
-
-    async def complete_streaming(
-        self,
-        request: ChatModelRequest,
-        *,
-        on_content_delta: ChatModelContentDeltaHandler,
-    ) -> ChatModelResponse:
-        self._validate_request(request)
-        response = await self._execute(
-            lambda: self._stream(
-                request,
-                to_langchain_messages(request.messages),
-                on_content_delta,
             )
         )
         return _validated_response(response)
@@ -218,47 +200,6 @@ class LangChainChatModelAdapter:
             )
             return await model.ainvoke(messages)
         return await model.ainvoke(messages)
-
-    async def _stream(
-        self,
-        request: ChatModelRequest,
-        messages: list[Any],
-        on_content_delta: ChatModelContentDeltaHandler,
-    ) -> ChatModelResponse:
-        if request.tools:
-            raise ChatModelExecutionError(
-                ErrorCode.CHAT_RESPONSE_INVALID,
-                diagnostic={"check": "tool_streaming_unsupported"},
-            )
-        output_limit = self._output_limit(request)
-        model = _model_with_request_options(
-            self._model,
-            max_tokens=output_limit,
-            thinking_enabled=request.thinking_enabled,
-        )
-        combined = None
-        content_bytes = 0
-        async for chunk in model.astream(messages, stream_usage=True):
-            combined = chunk if combined is None else combined + chunk
-            content = chunk.content
-            if isinstance(content, str) and content:
-                content_bytes += len(content.encode("utf-8"))
-                if content_bytes > _MAX_RESPONSE_CONTENT_BYTES:
-                    raise ChatModelExecutionError(
-                        ErrorCode.CHAT_RESPONSE_INVALID,
-                        diagnostic={"check": "response_content_size"},
-                    )
-                try:
-                    await on_content_delta(content)
-                except Exception:
-                    pass
-        if combined is None:
-            raise ChatModelExecutionError(
-                ErrorCode.CHAT_RESPONSE_INVALID,
-                diagnostic={"check": "stream_empty"},
-            )
-        mapped = from_langchain_message(combined)
-        return mapped
 
     def _output_limit(self, request: ChatModelRequest) -> int | None:
         if request.max_output_tokens is None:

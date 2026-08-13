@@ -10,9 +10,10 @@ from rag_kb.adapters.chat_preview.pg_notify import (
     PgNotifyPreviewSink,
 )
 from rag_kb.domain import (
-    ChatPreviewDelta,
-    ChatPreviewReset,
-    ChatPreviewResetReason,
+    ChatProgressActivity,
+    ChatProgressSnapshot,
+    ChatProgressStage,
+    ChatProgressUpdate,
 )
 
 
@@ -30,28 +31,32 @@ class ChatPreviewPostgresTests(unittest.IsolatedAsyncioTestCase):
             RUNTIME_SQLALCHEMY_DSN,
             subscriber_queue_size=8,
         )
-        sink = PgNotifyPreviewSink(
-            RUNTIME_SQLALCHEMY_DSN,
-            flush_interval_ms=10,
-            max_total_bytes=4_096,
-        )
+        sink = PgNotifyPreviewSink(RUNTIME_SQLALCHEMY_DSN)
         run_id = uuid4()
         subscription = await broker.subscribe(run_id)
+        first_update = ChatProgressUpdate(
+            ChatProgressStage.UNDERSTAND_QUERY,
+            ChatProgressActivity.LOAD_CONTEXT,
+        )
+        second_update = ChatProgressUpdate(
+            ChatProgressStage.RETRIEVE_EVIDENCE,
+            ChatProgressActivity.TOOL_DECISION,
+            completed_stages=(ChatProgressStage.UNDERSTAND_QUERY,),
+        )
         try:
             self.assertTrue(await broker.start())
             self.assertTrue(await sink.start())
 
-            await sink.emit_delta(run_id=run_id, attempt=2, delta="你")
-            await sink.emit_delta(run_id=run_id, attempt=2, delta="好")
+            await sink.emit_progress(
+                run_id=run_id, attempt=2, update=first_update
+            )
             first = await asyncio.wait_for(
                 subscription.next_event(),
                 timeout=2,
             )
 
-            await sink.emit_reset(
-                run_id=run_id,
-                attempt=2,
-                reason=ChatPreviewResetReason.VALIDATION_REPAIR,
+            await sink.emit_progress(
+                run_id=run_id, attempt=2, update=second_update
             )
             second = await asyncio.wait_for(
                 subscription.next_event(),
@@ -62,15 +67,13 @@ class ChatPreviewPostgresTests(unittest.IsolatedAsyncioTestCase):
             await sink.close()
             await broker.close()
 
-        self.assertEqual(first, ChatPreviewDelta(run_id, 2, 1, "你好"))
+        self.assertEqual(
+            first,
+            ChatProgressSnapshot(run_id, 2, 1, first_update),
+        )
         self.assertEqual(
             second,
-            ChatPreviewReset(
-                run_id,
-                2,
-                2,
-                ChatPreviewResetReason.VALIDATION_REPAIR,
-            ),
+            ChatProgressSnapshot(run_id, 2, 2, second_update),
         )
 
 

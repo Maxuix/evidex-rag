@@ -15,17 +15,13 @@ import asyncpg
 
 from rag_kb.domain.chat_preview import (
     CHAT_PROGRESS_VERSION,
-    CHAT_PREVIEW_VERSION,
     ChatProgressActivity,
     ChatProgressFacts,
     ChatProgressSnapshot,
     ChatProgressStage,
     ChatProgressStatus,
     ChatProgressUpdate,
-    ChatPreviewDelta,
     ChatPreviewEvent,
-    ChatPreviewReset,
-    ChatPreviewResetReason,
 )
 from rag_kb.observability import get_logger, log_exception
 
@@ -33,25 +29,10 @@ from rag_kb.observability import get_logger, log_exception
 CHAT_PREVIEW_CHANNEL = "rag_kb_chat_preview_v1"
 MAX_NOTIFY_PAYLOAD_BYTES = 4_000
 _MAX_ATTEMPT_STATES = 1_024
-_MAX_STOPPED_ATTEMPTS = 1_024
 _RECONNECT_DELAYS_SECONDS = (0.25, 1.0, 2.0, 5.0)
 _LOGGER = get_logger("rag_kb.chat_preview.pg_notify")
 _Connect = Callable[..., Awaitable[Any]]
 _Sleep = Callable[[float], Awaitable[None]]
-
-
-@dataclass(frozen=True, slots=True)
-class _DeltaCommand:
-    run_id: UUID
-    attempt: int
-    delta: str
-
-
-@dataclass(frozen=True, slots=True)
-class _ResetCommand:
-    run_id: UUID
-    attempt: int
-    reason: ChatPreviewResetReason
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,43 +42,23 @@ class _ProgressCommand:
     update: ChatProgressUpdate
 
 
-@dataclass(slots=True)
-class _AttemptState:
-    next_seq: int = 1
-    total_bytes: int = 0
-    buffer: str = ""
-    flush_at: float | None = None
-
-
 class PgNotifyPreviewSink:
-    """Batch preview text and publish bounded, versioned NOTIFY payloads."""
+    """Publish bounded, versioned Agent-progress NOTIFY payloads."""
 
     def __init__(
         self,
         sqlalchemy_dsn: str,
         *,
-        flush_interval_ms: int,
-        max_total_bytes: int,
         command_queue_size: int = 256,
         connect: _Connect = asyncpg.connect,
     ) -> None:
-        if flush_interval_ms < 1:
-            raise ValueError("preview flush interval must be positive")
-        if max_total_bytes < 1 or command_queue_size < 1:
+        if command_queue_size < 1:
             raise ValueError("preview sink limits must be positive")
         self._dsn = _asyncpg_dsn(sqlalchemy_dsn)
-        self._flush_interval_seconds = flush_interval_ms / 1_000
-        self._max_total_bytes = max_total_bytes
         self._connect = connect
-        self._commands: asyncio.Queue[
-            _DeltaCommand | _ResetCommand | _ProgressCommand
-        ] = (
-            asyncio.Queue(maxsize=command_queue_size)
+        self._commands: asyncio.Queue[_ProgressCommand] = asyncio.Queue(
+            maxsize=command_queue_size
         )
-        self._forced_resets: dict[
-            tuple[UUID, int], ChatPreviewResetReason
-        ] = {}
-        self._stopped_keys: OrderedDict[tuple[UUID, int], None] = OrderedDict()
         self._worker_task: asyncio.Task[None] | None = None
         self._connection: Any | None = None
         self._connection_lock = asyncio.Lock()
@@ -125,42 +86,6 @@ class PgNotifyPreviewSink:
             await asyncio.gather(task, return_exceptions=True)
         await self._discard_connection()
 
-    async def emit_delta(
-        self,
-        *,
-        run_id: UUID,
-        attempt: int,
-        delta: str,
-    ) -> None:
-        if self._closed or not delta:
-            return
-        key = (run_id, attempt)
-        if key in self._stopped_keys or key in self._forced_resets:
-            return
-        self._ensure_worker()
-        try:
-            self._commands.put_nowait(_DeltaCommand(run_id, attempt, delta))
-        except asyncio.QueueFull:
-            self._forced_resets[key] = ChatPreviewResetReason.PREVIEW_INVALID
-            self._mark_stopped(key)
-
-    async def emit_reset(
-        self,
-        *,
-        run_id: UUID,
-        attempt: int,
-        reason: ChatPreviewResetReason,
-    ) -> None:
-        if self._closed:
-            return
-        key = (run_id, attempt)
-        self._mark_stopped(key)
-        self._ensure_worker()
-        try:
-            self._commands.put_nowait(_ResetCommand(run_id, attempt, reason))
-        except asyncio.QueueFull:
-            self._forced_resets[key] = reason
-
     async def emit_progress(
         self,
         *,
@@ -185,30 +110,10 @@ class PgNotifyPreviewSink:
             )
 
     async def _run(self) -> None:
-        states: dict[tuple[UUID, int], _AttemptState] = {}
         progress_sequences: OrderedDict[tuple[UUID, int], int] = OrderedDict()
-        loop = asyncio.get_running_loop()
         while not self._closed:
-            await self._publish_forced_resets(states)
-            timeout = _next_flush_timeout(states, loop.time())
-            try:
-                if timeout is None:
-                    command = await self._commands.get()
-                else:
-                    command = await asyncio.wait_for(
-                        self._commands.get(),
-                        timeout=timeout,
-                    )
-            except TimeoutError:
-                command = None
-
-            if isinstance(command, _DeltaCommand):
-                await self._accept_delta(states, command, loop.time())
-            elif isinstance(command, _ResetCommand):
-                await self._publish_reset(states, command)
-            elif isinstance(command, _ProgressCommand):
-                await self._publish_progress(progress_sequences, command)
-            await self._flush_due(states, loop.time())
+            command = await self._commands.get()
+            await self._publish_progress(progress_sequences, command)
 
     async def _publish_progress(
         self,
@@ -232,100 +137,6 @@ class PgNotifyPreviewSink:
         except (UnicodeError, ValueError):
             return
         await self._notify(payload)
-
-    async def _accept_delta(
-        self,
-        states: dict[tuple[UUID, int], _AttemptState],
-        command: _DeltaCommand,
-        now: float,
-    ) -> None:
-        key = (command.run_id, command.attempt)
-        if key in self._stopped_keys:
-            return
-        state = states.get(key)
-        if state is None:
-            if len(states) >= _MAX_ATTEMPT_STATES:
-                states.pop(next(iter(states)))
-            state = _AttemptState()
-            states[key] = state
-        available = self._max_total_bytes - state.total_bytes
-        accepted = _utf8_prefix(command.delta, available)
-        if not accepted:
-            self._mark_stopped(key)
-            return
-        accepted_bytes = len(accepted.encode("utf-8"))
-        state.buffer += accepted
-        state.total_bytes += accepted_bytes
-        if state.flush_at is None:
-            state.flush_at = now + self._flush_interval_seconds
-        if accepted != command.delta or state.total_bytes >= self._max_total_bytes:
-            self._mark_stopped(key)
-        if not _delta_payload_fits(
-            command.run_id,
-            command.attempt,
-            state.next_seq,
-            state.buffer,
-        ):
-            await self._flush(key, state)
-
-    async def _flush_due(
-        self,
-        states: dict[tuple[UUID, int], _AttemptState],
-        now: float,
-    ) -> None:
-        for key, state in tuple(states.items()):
-            if state.flush_at is not None and state.flush_at <= now:
-                await self._flush(key, state)
-
-    async def _flush(
-        self,
-        key: tuple[UUID, int],
-        state: _AttemptState,
-    ) -> None:
-        if not state.buffer:
-            state.flush_at = None
-            return
-        run_id, attempt = key
-        payloads = serialize_preview_delta_payloads(
-            run_id=run_id,
-            attempt=attempt,
-            starting_seq=state.next_seq,
-            delta=state.buffer,
-        )
-        state.buffer = ""
-        state.flush_at = None
-        state.next_seq += len(payloads)
-        for payload in payloads:
-            await self._notify(payload)
-
-    async def _publish_reset(
-        self,
-        states: dict[tuple[UUID, int], _AttemptState],
-        command: _ResetCommand,
-    ) -> None:
-        key = (command.run_id, command.attempt)
-        state = states.pop(key, _AttemptState())
-        payload = serialize_preview_event(
-            ChatPreviewReset(
-                run_id=command.run_id,
-                attempt=command.attempt,
-                seq=state.next_seq,
-                reason=command.reason,
-            )
-        )
-        await self._notify(payload)
-
-    async def _publish_forced_resets(
-        self,
-        states: dict[tuple[UUID, int], _AttemptState],
-    ) -> None:
-        pending = tuple(self._forced_resets.items())
-        self._forced_resets.clear()
-        for (run_id, attempt), reason in pending:
-            await self._publish_reset(
-                states,
-                _ResetCommand(run_id, attempt, reason),
-            )
 
     async def _notify(self, payload: str) -> None:
         connection = await self._ensure_connection()
@@ -386,12 +197,6 @@ class PgNotifyPreviewSink:
             level=logging.WARNING,
             component="notify_sink",
         )
-
-    def _mark_stopped(self, key: tuple[UUID, int]) -> None:
-        self._stopped_keys.pop(key, None)
-        self._stopped_keys[key] = None
-        if len(self._stopped_keys) > _MAX_STOPPED_ATTEMPTS:
-            self._stopped_keys.popitem(last=False)
 
 
 class PgNotifyPreviewSubscription:
@@ -606,48 +411,29 @@ class PgNotifyPreviewBroker:
 
 
 def serialize_preview_event(event: ChatPreviewEvent) -> str:
-    if isinstance(event, ChatPreviewDelta):
-        payload: dict[str, object] = {
-            "version": CHAT_PREVIEW_VERSION,
-            "event": "answer.preview.delta",
-            "run_id": str(event.run_id),
-            "attempt": event.attempt,
-            "seq": event.seq,
-            "delta": event.delta,
-        }
-    elif isinstance(event, ChatPreviewReset):
-        payload = {
-            "version": CHAT_PREVIEW_VERSION,
-            "event": "answer.preview.reset",
-            "run_id": str(event.run_id),
-            "attempt": event.attempt,
-            "seq": event.seq,
-            "reason": event.reason.value,
-        }
-    else:
-        update = event.update
-        facts = update.facts
-        payload = {
-            "version": CHAT_PROGRESS_VERSION,
-            "event": "agent.progress",
-            "run_id": str(event.run_id),
-            "attempt": event.attempt,
-            "seq": event.seq,
-            "active_stage": update.active_stage.value,
-            "activity": update.activity.value,
-            "completed_stages": [item.value for item in update.completed_stages],
-            "status": update.status.value,
-            "facts": {
-                "objective": facts.objective,
-                "queries": list(facts.queries),
-                "evidence_count": facts.evidence_count,
-                "new_evidence_count": facts.new_evidence_count,
-                "retrieval_calls": facts.retrieval_calls,
-                "covered_aspects": list(facts.covered_aspects),
-                "missing_aspects": list(facts.missing_aspects),
-                "conflict_count": facts.conflict_count,
-            },
-        }
+    update = event.update
+    facts = update.facts
+    payload: dict[str, object] = {
+        "version": CHAT_PROGRESS_VERSION,
+        "event": "agent.progress",
+        "run_id": str(event.run_id),
+        "attempt": event.attempt,
+        "seq": event.seq,
+        "active_stage": update.active_stage.value,
+        "activity": update.activity.value,
+        "completed_stages": [item.value for item in update.completed_stages],
+        "status": update.status.value,
+        "facts": {
+            "objective": facts.objective,
+            "queries": list(facts.queries),
+            "evidence_count": facts.evidence_count,
+            "new_evidence_count": facts.new_evidence_count,
+            "retrieval_calls": facts.retrieval_calls,
+            "covered_aspects": list(facts.covered_aspects),
+            "missing_aspects": list(facts.missing_aspects),
+            "conflict_count": facts.conflict_count,
+        },
+    }
     encoded = json.dumps(
         payload,
         ensure_ascii=False,
@@ -659,54 +445,6 @@ def serialize_preview_event(event: ChatPreviewEvent) -> str:
     return encoded
 
 
-def serialize_preview_delta_payloads(
-    *,
-    run_id: UUID,
-    attempt: int,
-    starting_seq: int,
-    delta: str,
-) -> tuple[str, ...]:
-    if not delta or attempt < 1 or starting_seq < 1:
-        raise ValueError("invalid preview delta serialization input")
-    payloads: list[str] = []
-    remaining = delta
-    seq = starting_seq
-    while remaining:
-        low = 1
-        high = len(remaining)
-        accepted = 0
-        while low <= high:
-            middle = (low + high) // 2
-            event = ChatPreviewDelta(
-                run_id=run_id,
-                attempt=attempt,
-                seq=seq,
-                delta=remaining[:middle],
-            )
-            try:
-                serialize_preview_event(event)
-            except (UnicodeError, ValueError):
-                high = middle - 1
-            else:
-                accepted = middle
-                low = middle + 1
-        if accepted == 0:
-            raise ValueError("preview delta cannot fit in one NOTIFY payload")
-        payloads.append(
-            serialize_preview_event(
-                ChatPreviewDelta(
-                    run_id=run_id,
-                    attempt=attempt,
-                    seq=seq,
-                    delta=remaining[:accepted],
-                )
-            )
-        )
-        remaining = remaining[accepted:]
-        seq += 1
-    return tuple(payloads)
-
-
 def parse_preview_payload(payload: str) -> ChatPreviewEvent:
     if len(payload.encode("utf-8")) > MAX_NOTIFY_PAYLOAD_BYTES:
         raise ValueError("chat preview NOTIFY payload exceeds its byte limit")
@@ -714,44 +452,11 @@ def parse_preview_payload(payload: str) -> ChatPreviewEvent:
         value = json.loads(payload)
     except json.JSONDecodeError as error:
         raise ValueError("invalid chat preview JSON") from error
-    if not isinstance(value, dict) or value.get("version") not in {
-        CHAT_PREVIEW_VERSION,
-        CHAT_PROGRESS_VERSION,
-    }:
+    if not isinstance(value, dict) or value.get("version") != CHAT_PROGRESS_VERSION:
         raise ValueError("invalid chat preview version")
-    event_type = value.get("event")
-    if event_type == "agent.progress":
-        return _parse_progress_payload(value)
-    expected_keys = {
-        "version",
-        "event",
-        "run_id",
-        "attempt",
-        "seq",
-        "delta" if event_type == "answer.preview.delta" else "reason",
-    }
-    if set(value) != expected_keys:
-        raise ValueError("invalid chat preview fields")
-    attempt = value.get("attempt")
-    seq = value.get("seq")
-    if type(attempt) is not int or type(seq) is not int:
-        raise ValueError("invalid chat preview sequence")
-    try:
-        run_id = UUID(value["run_id"])
-    except (AttributeError, TypeError, ValueError) as error:
-        raise ValueError("invalid chat preview run ID") from error
-    if event_type == "answer.preview.delta":
-        delta = value.get("delta")
-        if not isinstance(delta, str):
-            raise ValueError("invalid chat preview delta")
-        return ChatPreviewDelta(run_id, attempt, seq, delta)
-    if event_type == "answer.preview.reset":
-        try:
-            reason = ChatPreviewResetReason(value.get("reason"))
-        except (TypeError, ValueError) as error:
-            raise ValueError("invalid chat preview reset reason") from error
-        return ChatPreviewReset(run_id, attempt, seq, reason)
-    raise ValueError("invalid chat preview event type")
+    if value.get("event") != "agent.progress":
+        raise ValueError("invalid chat preview event type")
+    return _parse_progress_payload(value)
 
 
 def _parse_progress_payload(value: dict[str, Any]) -> ChatProgressSnapshot:
@@ -845,42 +550,6 @@ def _string_tuple(value: Any) -> tuple[str, ...]:
 
 def _enum_tuple(value: Any, enum: Any) -> tuple[Any, ...]:
     return tuple(enum(item) for item in _string_tuple(value))
-
-
-def _delta_payload_fits(
-    run_id: UUID,
-    attempt: int,
-    seq: int,
-    delta: str,
-) -> bool:
-    try:
-        serialize_preview_event(ChatPreviewDelta(run_id, attempt, seq, delta))
-    except (UnicodeError, ValueError):
-        return False
-    return True
-
-
-def _utf8_prefix(value: str, max_bytes: int) -> str:
-    if max_bytes <= 0:
-        return ""
-    encoded = value.encode("utf-8")
-    if len(encoded) <= max_bytes:
-        return value
-    return encoded[:max_bytes].decode("utf-8", errors="ignore")
-
-
-def _next_flush_timeout(
-    states: dict[tuple[UUID, int], _AttemptState],
-    now: float,
-) -> float | None:
-    deadlines = tuple(
-        state.flush_at
-        for state in states.values()
-        if state.flush_at is not None
-    )
-    if not deadlines:
-        return None
-    return max(0.0, min(deadlines) - now)
 
 
 def _connection_open(connection: Any | None) -> bool:

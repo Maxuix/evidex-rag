@@ -18,8 +18,6 @@ class EvidenceCoverage(StrEnum):
     SUFFICIENT = "sufficient"
     PARTIAL = "partial"
     NONE = "none"
-    AMBIGUOUS = "ambiguous"
-    CONFLICT = "conflict"
 
 
 class AnswerOutcome(StrEnum):
@@ -37,8 +35,6 @@ class AnswerDraftSource(StrEnum):
 class AnswerControlReason(StrEnum):
     INSUFFICIENT_EVIDENCE = "insufficient_evidence"
     NO_USABLE_EVIDENCE = "no_usable_evidence"
-    AMBIGUOUS_QUESTION = "ambiguous_question"
-    CONFLICT_UNRESOLVED = "conflict_unresolved"
     STRUCTURE_VALIDATION_FAILED = "structure_validation_failed"
 
 
@@ -147,12 +143,6 @@ class EvidenceAssessment:
             self.usable_citation_ids or self.supported_aspects
         ):
             raise ValueError("no usable evidence cannot declare supported aspects")
-        if self.coverage is EvidenceCoverage.AMBIGUOUS and (
-            self.usable_citation_ids
-            or self.supported_aspects
-            or not self.missing_aspects
-        ):
-            raise ValueError("ambiguous questions require only missing clarification")
 
 
 @dataclass(frozen=True, slots=True)

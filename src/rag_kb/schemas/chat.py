@@ -16,7 +16,6 @@ from rag_kb.schemas.common import OpaqueCursor, PublicSchema
 ChatProgressStageValue = Literal[
     "understand_query",
     "retrieve_evidence",
-    "assess_evidence",
     "prepare_visual_evidence",
     "generate_answer",
     "validate_answer",
@@ -319,24 +318,6 @@ class ChatRunFailedEvent(PublicSchema):
     status_url: str
 
 
-class ChatAnswerPreviewEvent(PublicSchema):
-    run_id: UUID
-    attempt: Annotated[int, Field(ge=1)]
-    seq: Annotated[int, Field(ge=1)]
-    delta: Annotated[str, Field(min_length=1)]
-
-
-class ChatAnswerPreviewResetEvent(PublicSchema):
-    run_id: UUID
-    attempt: Annotated[int, Field(ge=1)]
-    seq: Annotated[int, Field(ge=1)]
-    reason: Literal[
-        "generation_failed",
-        "validation_repair",
-        "preview_invalid",
-    ]
-
-
 class ChatAgentProgressFacts(PublicSchema):
     objective: Annotated[str, Field(max_length=160)] | None
     queries: Annotated[tuple[Annotated[str, Field(max_length=160)], ...], Field(max_length=3)]
@@ -364,16 +345,13 @@ class ChatAgentProgressEvent(PublicSchema):
         "calculate",
         "submit_answer",
         "retrieval_complete",
-        "verify_coverage",
-        "research_complete",
-        "assess_evidence",
         "prepare_visual_evidence",
         "generate_answer",
         "validate_answer",
         "persist_result",
     ]
     completed_stages: Annotated[
-        tuple[ChatProgressStageValue, ...], Field(max_length=8)
+        tuple[ChatProgressStageValue, ...], Field(max_length=6)
     ]
     status: Literal["active", "completed"]
     facts: ChatAgentProgressFacts

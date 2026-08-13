@@ -26,12 +26,9 @@ from rag_kb.domain.memory import (
 
 class ChatPipelinePhase(StrEnum):
     LOAD_CONTEXT = "load_context"
-    CONTEXTUALIZE_QUERY = "contextualize_query"
     RETRIEVE_EVIDENCE = "retrieve_evidence"
-    ASSESS_EVIDENCE = "assess_evidence"
     PREPARE_VISUAL_EVIDENCE = "prepare_visual_evidence"
     GENERATE_OR_REFUSE = "generate_or_refuse"
-    VALIDATE_STRUCTURE = "validate_structure"
     PERSIST_RESULT = "persist_result"
 
 
