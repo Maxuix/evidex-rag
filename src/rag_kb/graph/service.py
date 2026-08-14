@@ -11,6 +11,7 @@ from uuid import UUID, uuid4
 from rag_kb.auth import AccessPolicy, AuthContext
 from rag_kb.domain import (
     GRAPH_EXTRACTOR_VERSION,
+    GraphAdmissionStats,
     GraphChunkExtraction,
     GraphChunkResultStatus,
     GraphConfigSnapshot,
@@ -25,7 +26,11 @@ from rag_kb.domain import (
     ResourceNotFoundError,
     ResourceStateConflictError,
 )
-from rag_kb.graph.extraction import graph_protocol_error_family, parse_graph_extraction
+from rag_kb.graph.extraction import (
+    graph_protocol_error_family,
+    graph_protocol_error_is_repairable,
+    parse_graph_extraction,
+)
 from rag_kb.observability import get_logger, log_event
 from rag_kb.ports.model_api import ChatModelAdapter
 from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, UnitOfWorkPurpose, execute_in_transaction
@@ -38,23 +43,9 @@ _TRUNCATED_FINISH_REASONS = frozenset(
     {"length", "max_tokens", "max_output_tokens", "content_filter_length"}
 )
 _REPAIR_RULES = {
-    "support_text_not_locatable": (
-        "Copy every surface and support from the chunk; delete any item that cannot be located."
-    ),
-    "relation_support_missing_endpoint": (
-        "Every relation support must explicitly contain both referenced entity surfaces; "
-        "delete the relation if it does not."
-    ),
-    "relation_endpoint_unknown": (
-        "Every relation endpoint must reference an entity id defined in this response; "
-        "delete the relation if it cannot be corrected."
-    ),
     "json_invalid": "Return one JSON object parseable by json.loads, with no fence or explanation.",
     "schema_invalid": (
         "Use only the specified keys, entity type enum, JSON value types, and null rules."
-    ),
-    "self_relation": (
-        "Delete every relation whose subject and object resolve to the same entity."
     ),
 }
 _JSON_SKELETON = (
@@ -290,6 +281,8 @@ class GraphExtractionWorker:
                     trace_id=trace_id,
                     knowledge_base_id=work.config.knowledge_base_id,
                 )
+                if not graph_protocol_error_is_repairable(initial_error.code):
+                    raise
                 repair = await self._complete(
                     revision_id,
                     chunk.content,
@@ -323,6 +316,7 @@ class GraphExtractionWorker:
             extraction = GraphChunkExtraction(
                 result_status=GraphChunkResultStatus.SKIPPED_PROTOCOL,
                 error_code=error.code,
+                admission=error.admission,
             )
         except ChatModelExecutionError:
             await self._mark_failed(work, ErrorCode.GRAPH_PROVIDER_UNAVAILABLE.value)
@@ -330,12 +324,18 @@ class GraphExtractionWorker:
         except Exception:
             await self._mark_failed(work, ErrorCode.GRAPH_BUILD_FAILED.value)
             return
+        _log_admission(extraction.admission, trace_id=trace_id, knowledge_base_id=work.config.knowledge_base_id)
         log_event(
             _LOGGER,
             "graph_extraction_final",
             phase="final",
             outcome=extraction.result_status.value,
             error_code=extraction.error_code,
+            dropped_entity_count=extraction.admission.dropped_entity_count,
+            dropped_relation_count=extraction.admission.dropped_relation_count,
+            dropped_relation_grounding_count=(
+                extraction.admission.dropped_relation_grounding_count
+            ),
             trace_id=trace_id,
             knowledge_base_id=work.config.knowledge_base_id,
         )
@@ -442,6 +442,29 @@ class GraphExtractionWorker:
                 fields[key] = response.usage[key]
         log_event(_LOGGER, "graph_extraction_model_call", **fields)
         return response
+
+
+def _log_admission(
+    admission: GraphAdmissionStats,
+    *,
+    trace_id: str,
+    knowledge_base_id: UUID,
+) -> None:
+    for role, codes in (
+        ("entity", admission.entity_drop_codes),
+        ("relation", admission.relation_drop_codes),
+    ):
+        for code, count in codes:
+            log_event(
+                _LOGGER,
+                "graph_extraction_admission",
+                phase="final",
+                item_role=role,
+                error_code=code,
+                dropped_count=count,
+                trace_id=trace_id,
+                knowledge_base_id=knowledge_base_id,
+            )
 
 
 def _raise_if_truncated(response) -> None:

@@ -12,7 +12,7 @@ from typing import Any
 from uuid import UUID
 
 
-GRAPH_EXTRACTOR_VERSION = "entity_graph_v3"
+GRAPH_EXTRACTOR_VERSION = "entity_graph_v4"
 GRAPH_RETRIEVAL_PROFILE_VERSION = "graph_augmented_v1"
 GRAPH_AUGMENTATION_VERSION = "entity_graph_v1"
 GRAPH_MAX_ENTITIES = 64
@@ -54,12 +54,64 @@ class GraphEntityType(StrEnum):
     CONCEPT = "concept"
 
 
+GRAPH_RELATION_GROUNDING_CODES = frozenset(
+    {
+        "relation_support_not_locatable",
+        "relation_support_missing_subject",
+        "relation_support_missing_object",
+        "relation_support_missing_both",
+    }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class GraphAdmissionStats:
+    """Content-safe item-admission counters for one extractor response."""
+
+    dropped_entity_count: int = 0
+    dropped_relation_count: int = 0
+    dropped_relation_grounding_count: int = 0
+    entity_drop_codes: tuple[tuple[str, int], ...] = ()
+    relation_drop_codes: tuple[tuple[str, int], ...] = ()
+
+    def __post_init__(self) -> None:
+        if (
+            self.dropped_entity_count < 0
+            or self.dropped_relation_count < 0
+            or self.dropped_relation_grounding_count < 0
+        ):
+            raise ValueError("graph admission counts must be non-negative")
+        if self.dropped_relation_grounding_count > self.dropped_relation_count:
+            raise ValueError("graph grounding drops cannot exceed relation drops")
+        if sum(count for _, count in self.entity_drop_codes) != self.dropped_entity_count:
+            raise ValueError("graph entity drop codes do not match the entity count")
+        if sum(count for _, count in self.relation_drop_codes) != self.dropped_relation_count:
+            raise ValueError("graph relation drop codes do not match the relation count")
+        if (
+            sum(
+                count
+                for code, count in self.relation_drop_codes
+                if code in GRAPH_RELATION_GROUNDING_CODES
+            )
+            != self.dropped_relation_grounding_count
+        ):
+            raise ValueError("graph grounding drop codes do not match the grounding count")
+        if any(count < 1 for _, count in (*self.entity_drop_codes, *self.relation_drop_codes)):
+            raise ValueError("graph admission drop codes must be positive")
+
+
 class GraphProtocolError(ValueError):
     """The extractor returned a response outside the fixed graph protocol."""
 
-    def __init__(self, code: str = "schema_invalid") -> None:
+    def __init__(
+        self,
+        code: str = "schema_invalid",
+        *,
+        admission: GraphAdmissionStats | None = None,
+    ) -> None:
         super().__init__(code)
         self.code = code
+        self.admission = admission or GraphAdmissionStats()
 
 
 class GraphResourceLimitError(ValueError):
@@ -307,6 +359,7 @@ class GraphChunkExtraction:
     relations: tuple[GraphRelationAssertion, ...] = ()
     result_hash: str = ""
     error_code: str | None = None
+    admission: GraphAdmissionStats = GraphAdmissionStats()
 
     def __post_init__(self) -> None:
         if len(self.mentions) > GRAPH_MAX_ENTITIES:

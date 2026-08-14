@@ -17,7 +17,11 @@ from rag_kb.domain import (
     normalize_entity_surface,
     normalize_predicate,
 )
-from rag_kb.graph.extraction import graph_protocol_error_family, parse_graph_extraction
+from rag_kb.graph.extraction import (
+    graph_protocol_error_family,
+    graph_protocol_error_is_repairable,
+    parse_graph_extraction,
+)
 from rag_kb.retrieval.eligibility import EvidenceEligibilityPolicy
 
 
@@ -108,25 +112,27 @@ class GraphExtractionUnitTests(unittest.TestCase):
         relation = value.relations[0]
         self.assertEqual(text[relation.support_start:relation.support_end], "ACME\n acquired  BETA")
 
-    def test_relation_without_both_literal_normalized_endpoints_is_rejected(self) -> None:
-        with self.assertRaisesRegex(GraphProtocolError, "relation_support_missing_object"):
-            parse_graph_extraction(
-                {
-                    "entities": [
-                        _entity("a", "organization", "Acme"),
-                        _entity("b", "organization", "Beta"),
-                    ],
-                    "relations": [
-                        {
-                            "subject": "a",
-                            "predicate": "acquired",
-                            "object": "b",
-                            "support": "Acme acquired it",
-                        }
-                    ],
-                },
-                "Acme acquired it. Beta objected.",
-            )
+    def test_relation_without_both_literal_normalized_endpoints_is_dropped(self) -> None:
+        value = parse_graph_extraction(
+            {
+                "entities": [
+                    _entity("a", "organization", "Acme"),
+                    _entity("b", "organization", "Beta"),
+                ],
+                "relations": [
+                    {
+                        "subject": "a",
+                        "predicate": "acquired",
+                        "object": "b",
+                        "support": "Acme acquired it",
+                    }
+                ],
+            },
+            "Acme acquired it. Beta objected.",
+        )
+        self.assertIs(value.result_status, GraphChunkResultStatus.EXTRACTED)
+        self.assertEqual([item.surface for item in value.mentions], ["Acme", "Beta"])
+        self.assertEqual(value.relations, ())
 
     def test_quote_variants_share_entity_identity(self) -> None:
         self.assertEqual(
@@ -214,23 +220,20 @@ class GraphExtractionUnitTests(unittest.TestCase):
                     )
                 self.assertEqual(raised.exception.code, "schema_unexpected_key")
 
-    def test_identity_boundaries_remain_rejected(self) -> None:
-        cases = (
-            (
-                {
-                    "entities": [
-                        _entity("x", "concept", "x"),
-                        _entity("x", "concept", "x"),
-                    ],
-                    "relations": [],
-                },
-                "duplicate_entity_id",
-            ),
+    def test_duplicate_entity_id_keeps_the_first_mention(self) -> None:
+        value = parse_graph_extraction(
+            {
+                "entities": [
+                    _entity("x", "concept", "x"),
+                    _entity("x", "concept", "x"),
+                ],
+                "relations": [],
+            },
+            "x",
         )
-        for payload, code in cases:
-            with self.subTest(code=code):
-                with self.assertRaisesRegex(GraphProtocolError, code):
-                    parse_graph_extraction(payload, "x")
+        self.assertIs(value.result_status, GraphChunkResultStatus.EXTRACTED)
+        self.assertEqual(len(value.mentions), 1)
+        self.assertEqual(value.mentions[0].mention_id, "x")
 
     def test_grounding_detail_codes_keep_historical_families(self) -> None:
         cases = (
@@ -253,24 +256,6 @@ class GraphExtractionUnitTests(unittest.TestCase):
                 "disambiguator_support_not_locatable",
                 "support_text_not_locatable",
             ),
-            (
-                {
-                    "entities": [
-                        _entity("a", "organization", "Acme"),
-                        _entity("b", "organization", "Beta"),
-                    ],
-                    "relations": [
-                        {
-                            "subject": "a",
-                            "predicate": "owns",
-                            "object": "b",
-                            "support": "Absent",
-                        }
-                    ],
-                },
-                "relation_support_not_locatable",
-                "support_text_not_locatable",
-            ),
         )
         for payload, code, family in cases:
             with self.subTest(code=code):
@@ -279,7 +264,57 @@ class GraphExtractionUnitTests(unittest.TestCase):
                 self.assertEqual(raised.exception.code, code)
                 self.assertEqual(graph_protocol_error_family(code), family)
 
-    def test_relation_support_identifies_each_missing_endpoint_shape(self) -> None:
+    def test_invalid_neighbor_items_do_not_discard_grounded_relations(self) -> None:
+        value = parse_graph_extraction(
+            {
+                "entities": [
+                    _entity("acme", "organization", "Acme"),
+                    _entity("beta", "organization", "Beta"),
+                    _entity("ghost", "organization", "MissingCo"),
+                    _entity("bad id", "organization", "Gamma"),
+                ],
+                "relations": [
+                    {
+                        "subject": "acme",
+                        "predicate": "acquired",
+                        "object": "beta",
+                        "support": "Acme acquired Beta",
+                    },
+                    {
+                        "subject": "acme",
+                        "predicate": "owns",
+                        "object": "beta",
+                        "support": "Acme owns it",
+                    },
+                    {
+                        "subject": "acme",
+                        "predicate": "mentions",
+                        "object": "ghost",
+                        "support": "Gamma exists",
+                    },
+                ],
+            },
+            "Acme acquired Beta. Gamma exists.",
+        )
+        self.assertIs(value.result_status, GraphChunkResultStatus.EXTRACTED)
+        self.assertEqual([item.surface for item in value.mentions], ["Acme", "Beta"])
+        self.assertEqual(len(value.relations), 1)
+        self.assertEqual(value.relations[0].predicate, "acquired")
+        self.assertEqual(value.admission.dropped_entity_count, 2)
+        self.assertEqual(value.admission.dropped_relation_count, 2)
+        self.assertEqual(value.admission.dropped_relation_grounding_count, 1)
+        self.assertEqual(
+            value.admission.relation_drop_codes,
+            (("relation_endpoint_unknown", 1), ("relation_support_not_locatable", 1)),
+        )
+        self.assertEqual(
+            value.mentions[0].surface,
+            "Acme acquired Beta. Gamma exists."[
+                value.mentions[0].surface_start:value.mentions[0].surface_end
+            ],
+        )
+
+    def test_relation_support_missing_endpoints_are_dropped_not_chunk_failures(self) -> None:
         for support, code in (
             ("it owns Beta", "relation_support_missing_subject"),
             ("Acme owns it", "relation_support_missing_object"),
@@ -287,29 +322,90 @@ class GraphExtractionUnitTests(unittest.TestCase):
         ):
             with self.subTest(code=code):
                 text = f"Acme and Beta exist. {support}."
-                with self.assertRaises(GraphProtocolError) as raised:
-                    parse_graph_extraction(
-                        {
-                            "entities": [
-                                _entity("a", "organization", "Acme"),
-                                _entity("b", "organization", "Beta"),
-                            ],
-                            "relations": [
-                                {
-                                    "subject": "a",
-                                    "predicate": "owns",
-                                    "object": "b",
-                                    "support": support,
-                                }
-                            ],
-                        },
-                        text,
-                    )
-                self.assertEqual(raised.exception.code, code)
+                value = parse_graph_extraction(
+                    {
+                        "entities": [
+                            _entity("a", "organization", "Acme"),
+                            _entity("b", "organization", "Beta"),
+                        ],
+                        "relations": [
+                            {
+                                "subject": "a",
+                                "predicate": "owns",
+                                "object": "b",
+                                "support": support,
+                            }
+                        ],
+                    },
+                    text,
+                )
+                self.assertIs(value.result_status, GraphChunkResultStatus.EXTRACTED)
+                self.assertEqual(len(value.mentions), 2)
+                self.assertEqual(value.relations, ())
+                self.assertEqual(value.admission.dropped_relation_count, 1)
+                self.assertEqual(value.admission.dropped_relation_grounding_count, 1)
+                self.assertEqual(value.admission.relation_drop_codes, ((code, 1),))
                 self.assertEqual(
                     graph_protocol_error_family(code),
                     "relation_support_missing_endpoint",
                 )
+                self.assertFalse(graph_protocol_error_is_repairable(code))
+
+    def test_unlocatable_relation_support_is_dropped_when_mentions_remain(self) -> None:
+        value = parse_graph_extraction(
+            {
+                "entities": [
+                    _entity("a", "organization", "Acme"),
+                    _entity("b", "organization", "Beta"),
+                ],
+                "relations": [
+                    {
+                        "subject": "a",
+                        "predicate": "owns",
+                        "object": "b",
+                        "support": "Absent",
+                    }
+                ],
+            },
+            "Acme owns it. Beta exists.",
+        )
+        self.assertIs(value.result_status, GraphChunkResultStatus.EXTRACTED)
+        self.assertEqual(len(value.mentions), 2)
+        self.assertEqual(value.relations, ())
+        self.assertEqual(value.admission.dropped_relation_count, 1)
+        self.assertEqual(value.admission.dropped_relation_grounding_count, 1)
+        self.assertEqual(
+            value.admission.relation_drop_codes,
+            (("relation_support_not_locatable", 1),),
+        )
+
+    def test_empty_payload_has_zero_admission_drops(self) -> None:
+        value = parse_graph_extraction({"entities": [], "relations": []}, "2026 12 31")
+        self.assertEqual(value.admission.dropped_entity_count, 0)
+        self.assertEqual(value.admission.dropped_relation_count, 0)
+        self.assertEqual(value.admission.dropped_relation_grounding_count, 0)
+        self.assertEqual(value.admission.relation_drop_codes, ())
+
+    def test_all_rejected_items_preserve_admission_counts_on_the_error(self) -> None:
+        with self.assertRaises(GraphProtocolError) as raised:
+            parse_graph_extraction(
+                {"entities": [_entity("x", "concept", "Absent")], "relations": []},
+                "Nothing matches.",
+            )
+        self.assertEqual(raised.exception.code, "entity_surface_not_locatable")
+        self.assertEqual(raised.exception.admission.dropped_entity_count, 1)
+        self.assertEqual(raised.exception.admission.dropped_relation_count, 0)
+        self.assertEqual(
+            raised.exception.admission.entity_drop_codes,
+            (("entity_surface_not_locatable", 1),),
+        )
+
+    def test_only_root_schema_failures_are_repairable(self) -> None:
+        self.assertTrue(graph_protocol_error_is_repairable("json_invalid"))
+        self.assertTrue(graph_protocol_error_is_repairable("schema_type"))
+        self.assertFalse(graph_protocol_error_is_repairable("entity_surface_not_locatable"))
+        self.assertFalse(graph_protocol_error_is_repairable("relation_support_missing_object"))
+        self.assertFalse(graph_protocol_error_is_repairable("schema_id_format"))
 
     def test_wide_table_fixture_can_legitimately_return_empty(self) -> None:
         text = " | ".join(f"C{i}" for i in range(128)) + "\n" + " | ".join("123" for _ in range(128))

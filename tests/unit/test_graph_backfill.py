@@ -167,42 +167,10 @@ class GraphBackfillWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("provider-secret-not-json", repair_prompt)
         self.assertIsNone(model.requests[0].thinking_enabled)
 
-    async def test_each_primary_protocol_error_gets_its_fixed_repair_rule(self) -> None:
+    async def test_each_root_protocol_error_gets_its_fixed_repair_rule(self) -> None:
         cases = (
             ("not-json", "json_invalid", "json.loads"),
             ('{"entities":{},"relations":[]}', "schema_type", "specified keys"),
-            (
-                '{"entities":[{"id":"a","type":"organization","surface":"Absent",'
-                '"disambiguator":null,"disambiguator_support":null}],"relations":[]}',
-                "entity_surface_not_locatable",
-                "Copy every surface",
-            ),
-            (
-                '{"entities":[{"id":"a","type":"organization","surface":"Acme",'
-                '"disambiguator":null,"disambiguator_support":null}],'
-                '"relations":[{"subject":"a","predicate":"owns","object":"missing",'
-                '"support":"Acme owns Beta"}]}',
-                "relation_endpoint_unknown",
-                "entity id defined",
-            ),
-            (
-                '{"entities":[{"id":"a","type":"organization","surface":"Acme",'
-                '"disambiguator":null,"disambiguator_support":null},'
-                '{"id":"b","type":"organization","surface":"Beta",'
-                '"disambiguator":null,"disambiguator_support":null}],'
-                '"relations":[{"subject":"a","predicate":"owns","object":"b",'
-                '"support":"Acme owns it"}]}',
-                "relation_support_missing_object",
-                "both referenced entity surfaces",
-            ),
-            (
-                '{"entities":[{"id":"a","type":"organization","surface":"Acme",'
-                '"disambiguator":null,"disambiguator_support":null}],'
-                '"relations":[{"subject":"a","predicate":"is","object":"a",'
-                '"support":"Acme"}]}',
-                "self_relation",
-                "same entity",
-            ),
         )
         for initial, code, rule_fragment in cases:
             with self.subTest(code=code):
@@ -217,6 +185,46 @@ class GraphBackfillWorkerTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn(rule_fragment, repair_prompt)
                 self.assertIn("Preserve every other item", repair_prompt)
                 self.assertIn('"disambiguator":null', repair_prompt)
+
+    async def test_item_failures_keep_grounded_neighbors_without_repair(self) -> None:
+        repository = _GraphRepository()
+        repository.work = GraphWorkItem(
+            GraphWorkKind.CHUNK, _config(), _chunk("Acme owns it. Beta exists.")
+        )
+        model = _FakeChat(
+            '{"entities":[{"id":"a","type":"organization","surface":"Acme",'
+            '"disambiguator":null,"disambiguator_support":null},'
+            '{"id":"b","type":"organization","surface":"Beta",'
+            '"disambiguator":null,"disambiguator_support":null}],'
+            '"relations":[{"subject":"a","predicate":"owns","object":"b",'
+            '"support":"Acme owns it"}]}'
+        )
+
+        await GraphExtractionWorker(_factory(repository), model).process_next_work_item()
+
+        self.assertEqual(len(model.requests), 1)
+        self.assertEqual(repository.saved_statuses, [GraphChunkResultStatus.EXTRACTED])
+        self.assertEqual(repository.saved_errors, [None])
+        saved = repository.saved_extractions[0]
+        self.assertEqual(saved.admission.dropped_relation_count, 1)
+        self.assertEqual(saved.admission.dropped_relation_grounding_count, 1)
+
+    async def test_grounding_failure_without_admitted_items_skips_repair(self) -> None:
+        repository = _GraphRepository()
+        repository.work = GraphWorkItem(
+            GraphWorkKind.CHUNK, _config(), _chunk("Acme exists.")
+        )
+        model = _FakeChat(
+            '{"entities":[{"id":"a","type":"organization","surface":"Absent",'
+            '"disambiguator":null,"disambiguator_support":null}],"relations":[]}',
+            "unused-repair",
+        )
+
+        await GraphExtractionWorker(_factory(repository), model).process_next_work_item()
+
+        self.assertEqual(len(model.requests), 1)
+        self.assertEqual(repository.saved_statuses, [GraphChunkResultStatus.SKIPPED_PROTOCOL])
+        self.assertEqual(repository.saved_errors, ["entity_surface_not_locatable"])
 
     async def test_initial_prompt_contains_complete_contract_and_soft_limits(self) -> None:
         repository = _GraphRepository()
@@ -247,9 +255,7 @@ class GraphBackfillWorkerTests(unittest.IsolatedAsyncioTestCase):
         )
         model = _FakeChat(
             '{"entities":[{"id":"a","type":"organization","surface":"secret-a",'
-            '"disambiguator":null,"disambiguator_support":null}],"relations":[]}',
-            '{"entities":[{"id":"a","type":"organization","surface":"secret-b",'
-            '"disambiguator":null,"disambiguator_support":null}],"relations":[]}',
+            '"disambiguator":null,"disambiguator_support":null}],"relations":[]}'
         )
 
         with patch("rag_kb.graph.service.log_event") as logged:
@@ -262,14 +268,28 @@ class GraphBackfillWorkerTests(unittest.IsolatedAsyncioTestCase):
         ]
         self.assertEqual(
             [(item["phase"], item["error_code"]) for item in protocol_events],
-            [
-                ("initial", "entity_surface_not_locatable"),
-                ("repair", "entity_surface_not_locatable"),
-            ],
+            [("initial", "entity_surface_not_locatable")],
         )
+        self.assertEqual(len(model.requests), 1)
         rendered = repr(logged.call_args_list)
         self.assertNotIn("secret-a", rendered)
-        self.assertNotIn("secret-b", rendered)
+        admission_events = [
+            call.kwargs
+            for call in logged.call_args_list
+            if call.args[1] == "graph_extraction_admission"
+        ]
+        self.assertEqual(
+            [(item["item_role"], item["error_code"], item["dropped_count"]) for item in admission_events],
+            [("entity", "entity_surface_not_locatable", 1)],
+        )
+        final_events = [
+            call.kwargs
+            for call in logged.call_args_list
+            if call.args[1] == "graph_extraction_final"
+        ]
+        self.assertEqual(final_events[0]["dropped_entity_count"], 1)
+        self.assertEqual(final_events[0]["dropped_relation_count"], 0)
+        self.assertEqual(final_events[0]["dropped_relation_grounding_count"], 0)
 
     async def test_provider_failure_fails_the_build_and_does_not_save_a_chunk(self) -> None:
         repository = _GraphRepository()
@@ -333,6 +353,7 @@ class _GraphRepository:
         self.preflight_saves = []
         self.saved_statuses = []
         self.saved_errors = []
+        self.saved_extractions = []
         self.failed_codes = []
         self.retry_versions = []
 
@@ -362,6 +383,7 @@ class _GraphRepository:
         del kb_id, build_id, index_chunk_id, content_hash, extractor_version
         self.saved_statuses.append(extraction.result_status)
         self.saved_errors.append(extraction.error_code)
+        self.saved_extractions.append(extraction)
         return True
 
     async def mark_failed(self, kb_id, *, build_id, error_code):
