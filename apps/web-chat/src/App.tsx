@@ -14,6 +14,8 @@ import type {
   ChatRun,
   ChatRunCreate,
   ChatSession,
+  GraphConfig,
+  GraphConfigUpdate,
   KnowledgeBase,
   ModelSettings,
   RerankMode,
@@ -161,8 +163,11 @@ function KnowledgeChat({
   const [messagesError, setMessagesError] = useState<string | null>(null);
 
   const [draft, setDraft] = useState("");
-  const [retrievalMode, setRetrievalMode] = useState<"vector" | "hybrid">("vector");
+  const [retrievalMode, setRetrievalMode] = useState<"vector" | "hybrid" | "graph">("vector");
   const [rerankMode, setRerankMode] = useState<RerankMode>("classic");
+  const [graphConfig, setGraphConfig] = useState<GraphConfig | null>(null);
+  const [graphConfigLoading, setGraphConfigLoading] = useState(false);
+  const [graphConfigError, setGraphConfigError] = useState<string | null>(null);
   const [modelSettings, setModelSettings] = useState<ModelSettings | null>(null);
   const [modelSettingsLoading, setModelSettingsLoading] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -188,6 +193,9 @@ function KnowledgeChat({
   const [activePage, setActivePage] = useState<"chat" | "knowledge-base">("chat");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const messageGeneration = useRef(0);
+  const graphConfigGeneration = useRef(0);
+  const selectedKnowledgeBaseIdRef = useRef(selectedKnowledgeBaseId);
+  selectedKnowledgeBaseIdRef.current = selectedKnowledgeBaseId;
 
   const selectedKnowledgeBase = useMemo(
     () => knowledgeBases.find((item) => item.id === selectedKnowledgeBaseId) ?? null,
@@ -205,6 +213,15 @@ function KnowledgeChat({
   const hybridEnabled = retrievalCapabilities?.modes.some(
     (item) => item.mode === "hybrid" && item.enabled,
   ) ?? false;
+  const graphCapabilityEnabled = retrievalCapabilities?.modes.some(
+    (item) => item.mode === "graph" && item.enabled,
+  ) ?? false;
+  const graphReady = graphCapabilityEnabled
+    && Boolean(graphConfig?.enabled && graphConfig.status === "ready");
+  const graphTopK = Math.min(
+    20,
+    Math.max(4, selectedKnowledgeBase?.retrieval_defaults.top_k ?? 4),
+  );
   const chatModels = modelSettings?.profiles.filter((profile) => (
     profile.kind === "chat"
     && profile.enabled
@@ -312,9 +329,85 @@ function KnowledgeChat({
     }
   }, [client]);
 
+  const loadGraphConfig = useCallback(async (
+    knowledgeBaseId: string,
+    quiet = false,
+  ): Promise<GraphConfig | null> => {
+    const generation = ++graphConfigGeneration.current;
+    if (!quiet) {
+      setGraphConfigLoading(true);
+      setGraphConfigError(null);
+    }
+    try {
+      const value = await client.getGraphConfig(knowledgeBaseId);
+      if (
+        generation === graphConfigGeneration.current
+        && selectedKnowledgeBaseIdRef.current === knowledgeBaseId
+      ) {
+        setGraphConfig(value);
+        setGraphConfigError(null);
+      }
+      return value;
+    } catch (error) {
+      if (
+        generation === graphConfigGeneration.current
+        && selectedKnowledgeBaseIdRef.current === knowledgeBaseId
+      ) {
+        setGraphConfigError(errorMessage(error));
+      }
+      return null;
+    } finally {
+      if (
+        !quiet
+        && generation === graphConfigGeneration.current
+        && selectedKnowledgeBaseIdRef.current === knowledgeBaseId
+      ) {
+        setGraphConfigLoading(false);
+      }
+    }
+  }, [client]);
+
+  const updateGraphConfig = useCallback(async (
+    payload: GraphConfigUpdate,
+  ): Promise<GraphConfig> => {
+    const knowledgeBaseId = selectedKnowledgeBaseIdRef.current;
+    if (!knowledgeBaseId) throw new Error("请先选择知识库。");
+    const value = await client.updateGraphConfig(knowledgeBaseId, payload);
+    if (selectedKnowledgeBaseIdRef.current === knowledgeBaseId) {
+      ++graphConfigGeneration.current;
+      setGraphConfig(value);
+      setGraphConfigError(null);
+      setGraphConfigLoading(false);
+    }
+    return value;
+  }, [client]);
+
   useEffect(() => {
     void loadKnowledgeBases();
   }, [loadKnowledgeBases]);
+
+  useEffect(() => {
+    ++graphConfigGeneration.current;
+    setGraphConfig(null);
+    setGraphConfigError(null);
+    if (!selectedKnowledgeBaseId) {
+      setGraphConfigLoading(false);
+      return;
+    }
+    void loadGraphConfig(selectedKnowledgeBaseId);
+  }, [loadGraphConfig, selectedKnowledgeBaseId]);
+
+  useEffect(() => {
+    if (
+      !selectedKnowledgeBaseId
+      || graphConfig?.knowledge_base_id !== selectedKnowledgeBaseId
+      || graphConfig.status !== "building"
+    ) return;
+    const timer = window.setInterval(() => {
+      void loadGraphConfig(selectedKnowledgeBaseId, true);
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [graphConfig, loadGraphConfig, selectedKnowledgeBaseId]);
 
   useEffect(() => {
     storeKnowledgeBaseId(selectedKnowledgeBaseId || null);
@@ -332,7 +425,8 @@ function KnowledgeChat({
 
   useEffect(() => {
     if (!hybridEnabled && retrievalMode === "hybrid") setRetrievalMode("vector");
-  }, [hybridEnabled, retrievalMode]);
+    if (!graphReady && retrievalMode === "graph") setRetrievalMode("vector");
+  }, [graphReady, hybridEnabled, retrievalMode]);
 
   useEffect(() => {
     if (selectedKnowledgeBase) {
@@ -551,8 +645,10 @@ function KnowledgeChat({
           },
           retrieval: {
             mode: retrievalMode,
-            top_k: selectedKnowledgeBase.retrieval_defaults.top_k,
-            rerank_mode: rerankMode,
+            top_k: retrievalMode === "graph"
+              ? graphTopK
+              : selectedKnowledgeBase.retrieval_defaults.top_k,
+            rerank_mode: retrievalMode === "graph" ? "classic" : rerankMode,
           },
           model_profile_revision_id: selectedChatModelRevisionId,
         },
@@ -587,18 +683,23 @@ function KnowledgeChat({
     }
   };
 
-  const changeRetrievalMode = (next: "vector" | "hybrid") => {
+  const changeRetrievalMode = (next: "vector" | "hybrid" | "graph") => {
     if (next === "hybrid" && !hybridEnabled) return;
+    if (next === "graph" && !graphReady) return;
     if (pendingRun) {
       setPendingRun(null);
       setSubmissionError(null);
     }
     if (next === "hybrid" && rerankMode === "none") setRerankMode("classic");
+    if (next === "graph") setRerankMode("classic");
     setRetrievalMode(next);
   };
 
   const changeRerankMode = (next: RerankMode) => {
-    if (next === "none" && retrievalMode === "hybrid") return;
+    if (
+      (next === "none" && retrievalMode === "hybrid")
+      || retrievalMode === "graph"
+    ) return;
     if (
       next === "local_minilm_v1"
       && (selectedKnowledgeBase?.retrieval_defaults.top_k ?? 100) > 20
@@ -816,6 +917,14 @@ function KnowledgeChat({
           selectedKnowledgeBaseId={selectedKnowledgeBaseId}
           modelSettings={modelSettings}
           hybridEnabled={hybridEnabled}
+          graphCapabilityEnabled={graphCapabilityEnabled}
+          graphConfig={graphConfig}
+          graphConfigLoading={graphConfigLoading}
+          graphConfigError={graphConfigError}
+          onRefreshGraphConfig={() => selectedKnowledgeBaseId
+            ? loadGraphConfig(selectedKnowledgeBaseId)
+            : Promise.resolve(null)}
+          onUpdateGraphConfig={updateGraphConfig}
           onKnowledgeBaseCreated={(created) => {
             setKnowledgeBases((current) => (
               [...current.filter((item) => item.id !== created.id), created]
@@ -1011,6 +1120,24 @@ function KnowledgeChat({
                             : "当前服务未启用混合检索。",
                       disabled: !hybridEnabled,
                     },
+                    {
+                      value: "graph",
+                      label: "实体图谱",
+                      description: graphReady
+                        ? "以混合检索为种子，补充实体关系路径。"
+                        : graphConfigLoading
+                          ? "正在读取当前知识库的图谱状态。"
+                          : graphConfigError
+                            ? "图谱状态不可用。"
+                            : graphConfig?.status === "building"
+                              ? "图谱正在构建完成前不可用。"
+                              : graphConfig?.status === "failed"
+                                ? "图谱构建失败，请先修复或重试。"
+                                : !graphCapabilityEnabled
+                                  ? "当前服务未启用实体图谱。"
+                                  : "当前知识库尚未启用或完成图谱构建。",
+                      disabled: !graphReady,
+                    },
                   ]}
                   onChange={changeRetrievalMode}
                 />
@@ -1023,15 +1150,19 @@ function KnowledgeChat({
                     {
                       value: "none",
                       label: "不精排",
-                      description: retrievalMode === "hybrid"
-                        ? "混合检索必须保留精排。"
+                      description: retrievalMode === "hybrid" || retrievalMode === "graph"
+                        ? retrievalMode === "graph"
+                          ? "实体图谱固定使用经典精排。"
+                          : "混合检索必须保留精排。"
                         : "直接使用向量检索顺序，资源开销最低。",
-                      disabled: retrievalMode === "hybrid",
+                      disabled: retrievalMode === "hybrid" || retrievalMode === "graph",
                     },
                     {
                       value: "classic",
                       label: "经典精排",
-                      description: "使用现有关键词、向量与去重规则。",
+                      description: retrievalMode === "graph"
+                        ? "实体图谱固定以混合检索的经典规则生成种子。"
+                        : "使用现有关键词、向量与去重规则。",
                     },
                     {
                       value: "local_minilm_v1",

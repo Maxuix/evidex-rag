@@ -15,6 +15,7 @@ from rag_kb.repositories import (
     ContentMutationRepository,
     DocumentRepository,
     FileConsistencyRepository,
+    GraphRepository,
     IndexingRepository,
     KnowledgeBaseRepository,
     ModelSettingsRepository,
@@ -28,6 +29,7 @@ from rag_kb.repositories.sqlalchemy_content import (
 )
 from rag_kb.repositories.sqlalchemy_chat import SqlAlchemyChatRepository
 from rag_kb.repositories.sqlalchemy_indexing import SqlAlchemyIndexingRepository
+from rag_kb.repositories.sqlalchemy_graph import SqlAlchemyGraphRepository
 from rag_kb.repositories.sqlalchemy_model_settings import (
     SqlAlchemyModelSettingsRepository,
 )
@@ -73,6 +75,7 @@ class SqlAlchemyUnitOfWork:
         self._file_consistency_repository: FileConsistencyRepository | None = None
         self._indexing_repository: IndexingRepository | None = None
         self._model_settings_repository: ModelSettingsRepository | None = None
+        self._graph_repository: GraphRepository | None = None
         self._owner_task: asyncio.Task[object] | None = None
         self._state = _State.NEW
 
@@ -124,6 +127,12 @@ class SqlAlchemyUnitOfWork:
         assert self._model_settings_repository is not None
         return self._model_settings_repository
 
+    @property
+    def graph(self) -> GraphRepository:
+        self._ensure_active()
+        assert self._graph_repository is not None
+        return self._graph_repository
+
     async def __aenter__(self) -> SqlAlchemyUnitOfWork:
         if self._state is not _State.NEW:
             raise UnitOfWorkStateError("a Unit of Work instance is single-use")
@@ -160,6 +169,9 @@ class SqlAlchemyUnitOfWork:
             session, self.workspace_id, self._ensure_active
         )
         self._model_settings_repository = SqlAlchemyModelSettingsRepository(
+            session, self.workspace_id, self._ensure_active
+        )
+        self._graph_repository = SqlAlchemyGraphRepository(
             session, self.workspace_id, self._ensure_active
         )
         try:

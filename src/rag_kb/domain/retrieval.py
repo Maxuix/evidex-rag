@@ -39,6 +39,7 @@ class EvidenceScoreKind(StrEnum):
     HYBRID_RERANK = "hybrid_rerank"
     RECIPROCAL_RANK_FUSION = "reciprocal_rank_fusion"
     ADJACENCY = "adjacency"
+    GRAPH_PATH = "graph_path"
 
 
 @dataclass(frozen=True, slots=True)
@@ -236,6 +237,22 @@ class RetrievalRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class GraphRetrievalRequest:
+    knowledge_base_id: UUID
+    query: str
+    top_k: int = 10
+    include_debug: bool = False
+
+    def __post_init__(self) -> None:
+        normalized = self.query.strip()
+        if not normalized:
+            raise ValueError("graph retrieval query must not be empty")
+        if not 4 <= self.top_k <= 20:
+            raise ValueError("graph retrieval top_k must be between 4 and 20")
+        object.__setattr__(self, "query", normalized)
+
+
+@dataclass(frozen=True, slots=True)
 class RetrievalQueryPlan:
     workspace_id: UUID
     knowledge_base_id: UUID
@@ -404,6 +421,10 @@ class Evidence:
     document_original_filename: str | None = None
     adjacency_anchor_index_chunk_id: UUID | None = None
     adjacency_offset: int | None = None
+    graph_path_id: str | None = None
+    graph_anchor_index_chunk_id: UUID | None = None
+    graph_hop_count: int | None = None
+    graph_path_rank: int | None = None
 
     def __post_init__(self) -> None:
         if self.rank < 1:
@@ -435,11 +456,47 @@ class Evidence:
                 or self.model_rerank_winning_window_index is not None
             ):
                 raise ValueError("adjacency evidence metadata is invalid")
+        elif self.score_kind is EvidenceScoreKind.GRAPH_PATH:
+            if (
+                self.score <= 0.0
+                or self.vector_similarity is not None
+                or self.lexical_score != 0.0
+                or self.lexical_coverage != 0.0
+                or self.text_space_rank is not None
+                or self.lexical_rank is not None
+                or self.cross_modal_rank is not None
+                or self.fusion_score is not None
+                or any(value is not None for value in (
+                    self.model_rerank_score,
+                    self.model_rerank_rank,
+                    self.model_rerank_window_count,
+                    self.model_rerank_winning_window_index,
+                ))
+                or self.graph_path_id is None
+                or self.graph_anchor_index_chunk_id is None
+                or self.graph_hop_count not in {1, 2}
+                or self.graph_path_rank is None
+                or self.graph_path_rank < 1
+                or not math.isclose(
+                    self.score, 1.0 / self.graph_path_rank, rel_tol=1e-9
+                )
+            ):
+                raise ValueError("graph path evidence metadata is invalid")
         elif (
             self.adjacency_anchor_index_chunk_id is not None
             or self.adjacency_offset is not None
         ):
             raise ValueError("non-adjacency evidence cannot reference an anchor")
+        if self.score_kind is not EvidenceScoreKind.GRAPH_PATH and any(
+            value is not None
+            for value in (
+                self.graph_path_id,
+                self.graph_anchor_index_chunk_id,
+                self.graph_hop_count,
+                self.graph_path_rank,
+            )
+        ):
+            raise ValueError("non-graph evidence cannot reference a graph path")
         for name, value in (
             ("vector_similarity", self.vector_similarity),
             ("lexical_score", self.lexical_score),
@@ -507,6 +564,7 @@ class RetrievalDebug:
     evidence_group_count: int | None = None
     model_rerank_candidate_count: int | None = None
     model_rerank_window_count: int | None = None
+    graph: Any | None = None
 
     def __post_init__(self) -> None:
         if self.result_count < 0 or self.result_count > self.query_plan.top_k:

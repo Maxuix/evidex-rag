@@ -130,10 +130,14 @@ class RuntimeDiagnosticsTests(unittest.TestCase):
             status_code=200,
             cleanup_completed=1,
             error_type="OSError",
+            prompt_tokens=10,
+            completion_tokens=4,
+            total_tokens=14,
         )
         payload = json.loads(stream.getvalue())
         self.assertEqual(payload["trace_id"], "trace-1")
         self.assertEqual(payload["cleanup_completed"], 1)
+        self.assertEqual(payload["total_tokens"], 14)
         self.assertNotIn("message", payload)
 
         with self.assertRaises(ValueError):

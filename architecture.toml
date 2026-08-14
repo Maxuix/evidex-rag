@@ -48,6 +48,12 @@ scan_roots = ["src", "apps"]
   "rag_kb.domain",
   "rag_kb.ports",
 ]
+"rag_kb.graph" = [
+  "rag_kb.auth",
+  "rag_kb.domain",
+  "rag_kb.ports",
+  "rag_kb.uow",
+]
 "rag_kb.answering" = [
   "rag_kb.domain",
   "rag_kb.memory",
@@ -79,6 +85,7 @@ scan_roots = ["src", "apps"]
   "rag_kb.db",
   "rag_kb.document_processing",
   "rag_kb.domain",
+  "rag_kb.graph",
   "rag_kb.memory",
   "rag_kb.observability",
   "rag_kb.ports",
@@ -95,6 +102,7 @@ scan_roots = ["src", "apps"]
   "rag_kb.config",
   "rag_kb.db",
   "rag_kb.domain",
+  "rag_kb.graph",
   "rag_kb.indexing",
   "rag_kb.memory",
   "rag_kb.observability",

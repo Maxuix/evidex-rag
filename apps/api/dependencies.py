@@ -14,6 +14,7 @@ from apps.model_asset_runtime import (
     build_legacy_embedding_adapters,
 )
 from rag_kb.adapters.file_store.local import LocalFileStore
+from rag_kb.adapters.graph_store.postgres import PgGraphStore
 from rag_kb.adapters.chat_preview.pg_notify import PgNotifyPreviewBroker
 from rag_kb.adapters.lexical_store.postgres import PgLexicalStore
 from rag_kb.adapters.local_reranker import LocalMiniLmReranker
@@ -77,6 +78,7 @@ from rag_kb.services.content import (
     build_content_services,
 )
 from rag_kb.services.files import SourceFileService
+from rag_kb.graph import GraphConfigurationService
 from rag_kb.services.indexing import IndexingJobService
 from rag_kb.services.markdown_media import MarkdownMediaNormalizer
 from rag_kb.services.model_settings import (
@@ -108,6 +110,7 @@ class ApiDependencies:
     multimodal_embedding_provider: MultimodalEmbeddingAdapter | None
     vector_store: PgVectorStore
     retrieval_service: RetrievalService
+    graph_configuration_service: GraphConfigurationService
     chat_service: ChatService
     chat_terminal_watcher: ChatTerminalWatcher
     chat_event_watcher: ChatEventWatcher
@@ -188,6 +191,7 @@ def build_api_dependencies(
         database.sessions,
         embedding_space,
     )
+    graph_store = PgGraphStore(database.sessions)
     content_services = build_content_services(
         unit_of_work,
         access_policy,
@@ -242,6 +246,7 @@ def build_api_dependencies(
         embedding_model_resolver=dynamic_embeddings.embedding,
         multimodal_embedding_model_resolver=dynamic_embeddings.multimodal,
         text_reranker=LocalMiniLmReranker(),
+        graph_store=graph_store,
     )
     chat_service = ChatService(
         unit_of_work,
@@ -311,6 +316,9 @@ def build_api_dependencies(
         multimodal_embedding_provider=multimodal_embedding_provider,
         vector_store=vector_store,
         retrieval_service=retrieval_service,
+        graph_configuration_service=GraphConfigurationService(
+            unit_of_work, access_policy
+        ),
         chat_service=chat_service,
         chat_terminal_watcher=chat_terminal_watcher,
         chat_event_watcher=ChatEventWatcher(chat_terminal_watcher),

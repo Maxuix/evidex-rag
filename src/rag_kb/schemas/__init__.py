@@ -46,6 +46,7 @@ from rag_kb.schemas.documents import (
     DocumentUploadResponse,
     DocumentVersionResponse,
 )
+from rag_kb.schemas.graph import GraphConfigResponse, GraphConfigUpdate
 from rag_kb.schemas.indexing import (
     IndexingErrorResponse,
     IndexingJobPage,
@@ -91,6 +92,9 @@ from rag_kb.schemas.retrieval import (
     RelatedVisualEvidenceResponse,
     RetrievalQueryPlanResponse,
     RetrievalQueryRequest,
+    GraphBundleDebugResponse,
+    GraphDebugResponse,
+    GraphPathDebugResponse,
 )
 
 __all__ = [
@@ -128,6 +132,8 @@ __all__ = [
     "DocumentPage",
     "DocumentResponse",
     "DocumentUploadResponse",
+    "GraphConfigResponse",
+    "GraphConfigUpdate",
     "DocumentVersionResponse",
     "IndexingErrorResponse",
     "IndexingJobPage",
@@ -172,4 +178,7 @@ __all__ = [
     "RelatedVisualEvidenceResponse",
     "RetrievalQueryPlanResponse",
     "RetrievalQueryRequest",
+    "GraphBundleDebugResponse",
+    "GraphDebugResponse",
+    "GraphPathDebugResponse",
 ]

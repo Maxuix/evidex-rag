@@ -15,6 +15,8 @@ import type {
   DocumentChunkInspection,
   DocumentDetail,
   DocumentRecord,
+  GraphConfig,
+  GraphConfigUpdate,
   IndexingJob,
   KnowledgeBase,
   KnowledgeBaseEmbeddingSelection,
@@ -65,6 +67,12 @@ export function KnowledgeBaseManagementPage({
   selectedKnowledgeBaseId,
   modelSettings,
   hybridEnabled,
+  graphCapabilityEnabled,
+  graphConfig,
+  graphConfigLoading,
+  graphConfigError,
+  onRefreshGraphConfig,
+  onUpdateGraphConfig,
   onKnowledgeBaseCreated,
   onKnowledgeBaseDeleted,
   onOpenModelSettings,
@@ -75,6 +83,12 @@ export function KnowledgeBaseManagementPage({
   selectedKnowledgeBaseId: string;
   modelSettings: ModelSettings | null;
   hybridEnabled: boolean;
+  graphCapabilityEnabled: boolean;
+  graphConfig: GraphConfig | null;
+  graphConfigLoading: boolean;
+  graphConfigError: string | null;
+  onRefreshGraphConfig: () => Promise<GraphConfig | null>;
+  onUpdateGraphConfig: (payload: GraphConfigUpdate) => Promise<GraphConfig>;
   onKnowledgeBaseCreated: (value: KnowledgeBase) => void;
   onKnowledgeBaseDeleted: (id: string) => void;
   onOpenModelSettings: () => void;
@@ -375,6 +389,18 @@ export function KnowledgeBaseManagementPage({
 
               {actionError ? <InlineError message={actionError} /> : null}
 
+              <GraphSettingsPanel
+                knowledgeBase={knowledgeBase}
+                modelSettings={modelSettings}
+                capabilityEnabled={graphCapabilityEnabled}
+                config={graphConfig}
+                loading={graphConfigLoading}
+                error={graphConfigError}
+                onRefresh={onRefreshGraphConfig}
+                onUpdate={onUpdateGraphConfig}
+                onOpenModelSettings={onOpenModelSettings}
+              />
+
               <section className="management-panel upload-panel-chat">
                 <div className="management-panel-heading">
                   <div>
@@ -522,6 +548,301 @@ export function KnowledgeBaseManagementPage({
         />
       ) : null}
     </main>
+  );
+}
+
+type GraphAction = "configure" | "retry" | "force-rebuild" | "disable" | "refresh";
+
+function GraphSettingsPanel({
+  knowledgeBase,
+  modelSettings,
+  capabilityEnabled,
+  config,
+  loading,
+  error,
+  onRefresh,
+  onUpdate,
+  onOpenModelSettings,
+}: {
+  knowledgeBase: KnowledgeBase;
+  modelSettings: ModelSettings | null;
+  capabilityEnabled: boolean;
+  config: GraphConfig | null;
+  loading: boolean;
+  error: string | null;
+  onRefresh: () => Promise<GraphConfig | null>;
+  onUpdate: (payload: GraphConfigUpdate) => Promise<GraphConfig>;
+  onOpenModelSettings: () => void;
+}) {
+  const currentConfig = config?.knowledge_base_id === knowledgeBase.id ? config : null;
+  const chatProfiles = useMemo(
+    () => validProfiles(modelSettings, "chat"),
+    [modelSettings],
+  );
+  const [profileRevisionId, setProfileRevisionId] = useState("");
+  const [busyAction, setBusyAction] = useState<GraphAction | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const configured = currentConfig?.chat_profile_revision_id;
+    const preferred = modelSettings?.selection.chat_profile_revision_id;
+    setProfileRevisionId(
+      chatProfiles.some((profile) => profile.revision_id === configured)
+        ? configured!
+        : chatProfiles.some((profile) => profile.revision_id === preferred)
+          ? preferred!
+          : chatProfiles[0]?.revision_id ?? "",
+    );
+    setActionError(null);
+  }, [
+    chatProfiles,
+    currentConfig?.chat_profile_revision_id,
+    knowledgeBase.id,
+    modelSettings?.selection.chat_profile_revision_id,
+  ]);
+
+  const runAction = async (action: GraphAction) => {
+    if (busyAction) return;
+    if (action === "configure" && !profileRevisionId) return;
+    setBusyAction(action);
+    setActionError(null);
+    try {
+      if (action === "refresh") {
+        await onRefresh();
+      } else if (action === "configure") {
+        await onUpdate({
+          enabled: true,
+          chat_profile_revision_id: profileRevisionId,
+        });
+      } else if (action === "retry") {
+        await onUpdate({ enabled: true, retry: true });
+      } else if (action === "force-rebuild") {
+        await onUpdate({ enabled: true, retry: true, force_rebuild: true });
+      } else {
+        await onUpdate({ enabled: false });
+      }
+    } catch (caught) {
+      setActionError(managementError(caught));
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const status = currentConfig?.status ?? null;
+  const statusLabel = status ? graphStatusLabel(status) : loading ? "读取中" : "未读取";
+  const profileChanged = Boolean(
+    currentConfig?.enabled
+    && profileRevisionId
+    && profileRevisionId !== currentConfig.chat_profile_revision_id,
+  );
+  const progress = currentConfig
+    ? currentConfig.eligible_chunk_count > 0
+      ? Math.min(100, Math.round(
+        (currentConfig.processed_chunk_count / currentConfig.eligible_chunk_count) * 100,
+      ))
+      : currentConfig.status === "ready" ? 100 : 0
+    : 0;
+  const controlsBusy = busyAction !== null;
+
+  return (
+    <section className="management-panel graph-settings-panel">
+      <div className="management-panel-heading graph-settings-heading">
+        <div>
+          <span className="eyebrow">检索增强</span>
+          <h2>实体图谱 Graph</h2>
+          <p>抽取实体及其关系，用于补充普通向量与关键词检索难以连接的多跳证据。</p>
+        </div>
+        <span
+          className={`graph-status-badge ${status ?? "unknown"}`}
+          role="status"
+          aria-label={`Graph 状态：${statusLabel}`}
+        >
+          {statusLabel}
+        </span>
+      </div>
+
+      <div className="graph-compatibility-note">
+        <strong>现有知识库可直接启用</strong>
+        <span>
+          无需重新上传或重建普通索引；Graph 会在索引空闲时读取当前可检索的文本与表格 chunks，增量完成回填。
+        </span>
+      </div>
+
+      {!capabilityEnabled ? (
+        <div className="graph-runtime-note">
+          当前运行环境未开放 Graph 检索；可以查看已有状态，但不能开始新的构建。
+        </div>
+      ) : null}
+
+      {loading && !currentConfig ? (
+        <div className="graph-loading" aria-live="polite">正在读取 Graph 配置…</div>
+      ) : null}
+
+      {error ? <InlineError message={`Graph 配置读取失败：${error}`} /> : null}
+      {actionError ? <InlineError message={`Graph 操作失败：${actionError}`} /> : null}
+
+      {currentConfig ? (
+        <div className="graph-settings-body">
+          <div className="graph-model-row">
+            <ModelSelect
+              label={currentConfig.enabled ? "Graph 抽取模型" : "选择 Graph 抽取模型"}
+              value={profileRevisionId}
+              profiles={chatProfiles}
+              disabled={!capabilityEnabled || controlsBusy}
+              onChange={setProfileRevisionId}
+            />
+            {currentConfig.enabled ? (
+              <div className="graph-current-model">
+                <span>当前构建使用</span>
+                <strong>{currentConfig.profile_name ?? "已保存的 Chat Profile"}</strong>
+                <small>
+                  {[currentConfig.provider_name, currentConfig.model]
+                    .filter(Boolean)
+                    .join(" · ") || "模型信息不可用"}
+                </small>
+              </div>
+            ) : (
+              <div className="graph-current-model muted">
+                <span>启用后</span>
+                <strong>后台增量回填</strong>
+                <small>构建期间普通检索和聊天仍可继续使用</small>
+              </div>
+            )}
+          </div>
+
+          {!chatProfiles.length ? (
+            <div className="model-required-note graph-model-required">
+              Graph 需要一个已启用且验证通过的 Chat 模型。
+              <button type="button" onClick={onOpenModelSettings}>打开模型设置</button>
+            </div>
+          ) : null}
+
+          {currentConfig.enabled ? (
+            <>
+              <div className="graph-progress-block">
+                <div>
+                  <strong>{graphProgressTitle(currentConfig)}</strong>
+                  <span>{progress}%</span>
+                </div>
+                <progress max={100} value={progress} />
+                {currentConfig.last_error_code ? (
+                  <small>错误码：{currentConfig.last_error_code}</small>
+                ) : null}
+              </div>
+              <dl className="graph-stat-grid">
+                <div>
+                  <dt>已处理 / 可处理</dt>
+                  <dd>{currentConfig.processed_chunk_count} / {currentConfig.eligible_chunk_count}</dd>
+                </div>
+                <div>
+                  <dt>抽取到图谱</dt>
+                  <dd>{currentConfig.extracted_chunk_count}</dd>
+                </div>
+                <div>
+                  <dt>无实体关系</dt>
+                  <dd>{currentConfig.empty_chunk_count}</dd>
+                </div>
+                <div>
+                  <dt>协议跳过 / 资源跳过</dt>
+                  <dd>{currentConfig.protocol_skipped_count} / {currentConfig.resource_skipped_count}</dd>
+                </div>
+                <div>
+                  <dt>总跳过 / 允许上限</dt>
+                  <dd>{currentConfig.protocol_skipped_count + currentConfig.resource_skipped_count} / {currentConfig.allowed_skipped_count}</dd>
+                </div>
+              </dl>
+            </>
+          ) : null}
+
+          <div className="graph-actions">
+            {!currentConfig.enabled ? (
+              <button
+                className="primary-button"
+                type="button"
+                disabled={!capabilityEnabled || !profileRevisionId || controlsBusy}
+                onClick={() => void runAction("configure")}
+              >
+                {busyAction === "configure" ? "正在启用…" : "启用并开始构建"}
+              </button>
+            ) : (
+              <>
+                {profileChanged ? (
+                  <button
+                    className="primary-button"
+                    type="button"
+                    disabled={!capabilityEnabled || controlsBusy}
+                    onClick={() => void runAction("configure")}
+                  >
+                    {busyAction === "configure" ? "正在应用…" : "应用模型并重新构建"}
+                  </button>
+                ) : null}
+                {currentConfig.requires_rebuild ? (
+                  <button
+                    className="primary-button"
+                    type="button"
+                    disabled={!capabilityEnabled || controlsBusy}
+                    onClick={() => void runAction("force-rebuild")}
+                  >
+                    {busyAction === "force-rebuild" ? "正在代际重建…" : "重建为当前 Graph 代际"}
+                  </button>
+                ) : null}
+                {currentConfig.status === "failed" && !currentConfig.requires_rebuild ? (
+                  <button
+                    className="primary-button"
+                    type="button"
+                    disabled={!capabilityEnabled || controlsBusy}
+                    onClick={() => void runAction("retry")}
+                  >
+                    {busyAction === "retry" ? "正在重试…" : "重试构建"}
+                  </button>
+                ) : null}
+                {currentConfig.status === "ready" && !currentConfig.requires_rebuild && currentConfig.protocol_skipped_count > 0 ? (
+                  <button
+                    className="quiet-button"
+                    type="button"
+                    disabled={!capabilityEnabled || controlsBusy}
+                    onClick={() => void runAction("retry")}
+                  >
+                    {busyAction === "retry" ? "正在重试…" : "重试协议跳过项"}
+                  </button>
+                ) : null}
+                {currentConfig.status !== "building" && !currentConfig.requires_rebuild ? (
+                  <button
+                    className="quiet-button"
+                    type="button"
+                    title="生成新的 Graph 构建并重新抽取所有可处理 chunks"
+                    disabled={!capabilityEnabled || controlsBusy}
+                    onClick={() => void runAction("force-rebuild")}
+                  >
+                    {busyAction === "force-rebuild" ? "正在重建…" : "强制重建"}
+                  </button>
+                ) : null}
+                <button
+                  className="quiet-button"
+                  type="button"
+                  disabled={controlsBusy}
+                  onClick={() => void runAction("refresh")}
+                >
+                  {busyAction === "refresh" ? "正在刷新…" : "刷新状态"}
+                </button>
+                <button
+                  className="danger-button"
+                  type="button"
+                  disabled={controlsBusy}
+                  onClick={() => void runAction("disable")}
+                >
+                  {busyAction === "disable" ? "正在禁用…" : "禁用 Graph"}
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      ) : !loading ? (
+        <div className="graph-actions graph-retry-load">
+          <button className="quiet-button" type="button" onClick={() => void runAction("refresh")}>重新读取</button>
+        </div>
+      ) : null}
+    </section>
   );
 }
 
@@ -740,17 +1061,23 @@ function ModelSelect({
   label,
   value,
   profiles,
+  disabled = false,
   onChange,
 }: {
   label: string;
   value: string;
   profiles: ModelProfile[];
+  disabled?: boolean;
   onChange: (value: string) => void;
 }) {
   return (
     <label className="management-field">
       {label}
-      <select value={profiles.some((item) => item.revision_id === value) ? value : ""} onChange={(event) => onChange(event.target.value)}>
+      <select
+        value={profiles.some((item) => item.revision_id === value) ? value : ""}
+        disabled={disabled}
+        onChange={(event) => onChange(event.target.value)}
+      >
         <option value="">请选择模型</option>
         {profiles.map((profile) => (
           <option key={profile.revision_id} value={profile.revision_id}>
@@ -1170,6 +1497,23 @@ function InlineError({ message }: { message: string }) {
 
 function EmptyState({ text }: { text: string }) {
   return <div className="management-empty">{text}</div>;
+}
+
+function graphStatusLabel(status: GraphConfig["status"]): string {
+  const labels: Record<GraphConfig["status"], string> = {
+    disabled: "未启用",
+    building: "构建中",
+    ready: "可用",
+    failed: "构建失败",
+  };
+  return labels[status];
+}
+
+function graphProgressTitle(config: GraphConfig): string {
+  if (config.status === "ready") return "构建完成，Graph 检索已可用";
+  if (config.status === "failed") return "构建中止，可重试或更换模型";
+  if (config.eligible_chunk_count === 0) return "正在验证模型并扫描现有 chunks";
+  return `正在构建，已处理 ${config.processed_chunk_count} 个 chunks`;
 }
 
 function validProfiles(

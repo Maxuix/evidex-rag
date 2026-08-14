@@ -8,6 +8,7 @@ from rag_kb.domain import (
     IndexingPhase,
     PromotionCommand,
     PromotionResult,
+    PromotionReason,
 )
 from rag_kb.uow import UnitOfWorkFactory, UnitOfWorkPurpose, execute_in_transaction
 
@@ -19,9 +20,22 @@ class CandidatePromotionService:
         self._unit_of_work = unit_of_work
 
     async def promote(self, command: PromotionCommand) -> PromotionResult:
+        async def persist(uow):
+            result = await uow.indexing.promote(command)
+            graph = getattr(uow, "graph", None)
+            if (
+                result is not None
+                and result.reason is PromotionReason.PROMOTED
+                and graph is not None
+            ):
+                await graph.invalidate_for_indexed_target(
+                    command.indexed_document_version_id
+                )
+            return result
+
         result = await execute_in_transaction(
             self._unit_of_work,
-            lambda uow: uow.indexing.promote(command),
+            persist,
             purpose=UnitOfWorkPurpose.INDEXING,
         )
         if result is None:

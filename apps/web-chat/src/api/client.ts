@@ -12,6 +12,8 @@ import type {
   DocumentDetail,
   DocumentRecord,
   DocumentUpload,
+  GraphConfig,
+  GraphConfigUpdate,
   IndexingJob,
   KnowledgeBase,
   KnowledgeBaseEmbeddingSelection,
@@ -239,6 +241,21 @@ export class ApiClient {
 
   getRetrievalCapabilities(): Promise<RetrievalCapabilities> {
     return this.request("/retrieval/capabilities");
+  }
+
+  getGraphConfig(knowledgeBaseId: UUID): Promise<GraphConfig> {
+    return this.request(`/knowledge-bases/${knowledgeBaseId}/graph-config`);
+  }
+
+  updateGraphConfig(
+    knowledgeBaseId: UUID,
+    payload: GraphConfigUpdate,
+  ): Promise<GraphConfig> {
+    return this.request(`/knowledge-bases/${knowledgeBaseId}/graph-config`, {
+      method: "PUT",
+      headers: this.jsonHeaders(),
+      body: JSON.stringify(payload),
+    });
   }
 
   getModelSettings(): Promise<ModelSettings> {

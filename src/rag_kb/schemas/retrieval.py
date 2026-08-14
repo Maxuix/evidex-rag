@@ -27,9 +27,16 @@ class RetrievalQueryRequest(RetrievalPublicSchema):
     strategy: RetrievalStrategy = RetrievalStrategy.EXACT_VECTOR
     rerank_mode: RerankMode = RerankMode.NONE
     include_debug: bool = False
+    mode: Literal["vector", "hybrid", "graph"] | None = None
 
     @model_validator(mode="after")
     def require_supported_rerank_combination(self) -> Self:
+        if self.mode == "graph":
+            if not 4 <= self.top_k <= 20:
+                raise ValueError("graph retrieval top_k must be between 4 and 20")
+            if self.rerank_mode is not RerankMode.CLASSIC:
+                raise ValueError("graph retrieval requires classic reranking")
+            return self
         if (
             self.strategy is RetrievalStrategy.HYBRID
             and self.rerank_mode is RerankMode.NONE
@@ -52,9 +59,11 @@ class RetrievalQueryRequest(RetrievalPublicSchema):
 
 
 class RetrievalCapabilityResponse(RetrievalPublicSchema):
-    mode: Literal["vector", "hybrid"]
+    mode: Literal["vector", "hybrid", "graph"]
     strategy: Literal["exact_vector", "hybrid"]
-    profile_version: Literal["exact_vector_v2", "hybrid_fts_rrf_v2"]
+    profile_version: Literal[
+        "exact_vector_v2", "hybrid_fts_rrf_v2", "graph_augmented_v1"
+    ]
     enabled: bool
 
 
@@ -103,6 +112,10 @@ class EvidenceResponse(RetrievalPublicSchema):
     model_rerank_window_count: int | None = None
     model_rerank_winning_window_index: int | None = None
     related_visuals: tuple["RelatedVisualEvidenceResponse", ...] = ()
+    graph_path_id: str | None = None
+    graph_anchor_index_chunk_id: UUID | None = None
+    graph_hop_count: Literal[1, 2] | None = None
+    graph_path_rank: int | None = None
 
 
 class EvidenceAssetResponse(RetrievalPublicSchema):
@@ -143,6 +156,38 @@ class RetrievalDebugResponse(RetrievalPublicSchema):
     evidence_group_count: int | None = None
     model_rerank_candidate_count: int | None = None
     model_rerank_window_count: int | None = None
+    graph: "GraphDebugResponse | None" = None
+
+
+class GraphPathDebugResponse(RetrievalPublicSchema):
+    path_id: str
+    entry_entity_key: str
+    hop_count: Literal[1, 2]
+    seed_entry: bool
+    anchor_chunk_id: UUID
+    rank: int
+    support_counts: tuple[int, ...]
+    source_chunk_ids: tuple[UUID, ...]
+
+
+class GraphBundleDebugResponse(RetrievalPublicSchema):
+    path_id: str
+    chunk_ids: tuple[UUID, ...]
+
+
+class GraphDebugResponse(RetrievalPublicSchema):
+    dense_seed_count: int
+    lexical_seed_count: int
+    fused_seed_count: int
+    query_entity_count: int
+    one_hop_path_count: int
+    two_hop_path_count: int
+    rejected_path_count: int
+    bundle_count: int
+    protocol_skipped_count: int
+    resource_skipped_count: int
+    paths: tuple[GraphPathDebugResponse, ...] = ()
+    bundles: tuple[GraphBundleDebugResponse, ...] = ()
 
 
 class EvidencePackResponse(RetrievalPublicSchema):

@@ -2083,6 +2083,219 @@ input:focus-visible {
   min-width: 0;
 }
 
+.graph-settings-panel {
+  display: grid;
+  gap: 17px;
+}
+
+.graph-settings-heading {
+  align-items: center;
+}
+
+.graph-status-badge {
+  flex: 0 0 auto;
+  padding: 6px 10px;
+  color: #555555;
+  background: #f3f3f3;
+  border: 1px solid #dddddd;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 760;
+  letter-spacing: 0.02em;
+}
+
+.graph-status-badge.building {
+  color: #315b7d;
+  background: #eef6fc;
+  border-color: #c9deee;
+}
+
+.graph-status-badge.ready {
+  color: var(--success);
+  background: #eff8f2;
+  border-color: #c7e3d0;
+}
+
+.graph-status-badge.failed {
+  color: var(--danger);
+  background: #fff0ee;
+  border-color: #f2ccc6;
+}
+
+.graph-compatibility-note {
+  display: grid;
+  padding: 12px 14px;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: start;
+  gap: 12px;
+  color: var(--muted);
+  background: #f7f7f7;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.graph-compatibility-note strong {
+  color: var(--text);
+  font-size: 11px;
+}
+
+.graph-runtime-note {
+  padding: 10px 12px;
+  color: #805d14;
+  background: #fff9e8;
+  border: 1px solid #f3dfae;
+  border-radius: 10px;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.graph-loading {
+  padding: 18px;
+  color: var(--muted);
+  text-align: center;
+  background: #fafafa;
+  border-radius: 12px;
+  font-size: 11px;
+}
+
+.graph-settings-body {
+  display: grid;
+  gap: 15px;
+}
+
+.graph-model-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  align-items: end;
+  gap: 12px;
+}
+
+.graph-current-model {
+  display: grid;
+  min-height: 63px;
+  padding: 10px 12px;
+  align-content: center;
+  gap: 2px;
+  background: #fafafa;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.graph-current-model span,
+.graph-current-model small {
+  color: var(--faint);
+  font-size: 9px;
+  line-height: 1.4;
+}
+
+.graph-current-model strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.graph-current-model.muted strong {
+  color: #444444;
+}
+
+.graph-model-required {
+  margin: 0;
+}
+
+.graph-progress-block {
+  display: grid;
+  padding: 13px 14px;
+  gap: 8px;
+  background: #fafafa;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.graph-progress-block > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.graph-progress-block strong {
+  color: #333333;
+  font-size: 11px;
+}
+
+.graph-progress-block progress {
+  width: 100%;
+  height: 6px;
+  overflow: hidden;
+  appearance: none;
+  background: #e7e7e7;
+  border: 0;
+  border-radius: 999px;
+}
+
+.graph-progress-block progress::-webkit-progress-bar {
+  background: #e7e7e7;
+  border-radius: 999px;
+}
+
+.graph-progress-block progress::-webkit-progress-value {
+  background: #111111;
+  border-radius: 999px;
+}
+
+.graph-progress-block small {
+  color: var(--danger);
+  font-size: 9px;
+}
+
+.graph-stat-grid {
+  display: grid;
+  margin: 0;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.graph-stat-grid > div {
+  min-width: 0;
+  padding: 11px 12px;
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.graph-stat-grid dt {
+  overflow: hidden;
+  color: var(--faint);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.graph-stat-grid dd {
+  margin: 4px 0 0;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 730;
+}
+
+.graph-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.graph-retry-load {
+  margin-top: -4px;
+}
+
 .kb-creator {
   background: #fafafa;
 }
@@ -2964,8 +3177,22 @@ input:focus-visible {
   .kb-create-form,
   .choice-group,
   .model-selection-grid,
+  .graph-model-row,
   .chunk-list {
     grid-template-columns: 1fr;
+  }
+
+  .graph-compatibility-note {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+
+  .graph-stat-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .graph-actions > button {
+    flex: 1 1 auto;
   }
 
   .document-row {

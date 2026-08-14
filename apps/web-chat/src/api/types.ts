@@ -218,7 +218,7 @@ export interface RetrievalEvidence {
   source_location: JsonMap;
   hierarchy: JsonMap;
   score: number;
-  score_kind: "cosine_similarity" | "hybrid_rerank" | "reciprocal_rank_fusion";
+  score_kind: "cosine_similarity" | "hybrid_rerank" | "reciprocal_rank_fusion" | "graph_path";
   vector_similarity: number | null;
   lexical_score: number;
   modality: "text" | "image" | "table";
@@ -299,22 +299,51 @@ export interface ChatRunRetrieval {
     | "exact_vector_v1"
     | "hybrid_fts_rrf_v1"
     | "exact_vector_v2"
-    | "hybrid_fts_rrf_v2";
+    | "hybrid_fts_rrf_v2"
+    | "graph_augmented_v1";
   strategy: "exact_vector" | "hybrid";
   top_k: number;
   rerank_mode: RerankMode;
 }
 
 export interface RetrievalCapability {
-  mode: "vector" | "hybrid";
+  mode: "vector" | "hybrid" | "graph";
   strategy: "exact_vector" | "hybrid";
-  profile_version: "exact_vector_v2" | "hybrid_fts_rrf_v2";
+  profile_version: "exact_vector_v2" | "hybrid_fts_rrf_v2" | "graph_augmented_v1";
   enabled: boolean;
 }
 
 export interface RetrievalCapabilities {
   default_mode: "vector";
   modes: RetrievalCapability[];
+}
+
+export interface GraphConfig {
+  knowledge_base_id: UUID;
+  enabled: boolean;
+  status: "disabled" | "building" | "ready" | "failed";
+  build_id: UUID;
+  chat_profile_revision_id: UUID | null;
+  profile_name: string | null;
+  provider_name: string | null;
+  model: string | null;
+  extractor_version: string;
+  last_error_code: string | null;
+  eligible_chunk_count: number;
+  processed_chunk_count: number;
+  extracted_chunk_count: number;
+  empty_chunk_count: number;
+  protocol_skipped_count: number;
+  resource_skipped_count: number;
+  allowed_skipped_count: number;
+  requires_rebuild: boolean;
+}
+
+export interface GraphConfigUpdate {
+  enabled: boolean;
+  chat_profile_revision_id?: UUID | null;
+  retry?: boolean;
+  force_rebuild?: boolean;
 }
 
 export interface ChatAgentTraceEvent {
@@ -383,7 +412,7 @@ export interface ChatRunCreate {
     insufficiency_policy: "refuse" | "partial_answer";
   };
   retrieval: {
-    mode: "vector" | "hybrid";
+    mode: "vector" | "hybrid" | "graph";
     top_k: number;
     rerank_mode: RerankMode;
   };

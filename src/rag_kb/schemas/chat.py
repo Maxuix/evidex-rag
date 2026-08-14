@@ -103,12 +103,18 @@ class AnswerPolicyOverrides(PublicSchema):
 
 
 class ChatRetrievalRequest(PublicSchema):
-    mode: Literal["vector", "hybrid"] = "vector"
+    mode: Literal["vector", "hybrid", "graph"] = "vector"
     top_k: Annotated[int, Field(ge=1, le=100)] = 10
     rerank_mode: RerankMode | None = None
 
     @model_validator(mode="after")
     def require_supported_rerank_combination(self) -> "ChatRetrievalRequest":
+        if self.mode == "graph":
+            if not 4 <= self.top_k <= 20:
+                raise ValueError("graph retrieval top_k must be between 4 and 20")
+            if self.rerank_mode is not RerankMode.CLASSIC:
+                raise ValueError("graph retrieval requires classic reranking")
+            return self
         if self.mode == "hybrid" and self.rerank_mode is RerankMode.NONE:
             raise ValueError("hybrid retrieval requires reranking")
         if (
@@ -184,6 +190,7 @@ class ChatRunRetrievalResponse(PublicSchema):
         "hybrid_fts_rrf_v1",
         "exact_vector_v2",
         "hybrid_fts_rrf_v2",
+        "graph_augmented_v1",
     ]
     strategy: Literal["exact_vector", "hybrid"]
     top_k: Annotated[int, Field(ge=1, le=100)]

@@ -297,6 +297,44 @@ class ChatCreationServiceTests(unittest.IsolatedAsyncioTestCase):
             },
         )
 
+    async def test_graph_run_freezes_classic_outer_profile_without_hybrid_capability(
+        self,
+    ) -> None:
+        workspace_id = uuid4()
+        kb_id = uuid4()
+        chat = _ChatRepository(kb_id=kb_id)
+        service = ChatService(
+            _Factory(workspace_id, chat, kb_id),
+            SingleWorkspaceAccessPolicy(workspace_id),
+            model_configuration={"resolved_model": "fixed-model"},
+            hybrid_enabled=False,
+            retrieval_profile_factory=_profile_factory,
+        )
+
+        created = await service.create_run(
+            AuthContext("principal", "client", workspace_id),
+            uuid4(),
+            session_id=uuid4(),
+            kb_id=kb_id,
+            message="Atlas Labs",
+            answer_style=None,
+            insufficiency_policy=None,
+            retrieval_mode="graph",
+            top_k=4,
+            rerank_mode=RerankMode.CLASSIC,
+        )
+
+        self.assertEqual(
+            created["retrieval_strategy"],
+            {
+                "profile_version": "graph_augmented_v1",
+                "strategy": "hybrid",
+                "top_k": 4,
+                "rerank_mode": "classic",
+                "augmentation": "entity_graph_v1",
+            },
+        )
+
     async def test_session_listing_filters_by_authorized_knowledge_base(self) -> None:
         workspace_id = uuid4()
         kb_id = uuid4()

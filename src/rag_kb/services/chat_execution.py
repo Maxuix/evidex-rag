@@ -17,6 +17,7 @@ from rag_kb.domain import (
     Evidence,
     EvidencePack,
     EvidenceScoreKind,
+    GraphRetrievalRequest,
     ResourceNotFoundError,
     RetrievalRequest,
     RetrievalExecutionError,
@@ -24,7 +25,7 @@ from rag_kb.domain import (
     ReconciliationResult,
 )
 from rag_kb.retrieval import RetrievalService
-from rag_kb.retrieval.profile import parse_retrieval_snapshot
+from rag_kb.retrieval.profile import parse_chat_retrieval_snapshot
 from rag_kb.uow import (
     UnitOfWork,
     UnitOfWorkFactory,
@@ -127,20 +128,29 @@ class ChatEvidenceRetriever:
         top_k_override: int | None = None,
     ) -> EvidencePack:
         try:
-            strategy, top_k, rerank_mode = parse_retrieval_snapshot(
+            strategy, top_k, rerank_mode, augmentation = parse_chat_retrieval_snapshot(
                 context.retrieval_strategy,
             )
             if top_k_override is not None:
                 if not 1 <= top_k_override <= top_k:
                     raise ValueError
                 top_k = top_k_override
-            request = RetrievalRequest(
-                knowledge_base_id=context.knowledge_base_id,
-                query=query,
-                top_k=top_k,
-                strategy=strategy,
-                rerank_mode=rerank_mode,
-                include_debug=True,
+            request = (
+                GraphRetrievalRequest(
+                    knowledge_base_id=context.knowledge_base_id,
+                    query=query,
+                    top_k=top_k,
+                    include_debug=True,
+                )
+                if augmentation is not None
+                else RetrievalRequest(
+                    knowledge_base_id=context.knowledge_base_id,
+                    query=query,
+                    top_k=top_k,
+                    strategy=strategy,
+                    rerank_mode=rerank_mode,
+                    include_debug=True,
+                )
             )
         except (KeyError, TypeError, ValueError) as error:
             raise ChatPipelineExecutionError(
@@ -149,13 +159,15 @@ class ChatEvidenceRetriever:
                 diagnostic={"check": "retrieval_snapshot"},
             ) from error
         try:
-            pack = await self._retrieval.retrieve(
-                AuthContext(
-                    principal_id=context.principal_id,
-                    client_id=context.client_id,
-                    workspace_id=context.workspace_id,
-                ),
-                request,
+            auth_context = AuthContext(
+                principal_id=context.principal_id,
+                client_id=context.client_id,
+                workspace_id=context.workspace_id,
+            )
+            pack = (
+                await self._retrieval.retrieve_graph(auth_context, request)
+                if augmentation is not None
+                else await self._retrieval.retrieve(auth_context, request)
             )
         except RetrievalExecutionError as error:
             raise ChatPipelineExecutionError(

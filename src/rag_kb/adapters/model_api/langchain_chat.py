@@ -178,6 +178,8 @@ class LangChainChatModelAdapter:
             max_tokens=output_limit,
             thinking_enabled=request.thinking_enabled,
         )
+        if request.response_format is not None:
+            model = model.bind(response_format=dict(request.response_format))
         if request.tools:
             tools = [
                 {

@@ -59,6 +59,7 @@ from rag_kb.domain import (
     EvidencePack,
     EmbeddingRoleSummary,
     FileAdmissionError,
+    GraphRetrievalRequest,
     IdempotencyKeyReusedError,
     IdempotencyScope,
     InsufficiencyPolicy,
@@ -253,6 +254,12 @@ class StubRetrievalService:
                     profile_version="hybrid_fts_rrf_v2",
                     enabled=False,
                 ),
+                SimpleNamespace(
+                    mode="graph",
+                    strategy="hybrid",
+                    profile_version="graph_augmented_v1",
+                    enabled=True,
+                ),
             ),
         )
 
@@ -298,6 +305,9 @@ class StubRetrievalService:
                 else None
             ),
         )
+
+    async def retrieve_graph(self, context, retrieval_request: GraphRetrievalRequest):
+        return await self.retrieve(context, retrieval_request)
 
 
 class _PreviewSubscription:
@@ -860,6 +870,7 @@ class CommonContractTests(unittest.TestCase):
                 "/api/v1/knowledge-bases",
                 "/api/v1/knowledge-bases/{kb_id}",
                 "/api/v1/knowledge-bases/{kb_id}/documents",
+                "/api/v1/knowledge-bases/{kb_id}/graph-config",
                 "/api/v1/knowledge-bases/{kb_id}/indexing-jobs",
                 "/api/v1/indexing-jobs/{job_id}",
                 "/api/v1/indexing-jobs/{job_id}/retry",
@@ -988,10 +999,55 @@ class RetrievalApiContractTests(unittest.IsolatedAsyncioTestCase):
                         "profile_version": "hybrid_fts_rrf_v2",
                         "enabled": False,
                     },
+                    {
+                        "mode": "graph",
+                        "strategy": "hybrid",
+                        "profile_version": "graph_augmented_v1",
+                        "enabled": True,
+                    },
                 ],
             },
         )
         self.assertEqual(self.service.requests, [])
+
+    async def test_graph_retrieval_routes_outer_mode_and_requires_classic(self) -> None:
+        response = await request(
+            self.app,
+            "POST",
+            f"{API_PREFIX}/retrieval/query",
+            json_body={
+                "knowledge_base_id": "01900000-0000-7000-8000-000000000091",
+                "query": "Atlas Labs",
+                "mode": "graph",
+                "top_k": 4,
+                "rerank_mode": "classic",
+            },
+        )
+        self.assertEqual(response.status, 200)
+        _, graph_request = self.service.requests[-1]
+        self.assertIsInstance(graph_request, GraphRetrievalRequest)
+        self.assertEqual(graph_request.top_k, 4)
+
+        for payload in (
+            {"top_k": 3, "rerank_mode": "classic"},
+            {"top_k": 4, "rerank_mode": "none"},
+            {"top_k": 4, "rerank_mode": "local_minilm_v1"},
+        ):
+            with self.subTest(payload=payload):
+                invalid = await request(
+                    self.app,
+                    "POST",
+                    f"{API_PREFIX}/retrieval/query",
+                    json_body={
+                        "knowledge_base_id": (
+                            "01900000-0000-7000-8000-000000000091"
+                        ),
+                        "query": "Atlas Labs",
+                        "mode": "graph",
+                        **payload,
+                    },
+                )
+                self.assertEqual(invalid.status, 422)
 
     async def test_client_cannot_inject_mandatory_filters(self) -> None:
         forbidden_fields = (

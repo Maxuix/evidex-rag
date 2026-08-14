@@ -29,6 +29,14 @@ class EvidenceEligibilityPolicy:
             return False
         if item.score_kind is EvidenceScoreKind.ADJACENCY:
             return False
+        if item.score_kind is EvidenceScoreKind.GRAPH_PATH:
+            return (
+                item.graph_path_id is not None
+                and item.graph_anchor_index_chunk_id is not None
+                and item.graph_hop_count in {1, 2}
+                and item.graph_path_rank is not None
+                and item.score > 0.0
+            )
         if item.score_kind is EvidenceScoreKind.RECIPROCAL_RANK_FUSION:
             if item.vector_similarity is None:
                 return False

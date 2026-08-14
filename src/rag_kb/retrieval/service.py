@@ -6,11 +6,13 @@ import asyncio
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, replace
 import math
+import re
 from typing import Any, Literal, Protocol
 from uuid import UUID
 
 from rag_kb.auth import AccessPolicy, AuthContext
 from rag_kb.domain import (
+    GRAPH_EXTRACTOR_VERSION,
     AdjacentChunkAnchor,
     AdjacentChunkQuery,
     AdjacentChunkResult,
@@ -22,6 +24,13 @@ from rag_kb.domain import (
     evidence_group_identity,
     EvidencePack,
     EvidenceScoreKind,
+    GraphChunkEvidence,
+    GraphConfigStatus,
+    GraphDebug,
+    GraphEvidenceBundle,
+    GraphEntityLookupQuery,
+    GraphRetrievalRequest,
+    GraphTraversalQuery,
     IndexChunkAssetRelationSnapshot,
     IndexingExecutionError,
     LexicalSearchResult,
@@ -36,11 +45,14 @@ from rag_kb.domain import (
     RerankMode,
     VectorSearchHit,
     VectorSearchResult,
+    allowed_graph_skips,
+    normalize_entity_surface,
     validate_embedding_vector,
 )
 from rag_kb.document_processing.lexical import (
     LEXICAL_ANALYZER_VERSION,
     LEXICAL_QUERY_VERSION,
+    analyze_query,
 )
 from rag_kb.ports.model_api import (
     EmbeddingModelAdapter,
@@ -48,7 +60,7 @@ from rag_kb.ports.model_api import (
     RerankerAdapterError,
     TextRerankerAdapter,
 )
-from rag_kb.ports.retrieval import LexicalStore, VectorStore
+from rag_kb.ports.retrieval import GraphStore, LexicalStore, VectorStore
 from rag_kb.retrieval.reranker import (
     RerankedHit,
     order_model_scored_evidence,
@@ -79,9 +91,11 @@ class CompositeEvidenceHydrator(Protocol):
     ) -> tuple[IndexChunkAssetRelationSnapshot, ...]: ...
 
 
-RetrievalMode = Literal["vector", "hybrid"]
+RetrievalMode = Literal["vector", "hybrid", "graph"]
 RetrievalCapabilityStrategy = Literal["exact_vector", "hybrid"]
-RetrievalCapabilityProfile = Literal["exact_vector_v2", "hybrid_fts_rrf_v2"]
+RetrievalCapabilityProfile = Literal[
+    "exact_vector_v2", "hybrid_fts_rrf_v2", "graph_augmented_v1"
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,6 +155,7 @@ class RetrievalService:
             | None
         ) = None,
         text_reranker: TextRerankerAdapter | None = None,
+        graph_store: GraphStore | None = None,
     ) -> None:
         if candidate_multiplier < 2:
             raise ValueError("candidate_multiplier must be at least two")
@@ -185,6 +200,7 @@ class RetrievalService:
             multimodal_embedding_model_resolver
         )
         self._text_reranker = text_reranker
+        self._graph_store = graph_store
         common_profile = {
             "top_k": 10,
             "rerank_mode": RerankMode.CLASSIC,
@@ -247,6 +263,18 @@ class RetrievalService:
                     profile_version="hybrid_fts_rrf_v2",
                     enabled=self.hybrid_request_enabled(),
                 ),
+                *(
+                    (
+                        RetrievalCapability(
+                            mode="graph",
+                            strategy="hybrid",
+                            profile_version="graph_augmented_v1",
+                            enabled=True,
+                        ),
+                    )
+                    if self._graph_store is not None
+                    else ()
+                ),
             ),
         )
 
@@ -297,6 +325,197 @@ class RetrievalService:
                 ErrorCode.RETRIEVAL_DEADLINE_EXCEEDED,
                 diagnostic={"check": "absolute_deadline"},
             ) from error
+
+    async def retrieve_graph(
+        self,
+        context: AuthContext,
+        request: GraphRetrievalRequest,
+    ) -> EvidencePack:
+        """Retrieve hybrid seeds and augment them with bounded graph paths."""
+
+        deadline = asyncio.timeout(self._deadline_seconds)
+        try:
+            async with deadline:
+                return await self._retrieve_graph(context, request)
+        except TimeoutError as error:
+            if not deadline.expired():
+                raise
+            raise RetrievalExecutionError(
+                ErrorCode.RETRIEVAL_DEADLINE_EXCEEDED,
+                diagnostic={"check": "graph_absolute_deadline"},
+            ) from error
+
+    async def _retrieve_graph(
+        self,
+        context: AuthContext,
+        request: GraphRetrievalRequest,
+    ) -> EvidencePack:
+        metadata_filter = self._access_policy.metadata_filter(context)
+        if request.include_debug:
+            self._access_policy.authorize_retrieval_debug(context)
+        graph_store = self._graph_store
+        if graph_store is None or self._lexical_store is None:
+            raise RetrievalExecutionError(
+                ErrorCode.GRAPH_NOT_READY,
+                diagnostic={"check": "graph_store"},
+            )
+        config = await graph_store.get_config(
+            metadata_filter.workspace_id,
+            request.knowledge_base_id,
+        )
+        if not _graph_config_is_ready(config):
+            raise RetrievalExecutionError(
+                ErrorCode.GRAPH_NOT_READY,
+                diagnostic={"check": "graph_completeness"},
+            )
+
+        seed_count = min(40, max(12, request.top_k * 2))
+        seed_profile = replace(
+            self._hybrid_profile,
+            top_k=request.top_k,
+            rerank_mode=RerankMode.CLASSIC,
+            dense_candidate_count=seed_count,
+            lexical_candidate_count=seed_count,
+            cross_modal_candidate_count=max(request.top_k, seed_count),
+        )
+        seed_pack = await self._retrieve_hybrid(
+            context,
+            RetrievalRequest(
+                knowledge_base_id=request.knowledge_base_id,
+                query=request.query,
+                top_k=request.top_k,
+                strategy=RetrievalStrategy.HYBRID,
+                rerank_mode=RerankMode.CLASSIC,
+                include_debug=True,
+            ),
+            seed_profile,
+        )
+        if seed_pack.index_revision_id == UUID(int=0):
+            raise RetrievalExecutionError(
+                ErrorCode.INDEX_REVISION_INCOMPATIBLE,
+                diagnostic={"check": "graph_seed_revision"},
+            )
+
+        query_entity_keys = await self._graph_query_entity_keys(
+            graph_store,
+            metadata_filter.workspace_id,
+            request.knowledge_base_id,
+            config.build_id,
+            request.query,
+            seed_pack.index_revision_id,
+        )
+        protected_seed_count = min(6, request.top_k - 2)
+        protected_seed_ids = tuple(
+            item.index_chunk_id
+            for item in seed_pack.evidence[:protected_seed_count]
+        )
+        entry_keys = tuple(dict.fromkeys(query_entity_keys))
+        traversal = None
+        if entry_keys or protected_seed_ids:
+            traversal = await graph_store.traverse(
+                GraphTraversalQuery(
+                    workspace_id=metadata_filter.workspace_id,
+                    knowledge_base_id=request.knowledge_base_id,
+                    build_id=config.build_id,
+                    index_revision_id=seed_pack.index_revision_id,
+                    entry_entity_keys=entry_keys,
+                    seed_chunk_ids=protected_seed_ids,
+                    max_hops=2,
+                )
+            )
+        if traversal is None:
+            raise ResourceNotFoundError(
+                "knowledge base or active revision was not found"
+            )
+        if traversal.resolved_active_revision_id != seed_pack.index_revision_id:
+            raise RetrievalExecutionError(
+                ErrorCode.INDEX_REVISION_INCOMPATIBLE,
+                diagnostic={"check": "graph_frozen_revision"},
+            )
+        _validate_graph_traversal(
+            traversal,
+            workspace_id=metadata_filter.workspace_id,
+            knowledge_base_id=request.knowledge_base_id,
+            index_revision_id=seed_pack.index_revision_id,
+        )
+
+        evidence, bundles = _pack_graph_evidence(
+            seed_pack.evidence,
+            traversal,
+            top_k=request.top_k,
+        )
+        seed_debug = seed_pack.debug
+        graph_debug = GraphDebug(
+            dense_seed_count=seed_debug.text_candidate_count if seed_debug else 0,
+            lexical_seed_count=seed_debug.lexical_candidate_count if seed_debug else 0,
+            fused_seed_count=len(seed_pack.evidence),
+            query_entity_count=len(query_entity_keys),
+            one_hop_path_count=sum(
+                path.hop_count == 1 for path in traversal.paths
+            ),
+            two_hop_path_count=sum(
+                path.hop_count == 2 for path in traversal.paths
+            ),
+            rejected_path_count=traversal.rejected_path_count,
+            bundle_count=len(bundles),
+            protocol_skipped_count=config.protocol_skipped_count,
+            resource_skipped_count=config.resource_skipped_count,
+            paths=traversal.paths,
+            bundles=bundles,
+        )
+        debug = None
+        if request.include_debug and seed_debug is not None:
+            debug = replace(
+                seed_debug,
+                result_count=len(evidence),
+                graph=graph_debug,
+            )
+        return EvidencePack(
+            knowledge_base_id=seed_pack.knowledge_base_id,
+            index_revision_id=seed_pack.index_revision_id,
+            strategy=RetrievalStrategy.HYBRID,
+            evidence=evidence,
+            debug=debug,
+        )
+
+    async def _graph_query_entity_keys(
+        self,
+        graph_store: GraphStore,
+        workspace_id: UUID,
+        knowledge_base_id: UUID,
+        build_id: UUID,
+        query: str,
+        index_revision_id: UUID,
+    ) -> tuple[str, ...]:
+        candidates: dict[str, object] = {}
+        fragments = _graph_query_fragments(query)
+        for fragment in fragments:
+            try:
+                normalized = normalize_entity_surface(fragment)
+            except ValueError:
+                continue
+            for prefix in (False, True):
+                if prefix and len(candidates) >= 8:
+                    break
+                matches = await graph_store.find_entity_candidates(
+                    GraphEntityLookupQuery(
+                        workspace_id=workspace_id,
+                        knowledge_base_id=knowledge_base_id,
+                        build_id=build_id,
+                        normalized_surface=normalized,
+                        prefix=prefix,
+                    )
+                )
+                for match in matches:
+                    if match.index_revision_id != index_revision_id:
+                        raise RetrievalExecutionError(
+                            ErrorCode.INDEX_REVISION_INCOMPATIBLE,
+                            diagnostic={"check": "graph_entity_revision"},
+                        )
+                    candidates.setdefault(match.entity_key, match)
+                    if len(candidates) >= 8:
+                        break
+        return tuple(candidates)
 
     async def retrieve_adjacent_evidence(
         self,
@@ -1745,6 +1964,199 @@ class RetrievalService:
             width=relation.asset_width,
             height=relation.asset_height,
         )
+
+
+def _graph_config_is_ready(config) -> bool:
+    if config is None or config.status is not GraphConfigStatus.READY:
+        return False
+    if config.extractor_version != GRAPH_EXTRACTOR_VERSION:
+        return False
+    if config.preflight_extractor_version != config.extractor_version:
+        return False
+    if config.processed_chunk_count != config.eligible_chunk_count:
+        return False
+    skipped = config.protocol_skipped_count + config.resource_skipped_count
+    if skipped > allowed_graph_skips(config.eligible_chunk_count):
+        return False
+    return config.eligible_chunk_count == 0 or (
+        config.extracted_chunk_count + config.empty_chunk_count > 0
+    )
+
+
+def _validate_graph_traversal(
+    traversal,
+    *,
+    workspace_id: UUID,
+    knowledge_base_id: UUID,
+    index_revision_id: UUID,
+) -> None:
+    """Reject malformed or cross-scope graph rows before materialization."""
+
+    chunks = {chunk.index_chunk_id: chunk for chunk in traversal.chunks}
+    for chunk in traversal.chunks:
+        if (
+            chunk.workspace_id != workspace_id
+            or chunk.knowledge_base_id != knowledge_base_id
+            or chunk.index_revision_id != index_revision_id
+            or chunk.excluded
+        ):
+            raise RetrievalExecutionError(
+                ErrorCode.INDEX_REVISION_INCOMPATIBLE,
+                diagnostic={"check": "graph_chunk_scope"},
+            )
+    for path in traversal.paths:
+        if not 1 <= path.hop_count <= 2 or path.rank > 20:
+            raise RetrievalExecutionError(
+                ErrorCode.GRAPH_CONFIG_INVALID,
+                diagnostic={"check": "graph_path_bound"},
+            )
+        if any(chunk_id not in chunks for chunk_id in path.source_chunk_ids):
+            raise RetrievalExecutionError(
+                ErrorCode.GRAPH_CONFIG_INVALID,
+                diagnostic={"check": "graph_path_sources"},
+            )
+        relation_ids = {hop.relation_id for hop in path.hops}
+        if len(relation_ids) != len(path.hops):
+            raise RetrievalExecutionError(
+                ErrorCode.GRAPH_CONFIG_INVALID,
+                diagnostic={"check": "graph_relation_reuse"},
+            )
+        for hop in path.hops:
+            if (
+                hop.source_index_revision_id != index_revision_id
+                or hop.subject_entity_key == hop.object_entity_key
+            ):
+                raise RetrievalExecutionError(
+                    ErrorCode.INDEX_REVISION_INCOMPATIBLE,
+                    diagnostic={"check": "graph_hop_scope"},
+                )
+        first_endpoints = {
+            path.hops[0].subject_entity_key,
+            path.hops[0].object_entity_key,
+        }
+        if path.entry_entity_key not in first_endpoints:
+            raise RetrievalExecutionError(
+                ErrorCode.GRAPH_CONFIG_INVALID,
+                diagnostic={"check": "graph_entry_grounding"},
+            )
+        if path.hop_count == 2:
+            second_endpoints = {
+                path.hops[1].subject_entity_key,
+                path.hops[1].object_entity_key,
+            }
+            if (
+                len(first_endpoints & second_endpoints) != 1
+                or len(first_endpoints | second_endpoints) != 3
+            ):
+                raise RetrievalExecutionError(
+                    ErrorCode.GRAPH_CONFIG_INVALID,
+                    diagnostic={"check": "graph_two_hop_shape"},
+                )
+
+
+def _graph_query_fragments(query: str) -> tuple[str, ...]:
+    """Return bounded deterministic entity lookup fragments, without an LLM."""
+
+    fragments: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: str) -> None:
+        normalized = value.strip()
+        cjk_count = len(re.findall(r"[\u3400-\u9fff]", normalized))
+        alnum_count = len(re.findall(r"[A-Za-z0-9]", normalized))
+        if (
+            normalized
+            and (cjk_count >= 2 or alnum_count >= 3)
+            and normalized not in seen
+            and len(fragments) < 64
+        ):
+            seen.add(normalized)
+            fragments.append(normalized)
+
+    add(query)
+    for match in re.findall(r'["“]([^"”]+)["”]', query):
+        add(match)
+    tokens = analyze_query(query)
+    for width in range(1, 5):
+        for index in range(0, len(tokens) - width + 1):
+            add("".join(tokens[index : index + width]))
+            if len(fragments) >= 64:
+                return tuple(fragments)
+    return tuple(fragments)
+
+
+def _pack_graph_evidence(
+    seed_evidence: tuple[Evidence, ...],
+    traversal,
+    *,
+    top_k: int,
+) -> tuple[tuple[Evidence, ...], tuple[GraphEvidenceBundle, ...]]:
+    chunk_by_id = {item.index_chunk_id: item for item in traversal.chunks}
+    selected: list[Evidence] = list(seed_evidence[: min(6, top_k - 2)])
+    selected_ids = {item.index_chunk_id for item in selected}
+    bundles: list[GraphEvidenceBundle] = []
+    for path in traversal.paths:
+        bundle = GraphEvidenceBundle(path=path, chunk_ids=path.source_chunk_ids)
+        new_ids = tuple(
+            chunk_id for chunk_id in bundle.chunk_ids if chunk_id not in selected_ids
+        )
+        if len(selected) + len(new_ids) > top_k:
+            continue
+        if any(chunk_id not in chunk_by_id for chunk_id in new_ids):
+            continue
+        bundles.append(bundle)
+        for chunk_id in new_ids:
+            selected.append(
+                _graph_evidence_from_chunk(chunk_by_id[chunk_id], path)
+            )
+            selected_ids.add(chunk_id)
+        if len(selected) >= top_k:
+            break
+    for item in seed_evidence:
+        if len(selected) >= top_k:
+            break
+        if item.index_chunk_id not in selected_ids:
+            selected.append(item)
+            selected_ids.add(item.index_chunk_id)
+    return tuple(
+        replace(item, rank=rank)
+        for rank, item in enumerate(selected[:top_k], start=1)
+    ), tuple(bundles)
+
+
+def _graph_evidence_from_chunk(
+    chunk: GraphChunkEvidence,
+    path,
+) -> Evidence:
+    if chunk.index_revision_id != path.hops[0].source_index_revision_id:
+        raise RetrievalExecutionError(
+            ErrorCode.INDEX_REVISION_INCOMPATIBLE,
+            diagnostic={"check": "graph_path_chunk_revision"},
+        )
+    return Evidence(
+        rank=1,
+        index_chunk_id=chunk.index_chunk_id,
+        indexed_document_version_id=chunk.indexed_document_version_id,
+        document_id=chunk.document_id,
+        document_version_id=chunk.document_version_id,
+        index_revision_id=chunk.index_revision_id,
+        ordinal=chunk.ordinal,
+        text=chunk.text,
+        source_location=chunk.source_location,
+        hierarchy=chunk.hierarchy,
+        source_metadata=chunk.source_metadata,
+        score=1.0 / path.rank,
+        score_kind=EvidenceScoreKind.GRAPH_PATH,
+        modality=chunk.modality,
+        evidence_group_key=chunk.evidence_group_key,
+        matched_representations=("graph_path",),
+        document_display_name=chunk.document_display_name,
+        document_original_filename=chunk.document_original_filename,
+        graph_path_id=path.path_id,
+        graph_anchor_index_chunk_id=path.anchor_chunk_id,
+        graph_hop_count=path.hop_count,
+        graph_path_rank=path.rank,
+    )
 
 
 def _providers_share_space(

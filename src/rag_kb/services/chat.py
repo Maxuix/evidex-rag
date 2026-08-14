@@ -33,7 +33,7 @@ from rag_kb.domain import (
     canonical_request_hash,
     resolve_p1_policy,
 )
-from rag_kb.retrieval.profile import RetrievalExecutionProfile
+from rag_kb.retrieval.profile import RetrievalExecutionProfile, graph_profile
 from rag_kb.memory import (
     ConversationContextSelector,
     serialize_contextualized_query,
@@ -198,18 +198,31 @@ class ChatService:
         model_profile_revision_id: UUID | None = None,
     ) -> ChatRun:
         self._authorize(context)
-        if retrieval_mode not in {"vector", "hybrid"}:
+        if retrieval_mode not in {"vector", "hybrid", "graph"}:
             raise ResourceStateConflictError("retrieval mode is unsupported")
         if retrieval_mode == "hybrid" and not self._hybrid_enabled:
             raise RetrievalExecutionError(
                 ErrorCode.CAPABILITY_NOT_ENABLED,
                 diagnostic={"capability": "hybrid"},
             )
+        if retrieval_mode == "graph" and rerank_mode is None:
+            raise ResourceStateConflictError(
+                "graph retrieval requires an explicit classic reranker"
+            )
         resolved_rerank_mode = (
             self._default_rerank_mode
             if rerank_mode is None
             else RerankMode(rerank_mode)
         )
+        if retrieval_mode == "graph":
+            if not 4 <= top_k <= 20:
+                raise ResourceStateConflictError(
+                    "graph retrieval top_k must be between 4 and 20"
+                )
+            if resolved_rerank_mode is not RerankMode.CLASSIC:
+                raise ResourceStateConflictError(
+                    "graph retrieval requires classic reranking"
+                )
         if retrieval_mode == "hybrid" and resolved_rerank_mode is RerankMode.NONE:
             raise ResourceStateConflictError(
                 "hybrid retrieval requires reranking"
@@ -243,12 +256,16 @@ class ChatService:
         }
         strategy = (
             RetrievalStrategy.HYBRID
-            if retrieval_mode == "hybrid"
+            if retrieval_mode in {"hybrid", "graph"}
             else RetrievalStrategy.EXACT_VECTOR
         )
-        retrieval_strategy = self._retrieval_profile_factory(
-            strategy, top_k, resolved_rerank_mode
-        ).as_dict()
+        retrieval_strategy = (
+            graph_profile(top_k=top_k).as_dict()
+            if retrieval_mode == "graph"
+            else self._retrieval_profile_factory(
+                strategy, top_k, resolved_rerank_mode
+            ).as_dict()
+        )
         request_hash = canonical_request_hash(
             {
                 "session_id": str(session_id),

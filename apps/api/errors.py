@@ -152,6 +152,24 @@ async def _retrieval_execution_handler(
             "The retrieval request exceeded its execution deadline.",
             True,
         ),
+        ErrorCode.GRAPH_NOT_READY: (
+            409,
+            "Graph not ready",
+            "The Entity Graph is disabled, building, incomplete, or failed.",
+            False,
+        ),
+        ErrorCode.GRAPH_CONFIG_INVALID: (
+            409,
+            "Graph configuration invalid",
+            "The Entity Graph configuration is invalid.",
+            False,
+        ),
+        ErrorCode.GRAPH_PROVIDER_UNAVAILABLE: (
+            503,
+            "Graph provider unavailable",
+            "The configured Graph extraction provider is temporarily unavailable.",
+            True,
+        ),
     }
     status, title, detail, retryable = mapping.get(
         error.code,

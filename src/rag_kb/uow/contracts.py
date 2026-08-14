@@ -12,6 +12,7 @@ from rag_kb.repositories import (
     ContentMutationRepository,
     DocumentRepository,
     FileConsistencyRepository,
+    GraphRepository,
     IndexingRepository,
     KnowledgeBaseRepository,
     ModelSettingsRepository,
@@ -71,6 +72,9 @@ class UnitOfWork(Protocol):
 
     @property
     def model_settings(self) -> ModelSettingsRepository: ...
+
+    @property
+    def graph(self) -> GraphRepository: ...
 
     async def __aenter__(self) -> UnitOfWork: ...
 

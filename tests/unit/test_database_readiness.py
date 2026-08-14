@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import unittest
 
-from rag_kb.db.readiness import DatabaseReadinessError, check_database_ready
+from rag_kb.db.readiness import (
+    EXPECTED_REVISION,
+    DatabaseReadinessError,
+    check_database_ready,
+)
 
 
 class _Connection:
@@ -36,7 +40,7 @@ class _Engine:
 class DatabaseReadinessTests(unittest.IsolatedAsyncioTestCase):
     async def test_current_revision_is_ready(self) -> None:
         await check_database_ready(  # type: ignore[arg-type]
-            _Engine("0011_native_agent_round_limit")
+            _Engine(EXPECTED_REVISION)
         )
 
     async def test_missing_or_stale_revision_is_rejected(self) -> None:

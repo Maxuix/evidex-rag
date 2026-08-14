@@ -10,13 +10,50 @@ from rag_kb.document_processing.lexical import (
     LEXICAL_ANALYZER_VERSION,
     LEXICAL_QUERY_VERSION,
 )
-from rag_kb.domain import RerankMode, RetrievalStrategy
+from rag_kb.domain import (
+    GRAPH_AUGMENTATION_VERSION,
+    GRAPH_RETRIEVAL_PROFILE_VERSION,
+    RerankMode,
+    RetrievalStrategy,
+)
 
 
 EXACT_PROFILE_VERSION = "exact_vector_v2"
 HYBRID_PROFILE_VERSION = "hybrid_fts_rrf_v2"
 LEGACY_EXACT_PROFILE_VERSION = "exact_vector_v1"
 LEGACY_HYBRID_PROFILE_VERSION = "hybrid_fts_rrf_v1"
+
+
+@dataclass(frozen=True, slots=True)
+class GraphRetrievalProfile:
+    """Small outer profile; dense/lexical execution remains the hybrid profile."""
+
+    profile_version: str
+    strategy: RetrievalStrategy
+    top_k: int
+    rerank_mode: RerankMode
+    augmentation: str
+
+    def __post_init__(self) -> None:
+        if self.profile_version != GRAPH_RETRIEVAL_PROFILE_VERSION:
+            raise ValueError("unsupported graph retrieval profile version")
+        if self.strategy is not RetrievalStrategy.HYBRID:
+            raise ValueError("graph retrieval uses hybrid seeds")
+        if not 4 <= self.top_k <= 20:
+            raise ValueError("graph retrieval top_k is invalid")
+        if self.rerank_mode is not RerankMode.CLASSIC:
+            raise ValueError("graph retrieval requires classic reranking")
+        if self.augmentation != GRAPH_AUGMENTATION_VERSION:
+            raise ValueError("graph augmentation version is invalid")
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "profile_version": self.profile_version,
+            "strategy": self.strategy.value,
+            "top_k": self.top_k,
+            "rerank_mode": self.rerank_mode.value,
+            "augmentation": self.augmentation,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,6 +235,48 @@ def parse_retrieval_snapshot(
     if rerank_mode is RerankMode.LOCAL_MINILM_V1 and top_k > 20:
         raise ValueError("local reranking supports top_k up to 20")
     return strategy, top_k, rerank_mode
+
+
+def parse_chat_retrieval_snapshot(
+    value: Mapping[str, Any],
+) -> tuple[RetrievalStrategy, int, RerankMode, str | None]:
+    """Parse old exact/hybrid snapshots or the new graph outer snapshot."""
+
+    if value.get("augmentation") is not None:
+        expected_fields = {
+            "profile_version",
+            "strategy",
+            "top_k",
+            "rerank_mode",
+            "augmentation",
+        }
+        if set(value) != expected_fields:
+            raise ValueError("graph retrieval snapshot fields are invalid")
+        profile = GraphRetrievalProfile(
+            profile_version=value["profile_version"],
+            strategy=RetrievalStrategy(value["strategy"]),
+            top_k=value["top_k"],
+            rerank_mode=RerankMode(value["rerank_mode"]),
+            augmentation=value["augmentation"],
+        )
+        return (
+            profile.strategy,
+            profile.top_k,
+            profile.rerank_mode,
+            profile.augmentation,
+        )
+    strategy, top_k, rerank_mode = parse_retrieval_snapshot(value)
+    return strategy, top_k, rerank_mode, None
+
+
+def graph_profile(*, top_k: int = 10) -> GraphRetrievalProfile:
+    return GraphRetrievalProfile(
+        profile_version=GRAPH_RETRIEVAL_PROFILE_VERSION,
+        strategy=RetrievalStrategy.HYBRID,
+        top_k=top_k,
+        rerank_mode=RerankMode.CLASSIC,
+        augmentation=GRAPH_AUGMENTATION_VERSION,
+    )
 
 
 def exact_profile(

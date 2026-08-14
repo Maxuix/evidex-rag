@@ -295,16 +295,17 @@ export interface ChatRunRetrieval {
     | "exact_vector_v1"
     | "hybrid_fts_rrf_v1"
     | "exact_vector_v2"
-    | "hybrid_fts_rrf_v2";
+    | "hybrid_fts_rrf_v2"
+    | "graph_augmented_v1";
   strategy: "exact_vector" | "hybrid";
   top_k: number;
   rerank_mode: RerankMode;
 }
 
 export interface RetrievalCapability {
-  mode: "vector" | "hybrid";
+  mode: "vector" | "hybrid" | "graph";
   strategy: "exact_vector" | "hybrid";
-  profile_version: "exact_vector_v2" | "hybrid_fts_rrf_v2";
+  profile_version: "exact_vector_v2" | "hybrid_fts_rrf_v2" | "graph_augmented_v1";
   enabled: boolean;
 }
 
@@ -403,7 +404,7 @@ export interface ChatRunCreate {
     insufficiency_policy: InsufficiencyPolicy;
   };
   retrieval: {
-    mode: "vector" | "hybrid";
+    mode: "vector" | "hybrid" | "graph";
     top_k: number;
     rerank_mode?: RerankMode;
   };
@@ -436,6 +437,56 @@ export interface RetrievalQueryPlan {
   rerank_mode: RerankMode;
 }
 
+export interface GraphConfig {
+  knowledge_base_id: UUID;
+  enabled: boolean;
+  status: "disabled" | "building" | "ready" | "failed";
+  build_id: UUID;
+  chat_profile_revision_id: UUID | null;
+  profile_name: string | null;
+  provider_name: string | null;
+  model: string | null;
+  extractor_version: string;
+  last_error_code: string | null;
+  eligible_chunk_count: number;
+  processed_chunk_count: number;
+  extracted_chunk_count: number;
+  empty_chunk_count: number;
+  protocol_skipped_count: number;
+  resource_skipped_count: number;
+}
+
+export interface GraphPathDebug {
+  path_id: string;
+  entry_entity_key: string;
+  hop_count: 1 | 2;
+  seed_entry: boolean;
+  anchor_chunk_id: UUID;
+  rank: number;
+  support_counts: number[];
+  source_chunk_ids: UUID[];
+}
+
+export interface GraphBundleDebug {
+  path_id: string;
+  chunk_ids: UUID[];
+}
+
+export interface GraphDebug {
+  dense_seed_count: number;
+  lexical_seed_count: number;
+  fused_seed_count: number;
+  query_entity_count: number;
+  one_hop_path_count: number;
+  two_hop_path_count: number;
+  rejected_path_count: number;
+  bundle_count: number;
+  protocol_skipped_count: number;
+  resource_skipped_count: number;
+  paths: GraphPathDebug[];
+  bundles: GraphBundleDebug[];
+}
+
 export interface Evidence {
   rank: number;
   index_chunk_id: UUID;
@@ -449,7 +500,7 @@ export interface Evidence {
   hierarchy: JsonMap;
   source_metadata: JsonMap;
   score: number;
-  score_kind: "cosine_similarity" | "hybrid_rerank" | "reciprocal_rank_fusion";
+  score_kind: "cosine_similarity" | "hybrid_rerank" | "reciprocal_rank_fusion" | "graph_path";
   vector_similarity: number | null;
   lexical_score: number;
   lexical_coverage: number;
@@ -465,6 +516,10 @@ export interface Evidence {
   model_rerank_rank: number | null;
   model_rerank_window_count: number | null;
   model_rerank_winning_window_index: number | null;
+  graph_path_id: string | null;
+  graph_anchor_index_chunk_id: UUID | null;
+  graph_hop_count: 1 | 2 | null;
+  graph_path_rank: number | null;
   related_visuals: RelatedVisualEvidence[];
 }
 
@@ -511,5 +566,6 @@ export interface EvidencePack {
     evidence_group_count: number | null;
     model_rerank_candidate_count: number | null;
     model_rerank_window_count: number | null;
+    graph: GraphDebug | null;
   } | null;
 }

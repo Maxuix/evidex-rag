@@ -13,6 +13,10 @@ from rag_kb.domain import (
     EvidenceAsset,
     EvidencePack,
     EvidenceScoreKind,
+    GraphDebug,
+    GraphEvidenceBundle,
+    GraphPathCandidate,
+    GraphPathHop,
     RerankMode,
     RetrievalDebug,
     RetrievalQueryPlan,
@@ -249,6 +253,88 @@ class RetrievalTransportContractTests(unittest.TestCase):
         self.assertEqual(related["asset"]["id"], str(ASSET_ID))
         self.assertEqual(related["lexical_rank"], 2)
         self.assertNotIn("storage_uri", related["asset"])
+
+    def test_graph_debug_and_path_evidence_serialize_safe_wire_fields(self) -> None:
+        hop = GraphPathHop(
+            subject_entity_key="a" * 64,
+            object_entity_key="b" * 64,
+            predicate="released",
+            normalized_predicate="released",
+            relation_id=UUID("01900000-0000-7000-8000-000000000911"),
+            source_chunk_id=CHUNK_ID,
+            source_index_revision_id=REVISION_ID,
+            source_location={"line_start": 3},
+            support_count=2,
+        )
+        path = GraphPathCandidate(
+            path_id="graph-path-1",
+            entry_entity_key="a" * 64,
+            hops=(hop,),
+            anchor_chunk_id=CHUNK_ID,
+            rank=1,
+            seed_entry=True,
+        )
+        graph_debug = GraphDebug(
+            dense_seed_count=3,
+            lexical_seed_count=2,
+            fused_seed_count=2,
+            query_entity_count=1,
+            one_hop_path_count=1,
+            bundle_count=1,
+            paths=(path,),
+            bundles=(GraphEvidenceBundle(path, (CHUNK_ID,)),),
+        )
+        plan = RetrievalQueryPlan(
+            workspace_id=WORKSPACE,
+            knowledge_base_id=KB_ID,
+            strategy=RetrievalStrategy.HYBRID,
+            top_k=4,
+            candidate_count=4,
+            rerank_mode=RerankMode.CLASSIC,
+        )
+        evidence = Evidence(
+            rank=1,
+            index_chunk_id=CHUNK_ID,
+            indexed_document_version_id=UUID(
+                "01900000-0000-7000-8000-000000000905"
+            ),
+            document_id=UUID("01900000-0000-7000-8000-000000000906"),
+            document_version_id=UUID(
+                "01900000-0000-7000-8000-000000000907"
+            ),
+            index_revision_id=REVISION_ID,
+            ordinal=3,
+            text="graph evidence",
+            source_location={"line_start": 3},
+            hierarchy={},
+            source_metadata={},
+            score=1.0,
+            score_kind=EvidenceScoreKind.GRAPH_PATH,
+            graph_path_id=path.path_id,
+            graph_anchor_index_chunk_id=CHUNK_ID,
+            graph_hop_count=1,
+            graph_path_rank=1,
+        )
+        body = EvidencePackResponse.from_domain(
+            EvidencePack(
+                knowledge_base_id=KB_ID,
+                index_revision_id=REVISION_ID,
+                strategy=RetrievalStrategy.HYBRID,
+                evidence=(evidence,),
+                debug=RetrievalDebug(
+                    plan,
+                    REVISION_ID,
+                    1,
+                    graph=graph_debug,
+                ),
+            )
+        ).model_dump(mode="json")
+
+        self.assertEqual(body["evidence"][0]["score_kind"], "graph_path")
+        self.assertEqual(body["evidence"][0]["graph_path_id"], path.path_id)
+        self.assertEqual(body["debug"]["graph"]["bundle_count"], 1)
+        self.assertEqual(body["debug"]["graph"]["paths"][0]["support_counts"], [2])
+        self.assertNotIn("provider_payload", body["debug"]["graph"])
 
 
 if __name__ == "__main__":

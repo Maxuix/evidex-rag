@@ -197,6 +197,7 @@ class ChatModelRequest:
     tools: tuple[ChatToolDefinition, ...] = ()
     tool_choice: ChatToolChoice | str | None = None
     parallel_tool_calls: bool = False
+    response_format: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if not self.messages:
@@ -224,6 +225,10 @@ class ChatModelRequest:
                 raise ValueError("chat model tool choice requires tools")
         if self.parallel_tool_calls:
             raise ValueError("parallel chat tool calls are not supported")
+        if self.response_format is not None:
+            if not isinstance(self.response_format, Mapping):
+                raise ValueError("chat response format must be an object")
+            object.__setattr__(self, "response_format", dict(self.response_format))
 
 
 @dataclass(frozen=True, slots=True)

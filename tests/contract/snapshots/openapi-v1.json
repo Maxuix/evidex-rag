@@ -662,7 +662,8 @@
             "default": "vector",
             "enum": [
               "vector",
-              "hybrid"
+              "hybrid",
+              "graph"
             ],
             "title": "Mode",
             "type": "string"
@@ -1236,7 +1237,8 @@
               "exact_vector_v1",
               "hybrid_fts_rrf_v1",
               "exact_vector_v2",
-              "hybrid_fts_rrf_v2"
+              "hybrid_fts_rrf_v2",
+              "graph_augmented_v1"
             ],
             "title": "Profile Version",
             "type": "string"
@@ -2470,6 +2472,12 @@
           "EMBEDDING_RESPONSE_INVALID",
           "LOCAL_RERANKER_UNAVAILABLE",
           "RETRIEVAL_DEADLINE_EXCEEDED",
+          "GRAPH_NOT_READY",
+          "GRAPH_CONFIG_INVALID",
+          "GRAPH_PROVIDER_UNAVAILABLE",
+          "GRAPH_PROTOCOL_INVALID",
+          "GRAPH_RESOURCE_LIMIT",
+          "GRAPH_BUILD_FAILED",
           "INDEX_PERSISTENCE_FAILED",
           "INDEX_INCOMPLETE",
           "INDEXING_STALE_WORKER",
@@ -2628,6 +2636,55 @@
               }
             ],
             "title": "Fusion Score"
+          },
+          "graph_anchor_index_chunk_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Graph Anchor Index Chunk Id"
+          },
+          "graph_hop_count": {
+            "anyOf": [
+              {
+                "enum": [
+                  1,
+                  2
+                ],
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Graph Hop Count"
+          },
+          "graph_path_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Graph Path Id"
+          },
+          "graph_path_rank": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Graph Path Rank"
           },
           "hierarchy": {
             "additionalProperties": true,
@@ -2812,7 +2869,8 @@
           "cosine_similarity",
           "hybrid_rerank",
           "reciprocal_rank_fusion",
-          "adjacency"
+          "adjacency",
+          "graph_path"
         ],
         "title": "EvidenceScoreKind",
         "type": "string"
@@ -2849,6 +2907,349 @@
           "error_type"
         ],
         "title": "FieldViolation",
+        "type": "object"
+      },
+      "GraphBundleDebugResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "chunk_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Chunk Ids",
+            "type": "array"
+          },
+          "path_id": {
+            "title": "Path Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path_id",
+          "chunk_ids"
+        ],
+        "title": "GraphBundleDebugResponse",
+        "type": "object"
+      },
+      "GraphConfigResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "allowed_skipped_count": {
+            "minimum": 0.0,
+            "title": "Allowed Skipped Count",
+            "type": "integer"
+          },
+          "build_id": {
+            "format": "uuid",
+            "title": "Build Id",
+            "type": "string"
+          },
+          "chat_profile_revision_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chat Profile Revision Id"
+          },
+          "eligible_chunk_count": {
+            "minimum": 0.0,
+            "title": "Eligible Chunk Count",
+            "type": "integer"
+          },
+          "empty_chunk_count": {
+            "minimum": 0.0,
+            "title": "Empty Chunk Count",
+            "type": "integer"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "extracted_chunk_count": {
+            "minimum": 0.0,
+            "title": "Extracted Chunk Count",
+            "type": "integer"
+          },
+          "extractor_version": {
+            "title": "Extractor Version",
+            "type": "string"
+          },
+          "knowledge_base_id": {
+            "format": "uuid",
+            "title": "Knowledge Base Id",
+            "type": "string"
+          },
+          "last_error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error Code"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "processed_chunk_count": {
+            "minimum": 0.0,
+            "title": "Processed Chunk Count",
+            "type": "integer"
+          },
+          "profile_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Name"
+          },
+          "protocol_skipped_count": {
+            "minimum": 0.0,
+            "title": "Protocol Skipped Count",
+            "type": "integer"
+          },
+          "provider_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Name"
+          },
+          "requires_rebuild": {
+            "title": "Requires Rebuild",
+            "type": "boolean"
+          },
+          "resource_skipped_count": {
+            "minimum": 0.0,
+            "title": "Resource Skipped Count",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "disabled",
+              "building",
+              "ready",
+              "failed"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "knowledge_base_id",
+          "enabled",
+          "status",
+          "build_id",
+          "chat_profile_revision_id",
+          "profile_name",
+          "provider_name",
+          "model",
+          "extractor_version",
+          "last_error_code",
+          "eligible_chunk_count",
+          "processed_chunk_count",
+          "extracted_chunk_count",
+          "empty_chunk_count",
+          "protocol_skipped_count",
+          "resource_skipped_count",
+          "allowed_skipped_count",
+          "requires_rebuild"
+        ],
+        "title": "GraphConfigResponse",
+        "type": "object"
+      },
+      "GraphConfigUpdate": {
+        "additionalProperties": false,
+        "properties": {
+          "chat_profile_revision_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chat Profile Revision Id"
+          },
+          "enabled": {
+            "default": true,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "force_rebuild": {
+            "default": false,
+            "title": "Force Rebuild",
+            "type": "boolean"
+          },
+          "retry": {
+            "default": false,
+            "title": "Retry",
+            "type": "boolean"
+          }
+        },
+        "title": "GraphConfigUpdate",
+        "type": "object"
+      },
+      "GraphDebugResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "bundle_count": {
+            "title": "Bundle Count",
+            "type": "integer"
+          },
+          "bundles": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/GraphBundleDebugResponse"
+            },
+            "title": "Bundles",
+            "type": "array"
+          },
+          "dense_seed_count": {
+            "title": "Dense Seed Count",
+            "type": "integer"
+          },
+          "fused_seed_count": {
+            "title": "Fused Seed Count",
+            "type": "integer"
+          },
+          "lexical_seed_count": {
+            "title": "Lexical Seed Count",
+            "type": "integer"
+          },
+          "one_hop_path_count": {
+            "title": "One Hop Path Count",
+            "type": "integer"
+          },
+          "paths": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/GraphPathDebugResponse"
+            },
+            "title": "Paths",
+            "type": "array"
+          },
+          "protocol_skipped_count": {
+            "title": "Protocol Skipped Count",
+            "type": "integer"
+          },
+          "query_entity_count": {
+            "title": "Query Entity Count",
+            "type": "integer"
+          },
+          "rejected_path_count": {
+            "title": "Rejected Path Count",
+            "type": "integer"
+          },
+          "resource_skipped_count": {
+            "title": "Resource Skipped Count",
+            "type": "integer"
+          },
+          "two_hop_path_count": {
+            "title": "Two Hop Path Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "dense_seed_count",
+          "lexical_seed_count",
+          "fused_seed_count",
+          "query_entity_count",
+          "one_hop_path_count",
+          "two_hop_path_count",
+          "rejected_path_count",
+          "bundle_count",
+          "protocol_skipped_count",
+          "resource_skipped_count"
+        ],
+        "title": "GraphDebugResponse",
+        "type": "object"
+      },
+      "GraphPathDebugResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "anchor_chunk_id": {
+            "format": "uuid",
+            "title": "Anchor Chunk Id",
+            "type": "string"
+          },
+          "entry_entity_key": {
+            "title": "Entry Entity Key",
+            "type": "string"
+          },
+          "hop_count": {
+            "enum": [
+              1,
+              2
+            ],
+            "title": "Hop Count",
+            "type": "integer"
+          },
+          "path_id": {
+            "title": "Path Id",
+            "type": "string"
+          },
+          "rank": {
+            "title": "Rank",
+            "type": "integer"
+          },
+          "seed_entry": {
+            "title": "Seed Entry",
+            "type": "boolean"
+          },
+          "source_chunk_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Source Chunk Ids",
+            "type": "array"
+          },
+          "support_counts": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Support Counts",
+            "type": "array"
+          }
+        },
+        "required": [
+          "path_id",
+          "entry_entity_key",
+          "hop_count",
+          "seed_entry",
+          "anchor_chunk_id",
+          "rank",
+          "support_counts",
+          "source_chunk_ids"
+        ],
+        "title": "GraphPathDebugResponse",
         "type": "object"
       },
       "HTTPValidationError": {
@@ -4472,7 +4873,8 @@
           "mode": {
             "enum": [
               "vector",
-              "hybrid"
+              "hybrid",
+              "graph"
             ],
             "title": "Mode",
             "type": "string"
@@ -4480,7 +4882,8 @@
           "profile_version": {
             "enum": [
               "exact_vector_v2",
-              "hybrid_fts_rrf_v2"
+              "hybrid_fts_rrf_v2",
+              "graph_augmented_v1"
             ],
             "title": "Profile Version",
             "type": "string"
@@ -4527,6 +4930,16 @@
               }
             ],
             "title": "Evidence Group Count"
+          },
+          "graph": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GraphDebugResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "hydrated_relation_count": {
             "anyOf": [
@@ -4713,6 +5126,22 @@
             "format": "uuid",
             "title": "Knowledge Base Id",
             "type": "string"
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "vector",
+                  "hybrid",
+                  "graph"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mode"
           },
           "query": {
             "minLength": 1,
@@ -6682,6 +7111,130 @@
         "summary": "Upload Document",
         "tags": [
           "documents"
+        ]
+      }
+    },
+    "/api/v1/knowledge-bases/{kb_id}/graph-config": {
+      "get": {
+        "operationId": "get_graph_config_api_v1_knowledge_bases__kb_id__graph_config_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "kb_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Kb Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GraphConfigResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Request validation failed"
+          }
+        },
+        "summary": "Get Graph Config",
+        "tags": [
+          "graph"
+        ]
+      },
+      "put": {
+        "operationId": "update_graph_config_api_v1_knowledge_bases__kb_id__graph_config_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "kb_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Kb Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GraphConfigUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GraphConfigResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Idempotency or resource conflict"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Request validation failed"
+          }
+        },
+        "summary": "Update Graph Config",
+        "tags": [
+          "graph"
         ]
       }
     },

@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import unittest
 
-from rag_kb.domain import RerankMode
+from rag_kb.domain import RerankMode, RetrievalStrategy
 from rag_kb.retrieval.profile import (
+    GRAPH_RETRIEVAL_PROFILE_VERSION,
     HYBRID_PROFILE_VERSION,
     LEGACY_EXACT_PROFILE_VERSION,
     exact_profile,
+    graph_profile,
+    parse_chat_retrieval_snapshot,
     parse_retrieval_snapshot,
 )
 
@@ -67,3 +70,18 @@ class RetrievalExecutionProfileTests(unittest.TestCase):
                 (KeyError, ValueError)
             ):
                 parse_retrieval_snapshot(snapshot)
+
+    def test_graph_profile_round_trips_as_a_classic_hybrid_outer_profile(self) -> None:
+        snapshot = graph_profile(top_k=8).as_dict()
+
+        strategy, top_k, rerank_mode, augmentation = parse_chat_retrieval_snapshot(
+            snapshot
+        )
+
+        self.assertEqual(snapshot["profile_version"], GRAPH_RETRIEVAL_PROFILE_VERSION)
+        self.assertIs(strategy, RetrievalStrategy.HYBRID)
+        self.assertEqual(top_k, 8)
+        self.assertIs(rerank_mode, RerankMode.CLASSIC)
+        self.assertEqual(augmentation, "entity_graph_v1")
+        with self.assertRaises(ValueError):
+            parse_chat_retrieval_snapshot({**snapshot, "rerank_mode": "none"})

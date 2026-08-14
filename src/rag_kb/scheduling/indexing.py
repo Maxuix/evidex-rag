@@ -15,12 +15,14 @@ from rag_kb.domain import (
     IndexingExecutionError,
     IndexingLease,
     ReconciliationResult,
+    GraphWorkItem,
 )
 from rag_kb.observability import get_logger, log_event, log_exception
 from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, UnitOfWorkPurpose, execute_in_transaction
 
 if TYPE_CHECKING:
     from rag_kb.indexing.pipeline import IndexingPipeline
+    from rag_kb.graph.service import GraphExtractionWorker
 
 
 Clock = Callable[[], datetime]
@@ -62,6 +64,7 @@ class IndexingJobScheduler:
         stale_after_seconds: float,
         retry_policy: RetryPolicy,
         reconciliation_batch_size: int,
+        graph_worker: GraphExtractionWorker | None = None,
         clock: Clock | None = None,
     ) -> None:
         if (
@@ -78,24 +81,37 @@ class IndexingJobScheduler:
         self._stale_after_seconds = stale_after_seconds
         self._retry = retry_policy
         self._reconciliation_batch_size = reconciliation_batch_size
+        self._graph_worker = graph_worker
         self._clock = clock or (lambda: datetime.now(UTC))
 
     async def execute(
         self,
-        lease: IndexingLease,
+        lease: IndexingLease | GraphWorkItem,
         stopped: asyncio.Event,
     ) -> None:
+        if isinstance(lease, GraphWorkItem):
+            if self._graph_worker is None:
+                return
+            await self._graph_worker.process_work_item(lease)
+            return
         await self._execute(lease, stopped)
 
-    async def claim_once(self) -> IndexingLease | None:
+    async def claim_once(self) -> IndexingLease | GraphWorkItem | None:
         observed_at = self._clock()
-        return await execute_in_transaction(
-            self._unit_of_work,
-            lambda uow: uow.indexing.claim(
+
+        async def claim_or_graph(uow: UnitOfWork):
+            lease = await uow.indexing.claim(
                 worker_id=self._worker_id,
                 observed_at=observed_at,
                 max_attempts=self._retry.max_attempts,
-            ),
+            )
+            if lease is not None or self._graph_worker is None:
+                return lease
+            return await uow.graph.next_work_item()
+
+        return await execute_in_transaction(
+            self._unit_of_work,
+            claim_or_graph,
             purpose=UnitOfWorkPurpose.CLAIM,
         )
 

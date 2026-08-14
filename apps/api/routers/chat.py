@@ -48,7 +48,7 @@ from rag_kb.memory import (
     hydrate_contextualized_query,
     hydrate_conversation_context,
 )
-from rag_kb.retrieval.profile import parse_retrieval_snapshot
+from rag_kb.retrieval.profile import parse_chat_retrieval_snapshot
 
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -367,7 +367,7 @@ def _run_response(value: ChatRun) -> ChatRunResponse:
 
 
 def _retrieval_response(value: ChatRun) -> dict[str, object]:
-    strategy, top_k, rerank_mode = parse_retrieval_snapshot(
+    strategy, top_k, rerank_mode, _augmentation = parse_chat_retrieval_snapshot(
         value.retrieval_strategy
     )
     return {

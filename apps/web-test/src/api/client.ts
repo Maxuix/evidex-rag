@@ -10,6 +10,7 @@ import type {
   DocumentDetail,
   DocumentChunkInspection,
   DocumentUpload,
+  GraphConfig,
   EvidencePack,
   IndexingJob,
   KnowledgeBase,
@@ -115,6 +116,26 @@ export class ApiClient {
 
   getRetrievalCapabilities(): Promise<RetrievalCapabilities> {
     return this.request("/retrieval/capabilities");
+  }
+
+  getGraphConfig(knowledgeBaseId: UUID): Promise<GraphConfig> {
+    return this.request(`/knowledge-bases/${knowledgeBaseId}/graph-config`);
+  }
+
+  updateGraphConfig(
+    knowledgeBaseId: UUID,
+    payload: {
+      enabled: boolean;
+      chat_profile_revision_id?: UUID | null;
+      retry?: boolean;
+      force_rebuild?: boolean;
+    },
+  ): Promise<GraphConfig> {
+    return this.request(`/knowledge-bases/${knowledgeBaseId}/graph-config`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
   }
 
   getModelSettings(): Promise<ModelSettingsSummary> {
@@ -254,7 +275,7 @@ export class ApiClient {
     knowledgeBaseId: UUID,
     query: string,
     topK: number,
-    strategy: "exact_vector" | "hybrid",
+    strategy: "exact_vector" | "hybrid" | "graph",
   ): Promise<EvidencePack> {
     return this.request("/retrieval/query", {
       method: "POST",
@@ -263,7 +284,8 @@ export class ApiClient {
         knowledge_base_id: knowledgeBaseId,
         query,
         top_k: topK,
-        strategy,
+        mode: strategy === "graph" ? "graph" : undefined,
+        strategy: strategy === "graph" ? "exact_vector" : strategy,
         rerank_mode: "classic",
         include_debug: true,
       }),

@@ -6,6 +6,7 @@ import { RetrievalView } from "./RetrievalView";
 import { ApiClient, loadRuntimeConfig } from "./api/client";
 import type {
   ChunkingPreset,
+  GraphConfig,
   KnowledgeBase,
   KnowledgeBaseEmbeddingSelection,
   ModelSettingsSummary,
@@ -119,6 +120,9 @@ export function ObservationApp({
     "text_local_v1",
   );
   const [modelSettings, setModelSettings] = useState<ModelSettingsSummary | null>(null);
+  const [graphConfig, setGraphConfig] = useState<GraphConfig | null>(null);
+  const [graphConfigLoading, setGraphConfigLoading] = useState(false);
+  const [graphConfigError, setGraphConfigError] = useState<unknown | null>(null);
   const [newEmbeddingStrategy, setNewEmbeddingStrategy] = useState<
     "dual_space" | "unified_multimodal"
   >("dual_space");
@@ -204,6 +208,30 @@ export function ObservationApp({
       cancelled = true;
     };
   }, [client]);
+
+  useEffect(() => {
+    if (!selectedId) {
+      setGraphConfig(null);
+      setGraphConfigError(null);
+      return;
+    }
+    let cancelled = false;
+    setGraphConfigLoading(true);
+    setGraphConfigError(null);
+    void client.getGraphConfig(selectedId).then((value) => {
+      if (!cancelled) setGraphConfig(value);
+    }).catch((error) => {
+      if (!cancelled) {
+        setGraphConfig(null);
+        setGraphConfigError(error);
+      }
+    }).finally(() => {
+      if (!cancelled) setGraphConfigLoading(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [client, selectedId]);
 
   useEffect(() => {
     if (!modelSettings) return;
@@ -615,6 +643,9 @@ export function ObservationApp({
                 retrievalCapabilities={retrievalCapabilities}
                 retrievalCapabilitiesLoading={retrievalCapabilitiesLoading}
                 retrievalCapabilitiesError={retrievalCapabilitiesError}
+                graphConfig={graphConfig}
+                graphConfigLoading={graphConfigLoading}
+                graphConfigError={graphConfigError}
                 onOpenDocument={openDocument}
               />
             ) : null}

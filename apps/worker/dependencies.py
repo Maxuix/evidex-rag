@@ -16,6 +16,7 @@ from apps.model_asset_runtime import (
 )
 from rag_kb.adapters.file_store.local import LocalFileStore
 from rag_kb.adapters.chat_preview.pg_notify import PgNotifyPreviewSink
+from rag_kb.adapters.graph_store.postgres import PgGraphStore
 from rag_kb.adapters.lexical_store.postgres import PgLexicalStore
 from rag_kb.adapters.local_reranker import LocalMiniLmReranker
 from rag_kb.adapters.model_api.langchain_chat import LangChainChatModelAdapter
@@ -50,6 +51,7 @@ from rag_kb.domain import (
     ParserLimits,
 )
 from rag_kb.indexing.pipeline import IndexingPipeline
+from rag_kb.graph import GraphExtractionWorker
 from rag_kb.ports.files import IndexAssetStore
 from rag_kb.ports.model_api import (
     ChatModelAdapter,
@@ -107,6 +109,7 @@ class WorkerDependencies:
     chat_scheduler: ChatRunScheduler
     indexing_pipeline: IndexingPipeline
     indexing_scheduler: IndexingJobScheduler
+    graph_extraction_worker: GraphExtractionWorker
     chat_preview_sink: PgNotifyPreviewSink | None
 
     async def close(self) -> None:
@@ -243,6 +246,7 @@ def build_worker_dependencies(
         database.sessions,
         embedding_space,
     )
+    graph_store = PgGraphStore(database.sessions)
     retrieval_service = RetrievalService(
         access_policy,
         embedding_provider,
@@ -289,6 +293,7 @@ def build_worker_dependencies(
         embedding_model_resolver=dynamic_embeddings.embedding,
         multimodal_embedding_model_resolver=dynamic_embeddings.multimodal,
         text_reranker=LocalMiniLmReranker(),
+        graph_store=graph_store,
     )
     index_asset_service = IndexAssetService(
         unit_of_work,
@@ -347,6 +352,10 @@ def build_worker_dependencies(
         retry_policy=retry_policy,
         reconciliation_batch_size=poller.reconciliation_batch_size,
     )
+    graph_extraction_worker = GraphExtractionWorker(
+        unit_of_work,
+        chat_model_adapter,
+    )
     indexing_scheduler = IndexingJobScheduler(
         unit_of_work,
         indexing_pipeline,
@@ -355,6 +364,7 @@ def build_worker_dependencies(
         stale_after_seconds=poller.stale_after_seconds,
         retry_policy=retry_policy,
         reconciliation_batch_size=poller.reconciliation_batch_size,
+        graph_worker=graph_extraction_worker,
     )
     return WorkerDependencies(
         settings=resolved_settings,
@@ -396,6 +406,7 @@ def build_worker_dependencies(
         chat_scheduler=chat_scheduler,
         indexing_pipeline=indexing_pipeline,
         indexing_scheduler=indexing_scheduler,
+        graph_extraction_worker=graph_extraction_worker,
         chat_preview_sink=chat_preview_sink,
     )
 
@@ -465,7 +476,7 @@ def _chat_model_loader(
             temperature=parameters.get("temperature", 0.2),
             top_p=parameters.get("top_p", 0.9),
             sampling_top_k=parameters.get("sampling_top_k", 40),
-            max_tokens=parameters.get("max_output_tokens", 4096),
+            max_tokens=parameters.get("max_output_tokens", 8192),
             reasoning_effort=parameters.get("reasoning_effort", "off"),
             thinking_enabled=parameters.get("reasoning_effort", "off") != "off",
         )

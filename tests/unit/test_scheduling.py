@@ -7,10 +7,15 @@ from unittest.mock import patch
 from uuid import uuid4
 
 from rag_kb.domain import (
+    GRAPH_EXTRACTOR_VERSION,
     ChatPipelineExecutionError,
     ChatPipelinePhase,
     ChatRunLease,
     ErrorCode,
+    GraphConfigSnapshot,
+    GraphConfigStatus,
+    GraphWorkItem,
+    GraphWorkKind,
     IndexingExecutionError,
     IndexingLease,
     IndexingPhase,
@@ -34,6 +39,30 @@ class SchedulingPolicyTests(unittest.TestCase):
 
 
 class IndexingSchedulerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_document_claim_precedes_one_graph_work_item(self) -> None:
+        repository = _Repository()
+        graph_item = GraphWorkItem(GraphWorkKind.PREFLIGHT, _graph_config())
+        graph_repository = _GraphRepository(graph_item)
+        factory = _Factory(repository, graph_repository)
+        graph_worker = _GraphWorker()
+        scheduler = _scheduler(
+            factory,
+            _Pipeline(factory),
+            graph_worker=graph_worker,
+        )
+
+        repository.claimed_lease = _lease(attempt=1)
+        document_lease = await scheduler.claim_once()
+        self.assertIs(document_lease, repository.claimed_lease)
+        self.assertEqual(graph_repository.calls, 0)
+
+        repository.claimed_lease = None
+        graph_lease = await scheduler.claim_once()
+        self.assertIs(graph_lease, graph_item)
+        self.assertEqual(graph_repository.calls, 1)
+        await scheduler.execute(graph_lease, asyncio.Event())
+        self.assertEqual(graph_worker.items, [graph_item])
+
     async def test_heartbeat_uses_independent_transactions(self) -> None:
         repository = _Repository()
         factory = _Factory(repository)
@@ -327,8 +356,9 @@ class WorkerConsumerTests(unittest.IsolatedAsyncioTestCase):
 
 
 class _Factory:
-    def __init__(self, repository) -> None:
+    def __init__(self, repository, graph_repository=None) -> None:
         self.repository = repository
+        self.graph_repository = graph_repository
         self.active = False
 
     def __call__(self, *, purpose, mode):
@@ -340,6 +370,7 @@ class _UnitOfWork:
     def __init__(self, factory) -> None:
         self.factory = factory
         self.indexing = factory.repository
+        self.graph = factory.graph_repository
 
     async def __aenter__(self):
         if self.factory.active:
@@ -360,6 +391,11 @@ class _Repository:
         self.released = 0
         self.rescheduled = None
         self.failed = 0
+        self.claimed_lease = None
+
+    async def claim(self, **values):
+        del values
+        return self.claimed_lease
 
     async def heartbeat(self, lease, *, observed_at):
         del lease, observed_at
@@ -399,6 +435,24 @@ class _Pipeline:
         if self.error is not None:
             raise self.error
         return IndexingResult(uuid4(), uuid4(), "ready", 1, serving_status="serving")
+
+
+class _GraphRepository:
+    def __init__(self, item) -> None:
+        self.item = item
+        self.calls = 0
+
+    async def next_work_item(self):
+        self.calls += 1
+        return self.item
+
+
+class _GraphWorker:
+    def __init__(self) -> None:
+        self.items = []
+
+    async def process_work_item(self, item):
+        self.items.append(item)
 
 
 class _ChatCoordinator:
@@ -495,7 +549,7 @@ def _chat_lease():
     return ChatRunLease(uuid4(), uuid4(), "worker-a", 1, NOW)
 
 
-def _scheduler(factory, pipeline):
+def _scheduler(factory, pipeline, *, graph_worker=None):
     return IndexingJobScheduler(
         factory,
         pipeline,
@@ -504,7 +558,21 @@ def _scheduler(factory, pipeline):
         stale_after_seconds=1,
         retry_policy=RetryPolicy(2, 0.01, 0.02),
         reconciliation_batch_size=10,
+        graph_worker=graph_worker,
         clock=lambda: NOW,
+    )
+
+
+def _graph_config() -> GraphConfigSnapshot:
+    return GraphConfigSnapshot(
+        workspace_id=uuid4(),
+        knowledge_base_id=uuid4(),
+        status=GraphConfigStatus.BUILDING,
+        build_id=uuid4(),
+        chat_profile_revision_id=uuid4(),
+        extractor_version=GRAPH_EXTRACTOR_VERSION,
+        preflight_extractor_version=None,
+        last_error_code=None,
     )
 
 
