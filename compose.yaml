@@ -45,6 +45,28 @@ x-runtime-service: &runtime-service
   logging: *local-logging
 
 services:
+  falkordb:
+    # Pinned FalkorDB 4.20.3 (multi-arch amd64/arm64, verified digest 2026-08-14).
+    # AOF is enabled explicitly (appendonly yes) so episode graphs survive
+    # container restarts; state lives on the named volume below.
+    image: docker.io/falkordb/falkordb:v4.20.3@sha256:05b3645c78c881a967c7d6b6ab4a8a2f461caf42962d38274aa116658195ad3d
+    environment:
+      # The image entrypoint builds the server command from REDIS_ARGS; AOF is
+      # enabled explicitly so episode graphs survive container restarts.
+      REDIS_ARGS: "--appendonly yes"
+    ports:
+      - 127.0.0.1:${RAG_KB_FALKORDB_PORT:-6379}:6379
+    volumes:
+      - falkordb-data:/var/lib/falkordb/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-h", "127.0.0.1", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    restart: unless-stopped
+    logging: *local-logging
+
   postgres:
     image: docker.io/pgvector/pgvector:0.8.2-pg18-bookworm@sha256:42e7f6b4e1eceb02ff14e3e6bc6108bbe259abbe83879dc1845d0da1ddeb555d
     environment:
@@ -197,6 +219,7 @@ services:
     logging: *local-logging
 
 volumes:
+  falkordb-data:
   postgres-data:
   source-data:
   inference-model-cache:
