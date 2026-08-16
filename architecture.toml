@@ -122,4 +122,3 @@ scan_roots = ["src", "apps"]
   "rag_kb.uow",
 ]
 "apps.web-chat" = []
-"apps.web-test" = []

@@ -248,38 +248,6 @@ class ChatCitationResponse(PublicSchema):
     matched_representations: tuple[str, ...] = ("text",)
 
 
-class ChatFinalContextAssetResponse(PublicSchema):
-    id: UUID
-    media_type: str
-    checksum_sha256: str
-    content_url: str
-    width: int | None = None
-    height: int | None = None
-
-
-class ChatFinalContextMediaResponse(PublicSchema):
-    message_index: Annotated[int, Field(ge=0)]
-    citation_ids: tuple[Annotated[str, Field(min_length=1, max_length=128)], ...]
-    asset: ChatFinalContextAssetResponse
-
-
-class ChatFinalContextMessageResponse(PublicSchema):
-    role: Literal["system", "user", "assistant"]
-    content: str
-
-
-class ChatRunFinalContextResponse(PublicSchema):
-    run_id: UUID
-    status: Literal["queued", "running", "completed", "failed", "cancelled"]
-    available: bool
-    version: Literal["final_llm_context_v1"] | None = None
-    operation: Literal["generate_answer", "repair_answer"] | None = None
-    output_schema: Literal["answer_v1"] | None = None
-    max_output_tokens: Annotated[int, Field(ge=1, le=8192)] | None = None
-    messages: tuple[ChatFinalContextMessageResponse, ...] = ()
-    media: tuple[ChatFinalContextMediaResponse, ...] = ()
-
-
 class ChatRunResponse(PublicSchema):
     run_id: UUID
     knowledge_base_id: UUID
@@ -293,7 +261,6 @@ class ChatRunResponse(PublicSchema):
     citations: tuple[ChatCitationResponse, ...]
     status_url: str
     events_url: str
-    final_context_url: str
     effective_answer_policy: EffectiveAnswerPolicyResponse
     agent: ChatAgentResponse
     retrieval: ChatRunRetrievalResponse

@@ -881,7 +881,6 @@ class CommonContractTests(unittest.TestCase):
                 "/api/v1/chat/sessions/{session_id}/messages",
                 "/api/v1/chat/runs",
                 "/api/v1/chat/runs/{run_id}",
-                "/api/v1/chat/runs/{run_id}/final-context",
                 "/api/v1/chat/runs/{run_id}/events",
                 "/api/v1/model-settings",
                 "/api/v1/model-providers",
@@ -2022,9 +2021,6 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
             body["events_url"], f"{body['status_url']}/events"
         )
         self.assertEqual(
-            body["final_context_url"], f"{body['status_url']}/final-context"
-        )
-        self.assertEqual(
             body["effective_answer_policy"],
             {
                 "grounding_policy": "evidence_only",
@@ -2062,53 +2058,6 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(listed.json()["items"][0]["id"], str(chat.session.id))
         self.assertEqual(filtered.json()["items"][0]["id"], str(chat.session.id))
-
-    async def test_chat_final_context_returns_messages_and_authorized_media(self) -> None:
-        chat = self.dependencies.chat_service
-        chat.run = dataclass_replace(
-            chat.run,
-            status="completed",
-            final_llm_context={
-                "version": "final_llm_context_v1",
-                "operation": "repair_answer",
-                "output_schema": "answer_v1",
-                "max_output_tokens": None,
-                "messages": [
-                    {"role": "system", "content": "System instructions"},
-                    {"role": "user", "content": "Final repair input"},
-                ],
-                "media": [
-                    {
-                        "message_index": 1,
-                        "citation_ids": ["cite_2"],
-                        "asset": {
-                            "id": "01900000-0000-7000-8000-000000000044",
-                            "media_type": "image/png",
-                            "checksum_sha256": "a" * 64,
-                            "content_url": "/api/v1/index-assets/01900000-0000-7000-8000-000000000044/content",
-                            "width": 320,
-                            "height": 200,
-                        },
-                    }
-                ],
-            },
-        )
-
-        response = await request(
-            self.app,
-            "GET",
-            f"{API_PREFIX}/chat/runs/{chat.run.id}/final-context",
-        )
-
-        self.assertEqual(response.status, 200)
-        self.assertTrue(response.json()["available"])
-        self.assertEqual(response.json()["operation"], "repair_answer")
-        self.assertEqual(
-            response.json()["messages"][1]["content"], "Final repair input"
-        )
-        self.assertEqual(
-            response.json()["media"][0]["asset"]["media_type"], "image/png"
-        )
 
     async def test_chat_rejects_policy_weakening_and_redacts_conflicts(self) -> None:
         chat = self.dependencies.chat_service

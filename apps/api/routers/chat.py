@@ -28,7 +28,6 @@ from rag_kb.schemas import (
     ChatAgentResponse,
     ChatCitationAssetResponse,
     ChatCitationResponse,
-    ChatRunFinalContextResponse,
     ChatMessagePage,
     ChatMessageResponse,
     ChatRunCreate,
@@ -174,20 +173,6 @@ async def get_chat_run(
     return _run_response(
         await request.app.state.dependencies.chat_service.get_run(context, run_id)
     )
-
-
-@router.get(
-    "/runs/{run_id}/final-context",
-    response_model=ChatRunFinalContextResponse,
-    responses=problem_responses(404, 422),
-)
-async def get_chat_run_final_context(
-    request: Request,
-    run_id: UUID,
-    context: Annotated[AuthContext, Depends(get_auth_context)],
-) -> ChatRunFinalContextResponse:
-    value = await request.app.state.dependencies.chat_service.get_run(context, run_id)
-    return _final_context_response(value)
 
 
 async def _prepare_chat_sse_subscription(
@@ -350,7 +335,6 @@ def _run_response(value: ChatRun) -> ChatRunResponse:
         citations=_citation_responses(value),
         status_url=_status_url(value.id),
         events_url=f"{_status_url(value.id)}/events",
-        final_context_url=f"{_status_url(value.id)}/final-context",
         effective_answer_policy=_policy_response(value),
         agent=_agent_response(value),
         retrieval=_retrieval_response(value),
@@ -400,31 +384,6 @@ def _model_response(value: ChatRun) -> dict[str, object]:
             "medium" if configuration.get("thinking_enabled") else "off",
         ),
     }
-
-
-def _final_context_response(value: ChatRun) -> ChatRunFinalContextResponse:
-    if value.final_llm_context is None:
-        return ChatRunFinalContextResponse(
-            run_id=value.id,
-            status=value.status,
-            available=False,
-        )
-    try:
-        return ChatRunFinalContextResponse.model_validate(
-            {
-                "run_id": value.id,
-                "status": value.status,
-                "available": True,
-                **value.final_llm_context,
-            }
-        )
-    except ValueError as error:
-        raise ApiProblem(
-            code=ErrorCode.CHAT_CONTEXT_INVALID,
-            status=500,
-            title="Chat context invalid",
-            detail="The persisted final model context is invalid.",
-        ) from error
 
 
 def _query_context_response(value: ChatRun) -> ChatRunQueryContextResponse:

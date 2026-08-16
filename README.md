@@ -15,11 +15,10 @@ Copy `.env.example` to `.env`, replace the database placeholders, then run:
 Open:
 
 - User Chat: <http://127.0.0.1:3000>
-- Diagnostic UI: <http://127.0.0.1:3001>
 - API docs: <http://127.0.0.1:8000/api/v1/docs>
 
 The starter manages the local database password in ignored `.env.local`, runs
-migrations, rebuilds the API/Worker and both frontend images with Docker layer
+migrations, rebuilds the API/Worker and frontend images with Docker layer
 cache, starts all services, and waits for health. Existing database and file
 volumes are retained. Local image builds default to HTTPS TUNA mirrors for PyPI
 and the Debian main repository while retaining Debian's official security

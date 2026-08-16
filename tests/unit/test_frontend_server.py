@@ -12,8 +12,7 @@ import unittest
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-SERVER_PATH = PROJECT_ROOT / "apps" / "web-test" / "server.py"
-USER_SERVER_PATH = PROJECT_ROOT / "apps" / "web-chat" / "server.py"
+SERVER_PATH = PROJECT_ROOT / "apps" / "web-chat" / "server.py"
 API_BASE_URL = "http://127.0.0.1:8000/api/v1"
 API_ORIGIN = "http://127.0.0.1:8000"
 INDEX_BODY = b"<!doctype html><html><body>compiled-shell</body></html>"
@@ -21,24 +20,20 @@ INDEX_BODY = b"<!doctype html><html><body>compiled-shell</body></html>"
 
 def _load_server_module(
     path: Path = SERVER_PATH,
-    module_name: str = "rag_kb_test_frontend_server",
+    module_name: str = "rag_kb_user_frontend_server",
 ) -> ModuleType:
     spec = importlib.util.spec_from_file_location(
         module_name,
         path,
     )
     if spec is None or spec.loader is None:
-        raise RuntimeError(f"cannot load test frontend server from {path}")
+        raise RuntimeError(f"cannot load user frontend server from {path}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
 SERVER_MODULE = _load_server_module()
-USER_SERVER_MODULE = _load_server_module(
-    USER_SERVER_PATH,
-    "rag_kb_user_frontend_server",
-)
 
 
 class FrontendServerTests(unittest.TestCase):
@@ -231,75 +226,6 @@ class FrontendServerTests(unittest.TestCase):
                 self.assertEqual(status, 404)
                 self.assertNotIn(source_marker, body)
                 self.assertNotIn(b"ContentSafeHandler", body)
-
-
-class UserFrontendServerTests(unittest.TestCase):
-    def test_user_frontend_preserves_static_server_security_contract(self) -> None:
-        with tempfile.TemporaryDirectory() as raw_root:
-            root = Path(raw_root)
-            dist = root / "dist"
-            (dist / "assets").mkdir(parents=True)
-            (dist / "index.html").write_bytes(INDEX_BODY)
-            handler = partial(
-                USER_SERVER_MODULE.ContentSafeHandler,
-                directory=str(dist),
-                api_base_url=API_BASE_URL,
-                api_origin=API_ORIGIN,
-            )
-            server = USER_SERVER_MODULE.ThreadingHTTPServer(
-                ("127.0.0.1", 0),
-                handler,
-            )
-            thread = threading.Thread(
-                target=server.serve_forever,
-                kwargs={"poll_interval": 0.01},
-                daemon=True,
-            )
-            thread.start()
-            host, port = server.server_address
-            try:
-                def request(path: str) -> tuple[int, dict[str, str], bytes]:
-                    connection = http.client.HTTPConnection(host, port, timeout=2)
-                    try:
-                        connection.request("GET", path)
-                        response = connection.getresponse()
-                        body = response.read()
-                        headers = {
-                            key.lower(): value
-                            for key, value in response.getheaders()
-                        }
-                        return response.status, headers, body
-                    finally:
-                        connection.close()
-
-                health_status, _, health_body = request("/health")
-                self.assertEqual(health_status, 200)
-                self.assertEqual(json.loads(health_body), {"status": "ok"})
-
-                config_status, config_headers, config_body = request(
-                    "/runtime-config.json"
-                )
-                self.assertEqual(config_status, 200)
-                self.assertEqual(
-                    json.loads(config_body),
-                    {"api_base_url": API_BASE_URL},
-                )
-                self.assertIn(
-                    f"connect-src 'self' {API_ORIGIN}",
-                    config_headers["content-security-policy"],
-                )
-
-                route_status, _, route_body = request("/conversation/example")
-                self.assertEqual(route_status, 200)
-                self.assertEqual(route_body, INDEX_BODY)
-
-                source_status, _, source_body = request("/server.py")
-                self.assertEqual(source_status, 404)
-                self.assertNotIn(b"ContentSafeHandler", source_body)
-            finally:
-                server.shutdown()
-                server.server_close()
-                thread.join(timeout=2)
 
 
 if __name__ == "__main__":

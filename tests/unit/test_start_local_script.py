@@ -134,31 +134,21 @@ class StartLocalScriptTests(unittest.TestCase):
         self.assertEqual(worker["mem_limit"], "6g")
         self.assertEqual(worker["pids_limit"], 256)
 
-    def test_compose_runs_user_and_diagnostic_frontends_on_separate_ports(self) -> None:
+    def test_compose_runs_user_frontend_on_loopback_port(self) -> None:
         configuration = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
 
         user_frontend = configuration["services"]["frontend"]
-        diagnostic_frontend = configuration["services"]["frontend-diagnostic"]
         self.assertEqual(
             user_frontend["ports"],
             ["127.0.0.1:${RAG_KB_FRONTEND_PORT:-3000}:3000"],
         )
-        self.assertEqual(
-            diagnostic_frontend["ports"],
-            [
-                "127.0.0.1:${RAG_KB_DIAGNOSTIC_FRONTEND_PORT:-3001}:3000",
-            ],
-        )
+        self.assertNotIn("frontend-diagnostic", configuration["services"])
         origins = configuration["x-runtime-environment"][
             "RAG_KB__SECURITY__ALLOWED_CORS_ORIGINS"
         ]
         self.assertIn("${RAG_KB_FRONTEND_PORT:-3000}", origins)
-        self.assertIn("${RAG_KB_DIAGNOSTIC_FRONTEND_PORT:-3001}", origins)
         self.assertIn("http://localhost:${RAG_KB_FRONTEND_PORT:-3000}", origins)
-        self.assertIn(
-            "http://localhost:${RAG_KB_DIAGNOSTIC_FRONTEND_PORT:-3001}",
-            origins,
-        )
+        self.assertNotIn("DIAGNOSTIC_FRONTEND_PORT", origins)
         self.assertIn("http://127.0.0.1:5173", origins)
         self.assertIn("http://localhost:5173", origins)
 
@@ -249,8 +239,7 @@ class StartLocalScriptTests(unittest.TestCase):
                 calls,
             )
             build_call = (
-                f"compose --env-file {state_file} build api frontend "
-                "frontend-diagnostic"
+                f"compose --env-file {state_file} build api frontend"
             )
             self.assertIn(build_call, calls)
             self.assertNotIn("build api worker", calls)
@@ -264,8 +253,7 @@ class StartLocalScriptTests(unittest.TestCase):
                 calls,
             )
             self.assertIn(
-                f"compose --env-file {state_file} up -d --wait api worker "
-                "frontend frontend-diagnostic",
+                f"compose --env-file {state_file} up -d --wait api worker frontend",
                 calls,
             )
             self.assertLess(
@@ -276,10 +264,7 @@ class StartLocalScriptTests(unittest.TestCase):
                 ),
             )
             self.assertIn("User Chat: http://127.0.0.1:3000", completed.stdout)
-            self.assertIn(
-                "Diagnostic UI: http://127.0.0.1:3001",
-                completed.stdout,
-            )
+            self.assertNotIn("Diagnostic UI", completed.stdout)
 
     def test_persists_three_shell_credentials_and_reuses_them(self) -> None:
         credentials = {

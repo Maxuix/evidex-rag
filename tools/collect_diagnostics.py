@@ -80,17 +80,11 @@ def main() -> int:
         default="http://127.0.0.1:3000",
         help="loopback user frontend origin used only for a health probe",
     )
-    parser.add_argument(
-        "--diagnostic-frontend-base-url",
-        default="http://127.0.0.1:3001",
-        help="loopback diagnostic frontend origin used only for a health probe",
-    )
     arguments = parser.parse_args()
     if arguments.since_hours <= 0 or arguments.max_events <= 0:
         parser.error("--since-hours and --max-events must be positive")
     _require_loopback_http_origin(arguments.api_base_url)
     _require_loopback_http_origin(arguments.frontend_base_url)
-    _require_loopback_http_origin(arguments.diagnostic_frontend_base_url)
 
     now = datetime.now(UTC)
     events, event_summary = collect_safe_events(
@@ -102,7 +96,6 @@ def main() -> int:
     health = collect_health(
         arguments.api_base_url,
         arguments.frontend_base_url,
-        arguments.diagnostic_frontend_base_url,
     )
     git_state = collect_git_state()
     manifest = {
@@ -345,18 +338,12 @@ def collect_docker_state() -> dict[str, object]:
 def collect_health(
     api_base_url: str,
     frontend_base_url: str,
-    diagnostic_frontend_base_url: str,
 ) -> list[dict[str, object]]:
     results: list[dict[str, object]] = []
     endpoints = (
         ("api", "/health/live", f"{api_base_url}/health/live"),
         ("api", "/health/ready", f"{api_base_url}/health/ready"),
         ("frontend", "/health", f"{frontend_base_url}/health"),
-        (
-            "frontend-diagnostic",
-            "/health",
-            f"{diagnostic_frontend_base_url}/health",
-        ),
     )
     for component, path, url in endpoints:
         started = perf_counter()
