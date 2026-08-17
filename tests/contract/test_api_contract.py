@@ -257,7 +257,7 @@ class StubRetrievalService:
                 SimpleNamespace(
                     mode="graph",
                     strategy="hybrid",
-                    profile_version="graph_augmented_v1",
+                    profile_version="graphiti_edge_augmented_v1",
                     enabled=True,
                 ),
             ),
@@ -1001,7 +1001,7 @@ class RetrievalApiContractTests(unittest.IsolatedAsyncioTestCase):
                     {
                         "mode": "graph",
                         "strategy": "hybrid",
-                        "profile_version": "graph_augmented_v1",
+                        "profile_version": "graphiti_edge_augmented_v1",
                         "enabled": True,
                     },
                 ],

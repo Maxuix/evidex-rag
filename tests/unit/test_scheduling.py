@@ -446,13 +446,20 @@ class _GraphRepository:
         self.calls += 1
         return self.item
 
+    def take_retired_graphiti_builds(self):
+        return ()
+
 
 class _GraphWorker:
     def __init__(self) -> None:
         self.items = []
+        self.retired = []
 
     async def process_work_item(self, item):
         self.items.append(item)
+
+    async def recycle_retired(self, builds):
+        self.retired.extend(builds)
 
 
 class _ChatCoordinator:

@@ -420,6 +420,19 @@ class ModelProviderSettings(StrictSettingsModel):
     multimodal_embedding: MultimodalEmbeddingProviderSettings | None = None
 
 
+class GraphitiSettings(StrictSettingsModel):
+    host: Annotated[str, Field(min_length=1, max_length=253)] = "127.0.0.1"
+    port: Annotated[int, Field(ge=1, le=65535)] = 6379
+
+    @field_validator("host")
+    @classmethod
+    def require_host(cls, value: str) -> str:
+        host = value.strip()
+        if not host:
+            raise ValueError("graphiti host must not be empty")
+        return host
+
+
 class RetrievalSettings(StrictSettingsModel):
     deadline_seconds: Annotated[
         float, Field(gt=0, allow_inf_nan=False)
@@ -497,6 +510,7 @@ class Settings(BaseSettings):
     model_secrets: ModelSecretsSettings = Field(default_factory=ModelSecretsSettings)
     model_provider: ModelProviderSettings | None = None
     retrieval: RetrievalSettings = Field(default_factory=RetrievalSettings)
+    graphiti: GraphitiSettings = Field(default_factory=GraphitiSettings)
     observability: ObservabilitySettings = Field(
         default_factory=ObservabilitySettings
     )

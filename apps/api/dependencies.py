@@ -11,8 +11,10 @@ from uuid import uuid4
 from apps.model_asset_runtime import (
     assemble_model_asset_runtime,
     build_dynamic_embedding_loaders,
+    build_graphiti_runtime,
     build_legacy_embedding_adapters,
 )
+from rag_kb.adapters.graphiti.client import GraphitiRuntime
 from rag_kb.adapters.file_store.local import LocalFileStore
 from rag_kb.adapters.graph_store.postgres import PgGraphStore
 from rag_kb.adapters.chat_preview.pg_notify import PgNotifyPreviewBroker
@@ -118,12 +120,14 @@ class ApiDependencies:
     chat_preview_broker: PgNotifyPreviewBroker | None
     model_secret_store: LocalModelSecretStore
     model_settings_service: ModelSettingsService
+    graphiti_runtime: GraphitiRuntime
 
     async def close(self) -> None:
         """Release process-owned database resources during API shutdown."""
 
         if self.chat_preview_broker is not None:
             await self.chat_preview_broker.close()
+        await self.graphiti_runtime.close()
         await self.database.close()
 
     async def start(self) -> None:
@@ -166,6 +170,9 @@ def build_api_dependencies(
     access_policy = SingleWorkspaceAccessPolicy(identity.workspace_id)
     model_secret_store = LocalModelSecretStore(
         resolved_settings.model_secrets.root_path
+    )
+    graphiti_runtime = build_graphiti_runtime(
+        unit_of_work, model_secret_store, resolved_settings
     )
     model_settings_service = ModelSettingsService(
         unit_of_work,
@@ -247,6 +254,7 @@ def build_api_dependencies(
         multimodal_embedding_model_resolver=dynamic_embeddings.multimodal,
         text_reranker=LocalMiniLmReranker(),
         graph_store=graph_store,
+        graphiti_graph=graphiti_runtime,
     )
     chat_service = ChatService(
         unit_of_work,
@@ -317,7 +325,7 @@ def build_api_dependencies(
         vector_store=vector_store,
         retrieval_service=retrieval_service,
         graph_configuration_service=GraphConfigurationService(
-            unit_of_work, access_policy
+            unit_of_work, access_policy, graphiti_runtime
         ),
         chat_service=chat_service,
         chat_terminal_watcher=chat_terminal_watcher,
@@ -328,6 +336,7 @@ def build_api_dependencies(
         chat_preview_broker=chat_preview_broker,
         model_secret_store=model_secret_store,
         model_settings_service=model_settings_service,
+        graphiti_runtime=graphiti_runtime,
     )
 
 async def _validate_model_profile(

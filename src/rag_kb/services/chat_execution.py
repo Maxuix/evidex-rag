@@ -7,6 +7,7 @@ from typing import Protocol
 
 from rag_kb.auth import AuthContext
 from rag_kb.domain import (
+    GRAPH_AUGMENTATION_VERSION,
     ChatExecutionCommand,
     ChatExecutionContext,
     ChatPipelineExecutionError,
@@ -135,6 +136,11 @@ class ChatEvidenceRetriever:
                 if not 1 <= top_k_override <= top_k:
                     raise ValueError
                 top_k = top_k_override
+            if (
+                augmentation is not None
+                and augmentation != GRAPH_AUGMENTATION_VERSION
+            ):
+                raise ValueError
             request = (
                 GraphRetrievalRequest(
                     knowledge_base_id=context.knowledge_base_id,
@@ -142,7 +148,7 @@ class ChatEvidenceRetriever:
                     top_k=top_k,
                     include_debug=True,
                 )
-                if augmentation is not None
+                if augmentation == GRAPH_AUGMENTATION_VERSION
                 else RetrievalRequest(
                     knowledge_base_id=context.knowledge_base_id,
                     query=query,
@@ -166,7 +172,7 @@ class ChatEvidenceRetriever:
             )
             pack = (
                 await self._retrieval.retrieve_graph(auth_context, request)
-                if augmentation is not None
+                if augmentation == GRAPH_AUGMENTATION_VERSION
                 else await self._retrieval.retrieve(auth_context, request)
             )
         except RetrievalExecutionError as error:

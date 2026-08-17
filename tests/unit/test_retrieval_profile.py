@@ -3,10 +3,14 @@ from __future__ import annotations
 import unittest
 
 from rag_kb.domain import RerankMode, RetrievalStrategy
+from rag_kb.schemas.chat import ChatRunRetrievalResponse
 from rag_kb.retrieval.profile import (
     GRAPH_RETRIEVAL_PROFILE_VERSION,
     HYBRID_PROFILE_VERSION,
     LEGACY_EXACT_PROFILE_VERSION,
+    LEGACY_GRAPH_AUGMENTATION_VERSION,
+    LEGACY_GRAPH_PROFILE_VERSION,
+    GraphRetrievalProfile,
     exact_profile,
     graph_profile,
     parse_chat_retrieval_snapshot,
@@ -82,6 +86,37 @@ class RetrievalExecutionProfileTests(unittest.TestCase):
         self.assertIs(strategy, RetrievalStrategy.HYBRID)
         self.assertEqual(top_k, 8)
         self.assertIs(rerank_mode, RerankMode.CLASSIC)
-        self.assertEqual(augmentation, "entity_graph_v1")
+        self.assertEqual(augmentation, "graphiti_edge_v1")
         with self.assertRaises(ValueError):
             parse_chat_retrieval_snapshot({**snapshot, "rerank_mode": "none"})
+
+    def test_legacy_graph_snapshot_remains_readable_for_display(self) -> None:
+        strategy, top_k, rerank_mode, augmentation = parse_chat_retrieval_snapshot(
+            {
+                "profile_version": LEGACY_GRAPH_PROFILE_VERSION,
+                "strategy": "hybrid",
+                "top_k": 8,
+                "rerank_mode": "classic",
+                "augmentation": LEGACY_GRAPH_AUGMENTATION_VERSION,
+            }
+        )
+
+        self.assertIs(strategy, RetrievalStrategy.HYBRID)
+        self.assertEqual(top_k, 8)
+        self.assertIs(rerank_mode, RerankMode.CLASSIC)
+        self.assertEqual(augmentation, LEGACY_GRAPH_AUGMENTATION_VERSION)
+        response = ChatRunRetrievalResponse(
+            profile_version=LEGACY_GRAPH_PROFILE_VERSION,
+            strategy=strategy.value,
+            top_k=top_k,
+            rerank_mode=rerank_mode,
+        )
+        self.assertEqual(response.profile_version, LEGACY_GRAPH_PROFILE_VERSION)
+        with self.assertRaises(ValueError):
+            GraphRetrievalProfile(
+                profile_version=LEGACY_GRAPH_PROFILE_VERSION,
+                strategy=RetrievalStrategy.HYBRID,
+                top_k=8,
+                rerank_mode=RerankMode.CLASSIC,
+                augmentation=LEGACY_GRAPH_AUGMENTATION_VERSION,
+            )

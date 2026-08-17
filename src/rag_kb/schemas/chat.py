@@ -191,6 +191,7 @@ class ChatRunRetrievalResponse(PublicSchema):
         "exact_vector_v2",
         "hybrid_fts_rrf_v2",
         "graph_augmented_v1",
+        "graphiti_edge_augmented_v1",
     ]
     strategy: Literal["exact_vector", "hybrid"]
     top_k: Annotated[int, Field(ge=1, le=100)]

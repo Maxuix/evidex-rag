@@ -12,8 +12,10 @@ from uuid import uuid4
 from apps.model_asset_runtime import (
     assemble_model_asset_runtime,
     build_dynamic_embedding_loaders,
+    build_graphiti_runtime,
     build_legacy_embedding_adapters,
 )
+from rag_kb.adapters.graphiti.client import GraphitiRuntime
 from rag_kb.adapters.file_store.local import LocalFileStore
 from rag_kb.adapters.chat_preview.pg_notify import PgNotifyPreviewSink
 from rag_kb.adapters.graph_store.postgres import PgGraphStore
@@ -110,6 +112,7 @@ class WorkerDependencies:
     indexing_pipeline: IndexingPipeline
     indexing_scheduler: IndexingJobScheduler
     graph_extraction_worker: GraphExtractionWorker
+    graphiti_runtime: GraphitiRuntime
     chat_preview_sink: PgNotifyPreviewSink | None
 
     async def close(self) -> None:
@@ -120,6 +123,7 @@ class WorkerDependencies:
         self.document_parser.close()
         if self.chat_preview_sink is not None:
             await self.chat_preview_sink.close()
+        await self.graphiti_runtime.close()
         await self.database.close()
 
     async def start(self) -> None:
@@ -211,6 +215,9 @@ def build_worker_dependencies(
     model_secret_store = LocalModelSecretStore(
         resolved_settings.model_secrets.root_path
     )
+    graphiti_runtime = build_graphiti_runtime(
+        unit_of_work, model_secret_store, resolved_settings
+    )
     dynamic_embeddings = build_dynamic_embedding_loaders(
         unit_of_work,
         model_secret_store,
@@ -294,6 +301,7 @@ def build_worker_dependencies(
         multimodal_embedding_model_resolver=dynamic_embeddings.multimodal,
         text_reranker=LocalMiniLmReranker(),
         graph_store=graph_store,
+        graphiti_graph=graphiti_runtime,
     )
     index_asset_service = IndexAssetService(
         unit_of_work,
@@ -354,7 +362,7 @@ def build_worker_dependencies(
     )
     graph_extraction_worker = GraphExtractionWorker(
         unit_of_work,
-        chat_model_adapter,
+        graphiti_runtime,
     )
     indexing_scheduler = IndexingJobScheduler(
         unit_of_work,
@@ -407,6 +415,7 @@ def build_worker_dependencies(
         indexing_pipeline=indexing_pipeline,
         indexing_scheduler=indexing_scheduler,
         graph_extraction_worker=graph_extraction_worker,
+        graphiti_runtime=graphiti_runtime,
         chat_preview_sink=chat_preview_sink,
     )
 

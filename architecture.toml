@@ -51,6 +51,7 @@ scan_roots = ["src", "apps"]
 "rag_kb.graph" = [
   "rag_kb.auth",
   "rag_kb.domain",
+  "rag_kb.observability",
   "rag_kb.ports",
   "rag_kb.uow",
 ]

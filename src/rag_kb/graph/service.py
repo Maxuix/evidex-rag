@@ -1,87 +1,33 @@
-"""Graph configuration and one-work-item extraction services."""
+"""Graph configuration and Graphiti build work-item services."""
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from dataclasses import dataclass
-from time import perf_counter
-from typing import Any
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from rag_kb.auth import AccessPolicy, AuthContext
 from rag_kb.domain import (
     GRAPH_EXTRACTOR_VERSION,
-    GraphAdmissionStats,
-    GraphChunkExtraction,
-    GraphChunkResultStatus,
+    ErrorCode,
     GraphConfigSnapshot,
-    GraphProtocolError,
-    GraphResourceLimitError,
+    GraphitiBuildSnapshot,
     GraphWorkItem,
     GraphWorkKind,
-    ChatModelExecutionError,
-    ChatModelMessage,
-    ChatModelRequest,
-    ErrorCode,
     ResourceNotFoundError,
-    ResourceStateConflictError,
 )
-from rag_kb.graph.extraction import (
-    graph_protocol_error_family,
-    graph_protocol_error_is_repairable,
-    parse_graph_extraction,
+from rag_kb.observability import get_logger, log_event, log_exception
+from rag_kb.ports.graphiti import GraphitiGraph
+from rag_kb.uow import (
+    UnitOfWork,
+    UnitOfWorkFactory,
+    UnitOfWorkPurpose,
+    execute_in_transaction,
 )
-from rag_kb.observability import get_logger, log_event
-from rag_kb.ports.model_api import ChatModelAdapter
-from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, UnitOfWorkPurpose, execute_in_transaction
 
 
-GRAPH_RESPONSE_FORMAT: dict[str, Any] = {"type": "json_object"}
-_LOGGER = get_logger(__name__)
-_TRUNCATED_RESPONSE_MARKER = '{"_response_truncated":true}'
-_TRUNCATED_FINISH_REASONS = frozenset(
-    {"length", "max_tokens", "max_output_tokens", "content_filter_length"}
-)
-_REPAIR_RULES = {
-    "json_invalid": "Return one JSON object parseable by json.loads, with no fence or explanation.",
-    "schema_invalid": (
-        "Use only the specified keys, entity type enum, JSON value types, and null rules."
-    ),
-}
-_JSON_SKELETON = (
-    '{"entities":[{"id":"entity_1","type":"organization","surface":"exact slice",'
-    '"disambiguator":null,"disambiguator_support":null}],'
-    '"relations":[{"subject":"entity_1","predicate":"exact relation",'
-    '"object":"entity_2","support":"exact slice containing both surfaces"}]}'
-)
-_GRAPH_SYSTEM_PROMPT = (
-    "You extract only explicitly grounded entities and relations from one text chunk. "
-    "Return one JSON object with exactly two arrays: entities and relations. "
-    "Each entity has id, type, surface, disambiguator, disambiguator_support. "
-    "Entity id uses only letters, numbers, underscore, or hyphen, is 1 through 64 "
-    "characters, and is unique within the response. "
-    "For ordinary named entities set disambiguator and disambiguator_support to null. "
-    "Use a disambiguator only when the text explicitly distinguishes two same-surface "
-    "entities; then the exact disambiguator string must appear inside "
-    "disambiguator_support. Never use an inferred category, role, or adjacent word "
-    "as a disambiguator; when uncertain, use null for both fields. "
-    "Types are person, organization, location, product, system, document, event, concept. "
-    "Each relation has subject, predicate, object, support. "
-    "Relation subject and object must exactly reference ids defined in this response. "
-    "Never return a self relation. "
-    "Relation support must explicitly contain both referenced entity surfaces; "
-    "delete a relation when this cannot be satisfied. "
-    "Every surface and support is one continuous exact substring from the chunk. "
-    "A pronoun, alias, canonical name, paraphrase, or evidence assembled across spans cannot "
-    "replace either endpoint surface. Do not infer from outside knowledge. "
-    "Return at most 16 entities and 8 relations. Prefer relations with explicit two-endpoint "
-    "support and never infer items to reach a count. "
-    "Do not treat standalone numbers, dates, or short table headers as entities. "
-    "Return empty arrays when no grounded fact exists. Do not add keys. "
-    "Follow this shape (example strings are placeholders): "
-    + _JSON_SKELETON
-)
-_PREFLIGHT_TEXT = "Atlas Labs released Orion in 2024."
+LOGGER = get_logger(__name__)
+
+
 @dataclass(frozen=True, slots=True)
 class GraphConfigView:
     snapshot: GraphConfigSnapshot
@@ -91,9 +37,15 @@ class GraphConfigView:
 
 
 class GraphConfigurationService:
-    def __init__(self, unit_of_work: UnitOfWorkFactory, access_policy: AccessPolicy) -> None:
+    def __init__(
+        self,
+        unit_of_work: UnitOfWorkFactory,
+        access_policy: AccessPolicy,
+        graphiti_graph: GraphitiGraph,
+    ) -> None:
         self._unit_of_work = unit_of_work
         self._access_policy = access_policy
+        self._graphiti_graph = graphiti_graph
 
     async def get(self, context: AuthContext, kb_id: UUID) -> GraphConfigSnapshot:
         self._access_policy.require_workspace(context, context.workspace_id)
@@ -103,7 +55,9 @@ class GraphConfigurationService:
             return await uow.graph.ensure_config(kb_id)
 
         return await execute_in_transaction(
-            self._unit_of_work, load, purpose=UnitOfWorkPurpose.REQUEST
+            self._unit_of_work,
+            load,
+            purpose=UnitOfWorkPurpose.REQUEST,
         )
 
     async def get_view(self, context: AuthContext, kb_id: UUID) -> GraphConfigView:
@@ -115,7 +69,9 @@ class GraphConfigurationService:
             return _config_view(snapshot, await _profile_bundle(uow, snapshot))
 
         return await execute_in_transaction(
-            self._unit_of_work, load, purpose=UnitOfWorkPurpose.REQUEST
+            self._unit_of_work,
+            load,
+            purpose=UnitOfWorkPurpose.REQUEST,
         )
 
     async def configure(
@@ -130,17 +86,24 @@ class GraphConfigurationService:
     ) -> GraphConfigSnapshot:
         self._access_policy.require_workspace(context, context.workspace_id)
 
-        async def persist(uow: UnitOfWork) -> GraphConfigSnapshot:
+        async def persist(
+            uow: UnitOfWork,
+        ) -> tuple[GraphConfigSnapshot, tuple[GraphitiBuildSnapshot, ...]]:
             _require_scope(uow, context)
-            return await uow.graph.configure(
+            snapshot = await uow.graph.configure(
                 kb_id,
                 chat_profile_revision_id=chat_profile_revision_id,
                 enabled=enabled,
                 extractor_version=extractor_version,
                 force_rebuild=force_rebuild,
             )
+            return snapshot, uow.graph.take_retired_graphiti_builds()
 
-        return await execute_in_transaction(self._unit_of_work, persist)
+        snapshot, retired = await execute_in_transaction(
+            self._unit_of_work, persist
+        )
+        await _recycle_graphiti_graphs(self._graphiti_graph, retired)
+        return snapshot
 
     async def retry(
         self,
@@ -151,335 +114,214 @@ class GraphConfigurationService:
     ) -> GraphConfigSnapshot:
         self._access_policy.require_workspace(context, context.workspace_id)
 
-        async def persist(uow: UnitOfWork) -> GraphConfigSnapshot:
+        async def persist(
+            uow: UnitOfWork,
+        ) -> tuple[GraphConfigSnapshot, tuple[GraphitiBuildSnapshot, ...]]:
             _require_scope(uow, context)
-            return await uow.graph.retry(
+            snapshot = await uow.graph.retry(
                 kb_id,
                 extractor_version=GRAPH_EXTRACTOR_VERSION,
                 force_rebuild=force_rebuild,
             )
+            return snapshot, uow.graph.take_retired_graphiti_builds()
 
-        return await execute_in_transaction(self._unit_of_work, persist)
+        snapshot, retired = await execute_in_transaction(
+            self._unit_of_work, persist
+        )
+        await _recycle_graphiti_graphs(self._graphiti_graph, retired)
+        return snapshot
 
 
 class GraphExtractionWorker:
-    """Process exactly one preflight, chunk, or finalize work item."""
+    """Process exactly one Graphiti preflight, episode, or finalize item."""
 
     def __init__(
         self,
         unit_of_work: UnitOfWorkFactory,
-        chat_model: ChatModelAdapter,
-        *,
-        max_output_tokens: int = 8192,
+        graphiti_graph: GraphitiGraph,
     ) -> None:
-        if not 256 <= max_output_tokens <= 8192:
-            raise ValueError("Graph extractor output limit is invalid")
         self._unit_of_work = unit_of_work
-        self._chat_model = chat_model
-        self._max_output_tokens = max_output_tokens
+        self._graphiti_graph = graphiti_graph
+
+    async def recycle_retired(
+        self, builds: tuple[GraphitiBuildSnapshot, ...]
+    ) -> None:
+        await _recycle_graphiti_graphs(self._graphiti_graph, builds)
 
     async def process_next_work_item(self) -> bool:
-        work = await execute_in_transaction(
+        async def claim(
+            uow: UnitOfWork,
+        ) -> tuple[GraphWorkItem | None, tuple[GraphitiBuildSnapshot, ...]]:
+            work = await uow.graph.next_work_item()
+            return work, uow.graph.take_retired_graphiti_builds()
+
+        work, retired = await execute_in_transaction(
             self._unit_of_work,
-            lambda uow: uow.graph.next_work_item(),
+            claim,
             purpose=UnitOfWorkPurpose.CLAIM,
         )
+        await _recycle_graphiti_graphs(self._graphiti_graph, retired)
         if work is None:
             return False
         await self.process_work_item(work)
         return True
 
     async def process_work_item(self, work: GraphWorkItem) -> None:
-        """Execute a scanner result without claiming a second item."""
-
-        if work.kind is GraphWorkKind.PREFLIGHT:
-            await self._preflight(work)
-        elif work.kind is GraphWorkKind.CHUNK:
-            assert work.chunk is not None
-            await self._extract_chunk(work)
-        else:
-            await self._finalize(work)
-
-    async def _preflight(self, work: GraphWorkItem) -> None:
-        revision_id = _require_revision(work)
-        try:
-            response = await self._complete(
-                revision_id,
-                _PREFLIGHT_TEXT,
-                purpose="preflight",
-                knowledge_base_id=work.config.knowledge_base_id,
-            )
-            _raise_if_truncated(response)
-            extraction = parse_graph_extraction(response.content, _PREFLIGHT_TEXT)
-            if (
-                extraction.result_status is not GraphChunkResultStatus.EXTRACTED
-                or len(extraction.mentions) < 2
-                or not extraction.relations
-            ):
-                raise GraphProtocolError("preflight_requires_grounded_relation")
-        except GraphResourceLimitError:
-            await self._mark_failed(work, "preflight_resource_limit")
-            return
-        except GraphProtocolError as error:
-            log_event(
-                _LOGGER,
-                "graph_extraction_protocol",
-                phase="preflight",
-                outcome="failed",
-                error_code=error.code,
-                knowledge_base_id=work.config.knowledge_base_id,
-            )
-            await self._mark_failed(work, "preflight_protocol_invalid")
-            return
-        except ChatModelExecutionError:
-            await self._mark_failed(work, ErrorCode.GRAPH_PROVIDER_UNAVAILABLE.value)
-            return
-        except Exception:
-            await self._mark_failed(work, ErrorCode.GRAPH_BUILD_FAILED.value)
-            return
-
-        await execute_in_transaction(
+        build = await execute_in_transaction(
             self._unit_of_work,
-            lambda uow: uow.graph.save_preflight_success(
+            lambda uow: uow.graph.get_graphiti_build(
                 work.config.knowledge_base_id,
                 build_id=work.config.build_id,
-                extractor_version=work.config.extractor_version,
             ),
-            purpose=UnitOfWorkPurpose.INDEXING,
+            purpose=UnitOfWorkPurpose.REQUEST,
         )
-
-    async def _extract_chunk(self, work: GraphWorkItem) -> None:
-        chunk = work.chunk
-        assert chunk is not None
-        if len(chunk.content) > 32_000:
-            extraction = GraphChunkExtraction(
-                result_status=GraphChunkResultStatus.SKIPPED_RESOURCE,
-                error_code="input_chars",
-            )
-            await self._save_extraction(work, extraction)
+        if build is None:
+            await self._mark_failed(work, ErrorCode.GRAPH_BUILD_FAILED.value)
             return
-        revision_id = _require_revision(work)
-        trace_id = str(uuid4())
         try:
-            response = await self._complete(
-                revision_id,
-                chunk.content,
-                purpose="chunk",
-                trace_id=trace_id,
-                knowledge_base_id=work.config.knowledge_base_id,
-            )
-            try:
-                _raise_if_truncated(response)
-                extraction = parse_graph_extraction(response.content, chunk.content)
-            except GraphProtocolError as initial_error:
+            if work.kind is GraphWorkKind.PREFLIGHT:
+                if not await self._graphiti_graph.probe(build):
+                    raise RuntimeError("Graphiti preflight probe failed")
                 log_event(
-                    _LOGGER,
-                    "graph_extraction_protocol",
-                    phase="initial",
-                    outcome="failed",
-                    error_code=initial_error.code,
-                    trace_id=trace_id,
+                    LOGGER,
+                    "graphiti_probe",
+                    build_id=build.build_id,
                     knowledge_base_id=work.config.knowledge_base_id,
+                    operation="preflight",
+                    outcome="ok",
                 )
-                if not graph_protocol_error_is_repairable(initial_error.code):
-                    raise
-                repair = await self._complete(
-                    revision_id,
-                    chunk.content,
-                    purpose="repair",
-                    repair_error_code=initial_error.code,
-                    trace_id=trace_id,
-                    knowledge_base_id=work.config.knowledge_base_id,
+                await execute_in_transaction(
+                    self._unit_of_work,
+                    lambda uow: uow.graph.save_preflight_success(
+                        work.config.knowledge_base_id,
+                        build_id=build.build_id,
+                        extractor_version=build.extractor_version,
+                    ),
+                    purpose=UnitOfWorkPurpose.INDEXING,
                 )
-                _raise_if_truncated(repair)
-                try:
-                    extraction = parse_graph_extraction(repair.content, chunk.content)
-                except GraphProtocolError as repair_error:
+                return
+
+            if work.kind is GraphWorkKind.CHUNK:
+                chunk = work.chunk
+                assert chunk is not None
+                episode_uuid = await self._graphiti_graph.add_episode(build, chunk)
+                saved = await execute_in_transaction(
+                    self._unit_of_work,
+                    lambda uow: uow.graph.save_graphiti_episode(
+                        kb_id=work.config.knowledge_base_id,
+                        build_id=build.build_id,
+                        index_chunk_id=chunk.index_chunk_id,
+                        content_hash=chunk.content_hash,
+                        episode_uuid=episode_uuid,
+                    ),
+                    purpose=UnitOfWorkPurpose.INDEXING,
+                )
+                if not saved:
                     log_event(
-                        _LOGGER,
-                        "graph_extraction_protocol",
-                        phase="repair",
-                        outcome="failed",
-                        error_code=repair_error.code,
-                        trace_id=trace_id,
+                        LOGGER,
+                        "graphiti_episode_write",
+                        build_id=build.build_id,
                         knowledge_base_id=work.config.knowledge_base_id,
+                        operation="chunk",
+                        outcome="skipped",
                     )
-                    raise
-                if extraction.result_status is GraphChunkResultStatus.EMPTY:
-                    raise GraphProtocolError("repair_empty_after_protocol_error")
-        except GraphResourceLimitError as error:
-            extraction = GraphChunkExtraction(
-                result_status=GraphChunkResultStatus.SKIPPED_RESOURCE,
-                error_code=error.code,
+                    return
+                log_event(
+                    LOGGER,
+                    "graphiti_episode_write",
+                    build_id=build.build_id,
+                    knowledge_base_id=work.config.knowledge_base_id,
+                    operation="chunk",
+                    outcome="ok",
+                )
+                return
+
+            episode_uuid = await execute_in_transaction(
+                self._unit_of_work,
+                lambda uow: uow.graph.first_graphiti_episode_uuid(
+                    work.config.knowledge_base_id,
+                    build_id=build.build_id,
+                ),
+                purpose=UnitOfWorkPurpose.REQUEST,
             )
-        except GraphProtocolError as error:
-            extraction = GraphChunkExtraction(
-                result_status=GraphChunkResultStatus.SKIPPED_PROTOCOL,
-                error_code=error.code,
-                admission=error.admission,
+            if build.expected_episode_count and episode_uuid is None:
+                raise RuntimeError("Graphiti ready probe has no episode mapping")
+            if not await self._graphiti_graph.probe(
+                build,
+                episode_uuid=episode_uuid,
+                require_complete=True,
+            ):
+                raise RuntimeError("Graphiti ready probe failed")
+            log_event(
+                LOGGER,
+                "graphiti_probe",
+                build_id=build.build_id,
+                knowledge_base_id=work.config.knowledge_base_id,
+                operation="finalize",
+                outcome="ok",
             )
-        except ChatModelExecutionError:
-            await self._mark_failed(work, ErrorCode.GRAPH_PROVIDER_UNAVAILABLE.value)
-            return
-        except Exception:
+
+            async def finalize(
+                uow: UnitOfWork,
+            ) -> tuple[GraphConfigSnapshot | None, tuple[GraphitiBuildSnapshot, ...]]:
+                snapshot = await uow.graph.finalize_graphiti_if_complete(
+                    work.config.knowledge_base_id,
+                    build_id=build.build_id,
+                )
+                return snapshot, uow.graph.take_retired_graphiti_builds()
+
+            _, retired = await execute_in_transaction(
+                self._unit_of_work,
+                finalize,
+                purpose=UnitOfWorkPurpose.INDEXING,
+            )
+            await _recycle_graphiti_graphs(self._graphiti_graph, retired)
+        except Exception as error:
+            log_exception(
+                LOGGER,
+                "graphiti_build_failed",
+                error,
+                build_id=work.config.build_id,
+                knowledge_base_id=work.config.knowledge_base_id,
+                operation=work.kind.value,
+                error_code=ErrorCode.GRAPH_BUILD_FAILED.value,
+            )
             await self._mark_failed(work, ErrorCode.GRAPH_BUILD_FAILED.value)
-            return
-        _log_admission(extraction.admission, trace_id=trace_id, knowledge_base_id=work.config.knowledge_base_id)
-        log_event(
-            _LOGGER,
-            "graph_extraction_final",
-            phase="final",
-            outcome=extraction.result_status.value,
-            error_code=extraction.error_code,
-            dropped_entity_count=extraction.admission.dropped_entity_count,
-            dropped_relation_count=extraction.admission.dropped_relation_count,
-            dropped_relation_grounding_count=(
-                extraction.admission.dropped_relation_grounding_count
-            ),
-            trace_id=trace_id,
-            knowledge_base_id=work.config.knowledge_base_id,
-        )
-        await self._save_extraction(work, extraction)
-
-    async def _save_extraction(
-        self, work: GraphWorkItem, extraction: GraphChunkExtraction
-    ) -> None:
-        assert work.chunk is not None
-        await execute_in_transaction(
-            self._unit_of_work,
-            lambda uow: uow.graph.save_chunk_extraction(
-                kb_id=work.config.knowledge_base_id,
-                build_id=work.config.build_id,
-                index_chunk_id=work.chunk.index_chunk_id,
-                content_hash=work.chunk.content_hash,
-                extractor_version=work.config.extractor_version,
-                extraction=extraction,
-            ),
-            purpose=UnitOfWorkPurpose.INDEXING,
-        )
-
-    async def _finalize(self, work: GraphWorkItem) -> None:
-        await execute_in_transaction(
-            self._unit_of_work,
-            lambda uow: uow.graph.finalize_if_complete(
-                work.config.knowledge_base_id,
-                build_id=work.config.build_id,
-                observed_at=datetime.now(UTC),
-            ),
-            purpose=UnitOfWorkPurpose.INDEXING,
-        )
 
     async def _mark_failed(self, work: GraphWorkItem, error_code: str) -> None:
-        await execute_in_transaction(
-            self._unit_of_work,
-            lambda uow: uow.graph.mark_failed(
+        async def persist(uow: UnitOfWork) -> tuple[GraphitiBuildSnapshot, ...]:
+            await uow.graph.mark_failed(
                 work.config.knowledge_base_id,
                 build_id=work.config.build_id,
                 error_code=error_code,
-            ),
+            )
+            return uow.graph.take_retired_graphiti_builds()
+
+        retired = await execute_in_transaction(
+            self._unit_of_work,
+            persist,
             purpose=UnitOfWorkPurpose.INDEXING,
         )
-
-    async def _complete(
-        self,
-        revision_id: UUID,
-        chunk_text: str,
-        *,
-        purpose: str,
-        repair_error_code: str | None = None,
-        trace_id: str | None = None,
-        knowledge_base_id: UUID | None = None,
-    ):
-        user_content = chunk_text
-        if repair_error_code is not None:
-            repair_family = graph_protocol_error_family(repair_error_code)
-            repair_rule = _REPAIR_RULES.get(
-                repair_family,
-                "Regenerate one response that follows the fixed extraction protocol.",
-            )
-            user_content = (
-                "Return a corrected JSON object only. Protocol error code: "
-                + repair_error_code
-                + ". Rule: "
-                + repair_rule
-                + " Preserve every other item that already satisfies the protocol. "
-                + "Follow this JSON shape: "
-                + _JSON_SKELETON
-                + "\nChunk:\n"
-                + chunk_text
-            )
-        started_at = perf_counter()
-        response = await self._chat_model.complete(
-            ChatModelRequest(
-                messages=(
-                    ChatModelMessage(role="system", content=_GRAPH_SYSTEM_PROMPT),
-                    ChatModelMessage(
-                        role="user",
-                        content=(
-                            f"Extraction operation: {purpose}.\n"
-                            "Use only the following chunk:\n"
-                            + user_content
-                        ),
-                    ),
-                ),
-                max_output_tokens=self._max_output_tokens,
-                model_profile_revision_id=revision_id,
-                thinking_enabled=None,
-                response_format=GRAPH_RESPONSE_FORMAT,
-            )
-        )
-        fields: dict[str, object] = {
-            "phase": "repair" if repair_error_code is not None else "initial",
-            "outcome": "completed",
-            "duration_ms": max(0, int((perf_counter() - started_at) * 1000)),
-        }
-        if trace_id is not None:
-            fields["trace_id"] = trace_id
-        if knowledge_base_id is not None:
-            fields["knowledge_base_id"] = knowledge_base_id
-        for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
-            if key in response.usage:
-                fields[key] = response.usage[key]
-        log_event(_LOGGER, "graph_extraction_model_call", **fields)
-        return response
+        await _recycle_graphiti_graphs(self._graphiti_graph, retired)
 
 
-def _log_admission(
-    admission: GraphAdmissionStats,
-    *,
-    trace_id: str,
-    knowledge_base_id: UUID,
+async def _recycle_graphiti_graphs(
+    graphiti_graph: GraphitiGraph,
+    builds: tuple[GraphitiBuildSnapshot, ...],
 ) -> None:
-    for role, codes in (
-        ("entity", admission.entity_drop_codes),
-        ("relation", admission.relation_drop_codes),
-    ):
-        for code, count in codes:
-            log_event(
-                _LOGGER,
-                "graph_extraction_admission",
-                phase="final",
-                item_role=role,
-                error_code=code,
-                dropped_count=count,
-                trace_id=trace_id,
-                knowledge_base_id=knowledge_base_id,
+    for build in builds:
+        try:
+            await graphiti_graph.delete_graph(build)
+        except Exception as error:
+            log_exception(
+                LOGGER,
+                "graphiti_build_failed",
+                error,
+                build_id=build.build_id,
+                knowledge_base_id=build.knowledge_base_id,
+                operation="recycle",
+                error_code="graph_recycle_failed",
             )
-
-
-def _raise_if_truncated(response) -> None:
-    finish_reason = (response.finish_reason or "").strip().casefold()
-    if (
-        finish_reason in _TRUNCATED_FINISH_REASONS
-        or response.content.strip() == _TRUNCATED_RESPONSE_MARKER
-    ):
-        raise GraphResourceLimitError("output_truncated")
-
-
-def _require_revision(work: GraphWorkItem) -> UUID:
-    if work.config.chat_profile_revision_id is None:
-        raise ResourceStateConflictError("Graph Chat Profile Revision is missing")
-    return work.config.chat_profile_revision_id
 
 
 def _require_scope(uow: UnitOfWork, context: AuthContext) -> None:

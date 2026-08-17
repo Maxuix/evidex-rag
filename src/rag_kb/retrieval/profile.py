@@ -22,6 +22,8 @@ EXACT_PROFILE_VERSION = "exact_vector_v2"
 HYBRID_PROFILE_VERSION = "hybrid_fts_rrf_v2"
 LEGACY_EXACT_PROFILE_VERSION = "exact_vector_v1"
 LEGACY_HYBRID_PROFILE_VERSION = "hybrid_fts_rrf_v1"
+LEGACY_GRAPH_PROFILE_VERSION = "graph_augmented_v1"
+LEGACY_GRAPH_AUGMENTATION_VERSION = "entity_graph_v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -252,6 +254,11 @@ def parse_chat_retrieval_snapshot(
         }
         if set(value) != expected_fields:
             raise ValueError("graph retrieval snapshot fields are invalid")
+        if (
+            value["profile_version"] == LEGACY_GRAPH_PROFILE_VERSION
+            and value["augmentation"] == LEGACY_GRAPH_AUGMENTATION_VERSION
+        ):
+            return _parse_legacy_graph_snapshot(value)
         profile = GraphRetrievalProfile(
             profile_version=value["profile_version"],
             strategy=RetrievalStrategy(value["strategy"]),
@@ -315,6 +322,25 @@ def exact_profile(
         rerank_lexical_weight=0.35,
         mmr_lambda=0.75,
     )
+
+
+def _parse_legacy_graph_snapshot(
+    value: Mapping[str, Any],
+) -> tuple[RetrievalStrategy, int, RerankMode, str]:
+    """Keep historical entity-graph ChatRuns readable without executing them."""
+
+    strategy = RetrievalStrategy(value["strategy"])
+    raw_top_k = value["top_k"]
+    if isinstance(raw_top_k, bool) or not isinstance(raw_top_k, int):
+        raise ValueError("retrieval snapshot top_k is invalid")
+    if strategy is not RetrievalStrategy.HYBRID:
+        raise ValueError("graph retrieval uses hybrid seeds")
+    if not 4 <= raw_top_k <= 20:
+        raise ValueError("graph retrieval top_k is invalid")
+    rerank_mode = RerankMode(value["rerank_mode"])
+    if rerank_mode is not RerankMode.CLASSIC:
+        raise ValueError("graph retrieval requires classic reranking")
+    return strategy, raw_top_k, rerank_mode, LEGACY_GRAPH_AUGMENTATION_VERSION
 
 
 def _require_bool(value: Any) -> bool:

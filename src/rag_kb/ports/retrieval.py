@@ -9,10 +9,9 @@ from rag_kb.domain import (
     AdjacentChunkQuery,
     AdjacentChunkResult,
     EmbeddingSpaceDefinition,
-    GraphEntityCandidate,
-    GraphEntityLookupQuery,
     GraphConfigSnapshot,
-    GraphTraversalQuery,
+    GraphitiBuildSnapshot,
+    GraphitiEdgeResult,
     GraphTraversalResult,
     LexicalSearchResult,
     RetrievalQueryPlan,
@@ -83,10 +82,27 @@ class GraphStore(Protocol):
         self, workspace_id: UUID, knowledge_base_id: UUID
     ) -> GraphConfigSnapshot | None: ...
 
-    async def find_entity_candidates(
-        self, query: GraphEntityLookupQuery
-    ) -> tuple[GraphEntityCandidate, ...]: ...
+    async def get_active_graphiti_build(
+        self, workspace_id: UUID, knowledge_base_id: UUID
+    ) -> GraphitiBuildSnapshot | None: ...
 
-    async def traverse(
-        self, query: GraphTraversalQuery
+    async def first_graphiti_episode_uuid(
+        self, workspace_id: UUID, knowledge_base_id: UUID, build_id: UUID
+    ) -> str | None: ...
+
+    async def hydrate_graphiti_edges(
+        self,
+        *,
+        workspace_id: UUID,
+        knowledge_base_id: UUID,
+        build_id: UUID,
+        index_revision_id: UUID,
+        edges: tuple[GraphitiEdgeResult, ...],
     ) -> GraphTraversalResult | None: ...
+
+    async def schedule_graphiti_rebuild(
+        self,
+        workspace_id: UUID,
+        knowledge_base_id: UUID,
+        failed_build_id: UUID,
+    ) -> bool: ...

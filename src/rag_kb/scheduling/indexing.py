@@ -106,14 +106,18 @@ class IndexingJobScheduler:
                 max_attempts=self._retry.max_attempts,
             )
             if lease is not None or self._graph_worker is None:
-                return lease
-            return await uow.graph.next_work_item()
+                return lease, ()
+            work = await uow.graph.next_work_item()
+            return work, uow.graph.take_retired_graphiti_builds()
 
-        return await execute_in_transaction(
+        claimed, retired = await execute_in_transaction(
             self._unit_of_work,
             claim_or_graph,
             purpose=UnitOfWorkPurpose.CLAIM,
         )
+        if retired and self._graph_worker is not None:
+            await self._graph_worker.recycle_retired(retired)
+        return claimed
 
     async def reconcile_once(self) -> ReconciliationResult:
         observed_at = self._clock()

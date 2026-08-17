@@ -157,7 +157,7 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
                     "UPDATE alembic_version SET version_num = 'runtime-mutation'"
                 )
             revision = await runtime.fetchval("SELECT version_num FROM alembic_version")
-            self.assertEqual(revision, "0012_entity_graph_rag")
+            self.assertEqual(revision, "0014_remove_legacy_entity_graph")
         finally:
             await runtime.close()
 
@@ -829,7 +829,7 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
         try:
             self.assertEqual(
                 await connection.fetchval("SELECT version_num FROM alembic_version"),
-                "0012_entity_graph_rag",
+                "0014_remove_legacy_entity_graph",
             )
         finally:
             await connection.close()
@@ -1033,205 +1033,17 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await connection.close()
 
-    async def test_entity_graph_scope_foreign_keys_and_cascades(self) -> None:
+    async def test_legacy_entity_graph_projection_is_removed(self) -> None:
         connection = await asyncpg.connect(MIGRATION_DSN)
         try:
-            workspace_id, embedding_space_id, kb_id = await self.create_foundation(
-                connection, suffix="entity-graph-schema"
-            )
-            revision_id = await self.create_revision(
-                connection, workspace_id, embedding_space_id, kb_id, status="active"
-            )
-            document_id, versions = await self.create_document_versions(
-                connection, workspace_id, kb_id, count=1
-            )
-            target_id = await connection.fetchval(
-                """
-                INSERT INTO indexed_document_version (
-                    workspace_id, kb_id, document_id, document_version_id,
-                    index_revision_id, source_change_seq,
-                    build_status, serving_status
-                ) VALUES ($1, $2, $3, $4, $5, 1, 'ready', 'serving')
-                RETURNING id
-                """,
-                workspace_id,
-                kb_id,
-                document_id,
-                versions[0],
-                revision_id,
-            )
-            chunk_id = await connection.fetchval(
-                """
-                INSERT INTO index_chunk (
-                    workspace_id, kb_id, indexed_document_version_id,
-                    ordinal, unit_key, modality, content, content_hash,
-                    token_count, source_location
-                ) VALUES (
-                    $1, $2, $3, 0, 'entity-graph-schema', 'text',
-                    'Atlas connects to Apollo', $4, 4, '{}'::jsonb
+            for table_name in (
+                "index_graph_chunk",
+                "graph_entity_mention",
+                "graph_relation_assertion",
+            ):
+                self.assertIsNone(
+                    await connection.fetchval("SELECT to_regclass($1)", table_name)
                 )
-                RETURNING id
-                """,
-                workspace_id,
-                kb_id,
-                target_id,
-                "a" * 64,
-            )
-            build_id = uuid4()
-            await connection.execute(
-                """
-                INSERT INTO knowledge_base_graph_config (
-                    kb_id, workspace_id, status, build_id, extractor_version
-                ) VALUES ($1, $2, 'disabled', $3, 'entity_graph_v1')
-                """,
-                kb_id,
-                workspace_id,
-                build_id,
-            )
-            await connection.execute(
-                """
-                INSERT INTO index_graph_chunk (
-                    workspace_id, kb_id, build_id, index_chunk_id,
-                    content_hash, extractor_version, result_status,
-                    entity_count, relation_count
-                ) VALUES ($1, $2, $3, $4, $5, 'entity_graph_v1',
-                          'extracted', 2, 1)
-                """,
-                workspace_id,
-                kb_id,
-                build_id,
-                chunk_id,
-                "a" * 64,
-            )
-            await connection.execute(
-                """
-                INSERT INTO graph_entity_mention (
-                    workspace_id, kb_id, build_id, index_chunk_id,
-                    mention_id, ordinal, entity_type, surface,
-                    normalized_surface, surface_start, surface_end, entity_key
-                ) VALUES
-                    ($1, $2, $3, $4, 'm-atlas', 0, 'organization',
-                     'Atlas', 'atlas', 0, 5, $5),
-                    ($1, $2, $3, $4, 'm-apollo', 1, 'system',
-                     'Apollo', 'apollo', 18, 24, $6)
-                """,
-                workspace_id,
-                kb_id,
-                build_id,
-                chunk_id,
-                "b" * 64,
-                "c" * 64,
-            )
-            await connection.execute(
-                """
-                INSERT INTO graph_relation_assertion (
-                    workspace_id, kb_id, build_id, index_chunk_id,
-                    relation_id, ordinal, subject_mention_id,
-                    object_mention_id, subject_entity_key,
-                    object_entity_key, predicate, normalized_predicate,
-                    support_start, support_end
-                ) VALUES (
-                    $1, $2, $3, $4, 'r-atlas-apollo', 0, 'm-atlas',
-                    'm-apollo', $5, $6, 'connects to', 'connects_to', 0, 24
-                )
-                """,
-                workspace_id,
-                kb_id,
-                build_id,
-                chunk_id,
-                "b" * 64,
-                "c" * 64,
-            )
-
-            other_kb_id = await connection.fetchval(
-                """
-                INSERT INTO knowledge_base (workspace_id, name)
-                VALUES ($1, 'entity-graph-other-kb')
-                RETURNING id
-                """,
-                workspace_id,
-            )
-            with self.assertRaises(asyncpg.ForeignKeyViolationError):
-                await connection.execute(
-                    """
-                    INSERT INTO index_graph_chunk (
-                        workspace_id, kb_id, build_id, index_chunk_id,
-                        content_hash, extractor_version, result_status
-                    ) VALUES ($1, $2, $3, $4, $5, 'entity_graph_v1', 'empty')
-                    """,
-                    workspace_id,
-                    other_kb_id,
-                    build_id,
-                    chunk_id,
-                    "a" * 64,
-                )
-
-            self.assertEqual(
-                await connection.fetchval(
-                    "SELECT count(*) FROM graph_entity_mention WHERE index_chunk_id = $1",
-                    chunk_id,
-                ),
-                2,
-            )
-            self.assertEqual(
-                await connection.fetchval(
-                    "SELECT count(*) FROM graph_relation_assertion WHERE index_chunk_id = $1",
-                    chunk_id,
-                ),
-                1,
-            )
-
-            with self.assertRaises(asyncpg.CheckViolationError):
-                await connection.execute(
-                    """
-                    INSERT INTO graph_relation_assertion (
-                        workspace_id, kb_id, build_id, index_chunk_id,
-                        relation_id, ordinal, subject_mention_id,
-                        object_mention_id, subject_entity_key,
-                        object_entity_key, predicate, normalized_predicate,
-                        support_start, support_end
-                    ) VALUES (
-                        $1, $2, $3, $4, 'r-self', 1, 'm-atlas',
-                        'm-atlas', $5, $5, 'is', 'is', 0, 5
-                    )
-                    """,
-                    workspace_id,
-                    kb_id,
-                    build_id,
-                    chunk_id,
-                    "b" * 64,
-                )
-
-            await connection.execute("DELETE FROM index_chunk WHERE id = $1", chunk_id)
-            self.assertEqual(
-                await connection.fetchval(
-                    "SELECT count(*) FROM index_graph_chunk WHERE index_chunk_id = $1",
-                    chunk_id,
-                ),
-                0,
-            )
-            self.assertEqual(
-                await connection.fetchval(
-                    "SELECT count(*) FROM graph_entity_mention WHERE index_chunk_id = $1",
-                    chunk_id,
-                ),
-                0,
-            )
-            self.assertEqual(
-                await connection.fetchval(
-                    "SELECT count(*) FROM graph_relation_assertion WHERE index_chunk_id = $1",
-                    chunk_id,
-                ),
-                0,
-            )
-            await connection.execute("DELETE FROM knowledge_base WHERE id = $1", kb_id)
-            self.assertEqual(
-                await connection.fetchval(
-                    "SELECT count(*) FROM knowledge_base_graph_config WHERE kb_id = $1",
-                    kb_id,
-                ),
-                0,
-            )
         finally:
             await connection.close()
 

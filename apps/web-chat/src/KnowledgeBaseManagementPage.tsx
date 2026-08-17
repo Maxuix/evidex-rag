@@ -796,16 +796,6 @@ function GraphSettingsPanel({
                     {busyAction === "retry" ? "正在重试…" : "重试构建"}
                   </button>
                 ) : null}
-                {currentConfig.status === "ready" && !currentConfig.requires_rebuild && currentConfig.protocol_skipped_count > 0 ? (
-                  <button
-                    className="quiet-button"
-                    type="button"
-                    disabled={!capabilityEnabled || controlsBusy}
-                    onClick={() => void runAction("retry")}
-                  >
-                    {busyAction === "retry" ? "正在重试…" : "重试协议跳过项"}
-                  </button>
-                ) : null}
                 {currentConfig.status !== "building" && !currentConfig.requires_rebuild ? (
                   <button
                     className="quiet-button"

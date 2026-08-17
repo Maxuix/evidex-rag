@@ -131,6 +131,8 @@ class SettingsTests(unittest.TestCase):
             30_000,
         )
         self.assertEqual(settings.retrieval.deadline_seconds, 240.0)
+        self.assertEqual(settings.graphiti.host, "127.0.0.1")
+        self.assertEqual(settings.graphiti.port, 6379)
         self.assertEqual(settings.chat_delivery.poll_interval_seconds, 1.0)
         self.assertEqual(settings.chat_delivery.jitter_ratio, 0.2)
         self.assertEqual(

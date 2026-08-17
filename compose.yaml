@@ -4,6 +4,9 @@ x-runtime-environment: &runtime-environment
   RAG_KB__SECURITY__ALLOWED_CORS_ORIGINS: '["http://127.0.0.1:${RAG_KB_FRONTEND_PORT:-3000}","http://localhost:${RAG_KB_FRONTEND_PORT:-3000}","http://127.0.0.1:5173","http://localhost:5173"]'
   RAG_KB__OBSERVABILITY__LOG_DIRECTORY: /var/log/rag-kb
   TIKTOKEN_CACHE_DIR: /var/lib/rag-kb/sources/.tiktoken-cache
+  GRAPHITI_TELEMETRY_ENABLED: "false"
+  RAG_KB__GRAPHITI__HOST: falkordb
+  RAG_KB__GRAPHITI__PORT: "6379"
 
 x-local-logging: &local-logging
   driver: local
@@ -33,6 +36,8 @@ x-runtime-service: &runtime-service
   environment: *runtime-environment
   depends_on:
     postgres:
+      condition: service_healthy
+    falkordb:
       condition: service_healthy
     storage-init:
       condition: service_completed_successfully

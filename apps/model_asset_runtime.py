@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from uuid import UUID
 
 from rag_kb.adapters.file_store.assets import LocalIndexAssetStore
+from rag_kb.adapters.graphiti.client import GraphitiModelCredentials, GraphitiRuntime
 from rag_kb.adapters.model_api.langchain_embeddings import (
     LangChainEmbeddingModelAdapter,
 )
@@ -25,6 +26,7 @@ from rag_kb.config.settings import (
 )
 from rag_kb.domain import (
     EmbeddingSpaceDefinition,
+    GraphitiBuildSnapshot,
     ModelKind,
     ModelValidationStatus,
 )
@@ -217,6 +219,76 @@ def build_dynamic_embedding_loaders(
     return DynamicEmbeddingLoaders(
         embedding=load_embedding,
         multimodal=load_multimodal,
+    )
+
+
+def build_graphiti_runtime(
+    unit_of_work: UnitOfWorkFactory,
+    secret_store: ModelSecretStore,
+    settings: Settings,
+) -> GraphitiRuntime:
+    async def credentials(build: GraphitiBuildSnapshot) -> GraphitiModelCredentials:
+        async def resolve(uow: UnitOfWork):
+            chat = await uow.model_settings.get_profile_revision(
+                build.chat_profile_revision_id
+            )
+            embedding = await uow.model_settings.get_profile_revision(
+                build.embedding_profile_revision_id
+            )
+            return chat, embedding
+
+        chat, embedding = await execute_in_transaction(
+            unit_of_work,
+            resolve,
+            purpose=UnitOfWorkPurpose.REQUEST,
+        )
+        if (
+            chat is None
+            or embedding is None
+            or chat.profile.kind is not ModelKind.CHAT
+            or embedding.profile.kind is not ModelKind.TEXT_EMBEDDING
+            or chat.current_revision.validation_status is not ModelValidationStatus.VALID
+            or embedding.current_revision.validation_status is not ModelValidationStatus.VALID
+            or embedding.current_revision.model != build.embedding_model
+            or not chat.profile.enabled
+            or not embedding.profile.enabled
+            or not chat.provider.enabled
+            or not embedding.provider.enabled
+        ):
+            raise ValueError("Graphiti build model revision is unavailable")
+        chat_key, embedding_key = await asyncio.gather(
+            asyncio.to_thread(
+                secret_store.read,
+                chat.provider_revision.secret_reference,
+            ),
+            asyncio.to_thread(
+                secret_store.read,
+                embedding.provider_revision.secret_reference,
+            ),
+        )
+        chat_parameters = chat.current_revision.configuration
+        embedding_parameters = embedding.current_revision.configuration
+        return GraphitiModelCredentials(
+            chat_base_url=chat.provider_revision.base_url,
+            chat_api_key=chat_key,
+            chat_model=chat.current_revision.model,
+            chat_timeout_seconds=chat.provider_revision.timeout_seconds,
+            chat_temperature=float(chat_parameters.get("temperature", 0.1)),
+            chat_max_tokens=int(chat_parameters.get("max_output_tokens", 8192)),
+            structured_output_mode=str(
+                chat_parameters.get("structured_output_mode", "json_object")
+            ),
+            embedding_base_url=embedding.provider_revision.base_url,
+            embedding_api_key=embedding_key,
+            embedding_model=embedding.current_revision.model,
+            embedding_timeout_seconds=embedding.provider_revision.timeout_seconds,
+            embedding_batch_size=int(embedding_parameters.get("max_batch_size", 16)),
+        )
+
+    return GraphitiRuntime(
+        credentials,
+        host=settings.graphiti.host,
+        port=settings.graphiti.port,
     )
 
 

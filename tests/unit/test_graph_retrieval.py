@@ -5,18 +5,14 @@ from dataclasses import replace
 from uuid import UUID
 
 from rag_kb.auth import SingleWorkspaceAccessPolicy
-from rag_kb.adapters.graph_store.postgres import (
-    PgGraphStore,
-    _GraphEdge,
-    _aggregate_edges,
-    _build_paths,
-)
 from rag_kb.domain import (
     GRAPH_EXTRACTOR_VERSION,
     GraphChunkEvidence,
     GraphConfigSnapshot,
     GraphConfigStatus,
-    GraphEntityCandidate,
+    GraphitiBuildSnapshot,
+    GraphitiBuildStatus,
+    GraphitiEdgeResult,
     GraphPathCandidate,
     GraphPathHop,
     GraphRetrievalRequest,
@@ -25,6 +21,10 @@ from rag_kb.domain import (
     RetrievalStrategy,
     VectorSearchResult,
 )
+from sqlalchemy import bindparam, text
+
+from rag_kb.adapters.graph_store.postgres import _bounded_graphiti_paths
+from rag_kb.domain.graph import GRAPH_MAX_PATHS
 from rag_kb.retrieval.service import RetrievalService, _pack_graph_evidence
 
 from tests.unit.test_retrieval_service import (
@@ -53,6 +53,63 @@ ENTITY_B = "b" * 64
 
 
 class GraphRetrievalTests(unittest.IsolatedAsyncioTestCase):
+    async def test_search_exception_fails_closed_without_rebuild(self) -> None:
+        graph_store = _GraphStore(_ready_config(), _path_result())
+        service = RetrievalService(
+            SingleWorkspaceAccessPolicy(WORKSPACE),
+            _Provider(),
+            _Store(VectorSearchResult(REVISION_ID, (_hit(CHUNK_3, ordinal=0),))),
+            lexical_store=_LexicalStore(),
+            graph_store=graph_store,
+            graphiti_graph=_Graphiti(search_error=RuntimeError("embed timeout")),
+        )
+
+        with self.assertRaises(RetrievalExecutionError) as raised:
+            await service.retrieve_graph(
+                _context(), GraphRetrievalRequest(KB_ID, "Atlas", top_k=4)
+            )
+
+        self.assertEqual(raised.exception.code.value, "GRAPH_NOT_READY")
+        self.assertEqual(graph_store.rebuilds, [])
+
+    async def test_probe_exception_fails_closed_without_rebuild(self) -> None:
+        graph_store = _GraphStore(_ready_config(), _path_result())
+        service = RetrievalService(
+            SingleWorkspaceAccessPolicy(WORKSPACE),
+            _Provider(),
+            _Store(VectorSearchResult(REVISION_ID, (_hit(CHUNK_3, ordinal=0),))),
+            lexical_store=_LexicalStore(),
+            graph_store=graph_store,
+            graphiti_graph=_Graphiti(probe_error=RuntimeError("falkordb down")),
+        )
+
+        with self.assertRaises(RetrievalExecutionError) as raised:
+            await service.retrieve_graph(
+                _context(), GraphRetrievalRequest(KB_ID, "Atlas", top_k=4)
+            )
+
+        self.assertEqual(raised.exception.code.value, "GRAPH_NOT_READY")
+        self.assertEqual(graph_store.rebuilds, [])
+
+    async def test_runtime_probe_failure_fails_closed_and_schedules_rebuild(self) -> None:
+        graph_store = _GraphStore(_ready_config(), _path_result())
+        service = RetrievalService(
+            SingleWorkspaceAccessPolicy(WORKSPACE),
+            _Provider(),
+            _Store(VectorSearchResult(REVISION_ID, (_hit(CHUNK_3, ordinal=0),))),
+            lexical_store=_LexicalStore(),
+            graph_store=graph_store,
+            graphiti_graph=_Graphiti(probe_success=False),
+        )
+
+        with self.assertRaises(RetrievalExecutionError) as raised:
+            await service.retrieve_graph(
+                _context(), GraphRetrievalRequest(KB_ID, "Atlas", top_k=4)
+            )
+
+        self.assertEqual(raised.exception.code.value, "GRAPH_NOT_READY")
+        self.assertEqual(graph_store.rebuilds, [(WORKSPACE, KB_ID, BUILD_ID)])
+
     async def test_graph_ignores_ordinary_hybrid_gate_and_preserves_hybrid_seed_strategy(
         self,
     ) -> None:
@@ -68,6 +125,7 @@ class GraphRetrievalTests(unittest.IsolatedAsyncioTestCase):
             lexical_store=lexical_store,
             hybrid_enabled=False,
             graph_store=graph_store,
+            graphiti_graph=_Graphiti(),
         )
 
         pack = await service.retrieve_graph(
@@ -96,6 +154,7 @@ class GraphRetrievalTests(unittest.IsolatedAsyncioTestCase):
             vector_store,
             lexical_store=_LexicalStore(),
             graph_store=graph_store,
+            graphiti_graph=_Graphiti(),
         )
 
         with self.assertRaises(RetrievalExecutionError) as raised:
@@ -123,6 +182,7 @@ class GraphRetrievalTests(unittest.IsolatedAsyncioTestCase):
             _Store(VectorSearchResult(REVISION_ID, ())),
             lexical_store=_LexicalStore(),
             graph_store=graph_store,
+            graphiti_graph=_Graphiti(),
         )
 
         with self.assertRaises(RetrievalExecutionError):
@@ -133,6 +193,41 @@ class GraphRetrievalTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(provider.queries, [])
         self.assertEqual(graph_store.traversal_queries, [])
 
+    def test_episode_uuid_lookup_uses_an_expanding_bind(self) -> None:
+        statement = text(
+            "SELECT 1 FROM graphiti_episode_chunk mapping "
+            "WHERE mapping.episode_uuid IN :episode_uuids"
+        ).bindparams(bindparam("episode_uuids", expanding=True))
+        compiled = str(
+            statement.bindparams(episode_uuids=["episode-1", "episode-2"]).compile(
+                compile_kwargs={"render_postcompile": True}
+            )
+        )
+        self.assertIn("IN (", compiled)
+        self.assertNotIn("ANY(", compiled)
+
+    def test_hydration_caps_paths_at_the_domain_bound(self) -> None:
+        edges = tuple(
+            GraphitiEdgeResult(f"edge-{index}", "fact", (f"episode-{index}",), index)
+            for index in range(1, GRAPH_MAX_PATHS + 4)
+        )
+        chunks = {
+            f"episode-{index}": _graph_chunk(UUID(int=index))
+            for index in range(1, GRAPH_MAX_PATHS + 4)
+        }
+
+        paths, admitted, rejected = _bounded_graphiti_paths(edges, chunks)
+
+        self.assertEqual(len(paths), GRAPH_MAX_PATHS)
+        self.assertEqual(len(admitted), GRAPH_MAX_PATHS)
+        self.assertEqual(rejected, 3)
+        GraphTraversalResult(
+            resolved_active_revision_id=REVISION_ID,
+            paths=paths,
+            chunks=admitted,
+            rejected_path_count=rejected,
+        )
+
     def test_seed_first_packing_keeps_a_path_whole(self) -> None:
         seed = _seed_evidence(CHUNK_1)
         path = _path_result()
@@ -142,117 +237,6 @@ class GraphRetrievalTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item.index_chunk_id for item in evidence], [seed.index_chunk_id, CHUNK_3])
         self.assertEqual(len(bundles), 1)
         self.assertEqual(bundles[0].chunk_ids, (seed.index_chunk_id, CHUNK_3))
-
-
-class GraphStoreAlgorithmTests(unittest.TestCase):
-    def test_seed_chunk_can_ground_paths_without_query_entity_keys(self) -> None:
-        edge = _GraphEdge(
-            relation_id=RELATION_ID,
-            subject_entity_key=ENTITY_A,
-            object_entity_key=ENTITY_B,
-            predicate="released",
-            normalized_predicate="released",
-            source_chunk=_graph_chunk(CHUNK_1),
-        )
-
-        paths, chunks, rejected = _build_paths(
-            (),
-            (edge,),
-            (),
-            {CHUNK_1},
-            max_paths=20,
-        )
-
-        self.assertEqual(rejected, 0)
-        self.assertEqual(len(paths), 2)
-        self.assertEqual({path.entry_entity_key for path in paths}, {ENTITY_A, ENTITY_B})
-        self.assertEqual(chunks, (_graph_chunk(CHUNK_1),))
-
-    def test_graph_sql_is_scoped_and_does_not_require_pg_trgm(self) -> None:
-        statements = (
-            PgGraphStore._config_statement(),
-            PgGraphStore._candidate_statement(False),
-            PgGraphStore._candidate_statement(True),
-            PgGraphStore._one_hop_statement(),
-            PgGraphStore._two_hop_statement(),
-        )
-
-        for statement in statements:
-            self.assertNotIn("pg_trgm", statement.text)
-            self.assertIn(":workspace_id", statement.text)
-            self.assertIn(":kb_id", statement.text)
-        self.assertIn("rel.subject_entity_key <> rel.object_entity_key", statements[-1].text)
-
-    def test_two_hop_path_aggregates_duplicate_support_and_keeps_sources(self) -> None:
-        first = _GraphEdge(
-            relation_id=RELATION_ID,
-            subject_entity_key=ENTITY_A,
-            object_entity_key=ENTITY_B,
-            predicate="released",
-            normalized_predicate="released",
-            source_chunk=_graph_chunk(CHUNK_1),
-        )
-        duplicate = replace(
-            first,
-            relation_id=UUID("01900000-0000-7000-8000-000000000938"),
-            source_chunk=_graph_chunk(CHUNK_3),
-        )
-        final = _GraphEdge(
-            relation_id=UUID("01900000-0000-7000-8000-000000000939"),
-            subject_entity_key=ENTITY_B,
-            object_entity_key="c" * 64,
-            predicate="supports",
-            normalized_predicate="supports",
-            source_chunk=_graph_chunk(CHUNK_3),
-        )
-        aggregated = _aggregate_edges((first, duplicate), {CHUNK_1})
-        self.assertEqual(len(aggregated), 1)
-        self.assertEqual(aggregated[0].support_count, 2)
-        self.assertEqual(aggregated[0].source_chunk.index_chunk_id, CHUNK_1)
-
-        paths, chunks, rejected = _build_paths(
-            (ENTITY_A,),
-            (first,),
-            ((first, final),),
-            {CHUNK_1},
-            max_paths=20,
-        )
-
-        self.assertEqual(rejected, 0)
-        self.assertTrue(any(path.hop_count == 2 for path in paths))
-        self.assertEqual({item.index_chunk_id for item in chunks}, {CHUNK_1, CHUNK_3})
-
-    def test_two_hop_intermediate_degree_limit_rejects_high_degree_expansion(self) -> None:
-        intermediate = ENTITY_B
-        first = _GraphEdge(
-            relation_id=RELATION_ID,
-            subject_entity_key=ENTITY_A,
-            object_entity_key=intermediate,
-            predicate="relates",
-            normalized_predicate="relates",
-            source_chunk=_graph_chunk(CHUNK_1),
-        )
-        neighbors = tuple(
-            _GraphEdge(
-                relation_id=UUID(f"01900000-0000-7000-8000-0000000009{i:02d}"),
-                subject_entity_key=intermediate,
-                object_entity_key=f"{i:064x}",
-                predicate="relates",
-                normalized_predicate="relates",
-                source_chunk=_graph_chunk(CHUNK_3),
-            )
-            for i in range(1, 18)
-        )
-
-        paths, _, _ = _build_paths(
-            (ENTITY_A,),
-            (first, *neighbors),
-            tuple((first, neighbor) for neighbor in neighbors),
-            {CHUNK_1},
-            max_paths=20,
-        )
-
-        self.assertFalse(any(path.hop_count == 2 for path in paths))
 
 
 class _LexicalStore:
@@ -271,28 +255,63 @@ class _GraphStore:
         self.config = config
         self.traversal = traversal
         self.traversal_queries = []
+        self.rebuilds = []
 
     async def get_config(self, workspace_id, knowledge_base_id):
         assert workspace_id == WORKSPACE
         assert knowledge_base_id == KB_ID
         return self.config
 
-    async def find_entity_candidates(self, query):
-        return (
-            GraphEntityCandidate(
-                entity_key=ENTITY_A,
-                entity_type="organization",
-                surface="Atlas",
-                normalized_surface="atlas",
-                index_chunk_id=CHUNK_3,
-                indexed_document_version_id=TARGET_ID,
-                index_revision_id=REVISION_ID,
-            ),
-        )
+    async def get_active_graphiti_build(self, workspace_id, knowledge_base_id):
+        assert workspace_id == WORKSPACE
+        assert knowledge_base_id == KB_ID
+        if (
+            self.config.status is not GraphConfigStatus.READY
+            or self.config.extractor_version != GRAPH_EXTRACTOR_VERSION
+        ):
+            return None
+        return _ready_build()
 
-    async def traverse(self, query):
-        self.traversal_queries.append(query)
+    async def first_graphiti_episode_uuid(
+        self, workspace_id, knowledge_base_id, build_id
+    ):
+        del workspace_id, knowledge_base_id, build_id
+        return "episode-1"
+
+    async def hydrate_graphiti_edges(self, **kwargs):
+        del kwargs
         return self.traversal
+
+    async def schedule_graphiti_rebuild(
+        self, workspace_id, knowledge_base_id, failed_build_id
+    ):
+        self.rebuilds.append((workspace_id, knowledge_base_id, failed_build_id))
+        return True
+
+
+class _Graphiti:
+    def __init__(self, *, probe_success=True, probe_error=None, search_error=None):
+        self.probe_success = probe_success
+        self.probe_error = probe_error
+        self.search_error = search_error
+
+    async def probe(self, build, *, episode_uuid=None, require_complete=False):
+        del build, episode_uuid, require_complete
+        if self.probe_error is not None:
+            raise self.probe_error
+        return self.probe_success
+
+    async def search(self, build, query):
+        del build, query
+        if self.search_error is not None:
+            raise self.search_error
+        return (GraphitiEdgeResult("edge-1", "released", ("episode-1",), 1),)
+
+    async def add_episode(self, build, chunk):
+        raise AssertionError((build, chunk))
+
+    async def delete_graph(self, build):
+        raise AssertionError(build)
 
 
 def _ready_config() -> GraphConfigSnapshot:
@@ -301,6 +320,7 @@ def _ready_config() -> GraphConfigSnapshot:
         knowledge_base_id=KB_ID,
         status=GraphConfigStatus.READY,
         build_id=BUILD_ID,
+        active_build_id=BUILD_ID,
         chat_profile_revision_id=UUID("01900000-0000-7000-8000-000000000932"),
         extractor_version=GRAPH_EXTRACTOR_VERSION,
         preflight_extractor_version=GRAPH_EXTRACTOR_VERSION,
@@ -308,6 +328,25 @@ def _ready_config() -> GraphConfigSnapshot:
         eligible_chunk_count=1,
         processed_chunk_count=1,
         extracted_chunk_count=1,
+        group_id=f"ws_{WORKSPACE}_kb_{KB_ID}_b_{BUILD_ID}",
+    )
+
+
+def _ready_build() -> GraphitiBuildSnapshot:
+    return GraphitiBuildSnapshot(
+        workspace_id=WORKSPACE,
+        knowledge_base_id=KB_ID,
+        build_id=BUILD_ID,
+        group_id=f"ws_{WORKSPACE}_kb_{KB_ID}_b_{BUILD_ID}",
+        status=GraphitiBuildStatus.READY,
+        index_revision_id=REVISION_ID,
+        serving_chunk_digest="a" * 64,
+        expected_episode_count=1,
+        chat_profile_revision_id=UUID("01900000-0000-7000-8000-000000000932"),
+        embedding_profile_revision_id=UUID("01900000-0000-7000-8000-000000000940"),
+        embedding_model="fake-embedding",
+        embedding_dimension=768,
+        extractor_version=GRAPH_EXTRACTOR_VERSION,
     )
 
 

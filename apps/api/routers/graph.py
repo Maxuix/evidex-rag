@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, Request
 from apps.api.openapi import problem_responses
 from apps.api.security import get_auth_context
 from rag_kb.auth import AuthContext
-from rag_kb.domain import GRAPH_EXTRACTOR_VERSION, allowed_graph_skips
+from rag_kb.domain import GRAPH_EXTRACTOR_VERSION
 from rag_kb.graph import GraphConfigView
 from rag_kb.schemas import GraphConfigResponse, GraphConfigUpdate
 
@@ -78,7 +78,7 @@ def _response(view: GraphConfigView) -> GraphConfigResponse:
         empty_chunk_count=snapshot.empty_chunk_count,
         protocol_skipped_count=snapshot.protocol_skipped_count,
         resource_skipped_count=snapshot.resource_skipped_count,
-        allowed_skipped_count=allowed_graph_skips(snapshot.eligible_chunk_count),
+        allowed_skipped_count=0,
         requires_rebuild=(
             snapshot.status.value != "disabled"
             and snapshot.extractor_version != GRAPH_EXTRACTOR_VERSION

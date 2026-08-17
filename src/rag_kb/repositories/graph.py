@@ -1,14 +1,13 @@
-"""Persistence contract for the current-only entity graph projection."""
+"""Persistence contract for Graphiti build orchestration."""
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Protocol, runtime_checkable
 from uuid import UUID
 
 from rag_kb.domain import (
-    GraphChunkExtraction,
     GraphConfigSnapshot,
+    GraphitiBuildSnapshot,
     GraphWorkItem,
 )
 
@@ -47,16 +46,27 @@ class GraphRepository(Protocol):
         self, kb_id: UUID, *, build_id: UUID, extractor_version: str
     ) -> bool: ...
 
-    async def save_chunk_extraction(
+    async def get_graphiti_build(
+        self, kb_id: UUID, *, build_id: UUID
+    ) -> GraphitiBuildSnapshot | None: ...
+
+    async def save_graphiti_episode(
         self,
         *,
         kb_id: UUID,
         build_id: UUID,
         index_chunk_id: UUID,
         content_hash: str,
-        extractor_version: str,
-        extraction: GraphChunkExtraction,
+        episode_uuid: str,
     ) -> bool: ...
+
+    async def first_graphiti_episode_uuid(
+        self, kb_id: UUID, *, build_id: UUID
+    ) -> str | None: ...
+
+    async def finalize_graphiti_if_complete(
+        self, kb_id: UUID, *, build_id: UUID
+    ) -> GraphConfigSnapshot | None: ...
 
     async def mark_failed(
         self,
@@ -66,10 +76,4 @@ class GraphRepository(Protocol):
         error_code: str,
     ) -> bool: ...
 
-    async def finalize_if_complete(
-        self,
-        kb_id: UUID,
-        *,
-        build_id: UUID,
-        observed_at: datetime,
-    ) -> GraphConfigSnapshot | None: ...
+    def take_retired_graphiti_builds(self) -> tuple[GraphitiBuildSnapshot, ...]: ...

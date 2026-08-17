@@ -432,6 +432,16 @@ class KnowledgeBaseGraphConfig(Base):
             name="fk_graph_config_same_workspace_chat_profile",
             ondelete="RESTRICT",
         ),
+        ForeignKeyConstraint(
+            ["workspace_id", "kb_id", "active_build_id"],
+            [
+                "graphiti_graph_build.workspace_id",
+                "graphiti_graph_build.kb_id",
+                "graphiti_graph_build.build_id",
+            ],
+            name="fk_graph_config_active_graphiti_build",
+            ondelete="RESTRICT",
+        ),
         CheckConstraint(
             "status IN ('disabled','building','ready','failed')",
             name="graph_config_status_supported",
@@ -459,16 +469,107 @@ class KnowledgeBaseGraphConfig(Base):
     build_id: Mapped[UUID] = mapped_column(
         PostgreSQLUUID(as_uuid=True), nullable=False, server_default=text("uuidv7()")
     )
+    active_build_id: Mapped[UUID | None] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), nullable=True
+    )
     chat_profile_revision_id: Mapped[UUID | None] = mapped_column(
         PostgreSQLUUID(as_uuid=True), nullable=True
     )
     extractor_version: Mapped[str] = mapped_column(
-        String(128), nullable=False, server_default=text("'entity_graph_v1'")
+        String(128), nullable=False, server_default=text("'graphiti_v1'")
     )
     preflight_extractor_version: Mapped[str | None] = mapped_column(String(128))
     last_error_code: Mapped[str | None] = mapped_column(String(128))
     created_at: Mapped[datetime] = created_timestamp()
     updated_at: Mapped[datetime] = updated_timestamp()
+
+
+class GraphitiGraphBuild(Base):
+    __tablename__ = "graphiti_graph_build"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "kb_id", "build_id", name="uq_graphiti_build_scope"),
+        UniqueConstraint("group_id", name="uq_graphiti_build_group"),
+        ForeignKeyConstraint(
+            ["workspace_id", "kb_id"],
+            ["knowledge_base.workspace_id", "knowledge_base.id"],
+            name="fk_graphiti_build_same_workspace_kb",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "chat_profile_revision_id"],
+            ["model_profile_revision.workspace_id", "model_profile_revision.id"],
+            name="fk_graphiti_build_same_workspace_chat_profile",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "embedding_profile_revision_id"],
+            ["model_profile_revision.workspace_id", "model_profile_revision.id"],
+            name="fk_graphiti_build_same_workspace_embedding_profile",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "status IN ('building','ready','failed','superseded')",
+            name="graphiti_build_status_supported",
+        ),
+        CheckConstraint(
+            "expected_episode_count >= 0 AND embedding_dimension BETWEEN 64 AND 4096",
+            name="graphiti_build_counts_valid",
+        ),
+    )
+
+    build_id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), primary_key=True)
+    workspace_id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), nullable=False)
+    kb_id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), nullable=False)
+    group_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    index_revision_id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), nullable=False)
+    serving_chunk_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    expected_episode_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    chat_profile_revision_id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), nullable=False)
+    embedding_profile_revision_id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), nullable=False)
+    embedding_model: Mapped[str] = mapped_column(String(255), nullable=False)
+    embedding_dimension: Mapped[int] = mapped_column(Integer, nullable=False)
+    extractor_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    superseded_by: Mapped[UUID | None] = mapped_column(PostgreSQLUUID(as_uuid=True))
+    last_error_code: Mapped[str | None] = mapped_column(String(128))
+    started_at: Mapped[datetime] = created_timestamp()
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class GraphitiEpisodeChunk(Base):
+    __tablename__ = "graphiti_episode_chunk"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id", "kb_id", "build_id", "index_chunk_id",
+            name="uq_graphiti_episode_build_chunk",
+        ),
+        UniqueConstraint("group_id", "episode_uuid", name="uq_graphiti_episode_group_uuid"),
+        ForeignKeyConstraint(
+            ["workspace_id", "kb_id", "build_id"],
+            ["graphiti_graph_build.workspace_id", "graphiti_graph_build.kb_id", "graphiti_graph_build.build_id"],
+            name="fk_graphiti_episode_build",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "kb_id", "index_chunk_id"],
+            ["index_chunk.workspace_id", "index_chunk.kb_id", "index_chunk.id"],
+            name="fk_graphiti_episode_chunk",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint("status IN ('completed')", name="graphiti_episode_status_supported"),
+    )
+
+    id: Mapped[UUID] = uuid_primary_key()
+    workspace_id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), nullable=False)
+    kb_id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), nullable=False)
+    build_id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), nullable=False)
+    group_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    episode_uuid: Mapped[str] = mapped_column(String(64), nullable=False)
+    index_revision_id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), nullable=False)
+    index_chunk_id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, server_default=text("'completed'"))
+    created_at: Mapped[datetime] = created_timestamp()
 
 
 class EmbeddingSpace(Base):
@@ -1121,219 +1222,6 @@ class IndexChunk(Base):
     excluded_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    created_at: Mapped[datetime] = created_timestamp()
-
-
-class IndexGraphChunk(Base):
-    __tablename__ = "index_graph_chunk"
-    __table_args__ = (
-        UniqueConstraint(
-            "workspace_id",
-            "kb_id",
-            "build_id",
-            "index_chunk_id",
-            name="uq_graph_chunk_build_chunk",
-        ),
-        ForeignKeyConstraint(
-            ["workspace_id", "kb_id", "index_chunk_id"],
-            ["index_chunk.workspace_id", "index_chunk.kb_id", "index_chunk.id"],
-            name="fk_graph_chunk_same_scope_chunk",
-            ondelete="CASCADE",
-        ),
-        CheckConstraint(
-            "result_status IN ('extracted','empty','skipped_protocol','skipped_resource')",
-            name="graph_chunk_result_status_supported",
-        ),
-        CheckConstraint(
-            "entity_count >= 0 AND relation_count >= 0",
-            name="graph_chunk_counts_nonnegative",
-        ),
-        Index(
-            "ix_graph_chunk_build_status",
-            "workspace_id",
-            "kb_id",
-            "build_id",
-            "result_status",
-        ),
-    )
-
-    id: Mapped[UUID] = uuid_primary_key()
-    workspace_id: Mapped[UUID] = mapped_column(
-        ForeignKey("workspace.id", ondelete="RESTRICT"), nullable=False, index=True
-    )
-    kb_id: Mapped[UUID] = mapped_column(
-        ForeignKey("knowledge_base.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    build_id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), nullable=False)
-    index_chunk_id: Mapped[UUID] = mapped_column(
-        PostgreSQLUUID(as_uuid=True), nullable=False
-    )
-    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
-    extractor_version: Mapped[str] = mapped_column(String(128), nullable=False)
-    result_status: Mapped[str] = mapped_column(String(32), nullable=False)
-    entity_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
-    relation_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
-    result_hash: Mapped[str | None] = mapped_column(String(64))
-    error_code: Mapped[str | None] = mapped_column(String(128))
-    created_at: Mapped[datetime] = created_timestamp()
-    updated_at: Mapped[datetime] = updated_timestamp()
-
-
-class GraphEntityMention(Base):
-    __tablename__ = "graph_entity_mention"
-    __table_args__ = (
-        UniqueConstraint(
-            "workspace_id",
-            "kb_id",
-            "build_id",
-            "index_chunk_id",
-            "mention_id",
-            name="uq_graph_mention_identity",
-        ),
-        ForeignKeyConstraint(
-            ["workspace_id", "kb_id", "build_id", "index_chunk_id"],
-            [
-                "index_graph_chunk.workspace_id",
-                "index_graph_chunk.kb_id",
-                "index_graph_chunk.build_id",
-                "index_graph_chunk.index_chunk_id",
-            ],
-            name="fk_graph_mention_chunk",
-            ondelete="CASCADE",
-        ),
-        CheckConstraint(
-            "entity_type IN ('person','organization','location','product','system','document','event','concept')",
-            name="graph_mention_entity_type_supported",
-        ),
-        CheckConstraint(
-            "surface_start >= 0 AND surface_end > surface_start",
-            name="graph_mention_surface_span_valid",
-        ),
-        CheckConstraint(
-            "(disambiguator_support_start IS NULL AND disambiguator_support_end IS NULL) "
-            "OR (disambiguator_support_start >= 0 AND disambiguator_support_end > disambiguator_support_start)",
-            name="graph_mention_disambiguator_span_valid",
-        ),
-        Index(
-            "ix_graph_mention_entity_key",
-            "workspace_id",
-            "kb_id",
-            "build_id",
-            "entity_key",
-        ),
-        Index(
-            "ix_graph_mention_surface_prefix",
-            "workspace_id",
-            "kb_id",
-            "build_id",
-            "normalized_surface",
-            postgresql_ops={"normalized_surface": "text_pattern_ops"},
-        ),
-    )
-
-    id: Mapped[UUID] = uuid_primary_key()
-    workspace_id: Mapped[UUID] = mapped_column(
-        ForeignKey("workspace.id", ondelete="RESTRICT"), nullable=False, index=True
-    )
-    kb_id: Mapped[UUID] = mapped_column(
-        ForeignKey("knowledge_base.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    build_id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), nullable=False)
-    index_chunk_id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), nullable=False)
-    mention_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
-    entity_type: Mapped[str] = mapped_column(String(32), nullable=False)
-    surface: Mapped[str] = mapped_column(String(512), nullable=False)
-    normalized_surface: Mapped[str] = mapped_column(String(512), nullable=False)
-    disambiguator: Mapped[str | None] = mapped_column(String(512))
-    disambiguator_support_start: Mapped[int | None] = mapped_column(Integer)
-    disambiguator_support_end: Mapped[int | None] = mapped_column(Integer)
-    surface_start: Mapped[int] = mapped_column(Integer, nullable=False)
-    surface_end: Mapped[int] = mapped_column(Integer, nullable=False)
-    entity_key: Mapped[str] = mapped_column(String(64), nullable=False)
-    created_at: Mapped[datetime] = created_timestamp()
-
-
-class GraphRelationAssertion(Base):
-    __tablename__ = "graph_relation_assertion"
-    __table_args__ = (
-        UniqueConstraint(
-            "workspace_id",
-            "kb_id",
-            "build_id",
-            "index_chunk_id",
-            "subject_entity_key",
-            "object_entity_key",
-            "normalized_predicate",
-            name="uq_graph_relation_semantic_identity",
-        ),
-        ForeignKeyConstraint(
-            ["workspace_id", "kb_id", "build_id", "index_chunk_id", "subject_mention_id"],
-            [
-                "graph_entity_mention.workspace_id",
-                "graph_entity_mention.kb_id",
-                "graph_entity_mention.build_id",
-                "graph_entity_mention.index_chunk_id",
-                "graph_entity_mention.mention_id",
-            ],
-            name="fk_graph_relation_subject_mention",
-            ondelete="CASCADE",
-        ),
-        ForeignKeyConstraint(
-            ["workspace_id", "kb_id", "build_id", "index_chunk_id", "object_mention_id"],
-            [
-                "graph_entity_mention.workspace_id",
-                "graph_entity_mention.kb_id",
-                "graph_entity_mention.build_id",
-                "graph_entity_mention.index_chunk_id",
-                "graph_entity_mention.mention_id",
-            ],
-            name="fk_graph_relation_object_mention",
-            ondelete="CASCADE",
-        ),
-        CheckConstraint(
-            "subject_entity_key <> object_entity_key",
-            name="graph_relation_not_self",
-        ),
-        CheckConstraint(
-            "support_start >= 0 AND support_end > support_start",
-            name="graph_relation_support_span_valid",
-        ),
-        Index(
-            "ix_graph_relation_subject",
-            "workspace_id",
-            "kb_id",
-            "build_id",
-            "subject_entity_key",
-        ),
-        Index(
-            "ix_graph_relation_object",
-            "workspace_id",
-            "kb_id",
-            "build_id",
-            "object_entity_key",
-        ),
-    )
-
-    id: Mapped[UUID] = uuid_primary_key()
-    workspace_id: Mapped[UUID] = mapped_column(
-        ForeignKey("workspace.id", ondelete="RESTRICT"), nullable=False, index=True
-    )
-    kb_id: Mapped[UUID] = mapped_column(
-        ForeignKey("knowledge_base.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    build_id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), nullable=False)
-    index_chunk_id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), nullable=False)
-    relation_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
-    subject_mention_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    object_mention_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    subject_entity_key: Mapped[str] = mapped_column(String(64), nullable=False)
-    object_entity_key: Mapped[str] = mapped_column(String(64), nullable=False)
-    predicate: Mapped[str] = mapped_column(String(256), nullable=False)
-    normalized_predicate: Mapped[str] = mapped_column(String(256), nullable=False)
-    support_start: Mapped[int] = mapped_column(Integer, nullable=False)
-    support_end: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = created_timestamp()
 
 

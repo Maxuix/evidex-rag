@@ -37,6 +37,7 @@ SAFE_FIELDS: Final = frozenset(
     {
         "assets_deleted",
         "attempt",
+        "build_id",
         "chunks_deleted",
         "client_id",
         "cleanup_completed",

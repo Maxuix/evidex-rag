@@ -327,11 +327,11 @@ class ChatCreationServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             created["retrieval_strategy"],
             {
-                "profile_version": "graph_augmented_v1",
+                "profile_version": "graphiti_edge_augmented_v1",
                 "strategy": "hybrid",
                 "top_k": 4,
                 "rerank_mode": "classic",
-                "augmentation": "entity_graph_v1",
+                "augmentation": "graphiti_edge_v1",
             },
         )
 
