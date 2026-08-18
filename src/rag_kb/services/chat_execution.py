@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Protocol
+from uuid import UUID
 
 from rag_kb.auth import AuthContext
 from rag_kb.domain import (
-    GRAPH_AUGMENTATION_VERSION,
     ChatExecutionCommand,
     ChatExecutionContext,
     ChatPipelineExecutionError,
@@ -18,6 +18,7 @@ from rag_kb.domain import (
     Evidence,
     EvidencePack,
     EvidenceScoreKind,
+    GraphitiSupplementResult,
     GraphRetrievalRequest,
     ResourceNotFoundError,
     RetrievalRequest,
@@ -129,18 +130,13 @@ class ChatEvidenceRetriever:
         top_k_override: int | None = None,
     ) -> EvidencePack:
         try:
-            strategy, top_k, rerank_mode, augmentation = parse_chat_retrieval_snapshot(
+            strategy, top_k, rerank_mode, execution_type = parse_chat_retrieval_snapshot(
                 context.retrieval_strategy,
             )
             if top_k_override is not None:
                 if not 1 <= top_k_override <= top_k:
                     raise ValueError
                 top_k = top_k_override
-            if (
-                augmentation is not None
-                and augmentation != GRAPH_AUGMENTATION_VERSION
-            ):
-                raise ValueError
             request = (
                 GraphRetrievalRequest(
                     knowledge_base_id=context.knowledge_base_id,
@@ -148,12 +144,14 @@ class ChatEvidenceRetriever:
                     top_k=top_k,
                     include_debug=True,
                 )
-                if augmentation == GRAPH_AUGMENTATION_VERSION
+                if execution_type == "manual_graph"
                 else RetrievalRequest(
                     knowledge_base_id=context.knowledge_base_id,
                     query=query,
                     top_k=top_k,
-                    strategy=strategy,
+                    strategy=RetrievalStrategy.EXACT_VECTOR
+                    if execution_type == "adaptive_graphiti"
+                    else strategy,
                     rerank_mode=rerank_mode,
                     include_debug=True,
                 )
@@ -172,7 +170,7 @@ class ChatEvidenceRetriever:
             )
             pack = (
                 await self._retrieval.retrieve_graph(auth_context, request)
-                if augmentation == GRAPH_AUGMENTATION_VERSION
+                if execution_type == "manual_graph"
                 else await self._retrieval.retrieve(auth_context, request)
             )
         except RetrievalExecutionError as error:
@@ -197,6 +195,61 @@ class ChatEvidenceRetriever:
             evidence=pack.evidence,
             debug=pack.debug,
         )
+
+    async def retrieve_graphiti_supplement(
+        self,
+        context: ChatExecutionContext,
+        query: str,
+        *,
+        excluded_index_chunk_ids: tuple[UUID, ...],
+    ) -> GraphitiSupplementResult:
+        try:
+            _, _, _, execution_type = parse_chat_retrieval_snapshot(
+                context.retrieval_strategy,
+            )
+            if execution_type != "adaptive_graphiti":
+                raise ValueError
+        except (KeyError, TypeError, ValueError) as error:
+            raise ChatPipelineExecutionError(
+                ErrorCode.CHAT_CONTEXT_INVALID,
+                phase=ChatPipelinePhase.RETRIEVE_EVIDENCE,
+                diagnostic={"check": "adaptive_retrieval_snapshot"},
+            ) from error
+        try:
+            result = await self._retrieval.retrieve_graphiti_supplement(
+                AuthContext(
+                    principal_id=context.principal_id,
+                    client_id=context.client_id,
+                    workspace_id=context.workspace_id,
+                ),
+                knowledge_base_id=context.knowledge_base_id,
+                index_revision_id=context.index_revision_id,
+                query=query,
+                excluded_index_chunk_ids=excluded_index_chunk_ids,
+            )
+        except RetrievalExecutionError as error:
+            raise ChatPipelineExecutionError(
+                error.code,
+                phase=ChatPipelinePhase.RETRIEVE_EVIDENCE,
+                diagnostic=error.diagnostic,
+            ) from error
+        evidence_ids = tuple(item.index_chunk_id for item in result.evidence)
+        if (
+            len(result.evidence) > 4
+            or result.route_result_code == "admitted" and not result.evidence
+            or any(
+                item.index_revision_id != context.index_revision_id
+                or item.index_chunk_id in excluded_index_chunk_ids
+                for item in result.evidence
+            )
+            or len(evidence_ids) != len(set(evidence_ids))
+        ):
+            raise ChatPipelineExecutionError(
+                ErrorCode.CHAT_REVISION_MISMATCH,
+                phase=ChatPipelinePhase.RETRIEVE_EVIDENCE,
+                diagnostic={"check": "adaptive_supplement_evidence"},
+            )
+        return result
 
     async def retrieve_adjacent(
         self,

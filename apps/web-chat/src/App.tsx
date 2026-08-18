@@ -8,6 +8,7 @@ import {
 
 import { ApiClient, ApiClientError, loadRuntimeConfig } from "./api/client";
 import type {
+  ChatAgentTraceEvent,
   ChatMessage,
   ChatProgressSnapshot,
   ChatProgressStage,
@@ -163,7 +164,7 @@ function KnowledgeChat({
   const [messagesError, setMessagesError] = useState<string | null>(null);
 
   const [draft, setDraft] = useState("");
-  const [retrievalMode, setRetrievalMode] = useState<"vector" | "hybrid" | "graph">("vector");
+  const [retrievalMode, setRetrievalMode] = useState<"vector" | "hybrid" | "graph" | "auto">("vector");
   const [rerankMode, setRerankMode] = useState<RerankMode>("classic");
   const [graphConfig, setGraphConfig] = useState<GraphConfig | null>(null);
   const [graphConfigLoading, setGraphConfigLoading] = useState(false);
@@ -683,7 +684,7 @@ function KnowledgeChat({
     }
   };
 
-  const changeRetrievalMode = (next: "vector" | "hybrid" | "graph") => {
+  const changeRetrievalMode = (next: "vector" | "hybrid" | "graph" | "auto") => {
     if (next === "hybrid" && !hybridEnabled) return;
     if (next === "graph" && !graphReady) return;
     if (pendingRun) {
@@ -1121,10 +1122,17 @@ function KnowledgeChat({
                       disabled: !hybridEnabled,
                     },
                     {
-                      value: "graph",
-                      label: "实体图谱",
+                      value: "auto",
+                      label: "自动（按需 Graphiti）",
                       description: graphReady
-                        ? "以混合检索为种子，补充实体关系路径。"
+                        ? "先普通检索，证据不足且适合关系扩展时按需补充 Graphiti。"
+                        : "当前将仅使用普通检索，不会自动开始建图。",
+                    },
+                    {
+                      value: "graph",
+                      label: "Graphiti 图增强",
+                      description: graphReady
+                        ? "以混合检索为种子，补充 Graphiti 关系路径。"
                         : graphConfigLoading
                           ? "正在读取当前知识库的图谱状态。"
                           : graphConfigError
@@ -1134,7 +1142,7 @@ function KnowledgeChat({
                               : graphConfig?.status === "failed"
                                 ? "图谱构建失败，请先修复或重试。"
                                 : !graphCapabilityEnabled
-                                  ? "当前服务未启用实体图谱。"
+                                  ? "当前服务未启用 Graphiti。"
                                   : "当前知识库尚未启用或完成图谱构建。",
                       disabled: !graphReady,
                     },
@@ -1152,7 +1160,7 @@ function KnowledgeChat({
                       label: "不精排",
                       description: retrievalMode === "hybrid" || retrievalMode === "graph"
                         ? retrievalMode === "graph"
-                          ? "实体图谱固定使用经典精排。"
+                          ? "Graphiti 图增强固定使用经典精排。"
                           : "混合检索必须保留精排。"
                         : "直接使用向量检索顺序，资源开销最低。",
                       disabled: retrievalMode === "hybrid" || retrievalMode === "graph",
@@ -1161,7 +1169,7 @@ function KnowledgeChat({
                       value: "classic",
                       label: "经典精排",
                       description: retrievalMode === "graph"
-                        ? "实体图谱固定以混合检索的经典规则生成种子。"
+                        ? "Graphiti 图增强固定以混合检索的经典规则生成种子。"
                         : "使用现有关键词、向量与去重规则。",
                     },
                     {
@@ -1491,6 +1499,8 @@ interface AnswerProcessMetrics {
   citationCount: number;
   calculationCalls: number;
   modelRounds: number;
+  graphitiStatus: string | null;
+  graphitiNewEvidenceCount: number;
 }
 
 interface AnswerProcessStep {
@@ -1541,6 +1551,9 @@ function AnswerProcessMetricList({ metrics }: { metrics: AnswerProcessMetrics })
       <li className="retrieval"><span>检索</span><strong>{metrics.retrievalCalls} 次</strong></li>
       <li className="candidate"><span>候选资料</span><strong>{metrics.candidateCount} 条</strong></li>
       <li className="citation"><span>最终引用</span><strong>{metrics.citationCount} 条</strong></li>
+      {metrics.graphitiStatus ? (
+        <li className="retrieval"><span>Graphiti 补充</span><strong>{metrics.graphitiStatus}</strong></li>
+      ) : null}
     </ul>
   );
 }
@@ -1617,6 +1630,9 @@ function AnswerProcessTechnicalDetails({
             <div><dt>Agent</dt><dd>Native Tool-Calling</dd></div>
             <div><dt>模型</dt><dd>{modelName}</dd></div>
             <div><dt>检索调用</dt><dd>{metrics.retrievalCalls} 次</dd></div>
+            {metrics.graphitiStatus ? (
+              <div><dt>Graphiti 补充</dt><dd>{metrics.graphitiStatus}</dd></div>
+            ) : null}
             <div><dt>计算调用</dt><dd>{metrics.calculationCalls} 次</dd></div>
             {hiddenDiagnosticCount > 0 ? (
               <div><dt>校验调整</dt><dd>{hiddenDiagnosticCount} 次</dd></div>
@@ -1637,6 +1653,19 @@ function answerProcessMetrics(run: ChatRun): AnswerProcessMetrics {
     (event) => event.tool === "search_knowledge_base" && event.status === "ok",
   ) ?? [];
   const eventCandidateCount = Math.max(0, ...searchEvents.map((event) => event.count));
+  const graphitiEvents = trace?.events.filter(
+    (event) => (
+      event.tool === "search_knowledge_base"
+      && event.retrieval_lane === "graphiti_supplement"
+    ),
+  ) ?? [];
+  const lastGraphitiEvent = graphitiEvents[graphitiEvents.length - 1];
+  const graphitiStatus = run.retrieval.profile_version === "adaptive_graphiti_v1"
+    ? graphitiStatusLabel(
+      lastGraphitiEvent?.route_result_code,
+      lastGraphitiEvent?.new_evidence_count ?? 0,
+    )
+    : null;
   return {
     retrievalCalls: safeUsageCount(run, "retrieval_calls", searchEvents.length),
     candidateCount: safeUsageCount(run, "evidence_refs", eventCandidateCount),
@@ -1649,7 +1678,34 @@ function answerProcessMetrics(run: ChatRun): AnswerProcessMetrics {
       ).length ?? 0,
     ),
     modelRounds: safeUsageCount(run, "model_rounds", 0),
+    graphitiStatus,
+    graphitiNewEvidenceCount: lastGraphitiEvent?.new_evidence_count ?? 0,
   };
+}
+
+function graphitiStatusLabel(
+  status: ChatAgentTraceEvent["route_result_code"] | undefined,
+  count: number,
+): string {
+  switch (status) {
+    case "admitted":
+      return `新增 ${count} 条`;
+    case "no_new_evidence":
+      return "已请求但无新证据";
+    case "not_configured":
+      return "当前未配置";
+    case "not_ready":
+      return "当前未就绪";
+    case "runtime_unavailable":
+      return "当前不可用";
+    case "rejected":
+      return "未执行";
+    case "not_requested":
+    case undefined:
+      return "未请求";
+    default:
+      return "未请求";
+  }
 }
 
 function safeUsageCount(run: ChatRun, key: string, fallback: number): number {
@@ -1675,14 +1731,14 @@ function completedAnswerSummary(
   if (outcome === "partial") {
     return {
       title: `这次回答只保留了有可靠来源的部分内容，并使用 ${metrics.citationCount} 条来源`,
-      description: candidateSummaryDescription(metrics),
+      description: `${candidateSummaryDescription(metrics)}${graphitiSummaryDescription(metrics)}`,
     };
   }
   return {
     title: metrics.retrievalCalls > 0
       ? `这次回答查找了 ${metrics.retrievalCalls} 次资料，最终使用 ${metrics.citationCount} 条来源`
       : `这次回答已经完成，最终使用 ${metrics.citationCount} 条来源`,
-    description: candidateSummaryDescription(metrics),
+    description: `${candidateSummaryDescription(metrics)}${graphitiSummaryDescription(metrics)}`,
   };
 }
 
@@ -1696,6 +1752,14 @@ function candidateSummaryDescription(metrics: AnswerProcessMetrics): string {
   return `检索到的 ${metrics.candidateCount} 条内容只是候选资料；只有经过整理并被最终回答采用的来源才会显示为引用。`;
 }
 
+function graphitiSummaryDescription(metrics: AnswerProcessMetrics): string {
+  if (!metrics.graphitiStatus) return "";
+  if (metrics.graphitiNewEvidenceCount > 0) {
+    return ` Graphiti 补充新增 ${metrics.graphitiNewEvidenceCount} 条来源候选。`;
+  }
+  return ` Graphiti 补充：${metrics.graphitiStatus}。`;
+}
+
 function completedAnswerSteps(
   run: ChatRun,
   metrics: AnswerProcessMetrics,
@@ -1705,7 +1769,7 @@ function completedAnswerSteps(
     ? `查找资料 · 第 1–${metrics.retrievalCalls} 次`
     : metrics.retrievalCalls === 1 ? "查找资料 · 1 次" : "评估可用资料";
   const searchDescription = metrics.retrievalCalls > 0
-    ? `共找到 ${metrics.candidateCount} 条候选内容；系统会继续筛选，候选资料不等于最终引用。`
+    ? `共找到 ${metrics.candidateCount} 条候选内容；系统会继续筛选，候选资料不等于最终引用。${graphitiSummaryDescription(metrics)}`
     : "本次没有调用知识库检索，也不会虚构检索阶段或候选数量。";
   const verificationDescription = outcome === "refused"
     ? "没有足够可靠的来源支持结论，因此没有生成推测性回答。"

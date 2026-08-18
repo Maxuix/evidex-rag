@@ -351,7 +351,7 @@ def _run_response(value: ChatRun) -> ChatRunResponse:
 
 
 def _retrieval_response(value: ChatRun) -> dict[str, object]:
-    strategy, top_k, rerank_mode, _augmentation = parse_chat_retrieval_snapshot(
+    strategy, top_k, rerank_mode, _execution_type = parse_chat_retrieval_snapshot(
         value.retrieval_strategy
     )
     return {
@@ -455,7 +455,7 @@ def _agent_response(value: ChatRun) -> ChatAgentResponse:
         return ChatAgentResponse.model_validate(
             {
                 **value.agent_configuration,
-                "trace": value.agent_trace,
+                "trace": _public_agent_trace(value.agent_trace),
             }
         )
     except ValueError as error:
@@ -465,6 +465,28 @@ def _agent_response(value: ChatRun) -> ChatAgentResponse:
             title="Chat agent state invalid",
             detail="The persisted ChatRun agent state is invalid.",
         ) from error
+
+
+def _public_agent_trace(value: dict[str, object] | None) -> dict[str, object] | None:
+    """Hide the evaluator-internal supplement tool name in safe API trace."""
+
+    if value is None:
+        return None
+    trace = dict(value)
+    events = trace.get("events")
+    if isinstance(events, list):
+        trace["events"] = [
+            {
+                **event,
+                "tool": "search_knowledge_base",
+            }
+            if isinstance(event, dict)
+            and event.get("tool") == "graphiti_supplement"
+            and event.get("retrieval_lane") == "graphiti_supplement"
+            else event
+            for event in events
+        ]
+    return trace
 
 
 def _run_error(value: ChatRun) -> ChatRunErrorResponse | None:

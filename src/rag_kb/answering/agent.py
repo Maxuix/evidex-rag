@@ -24,6 +24,7 @@ from rag_kb.domain import (
     AnswerDraftSource,
     AnswerOutcome,
     AnswerValidationRecord,
+    CHAT_GRAPHITI_ROUTE_REASONS,
     ChatAgentBudget,
     ChatAgentTrace,
     ChatAgentTraceEvent,
@@ -47,6 +48,7 @@ from rag_kb.domain import (
     EvidencePack,
     ErrorCode,
     PromptEvidence,
+    RetrievalStrategy,
     ValidatedAnswer,
 )
 from rag_kb.ports.model_api import ChatModelAdapter
@@ -58,12 +60,15 @@ from rag_kb.retrieval.calculator import (
 from rag_kb.retrieval.eligibility import EvidenceEligibilityPolicy
 from rag_kb.services.chat_execution import ChatEvidenceRetriever
 from rag_kb.services.chat_visuals import VisualEvidencePreparationStep
+from rag_kb.retrieval.profile import parse_chat_retrieval_snapshot
 
 
 AGENT_TRACE_ARTIFACT = "chat_agent_trace"
 _PROTOCOL_ERROR = '{"status":"error","code":"invalid_tool_protocol"}'
 _ARGUMENT_ERROR = '{"status":"error","code":"invalid_tool_arguments"}'
 _TRACE_REF_LIMIT = 100
+_SIMPLE_QUERY_MAX_COUNT = 3
+_QUERY_MAX_CHARS = 2048
 
 
 class NativeToolCallingAgent:
@@ -90,8 +95,14 @@ class NativeToolCallingAgent:
 
     async def run(self, context: ChatExecutionContext) -> ChatPipelineState:
         budget = _budget_from_context(context)
-        messages = _initial_messages(context, budget)
-        tools = _tools()
+        adaptive_graphiti = _adaptive_graphiti_enabled(context)
+        messages = _initial_messages(context, budget, adaptive=adaptive_graphiti)
+        tools = _tools(
+            adaptive=adaptive_graphiti,
+            graphiti_enabled=False,
+            round_number=1,
+            max_model_rounds=budget.max_model_rounds,
+        )
         evidence: list[Evidence] = []
         evidence_ids: set[object] = set()
         prompt_by_ref: dict[str, PromptEvidence] = {}
@@ -108,8 +119,16 @@ class NativeToolCallingAgent:
         calculation_calls = 0
         latest_visual_state: ChatAnsweringState | None = None
         strategy = None
+        simple_attempted = False
+        graphiti_attempted = False
 
         for round_number in range(1, budget.max_model_rounds + 1):
+            tools = _tools(
+                adaptive=adaptive_graphiti,
+                graphiti_enabled=simple_attempted and not graphiti_attempted,
+                round_number=round_number,
+                max_model_rounds=budget.max_model_rounds,
+            )
             response = await self._complete_round(
                 context,
                 messages,
@@ -152,32 +171,99 @@ class NativeToolCallingAgent:
                     tool_calls=(call,),
                 )
             )
-            if call.name == "search_knowledge_base":
-                queries = _search_arguments(call.arguments)
-                if queries is None:
+            if call.name in {"search_knowledge_base", "graphiti_supplement"}:
+                route_reason_code: str | None = None
+                graphiti_result = None
+                if call.name == "search_knowledge_base":
+                    queries = _search_arguments(call.arguments)
+                    lane = "simple"
+                    if queries is None:
+                        events.append(_rejected_event(call))
+                        messages.append(
+                            ChatModelMessage("tool", _ARGUMENT_ERROR, tool_call_id=call.id)
+                        )
+                        continue
+                elif not adaptive_graphiti:
                     events.append(_rejected_event(call))
                     messages.append(
                         ChatModelMessage("tool", _ARGUMENT_ERROR, tool_call_id=call.id)
                     )
                     continue
-                try:
-                    packs = await asyncio.gather(
-                        *(
-                            self._retriever.retrieve_query(
-                                context,
-                                query,
-                            )
-                            for query in queries
+                else:
+                    supplement = _supplement_arguments(call.arguments)
+                    if supplement is None:
+                        events.append(_rejected_event(call))
+                        messages.append(
+                            ChatModelMessage("tool", _ARGUMENT_ERROR, tool_call_id=call.id)
                         )
+                        continue
+                    if (
+                        not simple_attempted
+                        or graphiti_attempted
+                        or round_number > budget.max_model_rounds - 2
+                    ):
+                        messages.append(
+                            ChatModelMessage(
+                                "tool",
+                                _ARGUMENT_ERROR,
+                                tool_call_id=call.id,
+                            )
+                        )
+                        events.append(
+                            ChatAgentTraceEvent(
+                                tool="search_knowledge_base",
+                                status="rejected",
+                                tool_call_id=call.id,
+                                retrieval_lane="graphiti_supplement",
+                                route_reason_code=supplement[1],
+                                route_result_code="rejected",
+                                new_evidence_count=0,
+                            )
+                        )
+                        continue
+                    query, route_reason_code = supplement
+                    queries = (query,)
+                    lane = "graphiti_supplement"
+                    graphiti_attempted = True
+                    try:
+                        graphiti_result = (
+                            await self._retriever.retrieve_graphiti_supplement(
+                                context,
+                                queries[0],
+                                excluded_index_chunk_ids=tuple(evidence_ids),
+                            )
+                        )
+                    except ChatPipelineExecutionError as error:
+                        raise error.retain_model_calls(tuple(calls))
+                    packs = (
+                        EvidencePack(
+                            knowledge_base_id=context.knowledge_base_id,
+                            index_revision_id=context.index_revision_id,
+                            strategy=RetrievalStrategy.EXACT_VECTOR,
+                            evidence=graphiti_result.evidence,
+                        ),
                     )
-                except ChatPipelineExecutionError as error:
-                    raise error.retain_model_calls(tuple(calls))
+                if lane == "simple":
+                    try:
+                        packs = await asyncio.gather(
+                            *(
+                                self._retriever.retrieve_query(
+                                    context,
+                                    query,
+                                )
+                                for query in queries
+                            )
+                        )
+                    except ChatPipelineExecutionError as error:
+                        raise error.retain_model_calls(tuple(calls))
                 for pack in packs:
                     strategy = strategy or pack.strategy
                 query_candidates = _query_candidates(
                     packs,
                     eligibility=self._eligibility,
                 )
+                if lane == "simple" and any(query_candidates):
+                    simple_attempted = True
                 for offset in range(max((len(items) for items in query_candidates), default=0)):
                     for items in query_candidates:
                         if offset >= len(items):
@@ -230,6 +316,21 @@ class NativeToolCallingAgent:
                     prompt_by_ref,
                     visible_visual_refs,
                     sent_content_refs,
+                    status=(
+                        "graphiti_supplement"
+                        if graphiti_result is not None
+                        else "ok"
+                    ),
+                    route_result_code=(
+                        graphiti_result.route_result_code
+                        if graphiti_result is not None
+                        else None
+                    ),
+                    new_evidence_count=(
+                        graphiti_result.new_evidence_count
+                        if graphiti_result is not None
+                        else None
+                    ),
                 )
                 messages.append(
                     ChatModelMessage("tool", tool_result, tool_call_id=call.id)
@@ -264,11 +365,27 @@ class NativeToolCallingAgent:
                         sent_visuals.append(visual)
                 events.append(
                     ChatAgentTraceEvent(
-                        tool=call.name,
+                        tool="search_knowledge_base",
                         status="ok",
                         tool_call_id=call.id,
                         refs=result_refs[:_TRACE_REF_LIMIT],
                         count=len(result_refs),
+                        retrieval_lane=(lane if adaptive_graphiti else None),
+                        route_reason_code=(
+                            route_reason_code if adaptive_graphiti else None
+                        ),
+                        route_result_code=(
+                            graphiti_result.route_result_code
+                            if graphiti_result is not None
+                            else "not_requested"
+                            if adaptive_graphiti
+                            else None
+                        ),
+                        new_evidence_count=(
+                            graphiti_result.new_evidence_count
+                            if graphiti_result is not None
+                            else None
+                        ),
                     )
                 )
                 continue
@@ -367,7 +484,12 @@ class NativeToolCallingAgent:
         forced_response = await self._complete_round(
             context,
             messages,
-            (_tools()[2],),
+            (
+                _tool_by_name(
+                    _tools(adaptive=adaptive_graphiti),
+                    "submit_answer",
+                ),
+            ),
             "submit_answer",
             tuple(calls),
         )
@@ -489,7 +611,22 @@ class NativeToolCallingAgent:
 def _initial_messages(
     context: ChatExecutionContext,
     budget: ChatAgentBudget,
+    *,
+    adaptive: bool = False,
 ) -> list[ChatModelMessage]:
+    adaptive_instruction = (
+        " This ChatRun uses Simple-first adaptive Graphiti routing: call "
+        "search_knowledge_base with only the queries field first. After a "
+        "successful Simple result, the separate graphiti_supplement tool may "
+        "appear at most once only "
+        "for a cross-document relation gap, entity alias gap, "
+        "or a relational query without useful Simple evidence. Do not request "
+        "Graphiti for direct facts, summaries, tables, calculations, images, or "
+        "absence claims. Graphiti returns source chunks only; never treat edge "
+        "facts as answer evidence."
+        if adaptive
+        else ""
+    )
     messages = [
         ChatModelMessage(
             "system",
@@ -505,7 +642,8 @@ def _initial_messages(
             "Finish only with submit_answer. You may submit an answered, partial, or refused "
             "result as soon as further tool use would not improve it. "
             f"The tool loop has at most {budget.max_model_rounds} model rounds; this is a "
-            "technical loop guard, not a search or evidence budget.",
+            "technical loop guard, not a search or evidence budget."
+            + adaptive_instruction,
         ),
     ]
     for turn in context.conversation_context.turns:
@@ -519,21 +657,51 @@ def _initial_messages(
     return messages
 
 
-def _tools() -> tuple[ChatToolDefinition, ...]:
+def _tools(
+    *,
+    adaptive: bool = False,
+    graphiti_enabled: bool = False,
+    round_number: int = 1,
+    max_model_rounds: int = 8,
+) -> tuple[ChatToolDefinition, ...]:
+    search_properties: dict[str, Any] = {
+        "queries": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1, "maxLength": _QUERY_MAX_CHARS},
+            "minItems": 1,
+            "maxItems": _SIMPLE_QUERY_MAX_COUNT,
+        }
+    }
+    search_required = ["queries"]
+    search_description = (
+        "Search the frozen scope. Use Simple first; after a successful Simple "
+        "result, Graphiti supplement is allowed at most once."
+        if adaptive
+        else "Search only the frozen ChatRun knowledge-base scope with one to three queries."
+    )
     search = ChatToolDefinition(
         "search_knowledge_base",
-        "Search only the frozen ChatRun knowledge-base scope with one to three queries.",
+        search_description,
+        {
+            "type": "object",
+            "properties": search_properties,
+            "required": search_required,
+            "additionalProperties": False,
+        },
+    )
+    supplement = ChatToolDefinition(
+        "graphiti_supplement",
+        "Search Graphiti for one relation-oriented supplement query after a successful Simple search.",
         {
             "type": "object",
             "properties": {
-                "queries": {
-                    "type": "array",
-                    "items": {"type": "string", "minLength": 1, "maxLength": 2048},
-                    "minItems": 1,
-                    "maxItems": 3,
-                }
+                "query": {"type": "string", "minLength": 1, "maxLength": _QUERY_MAX_CHARS},
+                "route_reason_code": {
+                    "type": "string",
+                    "enum": sorted(CHAT_GRAPHITI_ROUTE_REASONS),
+                },
             },
-            "required": ["queries"],
+            "required": ["query", "route_reason_code"],
             "additionalProperties": False,
         },
     )
@@ -582,19 +750,56 @@ def _tools() -> tuple[ChatToolDefinition, ...]:
             "additionalProperties": False,
         },
     )
+    if (
+        adaptive
+        and graphiti_enabled
+        and round_number <= max_model_rounds - 2
+    ):
+        return search, calculate, supplement, submit
     return search, calculate, submit
 
 
-def _search_arguments(value: Mapping[str, Any]) -> tuple[str, ...] | None:
-    if set(value) != {"queries"}:
+def _tool_by_name(
+    tools: Sequence[ChatToolDefinition],
+    name: str,
+) -> ChatToolDefinition:
+    for tool in tools:
+        if tool.name == name:
+            return tool
+    raise RuntimeError(f"missing chat tool: {name}")
+
+
+def _search_arguments(
+    value: Mapping[str, Any],
+) -> tuple[str, ...] | None:
+    if not isinstance(value, Mapping) or set(value) != {"queries"}:
         return None
     raw = value.get("queries")
-    if not isinstance(raw, (list, tuple)) or not 1 <= len(raw) <= 3:
+    if not isinstance(raw, (list, tuple)) or not 1 <= len(raw) <= _SIMPLE_QUERY_MAX_COUNT:
         return None
     queries = tuple(item.strip() for item in raw if isinstance(item, str))
-    if len(queries) != len(raw) or any(not item or len(item) > 2048 for item in queries):
+    if len(queries) != len(raw) or any(
+        not item or len(item) > _QUERY_MAX_CHARS for item in queries
+    ):
         return None
     return queries
+
+
+def _supplement_arguments(
+    value: Mapping[str, Any],
+) -> tuple[str, str] | None:
+    if not isinstance(value, Mapping) or set(value) != {"query", "route_reason_code"}:
+        return None
+    query = value.get("query")
+    reason = value.get("route_reason_code")
+    if (
+        not isinstance(query, str)
+        or not query.strip()
+        or len(query.strip()) > _QUERY_MAX_CHARS
+        or reason not in CHAT_GRAPHITI_ROUTE_REASONS
+    ):
+        return None
+    return query.strip(), str(reason)
 
 
 def _calculate_arguments(value: Mapping[str, Any]) -> tuple[str, tuple[str, ...]] | None:
@@ -709,6 +914,10 @@ def _search_result(
     prompt_by_ref: Mapping[str, PromptEvidence],
     loaded_visual_refs: set[str],
     sent_content_refs: set[str],
+    *,
+    status: str = "ok",
+    route_result_code: str | None = None,
+    new_evidence_count: int | None = None,
 ) -> tuple[str, tuple[str, ...]]:
     observed_refs = set(sent_content_refs)
     newly_sent_refs: list[str] = []
@@ -740,14 +949,37 @@ def _search_result(
                 }
             )
         result_groups.append({"query": query, "results": items})
+    payload: dict[str, Any] = {"status": status, "groups": result_groups}
+    if route_result_code is not None:
+        payload["route_result_code"] = route_result_code
+    if new_evidence_count is not None:
+        payload["new_evidence_count"] = new_evidence_count
     return (
         json.dumps(
-            {"status": "ok", "groups": result_groups},
+            payload,
             ensure_ascii=False,
             separators=(",", ":"),
             sort_keys=True,
         ),
         tuple(newly_sent_refs),
+    )
+
+
+def _graphiti_tool_result(
+    *,
+    route_result_code: str,
+    new_evidence_count: int,
+) -> str:
+    return json.dumps(
+        {
+            "status": "graphiti_supplement",
+            "route_result_code": route_result_code,
+            "new_evidence_count": new_evidence_count,
+            "groups": [],
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
     )
 
 
@@ -1007,8 +1239,16 @@ def _strings(
 
 
 def _rejected_event(call: ChatToolCall, tool: str | None = None) -> ChatAgentTraceEvent:
+    resolved_tool = tool or call.name
     return ChatAgentTraceEvent(
-        tool=(tool or call.name) if (tool or call.name) in {"search_knowledge_base", "calculate", "submit_answer", "protocol"} else "protocol",
+        tool=(
+            "search_knowledge_base"
+            if resolved_tool == "graphiti_supplement"
+            else resolved_tool
+        )
+        if resolved_tool
+        in {"search_knowledge_base", "graphiti_supplement", "calculate", "submit_answer", "protocol"}
+        else "protocol",
         status="rejected",
         tool_call_id=call.id,
     )
@@ -1019,6 +1259,20 @@ def _model_revision_id(context: ChatExecutionContext):
 
     value = context.model_configuration.get("model_profile_revision_id")
     return UUID(str(value)) if value else None
+
+
+def _adaptive_graphiti_enabled(context: ChatExecutionContext) -> bool:
+    try:
+        _, _, _, execution_type = parse_chat_retrieval_snapshot(
+            context.retrieval_strategy
+        )
+    except (KeyError, TypeError, ValueError) as error:
+        raise ChatPipelineExecutionError(
+            ErrorCode.CHAT_CONTEXT_INVALID,
+            phase=ChatPipelinePhase.LOAD_CONTEXT,
+            diagnostic={"check": "retrieval_snapshot"},
+        ) from error
+    return execution_type == "adaptive_graphiti"
 
 
 def _model_output_limit(context: ChatExecutionContext) -> int:

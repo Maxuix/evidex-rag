@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+import copy
 from dataclasses import dataclass
 from datetime import UTC, datetime
 import logging
@@ -14,6 +15,7 @@ from typing import Any
 os.environ.setdefault("GRAPHITI_TELEMETRY_ENABLED", "false")
 
 _GRAPHITI: SimpleNamespace | None = None
+SCHEMA_ECHO_MAX_ATTEMPTS = 3
 
 from rag_kb.domain import (
     GraphChunkSource,
@@ -21,6 +23,161 @@ from rag_kb.domain import (
     GraphitiEdgeResult,
     GraphitiSearchQuery,
 )
+
+
+class GraphitiSchemaEchoError(RuntimeError):
+    """Provider returned JSON schema instead of the required Graphiti fields."""
+
+
+def required_model_field_names(response_model: Any) -> tuple[str, ...]:
+    fields = getattr(response_model, "model_fields", None)
+    if not isinstance(fields, dict):
+        return ()
+    names: list[str] = []
+    for name, field in fields.items():
+        checker = getattr(field, "is_required", None)
+        if callable(checker):
+            if checker():
+                names.append(str(name))
+            continue
+        if getattr(field, "is_required", False):
+            names.append(str(name))
+    return tuple(names)
+
+
+def is_schema_echo_payload(result: Any, response_model: Any) -> bool:
+    if response_model is None or not isinstance(result, dict):
+        return False
+    required = required_model_field_names(response_model)
+    return bool(required) and any(name not in result for name in required)
+
+
+def append_schema_echo_repair_note(messages: Any, response_model: Any) -> None:
+    if not messages:
+        return
+    last = messages[-1]
+    content = getattr(last, "content", None)
+    if not isinstance(content, str):
+        return
+    fields = required_model_field_names(response_model)
+    field_names = ", ".join(fields) if fields else "the required fields"
+    last.content = (
+        content
+        + "\n\nYour previous response was invalid: you returned the JSON schema "
+        "definition itself instead of the actual result. Return ONLY a JSON object "
+        f"with the keys: {field_names}. Do not include the schema definition."
+    )
+
+
+class SchemaEchoRepairingLLMClient:
+    """Retry Graphiti structured calls when the provider echoes the schema.
+
+    The first call uses Graphiti's public generate_response path, which injects
+    the schema once in json_object mode. Repairs call _generate_response so the
+    schema is not appended again.
+    """
+
+    def __init__(
+        self,
+        inner: Any,
+        *,
+        max_attempts: int = SCHEMA_ECHO_MAX_ATTEMPTS,
+    ) -> None:
+        if max_attempts < 1:
+            raise ValueError("max_attempts must be at least 1")
+        self._inner = inner
+        self._max_attempts = max_attempts
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    async def generate_response(
+        self,
+        messages: Any,
+        response_model: Any = None,
+        max_tokens: int | None = None,
+        model_size: Any = None,
+        group_id: str | None = None,
+        prompt_name: str | None = None,
+        *,
+        attribute_extraction: bool = False,
+    ) -> dict[str, Any]:
+        last_error: Exception | None = None
+        first_kwargs: dict[str, Any] = {}
+        if response_model is not None:
+            first_kwargs["response_model"] = response_model
+        if max_tokens is not None:
+            first_kwargs["max_tokens"] = max_tokens
+        if model_size is not None:
+            first_kwargs["model_size"] = model_size
+        if group_id is not None:
+            first_kwargs["group_id"] = group_id
+        if prompt_name is not None:
+            first_kwargs["prompt_name"] = prompt_name
+        if attribute_extraction:
+            first_kwargs["attribute_extraction"] = True
+        for attempt in range(self._max_attempts):
+            if attempt == 0:
+                result = await self._inner.generate_response(messages, **first_kwargs)
+            else:
+                raw = getattr(self._inner, "_generate_response", None)
+                if raw is None:
+                    raise GraphitiSchemaEchoError(
+                        "graphiti structured output missing required fields"
+                    )
+                repaired = copy.deepcopy(messages)
+                append_schema_echo_repair_note(repaired, response_model)
+                raw_kwargs: dict[str, Any] = {}
+                if max_tokens is not None:
+                    raw_kwargs["max_tokens"] = max_tokens
+                if model_size is not None:
+                    raw_kwargs["model_size"] = model_size
+                result = await raw(repaired, response_model, **raw_kwargs)
+            if is_schema_echo_payload(result, response_model):
+                last_error = GraphitiSchemaEchoError(
+                    "graphiti structured output missing required fields"
+                )
+                continue
+            if not isinstance(result, dict):
+                raise TypeError("graphiti llm client must return a JSON object")
+            return result
+        raise last_error or GraphitiSchemaEchoError(
+            "graphiti structured output missing required fields"
+        )
+
+
+def as_graphiti_llm_client(
+    inner: Any,
+    *,
+    max_attempts: int = SCHEMA_ECHO_MAX_ATTEMPTS,
+) -> Any:
+    """Preserve the inner Graphiti LLMClient type for pydantic isinstance checks."""
+
+    repair = SchemaEchoRepairingLLMClient(inner, max_attempts=max_attempts)
+
+    class _SchemaEchoRepairingLLMClient(type(inner)):
+        def __init__(self) -> None:
+            self._inner = inner
+            self._schema_echo_repair = repair
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._inner, name)
+
+        def set_tracer(self, tracer: Any) -> None:
+            setter = getattr(self._inner, "set_tracer", None)
+            if setter is not None:
+                setter(tracer)
+
+        @property
+        def token_tracker(self) -> Any:
+            return getattr(self._inner, "token_tracker", None)
+
+        async def generate_response(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+            return await self._schema_echo_repair.generate_response(*args, **kwargs)
+
+    _SchemaEchoRepairingLLMClient.__name__ = "SchemaEchoRepairingLLMClient"
+    _SchemaEchoRepairingLLMClient.__qualname__ = "SchemaEchoRepairingLLMClient"
+    return _SchemaEchoRepairingLLMClient()
 
 
 @dataclass(frozen=True, slots=True)
@@ -176,20 +333,22 @@ class GraphitiRuntime:
                 return cached
             modules = _graphiti_modules()
             values = await self._credentials(build)
-            llm = modules.OpenAIGenericClient(
-                config=modules.LLMConfig(
-                    api_key=values.chat_api_key,
-                    model=values.chat_model,
-                    base_url=values.chat_base_url,
-                    temperature=values.chat_temperature,
-                    max_tokens=values.chat_max_tokens,
-                ),
-                client=modules.AsyncOpenAI(
-                    api_key=values.chat_api_key,
-                    base_url=values.chat_base_url,
-                    timeout=values.chat_timeout_seconds,
-                ),
-                structured_output_mode=values.structured_output_mode,
+            llm = as_graphiti_llm_client(
+                modules.OpenAIGenericClient(
+                    config=modules.LLMConfig(
+                        api_key=values.chat_api_key,
+                        model=values.chat_model,
+                        base_url=values.chat_base_url,
+                        temperature=values.chat_temperature,
+                        max_tokens=values.chat_max_tokens,
+                    ),
+                    client=modules.AsyncOpenAI(
+                        api_key=values.chat_api_key,
+                        base_url=values.chat_base_url,
+                        timeout=values.chat_timeout_seconds,
+                    ),
+                    structured_output_mode=values.structured_output_mode,
+                )
             )
             embedder = modules.BoundedEmbedder(
                 modules.OpenAIEmbedder(

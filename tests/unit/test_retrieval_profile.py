@@ -11,6 +11,7 @@ from rag_kb.retrieval.profile import (
     LEGACY_GRAPH_AUGMENTATION_VERSION,
     LEGACY_GRAPH_PROFILE_VERSION,
     GraphRetrievalProfile,
+    adaptive_graphiti_profile,
     exact_profile,
     graph_profile,
     parse_chat_retrieval_snapshot,
@@ -78,7 +79,7 @@ class RetrievalExecutionProfileTests(unittest.TestCase):
     def test_graph_profile_round_trips_as_a_classic_hybrid_outer_profile(self) -> None:
         snapshot = graph_profile(top_k=8).as_dict()
 
-        strategy, top_k, rerank_mode, augmentation = parse_chat_retrieval_snapshot(
+        strategy, top_k, rerank_mode, execution_type = parse_chat_retrieval_snapshot(
             snapshot
         )
 
@@ -86,12 +87,12 @@ class RetrievalExecutionProfileTests(unittest.TestCase):
         self.assertIs(strategy, RetrievalStrategy.HYBRID)
         self.assertEqual(top_k, 8)
         self.assertIs(rerank_mode, RerankMode.CLASSIC)
-        self.assertEqual(augmentation, "graphiti_edge_v1")
+        self.assertEqual(execution_type, "manual_graph")
         with self.assertRaises(ValueError):
             parse_chat_retrieval_snapshot({**snapshot, "rerank_mode": "none"})
 
     def test_legacy_graph_snapshot_remains_readable_for_display(self) -> None:
-        strategy, top_k, rerank_mode, augmentation = parse_chat_retrieval_snapshot(
+        strategy, top_k, rerank_mode, execution_type = parse_chat_retrieval_snapshot(
             {
                 "profile_version": LEGACY_GRAPH_PROFILE_VERSION,
                 "strategy": "hybrid",
@@ -104,7 +105,7 @@ class RetrievalExecutionProfileTests(unittest.TestCase):
         self.assertIs(strategy, RetrievalStrategy.HYBRID)
         self.assertEqual(top_k, 8)
         self.assertIs(rerank_mode, RerankMode.CLASSIC)
-        self.assertEqual(augmentation, LEGACY_GRAPH_AUGMENTATION_VERSION)
+        self.assertEqual(execution_type, "manual_graph")
         response = ChatRunRetrievalResponse(
             profile_version=LEGACY_GRAPH_PROFILE_VERSION,
             strategy=strategy.value,
@@ -120,3 +121,29 @@ class RetrievalExecutionProfileTests(unittest.TestCase):
                 rerank_mode=RerankMode.CLASSIC,
                 augmentation=LEGACY_GRAPH_AUGMENTATION_VERSION,
             )
+
+    def test_adaptive_graphiti_snapshot_is_independent_and_strict(self) -> None:
+        snapshot = adaptive_graphiti_profile(top_k=8).as_dict()
+
+        strategy, top_k, rerank_mode, execution_type = parse_chat_retrieval_snapshot(
+            snapshot
+        )
+
+        self.assertIs(strategy, RetrievalStrategy.EXACT_VECTOR)
+        self.assertEqual((top_k, rerank_mode), (8, RerankMode.NONE))
+        self.assertEqual(execution_type, "adaptive_graphiti")
+        response = ChatRunRetrievalResponse(
+            profile_version="adaptive_graphiti_v1",
+            strategy=strategy.value,
+            top_k=top_k,
+            rerank_mode=rerank_mode,
+        )
+        self.assertEqual(response.profile_version, "adaptive_graphiti_v1")
+        for malformed in (
+            {**snapshot, "router": "future_router"},
+            {**snapshot, "augmentation": "entity_graph_v1"},
+            {**snapshot, "extra": True},
+            {key: value for key, value in snapshot.items() if key != "router"},
+        ):
+            with self.subTest(malformed=malformed), self.assertRaises(ValueError):
+                parse_chat_retrieval_snapshot(malformed)

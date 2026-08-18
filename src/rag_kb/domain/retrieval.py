@@ -608,6 +608,49 @@ class EvidencePack:
                 raise ValueError("debug result_count must match evidence cardinality")
 
 
+GRAPHITI_SUPPLEMENT_ROUTE_RESULTS = frozenset(
+    {
+        "admitted",
+        "no_new_evidence",
+        "not_configured",
+        "not_ready",
+        "runtime_unavailable",
+    }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class GraphitiSupplementResult:
+    """Bounded, source-only evidence returned by one adaptive supplement."""
+
+    route_result_code: str
+    evidence: tuple[Evidence, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.route_result_code not in GRAPHITI_SUPPLEMENT_ROUTE_RESULTS:
+            raise ValueError("Graphiti supplement route result is invalid")
+        if len(self.evidence) > 4:
+            raise ValueError("Graphiti supplement evidence is unbounded")
+        chunk_ids: set[UUID] = set()
+        for expected_rank, item in enumerate(self.evidence, start=1):
+            if item.rank != expected_rank:
+                raise ValueError("Graphiti supplement evidence ranks are invalid")
+            if item.score_kind is not EvidenceScoreKind.GRAPH_PATH:
+                raise ValueError("Graphiti supplement evidence must be graph grounded")
+            if item.index_chunk_id in chunk_ids:
+                raise ValueError("Graphiti supplement evidence chunks must be unique")
+            chunk_ids.add(item.index_chunk_id)
+        if self.route_result_code == "admitted":
+            if not self.evidence:
+                raise ValueError("admitted Graphiti supplement requires evidence")
+        elif self.evidence:
+            raise ValueError("unadmitted Graphiti supplement cannot carry evidence")
+
+    @property
+    def new_evidence_count(self) -> int:
+        return len(self.evidence)
+
+
 class RetrievalExecutionError(RuntimeError):
     """Stable, content-safe retrieval failure at a capability boundary."""
 

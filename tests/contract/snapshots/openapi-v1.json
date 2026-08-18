@@ -90,6 +90,19 @@
             "title": "Count",
             "type": "integer"
           },
+          "new_evidence_count": {
+            "anyOf": [
+              {
+                "maximum": 4.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "New Evidence Count"
+          },
           "refs": {
             "default": [],
             "items": {
@@ -99,6 +112,58 @@
             },
             "title": "Refs",
             "type": "array"
+          },
+          "retrieval_lane": {
+            "anyOf": [
+              {
+                "enum": [
+                  "simple",
+                  "graphiti_supplement"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retrieval Lane"
+          },
+          "route_reason_code": {
+            "anyOf": [
+              {
+                "enum": [
+                  "cross_document_relation_gap",
+                  "entity_alias_gap",
+                  "relation_chain_gap",
+                  "relational_query_without_simple_evidence"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Route Reason Code"
+          },
+          "route_result_code": {
+            "anyOf": [
+              {
+                "enum": [
+                  "not_requested",
+                  "admitted",
+                  "no_new_evidence",
+                  "not_configured",
+                  "not_ready",
+                  "runtime_unavailable",
+                  "rejected"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Route Result Code"
           },
           "status": {
             "enum": [
@@ -558,7 +623,8 @@
             "enum": [
               "vector",
               "hybrid",
-              "graph"
+              "graph",
+              "auto"
             ],
             "title": "Mode",
             "type": "string"
@@ -1029,7 +1095,8 @@
               "exact_vector_v2",
               "hybrid_fts_rrf_v2",
               "graph_augmented_v1",
-              "graphiti_edge_augmented_v1"
+              "graphiti_edge_augmented_v1",
+              "adaptive_graphiti_v1"
             ],
             "title": "Profile Version",
             "type": "string"

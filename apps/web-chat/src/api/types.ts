@@ -301,7 +301,8 @@ export interface ChatRunRetrieval {
     | "exact_vector_v2"
     | "hybrid_fts_rrf_v2"
     | "graph_augmented_v1"
-    | "graphiti_edge_augmented_v1";
+    | "graphiti_edge_augmented_v1"
+    | "adaptive_graphiti_v1";
   strategy: "exact_vector" | "hybrid";
   top_k: number;
   rerank_mode: RerankMode;
@@ -353,6 +354,21 @@ export interface ChatAgentTraceEvent {
   tool_call_id: string;
   refs: string[];
   count: number;
+  retrieval_lane?: "simple" | "graphiti_supplement";
+  route_reason_code?:
+    | "cross_document_relation_gap"
+    | "entity_alias_gap"
+    | "relation_chain_gap"
+    | "relational_query_without_simple_evidence";
+  route_result_code?:
+    | "not_requested"
+    | "admitted"
+    | "no_new_evidence"
+    | "not_configured"
+    | "not_ready"
+    | "runtime_unavailable"
+    | "rejected";
+  new_evidence_count?: number;
 }
 
 export interface ChatAgent {
@@ -413,7 +429,7 @@ export interface ChatRunCreate {
     insufficiency_policy: "refuse" | "partial_answer";
   };
   retrieval: {
-    mode: "vector" | "hybrid" | "graph";
+    mode: "vector" | "hybrid" | "graph" | "auto";
     top_k: number;
     rerank_mode: RerankMode;
   };

@@ -166,6 +166,58 @@ class GraphRetrievalTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(provider.queries, [])
         self.assertEqual(graph_store.traversal_queries, [])
 
+    async def test_adaptive_supplement_skips_simple_seed_and_excludes_existing_chunks(
+        self,
+    ) -> None:
+        provider = _Provider()
+        graph_store = _GraphStore(_ready_config(), _path_result())
+        service = RetrievalService(
+            SingleWorkspaceAccessPolicy(WORKSPACE),
+            provider,
+            _Store(VectorSearchResult(REVISION_ID, ())),
+            lexical_store=_LexicalStore(),
+            graph_store=graph_store,
+            graphiti_graph=_Graphiti(),
+        )
+
+        result = await service.retrieve_graphiti_supplement(
+            _context(),
+            knowledge_base_id=KB_ID,
+            index_revision_id=REVISION_ID,
+            query="Atlas relation",
+            excluded_index_chunk_ids=(CHUNK_3,),
+        )
+
+        self.assertEqual(result.route_result_code, "admitted")
+        self.assertEqual([item.index_chunk_id for item in result.evidence], [CHUNK_1])
+        self.assertEqual(provider.queries, [])
+        self.assertEqual(graph_store.traversal_queries, [])
+
+    async def test_adaptive_supplement_reports_not_ready_without_active_build(
+        self,
+    ) -> None:
+        graph_store = _GraphStore(
+            replace(_ready_config(), status=GraphConfigStatus.BUILDING), None
+        )
+        service = RetrievalService(
+            SingleWorkspaceAccessPolicy(WORKSPACE),
+            _Provider(),
+            _Store(VectorSearchResult(REVISION_ID, ())),
+            lexical_store=_LexicalStore(),
+            graph_store=graph_store,
+            graphiti_graph=_Graphiti(),
+        )
+
+        result = await service.retrieve_graphiti_supplement(
+            _context(),
+            knowledge_base_id=KB_ID,
+            index_revision_id=REVISION_ID,
+            query="Atlas relation",
+            excluded_index_chunk_ids=(),
+        )
+
+        self.assertEqual(result.route_result_code, "not_ready")
+
     async def test_stale_ready_graph_fails_closed_before_model_or_traversal(self) -> None:
         graph_store = _GraphStore(
             replace(
