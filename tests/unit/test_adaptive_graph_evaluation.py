@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from uuid import uuid4
+import json
 
 from apps.api.routers.chat import _public_agent_trace
 
@@ -19,16 +20,20 @@ from tools.evaluate_adaptive_graph_route import (
     ForcedGraphitiSupplementChatModelPort,
     GraphitiSupplementCapture,
     GraphitiSupplementCaptureComplete,
+    aggregate_graph_routing_metrics,
     aggregate_usage,
     align_chunk_layers,
     build_replay_capture_artifact,
     diagnostic_record,
     build_routing_judge_packet,
+    EVALUATOR_EDGE_LIMITS,
     load_cases,
     load_manifest,
     normalize_term,
     routing_judge_cache_key,
+    summarize_graph_route_trace,
     term_proxy,
+    validate_evaluator_edge_limit,
     validate_routing_judgement,
     write_replay_capture_artifact,
 )
@@ -154,6 +159,9 @@ class AdaptiveGraphEvaluationTests(unittest.IsolatedAsyncioTestCase):
                         "tool": "graphiti_supplement",
                         "retrieval_lane": "graphiti_supplement",
                         "route_result_code": "admitted",
+                        "rejected_claim_count": 1,
+                        "rejection_reasons": ["evidence_ref"],
+                        "submit_only_repair": True,
                     }
                 ]
             }
@@ -163,6 +171,26 @@ class AdaptiveGraphEvaluationTests(unittest.IsolatedAsyncioTestCase):
             trace["events"][0]["retrieval_lane"],
             "graphiti_supplement",
         )
+        self.assertNotIn("rejected_claim_count", trace["events"][0])
+        self.assertNotIn("rejection_reasons", trace["events"][0])
+        self.assertNotIn("submit_only_repair", trace["events"][0])
+
+    def test_public_trace_drops_retired_route_reason(self) -> None:
+        trace = _public_agent_trace(
+            {
+                "events": [
+                    {
+                        "tool": "search_knowledge_base",
+                        "retrieval_lane": "graphiti_supplement",
+                        "route_reason_code": "relational_query_without_simple_evidence",
+                        "route_result_code": "rejected",
+                        "new_evidence_count": 0,
+                    }
+                ]
+            }
+        )
+        self.assertNotIn("route_reason_code", trace["events"][0])
+        self.assertEqual(trace["events"][0]["route_result_code"], "rejected")
 
     def test_latest_routing_manifest_has_frozen_contract(self) -> None:
         manifest = load_manifest()
@@ -172,6 +200,112 @@ class AdaptiveGraphEvaluationTests(unittest.IsolatedAsyncioTestCase):
             [item["id"] for item in manifest["routes"]],
             ["vector-only", "hybrid-control", "manual-graph", "auto-route"],
         )
+
+    def test_graph_route_metrics_prioritize_recall_accuracy_and_safe_recall_status(self) -> None:
+        cases = (
+            {"case_id": "graph-001", "expected_route": {"route": "graph"}},
+            {"case_id": "simple-001", "expected_route": {"route": "simple"}},
+        )
+        observations = {
+            "graph-001": {
+                "graph_route_attempted": False,
+                "graph_route_admitted": False,
+                "graph_new_evidence_count": 0,
+            },
+            "simple-001": {
+                "graph_route_attempted": True,
+                "graph_route_admitted": True,
+                "graph_new_evidence_count": 1,
+            },
+        }
+        without_layers = aggregate_graph_routing_metrics(cases, observations)
+        self.assertEqual(
+            without_layers["route"]["graph_needed_route_recall"]["value"],
+            0.0,
+        )
+        self.assertEqual(
+            without_layers["route"]["graph_route_accuracy"]["value"],
+            0.0,
+        )
+        self.assertEqual(
+            without_layers["route"]["simple_false_positive_rate"]["value"],
+            1.0,
+        )
+        self.assertEqual(
+            without_layers["graph_recall"]["status"],
+            "not_computed_missing_layer_evidence",
+        )
+        self.assertNotIn("tokens", without_layers)
+        self.assertNotIn("latency", without_layers)
+
+        with_layers = aggregate_graph_routing_metrics(
+            cases,
+            {
+                "graph-001": {
+                    "graph_route_attempted": True,
+                    "graph_route_admitted": True,
+                    "graph_new_evidence_count": 1,
+                },
+                "simple-001": {
+                    "graph_route_attempted": False,
+                    "graph_route_admitted": False,
+                    "graph_new_evidence_count": 0,
+                },
+            },
+            alignments={
+                "graph-001": {
+                    "answer_gold_chunk_ids": ["gold"],
+                    "simple_chunk_ids": [],
+                    "layers": {
+                        "raw": ["gold"],
+                        "hydrated": ["gold"],
+                        "reranked": ["gold"],
+                        "packed": ["gold"],
+                    },
+                    "redundant_hit": False,
+                }
+            },
+        )
+        self.assertEqual(
+            with_layers["route"]["graph_needed_route_recall"]["value"],
+            1.0,
+        )
+        self.assertEqual(
+            with_layers["graph_recall"]["by_layer"]["packed"]["gold_recall"]["value"],
+            1.0,
+        )
+        self.assertEqual(
+            with_layers["benefit_capture"]["benefit_capture"]["value"],
+            1.0,
+        )
+
+    def test_graph_route_trace_reduces_to_closed_safe_observation(self) -> None:
+        result = summarize_graph_route_trace(
+            {
+                "events": [
+                    {
+                        "retrieval_lane": "simple",
+                        "route_result_code": "not_requested",
+                    },
+                    {
+                        "retrieval_lane": "graphiti_supplement",
+                        "route_result_code": "admitted",
+                        "new_evidence_count": 2,
+                    },
+                ],
+                "answer": "不要进入聚合结果",
+            }
+        )
+        self.assertEqual(
+            result,
+            {
+                "graph_route_attempted": True,
+                "graph_route_admitted": True,
+                "graph_new_evidence_count": 2,
+                "graph_route_result_counts": {"admitted": 1},
+            },
+        )
+        self.assertNotIn("answer", result)
 
     def test_term_proxy_normalizes_spaces_unicode_and_brackets(self) -> None:
         self.assertEqual(normalize_term("5 个（工作日）"), "5个(工作日)")
@@ -222,6 +356,68 @@ class AdaptiveGraphEvaluationTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(set(record["columns"]), {"capability", "agent_replay"})
         self.assertNotIn("query", record)
+        self.assertEqual(
+            record["columns"]["capability"]["gold_hit_by_layer"],
+            {
+                "raw": ["answer"],
+                "hydrated": ["answer"],
+                "reranked": [],
+                "packed": [],
+            },
+        )
+
+    def test_evaluator_k_and_layer_diagnostics_are_closed_and_content_safe(self) -> None:
+        self.assertEqual(EVALUATOR_EDGE_LIMITS, (8, 16, 32, 64))
+        for value in EVALUATOR_EDGE_LIMITS:
+            self.assertEqual(validate_evaluator_edge_limit(value), value)
+        with self.assertRaises(ValueError):
+            validate_evaluator_edge_limit(10)
+
+        alignment = align_chunk_layers(
+            column="capability",
+            answer_gold_chunk_ids=(str(uuid4()),),
+            simple_chunk_ids=(),
+            layer_chunk_ids={layer: () for layer in ("raw", "hydrated", "reranked", "packed")},
+        )
+        record = diagnostic_record(
+            case_id="synthetic-case-001",
+            alignments={"capability": alignment, "agent_replay": alignment},
+            query_source="capability",
+            query_count=1,
+            layer_diagnostics={
+                "capability": {
+                    "requested_k": 16,
+                    "raw_edge_uuids": [str(uuid4())],
+                    "raw_episode_count": 2,
+                    "unique_chunk_count": 1,
+                    "duplicate_chunk_path_count": 1,
+                    "gold_rerank_scores": {str(uuid4()): 0.42},
+                    "top1_gold_rerank_score": 0.42,
+                    "route_reason_code": None,
+                    "route_result_code": "not_requested",
+                    "salvage_status": "not_attempted",
+                    "final_outcome": "not_run",
+                },
+                "agent_replay": {
+                    "requested_k": 16,
+                    "raw_edge_uuids": [],
+                    "raw_episode_count": 0,
+                    "unique_chunk_count": 0,
+                    "duplicate_chunk_path_count": 0,
+                    "gold_rerank_scores": {},
+                    "top1_gold_rerank_score": None,
+                    "route_reason_code": "relation_chain_gap",
+                    "route_result_code": "admitted",
+                    "salvage_status": "not_attempted",
+                    "final_outcome": "not_run",
+                },
+            },
+        )
+        serialized = json.dumps(record, ensure_ascii=False)
+        self.assertNotIn("query", record)
+        self.assertNotIn("Chunk正文", serialized)
+        self.assertNotIn("filename.pdf", serialized)
+        self.assertEqual(record["layer_diagnostics"]["capability"]["requested_k"], 16)
 
     def test_usage_aggregation_does_not_invent_cost(self) -> None:
         result = aggregate_usage(
@@ -465,8 +661,10 @@ class AdaptiveGraphEvaluationTests(unittest.IsolatedAsyncioTestCase):
             chat_model_max_output_tokens=512,
             chat_model_max_retries=0,
         )
-        self.assertEqual(artifact["schema_version"], "adaptive_graph_replay_capture_v1")
+        self.assertEqual(artifact["schema_version"], "adaptive_graph_replay_capture_v2")
         self.assertEqual(artifact["case_count"], 1)
+        self.assertNotIn("query", artifact["cases"][0])
+        self.assertNotIn("query_sha256", artifact["cases"][0])
         self.assertNotIn("provider", artifact)
         self.assertNotIn("api_key", str(artifact))
         self.assertEqual(artifact["runtime"]["chat_model"], "deepseek-v4-flash")

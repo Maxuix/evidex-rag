@@ -400,8 +400,6 @@ def _bounded_graphiti_paths(
             if chunk is None:
                 rejected += 1
                 continue
-            if chunk.index_chunk_id in chunks:
-                continue
             if len(paths) >= GRAPH_MAX_PATHS:
                 rejected += 1
                 continue
@@ -409,7 +407,7 @@ def _bounded_graphiti_paths(
             path_id = hashlib.sha256(
                 f"{edge.edge_uuid}:{episode_uuid}".encode("utf-8")
             ).hexdigest()
-            chunks[chunk.index_chunk_id] = chunk
+            chunks.setdefault(chunk.index_chunk_id, chunk)
             paths.append(
                 GraphPathCandidate(
                     path_id=path_id,

@@ -216,7 +216,9 @@ class GraphitiSearchQuery:
     limit: int = 10
 
     def __post_init__(self) -> None:
-        if not self.group_id or not self.query.strip() or not 1 <= self.limit <= 40:
+        # Keep the production default at K=8 while allowing the evaluator's
+        # bounded 8/16/32/64 layer comparisons through the same domain port.
+        if not self.group_id or not self.query.strip() or not 1 <= self.limit <= 64:
             raise ValueError("Graphiti search query is invalid")
 
 

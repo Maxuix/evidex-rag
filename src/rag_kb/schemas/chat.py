@@ -140,7 +140,6 @@ class ChatAgentTraceEventResponse(PublicSchema):
         "cross_document_relation_gap",
         "entity_alias_gap",
         "relation_chain_gap",
-        "relational_query_without_simple_evidence",
     ] | None = None
     route_result_code: Literal[
         "not_requested",

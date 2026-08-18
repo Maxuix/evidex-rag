@@ -84,6 +84,7 @@ from rag_kb.domain.chat import (
 )
 from rag_kb.domain.chat_agent import (
     CHAT_AGENT_VERSION,
+    CHAT_AGENT_REJECTION_REASONS,
     CHAT_GRAPHITI_ROUTE_REASONS,
     CHAT_GRAPHITI_ROUTE_RESULTS,
     CHAT_RETRIEVAL_LANES,
@@ -328,6 +329,7 @@ __all__ = [
     "ChatProgressUpdate",
     "ChatPreviewEvent",
     "CHAT_AGENT_VERSION",
+    "CHAT_AGENT_REJECTION_REASONS",
     "CHAT_GRAPHITI_ROUTE_REASONS",
     "CHAT_GRAPHITI_ROUTE_RESULTS",
     "CHAT_RETRIEVAL_LANES",

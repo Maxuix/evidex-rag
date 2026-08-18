@@ -10,12 +10,14 @@ from uuid import uuid4
 from rag_kb.answering.agent import (
     AGENT_TRACE_ARTIFACT,
     NativeToolCallingAgent,
+    _initial_messages,
     _search_arguments,
     _supplement_arguments,
     _tools,
 )
 from rag_kb.domain import (
     AnswerOutcome,
+    CHAT_GRAPHITI_ROUTE_REASONS,
     ChatAgentBudget,
     ChatExecutionContext,
     ChatModelExecutionError,
@@ -362,6 +364,46 @@ def _same_unit_table_visual_pack(
 
 
 class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
+    def test_adaptive_prompt_does_not_claim_a_fixed_tool_count(self) -> None:
+        prompt = _initial_messages(
+            _adaptive_context(),
+            ChatAgentBudget(),
+            adaptive=True,
+        )[0].content
+
+        self.assertNotIn("three supplied tools", prompt)
+        self.assertIn("currently supplied tools", prompt)
+        self.assertIn("last-hop relation", prompt)
+
+    def test_route_reason_contract_has_no_unreachable_reason(self) -> None:
+        self.assertEqual(
+            CHAT_GRAPHITI_ROUTE_REASONS,
+            frozenset(
+                {
+                    "cross_document_relation_gap",
+                    "entity_alias_gap",
+                    "relation_chain_gap",
+                }
+            ),
+        )
+        self.assertEqual(
+            _supplement_arguments(
+                {
+                    "query": "relation",
+                    "route_reason_code": "relation_chain_gap",
+                }
+            ),
+            ("relation", "relation_chain_gap"),
+        )
+        self.assertIsNone(
+            _supplement_arguments(
+                {
+                    "query": "relation",
+                    "route_reason_code": "relational_query_without_simple_evidence",
+                }
+            )
+        )
+
     def test_adaptive_schema_parser_and_late_visibility_are_consistent(self) -> None:
         initial = _tools(
             adaptive=True,
@@ -412,13 +454,14 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
             ),
             ("relation", "cross_document_relation_gap"),
         )
-        self.assertIsNone(
+        self.assertEqual(
             _supplement_arguments(
                 {
                     "query": "relation",
                     "route_reason_code": "relation_chain_gap",
                 }
-            )
+            ),
+            ("relation", "relation_chain_gap"),
         )
 
     def test_only_model_rounds_are_configured_as_a_loop_guard(self) -> None:
@@ -606,7 +649,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
                 "graphiti_supplement",
                 {
                     "query": "relation",
-                    "route_reason_code": "relational_query_without_simple_evidence",
+                    "route_reason_code": "relation_chain_gap",
                 },
             ),
             ChatToolCall(
@@ -693,8 +736,65 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.PARTIAL)
         self.assertEqual(len(state.answering.validated.claims), 1)
-        self.assertIn("invalid evidence", state.answering.rendered.content)
+        self.assertNotIn("invalid evidence", state.answering.rendered.content.lower())
+        self.assertNotIn("evidence references", state.answering.rendered.content.lower())
+        self.assertEqual(
+            state.answering.validated.missing_aspects,
+            ("Some requested parts remain unanswered",),
+        )
         self.assertEqual(state.artifacts[AGENT_TRACE_ARTIFACT].events[-1].status, "salvaged")
+
+    async def test_all_invalid_claims_get_one_submit_only_repair_with_usable_pool(self) -> None:
+        context = _context()
+        model = _Model(
+            ChatToolCall("search-1", "search_knowledge_base", {"queries": ["revenue"]}),
+            ChatToolCall(
+                "submit-invalid",
+                "submit_answer",
+                {
+                    "outcome": "answered",
+                    "claims": [
+                        {
+                            "text": "Revenue was 10.",
+                            "kind": "fact",
+                            "evidence_refs": ["ev_other_run"],
+                            "calculation_refs": [],
+                        }
+                    ],
+                    "unanswered": [],
+                },
+            ),
+            ChatToolCall(
+                "submit-repair",
+                "submit_answer",
+                {
+                    "outcome": "answered",
+                    "claims": [
+                        {
+                            "text": "Revenue was 10.",
+                            "kind": "fact",
+                            "evidence_refs": ["ev_1"],
+                            "calculation_refs": [],
+                        }
+                    ],
+                    "unanswered": [],
+                },
+            ),
+        )
+
+        state = await _agent(model, _Retriever(_pack(context))).run(context)
+
+        self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.ANSWERED)
+        self.assertEqual(len(model.requests), 3)
+        self.assertEqual(
+            tuple(tool.name for tool in model.requests[2].tools),
+            ("submit_answer",),
+        )
+        self.assertEqual(
+            state.artifacts[AGENT_TRACE_ARTIFACT].retrieval_calls,
+            1,
+        )
+        self.assertNotIn("ev_other_run", model.requests[2].messages[-1].content)
 
     async def test_active_partial_submission_preserves_unanswered_aspects(self) -> None:
         context = _context()

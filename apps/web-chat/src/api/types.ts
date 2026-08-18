@@ -358,8 +358,7 @@ export interface ChatAgentTraceEvent {
   route_reason_code?:
     | "cross_document_relation_gap"
     | "entity_alias_gap"
-    | "relation_chain_gap"
-    | "relational_query_without_simple_evidence";
+    | "relation_chain_gap";
   route_result_code?:
     | "not_requested"
     | "admitted"

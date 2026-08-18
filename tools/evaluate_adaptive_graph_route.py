@@ -15,6 +15,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -22,7 +23,12 @@ import unicodedata
 from typing import Any
 from uuid import UUID
 
-from rag_kb.domain import ChatModelMessage, ChatModelRequest
+from rag_kb.domain import (
+    CHAT_GRAPHITI_ROUTE_REASONS,
+    CHAT_GRAPHITI_ROUTE_RESULTS,
+    ChatModelMessage,
+    ChatModelRequest,
+)
 from rag_kb.ports.model_api import ChatModelAdapter
 
 
@@ -31,14 +37,23 @@ DEFAULT_MANIFEST = PROJECT_ROOT / "evaluation" / "adaptive-graph-route-v1" / "ma
 ROUTE_IDS = ("vector-only", "hybrid-control", "manual-graph", "auto-route")
 LAYERS = ("raw", "hydrated", "reranked", "packed")
 CASE_OUTCOMES = frozenset({"answered", "refused"})
+EMPIRICAL_NEEDS = (
+    "simple_multi_round_solves",
+    "simple_retrieves_gold_but_answers_wrong",
+    "simple_miss_graph_can_recover",
+    "simple_miss_graph_also_miss",
+    "must_not_call_graph",
+)
 NEGATIVE_CONTROL_KINDS = frozenset(
     {"contradicted", "closed_world_absence", "open_world_unanswerable"}
 )
 ROUTING_JUDGE_SCHEMA_VERSION = "routing_rag_v1_judge_v1"
 ROUTING_JUDGE_PROMPT_VERSION = "routing_rag_v1_judge_prompt_v1"
-REPLAY_CAPTURE_SCHEMA_VERSION = "adaptive_graph_replay_capture_v1"
+REPLAY_CAPTURE_SCHEMA_VERSION = "adaptive_graph_replay_capture_v2"
 REPLAY_CAPTURE_SOURCE = "r2_clean_forced"
 REPLAY_QUERY_MAX_CHARS = 2048
+EVALUATOR_EDGE_LIMITS = (8, 16, 32, 64)
+GRAPH_ROUTE_LABELS = frozenset({"simple", "graph"})
 FORCED_CONTROLLER_MODES = frozenset(
     {"specific_tool_choice", "single_tool_required_fallback", "actual_auto"}
 )
@@ -86,6 +101,14 @@ def normalize_term(value: str) -> str:
         raise TypeError("term must be a string")
     normalized = unicodedata.normalize("NFKC", value).translate(_TERM_PUNCTUATION)
     return re.sub(r"\s+", "", normalized)
+
+
+def validate_evaluator_edge_limit(value: int) -> int:
+    """Validate an evaluator-only Graphiti K without changing production defaults."""
+
+    if value not in EVALUATOR_EDGE_LIMITS:
+        raise ValueError("evaluator edge limit must be one of 8, 16, 32, or 64")
+    return value
 
 
 def term_proxy(
@@ -154,7 +177,13 @@ def validate_case_contract(cases: Sequence[Mapping[str, Any]]) -> None:
                 raise ValueError(f"{case_id}: open-world control must be refused")
         elif kind is not None:
             raise ValueError(f"{case_id}: non-negative case has negative kind")
-        if raw_case.get("expected_route", {}).get("route") == "graph":
+        expected_route = raw_case.get("expected_route")
+        if (
+            not isinstance(expected_route, Mapping)
+            or expected_route.get("route") not in GRAPH_ROUTE_LABELS
+        ):
+            raise ValueError(f"{case_id}: expected_route label is invalid")
+        if expected_route.get("route") == "graph":
             source = raw_case.get("source")
             if not isinstance(source, Mapping):
                 raise ValueError(f"{case_id}: graph case source is invalid")
@@ -189,18 +218,101 @@ def load_cases(path: Path) -> list[dict[str, Any]]:
     return cases
 
 
+def load_empirical_fixture(
+    path: Path,
+    *,
+    source_case_ids: Iterable[str],
+    required_counts: Mapping[str, int],
+) -> list[dict[str, Any]]:
+    rows = [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    source_ids = {str(item) for item in source_case_ids}
+    seen: set[str] = set()
+    counts = {item: 0 for item in EMPIRICAL_NEEDS}
+    for row in rows:
+        if not isinstance(row, Mapping):
+            raise ValueError("empirical fixture row must be an object")
+        case_id = str(row.get("case_id", ""))
+        source_case_id = str(row.get("source_case_id", ""))
+        need = row.get("empirical_need")
+        if (
+            not case_id
+            or case_id in seen
+            or source_case_id not in source_ids
+            or need not in counts
+            or row.get("observation_required") is not True
+            or set(row) != {"case_id", "source_case_id", "empirical_need", "observation_required"}
+        ):
+            raise ValueError("empirical fixture row is invalid")
+        seen.add(case_id)
+        counts[str(need)] += 1
+    for need, minimum in required_counts.items():
+        if need not in counts or counts[need] < minimum:
+            raise ValueError(f"empirical fixture category is undersized: {need}")
+    return [dict(row) for row in rows]
+
+
 def load_manifest(path: Path = DEFAULT_MANIFEST) -> dict[str, Any]:
     manifest = json.loads(path.read_text(encoding="utf-8"))
     if manifest.get("schema_version") != "adaptive_graph_route_manifest_v2":
         raise ValueError("adaptive route manifest schema mismatch")
     if tuple(item.get("id") for item in manifest.get("routes", ())) != ROUTE_IDS:
         raise ValueError("adaptive route manifest lanes are not frozen")
+    contract = manifest.get("contract")
+    primary_metrics = contract.get("primary_metrics") if isinstance(contract, Mapping) else None
+    secondary_metrics = contract.get("secondary_metrics") if isinstance(contract, Mapping) else None
+    if primary_metrics != {
+        "route_label": "expected_route.route",
+        "route_recall": "graph_needed_route_recall",
+        "route_accuracy": "graph_route_accuracy",
+        "graph_recall": "packed_answer_gold_recall",
+        "benefit_capture": "packed_new_answer_gold_over_simple_missing",
+    }:
+        raise ValueError("adaptive primary metric contract is not frozen")
+    if secondary_metrics != {
+        "token_ratio": "budget_context_only",
+        "p95_latency_ratio": "budget_context_only",
+    }:
+        raise ValueError("adaptive secondary metric contract is not frozen")
     case_file = (path.parent / str(manifest.get("case_file", ""))).resolve()
     cases = load_cases(case_file)
     if manifest.get("case_count") != len(cases):
         raise ValueError("adaptive route manifest case count mismatch")
     manifest["case_file"] = str(case_file)
     manifest["case_ids"] = [str(item["case_id"]) for item in cases]
+    empirical = manifest.get("empirical_need")
+    if not isinstance(empirical, Mapping):
+        raise ValueError("adaptive empirical need contract is missing")
+    if empirical.get("schema_version") != "adaptive_graph_empirical_need_v1":
+        raise ValueError("adaptive empirical need schema mismatch")
+    fixture_path = (path.parent / str(empirical.get("fixture_file", ""))).resolve()
+    required_counts = empirical.get("required_categories")
+    if not isinstance(required_counts, Mapping):
+        raise ValueError("adaptive empirical need counts are missing")
+    fixture = load_empirical_fixture(
+        fixture_path,
+        source_case_ids=manifest["case_ids"],
+        required_counts={str(key): int(value) for key, value in required_counts.items()},
+    )
+    if empirical.get("case_count") != len(fixture):
+        raise ValueError("adaptive empirical fixture count mismatch")
+    if tuple(empirical.get("edge_limits", ())) != EVALUATOR_EDGE_LIMITS:
+        raise ValueError("adaptive empirical edge limits are not frozen")
+    if tuple(empirical.get("query_columns", ())) != (
+        "original_question",
+        "agent_query",
+        "manual_last_hop",
+        "candidate_normalized",
+    ):
+        raise ValueError("adaptive empirical query columns are not frozen")
+    manifest["empirical_need"] = {
+        **dict(empirical),
+        "fixture_file": str(fixture_path),
+        "case_ids": [str(item["case_id"]) for item in fixture],
+    }
     return manifest
 
 
@@ -336,6 +448,7 @@ class ForcedGraphitiSupplementChatModelPort:
     usage: dict[str, int] = field(default_factory=dict)
     response_tool_names: list[tuple[str, ...]] = field(default_factory=list)
     response_finish_reasons: list[str | None] = field(default_factory=list)
+    response_route_reason_codes: list[str | None] = field(default_factory=list)
     _used: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -348,6 +461,7 @@ class ForcedGraphitiSupplementChatModelPort:
         self.usage.clear()
         self.response_tool_names.clear()
         self.response_finish_reasons.clear()
+        self.response_route_reason_codes.clear()
         self._used = False
 
     async def complete(self, request: ChatModelRequest):
@@ -382,6 +496,12 @@ class ForcedGraphitiSupplementChatModelPort:
             tuple(tool_call.name for tool_call in response.tool_calls)
         )
         self.response_finish_reasons.append(response.finish_reason)
+        route_reason = None
+        if response.tool_calls:
+            candidate = response.tool_calls[0].arguments.get("route_reason_code")
+            if isinstance(candidate, str) and candidate in CHAT_GRAPHITI_ROUTE_REASONS:
+                route_reason = str(candidate)
+        self.response_route_reason_codes.append(route_reason)
         for key, value in response.usage.items():
             self.usage[key] = self.usage.get(key, 0) + value
         return response
@@ -403,8 +523,8 @@ class GraphitiSupplementCapture:
         normalized_case_id = self.case_id.strip()
         normalized_query = self.query.strip()
         if (
-            not normalized_case_id
-            or len(normalized_case_id) > 128
+            re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", normalized_case_id)
+            is None
             or not normalized_query
             or len(normalized_query) > REPLAY_QUERY_MAX_CHARS
         ):
@@ -424,8 +544,6 @@ class GraphitiSupplementCapture:
     def as_dict(self) -> dict[str, Any]:
         return {
             "case_id": self.case_id,
-            "query": self.query,
-            "query_sha256": hashlib.sha256(self.query.encode("utf-8")).hexdigest(),
             "excluded_index_chunk_ids": list(self.excluded_index_chunk_ids),
         }
 
@@ -448,7 +566,7 @@ class CapturingGraphitiSupplementRetriever:
         if self._active_case_id is not None:
             raise RuntimeError("supplement capture case is already active")
         normalized = case_id.strip()
-        if not normalized or len(normalized) > 128:
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", normalized) is None:
             raise ValueError("supplement capture case_id is invalid")
         self._active_case_id = normalized
         self._active_capture = None
@@ -615,11 +733,56 @@ class ChunkAlignment:
     simple_chunk_ids: tuple[str, ...]
     layer_chunk_ids: dict[str, tuple[str, ...]]
     first_loss_layer: str | None
+    gold_hit_by_layer: dict[str, tuple[str, ...]]
     new_answer_gold_chunk_ids: tuple[str, ...]
     redundant_hit: bool
     benefit: bool
     duplicate_count: int
     non_gold_admitted_count: int
+
+
+def summarize_graph_route_trace(
+    trace: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Reduce an Agent trace to content-safe Graph route observations.
+
+    The returned values are route facts only: booleans, counts, and the closed
+    route-result enum.  It intentionally does not retain questions, answers,
+    evidence bodies, filenames, or provider payloads.
+    """
+
+    if trace is None:
+        trace = {}
+    if not isinstance(trace, Mapping):
+        raise ValueError("agent trace must be an object")
+    events = trace.get("events", ())
+    if not isinstance(events, (list, tuple)):
+        raise ValueError("agent trace events must be a list")
+    attempted = False
+    admitted = False
+    new_evidence_count = 0
+    result_counts: dict[str, int] = {}
+    for event in events:
+        if not isinstance(event, Mapping):
+            continue
+        if event.get("retrieval_lane") != "graphiti_supplement":
+            continue
+        route_result = event.get("route_result_code")
+        if route_result not in CHAT_GRAPHITI_ROUTE_RESULTS:
+            raise ValueError("Graph route result is outside the closed enum")
+        count = event.get("new_evidence_count", 0)
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            raise ValueError("Graph route evidence count is invalid")
+        attempted = True
+        admitted = admitted or route_result == "admitted"
+        new_evidence_count += count
+        result_counts[str(route_result)] = result_counts.get(str(route_result), 0) + 1
+    return {
+        "graph_route_attempted": attempted,
+        "graph_route_admitted": admitted,
+        "graph_new_evidence_count": new_evidence_count,
+        "graph_route_result_counts": dict(sorted(result_counts.items())),
+    }
 
 
 def align_chunk_layers(
@@ -639,6 +802,10 @@ def align_chunk_layers(
         if layer not in layer_chunk_ids:
             raise ValueError(f"missing diagnostic layer: {layer}")
         layers[layer] = tuple(str(item) for item in layer_chunk_ids[layer])
+    gold_hit_by_layer = {
+        layer: tuple(item for item in gold if item in set(layers[layer]))
+        for layer in LAYERS
+    }
     first_loss: str | None = None
     for gold_id in gold:
         if gold_id in simple:
@@ -665,6 +832,7 @@ def align_chunk_layers(
         simple_chunk_ids=simple,
         layer_chunk_ids=layers,
         first_loss_layer=first_loss,
+        gold_hit_by_layer=gold_hit_by_layer,
         new_answer_gold_chunk_ids=new_gold,
         redundant_hit=redundant,
         benefit=bool(new_gold),
@@ -673,17 +841,265 @@ def align_chunk_layers(
     )
 
 
+def _rate(numerator: int, denominator: int) -> dict[str, Any]:
+    return {
+        "numerator": numerator,
+        "denominator": denominator,
+        "value": round(numerator / denominator, 6) if denominator else None,
+    }
+
+
+def _alignment_value(alignment: Any, field_name: str, default: Any = None) -> Any:
+    if isinstance(alignment, ChunkAlignment):
+        return getattr(alignment, field_name, default)
+    if isinstance(alignment, Mapping):
+        return alignment.get(field_name, default)
+    return default
+
+
+def _graph_recall_metrics(
+    graph_cases: Sequence[Mapping[str, Any]],
+    alignments: Mapping[str, Any] | None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Aggregate answer-gold recall without retaining gold identifiers."""
+
+    if alignments is None:
+        unavailable = {
+            "status": "not_computed_missing_layer_evidence",
+            "primary_metric": "packed_answer_gold_recall",
+            "by_layer": {},
+        }
+        return unavailable, {
+            "status": "not_computed_missing_layer_evidence",
+            "recoverable_case_count": None,
+            "benefit_case_count": None,
+            "redundant_case_count": None,
+        }
+
+    missing_cases = [
+        str(case["case_id"])
+        for case in graph_cases
+        if str(case["case_id"]) not in alignments
+    ]
+    if missing_cases:
+        incomplete = {
+            "status": "not_computed_incomplete_layer_evidence",
+            "primary_metric": "packed_answer_gold_recall",
+            "observed_case_count": len(graph_cases) - len(missing_cases),
+            "required_case_count": len(graph_cases),
+            "by_layer": {},
+        }
+        return incomplete, {
+            "status": "not_computed_incomplete_layer_evidence",
+            "recoverable_case_count": None,
+            "benefit_case_count": None,
+            "redundant_case_count": None,
+        }
+
+    layer_counts = {
+        layer: {"gold_hits": 0, "gold_total": 0, "case_hits": 0, "case_total": len(graph_cases)}
+        for layer in LAYERS
+    }
+    recoverable = benefit = redundant = 0
+    for case in graph_cases:
+        case_id = str(case["case_id"])
+        alignment = alignments[case_id]
+        gold = tuple(
+            dict.fromkeys(
+                str(item)
+                for item in (_alignment_value(alignment, "answer_gold_chunk_ids", ()) or ())
+            )
+        )
+        simple = set(
+            str(item)
+            for item in (_alignment_value(alignment, "simple_chunk_ids", ()) or ())
+        )
+        layers = _alignment_value(alignment, "layer_chunk_ids")
+        if layers is None and isinstance(alignment, Mapping):
+            layers = alignment.get("layers")
+        if not isinstance(layers, Mapping) or set(layers) != set(LAYERS):
+            raise ValueError("Graph recall alignment layers are invalid")
+        for layer in LAYERS:
+            layer_ids = set(str(item) for item in (layers.get(layer, ()) or ()))
+            hits = len(set(gold) & layer_ids)
+            layer_counts[layer]["gold_hits"] += hits
+            layer_counts[layer]["gold_total"] += len(gold)
+            layer_counts[layer]["case_hits"] += bool(set(gold) & layer_ids)
+        simple_missing = bool(gold) and not set(gold) <= simple
+        if simple_missing:
+            recoverable += 1
+        packed_ids = set(str(item) for item in (layers.get("packed", ()) or ()))
+        new_gold = set(gold) - simple & packed_ids
+        if new_gold:
+            benefit += 1
+        if bool(_alignment_value(alignment, "redundant_hit", False)):
+            redundant += 1
+
+    recall_by_layer = {
+        layer: {
+            **counts,
+            "gold_recall": _rate(counts["gold_hits"], counts["gold_total"]),
+            "case_hit_rate": _rate(counts["case_hits"], counts["case_total"]),
+        }
+        for layer, counts in layer_counts.items()
+    }
+    graph_recall = {
+        "status": "computed",
+        "primary_metric": "packed_answer_gold_recall",
+        "by_layer": recall_by_layer,
+    }
+    benefit_status = "computed" if recoverable else "not_computed_no_recoverable_cases"
+    return graph_recall, {
+        "status": benefit_status,
+        "recoverable_case_count": recoverable,
+        "benefit_case_count": benefit,
+        "benefit_capture": _rate(benefit, recoverable),
+        "redundant_case_count": redundant,
+    }
+
+
+def aggregate_graph_routing_metrics(
+    cases: Sequence[Mapping[str, Any]],
+    observations: Mapping[str, Mapping[str, Any]],
+    *,
+    alignments: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Compute the primary Graph route and recall metrics.
+
+    ``expected_route.route`` is the frozen synthetic benchmark label.  An
+    observation is intentionally limited to route booleans/counts, while the
+    optional alignment map is the evaluator-only raw/hydrated/reranked/packed
+    evidence summary.  Cost and latency are deliberately outside this function.
+    """
+
+    if not cases:
+        raise ValueError("Graph routing metrics require cases")
+    expected_ids = [str(case.get("case_id", "")) for case in cases]
+    if len(expected_ids) != len(set(expected_ids)) or any(not item for item in expected_ids):
+        raise ValueError("Graph routing case IDs are invalid")
+    if set(observations) != set(expected_ids):
+        raise ValueError("Graph routing observations must cover every case exactly once")
+
+    graph_needed = simple_cases = 0
+    true_positive = false_negative = true_negative = false_positive = 0
+    admitted_graph = effective_graph = 0
+    route_result_counts: dict[str, int] = {}
+    redundant_attempts = 0
+    for case in cases:
+        case_id = str(case["case_id"])
+        expected_route = case.get("expected_route")
+        if not isinstance(expected_route, Mapping):
+            raise ValueError(f"{case_id}: expected route is invalid")
+        label = expected_route.get("route")
+        if label not in GRAPH_ROUTE_LABELS:
+            raise ValueError(f"{case_id}: expected route label is invalid")
+        observation = observations[case_id]
+        attempted = observation.get("graph_route_attempted")
+        admitted = observation.get("graph_route_admitted", False)
+        new_evidence_count = observation.get("graph_new_evidence_count", 0)
+        if not isinstance(attempted, bool) or not isinstance(admitted, bool):
+            raise ValueError(f"{case_id}: Graph route observation booleans are invalid")
+        if (
+            isinstance(new_evidence_count, bool)
+            or not isinstance(new_evidence_count, int)
+            or new_evidence_count < 0
+        ):
+            raise ValueError(f"{case_id}: Graph route evidence count is invalid")
+        if admitted and not attempted:
+            raise ValueError(f"{case_id}: admitted Graph route was not attempted")
+        raw_counts = observation.get("graph_route_result_counts", {})
+        if raw_counts:
+            if not isinstance(raw_counts, Mapping):
+                raise ValueError(f"{case_id}: Graph route result counts are invalid")
+            for result, count in raw_counts.items():
+                if result not in CHAT_GRAPHITI_ROUTE_RESULTS:
+                    raise ValueError(f"{case_id}: Graph route result is invalid")
+                if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+                    raise ValueError(f"{case_id}: Graph route result count is invalid")
+                route_result_counts[str(result)] = route_result_counts.get(str(result), 0) + count
+        if label == "graph":
+            graph_needed += 1
+            true_positive += attempted
+            false_negative += not attempted
+            admitted_graph += admitted
+            effective_graph += new_evidence_count > 0
+        else:
+            simple_cases += 1
+            false_positive += attempted
+            true_negative += not attempted
+
+    graph_cases = [case for case in cases if case["expected_route"]["route"] == "graph"]
+    graph_recall, benefit = _graph_recall_metrics(graph_cases, alignments)
+    if alignments is not None and graph_recall["status"] == "computed":
+        for case in graph_cases:
+            alignment = alignments[str(case["case_id"])]
+            if bool(_alignment_value(alignment, "redundant_hit", False)):
+                observation = observations[str(case["case_id"])]
+                redundant_attempts += bool(observation["graph_route_attempted"])
+
+    route_metrics = {
+        "status": "computed",
+        "label_source": "manifest.expected_route.route",
+        "case_count": len(cases),
+        "graph_needed_case_count": graph_needed,
+        "simple_case_count": simple_cases,
+        "confusion": {
+            "true_positive_graph_needed_and_routed": true_positive,
+            "false_negative_graph_needed_but_not_routed": false_negative,
+            "true_negative_simple_and_not_routed": true_negative,
+            "false_positive_simple_but_routed": false_positive,
+        },
+        "graph_needed_route_recall": _rate(true_positive, graph_needed),
+        "graph_route_accuracy": _rate(true_positive + true_negative, len(cases)),
+        "graph_route_precision": _rate(true_positive, true_positive + false_positive),
+        "simple_false_positive_rate": _rate(false_positive, simple_cases),
+        "graph_route_admission_recall": _rate(admitted_graph, graph_needed),
+        "graph_effective_evidence_recall": _rate(effective_graph, graph_needed),
+        "route_result_counts": dict(sorted(route_result_counts.items())),
+        "redundant_graph_route_rate": (
+            _rate(
+                redundant_attempts,
+                sum(
+                    observations[str(case["case_id"])]["graph_route_attempted"]
+                    for case in graph_cases
+                ),
+            )
+            if alignments is not None and graph_recall["status"] == "computed"
+            else {
+                "numerator": None,
+                "denominator": None,
+                "value": None,
+            }
+        ),
+    }
+    return {
+        "primary_metric": "graph_needed_route_recall",
+        "route": route_metrics,
+        "graph_recall": graph_recall,
+        "benefit_capture": benefit,
+    }
+
+
 def diagnostic_record(
     *,
     case_id: str,
     alignments: Mapping[str, ChunkAlignment],
     query_source: str,
     query_count: int,
+    layer_diagnostics: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     if set(alignments) != {"capability", "agent_replay"}:
         raise ValueError("diagnostic record requires both columns")
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", case_id) is None:
+        raise ValueError("diagnostic case_id is invalid")
     if query_source not in {"capability", "agent_replay"} or query_count < 0:
         raise ValueError("diagnostic query metadata is invalid")
+    diagnostics = {
+        name: _validate_layer_diagnostic(
+            layer_diagnostics.get(name, {}) if layer_diagnostics is not None else {}
+        )
+        for name in ("capability", "agent_replay")
+    }
     return {
         "case_id": case_id,
         "columns": {
@@ -692,6 +1108,9 @@ def diagnostic_record(
                 "answer_gold_chunk_ids": list(value.answer_gold_chunk_ids),
                 "simple_chunk_ids": list(value.simple_chunk_ids),
                 "layers": {layer: list(ids) for layer, ids in value.layer_chunk_ids.items()},
+                "gold_hit_by_layer": {
+                    layer: list(ids) for layer, ids in value.gold_hit_by_layer.items()
+                },
                 "new_answer_gold_chunk_ids": list(value.new_answer_gold_chunk_ids),
                 "redundant_hit": value.redundant_hit,
                 "benefit": value.benefit,
@@ -702,6 +1121,97 @@ def diagnostic_record(
         },
         "query_source": query_source,
         "query_count": query_count,
+        "layer_diagnostics": diagnostics,
+    }
+
+
+def _validate_layer_diagnostic(value: Mapping[str, Any]) -> dict[str, Any]:
+    allowed = {
+        "requested_k",
+        "raw_edge_uuids",
+        "raw_episode_count",
+        "unique_chunk_count",
+        "duplicate_chunk_path_count",
+        "gold_rerank_scores",
+        "top1_gold_rerank_score",
+        "route_reason_code",
+        "route_result_code",
+        "salvage_status",
+        "final_outcome",
+    }
+    if set(value) - allowed:
+        raise ValueError("layer diagnostic contains unsupported fields")
+    requested_k = value.get("requested_k", EVALUATOR_EDGE_LIMITS[0])
+    validate_evaluator_edge_limit(requested_k)
+    raw_edge_uuids = value.get("raw_edge_uuids", ())
+    if not isinstance(raw_edge_uuids, (list, tuple)):
+        raise ValueError("raw edge UUIDs must be a list")
+    normalized_edge_uuids = tuple(str(item).strip() for item in raw_edge_uuids)
+    if any(not item or len(item) > 128 for item in normalized_edge_uuids):
+        raise ValueError("raw edge UUID is invalid")
+    if len(normalized_edge_uuids) != len(set(normalized_edge_uuids)):
+        raise ValueError("raw edge UUIDs must be unique")
+
+    counts: dict[str, int] = {}
+    for field_name in (
+        "raw_episode_count",
+        "unique_chunk_count",
+        "duplicate_chunk_path_count",
+    ):
+        field_value = value.get(field_name, 0)
+        if isinstance(field_value, bool) or not isinstance(field_value, int) or field_value < 0:
+            raise ValueError(f"layer diagnostic count is invalid: {field_name}")
+        counts[field_name] = field_value
+
+    raw_scores = value.get("gold_rerank_scores", {})
+    if not isinstance(raw_scores, Mapping):
+        raise ValueError("gold rerank scores must be an object")
+    gold_scores: dict[str, float] = {}
+    for chunk_id, score in raw_scores.items():
+        normalized_id = str(chunk_id).strip()
+        if not normalized_id or len(normalized_id) > 128:
+            raise ValueError("gold rerank score chunk id is invalid")
+        if (
+            isinstance(score, bool)
+            or not isinstance(score, (int, float))
+            or not math.isfinite(score)
+            or not 0.0 <= score <= 1.0
+        ):
+            raise ValueError("gold rerank score is invalid")
+        gold_scores[normalized_id] = float(score)
+    top_score = value.get("top1_gold_rerank_score")
+    if top_score is not None:
+        if (
+            isinstance(top_score, bool)
+            or not isinstance(top_score, (int, float))
+            or not math.isfinite(top_score)
+            or not 0.0 <= top_score <= 1.0
+        ):
+            raise ValueError("top gold rerank score is invalid")
+        top_score = float(top_score)
+
+    route_reason = value.get("route_reason_code")
+    if route_reason is not None and route_reason not in CHAT_GRAPHITI_ROUTE_REASONS:
+        raise ValueError("layer route reason is invalid")
+    route_result = value.get("route_result_code", "not_requested")
+    if route_result not in CHAT_GRAPHITI_ROUTE_RESULTS:
+        raise ValueError("layer route result is invalid")
+    salvage_status = value.get("salvage_status", "not_attempted")
+    if salvage_status not in {"not_attempted", "none", "salvaged", "refused"}:
+        raise ValueError("layer salvage status is invalid")
+    final_outcome = value.get("final_outcome", "not_run")
+    if final_outcome not in {"not_run", "answered", "partial", "refused"}:
+        raise ValueError("layer final outcome is invalid")
+    return {
+        "requested_k": requested_k,
+        "raw_edge_uuids": list(normalized_edge_uuids),
+        **counts,
+        "gold_rerank_scores": gold_scores,
+        "top1_gold_rerank_score": top_score,
+        "route_reason_code": route_reason,
+        "route_result_code": route_result,
+        "salvage_status": salvage_status,
+        "final_outcome": final_outcome,
     }
 
 

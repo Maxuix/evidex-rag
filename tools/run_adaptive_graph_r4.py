@@ -51,9 +51,11 @@ from rag_kb.uow import (
 )
 from tools.evaluate_adaptive_graph_route import (
     CapturingGraphitiSupplementRetriever,
+    EVALUATOR_EDGE_LIMITS,
     ForcedGraphitiSupplementChatModelPort,
     GraphitiSupplementCapture,
     GraphitiSupplementCaptureComplete,
+    aggregate_graph_routing_metrics,
     align_chunk_layers,
     build_replay_capture_artifact,
     diagnostic_record,
@@ -65,7 +67,7 @@ from tools.evaluate_adaptive_graph_route import (
 
 
 CONFIRM_EXTERNAL_CALLS = "RUN_ROUTING_RAG_R4_EXTERNAL_CALLS"
-R4_DIAGNOSTIC_SCHEMA_VERSION = "adaptive_graph_r4_diagnostic_v1"
+R4_DIAGNOSTIC_SCHEMA_VERSION = "adaptive_graph_r4_diagnostic_v2"
 GRAPHITI_EDGE_LIMIT = 8
 FORCED_CONTROLLER_MODE = "specific_tool_choice"
 ACTUAL_AUTO_CONTROLLER_MODE = "actual_auto"
@@ -93,6 +95,13 @@ def _parser() -> argparse.ArgumentParser:
         help="Evaluator-only model override using the selected profile's provider.",
     )
     parser.add_argument("--preflight-only", action="store_true")
+    parser.add_argument(
+        "--edge-limit",
+        type=int,
+        choices=EVALUATOR_EDGE_LIMITS,
+        default=GRAPHITI_EDGE_LIMIT,
+        help="Evaluator-only Graphiti edge K; production retrieval remains unchanged.",
+    )
     parser.add_argument("--confirm", required=True)
     return parser
 
@@ -415,8 +424,15 @@ async def _capture_queries(
             "forced_replacements": forced_model.replacements,
             "model_calls": forced_model.model_calls,
             "usage": dict(forced_model.usage),
-            "finish_reasons": tuple(forced_model.response_finish_reasons),
             "route_requested": capture is not None,
+            "route_reason_code": next(
+                (
+                    item
+                    for item in reversed(forced_model.response_route_reason_codes)
+                    if item is not None
+                ),
+                None,
+            ),
         }
         print(
             json.dumps(
@@ -479,7 +495,9 @@ async def _column_layers(
     build,
     query: str,
     excluded_chunk_ids: tuple[str, ...],
-) -> tuple[dict[str, tuple[str, ...]], dict[str, int]]:
+    edge_limit: int,
+    answer_gold_chunk_ids: Sequence[str] = (),
+) -> tuple[dict[str, tuple[str, ...]], dict[str, Any]]:
     edges = await dependencies.graphiti_runtime.search(
         build,
         GraphitiSearchQuery(
@@ -488,7 +506,7 @@ async def _column_layers(
             build_id=build.build_id,
             group_id=build.group_id,
             query=query,
-            limit=GRAPHITI_EDGE_LIMIT,
+            limit=edge_limit,
         ),
     )
     episode_ids = tuple(
@@ -546,7 +564,19 @@ async def _column_layers(
     }
     packed_ids = set(layers["packed"])
     excluded_ids = set(excluded_chunk_ids)
+    path_chunk_ids = tuple(
+        str(chunk_id)
+        for path in hydrated.paths
+        for chunk_id in path.source_chunk_ids
+    )
+    gold_rerank_scores = {
+        str(chunk_id): float(scores[UUID(str(chunk_id))])
+        for chunk_id in answer_gold_chunk_ids
+        if UUID(str(chunk_id)) in scores
+    }
     metrics = {
+        "requested_k": edge_limit,
+        "raw_edge_uuids": [str(edge.edge_uuid) for edge in edges],
         "raw_edge_count": len(edges),
         "raw_episode_count": len(episode_ids),
         "raw_mapped_chunk_count": len(raw_chunk_ids),
@@ -554,14 +584,19 @@ async def _column_layers(
             episode_id not in raw_mapping for episode_id in episode_ids
         ),
         "hydrated_chunk_count": len(hydrated.chunks),
+        "unique_chunk_count": len(set(path_chunk_ids)),
+        "duplicate_chunk_path_count": len(path_chunk_ids) - len(set(path_chunk_ids)),
         "below_threshold_count": len(hydrated.chunks) - len(reranked.chunks),
         "reranked_chunk_count": len(reranked.chunks),
+        "gold_rerank_scores": gold_rerank_scores,
+        "top1_gold_rerank_score": max(gold_rerank_scores.values(), default=None),
         "packed_chunk_count": len(packed),
         "budget_dropped_count": sum(
             str(item.index_chunk_id) not in packed_ids
             and str(item.index_chunk_id) not in excluded_ids
             for item in reranked.chunks
         ),
+        "route_result_code": "admitted" if packed else "no_new_evidence",
     }
     return layers, metrics
 
@@ -637,6 +672,27 @@ def _aggregate_graph_cases(records: Sequence[Mapping[str, Any]]) -> dict[str, An
             },
         }
     return result
+
+
+def _layer_diagnostic(
+    metrics: Mapping[str, Any],
+    *,
+    route_reason_code: str | None,
+    route_result_code: str,
+) -> dict[str, Any]:
+    return {
+        "requested_k": int(metrics["requested_k"]),
+        "raw_edge_uuids": list(metrics["raw_edge_uuids"]),
+        "raw_episode_count": int(metrics["raw_episode_count"]),
+        "unique_chunk_count": int(metrics["unique_chunk_count"]),
+        "duplicate_chunk_path_count": int(metrics["duplicate_chunk_path_count"]),
+        "gold_rerank_scores": dict(metrics["gold_rerank_scores"]),
+        "top1_gold_rerank_score": metrics["top1_gold_rerank_score"],
+        "route_reason_code": route_reason_code,
+        "route_result_code": route_result_code,
+        "salvage_status": "not_attempted",
+        "final_outcome": "not_run",
+    }
 
 
 async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
@@ -760,13 +816,15 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
             answer_gold_ids = locator_ids_by_case[case_id]["answer"]
             path_context_ids = locator_ids_by_case[case_id]["path_context"]
             column_layers: dict[str, dict[str, tuple[str, ...]]] = {}
-            layer_metrics: dict[str, dict[str, int]] = {}
+            layer_metrics: dict[str, dict[str, Any]] = {}
             layers, metrics = await _column_layers(
                 dependencies,
                 graph_store,
                 build=build,
                 query=str(case["question"]),
                 excluded_chunk_ids=simple_ids,
+                edge_limit=arguments.edge_limit,
+                answer_gold_chunk_ids=answer_gold_ids,
             )
             column_layers["capability"] = layers
             layer_metrics["capability"] = metrics
@@ -777,6 +835,8 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
                     build=build,
                     query=capture.query,
                     excluded_chunk_ids=simple_ids,
+                    edge_limit=arguments.edge_limit,
+                    answer_gold_chunk_ids=answer_gold_ids,
                 )
                 column_layers["agent_replay"] = layers
                 layer_metrics["agent_replay"] = metrics
@@ -798,6 +858,17 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
                         "budget_dropped_count",
                     )
                 }
+                layer_metrics["agent_replay"].update(
+                    {
+                        "requested_k": arguments.edge_limit,
+                        "raw_edge_uuids": [],
+                        "gold_rerank_scores": {},
+                        "top1_gold_rerank_score": None,
+                        "unique_chunk_count": 0,
+                        "duplicate_chunk_path_count": 0,
+                        "route_result_code": "not_requested",
+                    }
+                )
             alignments = {
                 column: align_chunk_layers(
                     column=column,
@@ -813,29 +884,64 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
                 alignments=alignments,
                 query_source="agent_replay",
                 query_count=1 if capture is not None else 0,
+                layer_diagnostics={
+                    "capability": _layer_diagnostic(
+                        layer_metrics["capability"],
+                        route_reason_code=None,
+                        route_result_code="not_requested",
+                    ),
+                    "agent_replay": _layer_diagnostic(
+                        layer_metrics["agent_replay"],
+                        route_reason_code=(
+                            capture_metrics[case_id]["route_reason_code"]
+                            if capture is not None
+                            else None
+                        ),
+                        route_result_code=(
+                            layer_metrics["agent_replay"]["route_result_code"]
+                            if capture is not None
+                            else "not_requested"
+                        ),
+                    ),
+                },
             )
             record["agent_replay_status"] = (
                 "requested" if capture is not None else "not_requested"
             )
             if capture is None:
                 record["columns"]["agent_replay"]["first_loss_layer"] = None
-            record["query_sha256"] = {
-                "capability": hashlib.sha256(
-                    str(case["question"]).encode("utf-8")
-                ).hexdigest(),
-                "agent_replay": (
-                    hashlib.sha256(capture.query.encode("utf-8")).hexdigest()
-                    if capture is not None
-                    else None
-                ),
-            }
             record["layer_metrics"] = layer_metrics
             record["capture_metrics"] = capture_metrics[case_id]
             records.append(record)
         aggregate = _aggregate_graph_cases(records)
+        route_observations = {
+            str(record["case_id"]): {
+                "graph_route_attempted": record.get("agent_replay_status") == "requested",
+                "graph_route_admitted": record["layer_metrics"]["agent_replay"].get(
+                    "route_result_code"
+                ) == "admitted",
+                "graph_new_evidence_count": int(
+                    record["layer_metrics"]["agent_replay"].get(
+                        "packed_chunk_count", 0
+                    )
+                ),
+            }
+            for record in records
+        }
+        graph_metrics = aggregate_graph_routing_metrics(
+            cases,
+            route_observations,
+            alignments={
+                str(record["case_id"]): record["columns"]["agent_replay"]
+                for record in records
+            },
+        )
+        aggregate["primary"] = graph_metrics
         decision = (
             "inconclusive_for_go"
-            if aggregate["columns"]["agent_replay"]["distinct_benefit"] < 10
+            if graph_metrics["benefit_capture"].get("status") != "computed"
+            or graph_metrics["benefit_capture"].get("benefit_capture", {}).get("value") is None
+            or graph_metrics["benefit_capture"]["benefit_capture"]["value"] < 0.7
             else "eligible_for_r5_layer_review"
         )
         diagnostic = {
@@ -852,7 +958,8 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
                     arguments.chat_model_profile_revision_id
                 ),
                 **chat_model_runtime,
-                "graphiti_edge_limit": GRAPHITI_EDGE_LIMIT,
+                "graphiti_edge_limit": arguments.edge_limit,
+                "evaluator_edge_limit": arguments.edge_limit,
                 "replay_mode": arguments.replay_mode,
                 "forced_controller_mode": controller_mode,
             },
@@ -877,6 +984,15 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
             "agent_replay_route_requested": aggregate["columns"][
                 "agent_replay"
             ]["route_requested"],
+            "graph_needed_route_recall": graph_metrics["route"][
+                "graph_needed_route_recall"
+            ]["value"],
+            "packed_answer_gold_recall": graph_metrics["graph_recall"][
+                "by_layer"
+            ].get("packed", {}).get("gold_recall", {}).get("value"),
+            "benefit_capture": graph_metrics["benefit_capture"].get(
+                "benefit_capture", {}
+            ).get("value"),
             "capture_model_calls": sum(
                 int(value["model_calls"]) for value in capture_metrics.values()
             ),

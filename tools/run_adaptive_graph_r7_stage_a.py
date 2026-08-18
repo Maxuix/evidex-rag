@@ -28,11 +28,13 @@ from tools.evaluate_adaptive_graph_route import (
     JUDGE_VERDICTS,
     ROUTING_JUDGE_PROMPT_VERSION,
     ROUTING_JUDGE_SCHEMA_VERSION,
+    aggregate_graph_routing_metrics,
     build_routing_judge_packet,
     load_cases,
     load_manifest,
     manifest_digest,
     routing_judge_cache_key,
+    summarize_graph_route_trace,
     validate_routing_judgement,
 )
 from tools.evaluate_agent_complex_qa import (
@@ -146,6 +148,7 @@ def _runtime(manifest: Mapping[str, Any]) -> dict[str, Any]:
             "judge_tokens": JUDGE_TOKEN_LIMIT,
             "total_tokens": TOTAL_TOKEN_LIMIT,
             "estimated_opencode_cost_usd": TOTAL_COST_LIMIT_USD,
+            "performance_limits_role": "secondary_budget_only",
             "auto_to_simple_token_ratio": PERFORMANCE_RATIO_LIMIT,
             "auto_to_simple_p95_latency_ratio": PERFORMANCE_RATIO_LIMIT,
         },
@@ -481,12 +484,16 @@ def _report(arguments: argparse.Namespace, manifest: Mapping[str, Any], cases: l
         if item["supplement_count"] > 1:
             safety["supplement_duplicate_calls"] += 1
     negative_controls: list[dict[str, Any]] = []
+    auto_route_observations: dict[str, Mapping[str, Any]] = {}
     for case_id, case in by_case.items():
         kind = case.get("negative_control_kind")
+        auto_item = answers["executions"][f"{case_id}:auto"]
+        auto_trace = ((auto_item.get("agent") or {}).get("trace") or {})
+        auto_route_observations[case_id] = summarize_graph_route_trace(auto_trace)
         if kind is None:
             continue
         simple_outcome = answers["executions"][f"{case_id}:simple"]["agent"]["trace"]["outcome"]
-        auto_outcome = answers["executions"][f"{case_id}:auto"]["agent"]["trace"]["outcome"]
+        auto_outcome = auto_trace["outcome"]
         negative_controls.append({"case_id": case_id, "kind": kind, "expected_outcome": case["expected_outcome"], "simple_outcome": simple_outcome, "auto_outcome": auto_outcome})
         if kind == "open_world_unanswerable" and auto_outcome != "refused":
             safety["open_world_auto_refusal_failures"] += 1
@@ -499,15 +506,47 @@ def _report(arguments: argparse.Namespace, manifest: Mapping[str, Any], cases: l
     judge_cost = float(judges["totals"]["estimated_cost_usd"]) if judge_complete else 0.0
     total_tokens = int(answers["totals"]["total_tokens"]) + judge_tokens
     total_cost = round(float(answers["totals"]["estimated_cost_usd"]) + judge_cost, 8)
-    decision = "stage_a_no_go_safety" if any(safety.values()) else "stage_a_inconclusive_judge_unavailable" if not judge_complete else "stage_a_no_go" if losses - wins > 2 or token_ratio > PERFORMANCE_RATIO_LIMIT or latency_ratio > PERFORMANCE_RATIO_LIMIT else "stage_a_requires_rounds_2_3"
+    graph_metrics = aggregate_graph_routing_metrics(cases, auto_route_observations)
+    route = graph_metrics["route"]
+    route_recall = route["graph_needed_route_recall"]["value"]
+    route_false_positive_rate = route["simple_false_positive_rate"]["value"]
+    primary_route_failed = (
+        route_recall is not None
+        and route_recall < 1.0
+    ) or (
+        route_false_positive_rate is not None
+        and route_false_positive_rate > 0.0
+    )
+    if any(safety.values()):
+        decision = "stage_a_no_go_safety"
+    elif graph_metrics["graph_recall"]["status"] != "computed":
+        decision = "stage_a_inconclusive_primary_graph_metrics_unavailable"
+    elif primary_route_failed:
+        decision = "stage_a_no_go_graph_routing"
+    elif not judge_complete:
+        decision = "stage_a_inconclusive_judge_unavailable"
+    else:
+        decision = "stage_a_no_go" if losses - wins > 2 else "stage_a_requires_rounds_2_3"
     report = {
         "runtime": _runtime(manifest),
         "artifacts": {"answers_sha256": _digest_file(arguments.output_root / "answers.json"), "judgements_sha256": _digest_file(judge_path) if judge_complete else None},
+        "primary": {
+            "metric_order": [
+                "graph_needed_route_recall",
+                "graph_route_accuracy",
+                "packed_answer_gold_recall",
+                "benefit_capture",
+            ],
+            "routing": graph_metrics["route"],
+            "graph_recall": graph_metrics["graph_recall"],
+            "benefit_capture": graph_metrics["benefit_capture"],
+            "decision_role": "primary_graph_routing_and_recall",
+        },
         "paired": {"status": "completed" if judge_complete else "not_computed_judge_unavailable", "wins": wins if judge_complete else None, "losses": losses if judge_complete else None, "ties": ties if judge_complete else None, "net_wins": wins - losses if judge_complete else None, "by_category": {key: dict(value) for key, value in sorted(categories.items())} if judge_complete else {}},
-        "performance": {"simple_tokens": lane_tokens["simple"], "auto_tokens": lane_tokens["auto"], "auto_to_simple_token_ratio": token_ratio, "simple_p95_seconds": simple_p95, "auto_p95_seconds": auto_p95, "auto_to_simple_p95_ratio": latency_ratio},
+        "performance": {"role": "secondary_budget_only", "used_for_primary_decision": False, "simple_tokens": lane_tokens["simple"], "auto_tokens": lane_tokens["auto"], "auto_to_simple_token_ratio": token_ratio, "simple_p95_seconds": simple_p95, "auto_p95_seconds": auto_p95, "auto_to_simple_p95_ratio": latency_ratio},
         "safety": safety,
         "negative_controls": negative_controls,
-        "judge": {"status": "completed" if judge_complete else "blocked", "successful_judgements": len(judges["judgements"]) if judge_complete else 0, "failed_attempts": [{"model": "mimo-v2.5", "failure": "structured_tool_not_returned"}, {"model": JUDGE_MODEL_OVERRIDE, "failure": "provider_connection_error"}] if not judge_complete else [], "usage_status": "complete" if judge_complete else "one_mimo_response_usage_unavailable"},
+        "judge": {"status": "completed" if judge_complete else "blocked", "successful_judgements": len(judges["judgements"]) if judge_complete else 0, "failed_attempts": [{"model": JUDGE_MODEL_OVERRIDE, "failure": "provider_rejected_named_tool_choice"}] if not judge_complete else [], "usage_status": "complete" if judge_complete else "unavailable_before_first_valid_judgement"},
         "budget": {"answer_executions": len(answers["executions"]), "successful_judge_calls": len(judges["judgements"]) if judge_complete else 0, "known_total_tokens": total_tokens, "known_estimated_opencode_cost_usd": total_cost, "cost_is_lower_bound": not judge_complete},
         "decision": decision,
     }

@@ -13,6 +13,7 @@ from rag_kb.domain import (
     GraphitiBuildSnapshot,
     GraphitiBuildStatus,
     GraphitiEdgeResult,
+    GraphitiSearchQuery,
     GraphPathCandidate,
     GraphPathHop,
     GraphRetrievalRequest,
@@ -91,7 +92,7 @@ class GraphRetrievalTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(raised.exception.code.value, "GRAPH_NOT_READY")
         self.assertEqual(graph_store.rebuilds, [])
 
-    async def test_runtime_probe_failure_fails_closed_and_schedules_rebuild(self) -> None:
+    async def test_runtime_probe_failure_fails_closed_without_scheduling_rebuild(self) -> None:
         graph_store = _GraphStore(_ready_config(), _path_result())
         service = RetrievalService(
             SingleWorkspaceAccessPolicy(WORKSPACE),
@@ -108,7 +109,7 @@ class GraphRetrievalTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(raised.exception.code.value, "GRAPH_NOT_READY")
-        self.assertEqual(graph_store.rebuilds, [(WORKSPACE, KB_ID, BUILD_ID)])
+        self.assertEqual(graph_store.rebuilds, [])
 
     async def test_graph_ignores_ordinary_hybrid_gate_and_preserves_hybrid_seed_strategy(
         self,
@@ -273,12 +274,42 @@ class GraphRetrievalTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(paths), GRAPH_MAX_PATHS)
         self.assertEqual(len(admitted), GRAPH_MAX_PATHS)
         self.assertEqual(rejected, 3)
+
         GraphTraversalResult(
             resolved_active_revision_id=REVISION_ID,
             paths=paths,
             chunks=admitted,
             rejected_path_count=rejected,
         )
+
+    def test_graphiti_search_accepts_evaluator_limit_64(self) -> None:
+        query = GraphitiSearchQuery(
+            workspace_id=WORKSPACE,
+            knowledge_base_id=KB_ID,
+            build_id=BUILD_ID,
+            group_id="evaluation",
+            query="bounded evaluator probe",
+            limit=64,
+        )
+
+        self.assertEqual(query.limit, 64)
+
+    def test_hydration_keeps_distinct_edges_for_the_same_chunk(self) -> None:
+        edges = (
+            GraphitiEdgeResult("edge-1", "first fact", ("episode-1",), 1),
+            GraphitiEdgeResult("edge-2", "second fact", ("episode-1",), 2),
+        )
+        chunk = _graph_chunk(CHUNK_1)
+
+        paths, admitted, rejected = _bounded_graphiti_paths(
+            edges,
+            {"episode-1": chunk},
+        )
+
+        self.assertEqual(len(paths), 2)
+        self.assertEqual({path.hops[0].object_entity_key for path in paths}, {"edge-1", "edge-2"})
+        self.assertEqual(admitted, (chunk,))
+        self.assertEqual(rejected, 0)
 
     def test_seed_first_packing_keeps_a_path_whole(self) -> None:
         seed = _seed_evidence(CHUNK_1)

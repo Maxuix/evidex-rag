@@ -467,7 +467,6 @@ class RetrievalService:
                 index_revision_id=index_revision_id,
                 query=query,
                 edge_limit=8,
-                schedule_runtime_rebuild=True,
             )
         except ResourceNotFoundError as error:
             log_exception(
@@ -576,7 +575,6 @@ class RetrievalService:
             index_revision_id=seed_pack.index_revision_id,
             query=request.query,
             edge_limit=min(10, max(4, request.top_k)),
-            schedule_runtime_rebuild=True,
         )
         traversal = candidate_set.traversal
 
@@ -628,7 +626,6 @@ class RetrievalService:
         index_revision_id: UUID,
         query: str,
         edge_limit: int,
-        schedule_runtime_rebuild: bool,
     ) -> GraphitiCandidateSet:
         graph_store = self._graph_store
         graphiti = self._graphiti_graph
@@ -676,12 +673,6 @@ class RetrievalService:
                 diagnostic={"check": "graph_runtime_probe"},
             ) from error
         if not graph_available:
-            if schedule_runtime_rebuild:
-                await graph_store.schedule_graphiti_rebuild(
-                    workspace_id,
-                    knowledge_base_id,
-                    build.build_id,
-                )
             raise RetrievalExecutionError(
                 ErrorCode.GRAPH_NOT_READY,
                 diagnostic={"check": "graph_runtime_probe"},

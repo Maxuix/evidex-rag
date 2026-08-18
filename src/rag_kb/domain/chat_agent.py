@@ -12,7 +12,16 @@ CHAT_GRAPHITI_ROUTE_REASONS = frozenset(
     {
         "cross_document_relation_gap",
         "entity_alias_gap",
-        "relational_query_without_simple_evidence",
+        "relation_chain_gap",
+    }
+)
+CHAT_AGENT_REJECTION_REASONS = frozenset(
+    {
+        "claim_shape",
+        "claim_text",
+        "evidence_ref",
+        "calculation_ref",
+        "visual_ref",
     }
 )
 CHAT_GRAPHITI_ROUTE_RESULTS = frozenset(
@@ -55,6 +64,9 @@ class ChatAgentTraceEvent:
     route_reason_code: str | None = None
     route_result_code: str | None = None
     new_evidence_count: int | None = None
+    rejected_claim_count: int = 0
+    rejection_reasons: tuple[str, ...] = ()
+    submit_only_repair: bool = False
 
     def __post_init__(self) -> None:
         if (
@@ -73,6 +85,10 @@ class ChatAgentTraceEvent:
             or len(self.refs) != len(set(self.refs))
             or any(not value.strip() or len(value) > 128 for value in self.refs)
             or self.count < 0
+            or self.rejected_claim_count < 0
+            or len(self.rejection_reasons) > len(CHAT_AGENT_REJECTION_REASONS)
+            or len(self.rejection_reasons) != len(set(self.rejection_reasons))
+            or any(item not in CHAT_AGENT_REJECTION_REASONS for item in self.rejection_reasons)
             or self.retrieval_lane not in CHAT_RETRIEVAL_LANES | {None}
             or self.route_reason_code not in CHAT_GRAPHITI_ROUTE_REASONS | {None}
             or self.route_result_code not in CHAT_GRAPHITI_ROUTE_RESULTS | {None}
@@ -123,6 +139,14 @@ class ChatAgentTraceEvent:
                     "route_reason_code": self.route_reason_code,
                     "route_result_code": self.route_result_code,
                     "new_evidence_count": self.new_evidence_count,
+                }
+            )
+        if self.rejected_claim_count or self.rejection_reasons or self.submit_only_repair:
+            value.update(
+                {
+                    "rejected_claim_count": self.rejected_claim_count,
+                    "rejection_reasons": list(self.rejection_reasons),
+                    "submit_only_repair": self.submit_only_repair,
                 }
             )
         return value

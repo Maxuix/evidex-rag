@@ -17,6 +17,7 @@ from apps.api.pagination import decode_cursor, encode_cursor
 from apps.api.security import get_auth_context
 from rag_kb.auth import AuthContext
 from rag_kb.domain import (
+    CHAT_GRAPHITI_ROUTE_REASONS,
     ChatMessage,
     ChatProgressSnapshot,
     ChatRun,
@@ -468,24 +469,29 @@ def _agent_response(value: ChatRun) -> ChatAgentResponse:
 
 
 def _public_agent_trace(value: dict[str, object] | None) -> dict[str, object] | None:
-    """Hide the evaluator-internal supplement tool name in safe API trace."""
+    """Expose only the public tool names and trace fields in the API."""
 
     if value is None:
         return None
     trace = dict(value)
     events = trace.get("events")
     if isinstance(events, list):
-        trace["events"] = [
-            {
-                **event,
-                "tool": "search_knowledge_base",
+        internal_keys = {"rejected_claim_count", "rejection_reasons", "submit_only_repair"}
+        public_events: list[object] = []
+        for event in events:
+            if not isinstance(event, dict):
+                public_events.append(event)
+                continue
+            public_event = {
+                key: item for key, item in event.items() if key not in internal_keys
             }
-            if isinstance(event, dict)
-            and event.get("tool") == "graphiti_supplement"
-            and event.get("retrieval_lane") == "graphiti_supplement"
-            else event
-            for event in events
-        ]
+            if event.get("retrieval_lane") == "graphiti_supplement":
+                if event.get("tool") == "graphiti_supplement":
+                    public_event["tool"] = "search_knowledge_base"
+                if public_event.get("route_reason_code") not in CHAT_GRAPHITI_ROUTE_REASONS:
+                    public_event.pop("route_reason_code", None)
+            public_events.append(public_event)
+        trace["events"] = public_events
     return trace
 
 
