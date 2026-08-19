@@ -51,6 +51,7 @@ from rag_kb.domain import (
     PromptEvidence,
     RetrievalStrategy,
     ValidatedAnswer,
+    VisualEvidenceDecision,
 )
 from rag_kb.ports.model_api import ChatModelAdapter
 from rag_kb.retrieval.calculator import (
@@ -125,6 +126,9 @@ class NativeToolCallingAgent:
         loaded_visual_refs: set[str] = set()
         sent_visual_asset_ids: set[object] = set()
         sent_visuals: list[ChatModelVisualContent] = []
+        visual_decisions: dict[
+            tuple[object, object], VisualEvidenceDecision
+        ] = {}
         calculations: dict[str, DecimalCalculationFact] = {}
         calls = []
         events: list[ChatAgentTraceEvent] = []
@@ -297,9 +301,19 @@ class NativeToolCallingAgent:
                         evidence.append(item)
                 retrieval_calls += len(queries)
                 cumulative = _pack(context, evidence, strategy)
-                visual_state = await self._prepare_visuals(context, cumulative, tuple(calls))
+                visual_state = await self._prepare_visuals(
+                    context,
+                    cumulative,
+                    tuple(calls),
+                    previous_visuals=tuple(sent_visuals),
+                )
                 latest_visual_state = visual_state.answering
                 assert latest_visual_state is not None
+                for decision in latest_visual_state.visual_decisions:
+                    key = (decision.visual_unit_id, decision.asset_id)
+                    existing = visual_decisions.get(key)
+                    if existing is None or not existing.selected:
+                        visual_decisions[key] = decision
                 _assign_refs(
                     latest_visual_state.evidence,
                     cumulative.evidence,
@@ -519,6 +533,7 @@ class NativeToolCallingAgent:
                     calculation_calls,
                     latest_visual_state,
                     sent_visuals,
+                    tuple(visual_decisions.values()),
                     call.arguments,
                 )
 
@@ -598,6 +613,7 @@ class NativeToolCallingAgent:
             calculation_calls,
             latest_visual_state,
             sent_visuals,
+            tuple(visual_decisions.values()),
             forced_payload,
         )
 
@@ -640,6 +656,8 @@ class NativeToolCallingAgent:
         context: ChatExecutionContext,
         pack: EvidencePack,
         calls: tuple[Any, ...],
+        *,
+        previous_visuals: tuple[ChatModelVisualContent, ...],
     ) -> ChatPipelineState:
         envelope = build_evidence_envelope(pack)
         assessment = EvidenceAssessment(
@@ -657,7 +675,8 @@ class NativeToolCallingAgent:
                     assessment=assessment,
                     model_calls=calls,
                 ),
-            )
+            ),
+            previous_visuals=previous_visuals,
         )
 
 
@@ -1194,6 +1213,7 @@ def _final_state(
     calculation_calls: int,
     visual_state: ChatAnsweringState | None,
     sent_visuals: Sequence[ChatModelVisualContent],
+    visual_decisions: Sequence[VisualEvidenceDecision],
     raw_submission: Mapping[str, Any],
 ) -> ChatPipelineState:
     pack = _pack(context, evidence, strategy)
@@ -1221,6 +1241,12 @@ def _final_state(
         visual
         for visual in sent_visuals
         if all(citation_id in cited for citation_id in visual.citation_ids)
+    )
+    retained_asset_ids = {item.asset_id for item in retained_visuals}
+    final_visual_decisions = tuple(
+        item
+        for item in visual_decisions
+        if not item.selected or item.asset_id in retained_asset_ids
     )
     expected = validated.outcome
     serialized_submission = (
@@ -1260,7 +1286,7 @@ def _final_state(
             draft=draft,
             model_calls=calls,
             visual_content=retained_visuals,
-            visual_decisions=(visual_state.visual_decisions if visual_state else ()),
+            visual_decisions=final_visual_decisions,
             visual_total_bytes=sum(len(item.content) for item in retained_visuals),
             validated=validated,
             rendered=rendered,
@@ -1293,7 +1319,7 @@ def _refusal_answer() -> ValidatedAnswer:
 
 
 def _requires_loaded_visual(prompt: PromptEvidence) -> bool:
-    return prompt.modality == "image" or not any(
+    return not any(
         item in {"text", "caption_text", "ocr_text", "table_text"}
         for item in prompt.matched_representations
     )

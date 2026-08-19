@@ -205,9 +205,6 @@ def build_worker_dependencies(
             temperature=chat_settings.temperature,
             max_tokens=chat_settings.max_tokens,
             thinking_enabled=chat_settings.thinking_enabled,
-            max_visual_images=chat_settings.max_visual_images,
-            max_visual_image_bytes=chat_settings.max_visual_image_bytes,
-            max_visual_total_bytes=chat_settings.max_visual_total_bytes,
         )
         if chat_settings is not None
         else UnconfiguredChatModelAdapter()
@@ -310,10 +307,10 @@ def build_worker_dependencies(
     )
     visual_evidence_preparer = VisualEvidencePreparationStep(
         index_asset_service,
-        max_images=(chat_settings.max_visual_images if chat_settings else 2),
-        max_image_bytes=(chat_settings.max_visual_image_bytes if chat_settings else 5_242_880),
-        max_total_bytes=(chat_settings.max_visual_total_bytes if chat_settings else 12_582_912),
-        max_pixels=(chat_settings.max_visual_pixels if chat_settings else 16_000_000),
+        max_images=4,
+        max_image_bytes=5_242_880,
+        max_total_bytes=12_582_912,
+        max_pixels=16_000_000,
     )
     chat_delivery = resolved_settings.chat_delivery
     chat_preview_sink = (

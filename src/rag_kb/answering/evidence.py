@@ -29,18 +29,7 @@ def build_evidence_envelope(pack: EvidencePack) -> EvidenceEnvelope:
                 source_location=item.source_location,
                 score=item.score,
                 modality=item.modality,
-                asset_snapshot=(
-                    {
-                        "id": str(item.asset.id),
-                        "media_type": item.asset.media_type,
-                        "checksum_sha256": item.asset.checksum_sha256,
-                        "content_url": item.asset.content_url,
-                        "width": item.asset.width,
-                        "height": item.asset.height,
-                    }
-                    if item.asset is not None
-                    else None
-                ),
+                asset_snapshot=None,
                 matched_representations=item.matched_representations,
                 document_display_name=item.document_display_name or "document",
                 document_original_filename=item.document_original_filename or "document",

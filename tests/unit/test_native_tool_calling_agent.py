@@ -1779,6 +1779,121 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state.answering.rendered.citations, ())
         self.assertEqual(state.answering.visual_content, ())
 
+    async def test_caption_text_is_citable_when_frozen_vision_is_disabled(self) -> None:
+        context = replace(
+            _context(),
+            model_configuration={
+                "resolved_model": "fixed-model",
+                "max_tokens": 2048,
+                "vision_enabled": False,
+            },
+        )
+        native_pack, content, _ = _native_visual_pack(context)
+        caption_evidence = replace(
+            native_pack.evidence[0],
+            text="The caption states revenue reached 10.",
+            matched_representations=("caption_text",),
+        )
+        pack = replace(native_pack, evidence=(caption_evidence,))
+        reader = _AssetReader(content)
+        model = _Model(
+            ChatToolCall(
+                "search-caption",
+                "search_knowledge_base",
+                {"queries": ["revenue caption"]},
+            ),
+            ChatToolCall(
+                "submit-caption",
+                "submit_answer",
+                {
+                    "outcome": "answered",
+                    "claims": [
+                        {
+                            "text": "Revenue reached 10.",
+                            "kind": "fact",
+                            "evidence_refs": ["ev_1"],
+                            "calculation_refs": [],
+                        }
+                    ],
+                    "unanswered": [],
+                },
+            ),
+        )
+
+        state = await _agent(
+            model,
+            _Retriever(pack),
+            visual_preparer=VisualEvidencePreparationStep(reader),
+        ).run(context)
+
+        self.assertEqual(reader.asset_ids, [])
+        self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.ANSWERED)
+        self.assertEqual(state.answering.visual_content, ())
+        self.assertIsNone(state.answering.rendered.citations[0].asset_snapshot)
+
+    async def test_visual_budget_is_shared_across_distinct_searches(self) -> None:
+        context = replace(
+            _context(),
+            model_configuration={
+                "resolved_model": "fixed-model",
+                "max_tokens": 2048,
+                "vision_enabled": True,
+                "max_visual_images": 1,
+                "max_visual_image_bytes": 5_242_880,
+                "max_visual_total_bytes": 12_582_912,
+                "max_visual_pixels": 16_000_000,
+            },
+        )
+        first_pack, first_content, _ = _native_visual_pack(context)
+        second_pack, second_content, _ = _native_visual_pack(context)
+        reader = _AssetMapReader(first_content, second_content)
+        model = _Model(
+            ChatToolCall(
+                "search-first-visual",
+                "search_knowledge_base",
+                {"queries": ["first chart"]},
+            ),
+            ChatToolCall(
+                "search-second-visual",
+                "search_knowledge_base",
+                {"queries": ["second chart"]},
+            ),
+            ChatToolCall(
+                "submit-first-visual",
+                "submit_answer",
+                {
+                    "outcome": "answered",
+                    "claims": [
+                        {
+                            "text": "The first chart supports the answer.",
+                            "kind": "fact",
+                            "evidence_refs": ["ev_1"],
+                            "calculation_refs": [],
+                        }
+                    ],
+                    "unanswered": [],
+                },
+            ),
+        )
+
+        state = await _agent(
+            model,
+            _QueryRetriever(
+                {
+                    "first chart": first_pack,
+                    "second chart": second_pack,
+                }
+            ),
+            visual_preparer=VisualEvidencePreparationStep(reader),
+        ).run(context)
+
+        self.assertEqual(reader.asset_ids, [first_content.snapshot.id])
+        self.assertEqual(len(state.answering.visual_content), 1)
+        self.assertEqual(
+            [item.asset_id for item in state.answering.visual_decisions if item.selected],
+            [first_content.snapshot.id],
+        )
+
     async def test_more_than_legacy_evidence_limit_does_not_fail_the_answer(self) -> None:
         context = _context()
         model = _Model(

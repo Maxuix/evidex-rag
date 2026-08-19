@@ -60,7 +60,12 @@ class VisualEvidencePreparationStep:
         self._max_pixels = max_pixels
         self._admission_policy = admission_policy or VisualEvidenceAdmissionPolicy()
 
-    async def run(self, state: ChatPipelineState) -> ChatPipelineState:
+    async def run(
+        self,
+        state: ChatPipelineState,
+        *,
+        previous_visuals: tuple[ChatModelVisualContent, ...] = (),
+    ) -> ChatPipelineState:
         context = state.context
         pack = state.evidence_pack
         answering = state.answering
@@ -80,6 +85,13 @@ class VisualEvidencePreparationStep:
         visual_content: list[ChatModelVisualContent] = []
         evidence_items = list(answering.evidence.items)
         total_bytes = 0
+        previous_asset_ids = {item.asset_id for item in previous_visuals}
+        previous_total_bytes = sum(len(item.content) for item in previous_visuals)
+        vision_enabled, max_images, max_image_bytes, max_total_bytes, max_pixels = (
+            self._frozen_limits(context.model_configuration)
+        )
+        remaining_images = max(0, max_images - len(previous_visuals))
+        remaining_total_bytes = max(0, max_total_bytes - previous_total_bytes)
         auth = AuthContext(
             principal_id=context.principal_id,
             client_id=context.client_id,
@@ -93,7 +105,7 @@ class VisualEvidencePreparationStep:
             self._admission_policy.decide(
                 pack,
                 answering.assessment.usable_citation_ids,
-                max_images=self._max_images,
+                max_images=max_images,
             )
         )
         decision_indexes = {
@@ -101,7 +113,9 @@ class VisualEvidencePreparationStep:
             for index, item in enumerate(decisions)
         }
         for candidate in candidates:
-            if len(visual_content) >= self._max_images:
+            if candidate.asset.id in previous_asset_ids:
+                continue
+            if not vision_enabled or len(visual_content) >= remaining_images:
                 break
             evidence = candidate.parent_evidence
             citation_id = candidate.parent_citation_id
@@ -134,7 +148,7 @@ class VisualEvidencePreparationStep:
             if (
                 asset.width is None
                 or asset.height is None
-                or asset.width * asset.height > self._max_pixels
+                or asset.width * asset.height > max_pixels
             ):
                 _record_decision(
                     decisions,
@@ -182,8 +196,8 @@ class VisualEvidencePreparationStep:
 
             content_size = len(loaded.content)
             if (
-                content_size > self._max_image_bytes
-                or total_bytes + content_size > self._max_total_bytes
+                content_size > max_image_bytes
+                or total_bytes + content_size > remaining_total_bytes
             ):
                 _record_decision(
                     decisions,
@@ -197,6 +211,17 @@ class VisualEvidencePreparationStep:
             try:
                 visual_citation_id = citation_id
                 prompt_visual = None
+                asset_snapshot = {
+                    "id": str(asset.id),
+                    "media_type": asset.media_type,
+                    "checksum_sha256": asset.checksum_sha256,
+                    "content_url": asset.content_url,
+                    "width": asset.width,
+                    "height": asset.height,
+                    "visual_unit_id": str(candidate.visual_unit_id),
+                    "parent_citation_id": citation_id,
+                    "selection_reason": candidate.reason_code.value,
+                }
                 if candidate.relation_type is not None:
                     visual_rank = len(evidence_items) + 1
                     visual_citation_id = f"cite_{visual_rank}"
@@ -215,16 +240,8 @@ class VisualEvidencePreparationStep:
                         score=evidence.score,
                         modality=candidate.modality,
                         asset_snapshot={
-                            "id": str(asset.id),
-                            "media_type": asset.media_type,
-                            "checksum_sha256": asset.checksum_sha256,
-                            "content_url": asset.content_url,
-                            "width": asset.width,
-                            "height": asset.height,
-                            "visual_unit_id": str(candidate.visual_unit_id),
-                            "parent_citation_id": citation_id,
+                            **asset_snapshot,
                             "relation_type": candidate.relation_type.value,
-                            "selection_reason": candidate.reason_code.value,
                         },
                         matched_representations=(
                             "table_image"
@@ -258,6 +275,12 @@ class VisualEvidencePreparationStep:
             visual_content.append(visual)
             if candidate.relation_type is None:
                 attached_native_citation_ids.add(citation_id)
+                evidence_items = [
+                    replace(item, asset_snapshot=asset_snapshot)
+                    if item.citation_id == citation_id
+                    else item
+                    for item in evidence_items
+                ]
             if prompt_visual is not None:
                 evidence_items.append(prompt_visual)
             _record_decision(
@@ -271,6 +294,18 @@ class VisualEvidencePreparationStep:
                     usable.append(visual_citation_id)
                 usable_set.add(visual_citation_id)
             total_bytes += content_size
+
+        attached_or_previous = previous_asset_ids | {
+            item.asset_id for item in visual_content
+        }
+        for candidate in candidates:
+            if candidate.asset.id not in attached_or_previous:
+                _record_decision(
+                    decisions,
+                    decision_indexes,
+                    candidate,
+                    VisualEvidenceReason.REJECTED_VISUAL_BUDGET,
+                )
 
         for evidence in pack.evidence:
             citation_id = f"cite_{evidence.rank}"
@@ -311,6 +346,40 @@ class VisualEvidencePreparationStep:
             ),
             query_context=state.query_context,
             artifacts=state.artifacts,
+        )
+
+    def _frozen_limits(
+        self,
+        configuration,
+    ) -> tuple[bool, int, int, int, int]:
+        vision_enabled = configuration.get("vision_enabled", True)
+        if not isinstance(vision_enabled, bool):
+            raise _context_error("visual_configuration")
+
+        def bounded(name: str, hard_limit: int) -> int:
+            value = configuration.get(name, hard_limit)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise _context_error("visual_configuration")
+            return min(value, hard_limit)
+
+        max_images = bounded("max_visual_images", self._max_images)
+        max_image_bytes = bounded(
+            "max_visual_image_bytes",
+            self._max_image_bytes,
+        )
+        max_total_bytes = bounded(
+            "max_visual_total_bytes",
+            self._max_total_bytes,
+        )
+        max_pixels = bounded("max_visual_pixels", self._max_pixels)
+        if max_total_bytes < max_image_bytes:
+            raise _context_error("visual_configuration")
+        return (
+            vision_enabled,
+            max_images,
+            max_image_bytes,
+            max_total_bytes,
+            max_pixels,
         )
 
 

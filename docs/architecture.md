@@ -385,6 +385,11 @@ ResearchResult/SearchTrace 诊断；核心 ChatRun、消息、答案、Citation�
 - Graphiti supplement 水合后的 text/table Chunk 同时保留 `graph_path` provenance 与对应的
   `text`/`table_text` 表示；路径 provenance 不是视觉形态，只有缺少可引用文本表示的纯视觉
   Evidence 才必须先实际加载资产。
+- 视觉开关和图片数、单图 bytes、运行总 bytes、pixels 限额取自 ChatRun 创建时冻结的模型配置，
+  并在整个 Agent run 内累计消费；进程 adapter 只执行不可变硬上限。caption/OCR/table text 是
+  可独立引用的文本表示，即使原 Chunk modality 为 image 也不要求发送图片。citation 的 asset
+  snapshot 只在对应资产通过授权与完整性检查并实际发送后附加，终态 visual content、decision
+  与 snapshot 均按 asset identity 对齐。
 - Agent 自行决定需要检索和引用哪些文档；服务端不从题面文件名生成 required Document 清单，
   也不以文档覆盖率改变回答结果。
 - 最终答案、assistant message、Citation 和 ChatRun 终态在同一所有权边界提交。
@@ -431,6 +436,8 @@ chunk 预览/排除、检索 debug，以及知识库/Session 选择、统一 Nat
 - 数据库事务短小，外部 I/O 在事务外；过期 Worker attempt 不能覆盖新终态。
 - 文件删除和本地数据 reset 属于破坏性操作，必须明确目标并得到用户授权。
 - 引用和视觉资产在返回前重新限定 workspace/KB/version，并验证稳定身份。
+- `vision_enabled=false` 时不读取或发送视觉资产；多轮检索不会重置视觉预算，也不会把未发送的
+  table/image asset 复制进 citation snapshot。
 
 索引 job、ChatRun lease、heartbeat、有限重试和文件协调是当前单 Worker 闭环的一部分。普通
 轮询直接尝试原子 claim，不先执行只读队列探测；stale reconciliation 启动时执行，之后每
