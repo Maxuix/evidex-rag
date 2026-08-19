@@ -1289,7 +1289,6 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
             worker_id=worker_id,
             heartbeat_interval_seconds=0.02,
             stale_after_seconds=stale_after,
-            deadline_seconds=10,
             retry_policy=RetryPolicy(max_attempts, 1, 2),
             reconciliation_batch_size=10,
             clock=clock,

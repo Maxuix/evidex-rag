@@ -3,8 +3,25 @@
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-STATE_FILE=${RAG_KB_LOCAL_COMPOSE_ENV_FILE:-"$ROOT/.env.local"}
-APP_ENV_FILE=${RAG_KB_LOCAL_APP_ENV_FILE:-"$ROOT/.env"}
+GIT_COMMON_DIRECTORY=
+if command -v git >/dev/null 2>&1; then
+  GIT_COMMON_DIRECTORY=$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
+fi
+case "$GIT_COMMON_DIRECTORY" in
+  */.git) LOCAL_CONFIG_ROOT=$(dirname -- "$GIT_COMMON_DIRECTORY") ;;
+  *) LOCAL_CONFIG_ROOT=$ROOT ;;
+esac
+
+STATE_FILE=${RAG_KB_LOCAL_COMPOSE_ENV_FILE:-"$LOCAL_CONFIG_ROOT/.env.local"}
+if [ -n "${RAG_KB_LOCAL_APP_ENV_FILE:-}" ]; then
+  APP_ENV_FILE=$RAG_KB_LOCAL_APP_ENV_FILE
+elif [ -f "$LOCAL_CONFIG_ROOT/.env" ]; then
+  APP_ENV_FILE="$LOCAL_CONFIG_ROOT/.env"
+else
+  APP_ENV_FILE="$LOCAL_CONFIG_ROOT/.env.example"
+fi
+COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME:-$(basename "$LOCAL_CONFIG_ROOT" | tr '[:upper:]' '[:lower:]')}
+export COMPOSE_PROJECT_NAME
 LOG_DIRECTORY="$ROOT/.runtime/logs"
 
 fail() {
@@ -75,7 +92,7 @@ write_state_file() {
 }
 
 compose() {
-  docker compose --env-file "$STATE_FILE" "$@"
+  RAG_KB_ENV_FILE="$APP_ENV_FILE" docker compose --env-file "$STATE_FILE" "$@"
 }
 
 run_compose() {
@@ -158,7 +175,10 @@ unset POSTGRES_ADMIN_PASSWORD RAG_KB_MIGRATION_PASSWORD RAG_KB_RUNTIME_PASSWORD
 unset RAG_KB_LOCAL_DATABASE_PASSWORD
 
 printf 'Using %s from %s (mode 600; values are not printed).\n' "$credential_source" "$STATE_FILE"
+printf 'Using shared Compose project %s for this repository.\n' "$COMPOSE_PROJECT_NAME"
 run_compose "Starting PostgreSQL..." up -d --wait postgres
+run_compose "Reconciling PostgreSQL roles and credentials..." \
+  exec -T postgres /docker-entrypoint-initdb.d/10-init-runtime.sh
 run_compose "Building the shared application and frontend images..." \
   build api frontend
 run_compose "Preparing local source storage..." up storage-init

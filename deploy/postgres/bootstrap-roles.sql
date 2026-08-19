@@ -3,6 +3,13 @@
 -- Passwords are supplied as psql variables by local tooling; no credential is
 -- stored in this file. Roles are fixed because Alembic grants are immutable.
 SELECT format(
+    'ALTER ROLE %I PASSWORD %L',
+    :'admin_user',
+    :'admin_password'
+)
+\gexec
+
+SELECT format(
     'CREATE ROLE rag_kb_migration LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION',
     :'migration_password'
 )

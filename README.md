@@ -6,7 +6,7 @@ retrieval, and chatting with source citations.
 
 ## Start
 
-Copy `.env.example` to `.env`, replace the database placeholders, then run:
+Run:
 
 ```bash
 ./start-local.sh
@@ -17,12 +17,17 @@ Open:
 - User Chat: <http://127.0.0.1:3000>
 - API docs: <http://127.0.0.1:8000/api/v1/docs>
 
-The starter manages the local database password in ignored `.env.local`, runs
-migrations, rebuilds the API/Worker and frontend images with Docker layer
-cache, starts all services, and waits for health. Existing database and file
-volumes are retained. Local image builds default to HTTPS TUNA mirrors for PyPI
-and the Debian main repository while retaining Debian's official security
-repository; build-only mirror URLs remain explicitly overridable.
+The starter resolves the repository's primary worktree through Git, so linked
+worktrees use the same ignored `.env.local`, optional `.env`, and stable Compose
+project instead of inventing new credentials or databases. It reconciles the
+admin, migration, and runtime role credentials before running migrations,
+rebuilds the API/Worker and frontend images with Docker layer cache, starts all
+services, and waits for health. Existing database and file volumes are retained.
+Copy `.env.example` to the primary worktree's `.env` only when local application
+overrides are needed; database credentials remain starter-managed. Local image
+builds default to HTTPS TUNA mirrors for PyPI and the Debian main repository
+while retaining Debian's official security repository; build-only mirror URLs
+remain explicitly overridable.
 
 The default environment has no legacy model provider. After startup, use the
 bottom-right model settings in Web Chat to add, validate, and select Chat and
@@ -65,6 +70,23 @@ boundaries, unit/contract tests protect behavior and public schemas, and
 database integration tests own migration and catalog invariants. Redundant
 source-shape, ORM inventory, retired-setting, and example-file snapshot tests
 are not kept as parallel gates.
+
+Database integration tests use a dedicated runner instead of the personal
+database:
+
+```bash
+python3 tools/run_database_tests.py
+python3 tools/run_database_tests.py \
+  tests.integration.db.test_schema.DatabaseSchemaTests.test_runtime_role_is_dml_only_and_readiness_is_read_only \
+  -v
+```
+
+Each invocation uses the already-present pinned PostgreSQL image without
+pulling, starts a uniquely named container on a Docker-chosen loopback port,
+uses passwordless `trust` authentication only inside that temporary instance,
+migrates its empty tmpfs database, runs the requested `unittest` targets, and
+removes the container. It finds the primary worktree's Python 3.12 virtual
+environment when the current linked worktree has no `.venv`.
 
 ## Useful Commands
 

@@ -159,18 +159,36 @@ class StartLocalScriptTests(unittest.TestCase):
         container: bool,
         volume: bool = False,
         credentials: dict[str, str] | None = None,
+        use_shared_defaults: bool = False,
     ) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
         fake_bin = directory / "bin"
         fake_bin.mkdir()
         log = directory / "docker.log"
-        state_file = directory / ".env.local"
-        app_env = directory / ".env"
+        primary = directory / "primary"
+        (primary / ".git").mkdir(parents=True)
+        state_file = (
+            primary / ".env.local"
+            if use_shared_defaults
+            else directory / ".env.local"
+        )
+        app_env = (
+            primary / ".env.example"
+            if use_shared_defaults
+            else directory / ".env"
+        )
         app_env.write_text("RAG_KB__APP__BIND_HOST=127.0.0.1\n")
+        git = fake_bin / "git"
+        git.write_text(
+            "#!/bin/sh\nprintf '%s\\n' \"$FAKE_GIT_COMMON_DIR\"\n",
+            encoding="utf-8",
+        )
+        git.chmod(0o755)
         docker = fake_bin / "docker"
         docker.write_text(
             textwrap.dedent(
-                """+                #!/bin/sh
-                printf '%s\n' "$*" >>"$FAKE_DOCKER_LOG"
+                """\
+                #!/bin/sh
+                printf 'project=%s %s\n' "$COMPOSE_PROJECT_NAME" "$*" >>"$FAKE_DOCKER_LOG"
                 if [ "$1 $2 $3 $4" = "compose ps -aq postgres" ]; then
                   [ "$FAKE_CONTAINER" = "1" ] && printf 'postgres-container\n'
                   exit 0
@@ -197,14 +215,21 @@ class StartLocalScriptTests(unittest.TestCase):
             "FAKE_DOCKER_LOG": str(log),
             "FAKE_CONTAINER": "1" if container else "0",
             "FAKE_VOLUME": "1" if volume else "0",
-            "RAG_KB_LOCAL_COMPOSE_ENV_FILE": str(state_file),
-            "RAG_KB_LOCAL_APP_ENV_FILE": str(app_env),
+            "FAKE_GIT_COMMON_DIR": str(primary / ".git"),
         }
+        if not use_shared_defaults:
+            environment.update(
+                {
+                    "RAG_KB_LOCAL_COMPOSE_ENV_FILE": str(state_file),
+                    "RAG_KB_LOCAL_APP_ENV_FILE": str(app_env),
+                }
+            )
         for name in (
             "POSTGRES_ADMIN_PASSWORD",
             "RAG_KB_MIGRATION_PASSWORD",
             "RAG_KB_RUNTIME_PASSWORD",
             "RAG_KB_LOCAL_DATABASE_PASSWORD",
+            "COMPOSE_PROJECT_NAME",
         ):
             environment.pop(name, None)
         if credentials is not None:
@@ -238,6 +263,11 @@ class StartLocalScriptTests(unittest.TestCase):
                 f"compose --env-file {state_file} up -d --wait postgres",
                 calls,
             )
+            reconcile_call = (
+                f"compose --env-file {state_file} exec -T postgres "
+                "/docker-entrypoint-initdb.d/10-init-runtime.sh"
+            )
+            self.assertIn(reconcile_call, calls)
             build_call = (
                 f"compose --env-file {state_file} build api frontend"
             )
@@ -257,6 +287,13 @@ class StartLocalScriptTests(unittest.TestCase):
                 calls,
             )
             self.assertLess(
+                calls.index(reconcile_call),
+                calls.index(
+                    f"compose --env-file {state_file} --profile tools run "
+                    "--rm migrate"
+                ),
+            )
+            self.assertLess(
                 calls.index(build_call),
                 calls.index(
                     f"compose --env-file {state_file} --profile tools run "
@@ -265,6 +302,27 @@ class StartLocalScriptTests(unittest.TestCase):
             )
             self.assertIn("User Chat: http://127.0.0.1:3000", completed.stdout)
             self.assertNotIn("Diagnostic UI", completed.stdout)
+
+    def test_uses_git_common_config_and_project_across_worktrees(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_directory:
+            directory = Path(raw_directory)
+            completed, state_file, log = self._run(
+                directory,
+                container=False,
+                use_shared_defaults=True,
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertEqual(state_file, directory / "primary" / ".env.local")
+            self.assertTrue(state_file.is_file())
+            state = state_file.read_text(encoding="utf-8")
+            self.assertIn(
+                f"RAG_KB_ENV_FILE={directory / 'primary' / '.env.example'}",
+                state,
+            )
+            calls = log.read_text(encoding="utf-8")
+            self.assertIn("project=primary compose ps -aq postgres", calls)
+            self.assertIn("Using shared Compose project primary", completed.stdout)
 
     def test_persists_three_shell_credentials_and_reuses_them(self) -> None:
         credentials = {

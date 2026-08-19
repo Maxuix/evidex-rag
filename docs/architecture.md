@@ -447,9 +447,13 @@ Layout、Table、页面装配和文档装配计数；数据库只保存固定 al
 类型、索引和约束。当前没有 metrics、告警、分布式 tracing 或生产值班平台，本地范围也不
 需要这些外部控制面。
 
-首次配置从 `.env.example` 复制 `.env`，替换数据库占位值；模型凭据通过 Web Chat 右下角的
-模型设置维护，不提交到仓库。`./start-local.sh` 创建或复用被忽略的 `.env.local`、执行迁移、
-构建并启动服务。常用命令：
+`./start-local.sh` 通过 Git common directory 定位主 worktree，使同一仓库的 linked worktree
+共享主 worktree 中被忽略的 `.env.local`、可选 `.env` 与稳定 Compose project；不会再按
+worktree 各自生成数据库身份。每次启动 PostgreSQL 后，它通过容器内本地 socket 幂等校准
+admin、migration、runtime 三个角色的密码、database/schema owner 和基础连接权限，再执行
+Alembic。角色校准不会重置业务卷或改写业务数据；随后仍按原流程升级到 Alembic head。没有
+`.env` 时直接使用 `.env.example`；需要本地应用覆盖时才在主 worktree 创建 `.env`。模型凭据
+通过 Web Chat 右下角的模型设置维护，不提交到仓库。常用命令：
 
 ```bash
 ./start-local.sh
@@ -458,6 +462,7 @@ docker compose --env-file .env.local logs --no-color api worker
 PYTHONPATH=src:. .venv/bin/python tools/collect_diagnostics.py
 PYTHONPATH=src:. .venv/bin/python tools/smoke_local.py
 docker compose --env-file .env.local down
+python3 tools/run_database_tests.py
 ```
 
 测试使用 `unittest`，现有目录包括 `tests/basic`、`tests/unit`、`tests/contract` 和
@@ -465,6 +470,11 @@ docker compose --env-file .env.local down
 
 - Python 行为变化至少运行 basic suite 和最接近变更的聚焦测试。
 - 数据库迁移、并发或 repository 行为变化才运行相关数据库 integration。
+- 数据库 integration 只通过 `tools/run_database_tests.py` 运行：每次创建唯一命名、Docker 动态
+  loopback 端口、tmpfs 数据目录和 `trust` 无密码认证的一次性 PostgreSQL，从空库迁移后注入
+  测试 DSN，结束时校验 owner label 并清理容器。它不读取持久库 `.env.local`，也不连接或
+  TRUNCATE 个人数据库，不自动拉取缺失镜像；linked worktree 缺少 `.venv` 时复用主 worktree
+  的 Python 3.12 环境。
 - 改哪个前端就构建哪个前端；不要求无关前端同时构建。
 - 纯文档变更只需检查链接、路径和 Markdown/diff，不运行应用测试。
 - 每个不变量只在最低且最有证明力的层级保留测试：basic 负责导入和依赖边界，unit/contract
