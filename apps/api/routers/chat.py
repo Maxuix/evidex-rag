@@ -17,6 +17,7 @@ from apps.api.pagination import decode_cursor, encode_cursor
 from apps.api.security import get_auth_context
 from rag_kb.auth import AuthContext
 from rag_kb.domain import (
+    CHAT_GRAPHITI_ROUTE_REASONS,
     ChatMessage,
     ChatProgressSnapshot,
     ChatRun,
@@ -351,7 +352,7 @@ def _run_response(value: ChatRun) -> ChatRunResponse:
 
 
 def _retrieval_response(value: ChatRun) -> dict[str, object]:
-    strategy, top_k, rerank_mode, _augmentation = parse_chat_retrieval_snapshot(
+    strategy, top_k, rerank_mode, _execution_type = parse_chat_retrieval_snapshot(
         value.retrieval_strategy
     )
     return {
@@ -455,7 +456,7 @@ def _agent_response(value: ChatRun) -> ChatAgentResponse:
         return ChatAgentResponse.model_validate(
             {
                 **value.agent_configuration,
-                "trace": value.agent_trace,
+                "trace": _public_agent_trace(value.agent_trace),
             }
         )
     except ValueError as error:
@@ -465,6 +466,33 @@ def _agent_response(value: ChatRun) -> ChatAgentResponse:
             title="Chat agent state invalid",
             detail="The persisted ChatRun agent state is invalid.",
         ) from error
+
+
+def _public_agent_trace(value: dict[str, object] | None) -> dict[str, object] | None:
+    """Expose only the public tool names and trace fields in the API."""
+
+    if value is None:
+        return None
+    trace = dict(value)
+    events = trace.get("events")
+    if isinstance(events, list):
+        internal_keys = {"rejected_claim_count", "rejection_reasons", "submit_only_repair"}
+        public_events: list[object] = []
+        for event in events:
+            if not isinstance(event, dict):
+                public_events.append(event)
+                continue
+            public_event = {
+                key: item for key, item in event.items() if key not in internal_keys
+            }
+            if event.get("retrieval_lane") == "graphiti_supplement":
+                if event.get("tool") == "graphiti_supplement":
+                    public_event["tool"] = "search_knowledge_base"
+                if public_event.get("route_reason_code") not in CHAT_GRAPHITI_ROUTE_REASONS:
+                    public_event.pop("route_reason_code", None)
+            public_events.append(public_event)
+        trace["events"] = public_events
+    return trace
 
 
 def _run_error(value: ChatRun) -> ChatRunErrorResponse | None:

@@ -7,9 +7,17 @@ import json
 import unittest
 from uuid import uuid4
 
-from rag_kb.answering.agent import AGENT_TRACE_ARTIFACT, NativeToolCallingAgent
+from rag_kb.answering.agent import (
+    AGENT_TRACE_ARTIFACT,
+    NativeToolCallingAgent,
+    _initial_messages,
+    _search_arguments,
+    _supplement_arguments,
+    _tools,
+)
 from rag_kb.domain import (
     AnswerOutcome,
+    CHAT_GRAPHITI_ROUTE_REASONS,
     ChatAgentBudget,
     ChatExecutionContext,
     ChatModelExecutionError,
@@ -24,6 +32,7 @@ from rag_kb.domain import (
     EvidencePack,
     EvidenceScoreKind,
     ErrorCode,
+    GraphitiSupplementResult,
     IndexAssetContent,
     IndexAssetSnapshot,
     RelatedVisualEvidence,
@@ -79,6 +88,30 @@ class _QueryRetriever:
         return self.packs_by_query[query]
 
 
+class _AdaptiveRetriever(_Retriever):
+    def __init__(
+        self,
+        pack: EvidencePack,
+        supplement: GraphitiSupplementResult,
+    ) -> None:
+        super().__init__(pack)
+        self.supplement = supplement
+        self.supplement_queries = []
+        self.supplement_exclusions = []
+
+    async def retrieve_graphiti_supplement(
+        self,
+        context,
+        query,
+        *,
+        excluded_index_chunk_ids,
+    ):
+        del context
+        self.supplement_queries.append(query)
+        self.supplement_exclusions.append(tuple(excluded_index_chunk_ids))
+        return self.supplement
+
+
 class _AssetReader:
     def __init__(self, content: IndexAssetContent) -> None:
         self.content = content
@@ -129,6 +162,20 @@ def _context() -> ChatExecutionContext:
     )
 
 
+def _adaptive_context() -> ChatExecutionContext:
+    return replace(
+        _context(),
+        retrieval_strategy={
+            "profile_version": "adaptive_graphiti_v1",
+            "strategy": "exact_vector",
+            "top_k": 3,
+            "rerank_mode": "none",
+            "router": "native_agent_evidence_aware_v1",
+            "augmentation": "graphiti_edge_v1",
+        },
+    )
+
+
 def _pack(
     context: ChatExecutionContext,
     *,
@@ -159,6 +206,30 @@ def _pack(
                 document_original_filename="report.pdf",
             )
             for index in range(1, count + 1)
+        ),
+    )
+
+
+def _graphiti_pack(
+    context: ChatExecutionContext,
+    *,
+    text: str = "Graphiti source",
+) -> EvidencePack:
+    base = _pack(context, text=text)
+    source = base.evidence[0]
+    return replace(
+        base,
+        evidence=(
+            replace(
+                source,
+                score=1.0,
+                score_kind=EvidenceScoreKind.GRAPH_PATH,
+                vector_similarity=None,
+                graph_path_id="supplement-path",
+                graph_anchor_index_chunk_id=source.index_chunk_id,
+                graph_hop_count=1,
+                graph_path_rank=1,
+            ),
         ),
     )
 
@@ -293,6 +364,106 @@ def _same_unit_table_visual_pack(
 
 
 class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
+    def test_adaptive_prompt_does_not_claim_a_fixed_tool_count(self) -> None:
+        prompt = _initial_messages(
+            _adaptive_context(),
+            ChatAgentBudget(),
+            adaptive=True,
+        )[0].content
+
+        self.assertNotIn("three supplied tools", prompt)
+        self.assertIn("currently supplied tools", prompt)
+        self.assertIn("last-hop relation", prompt)
+
+    def test_route_reason_contract_has_no_unreachable_reason(self) -> None:
+        self.assertEqual(
+            CHAT_GRAPHITI_ROUTE_REASONS,
+            frozenset(
+                {
+                    "cross_document_relation_gap",
+                    "entity_alias_gap",
+                    "relation_chain_gap",
+                }
+            ),
+        )
+        self.assertEqual(
+            _supplement_arguments(
+                {
+                    "query": "relation",
+                    "route_reason_code": "relation_chain_gap",
+                }
+            ),
+            ("relation", "relation_chain_gap"),
+        )
+        self.assertIsNone(
+            _supplement_arguments(
+                {
+                    "query": "relation",
+                    "route_reason_code": "relational_query_without_simple_evidence",
+                }
+            )
+        )
+
+    def test_adaptive_schema_parser_and_late_visibility_are_consistent(self) -> None:
+        initial = _tools(
+            adaptive=True,
+            graphiti_enabled=False,
+            round_number=1,
+            max_model_rounds=8,
+        )
+        eligible = _tools(
+            adaptive=True,
+            graphiti_enabled=True,
+            round_number=6,
+            max_model_rounds=8,
+        )
+        late = _tools(
+            adaptive=True,
+            graphiti_enabled=True,
+            round_number=7,
+            max_model_rounds=8,
+        )
+        self.assertNotIn("graphiti_supplement", [tool.name for tool in initial])
+        self.assertIn("graphiti_supplement", [tool.name for tool in eligible])
+        self.assertNotIn("graphiti_supplement", [tool.name for tool in late])
+        search_schema = next(
+            tool.input_schema for tool in eligible if tool.name == "search_knowledge_base"
+        )
+        supplement_schema = next(
+            tool.input_schema for tool in eligible if tool.name == "graphiti_supplement"
+        )
+        self.assertEqual(tuple(search_schema["required"]), ("queries",))
+        self.assertEqual(
+            set(supplement_schema["required"]), {"query", "route_reason_code"}
+        )
+        self.assertEqual(_search_arguments({"queries": ["one", "two"]}), ("one", "two"))
+        self.assertIsNone(
+            _search_arguments(
+                {
+                    "retrieval_lane": "simple",
+                    "queries": ["one"],
+                }
+            )
+        )
+        self.assertEqual(
+            _supplement_arguments(
+                {
+                    "query": "relation",
+                    "route_reason_code": "cross_document_relation_gap",
+                }
+            ),
+            ("relation", "cross_document_relation_gap"),
+        )
+        self.assertEqual(
+            _supplement_arguments(
+                {
+                    "query": "relation",
+                    "route_reason_code": "relation_chain_gap",
+                }
+            ),
+            ("relation", "relation_chain_gap"),
+        )
+
     def test_only_model_rounds_are_configured_as_a_loop_guard(self) -> None:
         self.assertEqual(ChatAgentBudget().as_dict(), {"max_model_rounds": 8})
         for value in (True, 1.5):
@@ -417,6 +588,115 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
             {"max_model_rounds": 8},
         )
 
+    async def test_adaptive_graphiti_is_simple_first_and_appends_one_supplement(self) -> None:
+        context = _adaptive_context()
+        simple_pack = _pack(context, text="Simple source", count=1)
+        supplement_pack = _graphiti_pack(context, text="Graphiti source")
+        retriever = _AdaptiveRetriever(
+            simple_pack,
+            GraphitiSupplementResult("admitted", supplement_pack.evidence),
+        )
+        model = _Model(
+            ChatToolCall(
+                "simple-1",
+                "search_knowledge_base",
+                {"queries": ["revenue"]},
+            ),
+            ChatToolCall(
+                "graph-1",
+                "graphiti_supplement",
+                {
+                    "query": "revenue relation",
+                    "route_reason_code": "cross_document_relation_gap",
+                },
+            ),
+            ChatToolCall(
+                "submit-1",
+                "submit_answer",
+                {"outcome": "refused", "claims": [], "unanswered": []},
+            ),
+        )
+
+        state = await _agent(model, retriever).run(context)
+
+        self.assertEqual(retriever.queries, ["revenue"])
+        self.assertEqual(retriever.supplement_queries, ["revenue relation"])
+        self.assertEqual(state.artifacts[AGENT_TRACE_ARTIFACT].retrieval_calls, 2)
+        graph_event = state.artifacts[AGENT_TRACE_ARTIFACT].events[1]
+        self.assertEqual(graph_event.tool, "search_knowledge_base")
+        self.assertEqual(graph_event.retrieval_lane, "graphiti_supplement")
+        self.assertEqual(graph_event.route_result_code, "admitted")
+        self.assertEqual(graph_event.new_evidence_count, 1)
+        self.assertIn(
+            "graphiti_supplement",
+            [tool.name for tool in model.requests[1].tools],
+        )
+        self.assertNotIn(
+            "retrieval_lane",
+            model.requests[0].tools[0].input_schema["properties"],
+        )
+        self.assertNotIn("edge-fact", model.requests[2].messages[-1].content)
+
+    async def test_adaptive_graphiti_rejects_graph_before_simple_and_repeated_graph(self) -> None:
+        context = _adaptive_context()
+        retriever = _AdaptiveRetriever(
+            _pack(context),
+            GraphitiSupplementResult("no_new_evidence"),
+        )
+        model = _Model(
+            ChatToolCall(
+                "graph-before-simple",
+                "graphiti_supplement",
+                {
+                    "query": "relation",
+                    "route_reason_code": "relation_chain_gap",
+                },
+            ),
+            ChatToolCall(
+                "simple-1",
+                "search_knowledge_base",
+                {"queries": ["relation"]},
+            ),
+            ChatToolCall(
+                "graph-1",
+                "graphiti_supplement",
+                {
+                    "query": "relation",
+                    "route_reason_code": "cross_document_relation_gap",
+                },
+            ),
+            ChatToolCall(
+                "graph-2",
+                "graphiti_supplement",
+                {
+                    "query": "relation again",
+                    "route_reason_code": "entity_alias_gap",
+                },
+            ),
+            ChatToolCall(
+                "submit-1",
+                "submit_answer",
+                {"outcome": "refused", "claims": [], "unanswered": []},
+            ),
+        )
+
+        state = await _agent(model, retriever).run(context)
+
+        self.assertEqual(retriever.supplement_queries, ["relation"])
+        self.assertEqual(state.artifacts[AGENT_TRACE_ARTIFACT].retrieval_calls, 2)
+        route_events = [
+            event
+            for event in state.artifacts[AGENT_TRACE_ARTIFACT].events
+            if event.retrieval_lane == "graphiti_supplement"
+        ]
+        self.assertEqual(
+            [event.route_result_code for event in route_events],
+            ["rejected", "no_new_evidence", "rejected"],
+        )
+        self.assertTrue(
+            all(event.tool == "search_knowledge_base" for event in route_events)
+        )
+
     async def test_profile_output_limit_is_forwarded_without_agent_clamping(self) -> None:
         context = replace(
             _context(),
@@ -456,8 +736,65 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.PARTIAL)
         self.assertEqual(len(state.answering.validated.claims), 1)
-        self.assertIn("invalid evidence", state.answering.rendered.content)
+        self.assertNotIn("invalid evidence", state.answering.rendered.content.lower())
+        self.assertNotIn("evidence references", state.answering.rendered.content.lower())
+        self.assertEqual(
+            state.answering.validated.missing_aspects,
+            ("Some requested parts remain unanswered",),
+        )
         self.assertEqual(state.artifacts[AGENT_TRACE_ARTIFACT].events[-1].status, "salvaged")
+
+    async def test_all_invalid_claims_get_one_submit_only_repair_with_usable_pool(self) -> None:
+        context = _context()
+        model = _Model(
+            ChatToolCall("search-1", "search_knowledge_base", {"queries": ["revenue"]}),
+            ChatToolCall(
+                "submit-invalid",
+                "submit_answer",
+                {
+                    "outcome": "answered",
+                    "claims": [
+                        {
+                            "text": "Revenue was 10.",
+                            "kind": "fact",
+                            "evidence_refs": ["ev_other_run"],
+                            "calculation_refs": [],
+                        }
+                    ],
+                    "unanswered": [],
+                },
+            ),
+            ChatToolCall(
+                "submit-repair",
+                "submit_answer",
+                {
+                    "outcome": "answered",
+                    "claims": [
+                        {
+                            "text": "Revenue was 10.",
+                            "kind": "fact",
+                            "evidence_refs": ["ev_1"],
+                            "calculation_refs": [],
+                        }
+                    ],
+                    "unanswered": [],
+                },
+            ),
+        )
+
+        state = await _agent(model, _Retriever(_pack(context))).run(context)
+
+        self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.ANSWERED)
+        self.assertEqual(len(model.requests), 3)
+        self.assertEqual(
+            tuple(tool.name for tool in model.requests[2].tools),
+            ("submit_answer",),
+        )
+        self.assertEqual(
+            state.artifacts[AGENT_TRACE_ARTIFACT].retrieval_calls,
+            1,
+        )
+        self.assertNotIn("ev_other_run", model.requests[2].messages[-1].content)
 
     async def test_active_partial_submission_preserves_unanswered_aspects(self) -> None:
         context = _context()

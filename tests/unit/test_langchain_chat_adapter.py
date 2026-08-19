@@ -130,6 +130,29 @@ class LangChainChatAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(model.calls[0][2], ToolMessage)
         self.assertEqual(model.bindings[0][1]["tool_choice"]["function"]["name"], "submit_answer")
 
+    async def test_nested_frozen_tool_arguments_are_counted(self) -> None:
+        model = _ToolModel(
+            AIMessage(content="ok", response_metadata={"model_name": "resolved-model"})
+        )
+        prior = ChatToolCall(
+            "call-nested",
+            "submit_answer",
+            {
+                "outcome": "partial",
+                "claims": [{"text": "claim", "citation_ids": ["cite_1"]}],
+                "unanswered": ["remaining"],
+            },
+        )
+        await _adapter(model).complete(
+            ChatModelRequest(
+                messages=(
+                    ChatModelMessage("user", "question"),
+                    ChatModelMessage("assistant", "", tool_calls=(prior,)),
+                ),
+            )
+        )
+        self.assertIsInstance(model.calls[0][1], AIMessage)
+
     async def test_visual_evidence_is_sent_after_tool_result(self) -> None:
         model = _ToolModel(AIMessage(content="ok", response_metadata={"model_name": "resolved-model"}))
         await _adapter(model).complete(

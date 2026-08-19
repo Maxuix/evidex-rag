@@ -33,7 +33,11 @@ from rag_kb.domain import (
     canonical_request_hash,
     resolve_p1_policy,
 )
-from rag_kb.retrieval.profile import RetrievalExecutionProfile, graph_profile
+from rag_kb.retrieval.profile import (
+    RetrievalExecutionProfile,
+    adaptive_graphiti_profile,
+    graph_profile,
+)
 from rag_kb.memory import (
     ConversationContextSelector,
     serialize_contextualized_query,
@@ -198,7 +202,7 @@ class ChatService:
         model_profile_revision_id: UUID | None = None,
     ) -> ChatRun:
         self._authorize(context)
-        if retrieval_mode not in {"vector", "hybrid", "graph"}:
+        if retrieval_mode not in {"vector", "hybrid", "graph", "auto"}:
             raise ResourceStateConflictError("retrieval mode is unsupported")
         if retrieval_mode == "hybrid" and not self._hybrid_enabled:
             raise RetrievalExecutionError(
@@ -262,6 +266,10 @@ class ChatService:
         retrieval_strategy = (
             graph_profile(top_k=top_k).as_dict()
             if retrieval_mode == "graph"
+            else adaptive_graphiti_profile(
+                top_k=top_k, rerank_mode=resolved_rerank_mode
+            ).as_dict()
+            if retrieval_mode == "auto"
             else self._retrieval_profile_factory(
                 strategy, top_k, resolved_rerank_mode
             ).as_dict()

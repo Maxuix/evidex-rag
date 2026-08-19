@@ -335,6 +335,42 @@ class ChatCreationServiceTests(unittest.IsolatedAsyncioTestCase):
             },
         )
 
+    async def test_auto_run_freezes_exact_vector_adaptive_profile(self) -> None:
+        workspace_id = uuid4()
+        kb_id = uuid4()
+        chat = _ChatRepository(kb_id=kb_id)
+        service = ChatService(
+            _Factory(workspace_id, chat, kb_id),
+            SingleWorkspaceAccessPolicy(workspace_id),
+            model_configuration={"resolved_model": "fixed-model"},
+            retrieval_profile_factory=_profile_factory,
+        )
+
+        created = await service.create_run(
+            AuthContext("principal", "client", workspace_id),
+            uuid4(),
+            session_id=uuid4(),
+            kb_id=kb_id,
+            message="Atlas Labs",
+            answer_style=None,
+            insufficiency_policy=None,
+            retrieval_mode="auto",
+            top_k=8,
+            rerank_mode=RerankMode.LOCAL_MINILM_V1,
+        )
+
+        self.assertEqual(
+            created["retrieval_strategy"],
+            {
+                "profile_version": "adaptive_graphiti_v1",
+                "strategy": "exact_vector",
+                "top_k": 8,
+                "rerank_mode": "local_minilm_v1",
+                "router": "native_agent_evidence_aware_v1",
+                "augmentation": "graphiti_edge_v1",
+            },
+        )
+
     async def test_session_listing_filters_by_authorized_knowledge_base(self) -> None:
         workspace_id = uuid4()
         kb_id = uuid4()

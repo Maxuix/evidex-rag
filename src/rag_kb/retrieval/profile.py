@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
-from typing import Any, Mapping
+from typing import Any, Literal, Mapping
 
 from rag_kb.document_processing.lexical import (
     LEXICAL_ANALYZER_VERSION,
@@ -20,10 +20,16 @@ from rag_kb.domain import (
 
 EXACT_PROFILE_VERSION = "exact_vector_v2"
 HYBRID_PROFILE_VERSION = "hybrid_fts_rrf_v2"
+ADAPTIVE_GRAPHITI_PROFILE_VERSION = "adaptive_graphiti_v1"
+ADAPTIVE_GRAPHITI_ROUTER_VERSION = "native_agent_evidence_aware_v1"
 LEGACY_EXACT_PROFILE_VERSION = "exact_vector_v1"
 LEGACY_HYBRID_PROFILE_VERSION = "hybrid_fts_rrf_v1"
 LEGACY_GRAPH_PROFILE_VERSION = "graph_augmented_v1"
 LEGACY_GRAPH_AUGMENTATION_VERSION = "entity_graph_v1"
+
+RetrievalExecutionType = Literal[
+    "simple", "manual_graph", "adaptive_graphiti"
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +60,42 @@ class GraphRetrievalProfile:
             "strategy": self.strategy.value,
             "top_k": self.top_k,
             "rerank_mode": self.rerank_mode.value,
+            "augmentation": self.augmentation,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class AdaptiveGraphitiRetrievalProfile:
+    """Chat-only Simple-first profile with one bounded Graphiti supplement."""
+
+    profile_version: str
+    strategy: RetrievalStrategy
+    top_k: int
+    rerank_mode: RerankMode
+    router: str
+    augmentation: str
+
+    def __post_init__(self) -> None:
+        if self.profile_version != ADAPTIVE_GRAPHITI_PROFILE_VERSION:
+            raise ValueError("unsupported adaptive Graphiti profile version")
+        if self.strategy is not RetrievalStrategy.EXACT_VECTOR:
+            raise ValueError("adaptive Graphiti uses exact vector Simple retrieval")
+        if not 1 <= self.top_k <= 100:
+            raise ValueError("adaptive Graphiti top_k is invalid")
+        if self.rerank_mode is RerankMode.LOCAL_MINILM_V1 and self.top_k > 20:
+            raise ValueError("local reranking supports top_k up to 20")
+        if self.router != ADAPTIVE_GRAPHITI_ROUTER_VERSION:
+            raise ValueError("adaptive Graphiti router version is invalid")
+        if self.augmentation != GRAPH_AUGMENTATION_VERSION:
+            raise ValueError("adaptive Graphiti augmentation version is invalid")
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "profile_version": self.profile_version,
+            "strategy": self.strategy.value,
+            "top_k": self.top_k,
+            "rerank_mode": self.rerank_mode.value,
+            "router": self.router,
             "augmentation": self.augmentation,
         }
 
@@ -241,8 +283,17 @@ def parse_retrieval_snapshot(
 
 def parse_chat_retrieval_snapshot(
     value: Mapping[str, Any],
-) -> tuple[RetrievalStrategy, int, RerankMode, str | None]:
-    """Parse old exact/hybrid snapshots or the new graph outer snapshot."""
+) -> tuple[RetrievalStrategy, int, RerankMode, RetrievalExecutionType]:
+    """Parse a persisted ChatRun and return its explicit execution type."""
+
+    if value.get("profile_version") == ADAPTIVE_GRAPHITI_PROFILE_VERSION:
+        profile = parse_adaptive_graphiti_snapshot(value)
+        return (
+            profile.strategy,
+            profile.top_k,
+            profile.rerank_mode,
+            "adaptive_graphiti",
+        )
 
     if value.get("augmentation") is not None:
         expected_fields = {
@@ -258,7 +309,8 @@ def parse_chat_retrieval_snapshot(
             value["profile_version"] == LEGACY_GRAPH_PROFILE_VERSION
             and value["augmentation"] == LEGACY_GRAPH_AUGMENTATION_VERSION
         ):
-            return _parse_legacy_graph_snapshot(value)
+            strategy, top_k, rerank_mode, _ = _parse_legacy_graph_snapshot(value)
+            return strategy, top_k, rerank_mode, "manual_graph"
         profile = GraphRetrievalProfile(
             profile_version=value["profile_version"],
             strategy=RetrievalStrategy(value["strategy"]),
@@ -270,10 +322,38 @@ def parse_chat_retrieval_snapshot(
             profile.strategy,
             profile.top_k,
             profile.rerank_mode,
-            profile.augmentation,
+            "manual_graph",
         )
     strategy, top_k, rerank_mode = parse_retrieval_snapshot(value)
-    return strategy, top_k, rerank_mode, None
+    return strategy, top_k, rerank_mode, "simple"
+
+
+def parse_adaptive_graphiti_snapshot(
+    value: Mapping[str, Any],
+) -> AdaptiveGraphitiRetrievalProfile:
+    """Strictly parse the independent Chat-only adaptive snapshot."""
+
+    expected_fields = {
+        "profile_version",
+        "strategy",
+        "top_k",
+        "rerank_mode",
+        "router",
+        "augmentation",
+    }
+    if set(value) != expected_fields:
+        raise ValueError("adaptive Graphiti retrieval snapshot fields are invalid")
+    raw_top_k = value["top_k"]
+    if isinstance(raw_top_k, bool) or not isinstance(raw_top_k, int):
+        raise ValueError("adaptive Graphiti snapshot top_k is invalid")
+    return AdaptiveGraphitiRetrievalProfile(
+        profile_version=value["profile_version"],
+        strategy=RetrievalStrategy(value["strategy"]),
+        top_k=raw_top_k,
+        rerank_mode=RerankMode(value["rerank_mode"]),
+        router=value["router"],
+        augmentation=value["augmentation"],
+    )
 
 
 def graph_profile(*, top_k: int = 10) -> GraphRetrievalProfile:
@@ -282,6 +362,19 @@ def graph_profile(*, top_k: int = 10) -> GraphRetrievalProfile:
         strategy=RetrievalStrategy.HYBRID,
         top_k=top_k,
         rerank_mode=RerankMode.CLASSIC,
+        augmentation=GRAPH_AUGMENTATION_VERSION,
+    )
+
+
+def adaptive_graphiti_profile(
+    *, top_k: int = 10, rerank_mode: RerankMode = RerankMode.NONE
+) -> AdaptiveGraphitiRetrievalProfile:
+    return AdaptiveGraphitiRetrievalProfile(
+        profile_version=ADAPTIVE_GRAPHITI_PROFILE_VERSION,
+        strategy=RetrievalStrategy.EXACT_VECTOR,
+        top_k=top_k,
+        rerank_mode=rerank_mode,
+        router=ADAPTIVE_GRAPHITI_ROUTER_VERSION,
         augmentation=GRAPH_AUGMENTATION_VERSION,
     )
 

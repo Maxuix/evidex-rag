@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -12,12 +13,14 @@ from rag_kb.domain import (
     Evidence,
     EvidencePack,
     EvidenceScoreKind,
+    GraphitiSupplementResult,
     RetrievalDebug,
     RetrievalQueryPlan,
     RetrievalStrategy,
 )
 from rag_kb.services.chat_execution import ChatEvidenceRetriever
 from rag_kb.retrieval.profile import exact_profile
+from rag_kb.retrieval.profile import adaptive_graphiti_profile
 
 
 def _context() -> ChatExecutionContext:
@@ -49,6 +52,67 @@ def _context() -> ChatExecutionContext:
 
 
 class ChatExecutionServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_adaptive_snapshot_uses_exact_simple_and_supplement_method(self) -> None:
+        context = _context()
+        context = replace(
+            context,
+            retrieval_strategy=adaptive_graphiti_profile(
+                top_k=3,
+            ).as_dict(),
+        )
+        evidence = Evidence(
+            rank=1,
+            index_chunk_id=uuid4(),
+            indexed_document_version_id=uuid4(),
+            document_id=uuid4(),
+            document_version_id=uuid4(),
+            index_revision_id=context.index_revision_id,
+            ordinal=0,
+            text="supplement",
+            source_location={},
+            hierarchy={},
+            source_metadata={},
+            score=1.0,
+            score_kind=EvidenceScoreKind.GRAPH_PATH,
+            graph_path_id="path",
+            graph_anchor_index_chunk_id=uuid4(),
+            graph_hop_count=1,
+            graph_path_rank=1,
+        )
+
+        class Retrieval:
+            request = None
+            supplement_call = None
+
+            async def retrieve(self, auth, request):
+                del auth
+                self.request = request
+                return EvidencePack(
+                    knowledge_base_id=request.knowledge_base_id,
+                    index_revision_id=context.index_revision_id,
+                    strategy=RetrievalStrategy.EXACT_VECTOR,
+                )
+
+            async def retrieve_graphiti_supplement(self, auth, **kwargs):
+                del auth
+                self.supplement_call = kwargs
+                return GraphitiSupplementResult("admitted", (evidence,))
+
+        retrieval = Retrieval()
+        retriever = ChatEvidenceRetriever(retrieval)  # type: ignore[arg-type]
+        await retriever.retrieve_query(context, "query")
+        supplement = await retriever.retrieve_graphiti_supplement(
+            context,
+            "relation",
+            excluded_index_chunk_ids=(),
+        )
+
+        self.assertIsNotNone(retrieval.request)
+        self.assertIs(retrieval.request.strategy, RetrievalStrategy.EXACT_VECTOR)
+        self.assertEqual(supplement.evidence, (evidence,))
+        assert retrieval.supplement_call is not None
+        self.assertEqual(retrieval.supplement_call["index_revision_id"], context.index_revision_id)
+
     async def test_retrieval_fails_closed_when_active_revision_moved(self) -> None:
         context = _context()
 

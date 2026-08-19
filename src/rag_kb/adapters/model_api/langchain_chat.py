@@ -268,7 +268,11 @@ def _truncated_response(error: openai.LengthFinishReasonError) -> ChatModelRespo
 def _request_content_bytes(request: ChatModelRequest) -> int:
     return sum(
         len(message.role.encode("utf-8")) + len(message.content.encode("utf-8"))
-        + sum(len(call.name.encode("utf-8")) + len(json.dumps(dict(call.arguments)).encode("utf-8")) for call in message.tool_calls)
+        + sum(
+            len(call.name.encode("utf-8"))
+            + len(json.dumps(to_plain_json(call.arguments)).encode("utf-8"))
+            for call in message.tool_calls
+        )
         for message in request.messages
     )
 

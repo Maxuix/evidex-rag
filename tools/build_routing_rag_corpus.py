@@ -30,6 +30,10 @@ DEFAULT_OUTPUT = ROOT / "evaluation" / "routing-rag-v1"
 CORPUS_SCHEMA = "routing_rag_corpus_v1"
 CASE_SCHEMA = "routing_rag_case_v1"
 GRAPH_SOURCE_ID = "graph-rag-v1"
+EXPECTED_OUTCOMES = frozenset({"answered", "refused"})
+NEGATIVE_CONTROL_KINDS = frozenset(
+    {"contradicted", "closed_world_absence", "open_world_unanswerable"}
+)
 
 
 @dataclass(frozen=True)
@@ -80,7 +84,7 @@ def _standard_documents(chart_uris: dict[str, str]) -> tuple[StandardDocument, .
             "table",
             """# 服务目录与支持承诺
 
-本目录只描述单项服务的责任团队与支持承诺。各行均为独立事实，不能把产品名称相似的条目合并。
+本目录只描述单项服务的责任团队与支持承诺，下面四项是本目录的完整服务集合。各行均为独立事实，不能把产品名称相似的条目合并。
 
 | 服务代号 | 责任团队 | 首次响应目标 | 升级联系人 |
 | --- | --- | --- | --- |
@@ -330,6 +334,27 @@ def _graph_cases(copied_filenames: dict[str, str]) -> list[dict[str, object]]:
         if source["current_graph_support"] != "1_2_hop":
             continue
         answer_document_id = str(source["answer_document_id"])
+        answer_relation_ids = tuple(str(item) for item in source["answer_relation_ids"])
+        gold_path = tuple(str(item) for item in source["gold_path"])
+        answer_locators = [
+            {
+                "kind": "graph_relation",
+                "relation_id": relation_id,
+                "document_filename": copied_filenames[answer_document_id],
+                "source_case_id": source["case_id"],
+            }
+            for relation_id in answer_relation_ids
+        ]
+        path_context_locators = [
+            {
+                "kind": "graph_relation",
+                "relation_id": relation_id,
+                "document_filename": copied_filenames[answer_document_id],
+                "source_case_id": source["case_id"],
+            }
+            for relation_id in gold_path
+            if relation_id not in answer_relation_ids
+        ]
         cases.append(
             {
                 "schema": CASE_SCHEMA,
@@ -338,6 +363,17 @@ def _graph_cases(copied_filenames: dict[str, str]) -> list[dict[str, object]]:
                 "question": source["question"],
                 "expected_answer": source["expected_answer"],
                 "answerable": True,
+                "expected_outcome": "answered",
+                "negative_control_kind": None,
+                "expected_answer_aspects": [
+                    {
+                        "aspect_id": "answer",
+                        "answer_variants": [source["expected_answer"]],
+                    }
+                ],
+                "answer_gold_source_locators": answer_locators,
+                "path_context_locators": path_context_locators,
+                "forbidden_claims": [],
                 "expected_route": _route(
                     "graph",
                     mode="graph",
@@ -350,8 +386,8 @@ def _graph_cases(copied_filenames: dict[str, str]) -> list[dict[str, object]]:
                     "corpus": GRAPH_SOURCE_ID,
                     "source_case_id": source["case_id"],
                     "document_filename": copied_filenames[answer_document_id],
-                    "gold_path": source["gold_path"],
-                    "answer_relation_ids": source["answer_relation_ids"],
+                    "gold_path": list(gold_path),
+                    "answer_relation_ids": list(answer_relation_ids),
                 },
                 "expected_answer_terms": [source["expected_answer"]],
             }
@@ -385,7 +421,20 @@ def _standard_cases(chart_hashes: dict[str, str]) -> list[dict[str, object]]:
         locator: dict[str, object],
         *,
         answerable: bool = True,
+        expected_outcome: str | None = None,
+        negative_control_kind: str | None = None,
+        expected_answer_aspects: list[dict[str, object]] | None = None,
+        forbidden_claims: list[str] | None = None,
     ) -> dict[str, object]:
+        resolved_outcome = expected_outcome or ("answered" if answerable else "refused")
+        answer_locators = [
+            {
+                "kind": "document_locator",
+                "document_id": document_id,
+                "document_filename": filename,
+                "locator": locator,
+            }
+        ] if resolved_outcome == "answered" else []
         return {
             "schema": CASE_SCHEMA,
             "case_id": case_id,
@@ -393,13 +442,23 @@ def _standard_cases(chart_hashes: dict[str, str]) -> list[dict[str, object]]:
             "question": question,
             "expected_answer": answer,
             "answerable": answerable,
+            "expected_outcome": resolved_outcome,
+            "negative_control_kind": negative_control_kind,
+            "expected_answer_aspects": expected_answer_aspects or (
+                [{"aspect_id": "answer", "answer_variants": [answer]}]
+                if resolved_outcome == "answered"
+                else []
+            ),
+            "answer_gold_source_locators": answer_locators,
+            "path_context_locators": [],
+            "forbidden_claims": forbidden_claims or [],
             "expected_route": route,
             "source": {
                 "document_id": document_id,
                 "document_filename": filename,
                 "locator": locator,
             },
-            "expected_answer_terms": [] if not answerable else [answer],
+            "expected_answer_terms": [] if resolved_outcome == "refused" else [answer],
         }
 
     cases = [
@@ -484,19 +543,23 @@ def _standard_cases(chart_hashes: dict[str, str]) -> list[dict[str, object]]:
             {"kind": "inline_png", "chart_id": "channel_mix", "sha256": chart_hashes["channel_mix"]},
         ),
         row(
-            "abstain-001", "negative_control", "服务目录中是否有名为 Nova Gate 的服务？", "无证据，应该拒答",
+            "abstain-001", "negative_control", "服务目录中是否有名为 Nova Gate 的服务？", "不存在",
             _route("simple", mode="vector", modality=None, top_k=5, reason="语料没有该服务。"),
-            "single-01", "single-01_service_catalog.md", {"kind": "absent", "anchor": "Nova Gate"}, answerable=False,
+            "single-01", "single-01_service_catalog.md", {"kind": "closed_world_absence", "anchor": "Nova Gate"},
+            answerable=True, expected_outcome="answered", negative_control_kind="closed_world_absence",
         ),
         row(
             "abstain-002", "negative_control", "北辰能源有限公司是否控股东港储能科技有限公司？", "无证据，应该拒答",
             _route("simple", mode="vector", modality=None, top_k=5, reason="近似名称不构成同一实体或控股关系。"),
             "doc16", "graph-16_noise_consumer_brand.txt", {"kind": "near_name_disambiguation"}, answerable=False,
+            negative_control_kind="open_world_unanswerable",
         ),
         row(
-            "abstain-003", "negative_control", "图 2 是否说明 Retail 渠道的占比低于 20%？", "无证据，应该拒答",
+            "abstain-003", "negative_control", "图 2 是否说明 Retail 渠道的占比低于 20%？", "否，Retail 渠道占比为 40%",
             _route("simple", mode="vector", modality="image", top_k=5, parsing_preset="multimodal_local_v2", reason="图像证据与断言相反。"),
-            "single-08", "single-08_channel_mix_chart.md", {"kind": "contradicted_inline_png", "chart_id": "channel_mix"}, answerable=False,
+            "single-08", "single-08_channel_mix_chart.md", {"kind": "contradicted_inline_png", "chart_id": "channel_mix"},
+            answerable=True, expected_outcome="answered", negative_control_kind="contradicted",
+            forbidden_claims=["Retail 渠道占比低于 20%"],
         ),
     ]
     return cases
@@ -631,8 +694,19 @@ def build(output: Path, *, force: bool = False) -> None:
                 "runtime_mode": "vector",
                 "description": "Normal RAG chain. The expected evidence modality is defined per case, not as a route.",
                 "expected_evidence_modalities": ["text", "table", "image"],
-                "negative_control_expected_outcome": "refused_or_insufficient",
+                "negative_control_expected_outcome": {
+                    "contradicted": "answered_with_citation",
+                    "closed_world_absence": "answered_with_citation",
+                    "open_world_unanswerable": "refused",
+                },
             },
+        },
+        "case_contract": {
+            "schema": CASE_SCHEMA,
+            "expected_outcomes": sorted(EXPECTED_OUTCOMES),
+            "negative_control_kinds": sorted(NEGATIVE_CONTROL_KINDS),
+            "benefit_locator": "answer_gold_source_locators",
+            "bridge_locator": "path_context_locators",
         },
     }
     (output / "manifest.json").write_text(
@@ -725,6 +799,7 @@ def validate(output: Path) -> int:
     if manifest.get("case_count") != len(cases):
         errors.append("case count mismatch")
     allowed_routes = {"graph", "simple"}
+    observed_negative_kinds: set[str] = set()
     expected_route_counts = {route: 0 for route in allowed_routes}
     for case in cases:
         route = case.get("expected_route")
@@ -733,6 +808,34 @@ def validate(output: Path) -> int:
             continue
         route_name = str(route["route"])
         expected_route_counts[route_name] += 1
+        case_id = str(case.get("case_id", ""))
+        expected_outcome = case.get("expected_outcome")
+        if expected_outcome not in EXPECTED_OUTCOMES:
+            errors.append(f"{case_id}: invalid expected_outcome")
+        answerable = case.get("answerable")
+        if not isinstance(answerable, bool) or answerable != (expected_outcome == "answered"):
+            errors.append(f"{case_id}: answerable and expected_outcome disagree")
+        negative_kind = case.get("negative_control_kind")
+        if case.get("category") == "negative_control":
+            if negative_kind not in NEGATIVE_CONTROL_KINDS:
+                errors.append(f"{case_id}: negative control kind is missing or invalid")
+            else:
+                observed_negative_kinds.add(str(negative_kind))
+        elif negative_kind is not None:
+            errors.append(f"{case_id}: non-negative case has a negative control kind")
+        aspects = case.get("expected_answer_aspects")
+        if not isinstance(aspects, list) or (expected_outcome == "answered" and not aspects):
+            errors.append(f"{case_id}: answered case needs non-empty answer aspects")
+        answer_locators = case.get("answer_gold_source_locators")
+        if not isinstance(answer_locators, list):
+            errors.append(f"{case_id}: answer gold locators must be a list")
+        elif expected_outcome == "answered" and not answer_locators:
+            errors.append(f"{case_id}: answered case needs answer gold locators")
+        path_locators = case.get("path_context_locators")
+        if not isinstance(path_locators, list):
+            errors.append(f"{case_id}: path context locators must be a list")
+        if not isinstance(case.get("forbidden_claims"), list):
+            errors.append(f"{case_id}: forbidden_claims must be a list")
         source = case.get("source")
         if not isinstance(source, dict):
             errors.append(f"{case.get('case_id')}: source must be an object")
@@ -751,33 +854,54 @@ def validate(output: Path) -> int:
             if not isinstance(path, list) or not path:
                 errors.append(f"{case.get('case_id')}: graph route needs a gold path")
             elif any(str(relation_id) not in graph_relations for relation_id in path):
-                errors.append(f"{case.get('case_id')}: graph path references unknown relation")
+                errors.append(f"{case_id}: graph path references unknown relation")
+            relation_ids = set(str(item) for item in source.get("answer_relation_ids", ()))
+            locator_ids = {
+                str(item.get("relation_id"))
+                for item in answer_locators or ()
+                if isinstance(item, dict) and item.get("kind") == "graph_relation"
+            }
+            if locator_ids != relation_ids:
+                errors.append(f"{case_id}: answer locators must match answer_relation_ids")
+            context_ids = {
+                str(item.get("relation_id"))
+                for item in path_locators or ()
+                if isinstance(item, dict) and item.get("kind") == "graph_relation"
+            }
+            if context_ids & locator_ids:
+                errors.append(f"{case_id}: path context overlaps answer gold")
         elif route_name == "simple":
             runtime = route.get("runtime_request")
             if not isinstance(runtime, dict) or runtime.get("mode") != "vector":
-                errors.append(f"{case.get('case_id')}: simple route must request vector mode")
+                    errors.append(f"{case_id}: simple route must request vector mode")
             modality = route.get("expected_evidence_modality")
             if modality == "table":
                 text = (documents_dir / str(filename)).read_text(encoding="utf-8") if isinstance(filename, str) and (documents_dir / str(filename)).exists() else ""
                 if "| ---" not in text:
-                    errors.append(f"{case.get('case_id')}: table case source lacks Markdown table")
+                        errors.append(f"{case_id}: table case source lacks Markdown table")
             if modality == "image":
                 locator = source.get("locator")
                 chart_id = locator.get("chart_id") if isinstance(locator, dict) else None
                 if not isinstance(chart_id, str) or chart_id not in chart_by_id:
                     if case.get("answerable"):
-                        errors.append(f"{case.get('case_id')}: chart case references unknown chart")
+                        errors.append(f"{case_id}: chart case references unknown chart")
                 elif isinstance(filename, str):
                     text = (documents_dir / filename).read_text(encoding="utf-8")
                     payload = (output / "assets" / str(chart_by_id[chart_id]["asset_filename"])).read_bytes()
                     if _data_uri(payload) not in text:
-                        errors.append(f"{case.get('case_id')}: chart Markdown does not embed its chart")
-        if case.get("answerable"):
+                        errors.append(f"{case_id}: chart Markdown does not embed its chart")
+        if expected_outcome == "answered":
             answer = str(case.get("expected_answer", ""))
             if not answer:
-                errors.append(f"{case.get('case_id')}: answerable case has no expected answer")
+                errors.append(f"{case_id}: answered case has no expected answer")
+        if negative_kind == "contradicted" and expected_outcome != "answered":
+            errors.append(f"{case_id}: contradicted control must be answered with citation")
+        if negative_kind == "open_world_unanswerable" and expected_outcome != "refused":
+            errors.append(f"{case_id}: open-world control must be refused")
     if manifest.get("route_case_counts") != expected_route_counts:
         errors.append("route case counts mismatch")
+    if observed_negative_kinds != set(NEGATIVE_CONTROL_KINDS):
+        errors.append("negative controls must cover contradicted, closed_world_absence, and open_world_unanswerable")
     if errors:
         print("validation failed:")
         for error in errors:

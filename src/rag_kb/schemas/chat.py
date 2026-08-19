@@ -103,7 +103,7 @@ class AnswerPolicyOverrides(PublicSchema):
 
 
 class ChatRetrievalRequest(PublicSchema):
-    mode: Literal["vector", "hybrid", "graph"] = "vector"
+    mode: Literal["vector", "hybrid", "graph", "auto"] = "vector"
     top_k: Annotated[int, Field(ge=1, le=100)] = 10
     rerank_mode: RerankMode | None = None
 
@@ -135,6 +135,22 @@ class ChatAgentTraceEventResponse(PublicSchema):
     tool_call_id: Annotated[str, Field(min_length=1, max_length=128)]
     refs: tuple[Annotated[str, Field(min_length=1, max_length=128)], ...] = ()
     count: Annotated[int, Field(ge=0)] = 0
+    retrieval_lane: Literal["simple", "graphiti_supplement"] | None = None
+    route_reason_code: Literal[
+        "cross_document_relation_gap",
+        "entity_alias_gap",
+        "relation_chain_gap",
+    ] | None = None
+    route_result_code: Literal[
+        "not_requested",
+        "admitted",
+        "no_new_evidence",
+        "not_configured",
+        "not_ready",
+        "runtime_unavailable",
+        "rejected",
+    ] | None = None
+    new_evidence_count: Annotated[int, Field(ge=0, le=4)] | None = None
 
 
 class ChatAgentTraceResponse(PublicSchema):
@@ -192,6 +208,7 @@ class ChatRunRetrievalResponse(PublicSchema):
         "hybrid_fts_rrf_v2",
         "graph_augmented_v1",
         "graphiti_edge_augmented_v1",
+        "adaptive_graphiti_v1",
     ]
     strategy: Literal["exact_vector", "hybrid"]
     top_k: Annotated[int, Field(ge=1, le=100)]

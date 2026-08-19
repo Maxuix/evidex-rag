@@ -93,6 +93,7 @@ from rag_kb.services.chat_delivery import (
 )
 from rag_kb.schemas import (
     CursorPayload,
+    ChatRunCreate,
     ErrorCode,
     KnowledgeBaseCreate,
     ModelProfileCreate,
@@ -780,6 +781,34 @@ class ApiContractTests(unittest.IsolatedAsyncioTestCase):
 
 
 class CommonContractTests(unittest.TestCase):
+    def test_chat_auto_is_chat_only_and_vector_bounded(self) -> None:
+        request = ChatRunCreate.model_validate(
+            {
+                "session_id": str(uuid4()),
+                "knowledge_base_id": str(uuid4()),
+                "message": "relation question",
+                "retrieval": {
+                    "mode": "auto",
+                    "top_k": 10,
+                    "rerank_mode": "local_minilm_v1",
+                },
+            }
+        )
+        self.assertEqual(request.retrieval.mode, "auto")
+        with self.assertRaises(ValidationError):
+            ChatRunCreate.model_validate(
+                {
+                    "session_id": str(uuid4()),
+                    "knowledge_base_id": str(uuid4()),
+                    "message": "relation question",
+                    "retrieval": {
+                        "mode": "auto",
+                        "top_k": 21,
+                        "rerank_mode": "local_minilm_v1",
+                    },
+                }
+            )
+
     def test_flexible_embedding_requests_are_discriminated_and_bounded(self) -> None:
         provider_id = uuid4()
         for dimension in ("auto", 64, 724, 4096):
@@ -1047,6 +1076,19 @@ class RetrievalApiContractTests(unittest.IsolatedAsyncioTestCase):
                     },
                 )
                 self.assertEqual(invalid.status, 422)
+
+        auto = await request(
+            self.app,
+            "POST",
+            f"{API_PREFIX}/retrieval/query",
+            json_body={
+                "knowledge_base_id": "01900000-0000-7000-8000-000000000091",
+                "query": "Atlas Labs",
+                "mode": "auto",
+                "top_k": 10,
+            },
+        )
+        self.assertEqual(auto.status, 422)
 
     async def test_client_cannot_inject_mandatory_filters(self) -> None:
         forbidden_fields = (

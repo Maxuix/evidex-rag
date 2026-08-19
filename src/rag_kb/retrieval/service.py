@@ -26,6 +26,8 @@ from rag_kb.domain import (
     GraphChunkEvidence,
     GraphDebug,
     GraphEvidenceBundle,
+    GraphitiBuildSnapshot,
+    GraphitiSupplementResult,
     GraphRetrievalRequest,
     GraphitiSearchQuery,
     IndexChunkAssetRelationSnapshot,
@@ -44,6 +46,7 @@ from rag_kb.domain import (
     VectorSearchResult,
     validate_embedding_vector,
 )
+from rag_kb.domain.graph import GRAPH_EXTRACTOR_VERSION
 from rag_kb.document_processing.lexical import (
     LEXICAL_ANALYZER_VERSION,
     LEXICAL_QUERY_VERSION,
@@ -57,6 +60,7 @@ from rag_kb.ports.model_api import (
 )
 from rag_kb.ports.retrieval import GraphStore, LexicalStore, VectorStore
 from rag_kb.ports.graphiti import GraphitiGraph
+from rag_kb.observability import get_logger, log_event, log_exception
 from rag_kb.retrieval.reranker import (
     RerankedHit,
     order_model_scored_evidence,
@@ -73,6 +77,9 @@ from rag_kb.retrieval.profile import (
     HYBRID_PROFILE_VERSION,
     RetrievalExecutionProfile,
 )
+
+
+LOGGER = get_logger(__name__)
 
 
 class CompositeEvidenceHydrator(Protocol):
@@ -110,6 +117,14 @@ class RetrievalCapabilitiesSnapshot:
 
     default_mode: Literal["vector"]
     modes: tuple[RetrievalCapability, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class GraphitiCandidateSet:
+    build: GraphitiBuildSnapshot
+    traversal: Any
+    edge_rank_by_path_id: dict[str, int]
+    rerank_score_by_chunk_id: dict[UUID, float]
 
 
 class RetrievalService:
@@ -343,6 +358,159 @@ class RetrievalService:
                 diagnostic={"check": "graph_absolute_deadline"},
             ) from error
 
+    async def retrieve_graphiti_supplement(
+        self,
+        context: AuthContext,
+        *,
+        knowledge_base_id: UUID,
+        index_revision_id: UUID,
+        query: str,
+        excluded_index_chunk_ids: tuple[UUID, ...],
+    ) -> GraphitiSupplementResult:
+        deadline = asyncio.timeout(self._deadline_seconds)
+        try:
+            async with deadline:
+                result = await self._retrieve_graphiti_supplement(
+                    context,
+                    knowledge_base_id=knowledge_base_id,
+                    index_revision_id=index_revision_id,
+                    query=query,
+                    excluded_index_chunk_ids=excluded_index_chunk_ids,
+                )
+                log_event(
+                    LOGGER,
+                    "adaptive_graphiti_supplement",
+                    outcome=result.route_result_code,
+                    knowledge_base_id=str(knowledge_base_id),
+                    index_revision_id=str(index_revision_id),
+                )
+                return result
+        except TimeoutError as error:
+            if not deadline.expired():
+                raise
+            raise RetrievalExecutionError(
+                ErrorCode.RETRIEVAL_DEADLINE_EXCEEDED,
+                diagnostic={"check": "adaptive_graphiti_absolute_deadline"},
+            ) from error
+
+    async def _retrieve_graphiti_supplement(
+        self,
+        context: AuthContext,
+        *,
+        knowledge_base_id: UUID,
+        index_revision_id: UUID,
+        query: str,
+        excluded_index_chunk_ids: tuple[UUID, ...],
+    ) -> GraphitiSupplementResult:
+        metadata_filter = self._access_policy.metadata_filter(context)
+        workspace_id = metadata_filter.workspace_id
+        graph_store = self._graph_store
+        if graph_store is None:
+            return GraphitiSupplementResult("not_configured")
+        config = await graph_store.get_config(workspace_id, knowledge_base_id)
+        if config is None:
+            return GraphitiSupplementResult("not_configured")
+        if (
+            config.workspace_id != workspace_id
+            or config.knowledge_base_id != knowledge_base_id
+        ):
+            raise RetrievalExecutionError(
+                ErrorCode.INDEX_REVISION_INCOMPATIBLE,
+                diagnostic={"check": "graph_config_scope"},
+            )
+        if config.index_revision_id is not None and config.index_revision_id != index_revision_id:
+            raise RetrievalExecutionError(
+                ErrorCode.INDEX_REVISION_INCOMPATIBLE,
+                diagnostic={"check": "graph_config_revision"},
+            )
+        if config.status.value == "disabled":
+            return GraphitiSupplementResult("not_configured")
+        if config.status.value != "ready" or config.active_build_id is None:
+            return GraphitiSupplementResult("not_ready")
+        if self._graphiti_graph is None:
+            return GraphitiSupplementResult("runtime_unavailable")
+        build = await graph_store.get_active_graphiti_build(
+            workspace_id, knowledge_base_id
+        )
+        if build is None:
+            return GraphitiSupplementResult("not_ready")
+        if build.build_id != config.active_build_id:
+            raise RetrievalExecutionError(
+                ErrorCode.GRAPH_CONFIG_INVALID,
+                diagnostic={"check": "graph_active_build_mapping"},
+            )
+        if (
+            build.workspace_id != workspace_id
+            or build.knowledge_base_id != knowledge_base_id
+            or build.index_revision_id != index_revision_id
+        ):
+            raise RetrievalExecutionError(
+                ErrorCode.INDEX_REVISION_INCOMPATIBLE,
+                diagnostic={"check": "graph_frozen_revision"},
+            )
+        if (
+            config.extractor_version != GRAPH_EXTRACTOR_VERSION
+            or build.extractor_version != GRAPH_EXTRACTOR_VERSION
+            or build.status.value != "ready"
+        ):
+            return GraphitiSupplementResult("not_ready")
+        if config.group_id is not None and config.group_id != build.group_id:
+            raise RetrievalExecutionError(
+                ErrorCode.GRAPH_CONFIG_INVALID,
+                diagnostic={"check": "graph_group_mapping"},
+            )
+        try:
+            candidate_set = await self._search_graphiti_candidates(
+                workspace_id,
+                knowledge_base_id,
+                build=build,
+                index_revision_id=index_revision_id,
+                query=query,
+                edge_limit=8,
+            )
+        except ResourceNotFoundError as error:
+            log_exception(
+                LOGGER,
+                "adaptive_graphiti_mapping_unavailable",
+                error,
+                knowledge_base_id=str(knowledge_base_id),
+                index_revision_id=str(index_revision_id),
+            )
+            raise RetrievalExecutionError(
+                ErrorCode.INDEX_REVISION_INCOMPATIBLE,
+                diagnostic={"check": "graph_hydration_scope"},
+            ) from error
+        except RetrievalExecutionError as error:
+            if error.code is ErrorCode.GRAPH_NOT_READY:
+                check = error.diagnostic.get("check")
+                if check in {"graph_runtime_probe", "graph_edge_search"}:
+                    log_exception(
+                        LOGGER,
+                        "adaptive_graphiti_runtime_unavailable",
+                        error,
+                        knowledge_base_id=str(knowledge_base_id),
+                        index_revision_id=str(index_revision_id),
+                    )
+                    return GraphitiSupplementResult("runtime_unavailable")
+                return GraphitiSupplementResult("not_ready")
+            if error.code is ErrorCode.LOCAL_RERANKER_UNAVAILABLE:
+                log_exception(
+                    LOGGER,
+                    "adaptive_graphiti_reranker_unavailable",
+                    error,
+                    knowledge_base_id=str(knowledge_base_id),
+                    index_revision_id=str(index_revision_id),
+                )
+                return GraphitiSupplementResult("runtime_unavailable")
+            raise
+        evidence = _pack_graphiti_supplement_evidence(
+            candidate_set,
+            excluded_index_chunk_ids=frozenset(excluded_index_chunk_ids),
+        )
+        if not evidence:
+            return GraphitiSupplementResult("no_new_evidence")
+        return GraphitiSupplementResult("admitted", evidence)
+
     async def _retrieve_graph(
         self,
         context: AuthContext,
@@ -400,77 +568,15 @@ class RetrievalService:
                 ErrorCode.INDEX_REVISION_INCOMPATIBLE,
                 diagnostic={"check": "graph_frozen_revision"},
             )
-        episode_uuid = await graph_store.first_graphiti_episode_uuid(
+        candidate_set = await self._search_graphiti_candidates(
             metadata_filter.workspace_id,
             request.knowledge_base_id,
-            build.build_id,
-        )
-        if build.expected_episode_count and episode_uuid is None:
-            raise RetrievalExecutionError(
-                ErrorCode.GRAPH_NOT_READY,
-                diagnostic={"check": "graph_runtime_probe_mapping"},
-            )
-        try:
-            graph_available = await graphiti.probe(
-                build,
-                episode_uuid=episode_uuid,
-                require_complete=True,
-            )
-        except Exception as error:
-            raise RetrievalExecutionError(
-                ErrorCode.GRAPH_NOT_READY,
-                diagnostic={"check": "graph_runtime_probe"},
-            ) from error
-        if not graph_available:
-            await graph_store.schedule_graphiti_rebuild(
-                metadata_filter.workspace_id,
-                request.knowledge_base_id,
-                build.build_id,
-            )
-            raise RetrievalExecutionError(
-                ErrorCode.GRAPH_NOT_READY,
-                diagnostic={"check": "graph_runtime_probe"},
-            )
-        try:
-            edges = await graphiti.search(
-                build,
-                GraphitiSearchQuery(
-                    workspace_id=metadata_filter.workspace_id,
-                    knowledge_base_id=request.knowledge_base_id,
-                    build_id=build.build_id,
-                    group_id=build.group_id,
-                    query=request.query,
-                    limit=min(10, max(4, request.top_k)),
-                ),
-            )
-        except Exception as error:
-            raise RetrievalExecutionError(
-                ErrorCode.GRAPH_NOT_READY,
-                diagnostic={"check": "graph_edge_search"},
-            ) from error
-        traversal = await graph_store.hydrate_graphiti_edges(
-            workspace_id=metadata_filter.workspace_id,
-            knowledge_base_id=request.knowledge_base_id,
-            build_id=build.build_id,
+            build=build,
             index_revision_id=seed_pack.index_revision_id,
-            edges=edges,
+            query=request.query,
+            edge_limit=min(10, max(4, request.top_k)),
         )
-        if traversal is None:
-            raise ResourceNotFoundError(
-                "knowledge base or active revision was not found"
-            )
-        if traversal.resolved_active_revision_id != seed_pack.index_revision_id:
-            raise RetrievalExecutionError(
-                ErrorCode.INDEX_REVISION_INCOMPATIBLE,
-                diagnostic={"check": "graph_frozen_revision"},
-            )
-        traversal = await self._rerank_graphiti_candidates(request.query, traversal)
-        _validate_graph_traversal(
-            traversal,
-            workspace_id=metadata_filter.workspace_id,
-            knowledge_base_id=request.knowledge_base_id,
-            index_revision_id=seed_pack.index_revision_id,
-        )
+        traversal = candidate_set.traversal
 
         evidence, bundles = _pack_graph_evidence(
             seed_pack.evidence,
@@ -511,10 +617,130 @@ class RetrievalService:
             debug=debug,
         )
 
+    async def _search_graphiti_candidates(
+        self,
+        workspace_id: UUID,
+        knowledge_base_id: UUID,
+        *,
+        build: GraphitiBuildSnapshot,
+        index_revision_id: UUID,
+        query: str,
+        edge_limit: int,
+    ) -> GraphitiCandidateSet:
+        graph_store = self._graph_store
+        graphiti = self._graphiti_graph
+        if graph_store is None or graphiti is None:
+            raise RetrievalExecutionError(
+                ErrorCode.GRAPH_NOT_READY,
+                diagnostic={"check": "graph_store"},
+            )
+        if (
+            build.workspace_id != workspace_id
+            or build.knowledge_base_id != knowledge_base_id
+            or build.index_revision_id != index_revision_id
+        ):
+            raise RetrievalExecutionError(
+                ErrorCode.INDEX_REVISION_INCOMPATIBLE,
+                diagnostic={"check": "graph_frozen_revision"},
+            )
+        if (
+            build.status.value != "ready"
+            or build.extractor_version != GRAPH_EXTRACTOR_VERSION
+        ):
+            raise RetrievalExecutionError(
+                ErrorCode.GRAPH_NOT_READY,
+                diagnostic={"check": "graph_completeness"},
+            )
+        episode_uuid = await graph_store.first_graphiti_episode_uuid(
+            workspace_id,
+            knowledge_base_id,
+            build.build_id,
+        )
+        if build.expected_episode_count and episode_uuid is None:
+            raise RetrievalExecutionError(
+                ErrorCode.GRAPH_NOT_READY,
+                diagnostic={"check": "graph_runtime_probe_mapping"},
+            )
+        try:
+            graph_available = await graphiti.probe(
+                build,
+                episode_uuid=episode_uuid,
+                require_complete=True,
+            )
+        except Exception as error:
+            raise RetrievalExecutionError(
+                ErrorCode.GRAPH_NOT_READY,
+                diagnostic={"check": "graph_runtime_probe"},
+            ) from error
+        if not graph_available:
+            raise RetrievalExecutionError(
+                ErrorCode.GRAPH_NOT_READY,
+                diagnostic={"check": "graph_runtime_probe"},
+            )
+        try:
+            edges = await graphiti.search(
+                build,
+                GraphitiSearchQuery(
+                    workspace_id=workspace_id,
+                    knowledge_base_id=knowledge_base_id,
+                    build_id=build.build_id,
+                    group_id=build.group_id,
+                    query=query,
+                    limit=edge_limit,
+                ),
+            )
+        except Exception as error:
+            raise RetrievalExecutionError(
+                ErrorCode.GRAPH_NOT_READY,
+                diagnostic={"check": "graph_edge_search"},
+            ) from error
+        edge_rank_by_path_id: dict[str, int] = {}
+        traversal = await graph_store.hydrate_graphiti_edges(
+            workspace_id=workspace_id,
+            knowledge_base_id=knowledge_base_id,
+            build_id=build.build_id,
+            index_revision_id=index_revision_id,
+            edges=edges,
+        )
+        if traversal is None:
+            raise ResourceNotFoundError(
+                "knowledge base or active revision was not found"
+            )
+        if traversal.resolved_active_revision_id != index_revision_id:
+            raise RetrievalExecutionError(
+                ErrorCode.INDEX_REVISION_INCOMPATIBLE,
+                diagnostic={"check": "graph_frozen_revision"},
+            )
+        for path in traversal.paths:
+            edge_rank_by_path_id[path.path_id] = path.rank
+        traversal, rerank_score_by_chunk_id = (
+            await self._rerank_graphiti_candidates_with_scores(query, traversal)
+        )
+        _validate_graph_traversal(
+            traversal,
+            workspace_id=workspace_id,
+            knowledge_base_id=knowledge_base_id,
+            index_revision_id=index_revision_id,
+        )
+        return GraphitiCandidateSet(
+            build=build,
+            traversal=traversal,
+            edge_rank_by_path_id=edge_rank_by_path_id,
+            rerank_score_by_chunk_id=rerank_score_by_chunk_id,
+        )
+
     async def _rerank_graphiti_candidates(self, query: str, traversal):
+        reranked, _ = await self._rerank_graphiti_candidates_with_scores(
+            query, traversal
+        )
+        return reranked
+
+    async def _rerank_graphiti_candidates_with_scores(self, query: str, traversal):
         reranker = self._text_reranker
         if reranker is None or not traversal.chunks:
-            return traversal
+            return traversal, {
+                chunk.index_chunk_id: 1.0 for chunk in traversal.chunks
+            }
         documents = tuple(
             RerankDocument(
                 index_chunk_id=chunk.index_chunk_id,
@@ -562,15 +788,22 @@ class RetrievalService:
                 start=1,
             )
         )
-        return replace(
-            traversal,
-            paths=paths,
-            chunks=tuple(
-                chunk for chunk in traversal.chunks if chunk.index_chunk_id in admitted
+        return (
+            replace(
+                traversal,
+                paths=paths,
+                chunks=tuple(
+                    chunk
+                    for chunk in traversal.chunks
+                    if chunk.index_chunk_id in admitted
+                ),
+                rejected_path_count=(
+                    traversal.rejected_path_count
+                    + len(traversal.paths)
+                    - len(paths)
+                ),
             ),
-            rejected_path_count=(
-                traversal.rejected_path_count + len(traversal.paths) - len(paths)
-            ),
+            score_by_id,
         )
 
     async def retrieve_adjacent_evidence(
@@ -2130,6 +2363,52 @@ def _pack_graph_evidence(
         replace(item, rank=rank)
         for rank, item in enumerate(selected[:top_k], start=1)
     ), tuple(bundles)
+
+
+def _pack_graphiti_supplement_evidence(
+    candidate_set: GraphitiCandidateSet,
+    *,
+    excluded_index_chunk_ids: frozenset[UUID],
+) -> tuple[Evidence, ...]:
+    """Pack only new source chunks for the bounded adaptive supplement."""
+
+    chunk_by_id = {
+        item.index_chunk_id: item for item in candidate_set.traversal.chunks
+    }
+    candidates: list[tuple[float, int, int, str, Any, GraphChunkEvidence]] = []
+    for path in candidate_set.traversal.paths:
+        edge_rank = candidate_set.edge_rank_by_path_id.get(path.path_id, path.rank)
+        for chunk_id in path.source_chunk_ids:
+            chunk = chunk_by_id.get(chunk_id)
+            if chunk is None or chunk_id in excluded_index_chunk_ids:
+                continue
+            candidates.append(
+                (
+                    -candidate_set.rerank_score_by_chunk_id.get(chunk_id, 1.0),
+                    edge_rank,
+                    chunk_id.int,
+                    path.path_id,
+                    path,
+                    chunk,
+                )
+            )
+    candidates.sort(key=lambda item: item[:4])
+    selected: list[Evidence] = []
+    selected_ids: set[UUID] = set()
+    per_edge_count: dict[UUID, int] = {}
+    for _, _, _, _, path, chunk in candidates:
+        if len(selected) >= 4 or chunk.index_chunk_id in selected_ids:
+            continue
+        relation_id = path.hops[0].relation_id
+        if per_edge_count.get(relation_id, 0) >= 2:
+            continue
+        selected.append(_graph_evidence_from_chunk(chunk, path))
+        selected_ids.add(chunk.index_chunk_id)
+        per_edge_count[relation_id] = per_edge_count.get(relation_id, 0) + 1
+    return tuple(
+        replace(item, rank=rank)
+        for rank, item in enumerate(selected, start=1)
+    )
 
 
 def _graph_evidence_from_chunk(
