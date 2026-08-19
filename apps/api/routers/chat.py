@@ -486,8 +486,6 @@ def _public_agent_trace(value: dict[str, object] | None) -> dict[str, object] | 
                 key: item for key, item in event.items() if key not in internal_keys
             }
             if event.get("retrieval_lane") == "graphiti_supplement":
-                if event.get("tool") == "graphiti_supplement":
-                    public_event["tool"] = "search_knowledge_base"
                 if public_event.get("route_reason_code") not in CHAT_GRAPHITI_ROUTE_REASONS:
                     public_event.pop("route_reason_code", None)
             public_events.append(public_event)

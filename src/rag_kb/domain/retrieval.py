@@ -241,6 +241,7 @@ class GraphRetrievalRequest:
     knowledge_base_id: UUID
     query: str
     top_k: int = 10
+    rerank_mode: RerankMode = RerankMode.CLASSIC
     include_debug: bool = False
 
     def __post_init__(self) -> None:
@@ -249,6 +250,10 @@ class GraphRetrievalRequest:
             raise ValueError("graph retrieval query must not be empty")
         if not 4 <= self.top_k <= 20:
             raise ValueError("graph retrieval top_k must be between 4 and 20")
+        try:
+            object.__setattr__(self, "rerank_mode", RerankMode(self.rerank_mode))
+        except ValueError as error:
+            raise ValueError("unsupported graph rerank mode") from error
         object.__setattr__(self, "query", normalized)
 
 

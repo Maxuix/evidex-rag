@@ -365,6 +365,7 @@ class RetrievalService:
         knowledge_base_id: UUID,
         index_revision_id: UUID,
         query: str,
+        rerank_mode: RerankMode,
         excluded_index_chunk_ids: tuple[UUID, ...],
     ) -> GraphitiSupplementResult:
         deadline = asyncio.timeout(self._deadline_seconds)
@@ -375,6 +376,7 @@ class RetrievalService:
                     knowledge_base_id=knowledge_base_id,
                     index_revision_id=index_revision_id,
                     query=query,
+                    rerank_mode=rerank_mode,
                     excluded_index_chunk_ids=excluded_index_chunk_ids,
                 )
                 log_event(
@@ -400,6 +402,7 @@ class RetrievalService:
         knowledge_base_id: UUID,
         index_revision_id: UUID,
         query: str,
+        rerank_mode: RerankMode,
         excluded_index_chunk_ids: tuple[UUID, ...],
     ) -> GraphitiSupplementResult:
         metadata_filter = self._access_policy.metadata_filter(context)
@@ -418,14 +421,9 @@ class RetrievalService:
                 ErrorCode.INDEX_REVISION_INCOMPATIBLE,
                 diagnostic={"check": "graph_config_scope"},
             )
-        if config.index_revision_id is not None and config.index_revision_id != index_revision_id:
-            raise RetrievalExecutionError(
-                ErrorCode.INDEX_REVISION_INCOMPATIBLE,
-                diagnostic={"check": "graph_config_revision"},
-            )
         if config.status.value == "disabled":
             return GraphitiSupplementResult("not_configured")
-        if config.status.value != "ready" or config.active_build_id is None:
+        if config.active_build_id is None:
             return GraphitiSupplementResult("not_ready")
         if self._graphiti_graph is None:
             return GraphitiSupplementResult("runtime_unavailable")
@@ -448,17 +446,8 @@ class RetrievalService:
                 ErrorCode.INDEX_REVISION_INCOMPATIBLE,
                 diagnostic={"check": "graph_frozen_revision"},
             )
-        if (
-            config.extractor_version != GRAPH_EXTRACTOR_VERSION
-            or build.extractor_version != GRAPH_EXTRACTOR_VERSION
-            or build.status.value != "ready"
-        ):
+        if build.extractor_version != GRAPH_EXTRACTOR_VERSION or build.status.value != "ready":
             return GraphitiSupplementResult("not_ready")
-        if config.group_id is not None and config.group_id != build.group_id:
-            raise RetrievalExecutionError(
-                ErrorCode.GRAPH_CONFIG_INVALID,
-                diagnostic={"check": "graph_group_mapping"},
-            )
         try:
             candidate_set = await self._search_graphiti_candidates(
                 workspace_id,
@@ -467,6 +456,7 @@ class RetrievalService:
                 index_revision_id=index_revision_id,
                 query=query,
                 edge_limit=8,
+                rerank_mode=rerank_mode,
             )
         except ResourceNotFoundError as error:
             log_exception(
@@ -540,7 +530,7 @@ class RetrievalService:
         seed_profile = replace(
             self._hybrid_profile,
             top_k=request.top_k,
-            rerank_mode=RerankMode.CLASSIC,
+            rerank_mode=request.rerank_mode,
             dense_candidate_count=seed_count,
             lexical_candidate_count=seed_count,
             cross_modal_candidate_count=max(request.top_k, seed_count),
@@ -552,7 +542,7 @@ class RetrievalService:
                 query=request.query,
                 top_k=request.top_k,
                 strategy=RetrievalStrategy.HYBRID,
-                rerank_mode=RerankMode.CLASSIC,
+                rerank_mode=request.rerank_mode,
                 include_debug=True,
             ),
             seed_profile,
@@ -575,6 +565,7 @@ class RetrievalService:
             index_revision_id=seed_pack.index_revision_id,
             query=request.query,
             edge_limit=min(10, max(4, request.top_k)),
+            rerank_mode=request.rerank_mode,
         )
         traversal = candidate_set.traversal
 
@@ -626,6 +617,7 @@ class RetrievalService:
         index_revision_id: UUID,
         query: str,
         edge_limit: int,
+        rerank_mode: RerankMode,
     ) -> GraphitiCandidateSet:
         graph_store = self._graph_store
         graphiti = self._graphiti_graph
@@ -713,8 +705,10 @@ class RetrievalService:
             )
         for path in traversal.paths:
             edge_rank_by_path_id[path.path_id] = path.rank
-        traversal, rerank_score_by_chunk_id = (
-            await self._rerank_graphiti_candidates_with_scores(query, traversal)
+        traversal, rerank_score_by_chunk_id = await self._rerank_graphiti_candidates_with_scores(
+            query,
+            traversal,
+            rerank_mode=rerank_mode,
         )
         _validate_graph_traversal(
             traversal,
@@ -729,18 +723,37 @@ class RetrievalService:
             rerank_score_by_chunk_id=rerank_score_by_chunk_id,
         )
 
-    async def _rerank_graphiti_candidates(self, query: str, traversal):
+    async def _rerank_graphiti_candidates(
+        self,
+        query: str,
+        traversal,
+        *,
+        rerank_mode: RerankMode = RerankMode.LOCAL_MINILM_V1,
+    ):
         reranked, _ = await self._rerank_graphiti_candidates_with_scores(
-            query, traversal
+            query,
+            traversal,
+            rerank_mode=rerank_mode,
         )
         return reranked
 
-    async def _rerank_graphiti_candidates_with_scores(self, query: str, traversal):
+    async def _rerank_graphiti_candidates_with_scores(
+        self,
+        query: str,
+        traversal,
+        *,
+        rerank_mode: RerankMode,
+    ):
+        if rerank_mode is not RerankMode.LOCAL_MINILM_V1:
+            return traversal, {}
         reranker = self._text_reranker
-        if reranker is None or not traversal.chunks:
-            return traversal, {
-                chunk.index_chunk_id: 1.0 for chunk in traversal.chunks
-            }
+        if reranker is None or reranker.profile is not RerankMode.LOCAL_MINILM_V1:
+            raise RetrievalExecutionError(
+                ErrorCode.LOCAL_RERANKER_UNAVAILABLE,
+                diagnostic={"check": "graph_local_reranker_not_configured"},
+            )
+        if not traversal.chunks:
+            return traversal, {}
         documents = tuple(
             RerankDocument(
                 index_chunk_id=chunk.index_chunk_id,
@@ -760,27 +773,29 @@ class RetrievalService:
                 diagnostic={"check": "graph_local_reranker"},
             ) from error
         score_by_id = {item.index_chunk_id: item.score for item in scores}
-        if len(score_by_id) != len(documents):
+        document_ids = {item.index_chunk_id for item in documents}
+        if (
+            len(scores) != len(documents)
+            or len(score_by_id) != len(scores)
+            or set(score_by_id) != document_ids
+        ):
             raise RetrievalExecutionError(
                 ErrorCode.LOCAL_RERANKER_UNAVAILABLE,
                 diagnostic={"check": "graph_local_reranker_contract"},
             )
-        admitted = {
-            chunk_id
-            for chunk_id, score in score_by_id.items()
-            if score >= self._eligibility.min_rerank_score
-        }
         paths = tuple(
             replace(path, rank=rank)
             for rank, path in enumerate(
                 sorted(
-                    (
-                        path
-                        for path in traversal.paths
-                        if set(path.source_chunk_ids).issubset(admitted)
-                    ),
+                    traversal.paths,
                     key=lambda path: (
-                        -min(score_by_id[chunk_id] for chunk_id in path.source_chunk_ids),
+                        0
+                        if all(chunk_id in score_by_id for chunk_id in path.source_chunk_ids)
+                        else 1,
+                        -min(
+                            (score_by_id[chunk_id] for chunk_id in path.source_chunk_ids),
+                            default=float("-inf"),
+                        ),
                         path.rank,
                         path.path_id,
                     ),
@@ -792,16 +807,6 @@ class RetrievalService:
             replace(
                 traversal,
                 paths=paths,
-                chunks=tuple(
-                    chunk
-                    for chunk in traversal.chunks
-                    if chunk.index_chunk_id in admitted
-                ),
-                rejected_path_count=(
-                    traversal.rejected_path_count
-                    + len(traversal.paths)
-                    - len(paths)
-                ),
             ),
             score_by_id,
         )
@@ -2390,7 +2395,7 @@ def _pack_graphiti_supplement_evidence(
                 continue
             candidates.append(
                 (
-                    -candidate_set.rerank_score_by_chunk_id.get(chunk_id, 1.0),
+                    path.rank,
                     edge_rank,
                     chunk_id.int,
                     path.path_id,

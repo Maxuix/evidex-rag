@@ -142,6 +142,7 @@ class ChatEvidenceRetriever:
                     knowledge_base_id=context.knowledge_base_id,
                     query=query,
                     top_k=top_k,
+                    rerank_mode=rerank_mode,
                     include_debug=True,
                 )
                 if execution_type == "manual_graph"
@@ -204,7 +205,7 @@ class ChatEvidenceRetriever:
         excluded_index_chunk_ids: tuple[UUID, ...],
     ) -> GraphitiSupplementResult:
         try:
-            _, _, _, execution_type = parse_chat_retrieval_snapshot(
+            _, _, rerank_mode, execution_type = parse_chat_retrieval_snapshot(
                 context.retrieval_strategy,
             )
             if execution_type != "adaptive_graphiti":
@@ -225,6 +226,7 @@ class ChatEvidenceRetriever:
                 knowledge_base_id=context.knowledge_base_id,
                 index_revision_id=context.index_revision_id,
                 query=query,
+                rerank_mode=rerank_mode,
                 excluded_index_chunk_ids=excluded_index_chunk_ids,
             )
         except RetrievalExecutionError as error:

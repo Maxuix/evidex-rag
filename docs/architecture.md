@@ -325,12 +325,17 @@ Retrieval Debug 都可使用该冻结模式；模型不可用时明确失败且�
 
 Native Agent 可通过 `search_knowledge_base` 每轮提交一至三条 Query，服务端在冻结的
 workspace/knowledge-base/index revision、检索策略与 top-k 内执行并在证据池中按 chunk 去重。
-adaptive ChatRun 先只允许 Simple lane；Simple 成功后，Agent 可按四种固定关系/证据缺口原因
-请求一次 Graphiti supplement。补充复用 Graphiti candidate search、probe 和当前 serving
-Chunk hydration，单独按 rerank/edge rank 排序，最多加入 4 条新 Chunk、同一 edge 最多 2 条，
+adaptive ChatRun 先只允许 Simple lane；一次合法 Simple 调用完成后，即使其准入结果为空，Agent
+也可按三个固定关系/证据缺口原因请求一次 `graphiti_supplement`，且该工具在最后一个普通模型
+轮次仍可用。补充从 active READY build 解析 serving 身份；配置进入 building 只表示 staging，
+不会遮蔽仍 active 的旧 READY build。补充复用 Graphiti candidate search、probe 和当前 serving
+Chunk hydration。`none`/`classic` 按 edge/path/chunk 身份稳定排序且不依赖 MiniLM；只有冻结模式
+为 `local_minilm_v1` 时才用 MiniLM 重排，低分或未打分 Chunk 不会因此被删除，模型分也不写入
+`GRAPH_PATH` Evidence。最终最多加入 4 条新 Chunk、同一 edge 最多 2 条，
 并排除已经在证据池中的 Chunk；它不执行第二次 vector/FTS seed。supplement 的 route result
 只允许 `admitted`、`no_new_evidence`、`not_configured`、`not_ready`、`runtime_unavailable`
-等安全码，edge fact 永不进入 Agent tool result。
+等安全码，公开 trace 保留真实 `tool=graphiti_supplement` 与 lane，edge fact 永不进入 Agent tool
+result。
 Agent 只保留最多 8 个普通模型轮次的有限循环护栏，不限制 Query、计算或 EvidenceRef 的累计数，
 也不比较或拒绝重复 Query。
 题面中的文件名不触发分类、硬 document scope 或全文预读，因此同一知识库中被引用的其他文档
@@ -358,7 +363,7 @@ Agent 尚未读取它们来改变 prompt、工具循环或确定性渲染；当�
 load_context
   -> model chooses search_knowledge_base / calculate
   -> server executes bounded tool and returns stable refs
-  -> adaptive mode may execute one Graphiti supplement after Simple evidence
+  -> adaptive mode may execute one Graphiti supplement after a completed Simple call
   -> model calls submit_answer when ready
   -> if the ordinary loop reaches its limit, one extra submit-only call finalizes
   -> claim-level deterministic validation and salvage

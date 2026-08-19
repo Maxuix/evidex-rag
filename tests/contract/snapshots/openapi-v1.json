@@ -177,6 +177,7 @@
           "tool": {
             "enum": [
               "search_knowledge_base",
+              "graphiti_supplement",
               "calculate",
               "submit_answer",
               "protocol"

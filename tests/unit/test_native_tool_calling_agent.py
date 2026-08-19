@@ -426,7 +426,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertNotIn("graphiti_supplement", [tool.name for tool in initial])
         self.assertIn("graphiti_supplement", [tool.name for tool in eligible])
-        self.assertNotIn("graphiti_supplement", [tool.name for tool in late])
+        self.assertIn("graphiti_supplement", [tool.name for tool in late])
         search_schema = next(
             tool.input_schema for tool in eligible if tool.name == "search_knowledge_base"
         )
@@ -683,7 +683,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(retriever.supplement_queries, ["revenue relation"])
         self.assertEqual(state.artifacts[AGENT_TRACE_ARTIFACT].retrieval_calls, 2)
         graph_event = state.artifacts[AGENT_TRACE_ARTIFACT].events[1]
-        self.assertEqual(graph_event.tool, "search_knowledge_base")
+        self.assertEqual(graph_event.tool, "graphiti_supplement")
         self.assertEqual(graph_event.retrieval_lane, "graphiti_supplement")
         self.assertEqual(graph_event.route_result_code, "admitted")
         self.assertEqual(graph_event.new_evidence_count, 1)
@@ -756,8 +756,54 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
             ["rejected", "no_new_evidence", "rejected"],
         )
         self.assertTrue(
-            all(event.tool == "search_knowledge_base" for event in route_events)
+            all(event.tool == "graphiti_supplement" for event in route_events)
         )
+
+    async def test_adaptive_empty_simple_can_use_graphiti_once(self) -> None:
+        context = _adaptive_context()
+        retriever = _AdaptiveRetriever(
+            _pack(context),
+            GraphitiSupplementResult(
+                "admitted",
+                _graphiti_pack(context, text="Graph-only source").evidence,
+            ),
+        )
+        model = _Model(
+            ChatToolCall(
+                "simple-empty",
+                "search_knowledge_base",
+                {"queries": ["missing relation"]},
+            ),
+            ChatToolCall(
+                "graph-after-empty",
+                "graphiti_supplement",
+                {
+                    "query": "entity relation",
+                    "route_reason_code": "cross_document_relation_gap",
+                },
+            ),
+            ChatToolCall(
+                "submit-graph-only",
+                "submit_answer",
+                {
+                    "outcome": "answered",
+                    "claims": [
+                        {
+                            "text": "The relation is supported.",
+                            "kind": "fact",
+                            "evidence_refs": ["ev_1"],
+                            "calculation_refs": [],
+                        }
+                    ],
+                    "unanswered": [],
+                },
+            ),
+        )
+
+        state = await _agent(model, retriever).run(context)
+
+        self.assertEqual(retriever.supplement_queries, ["entity relation"])
+        self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.ANSWERED)
 
     async def test_profile_output_limit_is_forwarded_without_agent_clamping(self) -> None:
         context = replace(

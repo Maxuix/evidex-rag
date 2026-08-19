@@ -223,11 +223,7 @@ class NativeToolCallingAgent:
                             ChatModelMessage("tool", _ARGUMENT_ERROR, tool_call_id=call.id)
                         )
                         continue
-                    if (
-                        not simple_attempted
-                        or graphiti_attempted
-                        or round_number > budget.max_model_rounds - 2
-                    ):
+                    if not simple_attempted or graphiti_attempted:
                         messages.append(
                             ChatModelMessage(
                                 "tool",
@@ -237,7 +233,7 @@ class NativeToolCallingAgent:
                         )
                         events.append(
                             ChatAgentTraceEvent(
-                                tool="search_knowledge_base",
+                                tool="graphiti_supplement",
                                 status="rejected",
                                 tool_call_id=call.id,
                                 retrieval_lane="graphiti_supplement",
@@ -288,7 +284,7 @@ class NativeToolCallingAgent:
                     packs,
                     eligibility=self._eligibility,
                 )
-                if lane == "simple" and any(query_candidates):
+                if lane == "simple":
                     simple_attempted = True
                 for offset in range(max((len(items) for items in query_candidates), default=0)):
                     for items in query_candidates:
@@ -391,7 +387,7 @@ class NativeToolCallingAgent:
                         sent_visuals.append(visual)
                 events.append(
                     ChatAgentTraceEvent(
-                        tool="search_knowledge_base",
+                        tool=call.name,
                         status="ok",
                         tool_call_id=call.id,
                         refs=result_refs[:_TRACE_REF_LIMIT],
@@ -674,7 +670,8 @@ def _initial_messages(
     adaptive_instruction = (
         " This ChatRun uses Simple-first adaptive Graphiti routing: call "
         "search_knowledge_base with only the queries field first. After a "
-        "successful Simple result, the separate graphiti_supplement tool may "
+        "completed Simple search, even when it returns no evidence, the separate "
+        "graphiti_supplement tool may "
         "appear at most once only for a missing last-hop relation, "
         "cross-document relation gap, entity alias gap, or relation-chain gap. "
         "Write a concise last-hop relation lookup; do not repeat the full "
@@ -731,7 +728,7 @@ def _tools(
     }
     search_required = ["queries"]
     search_description = (
-        "Search the frozen scope. Use Simple first; after a successful Simple "
+        "Search the frozen scope. Use Simple first; after a completed Simple "
         "result, a Graphiti supplement may appear at most once when a last-hop "
         "relation, cross-document relation, entity alias, or relation-chain gap remains."
         if adaptive
@@ -749,7 +746,7 @@ def _tools(
     )
     supplement = ChatToolDefinition(
         "graphiti_supplement",
-        "After a successful Simple search, issue at most one concise last-hop relation "
+        "After a completed Simple search, issue at most one concise last-hop relation "
         "lookup for a remaining cross-document, alias, or relation-chain gap. Do not "
         "repeat the full question, mix two hops, request absence proof, or ask for "
         "tables, charts, calculations, images, or direct facts.",
@@ -811,11 +808,7 @@ def _tools(
             "additionalProperties": False,
         },
     )
-    if (
-        adaptive
-        and graphiti_enabled
-        and round_number <= max_model_rounds - 2
-    ):
+    if adaptive and graphiti_enabled:
         return search, calculate, supplement, submit
     return search, calculate, submit
 
@@ -1327,11 +1320,7 @@ def _strings(
 def _rejected_event(call: ChatToolCall, tool: str | None = None) -> ChatAgentTraceEvent:
     resolved_tool = tool or call.name
     return ChatAgentTraceEvent(
-        tool=(
-            "search_knowledge_base"
-            if resolved_tool == "graphiti_supplement"
-            else resolved_tool
-        )
+        tool=resolved_tool
         if resolved_tool
         in {"search_knowledge_base", "graphiti_supplement", "calculate", "submit_answer", "protocol"}
         else "protocol",

@@ -130,7 +130,13 @@ class ChatAgentBudgetResponse(PublicSchema):
 
 
 class ChatAgentTraceEventResponse(PublicSchema):
-    tool: Literal["search_knowledge_base", "calculate", "submit_answer", "protocol"]
+    tool: Literal[
+        "search_knowledge_base",
+        "graphiti_supplement",
+        "calculate",
+        "submit_answer",
+        "protocol",
+    ]
     status: Literal["ok", "rejected", "salvaged", "refused"]
     tool_call_id: Annotated[str, Field(min_length=1, max_length=128)]
     refs: tuple[Annotated[str, Field(min_length=1, max_length=128)], ...] = ()

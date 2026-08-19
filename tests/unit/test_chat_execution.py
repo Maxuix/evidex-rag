@@ -16,6 +16,7 @@ from rag_kb.domain import (
     GraphitiSupplementResult,
     RetrievalDebug,
     RetrievalQueryPlan,
+    RerankMode,
     RetrievalStrategy,
 )
 from rag_kb.services.chat_execution import ChatEvidenceRetriever
@@ -112,6 +113,10 @@ class ChatExecutionServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(supplement.evidence, (evidence,))
         assert retrieval.supplement_call is not None
         self.assertEqual(retrieval.supplement_call["index_revision_id"], context.index_revision_id)
+        self.assertEqual(
+            retrieval.supplement_call["rerank_mode"],
+            RerankMode.NONE,
+        )
 
     async def test_retrieval_fails_closed_when_active_revision_moved(self) -> None:
         context = _context()

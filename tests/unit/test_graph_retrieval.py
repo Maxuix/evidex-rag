@@ -19,6 +19,7 @@ from rag_kb.domain import (
     GraphRetrievalRequest,
     GraphTraversalResult,
     RetrievalExecutionError,
+    RerankMode,
     RetrievalStrategy,
     VectorSearchResult,
 )
@@ -38,6 +39,7 @@ from tests.unit.test_retrieval_service import (
     REVISION_ID,
     WORKSPACE,
     _Provider,
+    _LocalReranker,
     _Store,
     _context,
     _hit,
@@ -190,6 +192,7 @@ class GraphRetrievalTests(unittest.IsolatedAsyncioTestCase):
             knowledge_base_id=KB_ID,
             index_revision_id=REVISION_ID,
             query="Atlas relation",
+            rerank_mode=RerankMode.CLASSIC,
             excluded_index_chunk_ids=(CHUNK_3,),
         )
 
@@ -218,10 +221,76 @@ class GraphRetrievalTests(unittest.IsolatedAsyncioTestCase):
             knowledge_base_id=KB_ID,
             index_revision_id=REVISION_ID,
             query="Atlas relation",
+            rerank_mode=RerankMode.CLASSIC,
             excluded_index_chunk_ids=(),
         )
 
         self.assertEqual(result.route_result_code, "not_ready")
+
+    async def test_building_config_serves_the_existing_active_ready_build(self) -> None:
+        graph_store = _GraphStore(
+            replace(_ready_config(), status=GraphConfigStatus.BUILDING),
+            _path_result(),
+        )
+        service = RetrievalService(
+            SingleWorkspaceAccessPolicy(WORKSPACE),
+            _Provider(),
+            _Store(VectorSearchResult(REVISION_ID, ())),
+            lexical_store=_LexicalStore(),
+            graph_store=graph_store,
+            graphiti_graph=_Graphiti(),
+        )
+
+        result = await service.retrieve_graphiti_supplement(
+            _context(),
+            knowledge_base_id=KB_ID,
+            index_revision_id=REVISION_ID,
+            query="Atlas relation",
+            rerank_mode=RerankMode.CLASSIC,
+            excluded_index_chunk_ids=(),
+        )
+
+        self.assertEqual(result.route_result_code, "admitted")
+
+    async def test_graph_classic_uses_native_order_without_local_reranker(self) -> None:
+        traversal = _path_result()
+        service = RetrievalService(
+            SingleWorkspaceAccessPolicy(WORKSPACE),
+            _Provider(),
+            _Store(VectorSearchResult(REVISION_ID, ())),
+        )
+
+        result = await service._rerank_graphiti_candidates(  # noqa: SLF001
+            "Atlas",
+            traversal,
+            rerank_mode=RerankMode.CLASSIC,
+        )
+
+        self.assertEqual(result, traversal)
+
+    async def test_graph_minilm_reorders_without_deleting_low_scores(self) -> None:
+        traversal = _path_result()
+        reranker = _LocalReranker(
+            {
+                CHUNK_1: (0.10, -2.0, 1, 0),
+                CHUNK_3: (0.05, -3.0, 1, 0),
+            }
+        )
+        service = RetrievalService(
+            SingleWorkspaceAccessPolicy(WORKSPACE),
+            _Provider(),
+            _Store(VectorSearchResult(REVISION_ID, ())),
+            text_reranker=reranker,
+        )
+
+        result = await service._rerank_graphiti_candidates(  # noqa: SLF001
+            "Atlas",
+            traversal,
+            rerank_mode=RerankMode.LOCAL_MINILM_V1,
+        )
+
+        self.assertEqual(result.chunks, traversal.chunks)
+        self.assertEqual(len(result.paths), len(traversal.paths))
 
     async def test_stale_ready_graph_fails_closed_before_model_or_traversal(self) -> None:
         graph_store = _GraphStore(
@@ -366,12 +435,7 @@ class _GraphStore:
     async def get_active_graphiti_build(self, workspace_id, knowledge_base_id):
         assert workspace_id == WORKSPACE
         assert knowledge_base_id == KB_ID
-        if (
-            self.config.status is not GraphConfigStatus.READY
-            or self.config.extractor_version != GRAPH_EXTRACTOR_VERSION
-        ):
-            return None
-        return _ready_build()
+        return _ready_build() if self.traversal is not None else None
 
     async def first_graphiti_episode_uuid(
         self, workspace_id, knowledge_base_id, build_id

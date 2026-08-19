@@ -151,7 +151,7 @@ class AdaptiveGraphEvaluationTests(unittest.IsolatedAsyncioTestCase):
             1.76,
         )
 
-    def test_public_trace_hides_internal_supplement_tool_name(self) -> None:
+    def test_public_trace_keeps_supplement_tool_name(self) -> None:
         trace = _public_agent_trace(
             {
                 "events": [
@@ -166,7 +166,7 @@ class AdaptiveGraphEvaluationTests(unittest.IsolatedAsyncioTestCase):
                 ]
             }
         )
-        self.assertEqual(trace["events"][0]["tool"], "search_knowledge_base")
+        self.assertEqual(trace["events"][0]["tool"], "graphiti_supplement")
         self.assertEqual(
             trace["events"][0]["retrieval_lane"],
             "graphiti_supplement",
