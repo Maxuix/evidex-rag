@@ -312,6 +312,12 @@ vector，dual 模式分别生成文本与跨模态 query vector，unified 模式
 源版本。现有 hybrid manifest 检查用于避免返回半成品索引；不支持时明确失败，不把不一致的
 结果伪装成成功。
 
+ChatRun 保存的 index revision 是创建时一致性 guard，而不是历史索引读取参数。当前公开 KB
+生命周期没有 revision switch/reconfigure 入口，检索始终读取当前 active serving revision，并在
+结果与 ChatRun guard 不一致时返回 `CHAT_REVISION_MISMATCH`；删除、失活或已替换的 revision 不会
+为历史 ChatRun 继续服务。若未来新增 revision 切换 API，必须另行定义冻结检索参数和旧 revision
+保留期，不能沿用当前 guard 假称已支持历史 serving。
+
 当前精排选择为 `none | classic | local_minilm_v1`。候选先按 lane 准入一次：exact/dense 使用
 文本 cosine 门，lexical 使用 FTS rank 与完整 manifest，cross-modal 使用自身 cosine 门；随后
 才在已准入集合排序并最终截取 `top_k`。`classic` 保留本地确定性排序并作为知识库默认，不能
@@ -336,6 +342,9 @@ Chunk hydration。`none`/`classic` 按 edge/path/chunk 身份稳定排序且不�
 只允许 `admitted`、`no_new_evidence`、`not_configured`、`not_ready`、`runtime_unavailable`
 等安全码，公开 trace 保留真实 `tool=graphiti_supplement` 与 lane，edge fact 永不进入 Agent tool
 result。
+manual Graph 固定为最终 `top_k` 预留 2 个 Graph 槽：hybrid 候选查询宽度仍按
+`min(40, max(12, top_k * 2))` 计算，但 seed 输出最多为 `top_k - 2`；packing 先完整保留这些 seed，
+再按 path-whole 规则使用剩余至多 2 个槽，不会静默挤出已返回 seed。
 Agent 只保留最多 8 个普通模型轮次的有限循环护栏，不限制 Query、计算或 EvidenceRef 的累计数，
 也不比较或拒绝重复 Query。
 题面中的文件名不触发分类、硬 document scope 或全文预读，因此同一知识库中被引用的其他文档

@@ -80,6 +80,7 @@ from rag_kb.retrieval.profile import (
 
 
 LOGGER = get_logger(__name__)
+GRAPH_RESERVE = 2
 
 
 class CompositeEvidenceHydrator(Protocol):
@@ -527,9 +528,10 @@ class RetrievalService:
             )
 
         seed_count = min(40, max(12, request.top_k * 2))
+        seed_output_count = request.top_k - GRAPH_RESERVE
         seed_profile = replace(
             self._hybrid_profile,
-            top_k=request.top_k,
+            top_k=seed_output_count,
             rerank_mode=request.rerank_mode,
             dense_candidate_count=seed_count,
             lexical_candidate_count=seed_count,
@@ -540,7 +542,7 @@ class RetrievalService:
             RetrievalRequest(
                 knowledge_base_id=request.knowledge_base_id,
                 query=request.query,
-                top_k=request.top_k,
+                top_k=seed_output_count,
                 strategy=RetrievalStrategy.HYBRID,
                 rerank_mode=request.rerank_mode,
                 include_debug=True,
@@ -2343,8 +2345,11 @@ def _pack_graph_evidence(
     *,
     top_k: int,
 ) -> tuple[tuple[Evidence, ...], tuple[GraphEvidenceBundle, ...]]:
+    seed_budget = top_k - GRAPH_RESERVE
+    if len(seed_evidence) > seed_budget:
+        raise AssertionError("graph seed evidence exceeds its reserved budget")
     chunk_by_id = {item.index_chunk_id: item for item in traversal.chunks}
-    selected: list[Evidence] = list(seed_evidence[: min(6, top_k - 2)])
+    selected: list[Evidence] = list(seed_evidence)
     selected_ids = {item.index_chunk_id for item in selected}
     bundles: list[GraphEvidenceBundle] = []
     for path in traversal.paths:
@@ -2364,12 +2369,6 @@ def _pack_graph_evidence(
             selected_ids.add(chunk_id)
         if len(selected) >= top_k:
             break
-    for item in seed_evidence:
-        if len(selected) >= top_k:
-            break
-        if item.index_chunk_id not in selected_ids:
-            selected.append(item)
-            selected_ids.add(item.index_chunk_id)
     return tuple(
         replace(item, rank=rank)
         for rank, item in enumerate(selected[:top_k], start=1)

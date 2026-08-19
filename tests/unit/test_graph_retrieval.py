@@ -394,6 +394,36 @@ class GraphRetrievalTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(bundles), 1)
         self.assertEqual(bundles[0].chunk_ids, (seed.index_chunk_id, CHUNK_3))
 
+    def test_graph_packing_preserves_all_seed_budget_at_top_k_four_and_ten(self) -> None:
+        traversal = _path_result()
+        seeds_four = tuple(
+            _seed_evidence(UUID(int=100 + index)) for index in range(2)
+        )
+        seeds_ten = tuple(
+            _seed_evidence(UUID(int=200 + index)) for index in range(8)
+        )
+
+        packed_four, _ = _pack_graph_evidence(seeds_four, traversal, top_k=4)
+        packed_ten, _ = _pack_graph_evidence(seeds_ten, traversal, top_k=10)
+
+        self.assertEqual(
+            [item.index_chunk_id for item in packed_four[:2]],
+            [item.index_chunk_id for item in seeds_four],
+        )
+        self.assertEqual(
+            [item.index_chunk_id for item in packed_ten[:8]],
+            [item.index_chunk_id for item in seeds_ten],
+        )
+        self.assertLessEqual(len(packed_four) - len(seeds_four), 2)
+        self.assertLessEqual(len(packed_ten) - len(seeds_ten), 2)
+
+    def test_graph_packing_rejects_seed_input_over_reserved_budget(self) -> None:
+        traversal = _path_result()
+        seeds = tuple(_seed_evidence(UUID(int=300 + index)) for index in range(3))
+
+        with self.assertRaises(AssertionError):
+            _pack_graph_evidence(seeds, traversal, top_k=4)
+
     def test_graph_chunk_hydration_keeps_graph_and_text_representations(self) -> None:
         traversal = _path_result()
         text_chunk = traversal.chunks[0]
