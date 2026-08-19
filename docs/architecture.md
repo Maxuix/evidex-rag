@@ -374,6 +374,9 @@ ResearchResult/SearchTrace 诊断；核心 ChatRun、消息、答案、Citation�
 - `submit_answer` 必须通过严格参数和逐 claim 校验；非法 claim 被局部删除，仍有合法 claim 时
   降级为 `partial`，零合法 claim 才确定性拒答。
 - 事实 claim 只能引用本次已授权 Evidence；实际未加载的图片不能产生视觉引用。
+- Graphiti supplement 水合后的 text/table Chunk 同时保留 `graph_path` provenance 与对应的
+  `text`/`table_text` 表示；路径 provenance 不是视觉形态，只有缺少可引用文本表示的纯视觉
+  Evidence 才必须先实际加载资产。
 - Agent 自行决定需要检索和引用哪些文档；服务端不从题面文件名生成 required Document 清单，
   也不以文档覆盖率改变回答结果。
 - 最终答案、assistant message、Citation 和 ChatRun 终态在同一所有权边界提交。

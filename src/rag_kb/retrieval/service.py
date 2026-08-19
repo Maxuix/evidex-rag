@@ -2420,6 +2420,7 @@ def _graph_evidence_from_chunk(
             ErrorCode.INDEX_REVISION_INCOMPATIBLE,
             diagnostic={"check": "graph_path_chunk_revision"},
         )
+    text_representation = "table_text" if chunk.modality == "table" else "text"
     return Evidence(
         rank=1,
         index_chunk_id=chunk.index_chunk_id,
@@ -2436,7 +2437,7 @@ def _graph_evidence_from_chunk(
         score_kind=EvidenceScoreKind.GRAPH_PATH,
         modality=chunk.modality,
         evidence_group_key=chunk.evidence_group_key,
-        matched_representations=("graph_path",),
+        matched_representations=("graph_path", text_representation),
         document_display_name=chunk.document_display_name,
         document_original_filename=chunk.document_original_filename,
         graph_path_id=path.path_id,

@@ -26,7 +26,11 @@ from sqlalchemy import bindparam, text
 
 from rag_kb.adapters.graph_store.postgres import _bounded_graphiti_paths
 from rag_kb.domain.graph import GRAPH_MAX_PATHS
-from rag_kb.retrieval.service import RetrievalService, _pack_graph_evidence
+from rag_kb.retrieval.service import (
+    RetrievalService,
+    _graph_evidence_from_chunk,
+    _pack_graph_evidence,
+)
 
 from tests.unit.test_retrieval_service import (
     CHUNK_1,
@@ -320,6 +324,20 @@ class GraphRetrievalTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item.index_chunk_id for item in evidence], [seed.index_chunk_id, CHUNK_3])
         self.assertEqual(len(bundles), 1)
         self.assertEqual(bundles[0].chunk_ids, (seed.index_chunk_id, CHUNK_3))
+
+    def test_graph_chunk_hydration_keeps_graph_and_text_representations(self) -> None:
+        traversal = _path_result()
+        text_chunk = traversal.chunks[0]
+        table_chunk = replace(text_chunk, modality="table")
+
+        text_evidence = _graph_evidence_from_chunk(text_chunk, traversal.paths[0])
+        table_evidence = _graph_evidence_from_chunk(table_chunk, traversal.paths[0])
+
+        self.assertEqual(text_evidence.matched_representations, ("graph_path", "text"))
+        self.assertEqual(
+            table_evidence.matched_representations,
+            ("graph_path", "table_text"),
+        )
 
 
 class _LexicalStore:

@@ -229,6 +229,7 @@ def _graphiti_pack(
                 graph_anchor_index_chunk_id=source.index_chunk_id,
                 graph_hop_count=1,
                 graph_path_rank=1,
+                matched_representations=("graph_path", "text"),
             ),
         ),
     )
@@ -613,7 +614,24 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
             ChatToolCall(
                 "submit-1",
                 "submit_answer",
-                {"outcome": "refused", "claims": [], "unanswered": []},
+                {
+                    "outcome": "answered",
+                    "claims": [
+                        {
+                            "text": "The relation is supported by Graphiti.",
+                            "kind": "fact",
+                            "evidence_refs": ["ev_2"],
+                            "calculation_refs": [],
+                        },
+                        {
+                            "text": "Simple and Graphiti evidence agree.",
+                            "kind": "fact",
+                            "evidence_refs": ["ev_1", "ev_2"],
+                            "calculation_refs": [],
+                        },
+                    ],
+                    "unanswered": [],
+                },
             ),
         )
 
@@ -627,6 +645,8 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(graph_event.retrieval_lane, "graphiti_supplement")
         self.assertEqual(graph_event.route_result_code, "admitted")
         self.assertEqual(graph_event.new_evidence_count, 1)
+        self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.ANSWERED)
+        self.assertEqual(len(state.answering.rendered.citations), 2)
         self.assertIn(
             "graphiti_supplement",
             [tool.name for tool in model.requests[1].tools],
