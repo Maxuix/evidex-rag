@@ -936,6 +936,38 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
             ("The cause of the change is not supported.",),
         )
 
+    async def test_submit_normalizes_optional_fact_fields_and_unanswered(self) -> None:
+        context = _context()
+        model = _Model(
+            ChatToolCall(
+                "search-normalized-submit",
+                "search_knowledge_base",
+                {"queries": ["revenue"]},
+            ),
+            ChatToolCall(
+                "normalized-submit",
+                "submit_answer",
+                {
+                    "outcome": "partial",
+                    "claims": [
+                        {
+                            "text": "Revenue was 10.",
+                            "evidence_refs": ["ev_1"],
+                        }
+                    ],
+                    "unanswered": ["  Cause unknown.  ", "", "Cause unknown."],
+                },
+            ),
+        )
+
+        state = await _agent(model, _Retriever(_pack(context))).run(context)
+
+        self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.PARTIAL)
+        self.assertEqual(
+            state.answering.validated.missing_aspects,
+            ("Cause unknown.",),
+        )
+
     async def test_calculation_ref_expands_to_original_evidence_citation(self) -> None:
         context = _context()
         model = _Model(

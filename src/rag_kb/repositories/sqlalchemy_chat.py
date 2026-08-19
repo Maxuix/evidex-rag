@@ -192,12 +192,12 @@ class SqlAlchemyChatRepository:
             _contextualization_calls(run),
             _serialized_calls(command.lease.attempt, command.model_calls),
         )
-        validation = {
-            **_serialized_validation(command),
+        terminal_facts = {
+            **_serialized_success(command),
             "query_rewrite": _query_rewrite_facts(run),
         }
         stable_success = {
-            **validation,
+            **terminal_facts,
             "claimed_by": command.lease.claimed_by,
             "claimed_at": command.lease.claimed_at.isoformat(),
         }
@@ -212,12 +212,6 @@ class SqlAlchemyChatRepository:
                 and _stored_attempt_calls(run.usage, command.lease.attempt) == calls
                 and _stored_success_facts(run.timing, command.lease.attempt)
                 == stable_success
-                and run.final_llm_context
-                == (
-                    dict(command.final_llm_context)
-                    if command.final_llm_context is not None
-                    else None
-                )
                 and run.agent_trace
                 == (
                     dict(command.agent_trace)
@@ -241,7 +235,7 @@ class SqlAlchemyChatRepository:
             run.timing,
             command.lease.attempt,
             {
-                **validation,
+                **terminal_facts,
                 "claimed_by": command.lease.claimed_by,
                 "claimed_at": command.lease.claimed_at.isoformat(),
                 "finished_at": command.finished_at.isoformat(),
@@ -282,11 +276,6 @@ class SqlAlchemyChatRepository:
         run.status = ChatRunStatus.COMPLETED
         run.usage = usage
         run.timing = timing
-        run.final_llm_context = (
-            dict(command.final_llm_context)
-            if command.final_llm_context is not None
-            else None
-        )
         if command.agent_trace is not None:
             run.agent_trace = dict(command.agent_trace)
         run.error_code = None
@@ -1034,8 +1023,7 @@ def _merge_timing(
     return {"attempts": attempts}
 
 
-def _serialized_validation(command: ChatTerminalSuccessCommand) -> dict[str, Any]:
-    validation = command.validation
+def _serialized_success(command: ChatTerminalSuccessCommand) -> dict[str, Any]:
     rejection_counts: dict[str, int] = {}
     for decision in command.visual_decisions:
         if not decision.selected:
@@ -1051,13 +1039,6 @@ def _serialized_validation(command: ChatTerminalSuccessCommand) -> dict[str, Any
             else None
         ),
         "citation_ids": [item.citation_id for item in command.rendered.citations],
-        "validation": {
-            "initial_issues": [item.value for item in validation.initial_issues],
-            "repair_issues": [item.value for item in validation.repair_issues],
-            "repair_attempted": validation.repair_attempted,
-            "repair_succeeded": validation.repair_succeeded,
-            "safe_fallback": validation.safe_fallback,
-        },
         "retrieval": dict(command.retrieval_diagnostics),
         "visual_evidence": {
             "candidate_count": len(command.visual_decisions),
@@ -1120,7 +1101,10 @@ def _stable_attempt_facts(
 def _stored_success_facts(
     stored: dict[str, Any] | None, attempt: int
 ) -> dict[str, Any] | None:
-    return _stable_attempt_facts(stored, attempt)
+    facts = _stable_attempt_facts(stored, attempt)
+    if facts is not None:
+        facts.pop("validation", None)
+    return facts
 
 
 def _stored_failure_facts(
@@ -1244,11 +1228,6 @@ def _run(
         contextualized_query=(
             dict(run.contextualized_query)
             if run.contextualized_query is not None
-            else None
-        ),
-        final_llm_context=(
-            dict(run.final_llm_context)
-            if run.final_llm_context is not None
             else None
         ),
     )

@@ -242,7 +242,6 @@ class ChatRun:
     completed_at: datetime | None
     conversation_context: dict[str, Any]
     contextualized_query: dict[str, Any] | None = None
-    final_llm_context: dict[str, Any] | None = None
     agent_configuration: dict[str, Any] = field(
         default_factory=lambda: {
             "version": "native_tool_calling_agent_v2",

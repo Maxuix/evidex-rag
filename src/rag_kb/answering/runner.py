@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 import logging
+from typing import Protocol
+from uuid import UUID
 
 from rag_kb.answering.agent import NativeToolCallingAgent
 from rag_kb.domain import (
     ChatExecutionCommand,
+    ChatExecutionContext,
     ChatProgressActivity,
     ChatProgressFacts,
     ChatProgressStage,
@@ -16,8 +20,6 @@ from rag_kb.domain import (
     ChatPipelineState,
     ErrorCode,
 )
-from rag_kb.services.chat_execution import ChatExecutionContextLoader, ChatPipelineStep
-from rag_kb.services.chat_progress import ChatProgressReporter
 from rag_kb.ports.chat_preview import ChatPreviewSink
 from rag_kb.observability import get_logger, log_exception
 
@@ -25,15 +27,36 @@ from rag_kb.observability import get_logger, log_exception
 LOGGER = get_logger("rag_kb.answering.runner")
 
 
+class ExecutionContextLoader(Protocol):
+    async def load(self, command: ChatExecutionCommand) -> ChatExecutionContext: ...
+
+
+class PipelineStep(Protocol):
+    async def run(self, state: ChatPipelineState) -> ChatPipelineState: ...
+
+
+class ProgressReporter(Protocol):
+    async def show(self, stage, activity, *, facts=None, completed=()) -> None: ...
+
+    async def finish(self, activity) -> None: ...
+
+
+ProgressReporterFactory = Callable[
+    [UUID, int, ChatPreviewSink | None],
+    ProgressReporter,
+]
+
+
 class NativeAgentRunner:
     def __init__(
         self,
-        context_loader: ChatExecutionContextLoader,
+        context_loader: ExecutionContextLoader,
         agent: NativeToolCallingAgent,
-        result_persister: ChatPipelineStep,
+        result_persister: PipelineStep,
         *,
         deadline_seconds: float,
         progress_sink: ChatPreviewSink | None = None,
+        progress_reporter_factory: ProgressReporterFactory,
     ) -> None:
         if deadline_seconds <= 0:
             raise ValueError("chat agent deadline must be positive")
@@ -42,11 +65,12 @@ class NativeAgentRunner:
         self._result_persister = result_persister
         self._deadline_seconds = deadline_seconds
         self._progress_sink = progress_sink
+        self._progress_reporter_factory = progress_reporter_factory
 
     async def execute(self, command: ChatExecutionCommand) -> ChatPipelineState:
         state: ChatPipelineState | None = None
         phase = ChatPipelinePhase.LOAD_CONTEXT
-        reporter = ChatProgressReporter(
+        reporter = self._progress_reporter_factory(
             command.lease.run_id,
             command.lease.attempt,
             self._progress_sink,
@@ -84,9 +108,7 @@ class NativeAgentRunner:
                     ),
                     completed=(
                         ChatProgressStage.RETRIEVE_EVIDENCE,
-                        ChatProgressStage.PREPARE_VISUAL_EVIDENCE,
                         ChatProgressStage.GENERATE_ANSWER,
-                        ChatProgressStage.VALIDATE_ANSWER,
                     ),
                 )
                 result = await self._result_persister.run(state)

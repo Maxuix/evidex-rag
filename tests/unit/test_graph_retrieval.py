@@ -260,13 +260,14 @@ class GraphRetrievalTests(unittest.IsolatedAsyncioTestCase):
             _Store(VectorSearchResult(REVISION_ID, ())),
         )
 
-        result = await service._rerank_graphiti_candidates(  # noqa: SLF001
+        result, scores = await service._rerank_graphiti_candidates_with_scores(  # noqa: SLF001
             "Atlas",
             traversal,
             rerank_mode=RerankMode.CLASSIC,
         )
 
         self.assertEqual(result, traversal)
+        self.assertEqual(scores, {})
 
     async def test_graph_minilm_reorders_without_deleting_low_scores(self) -> None:
         traversal = _path_result()
@@ -283,7 +284,7 @@ class GraphRetrievalTests(unittest.IsolatedAsyncioTestCase):
             text_reranker=reranker,
         )
 
-        result = await service._rerank_graphiti_candidates(  # noqa: SLF001
+        result, scores = await service._rerank_graphiti_candidates_with_scores(  # noqa: SLF001
             "Atlas",
             traversal,
             rerank_mode=RerankMode.LOCAL_MINILM_V1,
@@ -291,6 +292,7 @@ class GraphRetrievalTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result.chunks, traversal.chunks)
         self.assertEqual(len(result.paths), len(traversal.paths))
+        self.assertEqual(set(scores), {CHUNK_1, CHUNK_3})
 
     async def test_stale_ready_graph_fails_closed_before_model_or_traversal(self) -> None:
         graph_store = _GraphStore(

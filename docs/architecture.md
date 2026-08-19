@@ -95,7 +95,7 @@
 | 范围 | 当前选择 |
 | --- | --- |
 | 后端 | Python 3.12、FastAPI、Pydantic、异步 SQLAlchemy、asyncpg、Alembic |
-| 数据库 | PostgreSQL 18 + pgvector；当前 migration head 为 `0014_remove_legacy_entity_graph` |
+| 数据库 | PostgreSQL 18 + pgvector；当前 migration head 为 `0015_remove_retired_chat_state` |
 | 文档解析 | 原生 Docling；当前 PDF profile 在 Worker 管理的可终止子进程内按确定性页段解析 |
 | Chat 执行 | 普通异步原生 Tool-Calling loop；无 Agent 框架或图运行时 |
 | 模型接入 | OpenAI-compatible Chat/文本 Embedding；Tongyi 多模态 Embedding；固定离线 MiniLM reranker；已验证 Embedding 维度 64..4096 |
@@ -180,7 +180,10 @@ src/rag_kb/
 ```
 
 根目录 `architecture.toml` 描述当前 Python 顶层 import 方向。它用于防止环依赖和基础设施
-反向渗透，不要求为每个新概念建立新目录或新层。
+反向渗透，不要求为每个新概念建立新目录或新层；basic suite 会实际解析该文件并逐个核对本地
+import edge。`answering` 只依赖 context loader、retriever、visual preparer、result persister 与
+progress reporter 的窄 Protocol，具体 `services` 实现由 Worker composition root 注入，因此
+`answering` 与 `services` 不形成 runtime import 环。
 
 ### 5.1 保留的基础边界
 
@@ -241,7 +244,8 @@ budget/trace，`0010` 删除旧 workflow configuration/state 及其中的 Resear
 诊断，`0011` 将原生 Agent 收敛为仅保留模型循环轮次上限并原样迁移历史 usage/trace 观测，
 `0012` 曾增加旧自研实体图投影；`0013` 增加不可变 Graphiti build、active build 指针和
 Episode→Chunk 映射；`0014` 删除旧 `index_graph_chunk`、`graph_entity_mention` 与
-`graph_relation_assertion`，并把旧 Graph 配置安全降为 disabled。Graphiti 派生事实不阻塞
+`graph_relation_assertion`，并把旧 Graph 配置安全降为 disabled；`0015` 删除 native Agent 从未
+写入的 ChatRun `final_llm_context` 列。Graphiti 派生事实不阻塞
 普通索引发布，只有 build ready、覆盖完整且运行时探测通过时才可用于在线检索。
 除此之外不承诺任意历史版本兼容。主要持久事实为：
 
@@ -383,6 +387,12 @@ ChatRun 是唯一持久执行状态；没有 graph checkpoint、Controller、Ver
 Repair 或逐步骤 ledger。成功终态原子保存有界 Agent Trace。迁移
 `0010_drop_legacy_workflow` 已删除旧 workflow configuration/state 及其中的
 ResearchResult/SearchTrace 诊断；核心 ChatRun、消息、答案、Citation、usage 和 timing 事实保留。
+ChatRun 内部 trace 保存 claim salvage 的 rejected count、内部 reason 与 submit-only repair，供本地
+诊断使用；公开 API/SSE 会剥离这些内部字段，只保留隐私审查过的工具、lane、安全枚举与计数。
+共享 trace artifact key 属于 domain 契约，不由 `services` 反向导入 Agent 实现。
+`ChatAnsweringState` 只保存真实 Evidence 可用引用、原始 submit、确定性校验结果与渲染结果；
+不再伪造旧 assessment/structure-validation 状态。成功终态 timing 记录实际 outcome、引用、检索、
+视觉和 query-rewrite 事实，不写空 validation 占位。
 
 回答边界保持：
 

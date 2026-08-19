@@ -7,6 +7,7 @@ from typing import Any
 
 
 CHAT_AGENT_VERSION = "native_tool_calling_agent_v2"
+CHAT_AGENT_TRACE_ARTIFACT = "chat_agent_trace"
 CHAT_RETRIEVAL_LANES = frozenset({"simple", "graphiti_supplement"})
 CHAT_GRAPHITI_ROUTE_REASONS = frozenset(
     {

@@ -14,9 +14,9 @@ from rag_kb.domain import (
     ChatRunLease,
     ChatTerminalSuccessCommand,
     ChatTerminalWriteStatus,
+    CHAT_AGENT_TRACE_ARTIFACT,
     ErrorCode,
 )
-from rag_kb.answering.agent import AGENT_TRACE_ARTIFACT
 from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, execute_in_transaction
 
 
@@ -40,7 +40,6 @@ class ChatResultPersistenceStep:
             or answering is None
             or answering.validated is None
             or answering.rendered is None
-            or answering.validation is None
         ):
             raise ChatPipelineExecutionError(
                 ErrorCode.CHAT_CONTEXT_INVALID,
@@ -52,14 +51,12 @@ class ChatResultPersistenceStep:
             lease=context.lease,
             assistant_message_id=context.assistant_message_id,
             rendered=answering.rendered,
-            validation=answering.validation,
             model_calls=answering.model_calls,
             finished_at=self._clock(),
             retrieval_diagnostics=_retrieval_diagnostics(state),
             visual_decisions=answering.visual_decisions,
             visual_image_count=len(answering.visual_content),
             visual_total_bytes=answering.visual_total_bytes,
-            final_llm_context=_final_llm_context(state),
             agent_trace=_agent_trace(state),
         )
 
@@ -88,7 +85,7 @@ class ChatResultPersistenceStep:
 
 
 def _agent_trace(state: ChatPipelineState) -> dict[str, Any] | None:
-    value = state.artifacts.get(AGENT_TRACE_ARTIFACT)
+    value = state.artifacts.get(CHAT_AGENT_TRACE_ARTIFACT)
     if value is None:
         return None
     as_dict = getattr(value, "as_dict", None)
@@ -157,7 +154,6 @@ class ChatFailureSettlementService:
 _RETRYABLE_CODES = frozenset(
     {
         ErrorCode.CHAT_PROVIDER_UNAVAILABLE,
-        ErrorCode.CHAT_ASSESSMENT_INVALID,
         ErrorCode.CHAT_PIPELINE_DEADLINE_EXCEEDED,
         ErrorCode.CHAT_PERSISTENCE_FAILED,
         ErrorCode.CHAT_STALE_WORKER,
@@ -218,34 +214,3 @@ def _retrieval_diagnostics(state: ChatPipelineState) -> dict[str, int]:
         ),
     }
     return {key: value for key, value in values.items() if value is not None}
-
-
-def _final_llm_context(state: ChatPipelineState) -> dict[str, Any] | None:
-    value = state.artifacts.get("final_llm_context")
-    if value is None:
-        return None
-    if not isinstance(value, Mapping):
-        raise ChatPipelineExecutionError(
-            ErrorCode.CHAT_CONTEXT_INVALID,
-            phase=ChatPipelinePhase.PERSIST_RESULT,
-            diagnostic={"check": "final_llm_context"},
-        )
-    return _plain_json_object(value)
-
-
-def _plain_json_object(value: Mapping[str, Any]) -> dict[str, Any]:
-    return {key: _plain_json_value(item) for key, item in value.items()}
-
-
-def _plain_json_value(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        return _plain_json_object(value)
-    if isinstance(value, (tuple, list)):
-        return [_plain_json_value(item) for item in value]
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    raise ChatPipelineExecutionError(
-        ErrorCode.CHAT_CONTEXT_INVALID,
-        phase=ChatPipelinePhase.PERSIST_RESULT,
-        diagnostic={"check": "final_llm_context"},
-    )

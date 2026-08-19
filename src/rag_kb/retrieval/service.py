@@ -725,20 +725,6 @@ class RetrievalService:
             rerank_score_by_chunk_id=rerank_score_by_chunk_id,
         )
 
-    async def _rerank_graphiti_candidates(
-        self,
-        query: str,
-        traversal,
-        *,
-        rerank_mode: RerankMode = RerankMode.LOCAL_MINILM_V1,
-    ):
-        reranked, _ = await self._rerank_graphiti_candidates_with_scores(
-            query,
-            traversal,
-            rerank_mode=rerank_mode,
-        )
-        return reranked
-
     async def _rerank_graphiti_candidates_with_scores(
         self,
         query: str,

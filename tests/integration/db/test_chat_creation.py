@@ -19,7 +19,6 @@ from rag_kb.domain import (
     AnswerDraftSource,
     AnswerOutcome,
     AnswerStyle,
-    AnswerValidationRecord,
     ChatAnsweringState,
     ChatExecutionCommand,
     ChatModelCallRecord,
@@ -32,8 +31,6 @@ from rag_kb.domain import (
     ChatSessionBusyError,
     EmbeddingSpaceDefinition,
     ErrorCode,
-    EvidenceAssessment,
-    EvidenceCoverage,
     EvidenceEnvelope,
     EvidencePack,
     IdempotencyKeyReusedError,
@@ -462,10 +459,8 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
         timing = json.loads(persisted["timing"])
         self.assertEqual(len(usage["calls"]), 1)
         self.assertEqual(usage["totals"]["input_tokens"], 4)
-        self.assertEqual(
-            timing["attempts"]["1"]["validation"]["safe_fallback"],
-            False,
-        )
+        self.assertNotIn("validation", timing["attempts"]["1"])
+        self.assertEqual(timing["attempts"]["1"]["outcome"], "refused")
 
         stale = await ChatFailureSettlementService(
             self.factory,
@@ -498,7 +493,6 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
             lease=lease,
             assistant_message_id=context.assistant_message_id,
             rendered=state.answering.rendered,
-            validation=state.answering.validation,
             model_calls=state.answering.model_calls,
             finished_at=observed_at + timedelta(seconds=1),
         )
@@ -581,7 +575,6 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
             lease=lease,
             assistant_message_id=context.assistant_message_id,
             rendered=rendered,
-            validation=AnswerValidationRecord(initial_issues=()),
             model_calls=(_model_call("request-citations"),),
             finished_at=observed_at + timedelta(seconds=1),
         )
@@ -1037,12 +1030,6 @@ def _refusal_state(context) -> ChatPipelineState:
         index_revision_id=context.index_revision_id,
         items=(),
     )
-    assessment = EvidenceAssessment(
-        coverage=EvidenceCoverage.NONE,
-        usable_citation_ids=(),
-        supported_aspects=(),
-        missing_aspects=(),
-    )
     draft = AnswerDraftCandidate(
         raw_json='{"outcome":"refused","claims":[],"missing_aspects":[]}',
         expected_outcome=AnswerOutcome.REFUSED,
@@ -1065,7 +1052,7 @@ def _refusal_state(context) -> ChatPipelineState:
         ),
         answering=ChatAnsweringState(
             evidence=evidence,
-            assessment=assessment,
+            usable_citation_ids=(),
             draft=draft,
             model_calls=(_model_call("request-success"),),
             validated=validated,
@@ -1074,7 +1061,6 @@ def _refusal_state(context) -> ChatPipelineState:
                 content="无法基于当前证据回答。",
                 citations=(),
             ),
-            validation=AnswerValidationRecord(initial_issues=()),
         ),
     )
 

@@ -11,28 +11,28 @@ from rag_kb.domain import (
     AnswerDraftCandidate,
     AnswerDraftSource,
     AnswerOutcome,
-    AnswerValidationRecord,
     ChatAnsweringState,
     ChatAgentBudget,
     ChatAgentTrace,
+    ChatExecutionCommand,
     ChatExecutionContext,
     ChatModelCallRecord,
     ChatModelOperation,
     ChatPipelineExecutionError,
     ChatPipelinePhase,
     ChatPipelineState,
+    ChatProgressStage,
     ChatRunLease,
     ChatTerminalWriteStatus,
     ErrorCode,
-    EvidenceAssessment,
-    EvidenceCoverage,
     EvidenceEnvelope,
     RenderedAnswer,
     ValidatedAnswer,
     VisualEvidenceDecision,
     VisualEvidenceReason,
 )
-from rag_kb.repositories.sqlalchemy_chat import _serialized_validation
+from rag_kb.repositories.sqlalchemy_chat import _serialized_success
+from rag_kb.answering.runner import NativeAgentRunner
 from rag_kb.services.chat_terminal import (
     ChatFailureSettlementService,
     ChatResultPersistenceStep,
@@ -40,6 +40,32 @@ from rag_kb.services.chat_terminal import (
 
 
 class ChatTerminalServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_native_runner_reports_only_real_completed_stages(self) -> None:
+        observed = datetime(2026, 7, 15, 8, 0, tzinfo=UTC)
+        state = _completed_state(observed)
+        reporter = _Reporter()
+        runner = NativeAgentRunner(
+            _ContextLoader(state.context),
+            _Agent(state),
+            _Persister(state),
+            deadline_seconds=1,
+            progress_reporter_factory=lambda *_: reporter,
+        )
+
+        result = await runner.execute(ChatExecutionCommand(state.context.lease))
+
+        self.assertIs(result, state)
+        completed = reporter.shown[-1][2]
+        self.assertEqual(
+            completed,
+            (
+                ChatProgressStage.RETRIEVE_EVIDENCE,
+                ChatProgressStage.GENERATE_ANSWER,
+            ),
+        )
+        self.assertNotIn(ChatProgressStage.PREPARE_VISUAL_EVIDENCE, completed)
+        self.assertNotIn(ChatProgressStage.VALIDATE_ANSWER, completed)
+
     async def test_success_persists_content_safe_retrieval_and_visual_diagnostics(
         self,
     ) -> None:
@@ -73,8 +99,9 @@ class ChatTerminalServiceTests(unittest.IsolatedAsyncioTestCase):
 
         command = repository.success
         self.assertEqual(command.retrieval_diagnostics["text_candidate_count"], 3)
-        facts = _serialized_validation(command)
+        facts = _serialized_success(command)
         self.assertEqual(facts["control_reason"], "no_usable_evidence")
+        self.assertNotIn("validation", facts)
         self.assertEqual(facts["visual_evidence"]["rejected_count"], 1)
         self.assertEqual(
             facts["visual_evidence"]["rejection_counts"],
@@ -135,38 +162,6 @@ class ChatTerminalServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             repository.success.agent_trace["usage"]["evidence_refs"], 105
-        )
-
-    async def test_success_persists_final_llm_context_snapshot(self) -> None:
-        observed = datetime(2026, 7, 15, 8, 0, tzinfo=UTC)
-        state = replace(
-            _completed_state(observed),
-            artifacts={
-                "final_llm_context": {
-                    "version": "final_llm_context_v1",
-                    "operation": "generate_answer",
-                    "output_schema": "answer_v1",
-                    "max_output_tokens": None,
-                    "messages": [
-                        {"role": "system", "content": "instructions"},
-                        {"role": "user", "content": "question"},
-                    ],
-                    "media": [],
-                }
-            },
-        )
-        repository = _Repository(ChatTerminalWriteStatus.APPLIED)
-
-        await ChatResultPersistenceStep(_Factory(repository)).run(state)
-
-        snapshot = dict(repository.success.final_llm_context or {})
-        self.assertEqual(snapshot["operation"], "generate_answer")
-        self.assertEqual(
-            snapshot["messages"],
-            [
-                {"role": "system", "content": "instructions"},
-                {"role": "user", "content": "question"},
-            ],
         )
 
     async def test_stale_and_database_failures_are_content_safe(self) -> None:
@@ -357,12 +352,6 @@ def _completed_state(observed: datetime) -> ChatPipelineState:
         index_revision_id=context.index_revision_id,
         items=(),
     )
-    assessment = EvidenceAssessment(
-        coverage=EvidenceCoverage.NONE,
-        usable_citation_ids=(),
-        supported_aspects=(),
-        missing_aspects=(),
-    )
     draft = AnswerDraftCandidate(
         raw_json='{"outcome":"refused","claims":[],"missing_aspects":[]}',
         expected_outcome=AnswerOutcome.REFUSED,
@@ -378,7 +367,7 @@ def _completed_state(observed: datetime) -> ChatPipelineState:
     )
     answering = ChatAnsweringState(
         evidence=evidence,
-        assessment=assessment,
+        usable_citation_ids=(),
         draft=draft,
         model_calls=(_call(),),
         validated=validated,
@@ -388,10 +377,44 @@ def _completed_state(observed: datetime) -> ChatPipelineState:
             citations=(),
             control_reason=AnswerControlReason.NO_USABLE_EVIDENCE,
         ),
-        validation=AnswerValidationRecord(initial_issues=()),
     )
     return ChatPipelineState(
         context=context,
-        evidence_pack=SimpleNamespace(),
+        evidence_pack=SimpleNamespace(evidence=()),
         answering=answering,
     )
+
+
+class _ContextLoader:
+    def __init__(self, context) -> None:
+        self.context = context
+
+    async def load(self, command):
+        return self.context
+
+
+class _Agent:
+    def __init__(self, state) -> None:
+        self.state = state
+
+    async def run(self, context):
+        return self.state
+
+
+class _Persister:
+    def __init__(self, state) -> None:
+        self.state = state
+
+    async def run(self, state):
+        return self.state
+
+
+class _Reporter:
+    def __init__(self) -> None:
+        self.shown = []
+
+    async def show(self, stage, activity, *, facts=None, completed=()) -> None:
+        self.shown.append((stage, activity, completed))
+
+    async def finish(self, activity) -> None:
+        return None

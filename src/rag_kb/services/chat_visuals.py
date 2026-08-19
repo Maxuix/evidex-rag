@@ -14,8 +14,6 @@ from rag_kb.domain import (
     ChatPipelinePhase,
     ChatPipelineState,
     ErrorCode,
-    EvidenceAssessment,
-    EvidenceCoverage,
     EvidenceEnvelope,
     FileStoreError,
     IndexAssetContent,
@@ -78,7 +76,7 @@ class VisualEvidencePreparationStep:
         ):
             raise _context_error("visual_preparation_state")
 
-        usable = list(answering.assessment.usable_citation_ids)
+        usable = list(answering.usable_citation_ids)
         initially_usable = frozenset(usable)
         usable_set = set(usable)
         attached_native_citation_ids: set[str] = set()
@@ -99,12 +97,12 @@ class VisualEvidencePreparationStep:
         )
 
         candidates = self._admission_policy.rank_candidates(
-            pack, answering.assessment.usable_citation_ids
+            pack, answering.usable_citation_ids
         )
         decisions = list(
             self._admission_policy.decide(
                 pack,
-                answering.assessment.usable_citation_ids,
+                answering.usable_citation_ids,
                 max_images=max_images,
             )
         )
@@ -318,17 +316,6 @@ class VisualEvidencePreparationStep:
                 usable_set.discard(citation_id)
 
         retained = tuple(value for value in usable if value in usable_set)
-        assessment = answering.assessment
-        if not retained and assessment.coverage is not EvidenceCoverage.NONE:
-            assessment = EvidenceAssessment(
-                coverage=EvidenceCoverage.NONE,
-                usable_citation_ids=(),
-                supported_aspects=(),
-                missing_aspects=(),
-            )
-        elif retained != assessment.usable_citation_ids:
-            assessment = replace(assessment, usable_citation_ids=retained)
-
         return ChatPipelineState(
             context=context,
             evidence_pack=pack,
@@ -338,7 +325,7 @@ class VisualEvidencePreparationStep:
                     index_revision_id=answering.evidence.index_revision_id,
                     items=tuple(evidence_items),
                 ),
-                assessment=assessment,
+                usable_citation_ids=retained,
                 model_calls=answering.model_calls,
                 visual_content=tuple(visual_content),
                 visual_decisions=tuple(decisions),

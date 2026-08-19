@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tomllib
 import unittest
 
 
@@ -78,7 +79,43 @@ def _matches(name: str, prefix: str) -> bool:
     return name == prefix or name.startswith(f"{prefix}.")
 
 
+def _module_name(path: Path) -> str:
+    relative = path.relative_to(ROOT).with_suffix("")
+    parts = relative.parts
+    if parts[0] == "src":
+        parts = parts[1:]
+    if parts[-1] == "__init__":
+        parts = parts[:-1]
+    return ".".join(parts)
+
+
+def _boundary_for(module: str, boundaries: dict[str, list[str]]) -> str | None:
+    matches = [name for name in boundaries if _matches(module, name)]
+    return max(matches, key=len, default=None)
+
+
 class ArchitectureBoundaryTests(unittest.TestCase):
+    def test_declared_architecture_import_edges_match_source(self) -> None:
+        configuration = tomllib.loads(
+            (ROOT / "architecture.toml").read_text(encoding="utf-8")
+        )
+        boundaries = configuration["boundaries"]
+        violations: list[str] = []
+        for scan_root in configuration["scan_roots"]:
+            for path in sorted((ROOT / scan_root).rglob("*.py")):
+                source = _boundary_for(_module_name(path), boundaries)
+                if source is None:
+                    continue
+                allowed = set(boundaries[source]) | {source}
+                for imported in _imports(path):
+                    target = _boundary_for(imported, boundaries)
+                    if target is not None and target not in allowed:
+                        violations.append(
+                            f"{path.relative_to(ROOT)}: {source} -> {target} via {imported}"
+                        )
+
+        self.assertEqual(violations, [])
+
     def test_application_modules_do_not_import_infrastructure(self) -> None:
         violations: list[str] = []
         for directory in APPLICATION_DIRECTORIES:

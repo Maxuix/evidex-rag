@@ -73,6 +73,7 @@ from rag_kb.services.chat_terminal import (
     ChatFailureSettlementService,
     ChatResultPersistenceStep,
 )
+from rag_kb.services.chat_progress import ChatProgressReporter
 from rag_kb.services.chat_visuals import VisualEvidencePreparationStep
 from rag_kb.services.composite_evidence import CompositeEvidenceHydrationService
 from rag_kb.services.content import (
@@ -346,6 +347,7 @@ def build_worker_dependencies(
         result_persister,
         deadline_seconds=poller.chat_deadline_seconds,
         progress_sink=chat_preview_sink,
+        progress_reporter_factory=ChatProgressReporter,
     )
     chat_scheduler = ChatRunScheduler(
         chat_coordinator,

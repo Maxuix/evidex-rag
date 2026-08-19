@@ -157,9 +157,72 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
                     "UPDATE alembic_version SET version_num = 'runtime-mutation'"
                 )
             revision = await runtime.fetchval("SELECT version_num FROM alembic_version")
-            self.assertEqual(revision, "0014_remove_legacy_entity_graph")
+            self.assertEqual(revision, "0015_remove_retired_chat_state")
         finally:
             await runtime.close()
+
+    async def test_retired_final_llm_context_migration_round_trip(self) -> None:
+        migration = importlib.import_module(
+            "rag_kb.db.migrations.versions.0015_remove_retired_chat_state"
+        )
+        engine = create_async_engine(
+            MIGRATION_DSN.replace("postgresql://", "postgresql+asyncpg://", 1)
+        )
+        try:
+            async with engine.begin() as migration_connection:
+                await migration_connection.run_sync(
+                    lambda sync_connection: self._invoke_migration(
+                        sync_connection,
+                        migration,
+                        "downgrade",
+                    )
+                )
+            connection = await asyncpg.connect(MIGRATION_DSN)
+            try:
+                self.assertTrue(
+                    await connection.fetchval(
+                        """
+                        SELECT EXISTS (
+                            SELECT 1
+                            FROM information_schema.columns
+                            WHERE table_schema = 'public'
+                              AND table_name = 'chat_run'
+                              AND column_name = 'final_llm_context'
+                        )
+                        """
+                    )
+                )
+            finally:
+                await connection.close()
+
+            async with engine.begin() as migration_connection:
+                await migration_connection.run_sync(
+                    lambda sync_connection: self._invoke_migration(
+                        sync_connection,
+                        migration,
+                        "upgrade",
+                    )
+                )
+        finally:
+            await engine.dispose()
+
+        connection = await asyncpg.connect(MIGRATION_DSN)
+        try:
+            self.assertFalse(
+                await connection.fetchval(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM information_schema.columns
+                        WHERE table_schema = 'public'
+                          AND table_name = 'chat_run'
+                          AND column_name = 'final_llm_context'
+                    )
+                    """
+                )
+            )
+        finally:
+            await connection.close()
 
     async def test_knowledge_base_default_policy_is_partial_answer(self) -> None:
         connection = await asyncpg.connect(MIGRATION_DSN)
@@ -829,7 +892,7 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
         try:
             self.assertEqual(
                 await connection.fetchval("SELECT version_num FROM alembic_version"),
-                "0014_remove_legacy_entity_graph",
+                "0015_remove_retired_chat_state",
             )
         finally:
             await connection.close()

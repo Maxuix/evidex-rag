@@ -14,16 +14,9 @@ from uuid import UUID
 from rag_kb.domain.composite import VisualEvidenceDecision
 
 
-class EvidenceCoverage(StrEnum):
-    SUFFICIENT = "sufficient"
-    PARTIAL = "partial"
-    NONE = "none"
-
-
 class AnswerOutcome(StrEnum):
     ANSWERED = "answered"
     PARTIAL = "partial"
-    ACKNOWLEDGED = "acknowledged"
     REFUSED = "refused"
 
 
@@ -35,27 +28,11 @@ class AnswerDraftSource(StrEnum):
 class AnswerControlReason(StrEnum):
     INSUFFICIENT_EVIDENCE = "insufficient_evidence"
     NO_USABLE_EVIDENCE = "no_usable_evidence"
-    STRUCTURE_VALIDATION_FAILED = "structure_validation_failed"
 
 
 class ChatModelOperation(StrEnum):
     AGENT_ROUND = "agent_round"
     CONTEXTUALIZE_QUERY = "contextualize_query"
-
-
-class AnswerValidationIssue(StrEnum):
-    JSON_INVALID = "json_invalid"
-    SCHEMA_INVALID = "schema_invalid"
-    OUTCOME_MISMATCH = "outcome_mismatch"
-    CLAIMS_REQUIRED = "claims_required"
-    CLAIMS_FORBIDDEN = "claims_forbidden"
-    MISSING_ASPECTS_FORBIDDEN = "missing_aspects_forbidden"
-    MISSING_ASPECTS_REQUIRED = "missing_aspects_required"
-    MISSING_ASPECTS_MISMATCH = "missing_aspects_mismatch"
-    CITATIONS_REQUIRED = "citations_required"
-    CITATION_DUPLICATE = "citation_duplicate"
-    CITATION_NOT_ALLOWED = "citation_not_allowed"
-    RENDER_LIMIT_EXCEEDED = "render_limit_exceeded"
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,41 +85,6 @@ class EvidenceEnvelope:
     @property
     def citation_ids(self) -> frozenset[str]:
         return frozenset(item.citation_id for item in self.items)
-
-
-@dataclass(frozen=True, slots=True)
-class EvidenceAssessment:
-    coverage: EvidenceCoverage
-    usable_citation_ids: tuple[str, ...]
-    supported_aspects: tuple[str, ...]
-    missing_aspects: tuple[str, ...]
-
-    def __post_init__(self) -> None:
-        _require_unique_strings(
-            self.usable_citation_ids, field="usable citation identifiers"
-        )
-        _require_bounded_unique_strings(
-            self.supported_aspects, field="supported aspects"
-        )
-        _require_bounded_unique_strings(
-            self.missing_aspects, field="missing aspects"
-        )
-        if self.coverage is EvidenceCoverage.SUFFICIENT and (
-            not self.usable_citation_ids
-            or not self.supported_aspects
-            or self.missing_aspects
-        ):
-            raise ValueError("sufficient evidence has support and no missing aspects")
-        if self.coverage is EvidenceCoverage.PARTIAL and (
-            not self.usable_citation_ids
-            or not self.supported_aspects
-            or not self.missing_aspects
-        ):
-            raise ValueError("partial evidence requires support and missing aspects")
-        if self.coverage is EvidenceCoverage.NONE and (
-            self.usable_citation_ids or self.supported_aspects
-        ):
-            raise ValueError("no usable evidence cannot declare supported aspects")
 
 
 @dataclass(frozen=True, slots=True)
@@ -324,10 +266,7 @@ class RenderedAnswer:
             raise ValueError("rendered citations must be contiguous")
         if len({item.citation_id for item in self.citations}) != len(self.citations):
             raise ValueError("rendered citations must be unique")
-        if self.outcome in {
-            AnswerOutcome.REFUSED,
-            AnswerOutcome.ACKNOWLEDGED,
-        } and self.citations:
+        if self.outcome is AnswerOutcome.REFUSED and self.citations:
             raise ValueError("non-substantive results cannot contain citations")
         if self.outcome is not AnswerOutcome.REFUSED and self.control_reason is not None:
             raise ValueError("only refusals can carry a control reason")
@@ -339,42 +278,9 @@ class RenderedAnswer:
 
 
 @dataclass(frozen=True, slots=True)
-class AnswerValidationRecord:
-    initial_issues: tuple[AnswerValidationIssue, ...]
-    repair_issues: tuple[AnswerValidationIssue, ...] = ()
-    repair_attempted: bool = False
-    repair_succeeded: bool = False
-    safe_fallback: bool = False
-
-    def __post_init__(self) -> None:
-        if len(self.initial_issues) != len(set(self.initial_issues)):
-            raise ValueError("initial validation issues must be unique")
-        if len(self.repair_issues) != len(set(self.repair_issues)):
-            raise ValueError("repair validation issues must be unique")
-        if not self.initial_issues:
-            if (
-                self.repair_issues
-                or self.repair_attempted
-                or self.repair_succeeded
-                or self.safe_fallback
-            ):
-                raise ValueError("successful initial validation cannot repair or fallback")
-            return
-        if not self.repair_attempted:
-            if self.repair_issues or self.repair_succeeded or not self.safe_fallback:
-                raise ValueError("unrepaired invalid structure must safely fallback")
-            return
-        if self.repair_succeeded:
-            if self.repair_issues or self.safe_fallback:
-                raise ValueError("successful repair state is inconsistent")
-        elif not self.repair_issues or not self.safe_fallback:
-            raise ValueError("failed repair must record issues and safely fallback")
-
-
-@dataclass(frozen=True, slots=True)
 class ChatAnsweringState:
     evidence: EvidenceEnvelope
-    assessment: EvidenceAssessment
+    usable_citation_ids: tuple[str, ...]
     draft: AnswerDraftCandidate | None = None
     model_calls: tuple[ChatModelCallRecord, ...] = ()
     visual_content: tuple[ChatModelVisualContent, ...] = ()
@@ -382,13 +288,17 @@ class ChatAnsweringState:
     visual_total_bytes: int = 0
     validated: ValidatedAnswer | None = None
     rendered: RenderedAnswer | None = None
-    validation: AnswerValidationRecord | None = None
 
     def __post_init__(self) -> None:
         if self.visual_total_bytes < 0:
             raise ValueError("visual evidence bytes must be non-negative")
         if len(self.visual_decisions) > 400:
             raise ValueError("visual evidence decisions must be bounded")
+        _require_unique_strings(
+            self.usable_citation_ids, field="usable citation identifiers"
+        )
+        if not set(self.usable_citation_ids).issubset(self.evidence.citation_ids):
+            raise ValueError("usable citations must belong to the evidence envelope")
         if sum(len(item.content) for item in self.visual_content) != self.visual_total_bytes:
             raise ValueError("visual evidence bytes must match attached content")
         visual_citations = [
@@ -400,11 +310,11 @@ class ChatAnsweringState:
         if len(visual_assets) != len(set(visual_assets)):
             raise ValueError("visual evidence assets must be unique")
         if any(
-            citation_id not in self.assessment.usable_citation_ids
+            citation_id not in self.usable_citation_ids
             for citation_id in visual_citations
         ):
             raise ValueError("visual evidence must be admitted before model input")
-        completed = (self.validated, self.rendered, self.validation)
+        completed = (self.validated, self.rendered)
         if any(value is not None for value in completed) and any(
             value is None for value in completed
         ):
@@ -414,27 +324,6 @@ class ChatAnsweringState:
         if self.rendered is not None and self.validated is not None:
             if self.rendered.outcome is not self.validated.outcome:
                 raise ValueError("validated and rendered outcomes must match")
-        if (
-            self.validation is not None
-            and self.validation.safe_fallback
-            and self.validated is not None
-            and (
-                self.validated.source is not AnswerDraftSource.DETERMINISTIC
-                or self.validated.control_reason
-                not in {
-                    AnswerControlReason.INSUFFICIENT_EVIDENCE,
-                    AnswerControlReason.STRUCTURE_VALIDATION_FAILED,
-                }
-            )
-        ):
-            raise ValueError("safe fallback must use a deterministic refusal")
-        if (
-            self.validation is not None
-            and self.validation.repair_succeeded
-            and self.validated is not None
-            and self.validated.source is not AnswerDraftSource.PROVIDER
-        ):
-            raise ValueError("successful repair must produce a provider result")
 
 
 def _require_bounded_unique_strings(values: tuple[str, ...], *, field: str) -> None:

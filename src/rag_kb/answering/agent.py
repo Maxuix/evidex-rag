@@ -6,7 +6,8 @@ import asyncio
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 import json
-from typing import Any
+from typing import Any, Protocol
+from uuid import UUID
 
 from rag_kb.answering.model_execution import (
     complete_model,
@@ -23,8 +24,8 @@ from rag_kb.domain import (
     AnswerDraftCandidate,
     AnswerDraftSource,
     AnswerOutcome,
-    AnswerValidationRecord,
     CHAT_AGENT_REJECTION_REASONS,
+    CHAT_AGENT_TRACE_ARTIFACT,
     CHAT_GRAPHITI_ROUTE_REASONS,
     ChatAgentBudget,
     ChatAgentTrace,
@@ -43,8 +44,6 @@ from rag_kb.domain import (
     ChatToolChoice,
     ChatToolDefinition,
     Evidence,
-    EvidenceAssessment,
-    EvidenceCoverage,
     EvidenceEnvelope,
     EvidencePack,
     ErrorCode,
@@ -60,12 +59,10 @@ from rag_kb.retrieval.calculator import (
     evaluate_decimal_expression,
 )
 from rag_kb.retrieval.eligibility import EvidenceEligibilityPolicy
-from rag_kb.services.chat_execution import ChatEvidenceRetriever
-from rag_kb.services.chat_visuals import VisualEvidencePreparationStep
 from rag_kb.retrieval.profile import parse_chat_retrieval_snapshot
 
 
-AGENT_TRACE_ARTIFACT = "chat_agent_trace"
+AGENT_TRACE_ARTIFACT = CHAT_AGENT_TRACE_ARTIFACT
 _PROTOCOL_ERROR = '{"status":"error","code":"invalid_tool_protocol"}'
 _ARGUMENT_ERROR = '{"status":"error","code":"invalid_tool_arguments"}'
 _TRACE_REF_LIMIT = 100
@@ -85,14 +82,41 @@ class _SubmissionValidation:
     repair_eligible: bool = False
 
 
+class EvidenceRetriever(Protocol):
+    async def retrieve_query(
+        self,
+        context: ChatExecutionContext,
+        query: str,
+        *,
+        top_k_override: int | None = None,
+    ) -> EvidencePack: ...
+
+    async def retrieve_graphiti_supplement(
+        self,
+        context: ChatExecutionContext,
+        query: str,
+        *,
+        excluded_index_chunk_ids: tuple[UUID, ...],
+    ): ...
+
+
+class VisualEvidencePreparer(Protocol):
+    async def run(
+        self,
+        state: ChatPipelineState,
+        *,
+        previous_visuals: tuple[ChatModelVisualContent, ...] = (),
+    ) -> ChatPipelineState: ...
+
+
 class NativeToolCallingAgent:
     """Execute only search, calculate, and submit in a plain async loop."""
 
     def __init__(
         self,
         model: ChatModelAdapter,
-        retriever: ChatEvidenceRetriever,
-        visual_preparer: VisualEvidencePreparationStep,
+        retriever: EvidenceRetriever,
+        visual_preparer: VisualEvidencePreparer,
         *,
         min_cosine_similarity: float,
         min_rerank_score: float,
@@ -660,19 +684,15 @@ class NativeToolCallingAgent:
         previous_visuals: tuple[ChatModelVisualContent, ...],
     ) -> ChatPipelineState:
         envelope = build_evidence_envelope(pack)
-        assessment = EvidenceAssessment(
-            coverage=(EvidenceCoverage.SUFFICIENT if envelope.items else EvidenceCoverage.NONE),
-            usable_citation_ids=tuple(item.citation_id for item in envelope.items),
-            supported_aspects=(("question",) if envelope.items else ()),
-            missing_aspects=(),
-        )
         return await self._visual_preparer.run(
             ChatPipelineState(
                 context=context,
                 evidence_pack=pack,
                 answering=ChatAnsweringState(
                     evidence=envelope,
-                    assessment=assessment,
+                    usable_citation_ids=tuple(
+                        item.citation_id for item in envelope.items
+                    ),
                     model_calls=calls,
                 ),
             ),
@@ -817,7 +837,7 @@ def _tools(
                             "evidence_refs": {"type": "array", "items": {"type": "string"}},
                             "calculation_refs": {"type": "array", "items": {"type": "string"}},
                         },
-                        "required": ["text", "kind", "evidence_refs", "calculation_refs"],
+                        "required": ["text", "evidence_refs"],
                         "additionalProperties": False,
                     },
                 },
@@ -1038,24 +1058,6 @@ def _search_result(
     )
 
 
-def _graphiti_tool_result(
-    *,
-    route_result_code: str,
-    new_evidence_count: int,
-) -> str:
-    return json.dumps(
-        {
-            "status": "graphiti_supplement",
-            "route_result_code": route_result_code,
-            "new_evidence_count": new_evidence_count,
-            "groups": [],
-        },
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    )
-
-
 def _new_visuals(
     visual_content: Sequence[ChatModelVisualContent],
     cite_to_ref: Mapping[str, str],
@@ -1104,7 +1106,7 @@ def _validate_submission(
         return None
     outcome = value.get("outcome")
     raw_claims = value.get("claims")
-    unanswered = _strings(value.get("unanswered"), maximum=100)
+    unanswered = _normalized_unanswered(value.get("unanswered"), maximum=100)
     if outcome not in {"answered", "partial", "refused"} or unanswered is None:
         return None
     if not isinstance(raw_claims, (list, tuple)) or len(raw_claims) > 100:
@@ -1122,15 +1124,23 @@ def _validate_submission(
         rejection_reasons.add(reason)
 
     for raw in raw_claims:
-        if not isinstance(raw, Mapping) or set(raw) != {
-            "text", "kind", "evidence_refs", "calculation_refs"
-        }:
+        allowed_claim_fields = {
+            "text",
+            "kind",
+            "evidence_refs",
+            "calculation_refs",
+        }
+        if (
+            not isinstance(raw, Mapping)
+            or not {"text", "evidence_refs"}.issubset(raw)
+            or not set(raw).issubset(allowed_claim_fields)
+        ):
             reject("claim_shape")
             continue
         text = raw.get("text")
-        kind = raw.get("kind")
+        kind = raw.get("kind", "fact")
         evidence_refs = _strings(raw.get("evidence_refs"), maximum=None)
-        calculation_refs = _strings(raw.get("calculation_refs"), maximum=4)
+        calculation_refs = _strings(raw.get("calculation_refs", ()), maximum=4)
         if not isinstance(text, str) or not text.strip() or len(text) > 4000 or kind != "fact":
             reject("claim_text")
             continue
@@ -1222,20 +1232,7 @@ def _final_state(
         context.index_revision_id,
         tuple(prompt_by_ref.values()),
     )
-    coverage = (
-        EvidenceCoverage.NONE
-        if validated.outcome is AnswerOutcome.REFUSED
-        else EvidenceCoverage.PARTIAL
-        if validated.outcome is AnswerOutcome.PARTIAL
-        else EvidenceCoverage.SUFFICIENT
-    )
     cited = tuple(dict.fromkeys(ref for claim in validated.claims for ref in claim.citation_ids))
-    assessment = EvidenceAssessment(
-        coverage=coverage,
-        usable_citation_ids=cited if coverage is not EvidenceCoverage.NONE else (),
-        supported_aspects=(("question",) if coverage is not EvidenceCoverage.NONE else ()),
-        missing_aspects=(validated.missing_aspects if coverage is EvidenceCoverage.PARTIAL else ()),
-    )
     rendered = render_validated_answer(validated, envelope, current_query=context.query)
     retained_visuals = tuple(
         visual
@@ -1282,7 +1279,7 @@ def _final_state(
         evidence_pack=pack,
         answering=ChatAnsweringState(
             evidence=envelope,
-            assessment=assessment,
+            usable_citation_ids=cited,
             draft=draft,
             model_calls=calls,
             visual_content=retained_visuals,
@@ -1290,7 +1287,6 @@ def _final_state(
             visual_total_bytes=sum(len(item.content) for item in retained_visuals),
             validated=validated,
             rendered=rendered,
-            validation=AnswerValidationRecord(initial_issues=()),
         ),
         artifacts={AGENT_TRACE_ARTIFACT: trace},
     )
@@ -1341,6 +1337,23 @@ def _strings(
     if require_nonempty and not result:
         return None
     return result
+
+
+def _normalized_unanswered(
+    value: object,
+    *,
+    maximum: int,
+) -> tuple[str, ...] | None:
+    if not isinstance(value, (list, tuple)) or len(value) > maximum:
+        return None
+    normalized: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or len(item) > 1000:
+            return None
+        stripped = item.strip()
+        if stripped and stripped not in normalized:
+            normalized.append(stripped)
+    return tuple(normalized)
 
 
 def _rejected_event(call: ChatToolCall, tool: str | None = None) -> ChatAgentTraceEvent:

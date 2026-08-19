@@ -10,11 +10,7 @@ from types import MappingProxyType
 from typing import Any
 from uuid import UUID
 
-from rag_kb.domain.answering import (
-    AnswerValidationRecord,
-    ChatModelCallRecord,
-    RenderedAnswer,
-)
+from rag_kb.domain.answering import ChatModelCallRecord, RenderedAnswer
 from rag_kb.domain.chat_pipeline import ChatPipelinePhase, ChatRunLease
 from rag_kb.domain.errors import ErrorCode
 from rag_kb.domain.composite import VisualEvidenceDecision
@@ -31,14 +27,12 @@ class ChatTerminalSuccessCommand:
     lease: ChatRunLease
     assistant_message_id: UUID
     rendered: RenderedAnswer
-    validation: AnswerValidationRecord
     model_calls: tuple[ChatModelCallRecord, ...]
     finished_at: datetime
     retrieval_diagnostics: Mapping[str, int] = field(default_factory=dict)
     visual_decisions: tuple[VisualEvidenceDecision, ...] = ()
     visual_image_count: int = 0
     visual_total_bytes: int = 0
-    final_llm_context: Mapping[str, Any] | None = None
     agent_trace: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
@@ -57,12 +51,6 @@ class ChatTerminalSuccessCommand:
             "retrieval_diagnostics",
             MappingProxyType(dict(self.retrieval_diagnostics)),
         )
-        if self.final_llm_context is not None:
-            object.__setattr__(
-                self,
-                "final_llm_context",
-                MappingProxyType(dict(self.final_llm_context)),
-            )
         if self.agent_trace is not None:
             if (
                 self.agent_trace.get("version") != "native_tool_calling_agent_v2"
