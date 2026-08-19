@@ -22,6 +22,7 @@ from rag_kb.adapters.model_api.langchain_chat import LangChainChatModelAdapter
 from rag_kb.adapters.model_secrets.local import LocalModelSecretStore
 from rag_kb.domain import ChatModelMessage, ChatModelRequest, ChatToolDefinition
 from tools.evaluate_adaptive_graph_route import (
+    DEFAULT_MANIFEST,
     JUDGE_GROUNDING,
     JUDGE_REASON_CODES,
     JUDGE_STANCES,
@@ -47,7 +48,7 @@ from tools.run_adaptive_graph_r4 import _load_runtime_facts
 
 
 CONFIRM = "RUN_ROUTING_RAG_R7_STAGE_A"
-SCHEMA_VERSION = "adaptive_graph_r7_stage_a_v1"
+SCHEMA_VERSION = "adaptive_graph_r7_stage_a_v2"
 KB_ID = UUID("01a00fc2-2de3-7d42-adf3-003e7d83793a")
 INDEX_REVISION_ID = UUID("01a00fc2-2de9-7d8e-8dfc-4644e3daea8c")
 GRAPH_BUILD_ID = UUID("ca1a9671-d940-46a0-804c-307239b9d719")
@@ -96,6 +97,7 @@ def _digest_file(path: Path) -> str:
 
 def _write_checkpoint(path: Path, value: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    os.chmod(path.parent, 0o700)
     temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
     descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
@@ -115,6 +117,10 @@ def _write_checkpoint(path: Path, value: Mapping[str, Any]) -> None:
 
 
 def _load_checkpoint(path: Path) -> dict[str, Any]:
+    if not path.is_file() or path.stat().st_mode & 0o077:
+        raise RuntimeError("r7_checkpoint_permissions_invalid")
+    if path.stat().st_size > 64 * 1024 * 1024:
+        raise RuntimeError("r7_checkpoint_too_large")
     value = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(value, dict):
         raise ValueError("R7 checkpoint is invalid")
@@ -122,12 +128,18 @@ def _load_checkpoint(path: Path) -> dict[str, Any]:
 
 
 def _runtime(manifest: Mapping[str, Any]) -> dict[str, Any]:
+    if manifest.get("dataset_id") != "routing-rag-v2":
+        raise RuntimeError("r7_dataset_identity_changed")
     return {
         "schema_version": SCHEMA_VERSION,
         "created_at": datetime.now(UTC).isoformat(),
-        "dataset_id": "routing-rag-v1",
+        "dataset_id": str(manifest["dataset_id"]),
         "manifest_sha256": manifest_digest(manifest),
+        "manifest_file_sha256": _digest_file(DEFAULT_MANIFEST),
         "cases_sha256": _digest_file(Path(str(manifest["case_file"]))),
+        "fixture_sha256": _digest_file(
+            Path(str(manifest["empirical_need"]["fixture_file"]))
+        ),
         "evaluator_sha256": _digest_file(Path(__file__).with_name("evaluate_adaptive_graph_route.py")),
         "runner_sha256": _digest_file(Path(__file__)),
         "knowledge_base_id": str(KB_ID),
@@ -135,12 +147,20 @@ def _runtime(manifest: Mapping[str, Any]) -> dict[str, Any]:
         "graph_build_id": str(GRAPH_BUILD_ID),
         "answer_profile_revision_id": str(ANSWER_PROFILE_REVISION_ID),
         "judge_source_profile_revision_id": str(JUDGE_PROFILE_REVISION_ID),
+        "answer_model": "mimo-v2.5",
+        "answer_model_source": "profile_revision",
         "judge_model": JUDGE_MODEL_OVERRIDE,
         "judge_model_source": "evaluator_override_after_mimo_protocol_failure",
         "rounds": 1,
         "lanes": ["simple", "auto"],
-        "case_count": 39,
+        "case_count": int(manifest["case_count"]),
+        "case_order": [str(item) for item in manifest["case_ids"]],
         "schedule": "case_paired_even_simple_first_odd_auto_first",
+        "answer_rerank_mode": "classic",
+        "answer_retrieval_profiles": {
+            "simple": "exact_vector_v2",
+            "auto": "adaptive_graphiti_v1",
+        },
         "budgets": {
             "answer_executions": ANSWER_EXECUTION_LIMIT,
             "judge_calls": JUDGE_CALL_LIMIT,
@@ -153,6 +173,25 @@ def _runtime(manifest: Mapping[str, Any]) -> dict[str, Any]:
             "auto_to_simple_p95_latency_ratio": PERFORMANCE_RATIO_LIMIT,
         },
     }
+
+
+def _runtime_identity(value: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        str(key): item
+        for key, item in value.items()
+        if key != "created_at"
+    }
+
+
+def _assert_runtime_identity(
+    state: Mapping[str, Any],
+    expected: Mapping[str, Any],
+    *,
+    artifact: str,
+) -> None:
+    actual = state.get("runtime")
+    if not isinstance(actual, Mapping) or _runtime_identity(actual) != _runtime_identity(expected):
+        raise RuntimeError(f"r7_{artifact}_identity_mismatch")
 
 
 def _usage_tokens(run: Mapping[str, Any]) -> dict[str, int]:
@@ -285,9 +324,9 @@ def _poll_or_create(api: str, case: Mapping[str, Any], lane: str, item: dict[str
 
 def _run_answers(arguments: argparse.Namespace, manifest: Mapping[str, Any], cases: list[dict[str, Any]]) -> dict[str, Any]:
     path = arguments.output_root / "answers.json"
+    expected_runtime = _runtime(manifest)
     state = _load_checkpoint(path) if path.exists() else _initial_answers(manifest)
-    if state.get("runtime", {}).get("runner_sha256") != _runtime(manifest)["runner_sha256"]:
-        raise RuntimeError("r7_runner_changed_since_checkpoint")
+    _assert_runtime_identity(state, expected_runtime, artifact="answers")
     schedule: list[tuple[dict[str, Any], str]] = []
     for index, case in enumerate(cases):
         lanes = ("simple", "auto") if index % 2 == 0 else ("auto", "simple")
@@ -377,10 +416,13 @@ def _judge_tool() -> ChatToolDefinition:
 
 async def _run_judge(arguments: argparse.Namespace, manifest: Mapping[str, Any], cases: list[dict[str, Any]]) -> dict[str, Any]:
     answers = _load_checkpoint(arguments.output_root / "answers.json")
+    expected_runtime = _runtime(manifest)
+    _assert_runtime_identity(answers, expected_runtime, artifact="answers")
     if answers.get("status") != "completed" or len(answers.get("executions", {})) != ANSWER_EXECUTION_LIMIT:
         raise RuntimeError("r7_answers_incomplete")
     path = arguments.output_root / "judgements.json"
-    state = _load_checkpoint(path) if path.exists() else {"runtime": _runtime(manifest), "judgements": {}, "status": "running"}
+    state = _load_checkpoint(path) if path.exists() else {"runtime": expected_runtime, "judgements": {}, "status": "running"}
+    _assert_runtime_identity(state, expected_runtime, artifact="judgements")
     by_case = {str(case["case_id"]): case for case in cases}
     dependencies = build_worker_dependencies(env_file=None)
     try:
@@ -456,8 +498,12 @@ def _percentile(values: list[float], fraction: float) -> float:
 
 def _report(arguments: argparse.Namespace, manifest: Mapping[str, Any], cases: list[dict[str, Any]]) -> dict[str, Any]:
     answers = _load_checkpoint(arguments.output_root / "answers.json")
+    expected_runtime = _runtime(manifest)
+    _assert_runtime_identity(answers, expected_runtime, artifact="answers")
     judge_path = arguments.output_root / "judgements.json"
     judges = _load_checkpoint(judge_path) if judge_path.exists() else None
+    if judges is not None:
+        _assert_runtime_identity(judges, expected_runtime, artifact="judgements")
     if answers.get("status") != "completed":
         raise RuntimeError("r7_stage_a_answers_incomplete")
     wins = losses = ties = 0

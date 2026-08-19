@@ -22,14 +22,21 @@ from typing import Any, Iterable
 
 from PIL import Image, ImageDraw, ImageFont
 
-import build_graph_rag_corpus as graph_corpus
+try:
+    from tools import build_graph_rag_corpus as graph_corpus
+except ModuleNotFoundError:
+    import build_graph_rag_corpus as graph_corpus
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_OUTPUT = ROOT / "evaluation" / "routing-rag-v1"
+DEFAULT_OUTPUT = ROOT / "evaluation" / "routing-rag-v2"
+LEGACY_OUTPUT = ROOT / "evaluation" / "routing-rag-v1"
+DATASET_ID = "routing-rag-v2"
+LEGACY_DATASET_ID = "routing-rag-v1"
 CORPUS_SCHEMA = "routing_rag_corpus_v1"
 CASE_SCHEMA = "routing_rag_case_v1"
 GRAPH_SOURCE_ID = "graph-rag-v1"
+CHART_FONT_PATH = Path("/System/Library/Fonts/Supplemental/Verdana.ttf")
 EXPECTED_OUTCOMES = frozenset({"answered", "refused"})
 NEGATIVE_CONTROL_KINDS = frozenset(
     {"contradicted", "closed_world_absence", "open_world_unanswerable"}
@@ -219,9 +226,11 @@ def _standard_documents(chart_uris: dict[str, str]) -> tuple[StandardDocument, .
 
 def _font(size: int) -> ImageFont.ImageFont:
     try:
-        return ImageFont.truetype("DejaVuSans.ttf", size=size)
-    except OSError:
-        return ImageFont.load_default()
+        return ImageFont.truetype(str(CHART_FONT_PATH), size=size)
+    except OSError as error:
+        raise RuntimeError(
+            f"{CHART_FONT_PATH} is required for deterministic routing corpus charts"
+        ) from error
 
 
 def _draw_centered(
@@ -304,7 +313,9 @@ def _data_uri(payload: bytes) -> str:
     return "data:image/png;base64," + base64.b64encode(payload).decode("ascii")
 
 
-def _copy_graph_documents(output: Path) -> tuple[dict[str, str], dict[str, object]]:
+def _copy_graph_documents(
+    output: Path,
+) -> tuple[dict[str, str], dict[str, str], dict[str, object]]:
     """Build the source corpus in a temp directory and snapshot its documents/gold."""
 
     documents_dir = output / "documents"
@@ -314,6 +325,14 @@ def _copy_graph_documents(output: Path) -> tuple[dict[str, str], dict[str, objec
         staged_root = Path(temporary) / GRAPH_SOURCE_ID
         graph_corpus.build(staged_root)
         source_manifest = json.loads((staged_root / "manifest.json").read_text(encoding="utf-8"))
+        relation_document_ids = {
+            str(row["relation_id"]): str(row["document_id"])
+            for row in (
+                json.loads(line)
+                for line in (staged_root / "relations.jsonl").read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            )
+        }
         filename_by_document_id = {
             str(row["document_id"]): str(row["filename"])
             for row in source_manifest["documents"]
@@ -325,10 +344,13 @@ def _copy_graph_documents(output: Path) -> tuple[dict[str, str], dict[str, objec
             copied_filenames[document_id] = copied_filename
         for filename in ("manifest.json", "entities.jsonl", "relations.jsonl", "cases.jsonl"):
             shutil.copy2(staged_root / filename, gold_dir / filename)
-    return copied_filenames, source_manifest
+    return copied_filenames, relation_document_ids, source_manifest
 
 
-def _graph_cases(copied_filenames: dict[str, str]) -> list[dict[str, object]]:
+def _graph_cases(
+    copied_filenames: dict[str, str],
+    relation_document_ids: dict[str, str],
+) -> list[dict[str, object]]:
     cases: list[dict[str, object]] = []
     for source in graph_corpus.CASES:
         if source["current_graph_support"] != "1_2_hop":
@@ -340,7 +362,7 @@ def _graph_cases(copied_filenames: dict[str, str]) -> list[dict[str, object]]:
             {
                 "kind": "graph_relation",
                 "relation_id": relation_id,
-                "document_filename": copied_filenames[answer_document_id],
+                "document_filename": copied_filenames[relation_document_ids[relation_id]],
                 "source_case_id": source["case_id"],
             }
             for relation_id in answer_relation_ids
@@ -349,7 +371,7 @@ def _graph_cases(copied_filenames: dict[str, str]) -> list[dict[str, object]]:
             {
                 "kind": "graph_relation",
                 "relation_id": relation_id,
-                "document_filename": copied_filenames[answer_document_id],
+                "document_filename": copied_filenames[relation_document_ids[relation_id]],
                 "source_case_id": source["case_id"],
             }
             for relation_id in gold_path
@@ -575,6 +597,23 @@ def _assert_standard_documents(documents: tuple[StandardDocument, ...]) -> None:
 
 
 def build(output: Path, *, force: bool = False) -> None:
+    resolved_output = output.resolve()
+    if resolved_output == LEGACY_OUTPUT.resolve():
+        raise ValueError(
+            "refuse to build legacy routing-rag-v1; use the routing-rag-v2 default output"
+        )
+    existing_manifest = output / "manifest.json"
+    if existing_manifest.exists():
+        try:
+            existing_dataset_id = json.loads(
+                existing_manifest.read_text(encoding="utf-8")
+            ).get("dataset_id")
+        except (OSError, json.JSONDecodeError):
+            existing_dataset_id = None
+        if existing_dataset_id == LEGACY_DATASET_ID:
+            raise ValueError(
+                "refuse to build over legacy routing-rag-v1 manifest"
+            )
     if output.exists() and force:
         for child in output.iterdir():
             if child.name in {"README.md", ".gitkeep"}:
@@ -613,8 +652,8 @@ def build(output: Path, *, force: bool = False) -> None:
     for document in standard_documents:
         (documents_dir / document.filename).write_text(document.content, encoding="utf-8")
 
-    copied_graph_filenames, graph_manifest = _copy_graph_documents(output)
-    graph_cases = _graph_cases(copied_graph_filenames)
+    copied_graph_filenames, relation_document_ids, graph_manifest = _copy_graph_documents(output)
+    graph_cases = _graph_cases(copied_graph_filenames, relation_document_ids)
     standard_cases = _standard_cases(chart_hashes)
     all_cases = [*graph_cases, *standard_cases]
     _write_jsonl(output / "cases.jsonl", all_cases)
@@ -636,7 +675,7 @@ def build(output: Path, *, force: bool = False) -> None:
     )
     manifest = {
         "schema": CORPUS_SCHEMA,
-        "dataset_id": "routing-rag-v1",
+        "dataset_id": DATASET_ID,
         "language": "zh-CN",
         "synthetic": True,
         "source_graph_corpus": {
@@ -677,7 +716,7 @@ def build(output: Path, *, force: bool = False) -> None:
                     "document_id": document.document_id,
                     "filename": document.filename,
                     "format": document.format,
-                    "source": "routing-rag-v1",
+                    "source": DATASET_ID,
                     "material_type": document.material_type,
                 }
                 for document in standard_documents
@@ -713,7 +752,7 @@ def build(output: Path, *, force: bool = False) -> None:
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
     print(
-        f"built routing-rag-v1: {manifest['document_count']} documents, "
+        f"built {DATASET_ID}: {manifest['document_count']} documents, "
         f"{len(all_cases)} cases at {output}"
     )
 
@@ -737,12 +776,23 @@ def validate(output: Path) -> int:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     if manifest.get("schema") != CORPUS_SCHEMA:
         errors.append("manifest schema mismatch")
+    dataset_id = str(manifest.get("dataset_id", ""))
+    if dataset_id not in {DATASET_ID, LEGACY_DATASET_ID}:
+        errors.append("manifest dataset identity is unsupported")
     documents = manifest.get("documents")
     if not isinstance(documents, list):
         errors.append("manifest documents must be a list")
         documents = []
     names = [str(document.get("filename", "")) for document in documents if isinstance(document, dict)]
     document_ids = [str(document.get("document_id", "")) for document in documents if isinstance(document, dict)]
+    graph_document_filenames = {
+        str(document["document_id"]): str(document["filename"])
+        for document in documents
+        if isinstance(document, dict)
+        and document.get("source") == GRAPH_SOURCE_ID
+        and isinstance(document.get("document_id"), str)
+        and isinstance(document.get("filename"), str)
+    }
     if len(names) != len(set(names)):
         errors.append("document filenames must be unique")
     if len(document_ids) != len(set(document_ids)) or any(not document_id for document_id in document_ids):
@@ -870,6 +920,25 @@ def validate(output: Path) -> int:
             }
             if context_ids & locator_ids:
                 errors.append(f"{case_id}: path context overlaps answer gold")
+            if dataset_id == DATASET_ID:
+                locator_groups = (
+                    answer_locators if isinstance(answer_locators, list) else (),
+                    path_locators if isinstance(path_locators, list) else (),
+                )
+                for locator in (*locator_groups[0], *locator_groups[1]):
+                    if not isinstance(locator, dict) or locator.get("kind") != "graph_relation":
+                        continue
+                    relation_id = str(locator.get("relation_id", ""))
+                    relation = graph_relations.get(relation_id)
+                    expected_filename = (
+                        graph_document_filenames.get(str(relation.get("document_id")))
+                        if isinstance(relation, dict)
+                        else None
+                    )
+                    if expected_filename is None or locator.get("document_filename") != expected_filename:
+                        errors.append(
+                            f"{case_id}: graph locator document does not match relation source"
+                        )
         elif route_name == "simple":
             runtime = route.get("runtime_request")
             if not isinstance(runtime, dict) or runtime.get("mode") != "vector":
@@ -908,7 +977,7 @@ def validate(output: Path) -> int:
             print(f"- {error}")
         return 1
     print(
-        f"validated routing-rag-v1: {manifest['document_count']} documents, "
+        f"validated {dataset_id}: {manifest['document_count']} documents, "
         f"{len(cases)} cases, routes={manifest['route_case_counts']}"
     )
     return 0

@@ -265,7 +265,12 @@ Episode→Chunk 映射；`0014` 删除旧 `index_graph_chunk`、`graph_entity_me
 现有索引链路推导出“任何新流程都必须拥有 ledger/manifest/replay”。
 
 本地评测由独立的 `tools/evaluate_multimodal_real.py` 按需执行并输出结果，不进入 API、Worker、
-Unit of Work 或业务 schema。没有当前消费者时不预建评测数据集、run/result 表和 repository。
+Unit of Work 或业务 schema。Adaptive Graph 路由评测使用成对的
+`evaluation/routing-rag-v2/` 与 `evaluation/adaptive-graph-route-v2/` 合同；`v1` 仅保留为不可变
+历史身份。`tools/evaluate_adaptive_graph_route.py --dry-run` 只校验 corpus、locator、fixture、
+文件摘要以及 R4 参数/checkpoint 安全合同，不访问 Provider、数据库、Graph、Judge 或本地
+MiniLM。R4/R7 的外部运行仍是单独授权的评测入口，不属于 API、Worker 或业务 schema 的常规
+流程；其外部调用与本地评测工件保留边界按当前授权执行。
 
 没有要保留的数据时，本地 schema 变化可选择经用户确认后 reset；只有用户明确需要保留数据
 时才设计回填或兼容迁移。任何删除本地数据的命令仍需明确授权。

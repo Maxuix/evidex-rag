@@ -33,7 +33,7 @@ from rag_kb.ports.model_api import ChatModelAdapter
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_MANIFEST = PROJECT_ROOT / "evaluation" / "adaptive-graph-route-v1" / "manifest.json"
+DEFAULT_MANIFEST = PROJECT_ROOT / "evaluation" / "adaptive-graph-route-v2" / "manifest.json"
 ROUTE_IDS = ("vector-only", "hybrid-control", "manual-graph", "auto-route")
 LAYERS = ("raw", "hydrated", "reranked", "packed")
 CASE_OUTCOMES = frozenset({"answered", "refused"})
@@ -57,6 +57,7 @@ GRAPH_ROUTE_LABELS = frozenset({"simple", "graph"})
 FORCED_CONTROLLER_MODES = frozenset(
     {"specific_tool_choice", "single_tool_required_fallback", "actual_auto"}
 )
+RERANK_MODES = frozenset({"none", "classic", "local_minilm_v1"})
 JUDGE_VERDICTS = frozenset({"correct", "partial", "incorrect"})
 JUDGE_GROUNDING = frozenset({"supported", "partial", "unsupported"})
 JUDGE_STANCES = frozenset({"affirmed", "denied", "abstained", "not_applicable"})
@@ -259,6 +260,8 @@ def load_manifest(path: Path = DEFAULT_MANIFEST) -> dict[str, Any]:
     manifest = json.loads(path.read_text(encoding="utf-8"))
     if manifest.get("schema_version") != "adaptive_graph_route_manifest_v2":
         raise ValueError("adaptive route manifest schema mismatch")
+    if manifest.get("dataset_id") not in {"routing-rag-v1", "routing-rag-v2"}:
+        raise ValueError("adaptive route manifest dataset identity is invalid")
     if tuple(item.get("id") for item in manifest.get("routes", ())) != ROUTE_IDS:
         raise ValueError("adaptive route manifest lanes are not frozen")
     contract = manifest.get("contract")
@@ -317,10 +320,183 @@ def load_manifest(path: Path = DEFAULT_MANIFEST) -> dict[str, Any]:
 
 
 def manifest_digest(manifest: Mapping[str, Any]) -> str:
-    import hashlib
-
-    payload = json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    normalized = json.loads(json.dumps(manifest, ensure_ascii=False))
+    case_file = normalized.get("case_file")
+    if isinstance(case_file, str):
+        normalized["case_file"] = _portable_evaluation_path(case_file)
+    empirical = normalized.get("empirical_need")
+    if isinstance(empirical, dict):
+        fixture_file = empirical.get("fixture_file")
+        if isinstance(fixture_file, str):
+            empirical["fixture_file"] = _portable_evaluation_path(fixture_file)
+    payload = json.dumps(
+        normalized,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _portable_evaluation_path(value: str) -> str:
+    normalized = value.replace("\\", "/")
+    marker = "evaluation/"
+    marker_index = normalized.find(marker)
+    return normalized[marker_index:] if marker_index >= 0 else normalized
+
+
+def validate_evaluation_readiness(
+    manifest_path: Path = DEFAULT_MANIFEST,
+    *,
+    manifest: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Validate the complete offline evaluation boundary without external I/O."""
+
+    loaded = dict(manifest or load_manifest(manifest_path))
+    if loaded.get("dataset_id") != "routing-rag-v2":
+        raise ValueError("evaluation readiness requires routing-rag-v2")
+    case_file = Path(str(loaded["case_file"]))
+    if not case_file.is_absolute():
+        case_file = (manifest_path.parent / case_file).resolve()
+    empirical = loaded.get("empirical_need")
+    if not isinstance(empirical, Mapping):
+        raise ValueError("evaluation readiness fixture contract is missing")
+    fixture_file = Path(str(empirical["fixture_file"]))
+    if not fixture_file.is_absolute():
+        fixture_file = (manifest_path.parent / fixture_file).resolve()
+    cases = load_cases(case_file)
+    fixture = load_empirical_fixture(
+        fixture_file,
+        source_case_ids=(str(item["case_id"]) for item in cases),
+        required_counts={
+            str(key): int(value)
+            for key, value in dict(empirical["required_categories"]).items()
+        },
+    )
+    if len(cases) != 39 or len(fixture) != 22:
+        raise ValueError("evaluation readiness case or fixture count changed")
+    if [str(item["case_id"]) for item in cases] != list(loaded["case_ids"]):
+        raise ValueError("evaluation readiness case order changed")
+
+    corpus_manifest_path = case_file.parent / "manifest.json"
+    corpus_manifest = json.loads(corpus_manifest_path.read_text(encoding="utf-8"))
+    if (
+        corpus_manifest.get("dataset_id") != "routing-rag-v2"
+        or corpus_manifest.get("case_count") != len(cases)
+        or corpus_manifest.get("route_contract", {}).get("graph")
+        != {
+            "runtime_mode": "graph",
+            "top_k": 10,
+            "rerank_mode": "classic",
+            "expected_evidence_modality": "text",
+        }
+    ):
+        raise ValueError("evaluation readiness corpus contract changed")
+
+    graph_relations_path = case_file.parent / "gold" / "graph-rag-v1" / "relations.jsonl"
+    relation_document_ids: dict[str, str] = {}
+    relation_rows = []
+    for line in graph_relations_path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        if not isinstance(row, Mapping):
+            raise ValueError("evaluation readiness graph relation is invalid")
+        relation_rows.append(row)
+    for row in relation_rows:
+        relation_id = str(row.get("relation_id", ""))
+        document_id = str(row.get("document_id", ""))
+        if not relation_id or not document_id:
+            raise ValueError("evaluation readiness graph relation is invalid")
+        if relation_id in relation_document_ids:
+            raise ValueError("evaluation readiness relation source is ambiguous")
+        relation_document_ids[relation_id] = document_id
+    if len(relation_rows) != 224:
+        raise ValueError("evaluation readiness graph relation count changed")
+    graph_locator_candidates = [
+        locator
+        for case in cases
+        if case.get("expected_route", {}).get("route") == "graph"
+        for locator in (
+            list(case.get("answer_gold_source_locators", ()))
+            + list(case.get("path_context_locators", ()))
+        )
+    ]
+    if any(not isinstance(locator, Mapping) for locator in graph_locator_candidates):
+        raise ValueError("evaluation readiness graph locator is invalid")
+    graph_locators = [
+        locator
+        for locator in graph_locator_candidates
+        if locator.get("kind") == "graph_relation"
+    ]
+    document_filename_by_id: dict[str, str] = {}
+    documents = corpus_manifest.get("documents")
+    if not isinstance(documents, list):
+        raise ValueError("evaluation readiness corpus documents are invalid")
+    for item in documents:
+        if not isinstance(item, Mapping) or not isinstance(
+            item.get("document_id"), str
+        ) or not isinstance(item.get("filename"), str):
+            raise ValueError("evaluation readiness corpus document is invalid")
+        document_filename_by_id[str(item["document_id"])] = str(item["filename"])
+    if len(graph_locators) != 40 or len({str(item["relation_id"]) for item in graph_locators}) != 35:
+        raise ValueError("evaluation readiness graph locator coverage changed")
+    for locator in graph_locators:
+        relation_id = str(locator["relation_id"])
+        expected_filename = document_filename_by_id.get(relation_document_ids.get(relation_id, ""))
+        if expected_filename is None or str(locator.get("document_filename")) != expected_filename:
+            raise ValueError("evaluation readiness graph locator source mismatch")
+
+    from tools import run_adaptive_graph_r4 as r4_runner
+
+    rerank_action = next(
+        action
+        for action in r4_runner._parser()._actions
+        if "--rerank-mode" in action.option_strings
+    )
+    if (
+        r4_runner.R4_DIAGNOSTIC_SCHEMA_VERSION != "adaptive_graph_r4_diagnostic_v2"
+        or r4_runner.R4_CHECKPOINT_SCHEMA_VERSION != "adaptive_graph_r4_checkpoint_v2"
+        or rerank_action.default != "classic"
+        or frozenset(rerank_action.choices or ()) != RERANK_MODES
+        or not {
+            "question",
+            "query",
+            "text",
+            "filename",
+            "provider_payload",
+        }.issubset(r4_runner._R4_CHECKPOINT_FORBIDDEN_KEYS)
+        or "below_threshold_count" in r4_runner._R4_CHECKPOINT_FORBIDDEN_KEYS
+    ):
+        raise ValueError("evaluation readiness R4 contract changed")
+
+    return {
+        "dataset_id": str(loaded["dataset_id"]),
+        "case_count": len(cases),
+        "fixture_count": len(fixture),
+        "graph_locator_count": len(graph_locators),
+        "graph_unique_relation_count": len(
+            {str(item["relation_id"]) for item in graph_locators}
+        ),
+        "graph_source_relation_count": len(relation_rows),
+        "manifest_file_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+        "manifest_digest": manifest_digest(loaded),
+        "cases_file_sha256": hashlib.sha256(case_file.read_bytes()).hexdigest(),
+        "fixture_file_sha256": hashlib.sha256(fixture_file.read_bytes()).hexdigest(),
+        "corpus_manifest_sha256": hashlib.sha256(corpus_manifest_path.read_bytes()).hexdigest(),
+        "graph_relations_sha256": hashlib.sha256(graph_relations_path.read_bytes()).hexdigest(),
+        "rerank_modes": sorted(RERANK_MODES),
+        "layers": list(LAYERS),
+        "r4_contract": {
+            "diagnostic_schema": r4_runner.R4_DIAGNOSTIC_SCHEMA_VERSION,
+            "checkpoint_schema": r4_runner.R4_CHECKPOINT_SCHEMA_VERSION,
+            "rerank_default": rerank_action.default,
+            "rerank_choices": sorted(rerank_action.choices or ()),
+            "checkpoint_forbidden_key_count": len(
+                r4_runner._R4_CHECKPOINT_FORBIDDEN_KEYS
+            ),
+        },
+    }
 
 
 def build_routing_judge_packet(
@@ -633,14 +809,36 @@ class CapturingGraphitiSupplementRetriever:
         )
 
 
+def _redacted_capture_dict(value: GraphitiSupplementCapture | Mapping[str, Any]) -> dict[str, Any]:
+    if isinstance(value, GraphitiSupplementCapture):
+        return value.as_dict()
+    if set(value) != {"case_id", "excluded_index_chunk_ids"}:
+        raise ValueError("replay capture redaction is invalid")
+    case_id = str(value.get("case_id", ""))
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", case_id) is None:
+        raise ValueError("replay capture case identity is invalid")
+    excluded = value.get("excluded_index_chunk_ids")
+    if not isinstance(excluded, list):
+        raise ValueError("replay capture exclusions are invalid")
+    try:
+        normalized = [str(UUID(str(item))) for item in excluded]
+    except (TypeError, ValueError, AttributeError) as error:
+        raise ValueError("replay capture exclusions are invalid") from error
+    if normalized != excluded or len(normalized) != len(set(normalized)):
+        raise ValueError("replay capture exclusions are invalid")
+    return {"case_id": case_id, "excluded_index_chunk_ids": normalized}
+
+
 def build_replay_capture_artifact(
     *,
+    dataset_id: str,
+    rerank_mode: str,
     manifest_sha256: str,
     knowledge_base_id: str,
     index_revision_id: str,
     graph_build_id: str,
     chat_model_profile_revision_id: str,
-    captures: Sequence[GraphitiSupplementCapture],
+    captures: Sequence[GraphitiSupplementCapture | Mapping[str, Any]],
     controller_mode: str = "specific_tool_choice",
     chat_model: str | None = None,
     chat_model_source: str | None = None,
@@ -663,9 +861,14 @@ def build_replay_capture_artifact(
         raise ValueError("replay capture runtime identity is invalid") from error
     if not re.fullmatch(r"[0-9a-f]{64}", manifest_sha256):
         raise ValueError("replay capture manifest digest is invalid")
+    if not re.fullmatch(r"routing-rag-v[0-9]+", dataset_id):
+        raise ValueError("replay capture dataset identity is invalid")
+    if rerank_mode not in RERANK_MODES:
+        raise ValueError("replay capture rerank mode is invalid")
     if controller_mode not in FORCED_CONTROLLER_MODES:
         raise ValueError("replay capture controller mode is invalid")
-    case_ids = [item.case_id for item in captures]
+    redacted_captures = tuple(_redacted_capture_dict(item) for item in captures)
+    case_ids = [str(item["case_id"]) for item in redacted_captures]
     if (
         len(case_ids) != len(set(case_ids))
         or not captures
@@ -695,15 +898,16 @@ def build_replay_capture_artifact(
                 "chat_model_max_retries": chat_model_max_retries,
             }
         )
+    normalized_identifiers["rerank_mode"] = rerank_mode
     return {
         "schema_version": REPLAY_CAPTURE_SCHEMA_VERSION,
-        "dataset_id": "routing-rag-v1",
+        "dataset_id": dataset_id,
         "capture_source": capture_source,
         "controller_mode": controller_mode,
         "manifest_sha256": manifest_sha256,
         "runtime": normalized_identifiers,
         "case_count": len(captures),
-        "cases": [item.as_dict() for item in captures],
+        "cases": list(redacted_captures),
     }
 
 
@@ -1134,6 +1338,8 @@ def _validate_layer_diagnostic(value: Mapping[str, Any]) -> dict[str, Any]:
         "duplicate_chunk_path_count",
         "gold_rerank_scores",
         "top1_gold_rerank_score",
+        "rerank_score_state",
+        "rerank_reordered_chunk_count",
         "route_reason_code",
         "route_result_code",
         "salvage_status",
@@ -1190,6 +1396,17 @@ def _validate_layer_diagnostic(value: Mapping[str, Any]) -> dict[str, Any]:
             raise ValueError("top gold rerank score is invalid")
         top_score = float(top_score)
 
+    rerank_score_state = value.get("rerank_score_state", "not_applicable")
+    if rerank_score_state not in {"scored", "not_applicable"}:
+        raise ValueError("rerank score state is invalid")
+    reordered_count = value.get("rerank_reordered_chunk_count", 0)
+    if (
+        isinstance(reordered_count, bool)
+        or not isinstance(reordered_count, int)
+        or reordered_count < 0
+    ):
+        raise ValueError("rerank reordered chunk count is invalid")
+
     route_reason = value.get("route_reason_code")
     if route_reason is not None and route_reason not in CHAT_GRAPHITI_ROUTE_REASONS:
         raise ValueError("layer route reason is invalid")
@@ -1208,6 +1425,8 @@ def _validate_layer_diagnostic(value: Mapping[str, Any]) -> dict[str, Any]:
         **counts,
         "gold_rerank_scores": gold_scores,
         "top1_gold_rerank_score": top_score,
+        "rerank_score_state": rerank_score_state,
+        "rerank_reordered_chunk_count": reordered_count,
         "route_reason_code": route_reason,
         "route_result_code": route_result,
         "salvage_status": salvage_status,
@@ -1265,6 +1484,10 @@ def main() -> int:
     arguments = parser.parse_args()
     try:
         manifest = load_manifest(arguments.manifest)
+        readiness = validate_evaluation_readiness(
+            arguments.manifest,
+            manifest=manifest,
+        )
     except (OSError, ValueError, json.JSONDecodeError) as error:
         parser.error(str(error))
     if not arguments.dry_run:
@@ -1279,6 +1502,7 @@ def main() -> int:
                 "case_count": manifest["case_count"],
                 "route_ids": list(ROUTE_IDS),
                 "manifest_digest": manifest_digest(manifest),
+                "readiness": readiness,
             },
             ensure_ascii=False,
             sort_keys=True,

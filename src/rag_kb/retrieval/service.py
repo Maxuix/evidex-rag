@@ -126,6 +126,11 @@ class GraphitiCandidateSet:
     traversal: Any
     edge_rank_by_path_id: dict[str, int]
     rerank_score_by_chunk_id: dict[UUID, float]
+    raw_edge_uuids: tuple[str, ...] = ()
+    raw_episode_ids: tuple[str, ...] = ()
+    raw_mapped_episode_ids: tuple[str, ...] = ()
+    raw_chunk_ids: tuple[UUID, ...] = ()
+    hydrated_chunk_ids: tuple[UUID, ...] = ()
 
 
 class RetrievalService:
@@ -707,6 +712,22 @@ class RetrievalService:
             )
         for path in traversal.paths:
             edge_rank_by_path_id[path.path_id] = path.rank
+        raw_edge_uuids = tuple(str(edge.edge_uuid) for edge in edges)
+        raw_episode_ids = tuple(
+            dict.fromkeys(
+                episode_uuid
+                for edge in edges
+                for episode_uuid in edge.episode_uuids
+            )
+        )
+        raw_chunk_ids = tuple(
+            dict.fromkeys(
+                chunk_id
+                for path in traversal.paths
+                for chunk_id in path.source_chunk_ids
+            )
+        )
+        hydrated_chunk_ids = tuple(chunk.index_chunk_id for chunk in traversal.chunks)
         traversal, rerank_score_by_chunk_id = await self._rerank_graphiti_candidates_with_scores(
             query,
             traversal,
@@ -723,6 +744,11 @@ class RetrievalService:
             traversal=traversal,
             edge_rank_by_path_id=edge_rank_by_path_id,
             rerank_score_by_chunk_id=rerank_score_by_chunk_id,
+            raw_edge_uuids=raw_edge_uuids,
+            raw_episode_ids=raw_episode_ids,
+            raw_mapped_episode_ids=traversal.mapped_episode_ids,
+            raw_chunk_ids=raw_chunk_ids,
+            hydrated_chunk_ids=hydrated_chunk_ids,
         )
 
     async def _rerank_graphiti_candidates_with_scores(

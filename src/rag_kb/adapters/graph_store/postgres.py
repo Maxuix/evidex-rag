@@ -222,6 +222,9 @@ class PgGraphStore:
             paths=paths,
             chunks=chunks,
             rejected_path_count=rejected,
+            mapped_episode_ids=tuple(
+                dict.fromkeys(str(row["episode_uuid"]) for row in rows)
+            ),
         )
 
     async def schedule_graphiti_rebuild(

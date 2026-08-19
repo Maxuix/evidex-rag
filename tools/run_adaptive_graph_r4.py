@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run the explicitly authorized, read-only adaptive Graph RAG R4 diagnostic.
 
-The runner is deliberately narrow: it targets only ``routing-rag-v1`` Graph
+The runner is deliberately narrow: it targets the default ``routing-rag-v2`` Graph
 cases, creates no ChatRun, performs no Judge call, and never mutates a
 knowledge base or Graphiti build.  It captures the validated Forced supplement
 query at the Agent retrieval boundary, then replays Capability and Agent query
@@ -23,7 +23,7 @@ import re
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import bindparam, text
+from sqlalchemy import text
 
 from apps.worker.dependencies import build_worker_dependencies
 from rag_kb.adapters.graph_store.postgres import PgGraphStore
@@ -33,14 +33,17 @@ from rag_kb.answering.agent import NativeToolCallingAgent
 from rag_kb.domain import (
     ChatExecutionContext,
     ChatRunLease,
-    GraphitiSearchQuery,
+    ChatPipelineExecutionError,
+    ChatPipelinePhase,
+    ChatModelOperation,
+    ErrorCode,
     ModelKind,
     ModelValidationStatus,
     RerankMode,
+    RetrievalExecutionError,
 )
 from rag_kb.retrieval.profile import adaptive_graphiti_profile
 from rag_kb.retrieval.service import (
-    GraphitiCandidateSet,
     _pack_graphiti_supplement_evidence,
 )
 from rag_kb.services.chat_execution import ChatEvidenceRetriever
@@ -51,6 +54,7 @@ from rag_kb.uow import (
 )
 from tools.evaluate_adaptive_graph_route import (
     CapturingGraphitiSupplementRetriever,
+    DEFAULT_MANIFEST,
     EVALUATOR_EDGE_LIMITS,
     ForcedGraphitiSupplementChatModelPort,
     GraphitiSupplementCapture,
@@ -62,18 +66,121 @@ from tools.evaluate_adaptive_graph_route import (
     load_cases,
     load_manifest,
     manifest_digest,
-    write_replay_capture_artifact,
 )
 
 
 CONFIRM_EXTERNAL_CALLS = "RUN_ROUTING_RAG_R4_EXTERNAL_CALLS"
 R4_DIAGNOSTIC_SCHEMA_VERSION = "adaptive_graph_r4_diagnostic_v2"
+R4_CHECKPOINT_SCHEMA_VERSION = "adaptive_graph_r4_checkpoint_v2"
 GRAPHITI_EDGE_LIMIT = 8
 FORCED_CONTROLLER_MODE = "specific_tool_choice"
 ACTUAL_AUTO_CONTROLLER_MODE = "actual_auto"
 EVALUATOR_CHAT_MODEL_OVERRIDE = "deepseek-v4-flash"
 EVALUATOR_CHAT_MODEL_MAX_OUTPUT_TOKENS = 512
 EVALUATOR_CHAT_MODEL_MAX_RETRIES = 0
+_R4_CHECKPOINT_STAGES = frozenset(
+    {"capture", "capability", "agent_replay", "failed"}
+)
+_R4_EVALUATION_PHASES = frozenset({"capture", "capability", "agent_replay"})
+_R4_PIPELINE_PHASES = frozenset(item.value for item in ChatPipelinePhase)
+_R4_CHECKPOINT_FORBIDDEN_KEYS = frozenset(
+    {
+        "answer",
+        "api_key",
+        "body",
+        "content",
+        "document_name",
+        "exception_message",
+        "filename",
+        "headers",
+        "message",
+        "messages",
+        "provider_payload",
+        "query",
+        "question",
+        "request",
+        "response",
+        "secret",
+        "source_location",
+        "source_text",
+        "text",
+        "url",
+    }
+)
+_R4_DIAGNOSTIC_CHECKS = frozenset(
+    {
+        "active_lease",
+        "adaptive_retrieval_snapshot",
+        "adaptive_supplement_evidence",
+        "agent_budget",
+        "claimed_lease",
+        "cross_modal_provider_required",
+        "frozen_revision",
+        "graph_completeness",
+        "graph_edge_search",
+        "graph_frozen_revision",
+        "graph_local_reranker_not_configured",
+        "graph_runtime_probe",
+        "graph_runtime_probe_mapping",
+        "graph_store",
+        "model_output_limit",
+        "model_snapshot",
+        "retrieval_snapshot",
+        "resolved_model",
+        "step_contract",
+        "task_deadline",
+        "unified_provider_capabilities",
+    }
+)
+_R4_RETRYABLE_ERROR_CODES = frozenset(
+    {
+        ErrorCode.CHAT_PROVIDER_UNAVAILABLE.value,
+        ErrorCode.CHAT_PIPELINE_DEADLINE_EXCEEDED.value,
+        ErrorCode.RETRIEVAL_DEADLINE_EXCEEDED.value,
+        ErrorCode.GRAPH_PROVIDER_UNAVAILABLE.value,
+    }
+)
+_R4_STABLE_ERROR_CODES = frozenset(item.value for item in ErrorCode)
+_R4_RUNNER_ERROR_CODES = frozenset(
+    {
+        "r4_active_graph_build_changed",
+        "r4_active_revision_changed",
+        "r4_checkpoint_completion_order_invalid",
+        "r4_checkpoint_identity_mismatch",
+        "r4_checkpoint_missing_for_existing_output",
+        "r4_checkpoint_permissions_invalid",
+        "r4_existing_artifact_mismatch",
+        "r4_existing_artifact_permissions_invalid",
+        "r4_final_artifact_identity_mismatch",
+        "r4_forced_replacement_cardinality",
+        "r4_graph_case_count_changed",
+        "r4_graph_relation_locator_not_unique",
+        "r4_graph_runtime_not_ready",
+        "r4_knowledge_base_not_found",
+        "r4_chat_model_revision_not_found",
+        "r4_chat_model_revision_not_ready",
+        "r4_dataset_identity_changed",
+        "r4_rerank_changed_chunk_set",
+        "r4_simple_exclusion_capture_mismatch",
+        "r4_supplement_capture_incomplete",
+    }
+)
+_R4_FAILURE_CODES = _R4_RUNNER_ERROR_CODES | {
+    "r4_interrupted",
+    "r4_unexpected_failure",
+    "r4_validation_failure",
+}
+_R4_MODEL_CALL_OPERATIONS = frozenset(item.value for item in ChatModelOperation)
+
+
+class R4RunnerError(RuntimeError):
+    """Content-safe error raised by the evaluator's own validation contract."""
+
+    def __init__(self, code: str) -> None:
+        if code not in _R4_RUNNER_ERROR_CODES:
+            raise ValueError("R4 runner error code is invalid")
+        super().__init__(code)
+        self.code = code
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -84,10 +191,16 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--chat-model-profile-revision-id", type=UUID, required=True)
     parser.add_argument("--capture-output", type=Path, required=True)
     parser.add_argument("--diagnostic-output", type=Path, required=True)
+    parser.add_argument("--checkpoint-output", type=Path, required=True)
     parser.add_argument(
         "--replay-mode",
         choices=("forced", "actual-auto"),
         default="forced",
+    )
+    parser.add_argument(
+        "--rerank-mode",
+        choices=("none", "classic", "local_minilm_v1"),
+        default=RerankMode.CLASSIC.value,
     )
     parser.add_argument(
         "--chat-model-override",
@@ -107,18 +220,156 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _write_json_artifact(path: Path, value: Mapping[str, Any]) -> str:
-    payload = json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
+    return _write_json_atomic(path, value)
+
+
+def _canonical_json_bytes(value: Mapping[str, Any]) -> bytes:
+    return (
+        json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        + "\n"
+    ).encode("utf-8")
+
+
+def _assert_checkpoint_content_safe(value: Any) -> None:
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            if not isinstance(key, str) or key.lower() in _R4_CHECKPOINT_FORBIDDEN_KEYS:
+                raise ValueError("r4_checkpoint_contains_forbidden_field")
+            _assert_checkpoint_content_safe(item)
+        return
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            _assert_checkpoint_content_safe(item)
+        return
+    if value is not None and not isinstance(value, (str, int, float, bool)):
+        raise ValueError("r4_checkpoint_contains_unsupported_value")
+
+
+def _write_json_atomic(path: Path, value: Mapping[str, Any]) -> str:
+    """Atomically replace one owner-only checkpoint after a safety scan."""
+
+    _assert_checkpoint_content_safe(value)
+    payload = _canonical_json_bytes(value)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("x", encoding="utf-8") as handle:
-        handle.write(payload)
-        handle.write("\n")
-    os.chmod(path, 0o600)
-    return hashlib.sha256((payload + "\n").encode("utf-8")).hexdigest()
+    os.chmod(path.parent, 0o700)
+    temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    try:
+        with temporary.open("xb") as handle:
+            os.chmod(temporary, 0o600)
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _write_or_verify_json_artifact(path: Path, value: Mapping[str, Any]) -> str:
+    """Create an immutable final artifact or verify a prior crash wrote it."""
+
+    payload = _canonical_json_bytes(value)
+    digest = hashlib.sha256(payload).hexdigest()
+    if path.exists():
+        if not path.is_file() or path.read_bytes() != payload:
+            raise R4RunnerError("r4_existing_artifact_mismatch")
+        if path.stat().st_mode & 0o077:
+            raise R4RunnerError("r4_existing_artifact_permissions_invalid")
+        return digest
+    return _write_json_artifact(path, value)
+
+
+def _safe_usage(value: Mapping[str, Any]) -> dict[str, int]:
+    return {
+        key: candidate
+        for key in ("prompt_tokens", "completion_tokens", "total_tokens")
+        if isinstance(candidate := value.get(key), int)
+        and not isinstance(candidate, bool)
+        and candidate >= 0
+    }
+
+
+def _safe_diagnostic(value: Mapping[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    safe: dict[str, Any] = {}
+    check = value.get("check")
+    if isinstance(check, str) and check in _R4_DIAGNOSTIC_CHECKS:
+        safe["check"] = check
+    http_status = value.get("http_status")
+    if (
+        isinstance(http_status, int)
+        and not isinstance(http_status, bool)
+        and 100 <= http_status <= 599
+    ):
+        safe["http_status"] = http_status
+    return safe
+
+
+def _safe_model_call_usage(error: ChatPipelineExecutionError) -> list[dict[str, Any]]:
+    safe_calls: list[dict[str, Any]] = []
+    for call in error.model_calls:
+        operation = getattr(call.operation, "value", call.operation)
+        if not isinstance(operation, str) or operation not in _R4_MODEL_CALL_OPERATIONS:
+            continue
+        safe_calls.append(
+            {
+                "operation": operation,
+                "usage": _safe_usage(call.usage),
+            }
+        )
+    return safe_calls
+
+
+def _failure_record(
+    error: BaseException,
+    *,
+    phase: str,
+) -> dict[str, Any]:
+    if isinstance(error, ChatPipelineExecutionError):
+        error_code = error.code.value
+        error_phase = error.phase.value
+        diagnostic = _safe_diagnostic(error.diagnostic)
+        model_call_usage = _safe_model_call_usage(error)
+    elif isinstance(error, RetrievalExecutionError):
+        error_code = error.code.value
+        error_phase = phase
+        diagnostic = _safe_diagnostic(error.diagnostic)
+        model_call_usage = []
+    elif isinstance(error, R4RunnerError):
+        error_code = error.code
+        error_phase = phase
+        diagnostic = {}
+        model_call_usage = []
+    elif isinstance(error, ValueError):
+        error_code = "r4_validation_failure"
+        error_phase = phase
+        diagnostic = {}
+        model_call_usage = []
+    elif isinstance(error, (KeyboardInterrupt, asyncio.CancelledError)):
+        error_code = "r4_interrupted"
+        error_phase = phase
+        diagnostic = {}
+        model_call_usage = []
+    else:
+        error_code = "r4_unexpected_failure"
+        error_phase = phase
+        diagnostic = {}
+        model_call_usage = []
+    return {
+        "error_code": error_code,
+        "phase": error_phase,
+        "evaluation_phase": phase,
+        "retryable": error_code in _R4_RETRYABLE_ERROR_CODES,
+        "diagnostic": diagnostic,
+        "model_call_usage": model_call_usage,
+    }
 
 
 async def _load_runtime_facts(dependencies, *, kb_id: UUID, model_revision_id: UUID):
@@ -136,16 +387,16 @@ async def _load_runtime_facts(dependencies, *, kb_id: UUID, model_revision_id: U
         mode=TransactionMode.REPEATABLE_READ_ONLY,
     )
     if knowledge_base is None:
-        raise RuntimeError("r4_knowledge_base_not_found")
+        raise R4RunnerError("r4_knowledge_base_not_found")
     if bundle is None:
-        raise RuntimeError("r4_chat_model_revision_not_found")
+        raise R4RunnerError("r4_chat_model_revision_not_found")
     if (
         bundle.profile.kind is not ModelKind.CHAT
         or not bundle.profile.enabled
         or not bundle.provider.enabled
         or bundle.current_revision.validation_status is not ModelValidationStatus.VALID
     ):
-        raise RuntimeError("r4_chat_model_revision_not_ready")
+        raise R4RunnerError("r4_chat_model_revision_not_ready")
     parameters = dict(bundle.current_revision.configuration)
     model_configuration = {
         "model_profile_revision_id": str(bundle.current_revision.id),
@@ -283,9 +534,7 @@ def _relation_locator_chunk_ids(
             matches.append(str(row["index_chunk_id"]))
     unique = tuple(dict.fromkeys(matches))
     if len(unique) != 1:
-        raise RuntimeError(
-            f"r4_graph_relation_locator_not_unique:{relation_id}:{len(unique)}"
-        )
+        raise R4RunnerError("r4_graph_relation_locator_not_unique")
     return unique
 
 
@@ -308,6 +557,7 @@ def _execution_context(
     index_revision_id: UUID,
     question: str,
     model_configuration: Mapping[str, Any],
+    rerank_mode: RerankMode,
 ) -> ChatExecutionContext:
     run_id = uuid4()
     workspace_id = settings.identity.workspace_id
@@ -332,7 +582,7 @@ def _execution_context(
         effective_policy={"insufficiency_policy": "partial_answer"},
         retrieval_strategy=adaptive_graphiti_profile(
             top_k=10,
-            rerank_mode=RerankMode.CLASSIC,
+            rerank_mode=rerank_mode,
         ).as_dict(),
         model_configuration=model_configuration,
         attempt=1,
@@ -348,6 +598,7 @@ async def _capture_queries(
     index_revision_id: UUID,
     model_configuration: Mapping[str, Any],
     replay_mode: str,
+    rerank_mode: RerankMode,
 ) -> tuple[
     tuple[GraphitiSupplementCapture, ...],
     dict[str, Mapping[str, Any]],
@@ -392,6 +643,7 @@ async def _capture_queries(
                     index_revision_id=index_revision_id,
                     question=str(case["question"]),
                     model_configuration=model_configuration,
+                    rerank_mode=rerank_mode,
                 )
             )
         except GraphitiSupplementCaptureComplete:
@@ -401,29 +653,19 @@ async def _capture_queries(
             raise
         capture, simple_ids = capture_retriever.finish_observed_case()
         if replay_mode == "forced" and capture is None:
-            tool_names = ",".join(
-                "+".join(names) if names else "none"
-                for names in forced_model.response_tool_names
-            )
-            raise RuntimeError(
-                "r4_supplement_capture_incomplete:"
-                f"{case_id}:replacements={forced_model.replacements}:"
-                f"model_calls={forced_model.model_calls}:tools={tool_names}:"
-                f"finish_reasons={forced_model.response_finish_reasons}:"
-                f"usage={dict(forced_model.usage)}"
-            )
+            raise R4RunnerError("r4_supplement_capture_incomplete")
         expected_replacements = 1 if replay_mode == "forced" else 0
         if forced_model.replacements != expected_replacements:
-            raise RuntimeError("r4_forced_replacement_cardinality")
+            raise R4RunnerError("r4_forced_replacement_cardinality")
         if capture is not None:
             if set(capture.excluded_index_chunk_ids) != set(simple_ids):
-                raise RuntimeError("r4_simple_exclusion_capture_mismatch")
+                raise R4RunnerError("r4_simple_exclusion_capture_mismatch")
             captures.append(capture)
         simple_ids_by_case[case_id] = simple_ids
         metrics[case_id] = {
             "forced_replacements": forced_model.replacements,
             "model_calls": forced_model.model_calls,
-            "usage": dict(forced_model.usage),
+            "usage": _safe_usage(forced_model.usage),
             "route_requested": capture is not None,
             "route_reason_code": next(
                 (
@@ -450,155 +692,109 @@ async def _capture_queries(
     return tuple(captures), metrics, simple_ids_by_case
 
 
-async def _raw_episode_mapping(
-    dependencies,
-    *,
-    workspace_id: UUID,
-    kb_id: UUID,
-    build_id: UUID,
-    episode_ids: tuple[str, ...],
-) -> dict[str, str]:
-    if not episode_ids:
-        return {}
-    statement = text(
-        """
-        SELECT episode_uuid, index_chunk_id
-        FROM graphiti_episode_chunk
-        WHERE workspace_id = :workspace_id
-          AND kb_id = :kb_id
-          AND build_id = :build_id
-          AND episode_uuid IN :episode_ids
-        ORDER BY created_at, id
-        """
-    ).bindparams(bindparam("episode_ids", expanding=True))
-    async with dependencies.database.sessions() as session:
-        async with session.begin():
-            await session.execute(text("SET TRANSACTION READ ONLY"))
-            rows = (
-                await session.execute(
-                    statement,
-                    {
-                        "workspace_id": workspace_id,
-                        "kb_id": kb_id,
-                        "build_id": build_id,
-                        "episode_ids": episode_ids,
-                    },
-                )
-            ).mappings().all()
-    return {str(row["episode_uuid"]): str(row["index_chunk_id"]) for row in rows}
-
-
 async def _column_layers(
     dependencies,
-    graph_store: PgGraphStore,
     *,
     build,
     query: str,
     excluded_chunk_ids: tuple[str, ...],
     edge_limit: int,
     answer_gold_chunk_ids: Sequence[str] = (),
+    rerank_mode: RerankMode,
 ) -> tuple[dict[str, tuple[str, ...]], dict[str, Any]]:
-    edges = await dependencies.graphiti_runtime.search(
-        build,
-        GraphitiSearchQuery(
-            workspace_id=build.workspace_id,
-            knowledge_base_id=build.knowledge_base_id,
-            build_id=build.build_id,
-            group_id=build.group_id,
-            query=query,
-            limit=edge_limit,
-        ),
-    )
-    episode_ids = tuple(
-        dict.fromkeys(
-            episode_id
-            for edge in edges
-            for episode_id in edge.episode_uuids
-        )
-    )
-    raw_mapping = await _raw_episode_mapping(
-        dependencies,
-        workspace_id=build.workspace_id,
-        kb_id=build.knowledge_base_id,
-        build_id=build.build_id,
-        episode_ids=episode_ids,
-    )
-    raw_chunk_ids = tuple(
-        dict.fromkeys(
-            raw_mapping[episode_id]
-            for episode_id in episode_ids
-            if episode_id in raw_mapping
-        )
-    )
-    hydrated = await graph_store.hydrate_graphiti_edges(
-        workspace_id=build.workspace_id,
-        knowledge_base_id=build.knowledge_base_id,
-        build_id=build.build_id,
-        index_revision_id=build.index_revision_id,
-        edges=edges,
-    )
-    if hydrated is None or hydrated.resolved_active_revision_id != build.index_revision_id:
-        raise RuntimeError("r4_graph_hydration_revision_mismatch")
-    edge_rank_by_path_id = {path.path_id: path.rank for path in hydrated.paths}
-    reranked, scores = (
-        await dependencies.retrieval_service._rerank_graphiti_candidates_with_scores(
-            query,
-            hydrated,
-        )
-    )
-    candidate_set = GraphitiCandidateSet(
+    candidate_set = await dependencies.retrieval_service._search_graphiti_candidates(
+        build.workspace_id,
+        build.knowledge_base_id,
         build=build,
-        traversal=reranked,
-        edge_rank_by_path_id=edge_rank_by_path_id,
-        rerank_score_by_chunk_id=scores,
+        index_revision_id=build.index_revision_id,
+        query=query,
+        edge_limit=edge_limit,
+        rerank_mode=rerank_mode,
     )
     packed = _pack_graphiti_supplement_evidence(
         candidate_set,
         excluded_index_chunk_ids=frozenset(UUID(item) for item in excluded_chunk_ids),
     )
+    hydrated_ids = tuple(str(item) for item in candidate_set.hydrated_chunk_ids)
+    reranked_ids = _ordered_reranked_chunk_ids(
+        candidate_set.traversal,
+        hydrated_ids,
+    )
+    if set(hydrated_ids) != set(reranked_ids):
+        raise R4RunnerError("r4_rerank_changed_chunk_set")
+    hydrated_positions = {item: index for index, item in enumerate(hydrated_ids)}
+    rerank_reordered_chunk_count = sum(
+        hydrated_positions.get(item) != index
+        for index, item in enumerate(reranked_ids)
+    )
+    rerank_score_state = (
+        "scored" if candidate_set.rerank_score_by_chunk_id else "not_applicable"
+    )
     layers = {
-        "raw": raw_chunk_ids,
-        "hydrated": tuple(str(item.index_chunk_id) for item in hydrated.chunks),
-        "reranked": tuple(str(item.index_chunk_id) for item in reranked.chunks),
+        "raw": tuple(str(item) for item in candidate_set.raw_chunk_ids),
+        "hydrated": hydrated_ids,
+        "reranked": reranked_ids,
         "packed": tuple(str(item.index_chunk_id) for item in packed),
     }
     packed_ids = set(layers["packed"])
     excluded_ids = set(excluded_chunk_ids)
     path_chunk_ids = tuple(
         str(chunk_id)
-        for path in hydrated.paths
+        for path in candidate_set.traversal.paths
         for chunk_id in path.source_chunk_ids
     )
     gold_rerank_scores = {
-        str(chunk_id): float(scores[UUID(str(chunk_id))])
+        str(chunk_id): float(candidate_set.rerank_score_by_chunk_id[UUID(str(chunk_id))])
         for chunk_id in answer_gold_chunk_ids
-        if UUID(str(chunk_id)) in scores
+        if UUID(str(chunk_id)) in candidate_set.rerank_score_by_chunk_id
     }
     metrics = {
         "requested_k": edge_limit,
-        "raw_edge_uuids": [str(edge.edge_uuid) for edge in edges],
-        "raw_edge_count": len(edges),
-        "raw_episode_count": len(episode_ids),
-        "raw_mapped_chunk_count": len(raw_chunk_ids),
-        "no_mapping_episode_count": sum(
-            episode_id not in raw_mapping for episode_id in episode_ids
-        ),
-        "hydrated_chunk_count": len(hydrated.chunks),
+        "raw_edge_uuids": list(candidate_set.raw_edge_uuids),
+        "raw_edge_count": len(candidate_set.raw_edge_uuids),
+        "raw_episode_count": len(candidate_set.raw_episode_ids),
+        "raw_mapped_episode_count": len(candidate_set.raw_mapped_episode_ids),
+        "raw_mapped_chunk_count": len(candidate_set.raw_chunk_ids),
+        "no_mapping_episode_count": len(candidate_set.raw_episode_ids)
+        - len(candidate_set.raw_mapped_episode_ids),
+        "hydrated_chunk_count": len(candidate_set.hydrated_chunk_ids),
         "unique_chunk_count": len(set(path_chunk_ids)),
         "duplicate_chunk_path_count": len(path_chunk_ids) - len(set(path_chunk_ids)),
-        "below_threshold_count": len(hydrated.chunks) - len(reranked.chunks),
-        "reranked_chunk_count": len(reranked.chunks),
+        "reranked_chunk_count": len(reranked_ids),
+        "rerank_score_state": rerank_score_state,
+        "rerank_reordered_chunk_count": rerank_reordered_chunk_count,
         "gold_rerank_scores": gold_rerank_scores,
         "top1_gold_rerank_score": max(gold_rerank_scores.values(), default=None),
         "packed_chunk_count": len(packed),
         "budget_dropped_count": sum(
             str(item.index_chunk_id) not in packed_ids
             and str(item.index_chunk_id) not in excluded_ids
-            for item in reranked.chunks
+            for item in candidate_set.traversal.chunks
         ),
         "route_result_code": "admitted" if packed else "no_new_evidence",
     }
     return layers, metrics
+
+
+def _ordered_reranked_chunk_ids(
+    traversal: Any,
+    hydrated_ids: Sequence[str],
+) -> tuple[str, ...]:
+    """Reflect production path ordering while preserving the full hydrated set."""
+
+    hydrated = tuple(str(item) for item in hydrated_ids)
+    hydrated_set = set(hydrated)
+    path_order = tuple(
+        dict.fromkeys(
+            str(chunk_id)
+            for path in traversal.paths
+            for chunk_id in path.source_chunk_ids
+            if str(chunk_id) in hydrated_set
+        )
+    )
+    return path_order + tuple(
+        chunk_id for chunk_id in hydrated if chunk_id not in path_order
+    )
 
 
 def _aggregate_graph_cases(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -661,15 +857,24 @@ def _aggregate_graph_cases(records: Sequence[Mapping[str, Any]]) -> dict[str, An
                 for key in (
                     "raw_edge_count",
                     "raw_episode_count",
+                    "raw_mapped_episode_count",
                     "raw_mapped_chunk_count",
                     "no_mapping_episode_count",
                     "hydrated_chunk_count",
-                    "below_threshold_count",
                     "reranked_chunk_count",
+                    "rerank_reordered_chunk_count",
                     "packed_chunk_count",
                     "budget_dropped_count",
                 )
             },
+            "rerank_score_state_counts": dict(
+                Counter(
+                    item["layer_metrics"][column].get(
+                        "rerank_score_state", "not_applicable"
+                    )
+                    for item in records
+                )
+            ),
         }
     return result
 
@@ -688,6 +893,10 @@ def _layer_diagnostic(
         "duplicate_chunk_path_count": int(metrics["duplicate_chunk_path_count"]),
         "gold_rerank_scores": dict(metrics["gold_rerank_scores"]),
         "top1_gold_rerank_score": metrics["top1_gold_rerank_score"],
+        "rerank_score_state": metrics.get("rerank_score_state", "not_applicable"),
+        "rerank_reordered_chunk_count": int(
+            metrics.get("rerank_reordered_chunk_count", 0)
+        ),
         "route_reason_code": route_reason_code,
         "route_result_code": route_result_code,
         "salvage_status": "not_attempted",
@@ -695,15 +904,352 @@ def _layer_diagnostic(
     }
 
 
+def _checkpoint_identity(
+    *,
+    dataset_id: str,
+    manifest_sha256: str,
+    manifest_file_sha256: str,
+    cases_sha256: str,
+    fixture_sha256: str,
+    arguments: argparse.Namespace,
+    chat_model_runtime: Mapping[str, Any],
+    controller_mode: str,
+    rerank_mode: RerankMode,
+    case_ids: Sequence[str],
+) -> dict[str, Any]:
+    return {
+        "schema_version": R4_CHECKPOINT_SCHEMA_VERSION,
+        "dataset_id": dataset_id,
+        "scope": "expected_route_graph",
+        "manifest_sha256": manifest_sha256,
+        "manifest_file_sha256": manifest_file_sha256,
+        "cases_sha256": cases_sha256,
+        "fixture_sha256": fixture_sha256,
+        "runtime": {
+            "knowledge_base_id": str(arguments.knowledge_base_id),
+            "index_revision_id": str(arguments.index_revision_id),
+            "graph_build_id": str(arguments.graph_build_id),
+            "chat_model_profile_revision_id": str(
+                arguments.chat_model_profile_revision_id
+            ),
+            **chat_model_runtime,
+            "graphiti_edge_limit": arguments.edge_limit,
+            "evaluator_edge_limit": arguments.edge_limit,
+            "replay_mode": arguments.replay_mode,
+            "rerank_mode": rerank_mode.value,
+            "forced_controller_mode": controller_mode,
+            "runner_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+            "evaluator_sha256": hashlib.sha256(
+                Path(__file__).with_name("evaluate_adaptive_graph_route.py").read_bytes()
+            ).hexdigest(),
+        },
+        "case_ids": list(case_ids),
+    }
+
+
+def _new_checkpoint(identity: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        **identity,
+        "status": "active",
+        "completed_cases": [],
+        "active_case": None,
+        "final_artifacts": None,
+    }
+
+
+def _validate_redacted_capture(value: Any, *, case_id: str) -> None:
+    if value is None:
+        return
+    if not isinstance(value, Mapping) or set(value) != {
+        "case_id",
+        "excluded_index_chunk_ids",
+    }:
+        raise ValueError("r4_checkpoint_capture_invalid")
+    if value.get("case_id") != case_id:
+        raise ValueError("r4_checkpoint_capture_case_mismatch")
+    excluded = value.get("excluded_index_chunk_ids")
+    if not isinstance(excluded, list):
+        raise ValueError("r4_checkpoint_capture_invalid")
+    try:
+        normalized = [str(UUID(str(item))) for item in excluded]
+    except (TypeError, ValueError, AttributeError) as error:
+        raise ValueError("r4_checkpoint_capture_invalid") from error
+    if normalized != excluded or len(normalized) != len(set(normalized)):
+        raise ValueError("r4_checkpoint_capture_invalid")
+
+
+def _validate_completed_case(value: Any, *, expected_case_id: str) -> None:
+    if not isinstance(value, Mapping) or set(value) != {
+        "case_id",
+        "capture",
+        "record",
+    }:
+        raise ValueError("r4_checkpoint_completed_case_invalid")
+    if value.get("case_id") != expected_case_id:
+        raise ValueError("r4_checkpoint_completed_case_order_invalid")
+    _validate_redacted_capture(value.get("capture"), case_id=expected_case_id)
+    record = value.get("record")
+    if not isinstance(record, Mapping) or set(record) != {
+        "case_id",
+        "columns",
+        "query_source",
+        "query_count",
+        "layer_diagnostics",
+        "agent_replay_status",
+        "layer_metrics",
+        "capture_metrics",
+    }:
+        raise ValueError("r4_checkpoint_record_invalid")
+    if record.get("case_id") != expected_case_id:
+        raise ValueError("r4_checkpoint_record_case_mismatch")
+    _assert_checkpoint_content_safe(value)
+
+
+def _validate_checkpoint(
+    value: Any,
+    *,
+    identity: Mapping[str, Any],
+) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != {
+        *identity.keys(),
+        "status",
+        "completed_cases",
+        "active_case",
+        "final_artifacts",
+    }:
+        raise ValueError("r4_checkpoint_schema_invalid")
+    if any(value.get(key) != item for key, item in identity.items()):
+        raise R4RunnerError("r4_checkpoint_identity_mismatch")
+    if value.get("status") not in {"active", "completed"}:
+        raise ValueError("r4_checkpoint_status_invalid")
+    completed = value.get("completed_cases")
+    case_ids = list(identity["case_ids"])
+    if not isinstance(completed, list) or len(completed) > len(case_ids):
+        raise ValueError("r4_checkpoint_completed_cases_invalid")
+    for index, item in enumerate(completed):
+        _validate_completed_case(item, expected_case_id=case_ids[index])
+    active = value.get("active_case")
+    if active is not None:
+        if not isinstance(active, Mapping) or set(active) != {
+            "case_id",
+            "stage",
+            "error_code",
+            "phase",
+            "evaluation_phase",
+            "retryable",
+            "diagnostic",
+            "model_call_usage",
+        }:
+            raise ValueError("r4_checkpoint_active_case_invalid")
+        if len(completed) >= len(case_ids) or active.get("case_id") != case_ids[
+            len(completed)
+        ]:
+            raise ValueError("r4_checkpoint_active_case_order_invalid")
+        if active.get("stage") not in _R4_CHECKPOINT_STAGES:
+            raise ValueError("r4_checkpoint_stage_invalid")
+        error_code = active.get("error_code")
+        if error_code is not None and (
+            not isinstance(error_code, str)
+            or error_code not in _R4_FAILURE_CODES | _R4_STABLE_ERROR_CODES
+        ):
+            raise ValueError("r4_checkpoint_error_code_invalid")
+        phase = active.get("phase")
+        if phase not in _R4_EVALUATION_PHASES | _R4_PIPELINE_PHASES:
+            raise ValueError("r4_checkpoint_phase_invalid")
+        if active.get("evaluation_phase") not in _R4_EVALUATION_PHASES:
+            raise ValueError("r4_checkpoint_evaluation_phase_invalid")
+        if not isinstance(active.get("retryable"), bool):
+            raise ValueError("r4_checkpoint_retryable_invalid")
+        diagnostic = active.get("diagnostic")
+        if not isinstance(diagnostic, Mapping) or set(diagnostic) - {
+            "check",
+            "http_status",
+        }:
+            raise ValueError("r4_checkpoint_diagnostic_invalid")
+        if "check" in diagnostic and diagnostic["check"] not in _R4_DIAGNOSTIC_CHECKS:
+            raise ValueError("r4_checkpoint_diagnostic_invalid")
+        if "http_status" in diagnostic and (
+            isinstance(diagnostic["http_status"], bool)
+            or not isinstance(diagnostic["http_status"], int)
+            or not 100 <= diagnostic["http_status"] <= 599
+        ):
+            raise ValueError("r4_checkpoint_diagnostic_invalid")
+        usage = active.get("model_call_usage")
+        if not isinstance(usage, list):
+            raise ValueError("r4_checkpoint_usage_invalid")
+        for item in usage:
+            if not isinstance(item, Mapping) or set(item) != {"operation", "usage"}:
+                raise ValueError("r4_checkpoint_usage_invalid")
+            if not isinstance(item["operation"], str) or not isinstance(
+                item["usage"], Mapping
+            ):
+                raise ValueError("r4_checkpoint_usage_invalid")
+            if any(
+                isinstance(number, bool)
+                or not isinstance(number, int)
+                or number < 0
+                for number in item["usage"].values()
+            ):
+                raise ValueError("r4_checkpoint_usage_invalid")
+    if value["status"] == "completed" and (
+        active is not None
+        or len(completed) != len(case_ids)
+        or not isinstance(value.get("final_artifacts"), Mapping)
+        or set(value["final_artifacts"]) != {"capture_sha256", "diagnostic_sha256"}
+    ):
+        raise ValueError("r4_checkpoint_completion_invalid")
+    final_artifacts = value.get("final_artifacts")
+    if value["status"] == "active" and final_artifacts is not None:
+        raise ValueError("r4_checkpoint_completion_invalid")
+    if final_artifacts is not None:
+        if not isinstance(final_artifacts, Mapping) or set(final_artifacts) != {
+            "capture_sha256",
+            "diagnostic_sha256",
+        } or any(
+            not isinstance(item, str) or re.fullmatch(r"[0-9a-f]{64}", item) is None
+            for item in final_artifacts.values()
+        ):
+            raise ValueError("r4_checkpoint_final_artifacts_invalid")
+    _assert_checkpoint_content_safe(value)
+    return value
+
+
+def _load_or_create_checkpoint(
+    path: Path,
+    *,
+    identity: Mapping[str, Any],
+    final_outputs: Sequence[Path],
+) -> dict[str, Any]:
+    if not path.exists():
+        if any(item.exists() for item in final_outputs):
+            raise R4RunnerError("r4_checkpoint_missing_for_existing_output")
+        checkpoint = _new_checkpoint(identity)
+        _write_json_atomic(path, checkpoint)
+        return checkpoint
+    if not path.is_file() or path.stat().st_mode & 0o077:
+        raise R4RunnerError("r4_checkpoint_permissions_invalid")
+    try:
+        if path.stat().st_size > 16 * 1024 * 1024:
+            raise ValueError("r4_checkpoint_too_large")
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError("r4_checkpoint_unreadable") from error
+    checkpoint = _validate_checkpoint(loaded, identity=identity)
+    if checkpoint["status"] == "completed":
+        expected_digests = checkpoint["final_artifacts"]
+        for path_value, digest_key in zip(
+            final_outputs,
+            ("capture_sha256", "diagnostic_sha256"),
+        ):
+            if (
+                not path_value.is_file()
+                or hashlib.sha256(path_value.read_bytes()).hexdigest()
+                != expected_digests[digest_key]
+            ):
+                raise R4RunnerError("r4_final_artifact_identity_mismatch")
+    return checkpoint
+
+
+def _checkpoint_stage(
+    checkpoint: dict[str, Any],
+    path: Path,
+    *,
+    case_id: str,
+    stage: str,
+    phase: str | None = None,
+    failure: Mapping[str, Any] | None = None,
+) -> str:
+    if stage not in _R4_CHECKPOINT_STAGES:
+        raise ValueError("r4_checkpoint_stage_invalid")
+    completed = checkpoint["completed_cases"]
+    if (
+        len(completed) >= len(checkpoint["case_ids"])
+        or case_id != checkpoint["case_ids"][len(completed)]
+    ):
+        raise R4RunnerError("r4_checkpoint_stage_order_invalid")
+    checkpoint["status"] = "active"
+    resolved_phase = phase or (stage if stage in _R4_EVALUATION_PHASES else "capture")
+    if resolved_phase not in _R4_EVALUATION_PHASES:
+        raise ValueError("r4_checkpoint_phase_invalid")
+    details = dict(
+        failure
+        or {
+            "error_code": None,
+            "phase": resolved_phase,
+            "evaluation_phase": resolved_phase,
+            "retryable": False,
+            "diagnostic": {},
+            "model_call_usage": [],
+        }
+    )
+    if set(details) != {
+        "error_code",
+        "phase",
+        "evaluation_phase",
+        "retryable",
+        "diagnostic",
+        "model_call_usage",
+    }:
+        raise ValueError("r4_checkpoint_failure_invalid")
+    checkpoint["active_case"] = {
+        "case_id": case_id,
+        "stage": stage,
+        **details,
+    }
+    return _write_json_atomic(path, checkpoint)
+
+
+def _checkpoint_complete_case(
+    checkpoint: dict[str, Any],
+    path: Path,
+    *,
+    case_id: str,
+    capture: GraphitiSupplementCapture | Mapping[str, Any] | None,
+    record: Mapping[str, Any],
+) -> str:
+    completed = checkpoint["completed_cases"]
+    expected_case_id = checkpoint["case_ids"][len(completed)]
+    if case_id != expected_case_id:
+        raise R4RunnerError("r4_checkpoint_completion_order_invalid")
+    if capture is None:
+        redacted_capture = None
+    elif isinstance(capture, GraphitiSupplementCapture):
+        redacted_capture = capture.as_dict()
+    else:
+        redacted_capture = dict(capture)
+    value = {
+        "case_id": case_id,
+        "capture": redacted_capture,
+        "record": dict(record),
+    }
+    _validate_completed_case(value, expected_case_id=case_id)
+    previous_active = checkpoint["active_case"]
+    completed.append(value)
+    checkpoint["active_case"] = None
+    try:
+        return _write_json_atomic(path, checkpoint)
+    except BaseException:
+        completed.pop()
+        checkpoint["active_case"] = previous_active
+        raise
+
+
+def _checkpoint_error_code(error: BaseException) -> str:
+    return str(_failure_record(error, phase="capture")["error_code"])
+
+
 async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
     manifest = load_manifest()
+    if manifest.get("dataset_id") != "routing-rag-v2":
+        raise R4RunnerError("r4_dataset_identity_changed")
     cases = tuple(
         case
         for case in load_cases(Path(manifest["case_file"]))
         if case.get("expected_route", {}).get("route") == "graph"
     )
     if len(cases) != 20:
-        raise RuntimeError("r4_graph_case_count_changed")
+        raise R4RunnerError("r4_graph_case_count_changed")
+    rerank_mode = RerankMode(arguments.rerank_mode)
     dependencies = build_worker_dependencies(env_file=None)
     try:
         await dependencies.check_readiness()
@@ -724,7 +1270,7 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
             "chat_model_max_output_tokens"
         ]
         if knowledge_base.active_index_revision_id != arguments.index_revision_id:
-            raise RuntimeError("r4_active_revision_changed")
+            raise R4RunnerError("r4_active_revision_changed")
         graph_store = PgGraphStore(dependencies.database.sessions)
         build = await graph_store.get_active_graphiti_build(
             workspace_id,
@@ -735,7 +1281,7 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
             or build.build_id != arguments.graph_build_id
             or build.index_revision_id != arguments.index_revision_id
         ):
-            raise RuntimeError("r4_active_graph_build_changed")
+            raise R4RunnerError("r4_active_graph_build_changed")
         episode_uuid = await graph_store.first_graphiti_episode_uuid(
             workspace_id,
             arguments.knowledge_base_id,
@@ -746,7 +1292,7 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
             episode_uuid=episode_uuid,
             require_complete=True,
         ):
-            raise RuntimeError("r4_graph_runtime_not_ready")
+            raise R4RunnerError("r4_graph_runtime_not_ready")
         serving_rows = await _serving_chunk_rows(
             dependencies,
             workspace_id=workspace_id,
@@ -776,22 +1322,257 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
                 "index_revision_id": str(arguments.index_revision_id),
                 "graph_build_id": str(arguments.graph_build_id),
             }
-        captures, capture_metrics, simple_ids_by_case = await _capture_queries(
-            dependencies,
-            chat_model_adapter=chat_model_adapter,
-            cases=cases,
-            kb_id=arguments.knowledge_base_id,
-            index_revision_id=arguments.index_revision_id,
-            model_configuration=model_configuration,
-            replay_mode=arguments.replay_mode,
-        )
         controller_mode = (
             ACTUAL_AUTO_CONTROLLER_MODE
             if arguments.replay_mode == "actual-auto"
             else FORCED_CONTROLLER_MODE
         )
         manifest_sha256 = manifest_digest(manifest)
+        manifest_file_sha256 = hashlib.sha256(DEFAULT_MANIFEST.read_bytes()).hexdigest()
+        cases_sha256 = hashlib.sha256(
+            Path(str(manifest["case_file"])).read_bytes()
+        ).hexdigest()
+        fixture_sha256 = hashlib.sha256(
+            Path(str(manifest["empirical_need"]["fixture_file"])).read_bytes()
+        ).hexdigest()
+        identity = _checkpoint_identity(
+            dataset_id=str(manifest["dataset_id"]),
+            manifest_sha256=manifest_sha256,
+            manifest_file_sha256=manifest_file_sha256,
+            cases_sha256=cases_sha256,
+            fixture_sha256=fixture_sha256,
+            arguments=arguments,
+            chat_model_runtime=chat_model_runtime,
+            controller_mode=controller_mode,
+            rerank_mode=rerank_mode,
+            case_ids=[str(case["case_id"]) for case in cases],
+        )
+        checkpoint = _load_or_create_checkpoint(
+            arguments.checkpoint_output,
+            identity=identity,
+            final_outputs=(arguments.capture_output, arguments.diagnostic_output),
+        )
+        resumed_case_count = len(checkpoint["completed_cases"])
+        print(
+            json.dumps(
+                {
+                    "event": "r4_checkpoint_loaded",
+                    "completed_case_count": resumed_case_count,
+                    "remaining_case_count": len(cases) - resumed_case_count,
+                    "status": checkpoint["status"],
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+        for case in cases[resumed_case_count:]:
+            case_id = str(case["case_id"])
+            current_phase = "capture"
+            try:
+                _checkpoint_stage(
+                    checkpoint,
+                    arguments.checkpoint_output,
+                    case_id=case_id,
+                    stage="capture",
+                    phase=current_phase,
+                )
+                case_captures, case_capture_metrics, case_simple_ids = (
+                    await _capture_queries(
+                        dependencies,
+                        chat_model_adapter=chat_model_adapter,
+                        cases=(case,),
+                        kb_id=arguments.knowledge_base_id,
+                        index_revision_id=arguments.index_revision_id,
+                        model_configuration=model_configuration,
+                        replay_mode=arguments.replay_mode,
+                        rerank_mode=rerank_mode,
+                    )
+                )
+                capture = case_captures[0] if case_captures else None
+                capture_metrics = case_capture_metrics[case_id]
+                simple_ids = case_simple_ids[case_id]
+                answer_gold_ids = locator_ids_by_case[case_id]["answer"]
+                path_context_ids = locator_ids_by_case[case_id]["path_context"]
+                column_layers: dict[str, dict[str, tuple[str, ...]]] = {}
+                layer_metrics: dict[str, dict[str, Any]] = {}
+                current_phase = "capability"
+                _checkpoint_stage(
+                    checkpoint,
+                    arguments.checkpoint_output,
+                    case_id=case_id,
+                    stage="capability",
+                    phase=current_phase,
+                )
+                layers, metrics = await _column_layers(
+                    dependencies,
+                    build=build,
+                    query=str(case["question"]),
+                    excluded_chunk_ids=simple_ids,
+                    edge_limit=arguments.edge_limit,
+                    answer_gold_chunk_ids=answer_gold_ids,
+                    rerank_mode=rerank_mode,
+                )
+                column_layers["capability"] = layers
+                layer_metrics["capability"] = metrics
+                if capture is not None:
+                    current_phase = "agent_replay"
+                    _checkpoint_stage(
+                        checkpoint,
+                        arguments.checkpoint_output,
+                        case_id=case_id,
+                        stage="agent_replay",
+                        phase=current_phase,
+                    )
+                    layers, metrics = await _column_layers(
+                        dependencies,
+                        build=build,
+                        query=capture.query,
+                        excluded_chunk_ids=simple_ids,
+                        edge_limit=arguments.edge_limit,
+                        answer_gold_chunk_ids=answer_gold_ids,
+                        rerank_mode=rerank_mode,
+                    )
+                    column_layers["agent_replay"] = layers
+                    layer_metrics["agent_replay"] = metrics
+                else:
+                    column_layers["agent_replay"] = {
+                        layer: ()
+                        for layer in ("raw", "hydrated", "reranked", "packed")
+                    }
+                    layer_metrics["agent_replay"] = {
+                        key: 0
+                        for key in (
+                            "raw_edge_count",
+                            "raw_episode_count",
+                            "raw_mapped_episode_count",
+                            "raw_mapped_chunk_count",
+                            "no_mapping_episode_count",
+                            "hydrated_chunk_count",
+                            "reranked_chunk_count",
+                            "rerank_reordered_chunk_count",
+                            "packed_chunk_count",
+                            "budget_dropped_count",
+                        )
+                    }
+                    layer_metrics["agent_replay"].update(
+                        {
+                            "requested_k": arguments.edge_limit,
+                            "raw_edge_uuids": [],
+                            "gold_rerank_scores": {},
+                            "top1_gold_rerank_score": None,
+                            "rerank_score_state": "not_applicable",
+                            "unique_chunk_count": 0,
+                            "duplicate_chunk_path_count": 0,
+                            "route_result_code": "not_requested",
+                        }
+                    )
+                alignments = {
+                    column: align_chunk_layers(
+                        column=column,
+                        answer_gold_chunk_ids=answer_gold_ids,
+                        simple_chunk_ids=simple_ids,
+                        layer_chunk_ids=column_layers[column],
+                        path_context_chunk_ids=path_context_ids,
+                    )
+                    for column in ("capability", "agent_replay")
+                }
+                record = diagnostic_record(
+                    case_id=case_id,
+                    alignments=alignments,
+                    query_source="agent_replay",
+                    query_count=1 if capture is not None else 0,
+                    layer_diagnostics={
+                        "capability": _layer_diagnostic(
+                            layer_metrics["capability"],
+                            route_reason_code=None,
+                            route_result_code="not_requested",
+                        ),
+                        "agent_replay": _layer_diagnostic(
+                            layer_metrics["agent_replay"],
+                            route_reason_code=(
+                                capture_metrics["route_reason_code"]
+                                if capture is not None
+                                else None
+                            ),
+                            route_result_code=(
+                                layer_metrics["agent_replay"]["route_result_code"]
+                                if capture is not None
+                                else "not_requested"
+                            ),
+                        ),
+                    },
+                )
+                record["agent_replay_status"] = (
+                    "requested" if capture is not None else "not_requested"
+                )
+                if capture is None:
+                    record["columns"]["agent_replay"]["first_loss_layer"] = None
+                record["layer_metrics"] = layer_metrics
+                record["capture_metrics"] = capture_metrics
+                checkpoint_digest = _checkpoint_complete_case(
+                    checkpoint,
+                    arguments.checkpoint_output,
+                    case_id=case_id,
+                    capture=capture,
+                    record=record,
+                )
+                print(
+                    json.dumps(
+                        {
+                            "event": "r4_case_checkpointed",
+                            "case_id": case_id,
+                            "completed_case_count": len(
+                                checkpoint["completed_cases"]
+                            ),
+                            "checkpoint_sha256": checkpoint_digest,
+                        },
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
+            except BaseException as error:
+                if isinstance(error, asyncio.CancelledError):
+                    raise
+                failure = _failure_record(error, phase=current_phase)
+                if (
+                    checkpoint["completed_cases"]
+                    and checkpoint["completed_cases"][-1]["case_id"] == case_id
+                ):
+                    raise
+                _checkpoint_stage(
+                    checkpoint,
+                    arguments.checkpoint_output,
+                    case_id=case_id,
+                    stage="failed",
+                    phase=current_phase,
+                    failure=failure,
+                )
+                print(
+                    json.dumps(
+                        {
+                            "event": "r4_case_failed",
+                            "case_id": case_id,
+                            "completed_case_count": len(
+                                checkpoint["completed_cases"]
+                            ),
+                            "error_code": failure["error_code"],
+                        },
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
+                raise
+
+        completed_cases = checkpoint["completed_cases"]
+        records = [dict(item["record"]) for item in completed_cases]
+        captures = [
+            dict(item["capture"])
+            for item in completed_cases
+            if item["capture"] is not None
+        ]
         capture_artifact = build_replay_capture_artifact(
+            dataset_id=str(manifest["dataset_id"]),
+            rerank_mode=rerank_mode.value,
             manifest_sha256=manifest_sha256,
             knowledge_base_id=str(arguments.knowledge_base_id),
             index_revision_id=str(arguments.index_revision_id),
@@ -803,116 +1584,10 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
             controller_mode=controller_mode,
             **chat_model_runtime,
         )
-        capture_digest = write_replay_capture_artifact(
+        capture_digest = _write_or_verify_json_artifact(
             arguments.capture_output,
             capture_artifact,
         )
-        capture_by_case = {item.case_id: item for item in captures}
-        records: list[dict[str, Any]] = []
-        for case in cases:
-            case_id = str(case["case_id"])
-            capture = capture_by_case.get(case_id)
-            simple_ids = simple_ids_by_case[case_id]
-            answer_gold_ids = locator_ids_by_case[case_id]["answer"]
-            path_context_ids = locator_ids_by_case[case_id]["path_context"]
-            column_layers: dict[str, dict[str, tuple[str, ...]]] = {}
-            layer_metrics: dict[str, dict[str, Any]] = {}
-            layers, metrics = await _column_layers(
-                dependencies,
-                graph_store,
-                build=build,
-                query=str(case["question"]),
-                excluded_chunk_ids=simple_ids,
-                edge_limit=arguments.edge_limit,
-                answer_gold_chunk_ids=answer_gold_ids,
-            )
-            column_layers["capability"] = layers
-            layer_metrics["capability"] = metrics
-            if capture is not None:
-                layers, metrics = await _column_layers(
-                    dependencies,
-                    graph_store,
-                    build=build,
-                    query=capture.query,
-                    excluded_chunk_ids=simple_ids,
-                    edge_limit=arguments.edge_limit,
-                    answer_gold_chunk_ids=answer_gold_ids,
-                )
-                column_layers["agent_replay"] = layers
-                layer_metrics["agent_replay"] = metrics
-            else:
-                column_layers["agent_replay"] = {
-                    layer: () for layer in ("raw", "hydrated", "reranked", "packed")
-                }
-                layer_metrics["agent_replay"] = {
-                    key: 0
-                    for key in (
-                        "raw_edge_count",
-                        "raw_episode_count",
-                        "raw_mapped_chunk_count",
-                        "no_mapping_episode_count",
-                        "hydrated_chunk_count",
-                        "below_threshold_count",
-                        "reranked_chunk_count",
-                        "packed_chunk_count",
-                        "budget_dropped_count",
-                    )
-                }
-                layer_metrics["agent_replay"].update(
-                    {
-                        "requested_k": arguments.edge_limit,
-                        "raw_edge_uuids": [],
-                        "gold_rerank_scores": {},
-                        "top1_gold_rerank_score": None,
-                        "unique_chunk_count": 0,
-                        "duplicate_chunk_path_count": 0,
-                        "route_result_code": "not_requested",
-                    }
-                )
-            alignments = {
-                column: align_chunk_layers(
-                    column=column,
-                    answer_gold_chunk_ids=answer_gold_ids,
-                    simple_chunk_ids=simple_ids,
-                    layer_chunk_ids=column_layers[column],
-                    path_context_chunk_ids=path_context_ids,
-                )
-                for column in ("capability", "agent_replay")
-            }
-            record = diagnostic_record(
-                case_id=case_id,
-                alignments=alignments,
-                query_source="agent_replay",
-                query_count=1 if capture is not None else 0,
-                layer_diagnostics={
-                    "capability": _layer_diagnostic(
-                        layer_metrics["capability"],
-                        route_reason_code=None,
-                        route_result_code="not_requested",
-                    ),
-                    "agent_replay": _layer_diagnostic(
-                        layer_metrics["agent_replay"],
-                        route_reason_code=(
-                            capture_metrics[case_id]["route_reason_code"]
-                            if capture is not None
-                            else None
-                        ),
-                        route_result_code=(
-                            layer_metrics["agent_replay"]["route_result_code"]
-                            if capture is not None
-                            else "not_requested"
-                        ),
-                    ),
-                },
-            )
-            record["agent_replay_status"] = (
-                "requested" if capture is not None else "not_requested"
-            )
-            if capture is None:
-                record["columns"]["agent_replay"]["first_loss_layer"] = None
-            record["layer_metrics"] = layer_metrics
-            record["capture_metrics"] = capture_metrics[case_id]
-            records.append(record)
         aggregate = _aggregate_graph_cases(records)
         route_observations = {
             str(record["case_id"]): {
@@ -946,37 +1621,40 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
         )
         diagnostic = {
             "schema_version": R4_DIAGNOSTIC_SCHEMA_VERSION,
-            "dataset_id": "routing-rag-v1",
+            "dataset_id": str(manifest["dataset_id"]),
             "scope": "expected_route_graph",
             "manifest_sha256": manifest_sha256,
+            "manifest_file_sha256": manifest_file_sha256,
+            "cases_sha256": cases_sha256,
+            "fixture_sha256": fixture_sha256,
             "capture_artifact_sha256": capture_digest,
-            "runtime": {
-                "knowledge_base_id": str(arguments.knowledge_base_id),
-                "index_revision_id": str(arguments.index_revision_id),
-                "graph_build_id": str(arguments.graph_build_id),
-                "chat_model_profile_revision_id": str(
-                    arguments.chat_model_profile_revision_id
-                ),
-                **chat_model_runtime,
-                "graphiti_edge_limit": arguments.edge_limit,
-                "evaluator_edge_limit": arguments.edge_limit,
-                "replay_mode": arguments.replay_mode,
-                "forced_controller_mode": controller_mode,
-            },
+            "runtime": dict(identity["runtime"]),
             "case_count": len(records),
             "records": records,
             "aggregate": aggregate,
             "decision": decision,
         }
-        diagnostic_digest = _write_json_artifact(
+        diagnostic_digest = _write_or_verify_json_artifact(
             arguments.diagnostic_output,
             diagnostic,
+        )
+        checkpoint["status"] = "completed"
+        checkpoint["active_case"] = None
+        checkpoint["final_artifacts"] = {
+            "capture_sha256": capture_digest,
+            "diagnostic_sha256": diagnostic_digest,
+        }
+        checkpoint_digest = _write_json_atomic(
+            arguments.checkpoint_output,
+            checkpoint,
         )
         return {
             "status": "completed",
             "case_count": len(records),
             "capture_artifact_sha256": capture_digest,
             "diagnostic_artifact_sha256": diagnostic_digest,
+            "checkpoint_artifact_sha256": checkpoint_digest,
+            "resumed_case_count": resumed_case_count,
             "decision": decision,
             "agent_replay_distinct_benefit": aggregate["columns"][
                 "agent_replay"
@@ -994,11 +1672,11 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
                 "benefit_capture", {}
             ).get("value"),
             "capture_model_calls": sum(
-                int(value["model_calls"]) for value in capture_metrics.values()
+                int(record["capture_metrics"]["model_calls"]) for record in records
             ),
             "capture_total_tokens": sum(
-                int(value["usage"].get("total_tokens", 0))
-                for value in capture_metrics.values()
+                int(record["capture_metrics"]["usage"].get("total_tokens", 0))
+                for record in records
             ),
         }
     finally:
@@ -1010,10 +1688,13 @@ def main() -> int:
     arguments = parser.parse_args()
     if arguments.confirm != CONFIRM_EXTERNAL_CALLS:
         parser.error(f"--confirm must equal {CONFIRM_EXTERNAL_CALLS}")
-    if arguments.capture_output.resolve() == arguments.diagnostic_output.resolve():
-        parser.error("capture and diagnostic outputs must differ")
-    if arguments.capture_output.exists() or arguments.diagnostic_output.exists():
-        parser.error("output artifacts must not already exist")
+    output_paths = {
+        arguments.capture_output.resolve(),
+        arguments.diagnostic_output.resolve(),
+        arguments.checkpoint_output.resolve(),
+    }
+    if len(output_paths) != 3:
+        parser.error("capture, diagnostic, and checkpoint outputs must differ")
     result = asyncio.run(_run(arguments))
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     return 0

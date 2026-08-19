@@ -291,10 +291,16 @@ class GraphTraversalResult:
     paths: tuple[GraphPathCandidate, ...] = ()
     chunks: tuple[GraphChunkEvidence, ...] = ()
     rejected_path_count: int = 0
+    mapped_episode_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if len(self.paths) > GRAPH_MAX_PATHS or self.rejected_path_count < 0:
             raise ValueError("graph traversal result bound is invalid")
+        object.__setattr__(
+            self,
+            "mapped_episode_ids",
+            tuple(dict.fromkeys(str(item) for item in self.mapped_episode_ids)),
+        )
         chunk_ids = {item.index_chunk_id for item in self.chunks}
         if any(
             source_chunk_id not in chunk_ids

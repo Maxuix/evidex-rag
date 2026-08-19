@@ -34,6 +34,7 @@ from tools.evaluate_adaptive_graph_route import (
     summarize_graph_route_trace,
     term_proxy,
     validate_evaluator_edge_limit,
+    validate_evaluation_readiness,
     validate_routing_judgement,
     write_replay_capture_artifact,
 )
@@ -41,8 +42,10 @@ from tools.run_adaptive_graph_r7_stage_a import (
     ANSWER_EXECUTION_LIMIT,
     JUDGE_CALL_LIMIT,
     _answer_totals,
+    _assert_runtime_identity,
     _judge_cost,
     _judge_tool,
+    _runtime,
     _quality_tuple,
 )
 
@@ -105,6 +108,23 @@ class AdaptiveGraphEvaluationTests(unittest.IsolatedAsyncioTestCase):
                 }
             ),
         )
+
+    def test_r7_resume_identity_covers_manifest_fixture_case_order_and_runtime(self) -> None:
+        manifest = load_manifest()
+        runtime = _runtime(manifest)
+        _assert_runtime_identity({"runtime": runtime}, runtime, artifact="answers")
+        changed = dict(runtime)
+        changed["case_order"] = list(runtime["case_order"])[::-1]
+        with self.assertRaisesRegex(RuntimeError, "r7_answers_identity_mismatch"):
+            _assert_runtime_identity(
+                {"runtime": changed},
+                runtime,
+                artifact="answers",
+            )
+        legacy = dict(manifest)
+        legacy["dataset_id"] = "routing-rag-v1"
+        with self.assertRaisesRegex(RuntimeError, "r7_dataset_identity_changed"):
+            _runtime(legacy)
 
     def test_r7_stage_a_usage_and_judge_schema_are_closed(self) -> None:
         state = {
@@ -194,12 +214,32 @@ class AdaptiveGraphEvaluationTests(unittest.IsolatedAsyncioTestCase):
 
     def test_latest_routing_manifest_has_frozen_contract(self) -> None:
         manifest = load_manifest()
-        self.assertEqual(manifest["dataset_id"], "routing-rag-v1")
+        self.assertEqual(manifest["dataset_id"], "routing-rag-v2")
         self.assertEqual(manifest["case_count"], 39)
         self.assertEqual(
             [item["id"] for item in manifest["routes"]],
             ["vector-only", "hybrid-control", "manual-graph", "auto-route"],
         )
+
+    def test_evaluation_readiness_is_offline_and_tracks_source_bytes(self) -> None:
+        readiness = validate_evaluation_readiness()
+        self.assertEqual(
+            {
+                readiness["case_count"],
+                readiness["fixture_count"],
+                readiness["graph_locator_count"],
+                readiness["graph_unique_relation_count"],
+            },
+            {39, 22, 40, 35},
+        )
+        for key in (
+            "manifest_file_sha256",
+            "cases_file_sha256",
+            "fixture_file_sha256",
+            "corpus_manifest_sha256",
+            "graph_relations_sha256",
+        ):
+            self.assertRegex(readiness[key], r"^[0-9a-f]{64}$")
 
     def test_graph_route_metrics_prioritize_recall_accuracy_and_safe_recall_status(self) -> None:
         cases = (
@@ -393,6 +433,8 @@ class AdaptiveGraphEvaluationTests(unittest.IsolatedAsyncioTestCase):
                     "duplicate_chunk_path_count": 1,
                     "gold_rerank_scores": {str(uuid4()): 0.42},
                     "top1_gold_rerank_score": 0.42,
+                    "rerank_score_state": "scored",
+                    "rerank_reordered_chunk_count": 1,
                     "route_reason_code": None,
                     "route_result_code": "not_requested",
                     "salvage_status": "not_attempted",
@@ -406,6 +448,8 @@ class AdaptiveGraphEvaluationTests(unittest.IsolatedAsyncioTestCase):
                     "duplicate_chunk_path_count": 0,
                     "gold_rerank_scores": {},
                     "top1_gold_rerank_score": None,
+                    "rerank_score_state": "not_applicable",
+                    "rerank_reordered_chunk_count": 0,
                     "route_reason_code": "relation_chain_gap",
                     "route_result_code": "admitted",
                     "salvage_status": "not_attempted",
@@ -418,6 +462,18 @@ class AdaptiveGraphEvaluationTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("Chunk正文", serialized)
         self.assertNotIn("filename.pdf", serialized)
         self.assertEqual(record["layer_diagnostics"]["capability"]["requested_k"], 16)
+        self.assertEqual(
+            record["layer_diagnostics"]["capability"]["rerank_score_state"],
+            "scored",
+        )
+        with self.assertRaises(ValueError):
+            diagnostic_record(
+                case_id="synthetic-case-001",
+                alignments={"capability": alignment, "agent_replay": alignment},
+                query_source="capability",
+                query_count=1,
+                layer_diagnostics={"capability": {"below_threshold_count": 1}},
+            )
 
     def test_usage_aggregation_does_not_invent_cost(self) -> None:
         result = aggregate_usage(
@@ -588,6 +644,8 @@ class AdaptiveGraphEvaluationTests(unittest.IsolatedAsyncioTestCase):
     def test_actual_auto_capture_artifact_allows_no_requested_supplement(self) -> None:
         runtime_ids = [str(uuid4()) for _ in range(4)]
         artifact = build_replay_capture_artifact(
+            dataset_id="routing-rag-v2",
+            rerank_mode="classic",
             manifest_sha256="b" * 64,
             knowledge_base_id=runtime_ids[0],
             index_revision_id=runtime_ids[1],
@@ -650,6 +708,8 @@ class AdaptiveGraphEvaluationTests(unittest.IsolatedAsyncioTestCase):
             excluded_index_chunk_ids=(str(uuid4()),),
         )
         artifact = build_replay_capture_artifact(
+            dataset_id="routing-rag-v2",
+            rerank_mode="classic",
             manifest_sha256="a" * 64,
             knowledge_base_id=runtime_ids[0],
             index_revision_id=runtime_ids[1],
