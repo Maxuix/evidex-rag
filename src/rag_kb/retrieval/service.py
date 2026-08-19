@@ -1455,25 +1455,14 @@ class RetrievalService:
             lexical_weight=profile.rerank_lexical_weight,
         )
         metrics = {item.hit.index_chunk_id: item for item in scored}
-        eligibility = EvidenceEligibilityPolicy(
-            profile.min_cosine_similarity,
-            profile.min_rerank_score,
-            profile.cross_modal_min_cosine_similarity,
-        )
-        eligible_ids = {
-            item.hit.index_chunk_id
-            for item in scored
-            if eligibility.usable_text_candidate(item)
-        }
         dense_hits = tuple(
             metrics[hit.index_chunk_id].hit
             for hit in dense_result.hits
-            if hit.index_chunk_id in eligible_ids
+            if 1.0 - hit.cosine_distance >= profile.min_cosine_similarity
         )
         lexical_hits = tuple(
             metrics[hit.index_chunk_id].hit
             for hit in lexical_result.hits
-            if hit.index_chunk_id in eligible_ids
         )
         cross_hits = tuple(
             sorted(
@@ -1914,13 +1903,25 @@ class RetrievalService:
         self._validate_scope(plan, result)
         if plan.rerank:
             output_limit = self._candidate_evidence_limit(plan)
-            ordered_reranked = rerank_hits(
-                query,
-                result.hits,
-                top_k=output_limit,
-                vector_weight=profile.rerank_vector_weight,
-                lexical_weight=profile.rerank_lexical_weight,
-                mmr_lambda=profile.mmr_lambda,
+            admitted_hits = tuple(
+                hit
+                for hit in result.hits
+                if 1.0 - hit.cosine_distance >= profile.min_cosine_similarity
+            )
+            ordered_reranked = tuple(
+                sorted(
+                    score_hits(
+                        query,
+                        admitted_hits,
+                        vector_weight=profile.rerank_vector_weight,
+                        lexical_weight=profile.rerank_lexical_weight,
+                    ),
+                    key=lambda item: (
+                        -item.score,
+                        item.hit.cosine_distance,
+                        item.hit.index_chunk_id.int,
+                    ),
+                )[:output_limit]
             )
             candidates = tuple(
                 RetrievalService._evidence_from_reranked(rank, item)
@@ -1928,7 +1929,11 @@ class RetrievalService:
             )
             return await self._finish_reranking(query, candidates, plan)
         ordered = sorted(
-            result.hits,
+            (
+                hit
+                for hit in result.hits
+                if 1.0 - hit.cosine_distance >= profile.min_cosine_similarity
+            ),
             key=lambda hit: (hit.cosine_distance, hit.index_chunk_id.int),
         )[: plan.top_k]
         evidence = tuple(
@@ -1945,6 +1950,7 @@ class RetrievalService:
                 hierarchy=hit.hierarchy,
                 source_metadata=hit.source_metadata,
                 score=1.0 - hit.cosine_distance,
+                vector_similarity=1.0 - hit.cosine_distance,
                 modality=hit.modality,
                 asset=RetrievalService._asset(hit),
                 evidence_group_key=hit.evidence_group_key,
@@ -2215,8 +2221,8 @@ class RetrievalService:
             source_location=hit.source_location,
             hierarchy=hit.hierarchy,
             source_metadata=hit.source_metadata,
-            score=item.score,
-            score_kind=EvidenceScoreKind.HYBRID_RERANK,
+            score=item.vector_similarity,
+            score_kind=EvidenceScoreKind.COSINE_SIMILARITY,
             vector_similarity=item.vector_similarity,
             lexical_score=item.lexical_score,
             lexical_coverage=item.lexical_coverage,

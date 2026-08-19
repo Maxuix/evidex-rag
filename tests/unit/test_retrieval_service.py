@@ -364,7 +364,7 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(pack.debug.resolved_active_revision_id, REVISION_ID)
         self.assertEqual(pack.debug.result_count, 2)
 
-    async def test_rerank_retrieval_uses_service_weights_and_returns_hybrid_scores(
+    async def test_classic_rerank_orders_admitted_cosine_evidence(
         self,
     ) -> None:
         generic = replace(
@@ -399,9 +399,37 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(pack.evidence[0].index_chunk_id, CHUNK_2)
         self.assertEqual(
             pack.evidence[0].score_kind,
-            EvidenceScoreKind.HYBRID_RERANK,
+            EvidenceScoreKind.COSINE_SIMILARITY,
         )
+        self.assertAlmostEqual(pack.evidence[0].score, 0.8)
         self.assertGreater(pack.evidence[0].lexical_score or 0.0, 0.0)
+
+    async def test_classic_keeps_admitted_semantic_hit_without_term_overlap(
+        self,
+    ) -> None:
+        semantic = replace(
+            _hit(CHUNK_1, distance=0.60, ordinal=1),
+            text="unrelated surface words",
+        )
+        service = RetrievalService(
+            SingleWorkspaceAccessPolicy(WORKSPACE),
+            _Provider(),
+            _Store(VectorSearchResult(REVISION_ID, (semantic,))),
+        )
+
+        pack = await service.retrieve(
+            _context(),
+            RetrievalRequest(
+                KB_ID,
+                "policy deadline",
+                top_k=2,
+                rerank_mode=RerankMode.CLASSIC,
+            ),
+        )
+
+        self.assertEqual([item.index_chunk_id for item in pack.evidence], [CHUNK_1])
+        self.assertAlmostEqual(pack.evidence[0].score, 0.40)
+        self.assertEqual(pack.evidence[0].lexical_coverage, 0.0)
 
     async def test_local_model_reorders_classic_candidates_and_keeps_base_scores(
         self,
@@ -452,7 +480,10 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(pack.evidence[0].model_rerank_rank, 1)
         self.assertEqual(pack.evidence[0].model_rerank_window_count, 2)
         self.assertEqual(pack.evidence[0].model_rerank_winning_window_index, 1)
-        self.assertIs(pack.evidence[0].score_kind, EvidenceScoreKind.HYBRID_RERANK)
+        self.assertIs(
+            pack.evidence[0].score_kind,
+            EvidenceScoreKind.COSINE_SIMILARITY,
+        )
         assert pack.debug is not None
         self.assertEqual(pack.debug.model_rerank_candidate_count, 2)
         self.assertEqual(pack.debug.model_rerank_window_count, 5)
@@ -570,7 +601,7 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(pack.debug.lexical_candidate_count, 1)
         self.assertEqual(pack.debug.lexical_manifest_target_count, 1)
 
-    async def test_hybrid_rejects_low_cosine_lexical_candidate(self) -> None:
+    async def test_hybrid_admits_strong_lexical_candidate_with_low_cosine(self) -> None:
         dense = replace(
             _hit(CHUNK_1, distance=0.10),
             text="policy deadline handbook",
@@ -608,8 +639,14 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(
-            [item.index_chunk_id for item in pack.evidence], [CHUNK_1]
+            {item.index_chunk_id for item in pack.evidence},
+            {CHUNK_1, CHUNK_2},
         )
+        lexical_evidence = next(
+            item for item in pack.evidence if item.index_chunk_id == CHUNK_2
+        )
+        self.assertEqual(lexical_evidence.lexical_rank, 1)
+        self.assertIsNone(lexical_evidence.text_space_rank)
 
     async def test_hybrid_lane_failure_cancels_and_settles_dense_sibling(
         self,

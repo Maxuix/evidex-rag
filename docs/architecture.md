@@ -312,8 +312,11 @@ vector，dual 模式分别生成文本与跨模态 query vector，unified 模式
 源版本。现有 hybrid manifest 检查用于避免返回半成品索引；不支持时明确失败，不把不一致的
 结果伪装成成功。
 
-当前精排选择为 `none | classic | local_minilm_v1`。`classic` 保留现有本地确定性排序并作为
-知识库默认；`local_minilm_v1` 使用构建时固定、运行时离线的多语言 MiniLM ARM64 INT8 ONNX
+当前精排选择为 `none | classic | local_minilm_v1`。候选先按 lane 准入一次：exact/dense 使用
+文本 cosine 门，lexical 使用 FTS rank 与完整 manifest，cross-modal 使用自身 cosine 门；随后
+才在已准入集合排序并最终截取 `top_k`。`classic` 保留本地确定性排序并作为知识库默认，不能
+以词面覆盖或排序分改写 cosine/FTS 准入事实；hybrid 的 lexical lane 不复用 dense cosine 门。
+`local_minilm_v1` 使用构建时固定、运行时离线的多语言 MiniLM ARM64 INT8 ONNX
 工件，只对现有准入后的最多 20 个 text/table 候选重排。模型 tokenizer 将 query 截至 96
 tokens、层级截至 32 tokens，并把超过剩余 512-token pair 预算的正文按段落或表格行临时窗口化
 （64-token overlap、总窗口最多 80），以窗口最大 logit 聚合回原 Chunk。模型分数不覆盖原

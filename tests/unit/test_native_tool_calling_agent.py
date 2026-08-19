@@ -589,6 +589,48 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
             {"max_model_rounds": 8},
         )
 
+    async def test_agent_keeps_lexical_rrf_evidence_without_cosine_gate(self) -> None:
+        context = _context()
+        base = _pack(context).evidence[0]
+        lexical = replace(
+            base,
+            score=0.02,
+            score_kind=EvidenceScoreKind.RECIPROCAL_RANK_FUSION,
+            vector_similarity=0.10,
+            lexical_score=0.9,
+            lexical_rank=1,
+            fusion_score=0.02,
+        )
+        pack = replace(_pack(context), evidence=(lexical,))
+        model = _Model(
+            ChatToolCall(
+                "search-lexical",
+                "search_knowledge_base",
+                {"queries": ["revenue"]},
+            ),
+            ChatToolCall(
+                "submit-lexical",
+                "submit_answer",
+                {
+                    "outcome": "answered",
+                    "claims": [
+                        {
+                            "text": "Revenue was 10 in 2025.",
+                            "kind": "fact",
+                            "evidence_refs": ["ev_1"],
+                            "calculation_refs": [],
+                        }
+                    ],
+                    "unanswered": [],
+                },
+            ),
+        )
+
+        state = await _agent(model, _Retriever(pack)).run(context)
+
+        self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.ANSWERED)
+        self.assertIn('"evidence_ref":"ev_1"', model.requests[1].messages[-1].content)
+
     async def test_adaptive_graphiti_is_simple_first_and_appends_one_supplement(self) -> None:
         context = _adaptive_context()
         simple_pack = _pack(context, text="Simple source", count=1)

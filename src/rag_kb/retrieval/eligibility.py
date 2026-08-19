@@ -38,9 +38,11 @@ class EvidenceEligibilityPolicy:
                 and item.score > 0.0
             )
         if item.score_kind is EvidenceScoreKind.RECIPROCAL_RANK_FUSION:
+            if item.lexical_rank is not None:
+                return True
             if item.vector_similarity is None:
                 return False
-            if item.text_space_rank is not None or item.lexical_rank is not None:
+            if item.text_space_rank is not None:
                 return item.vector_similarity >= self.min_cosine_similarity
             return (
                 item.cross_modal_rank is not None
