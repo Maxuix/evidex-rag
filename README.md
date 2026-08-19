@@ -34,9 +34,8 @@ Chat path is a bounded native tool-calling Agent loop. PostgreSQL
 `ChatRun` remains the durable execution state, while the existing pgvector and
 embedding adapters remain responsible for indexing and retrieval. These
 implementations have no runtime rollback switches; strict configuration rejects
-the retired backend keys. See the
-[local development guide](docs/release/local-development-guide.md) for the
-supported settings.
+the retired backend keys. See the runtime and configuration sections in the
+[current architecture](docs/architecture.md) for the supported setup.
 
 The checked-in local development profile explicitly enables best-effort live
 Agent progress with the historically named
@@ -93,18 +92,23 @@ After inspecting the exact project-owned volumes, repeat the reset command
 without `--inspect-only`. It permanently removes the selected Compose project's
 PostgreSQL and source-data volumes while preserving its inference-model cache.
 
-See the [local development guide](docs/release/local-development-guide.md) for
-configuration, sample import, and troubleshooting.
+See the [current architecture](docs/architecture.md) for configuration, runtime
+boundaries, validation, and troubleshooting commands.
 
 ## Project Documentation
 
-- [Current architecture and local-first boundaries](docs/Enterprise-knowledge-base-design.md)
-- [Architecture detail index](docs/architecture/README.md)
-- [Native Tool-Calling Agent](docs/architecture/native-tool-calling-agent.md)
-- [Current execution tracker](docs/implementation-plans/EXECUTION-TRACKER.md)
-- [Implementation-plan workflow and template](docs/implementation-plans/README.md)
+- [Single current architecture](docs/architecture.md)
+- [Current plan](.agent/PLAN.md)
+- [Current TODO](.agent/TODO.md)
+- [Current progress tracker](.agent/TRACKER.md)
+- [Actual history log](.agent/LOG.md)
+- [Executed test reports](docs/test/)
+- [Concept-only roadmap](docs/roadmap/01-0819-project-roadmap.md)
+- [Historical archive](archive/README.md)
 
-The architecture document is a high-level map of the current implementation.
-The tracker and a short dated plan are used only for active multi-stage, risky,
-schema-changing, or destructive work; focused changes can proceed without that
-process overhead. See `AGENTS.md` for the local-first maintenance rules.
+The `.agent/` task system separates intent, concrete actions, progress, and
+actual history. `docs/architecture.md` is the only maintained architecture
+document; reviews, executed test reports, and concept-only roadmaps use their
+dedicated folders. Test reports record results and do not replace the validation
+rules in `AGENTS.md`. See that file for lifecycle, naming, authorization, and
+validation rules.
