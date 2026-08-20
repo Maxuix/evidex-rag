@@ -125,6 +125,9 @@ Creation first proves that the existing local `rag` app/frontend images match
 the current checkout's corresponding build inputs, then adds eval-only tags;
 it fails instead of rebuilding, pulling, or downloading when they differ. It
 restores only the verified frozen evaluation backup into eval-owned volumes.
+The Adaptive Graph identity comes from the checksummed completed R7 artifact
+in that same backup and must exactly match the restored database's serving
+KB/index/build and answer/judge profiles.
 Destruction validates the project, per-create owner labels, known container/
 volume/network set, and private runtime directory before removing those
 objects. Neither command targets the personal `rag` volumes. Provider and Judge

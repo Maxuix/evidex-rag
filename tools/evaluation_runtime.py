@@ -73,8 +73,13 @@ REQUIRED_SEED_FILES = (
     "p6-source-data.tar.gz",
     "p6-model-secrets.tar.gz",
     "p6-falkordb.rdb",
+    "adaptive-graph-route-v2.tar.gz",
     "SHA256SUMS",
 )
+FROZEN_ADAPTIVE_RESULT = (
+    "adaptive-graph-route-v2/stage-a-20260820/answers.json"
+)
+MAX_FROZEN_ADAPTIVE_RESULT_BYTES = 1024 * 1024
 EXPECTED_SERVICES = frozenset(
     {"postgres", "falkordb", "storage-init", "migrate", "maintenance", "api", "worker", "frontend"}
 )
@@ -96,6 +101,15 @@ class EvaluationRuntimeError(ValueError):
 @dataclass(frozen=True, slots=True)
 class AdaptiveGraphIdentity:
     workspace_id: UUID
+    knowledge_base_id: UUID
+    index_revision_id: UUID
+    graph_build_id: UUID
+    answer_profile_revision_id: UUID
+    judge_profile_revision_id: UUID
+
+
+@dataclass(frozen=True, slots=True)
+class FrozenAdaptiveGraphIdentity:
     knowledge_base_id: UUID
     index_revision_id: UUID
     graph_build_id: UUID
@@ -523,6 +537,64 @@ def _verify_seed(seed: Path) -> Path:
     return seed
 
 
+def _seed_adaptive_identity(seed: Path) -> FrozenAdaptiveGraphIdentity:
+    archive_path = _private_regular_file(
+        seed / "adaptive-graph-route-v2.tar.gz",
+        reason="evaluation adaptive Graph seed",
+    )
+    with tarfile.open(archive_path, mode="r:gz") as archive:
+        members = [
+            member
+            for member in archive.getmembers()
+            if member.name == FROZEN_ADAPTIVE_RESULT
+        ]
+        if (
+            len(members) != 1
+            or not members[0].isfile()
+            or not 0 < members[0].size <= MAX_FROZEN_ADAPTIVE_RESULT_BYTES
+        ):
+            raise EvaluationRuntimeError("evaluation adaptive Graph seed is invalid")
+        source = archive.extractfile(members[0])
+        if source is None:
+            raise EvaluationRuntimeError("evaluation adaptive Graph seed is unreadable")
+        with source:
+            try:
+                value = json.loads(source.read(MAX_FROZEN_ADAPTIVE_RESULT_BYTES + 1))
+            except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                raise EvaluationRuntimeError(
+                    "evaluation adaptive Graph seed is invalid"
+                ) from error
+    if (
+        not isinstance(value, dict)
+        or value.get("schema_version") != "adaptive_graph_r7_stage_a_v2"
+        or value.get("status") != "completed"
+    ):
+        raise EvaluationRuntimeError("evaluation adaptive Graph seed is invalid")
+    runtime = value.get("runtime")
+    if not isinstance(runtime, dict) or runtime.get("dataset_id") != "routing-rag-v2":
+        raise EvaluationRuntimeError("evaluation adaptive Graph seed is invalid")
+    fields = {
+        "knowledge_base_id",
+        "index_revision_id",
+        "graph_build_id",
+        "answer_profile_revision_id",
+        "judge_source_profile_revision_id",
+    }
+    if any(name not in runtime for name in fields):
+        raise EvaluationRuntimeError("evaluation adaptive Graph seed is invalid")
+    try:
+        identifiers = {name: UUID(str(runtime[name])) for name in fields}
+    except (TypeError, ValueError) as error:
+        raise EvaluationRuntimeError("evaluation adaptive Graph seed is invalid") from error
+    return FrozenAdaptiveGraphIdentity(
+        knowledge_base_id=identifiers["knowledge_base_id"],
+        index_revision_id=identifiers["index_revision_id"],
+        graph_build_id=identifiers["graph_build_id"],
+        answer_profile_revision_id=identifiers["answer_profile_revision_id"],
+        judge_profile_revision_id=identifiers["judge_source_profile_revision_id"],
+    )
+
+
 def _docker_project_objects() -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
     containers = tuple(
         line
@@ -699,17 +771,38 @@ def _restore_database(runtime: EvaluationRuntime, *, seed: Path) -> None:
     _run(["docker", "exec", container, "/docker-entrypoint-initdb.d/10-init-runtime.sh"])
 
 
-def _adaptive_identity(runtime: EvaluationRuntime) -> AdaptiveGraphIdentity:
+def _adaptive_identity(
+    runtime: EvaluationRuntime,
+    *,
+    frozen: FrozenAdaptiveGraphIdentity,
+) -> AdaptiveGraphIdentity:
     container = _container_id(runtime, "postgres")
     query = (
         "SELECT config.workspace_id, config.kb_id, kb.active_index_revision_id, config.active_build_id, "
-        "selection.chat_profile_revision_id "
+        "answer.id, judge.id "
         "FROM knowledge_base_graph_config config "
         "JOIN knowledge_base kb ON kb.workspace_id = config.workspace_id AND kb.id = config.kb_id "
+        "JOIN graphiti_graph_build build ON build.workspace_id = config.workspace_id "
+        "AND build.kb_id = config.kb_id AND build.build_id = config.active_build_id "
         "JOIN model_selection selection ON selection.workspace_id = config.workspace_id "
-        "WHERE config.status = 'ready' AND config.active_build_id IS NOT NULL "
-        "AND kb.active_index_revision_id IS NOT NULL "
-        "AND selection.chat_profile_revision_id IS NOT NULL"
+        f"AND selection.chat_profile_revision_id = '{frozen.answer_profile_revision_id}'::uuid "
+        "JOIN model_profile_revision answer ON answer.workspace_id = config.workspace_id "
+        f"AND answer.id = '{frozen.answer_profile_revision_id}'::uuid "
+        "JOIN model_profile answer_profile ON answer_profile.workspace_id = answer.workspace_id "
+        "AND answer_profile.id = answer.profile_id "
+        "JOIN model_profile_revision judge ON judge.workspace_id = config.workspace_id "
+        f"AND judge.id = '{frozen.judge_profile_revision_id}'::uuid "
+        "JOIN model_profile judge_profile ON judge_profile.workspace_id = judge.workspace_id "
+        "AND judge_profile.id = judge.profile_id "
+        "WHERE config.status = 'ready' AND build.status = 'ready' "
+        "AND build.completed_at IS NOT NULL "
+        f"AND config.kb_id = '{frozen.knowledge_base_id}'::uuid "
+        f"AND kb.active_index_revision_id = '{frozen.index_revision_id}'::uuid "
+        f"AND config.active_build_id = '{frozen.graph_build_id}'::uuid "
+        "AND build.index_revision_id = kb.active_index_revision_id "
+        "AND answer.validation_status = 'valid' AND judge.validation_status = 'valid' "
+        "AND answer_profile.kind = 'chat' AND answer_profile.enabled "
+        "AND judge_profile.kind = 'chat' AND judge_profile.enabled"
     )
     output = _run(
         [
@@ -733,10 +826,10 @@ def _adaptive_identity(runtime: EvaluationRuntime) -> AdaptiveGraphIdentity:
         capture=True,
     )
     rows = [line.split("\t") for line in output.splitlines() if line]
-    if len(rows) != 1 or len(rows[0]) != 5:
-        raise EvaluationRuntimeError("evaluation adaptive Graph identity is ambiguous")
+    if len(rows) != 1 or len(rows[0]) != 6:
+        raise EvaluationRuntimeError("evaluation adaptive Graph identity is unavailable")
     try:
-        workspace_id, kb_id, revision_id, build_id, profile_id = (
+        workspace_id, kb_id, revision_id, build_id, answer_profile_id, judge_profile_id = (
             UUID(item) for item in rows[0]
         )
     except ValueError as error:
@@ -746,8 +839,8 @@ def _adaptive_identity(runtime: EvaluationRuntime) -> AdaptiveGraphIdentity:
         knowledge_base_id=kb_id,
         index_revision_id=revision_id,
         graph_build_id=build_id,
-        answer_profile_revision_id=profile_id,
-        judge_profile_revision_id=profile_id,
+        answer_profile_revision_id=answer_profile_id,
+        judge_profile_revision_id=judge_profile_id,
     )
 
 
@@ -756,6 +849,7 @@ def create_runtime(*, seed: Path, confirmation: str) -> dict[str, object]:
         raise EvaluationRuntimeError("evaluation create confirmation is invalid")
     _assert_primary_checkout()
     seed = _verify_seed(seed)
+    frozen_identity = _seed_adaptive_identity(seed)
     _assert_no_existing_runtime()
     build_revision = _reuse_local_images()
     DEFAULT_RUNTIME_ROOT.mkdir(parents=True, mode=0o700)
@@ -786,7 +880,7 @@ def create_runtime(*, seed: Path, confirmation: str) -> dict[str, object]:
     _restore_falkor(runtime, seed=seed)
     _prepare_host_runtime(seed)
     _run(compose_command(runtime, "--profile", "tools", "run", "--rm", "migrate"), runtime=runtime)
-    identity = _adaptive_identity(runtime)
+    identity = _adaptive_identity(runtime, frozen=frozen_identity)
     _write_private(
         DEFAULT_RUNTIME_ENV,
         _evaluation_env(

@@ -279,7 +279,10 @@ checkout 工作：先证明现有本地 `rag` app/frontend image 对应 revision
 无差异，再增加 eval-only tag；不一致时失败，不自动 rebuild、pull 或下载。随后从已校验的冻结备份
 恢复 eval-owned PostgreSQL、source、model secrets 和 FalkorDB，并给 container、volume、network
 写入同一个随机 owner label；host evaluator 与 Compose 使用各自的私有 env，避免 Docker hostname、
-主机路径或个人服务环境串用。destroy 另需明确确认，且只在 project、owner、已知对象集合和无
+主机路径或个人服务环境串用。Adaptive Graph 身份来自同一备份内已完成且有 checksum 的 R7 工件，
+再逐字段验证其 KB、active index/build、answer/judge profile 与恢复库的当前 serving 关系；不按
+READY 候选数量、名称或时间猜测，也不把 judge profile 替换为当前 answer profile。destroy 另需明确
+确认，且只在 project、owner、已知对象集合和无
 symlink 的私有 runtime 目录全部匹配时删除 `rag-eval` 对象；不执行 prune，不读取、停止或挂载
 `rag` 的业务 volume。真实 lifecycle 演练与 Provider/Judge 调用仍分别受当前授权约束。
 

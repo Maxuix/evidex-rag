@@ -243,6 +243,89 @@ class EvaluationRuntimeTests(unittest.TestCase):
                 module._extract_private_archive(unsafe_archive, unsafe_target)
             self.assertFalse(unsafe_target.exists())
 
+    def test_seed_adaptive_identity_comes_from_frozen_r7_result(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            seed = Path(directory)
+            archive_path = seed / "adaptive-graph-route-v2.tar.gz"
+            payload = json.dumps(
+                {
+                    "schema_version": "adaptive_graph_r7_stage_a_v2",
+                    "status": "completed",
+                    "runtime": {
+                        "dataset_id": "routing-rag-v2",
+                        "knowledge_base_id": _IDENTITY["knowledge_base_id"],
+                        "index_revision_id": _IDENTITY["index_revision_id"],
+                        "graph_build_id": _IDENTITY["graph_build_id"],
+                        "answer_profile_revision_id": _IDENTITY[
+                            "answer_profile_revision_id"
+                        ],
+                        "judge_source_profile_revision_id": _IDENTITY[
+                            "judge_profile_revision_id"
+                        ],
+                    },
+                }
+            ).encode()
+            with tarfile.open(archive_path, "w:gz") as archive:
+                member = tarfile.TarInfo(module.FROZEN_ADAPTIVE_RESULT)
+                member.size = len(payload)
+                archive.addfile(member, BytesIO(payload))
+            archive_path.chmod(0o600)
+
+            identity = module._seed_adaptive_identity(seed)
+
+        self.assertEqual(identity.knowledge_base_id, UUID(_IDENTITY["knowledge_base_id"]))
+        self.assertEqual(
+            identity.answer_profile_revision_id,
+            UUID(_IDENTITY["answer_profile_revision_id"]),
+        )
+        self.assertEqual(
+            identity.judge_profile_revision_id,
+            UUID(_IDENTITY["judge_profile_revision_id"]),
+        )
+
+    def test_adaptive_identity_validates_exact_frozen_database_relation(self) -> None:
+        runtime = EvaluationRuntime(
+            manifest=Path("runtime.json"),
+            runtime_root=Path("."),
+            env_file=Path("runtime.env"),
+            compose_env_file=Path("compose.env"),
+            owner=_OWNER,
+            build_revision="a" * 40,
+            api_base_url="http://127.0.0.1:28000/api/v1",
+            ports=dict(module.EVALUATION_PORTS),
+            adaptive_graph=None,
+        )
+        frozen = module.FrozenAdaptiveGraphIdentity(
+            knowledge_base_id=UUID(_IDENTITY["knowledge_base_id"]),
+            index_revision_id=UUID(_IDENTITY["index_revision_id"]),
+            graph_build_id=UUID(_IDENTITY["graph_build_id"]),
+            answer_profile_revision_id=UUID(_IDENTITY["answer_profile_revision_id"]),
+            judge_profile_revision_id=UUID(_IDENTITY["judge_profile_revision_id"]),
+        )
+        output = "\t".join(
+            _IDENTITY[name]
+            for name in (
+                "workspace_id",
+                "knowledge_base_id",
+                "index_revision_id",
+                "graph_build_id",
+                "answer_profile_revision_id",
+                "judge_profile_revision_id",
+            )
+        )
+        with (
+            patch.object(module, "_container_id", return_value="postgres-container"),
+            patch.object(module, "_run", return_value=output) as run,
+        ):
+            identity = module._adaptive_identity(runtime, frozen=frozen)
+
+        query = run.call_args.args[0][-1]
+        self.assertIn(str(frozen.knowledge_base_id), query)
+        self.assertIn(str(frozen.graph_build_id), query)
+        self.assertIn(str(frozen.judge_profile_revision_id), query)
+        self.assertEqual(identity.answer_profile_revision_id, frozen.answer_profile_revision_id)
+        self.assertEqual(identity.judge_profile_revision_id, frozen.judge_profile_revision_id)
+
     def test_eval_images_reuse_only_source_equivalent_local_images(self) -> None:
         revision = "a" * 40
         with patch.object(
