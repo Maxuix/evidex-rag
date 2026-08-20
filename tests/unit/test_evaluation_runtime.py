@@ -276,6 +276,31 @@ class EvaluationRuntimeTests(unittest.TestCase):
                 module._reuse_local_images()
         self.assertEqual(run.call_count, 2)
 
+    def test_database_restore_assigns_objects_to_migration_role(self) -> None:
+        runtime = EvaluationRuntime(
+            manifest=Path("runtime.json"),
+            runtime_root=Path("."),
+            env_file=Path("runtime.env"),
+            compose_env_file=Path("compose.env"),
+            owner=_OWNER,
+            build_revision="a" * 40,
+            api_base_url="http://127.0.0.1:28000/api/v1",
+            ports=dict(module.EVALUATION_PORTS),
+            adaptive_graph=None,
+        )
+        with (
+            patch.object(module, "_container_id", return_value="postgres-container"),
+            patch.object(module, "_run", return_value="") as run,
+        ):
+            module._restore_database(runtime, seed=Path("/private/seed"))
+        restore_command = run.call_args_list[1].args[0]
+        self.assertEqual(restore_command[0:3], ["docker", "exec", "postgres-container"])
+        self.assertIn("--role", restore_command)
+        self.assertEqual(
+            restore_command[restore_command.index("--role") + 1],
+            "rag_kb_migration",
+        )
+
     def test_owner_guard_rejects_unknown_service_or_incomplete_volumes(self) -> None:
         runtime = EvaluationRuntime(
             manifest=Path("runtime.json"),

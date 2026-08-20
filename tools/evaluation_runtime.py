@@ -689,6 +689,8 @@ def _restore_database(runtime: EvaluationRuntime, *, seed: Path) -> None:
                 "--if-exists",
                 "--no-owner",
                 "--no-privileges",
+                "--role",
+                "rag_kb_migration",
                 "--username",
                 "postgres",
                 "--dbname",
