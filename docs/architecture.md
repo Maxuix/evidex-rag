@@ -278,7 +278,9 @@ runtime 时，入口在发起外部 I/O 前失败；个人 API、`.env.local` �
 checkout 工作：先证明现有本地 `rag` app/frontend image 对应 revision 与当前 checkout 的相关构建输入
 无差异，再增加 eval-only tag；不一致时失败，不自动 rebuild、pull 或下载。随后从已校验的冻结备份
 恢复 eval-owned PostgreSQL、source、model secrets 和 FalkorDB，并给 container、volume、network
-写入同一个随机 owner label；host evaluator 与 Compose 使用各自的私有 env，避免 Docker hostname、
+写入同一个随机 owner label。冻结 database dump 不携带 ACL；migration 后只重放基线迁移已经定义的
+runtime table/default grants 及其表/函数例外，并立即校验表权限。host evaluator 与 Compose 使用各自
+的私有 env，避免 Docker hostname、
 主机路径或个人服务环境串用。Adaptive Graph 身份来自同一备份内已完成且有 checksum 的 R7 工件，
 再逐字段验证其 KB、active index/build、answer/judge profile 与恢复库的当前 serving 关系；不按
 READY 候选数量、名称或时间猜测，也不把 judge profile 替换为当前 answer profile。destroy 另需明确

@@ -359,7 +359,7 @@ class EvaluationRuntimeTests(unittest.TestCase):
                 module._reuse_local_images()
         self.assertEqual(run.call_count, 2)
 
-    def test_database_restore_preserves_dump_ownership_and_acl(self) -> None:
+    def test_database_restore_preserves_dump_ownership(self) -> None:
         runtime = EvaluationRuntime(
             manifest=Path("runtime.json"),
             runtime_root=Path("."),
@@ -381,6 +381,34 @@ class EvaluationRuntimeTests(unittest.TestCase):
         self.assertNotIn("--no-owner", restore_command)
         self.assertNotIn("--no-privileges", restore_command)
         self.assertNotIn("--role", restore_command)
+
+    def test_eval_runtime_replays_existing_baseline_grants_after_restore(self) -> None:
+        runtime = EvaluationRuntime(
+            manifest=Path("runtime.json"),
+            runtime_root=Path("."),
+            env_file=Path("runtime.env"),
+            compose_env_file=Path("compose.env"),
+            owner=_OWNER,
+            build_revision="a" * 40,
+            api_base_url="http://127.0.0.1:28000/api/v1",
+            ports=dict(module.EVALUATION_PORTS),
+            adaptive_graph=None,
+        )
+        with (
+            patch.object(module, "_container_id", return_value="postgres-container"),
+            patch.object(module, "_run", side_effect=("", "t")) as run,
+        ):
+            module._reconcile_runtime_grants(runtime)
+
+        command = run.call_args_list[0].args[0]
+        check_command = run.call_args_list[1].args[0]
+        self.assertEqual(command[:3], ["docker", "exec", "postgres-container"])
+        self.assertIn("GRANT SELECT, INSERT, UPDATE, DELETE", command[-1])
+        self.assertIn("REVOKE INSERT, UPDATE, DELETE ON TABLE alembic_version", command[-1])
+        self.assertIn("REVOKE UPDATE ON TABLE index_chunk_plan", command[-1])
+        self.assertEqual(command[-1], module.EVALUATION_RUNTIME_GRANTS)
+        self.assertEqual(check_command[-1], module.EVALUATION_RUNTIME_GRANTS_CHECK)
+        self.assertTrue(run.call_args_list[1].kwargs["capture"])
 
     def test_owner_guard_rejects_unknown_service_or_incomplete_volumes(self) -> None:
         runtime = EvaluationRuntime(

@@ -80,6 +80,31 @@ FROZEN_ADAPTIVE_RESULT = (
     "adaptive-graph-route-v2/stage-a-20260820/answers.json"
 )
 MAX_FROZEN_ADAPTIVE_RESULT_BYTES = 1024 * 1024
+EVALUATION_RUNTIME_GRANTS = (
+    "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public "
+    "TO rag_kb_runtime; "
+    "REVOKE INSERT, UPDATE, DELETE ON TABLE alembic_version FROM rag_kb_runtime; "
+    "ALTER DEFAULT PRIVILEGES FOR ROLE rag_kb_migration IN SCHEMA public "
+    "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO rag_kb_runtime; "
+    "REVOKE UPDATE ON TABLE index_chunk_plan FROM rag_kb_runtime; "
+    "REVOKE ALL ON FUNCTION enforce_provisioned_kb_active_revision() FROM PUBLIC; "
+    "REVOKE ALL ON FUNCTION enforce_document_version_source_immutability() FROM PUBLIC; "
+    "REVOKE ALL ON FUNCTION enforce_source_change_immutability() FROM PUBLIC"
+)
+EVALUATION_RUNTIME_GRANTS_CHECK = (
+    "WITH runtime_tables AS ("
+    "SELECT table_schema, table_name FROM information_schema.tables "
+    "WHERE table_schema = 'public' AND table_type = 'BASE TABLE'"
+    ") SELECT COALESCE(bool_and("
+    "has_table_privilege('rag_kb_runtime', format('%I.%I', table_schema, table_name), 'SELECT') "
+    "AND (table_name = 'alembic_version' OR "
+    "has_table_privilege('rag_kb_runtime', format('%I.%I', table_schema, table_name), 'INSERT')) "
+    "AND (table_name IN ('alembic_version', 'index_chunk_plan') OR "
+    "has_table_privilege('rag_kb_runtime', format('%I.%I', table_schema, table_name), 'UPDATE')) "
+    "AND (table_name = 'alembic_version' OR "
+    "has_table_privilege('rag_kb_runtime', format('%I.%I', table_schema, table_name), 'DELETE'))"
+    "), false) FROM runtime_tables"
+)
 EXPECTED_SERVICES = frozenset(
     {"postgres", "falkordb", "storage-init", "migrate", "maintenance", "api", "worker", "frontend"}
 )
@@ -771,6 +796,50 @@ def _restore_database(runtime: EvaluationRuntime, *, seed: Path) -> None:
     _run(["docker", "exec", container, "/docker-entrypoint-initdb.d/10-init-runtime.sh"])
 
 
+def _reconcile_runtime_grants(runtime: EvaluationRuntime) -> None:
+    """Restore the immutable 0001 runtime ACL omitted by the frozen dump."""
+
+    container = _container_id(runtime, "postgres")
+    _run(
+        [
+            "docker",
+            "exec",
+            container,
+            "psql",
+            "-X",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-U",
+            "postgres",
+            "-d",
+            "rag_kb",
+            "-c",
+            EVALUATION_RUNTIME_GRANTS,
+        ]
+    )
+    valid = _run(
+        [
+            "docker",
+            "exec",
+            container,
+            "psql",
+            "-X",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-U",
+            "postgres",
+            "-d",
+            "rag_kb",
+            "-At",
+            "-c",
+            EVALUATION_RUNTIME_GRANTS_CHECK,
+        ],
+        capture=True,
+    )
+    if valid != "t":
+        raise EvaluationRuntimeError("evaluation runtime grants are invalid")
+
+
 def _adaptive_identity(
     runtime: EvaluationRuntime,
     *,
@@ -880,6 +949,7 @@ def create_runtime(*, seed: Path, confirmation: str) -> dict[str, object]:
     _restore_falkor(runtime, seed=seed)
     _prepare_host_runtime(seed)
     _run(compose_command(runtime, "--profile", "tools", "run", "--rm", "migrate"), runtime=runtime)
+    _reconcile_runtime_grants(runtime)
     identity = _adaptive_identity(runtime, frozen=frozen_identity)
     _write_private(
         DEFAULT_RUNTIME_ENV,
