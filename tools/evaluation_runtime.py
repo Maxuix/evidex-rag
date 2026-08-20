@@ -564,14 +564,14 @@ def _seed_adaptive_identity(seed: Path) -> FrozenAdaptiveGraphIdentity:
                 raise EvaluationRuntimeError(
                     "evaluation adaptive Graph seed is invalid"
                 ) from error
-    if (
-        not isinstance(value, dict)
-        or value.get("schema_version") != "adaptive_graph_r7_stage_a_v2"
-        or value.get("status") != "completed"
-    ):
+    if not isinstance(value, dict) or value.get("status") != "completed":
         raise EvaluationRuntimeError("evaluation adaptive Graph seed is invalid")
     runtime = value.get("runtime")
-    if not isinstance(runtime, dict) or runtime.get("dataset_id") != "routing-rag-v2":
+    if (
+        not isinstance(runtime, dict)
+        or runtime.get("schema_version") != "adaptive_graph_r7_stage_a_v2"
+        or runtime.get("dataset_id") != "routing-rag-v2"
+    ):
         raise EvaluationRuntimeError("evaluation adaptive Graph seed is invalid")
     fields = {
         "knowledge_base_id",

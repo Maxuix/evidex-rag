@@ -249,9 +249,9 @@ class EvaluationRuntimeTests(unittest.TestCase):
             archive_path = seed / "adaptive-graph-route-v2.tar.gz"
             payload = json.dumps(
                 {
-                    "schema_version": "adaptive_graph_r7_stage_a_v2",
                     "status": "completed",
                     "runtime": {
+                        "schema_version": "adaptive_graph_r7_stage_a_v2",
                         "dataset_id": "routing-rag-v2",
                         "knowledge_base_id": _IDENTITY["knowledge_base_id"],
                         "index_revision_id": _IDENTITY["index_revision_id"],
