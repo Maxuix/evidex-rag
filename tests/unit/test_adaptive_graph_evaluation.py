@@ -619,6 +619,25 @@ class AdaptiveGraphEvaluationTests(unittest.IsolatedAsyncioTestCase):
             "graphiti_supplement",
         ))
 
+    async def test_single_tool_fallback_restricts_initial_required_choice(self) -> None:
+        delegate = _RecordingModel()
+        controller = ForcedGraphitiSupplementChatModelPort(
+            delegate,
+            controller_mode="single_tool_required_fallback",
+        )
+        tools = tuple(item for item in _tools() if item.name != "graphiti_supplement")
+        request = ChatModelRequest(
+            messages=(ChatModelMessage("user", "原始问题"),),
+            tools=tools,
+            tool_choice="required",
+        )
+        await controller.complete(request)
+        self.assertEqual(delegate.requests[0].tool_choice, "required")
+        self.assertEqual(
+            tuple(item.name for item in delegate.requests[0].tools),
+            ("search_knowledge_base",),
+        )
+
     async def test_actual_auto_observer_does_not_change_model_request(self) -> None:
         delegate = _RecordingModel()
         controller = ForcedGraphitiSupplementChatModelPort(

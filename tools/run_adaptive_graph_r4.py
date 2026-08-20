@@ -74,6 +74,7 @@ R4_DIAGNOSTIC_SCHEMA_VERSION = "adaptive_graph_r4_diagnostic_v2"
 R4_CHECKPOINT_SCHEMA_VERSION = "adaptive_graph_r4_checkpoint_v2"
 GRAPHITI_EDGE_LIMIT = 8
 FORCED_CONTROLLER_MODE = "specific_tool_choice"
+OVERRIDE_CONTROLLER_MODE = "single_tool_required_fallback"
 ACTUAL_AUTO_CONTROLLER_MODE = "actual_auto"
 EVALUATOR_CHAT_MODEL_OVERRIDE = "deepseek-v4-flash"
 EVALUATOR_CHAT_MODEL_MAX_OUTPUT_TOKENS = 512
@@ -181,6 +182,16 @@ class R4RunnerError(RuntimeError):
             raise ValueError("R4 runner error code is invalid")
         super().__init__(code)
         self.code = code
+
+
+def _controller_mode(*, replay_mode: str, model_override: str | None) -> str:
+    """Choose the evaluator controller compatible with the selected model."""
+
+    if replay_mode == "actual-auto":
+        return ACTUAL_AUTO_CONTROLLER_MODE
+    if model_override == EVALUATOR_CHAT_MODEL_OVERRIDE:
+        return OVERRIDE_CONTROLLER_MODE
+    return FORCED_CONTROLLER_MODE
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -599,16 +610,12 @@ async def _capture_queries(
     model_configuration: Mapping[str, Any],
     replay_mode: str,
     rerank_mode: RerankMode,
+    controller_mode: str,
 ) -> tuple[
     tuple[GraphitiSupplementCapture, ...],
     dict[str, Mapping[str, Any]],
     dict[str, tuple[str, ...]],
 ]:
-    controller_mode = (
-        ACTUAL_AUTO_CONTROLLER_MODE
-        if replay_mode == "actual-auto"
-        else FORCED_CONTROLLER_MODE
-    )
     forced_model = ForcedGraphitiSupplementChatModelPort(
         chat_model_adapter,
         controller_mode=controller_mode,
@@ -1322,10 +1329,9 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
                 "index_revision_id": str(arguments.index_revision_id),
                 "graph_build_id": str(arguments.graph_build_id),
             }
-        controller_mode = (
-            ACTUAL_AUTO_CONTROLLER_MODE
-            if arguments.replay_mode == "actual-auto"
-            else FORCED_CONTROLLER_MODE
+        controller_mode = _controller_mode(
+            replay_mode=arguments.replay_mode,
+            model_override=arguments.chat_model_override,
         )
         manifest_sha256 = manifest_digest(manifest)
         manifest_file_sha256 = hashlib.sha256(DEFAULT_MANIFEST.read_bytes()).hexdigest()
@@ -1386,6 +1392,7 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
                         model_configuration=model_configuration,
                         replay_mode=arguments.replay_mode,
                         rerank_mode=rerank_mode,
+                        controller_mode=controller_mode,
                     )
                 )
                 capture = case_captures[0] if case_captures else None

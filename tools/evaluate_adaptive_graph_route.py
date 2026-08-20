@@ -644,6 +644,22 @@ class ForcedGraphitiSupplementChatModelPort:
         effective = request
         tool_names = {item.name for item in request.tools}
         if (
+            self.controller_mode == "single_tool_required_fallback"
+            and not self._used
+            and "graphiti_supplement" not in tool_names
+            and str(request.tool_choice) == "required"
+        ):
+            # Some thinking-capable providers reject a multi-tool REQUIRED
+            # request. Keep the native loop deterministic by exposing only the
+            # Simple tool on the first turn; the Agent still validates exactly
+            # one tool call.
+            simple_tools = tuple(
+                item for item in request.tools if item.name == "search_knowledge_base"
+            )
+            if len(simple_tools) != 1:
+                raise RuntimeError("Fallback Simple tool cardinality is invalid")
+            effective = replace(request, tools=simple_tools, tool_choice="required")
+        elif (
             self.controller_mode != "actual_auto"
             and not self._used
             and "graphiti_supplement" in tool_names

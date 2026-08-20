@@ -21,6 +21,7 @@ from tools.run_adaptive_graph_r4 import (
     _checkpoint_error_code,
     _checkpoint_stage,
     _failure_record,
+    _controller_mode,
     _load_or_create_checkpoint,
     _new_checkpoint,
     _ordered_reranked_chunk_ids,
@@ -80,6 +81,26 @@ def _record(case_id: str) -> dict[str, object]:
 
 
 class R4CheckpointTests(unittest.TestCase):
+    def test_override_uses_single_tool_fallback_controller(self) -> None:
+        self.assertEqual(
+            _controller_mode(replay_mode="forced", model_override=None),
+            "specific_tool_choice",
+        )
+        self.assertEqual(
+            _controller_mode(
+                replay_mode="forced",
+                model_override="deepseek-v4-flash",
+            ),
+            "single_tool_required_fallback",
+        )
+        self.assertEqual(
+            _controller_mode(
+                replay_mode="actual-auto",
+                model_override="deepseek-v4-flash",
+            ),
+            "actual_auto",
+        )
+
     def test_column_layers_is_bound_to_production_candidate_and_pack_paths(self) -> None:
         source = inspect.getsource(r4_runner._column_layers)
         self.assertIn("_search_graphiti_candidates", source)
