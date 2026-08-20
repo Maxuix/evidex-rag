@@ -121,11 +121,14 @@ PYTHONPATH=src:. .venv/bin/python tools/evaluation_runtime.py preview
 ```
 
 Create and destroy require their exact confirmation values shown by preview.
-Creation restores only the verified frozen evaluation backup into eval-owned
-volumes; destruction validates the project, per-create owner labels, known
-container/volume/network set, and private runtime directory before removing
-those objects. Neither command targets the personal `rag` volumes. Provider and
-Judge execution remains a separate, per-run authorization decision.
+Creation first proves that the existing local `rag` app/frontend images match
+the current checkout's corresponding build inputs, then adds eval-only tags;
+it fails instead of rebuilding, pulling, or downloading when they differ. It
+restores only the verified frozen evaluation backup into eval-owned volumes.
+Destruction validates the project, per-create owner labels, known container/
+volume/network set, and private runtime directory before removing those
+objects. Neither command targets the personal `rag` volumes. Provider and Judge
+execution remains a separate, per-run authorization decision.
 
 ## Useful Commands
 

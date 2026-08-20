@@ -1,15 +1,18 @@
 x-evaluation-service: &evaluation-service
   env_file: !override
     - ${RAG_KB_EVAL_ENV_FILE:?evaluation runtime env file is required}
+  pull_policy: never
   labels:
     rag-kb.evaluation-owner: ${RAG_KB_EVAL_OWNER:?evaluation owner is required}
 
 services:
   postgres:
+    pull_policy: never
     labels:
       rag-kb.evaluation-owner: ${RAG_KB_EVAL_OWNER:?evaluation owner is required}
 
   falkordb:
+    pull_policy: never
     labels:
       rag-kb.evaluation-owner: ${RAG_KB_EVAL_OWNER:?evaluation owner is required}
 
@@ -43,6 +46,7 @@ services:
 
   frontend:
     image: rag-kb-user-frontend:eval
+    pull_policy: never
     labels:
       rag-kb.evaluation-owner: ${RAG_KB_EVAL_OWNER:?evaluation owner is required}
 

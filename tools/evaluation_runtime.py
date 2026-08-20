@@ -39,6 +39,28 @@ COMPOSE_FILES = (PROJECT_ROOT / "compose.yaml", PROJECT_ROOT / "compose.eval.yam
 CREATE_CONFIRMATION = "CREATE_ISOLATED_RAG_EVAL"
 DESTROY_CONFIRMATION = "DESTROY_ISOLATED_RAG_EVAL"
 EVALUATION_PASSWORD = "isolated-evaluation-only"
+LOCAL_IMAGE_REUSE = (
+    (
+        "rag-kb-app:local",
+        "rag-kb-app:eval",
+        (
+            "Dockerfile",
+            "requirements.lock",
+            "alembic.ini",
+            "apps",
+            "config/docling-artifacts-v1.json",
+            "config/local-reranker-artifacts-v1.json",
+            "src",
+            "tools/prepare_docling_artifacts.py",
+            "tools/prepare_local_reranker_artifacts.py",
+        ),
+    ),
+    (
+        "rag-kb-user-frontend:local",
+        "rag-kb-user-frontend:eval",
+        ("apps/web-chat",),
+    ),
+)
 EVALUATION_PORTS = {
     "api": 28000,
     "frontend": 23000,
@@ -374,18 +396,44 @@ def _evaluation_env(
     return "".join(f"{name}={retained[name]}\n" for name in sorted(retained)).encode("utf-8")
 
 
-def _git_revision() -> str:
-    completed = subprocess.run(
-        ["git", "-C", str(PROJECT_ROOT), "rev-parse", "HEAD"],
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=5,
-    )
-    revision = completed.stdout.strip()
-    if _REVISION_PATTERN.fullmatch(revision) is None:
-        raise EvaluationRuntimeError("evaluation build revision is invalid")
-    return revision
+def _reuse_local_images() -> str:
+    revisions: list[str] = []
+    for source, _, paths in LOCAL_IMAGE_REUSE:
+        revision = _run(
+            [
+                "docker",
+                "image",
+                "inspect",
+                "--format",
+                '{{index .Config.Labels "org.opencontainers.image.revision"}}',
+                source,
+            ],
+            capture=True,
+        )
+        if _REVISION_PATTERN.fullmatch(revision) is None:
+            raise EvaluationRuntimeError("local image revision is invalid")
+        try:
+            _run(
+                [
+                    "git",
+                    "-C",
+                    str(PROJECT_ROOT),
+                    "diff",
+                    "--quiet",
+                    revision,
+                    "HEAD",
+                    "--",
+                    *paths,
+                ]
+            )
+        except subprocess.CalledProcessError as error:
+            raise EvaluationRuntimeError("local image source is stale") from error
+        revisions.append(revision)
+    if len(set(revisions)) != 1:
+        raise EvaluationRuntimeError("local image revisions do not match")
+    for source, target, _ in LOCAL_IMAGE_REUSE:
+        _run(["docker", "image", "tag", source, target])
+    return revisions[0]
 
 
 def _assert_primary_checkout() -> None:
@@ -711,10 +759,10 @@ def create_runtime(*, seed: Path, confirmation: str) -> dict[str, object]:
     _assert_primary_checkout()
     seed = _verify_seed(seed)
     _assert_no_existing_runtime()
+    build_revision = _reuse_local_images()
     DEFAULT_RUNTIME_ROOT.mkdir(parents=True, mode=0o700)
     os.chmod(DEFAULT_RUNTIME_ROOT, 0o700)
     owner = uuid4().hex
-    build_revision = _git_revision()
     _write_private(DEFAULT_RUNTIME_ENV, _evaluation_env(owner=owner, host_access=True))
     _write_private(DEFAULT_COMPOSE_ENV, _evaluation_env(owner=owner, host_access=False))
     _write_private(
@@ -732,7 +780,6 @@ def create_runtime(*, seed: Path, confirmation: str) -> dict[str, object]:
         ).encode(),
     )
     runtime = load_evaluation_runtime()
-    _run(compose_command(runtime, "build", "api", "frontend"), runtime=runtime)
     _run(compose_command(runtime, "up", "-d", "--wait", "postgres"), runtime=runtime)
     _run(compose_command(runtime, "create", "storage-init", "falkordb"), runtime=runtime)
     _restore_database(runtime, seed=seed)

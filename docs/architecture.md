@@ -275,12 +275,13 @@ loopback 端口、数据库/Graph 连接、workspace/profile 身份和 source/mo
 runtime 时，入口在发起外部 I/O 前失败；个人 API、`.env.local` 和源码 UUID 不是 evaluator fallback。
 
 `tools/evaluation_runtime.py` 提供 preview/create/inspect/destroy 的有界生命周期。create 只在 primary
-checkout 从已校验的冻结备份恢复 eval-owned PostgreSQL、source、model secrets 和 FalkorDB，并给
-container、volume、network 写入同一个随机 owner label；host evaluator 与 Compose 使用各自的私有
-env，避免 Docker hostname、主机路径或个人服务环境串用。destroy 另需明确确认，且只在 project、
-owner、已知对象集合和无 symlink 的私有 runtime 目录全部匹配时删除 `rag-eval` 对象；不执行 prune，
-不读取、停止或挂载 `rag` 的业务 volume。真实 lifecycle 演练与 Provider/Judge 调用仍分别受当前
-授权约束。
+checkout 工作：先证明现有本地 `rag` app/frontend image 对应 revision 与当前 checkout 的相关构建输入
+无差异，再增加 eval-only tag；不一致时失败，不自动 rebuild、pull 或下载。随后从已校验的冻结备份
+恢复 eval-owned PostgreSQL、source、model secrets 和 FalkorDB，并给 container、volume、network
+写入同一个随机 owner label；host evaluator 与 Compose 使用各自的私有 env，避免 Docker hostname、
+主机路径或个人服务环境串用。destroy 另需明确确认，且只在 project、owner、已知对象集合和无
+symlink 的私有 runtime 目录全部匹配时删除 `rag-eval` 对象；不执行 prune，不读取、停止或挂载
+`rag` 的业务 volume。真实 lifecycle 演练与 Provider/Judge 调用仍分别受当前授权约束。
 
 Adaptive Graph 路由评测使用成对的
 `evaluation/routing-rag-v2/` 与 `evaluation/adaptive-graph-route-v2/` 合同；`v1` 仅保留为不可变

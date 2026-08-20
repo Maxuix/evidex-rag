@@ -4,6 +4,7 @@ import json
 from io import BytesIO
 from pathlib import Path
 import stat
+import subprocess
 import tarfile
 import tempfile
 import unittest
@@ -241,6 +242,39 @@ class EvaluationRuntimeTests(unittest.TestCase):
             with self.assertRaises(EvaluationRuntimeError):
                 module._extract_private_archive(unsafe_archive, unsafe_target)
             self.assertFalse(unsafe_target.exists())
+
+    def test_eval_images_reuse_only_source_equivalent_local_images(self) -> None:
+        revision = "a" * 40
+        with patch.object(
+            module,
+            "_run",
+            side_effect=(revision, "", revision, "", "", ""),
+        ) as run:
+            self.assertEqual(module._reuse_local_images(), revision)
+        commands = [call.args[0] for call in run.call_args_list]
+        self.assertEqual(
+            commands[-2:],
+            [
+                ["docker", "image", "tag", "rag-kb-app:local", "rag-kb-app:eval"],
+                [
+                    "docker",
+                    "image",
+                    "tag",
+                    "rag-kb-user-frontend:local",
+                    "rag-kb-user-frontend:eval",
+                ],
+            ],
+        )
+
+    def test_eval_image_reuse_rejects_source_drift_before_tagging(self) -> None:
+        with patch.object(
+            module,
+            "_run",
+            side_effect=("a" * 40, subprocess.CalledProcessError(1, ["git"])),
+        ) as run:
+            with self.assertRaises(EvaluationRuntimeError):
+                module._reuse_local_images()
+        self.assertEqual(run.call_count, 2)
 
     def test_owner_guard_rejects_unknown_service_or_incomplete_volumes(self) -> None:
         runtime = EvaluationRuntime(
