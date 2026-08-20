@@ -732,6 +732,7 @@ def create_runtime(*, seed: Path, confirmation: str) -> dict[str, object]:
         ).encode(),
     )
     runtime = load_evaluation_runtime()
+    _run(compose_command(runtime, "build", "api", "frontend"), runtime=runtime)
     _run(compose_command(runtime, "up", "-d", "--wait", "postgres"), runtime=runtime)
     _run(compose_command(runtime, "create", "storage-init", "falkordb"), runtime=runtime)
     _restore_database(runtime, seed=seed)
@@ -739,7 +740,6 @@ def create_runtime(*, seed: Path, confirmation: str) -> dict[str, object]:
     _restore_volume(runtime, seed=seed, archive="p6-model-secrets.tar.gz", volume_key="model-secrets")
     _restore_falkor(runtime, seed=seed)
     _prepare_host_runtime(seed)
-    _run(compose_command(runtime, "build", "api", "frontend"), runtime=runtime)
     _run(compose_command(runtime, "--profile", "tools", "run", "--rm", "migrate"), runtime=runtime)
     identity = _adaptive_identity(runtime)
     _write_private(
