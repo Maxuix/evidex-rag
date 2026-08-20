@@ -220,12 +220,14 @@ def build_doctor_report(
         "legacy_app_env",
         not (runtime.canonical_checkout / LEGACY_APP_ENV_NAME).exists(),
         "legacy_app_env_present",
+        severity="warn",
     )
     _add_check(
         checks,
         "legacy_source_override",
         not (runtime.canonical_checkout / LEGACY_SOURCE_OVERRIDE).exists(),
         "legacy_source_override_present",
+        severity="warn",
     )
 
     if active_compose_projects is None:
@@ -366,10 +368,11 @@ def _add_check(
     reason: str,
     *,
     count: int | None = None,
+    severity: str = "fail",
 ) -> None:
     check: dict[str, object] = {
         "name": name,
-        "status": "pass" if passed else "fail",
+        "status": "pass" if passed else severity,
     }
     if not passed:
         check["reason"] = reason

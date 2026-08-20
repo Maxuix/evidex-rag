@@ -493,21 +493,27 @@ Layout、Table、页面装配和文档装配计数；数据库只保存固定 al
 类型、索引和约束。当前没有 metrics、告警、分布式 tracing 或生产值班平台，本地范围也不
 需要这些外部控制面。
 
-`./start-local.sh` 通过 Git common directory 定位主 worktree，使同一仓库的 linked worktree
-共享主 worktree 中被忽略的 `.env.local`、可选 `.env` 与稳定 Compose project；不会再按
-worktree 各自生成数据库身份。每次启动 PostgreSQL 后，它通过容器内本地 socket 幂等校准
-admin、migration、runtime 三个角色的密码、database/schema owner 和基础连接权限，再执行
-Alembic。角色校准不会重置业务卷或改写业务数据；随后仍按原流程升级到 Alembic head。没有
-`.env` 时直接使用 `.env.example`；需要本地应用覆盖时才在主 worktree 创建 `.env`。模型凭据
-通过 Web Chat 右下角的模型设置维护，不提交到仓库。常用命令：
+个人正式 runtime 只有一个身份：primary checkout、owner-only `.env.local`、Compose project
+`rag` 以及 manifest 中的四个 loopback 端口。linked worktree 只用于代码和测试，不能重建、
+migrate 或切换个人 stack。`./start-local.sh` 先执行 content-safe doctor；它不猜测 project/端口、
+不从容器提取 credential、也不生成或覆盖配置。通过 preflight 后，starter 才按顺序启动
+PostgreSQL、幂等校准现有 admin/migration/runtime 角色、构建带 Git revision label 的应用镜像、
+准备 source storage、执行 Alembic 并等待 API/Worker/frontend 健康。现有业务卷不会因启动被重置。
+
+旧 `.env.local` Compose state 与 `.env` application settings 的一次性收敛由
+`tools/migrate_local_manifest.py` 负责：默认只输出键计数与安全状态；`--apply` 创建 0600 旧 manifest
+备份后原子写入合并结果，并把两条 DSN 与 manifest 中的 runtime/migration credential 对齐。
+该操作不访问 Docker/数据库且保留 `.env`，legacy 文件只在后续精确清理中删除。模型 provider/profile
+继续通过 Web Chat 和数据库维护，不存在当前环境 fallback。常用命令：
 
 ```bash
 ./start-local.sh
-docker compose --env-file .env.local ps
-docker compose --env-file .env.local logs --no-color api worker
+PYTHONPATH=src:. .venv/bin/python tools/local_runtime.py doctor
+docker compose --env-file .env.local --project-name rag ps
+docker compose --env-file .env.local --project-name rag logs --no-color api worker
 PYTHONPATH=src:. .venv/bin/python tools/collect_diagnostics.py
 PYTHONPATH=src:. .venv/bin/python tools/smoke_local.py
-docker compose --env-file .env.local down
+docker compose --env-file .env.local --project-name rag down
 python3 tools/run_database_tests.py
 ```
 
@@ -544,7 +550,6 @@ CODE AGENTS 未获用户明确授权不得去掉 `--inspect-only`：
 
 ```bash
 PYTHONPATH=src:. .venv/bin/python tools/reset_local.py \
-  --env-file .env.local \
   --project-name rag \
   --inspect-only \
   --confirm DESTROY_RAG_KB_LOCAL_DATA

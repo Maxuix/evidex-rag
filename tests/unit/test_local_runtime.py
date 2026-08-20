@@ -139,6 +139,28 @@ class LocalRuntimeTests(unittest.TestCase):
         self.assertEqual(report["status"], "pass")
         self.assertTrue(all(item["status"] == "pass" for item in report["checks"]))
 
+    def test_legacy_files_warn_but_do_not_block_canonical_startup(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime = resolve_local_runtime(
+                checkout=root,
+                canonical_checkout=root,
+                env_file=self._manifest(root),
+                require_manifest=True,
+            )
+            (root / ".env").write_text("LEGACY=present\n", encoding="utf-8")
+
+            report = build_doctor_report(
+                runtime,
+                active_compose_projects=("rag",),
+            )
+
+        self.assertEqual(report["status"], "warn")
+        warning = next(
+            item for item in report["checks"] if item["name"] == "legacy_app_env"
+        )
+        self.assertEqual(warning["status"], "warn")
+
     def test_cli_output_is_content_safe_when_manifest_is_invalid(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

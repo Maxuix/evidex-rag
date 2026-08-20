@@ -42,6 +42,9 @@ RUN python -m pip check \
 
 FROM python-dependencies AS runtime
 
+ARG RAG_KB_BUILD_REVISION=unknown
+LABEL org.opencontainers.image.revision="${RAG_KB_BUILD_REVISION}"
+
 COPY config/docling-artifacts-v1.json /app/config/docling-artifacts-v1.json
 COPY tools/prepare_docling_artifacts.py /app/tools/prepare_docling_artifacts.py
 COPY src/rag_kb/adapters/parser/docling/artifacts.py /app/tools/docling_artifacts_verifier.py

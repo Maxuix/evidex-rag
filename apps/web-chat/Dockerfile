@@ -12,6 +12,9 @@ RUN npm run build && rm -f dist/runtime-config.json
 
 FROM docker.io/library/python:3.12.13-slim-bookworm@sha256:8a7e7cc04fd3e2bd787f7f24e22d5d119aa590d429b50c95dfe12b3abe52f48b
 
+ARG RAG_KB_BUILD_REVISION=unknown
+LABEL org.opencontainers.image.revision="${RAG_KB_BUILD_REVISION}"
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-import stat
 import subprocess
 import tempfile
 import textwrap
@@ -152,244 +151,160 @@ class StartLocalScriptTests(unittest.TestCase):
         self.assertIn("http://127.0.0.1:5173", origins)
         self.assertIn("http://localhost:5173", origins)
 
+    def test_compose_uses_one_manifest_and_revision_labels(self) -> None:
+        configuration = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
+
+        self.assertEqual(configuration["x-runtime-service"]["env_file"], [".env.local"])
+        self.assertEqual(
+            configuration["x-app-image"]["build"]["args"]["RAG_KB_BUILD_REVISION"],
+            "${RAG_KB_BUILD_REVISION:-unknown}",
+        )
+        self.assertEqual(
+            configuration["x-user-frontend-image"]["build"]["args"]
+            ["RAG_KB_BUILD_REVISION"],
+            "${RAG_KB_BUILD_REVISION:-unknown}",
+        )
+        self.assertIn(
+            'LABEL org.opencontainers.image.revision="${RAG_KB_BUILD_REVISION}"',
+            DOCKERFILE.read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            'LABEL org.opencontainers.image.revision="${RAG_KB_BUILD_REVISION}"',
+            (ROOT / "apps/web-chat/Dockerfile").read_text(encoding="utf-8"),
+        )
+
     def _run(
         self,
         directory: Path,
         *,
-        container: bool,
-        volume: bool = False,
-        credentials: dict[str, str] | None = None,
-        use_shared_defaults: bool = False,
+        linked: bool = False,
+        doctor_ok: bool = True,
+        extra_environment: dict[str, str] | None = None,
     ) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
-        fake_bin = directory / "bin"
-        fake_bin.mkdir()
-        log = directory / "docker.log"
         primary = directory / "primary"
-        (primary / ".git").mkdir(parents=True)
-        state_file = (
-            primary / ".env.local"
-            if use_shared_defaults
-            else directory / ".env.local"
-        )
-        app_env = (
-            primary / ".env.example"
-            if use_shared_defaults
-            else directory / ".env"
-        )
-        app_env.write_text("RAG_KB__APP__BIND_HOST=127.0.0.1\n")
-        git = fake_bin / "git"
-        git.write_text(
-            "#!/bin/sh\nprintf '%s\\n' \"$FAKE_GIT_COMMON_DIR\"\n",
+        checkout = directory / "linked" if linked else primary
+        checkout.mkdir(parents=True)
+        primary.mkdir(parents=True, exist_ok=True)
+        (primary / ".git").mkdir()
+        script = checkout / "start-local.sh"
+        script.write_text(SCRIPT.read_text(encoding="utf-8"), encoding="utf-8")
+        script.chmod(0o755)
+        manifest = checkout / ".env.local"
+        manifest.write_text(
+            "COMPOSE_PROJECT_NAME=rag\n"
+            "RAG_KB_API_PORT=18000\n"
+            "RAG_KB_FRONTEND_PORT=13000\n",
             encoding="utf-8",
         )
-        git.chmod(0o755)
-        docker = fake_bin / "docker"
-        docker.write_text(
+        manifest.chmod(0o600)
+
+        fake_bin = directory / "bin"
+        fake_bin.mkdir()
+        log = directory / "commands.log"
+        git = fake_bin / "git"
+        git.write_text(
             textwrap.dedent(
                 """\
                 #!/bin/sh
-                printf 'project=%s %s\n' "$COMPOSE_PROJECT_NAME" "$*" >>"$FAKE_DOCKER_LOG"
-                if [ "$1 $2 $3 $4" = "compose ps -aq postgres" ]; then
-                  [ "$FAKE_CONTAINER" = "1" ] && printf 'postgres-container\n'
-                  exit 0
-                fi
-                if [ "$1" = "inspect" ]; then
-                  printf 'POSTGRES_PASSWORD=admin-existing\n'
-                  printf 'RAG_KB_MIGRATION_PASSWORD=migration-existing\n'
-                  printf 'RAG_KB_RUNTIME_PASSWORD=runtime-existing\n'
-                  exit 0
-                fi
-                if [ "$1 $2" = "volume inspect" ]; then
-                  [ "$FAKE_VOLUME" = "1" ] && exit 0
-                  exit 1
-                fi
-                exit 0
+                case "$*" in
+                  *--git-common-dir*) printf '%s\\n' "$FAKE_GIT_COMMON_DIR" ;;
+                  *'rev-parse HEAD'*) printf '0123456789abcdef\\n' ;;
+                  *) exit 1 ;;
+                esac
                 """
             ),
             encoding="utf-8",
         )
+        git.chmod(0o755)
+        python = fake_bin / "python3"
+        python.write_text(
+            "#!/bin/sh\nprintf 'python3 %s\\n' \"$*\" >>\"$FAKE_COMMAND_LOG\"\n"
+            "exit \"$FAKE_DOCTOR_EXIT\"\n",
+            encoding="utf-8",
+        )
+        python.chmod(0o755)
+        docker = fake_bin / "docker"
+        docker.write_text(
+            "#!/bin/sh\nprintf 'project=%s revision=%s docker %s\\n' "
+            '"$COMPOSE_PROJECT_NAME" "$RAG_KB_BUILD_REVISION" "$*" '
+            '>>"$FAKE_COMMAND_LOG"\nexit 0\n',
+            encoding="utf-8",
+        )
         docker.chmod(0o755)
+
         environment = {
             **os.environ,
             "PATH": f"{fake_bin}:/usr/bin:/bin",
-            "FAKE_DOCKER_LOG": str(log),
-            "FAKE_CONTAINER": "1" if container else "0",
-            "FAKE_VOLUME": "1" if volume else "0",
             "FAKE_GIT_COMMON_DIR": str(primary / ".git"),
+            "FAKE_COMMAND_LOG": str(log),
+            "FAKE_DOCTOR_EXIT": "0" if doctor_ok else "1",
         }
-        if not use_shared_defaults:
-            environment.update(
-                {
-                    "RAG_KB_LOCAL_COMPOSE_ENV_FILE": str(state_file),
-                    "RAG_KB_LOCAL_APP_ENV_FILE": str(app_env),
-                }
-            )
         for name in (
-            "POSTGRES_ADMIN_PASSWORD",
-            "RAG_KB_MIGRATION_PASSWORD",
-            "RAG_KB_RUNTIME_PASSWORD",
-            "RAG_KB_LOCAL_DATABASE_PASSWORD",
             "COMPOSE_PROJECT_NAME",
+            "RAG_KB_LOCAL_COMPOSE_ENV_FILE",
+            "RAG_KB_LOCAL_APP_ENV_FILE",
+            "RAG_KB_BUILD_REVISION",
         ):
             environment.pop(name, None)
-        if credentials is not None:
-            environment.update(credentials)
+        if extra_environment:
+            environment.update(extra_environment)
         completed = subprocess.run(
-            (str(SCRIPT),),
-            cwd=ROOT,
+            (str(script),),
+            cwd=checkout,
             env=environment,
             capture_output=True,
             text=True,
         )
-        return completed, state_file, log
+        return completed, manifest, log
 
-    def test_imports_existing_container_credentials_without_printing_them(self) -> None:
+    def test_primary_start_uses_fixed_project_manifest_and_revision(self) -> None:
         with tempfile.TemporaryDirectory() as raw_directory:
-            completed, state_file, log = self._run(
-                Path(raw_directory), container=True
-            )
+            completed, manifest, log = self._run(Path(raw_directory))
 
             self.assertEqual(completed.returncode, 0, completed.stderr)
-            self.assertEqual(stat.S_IMODE(state_file.stat().st_mode), 0o600)
-            state = state_file.read_text(encoding="utf-8")
-            self.assertIn("POSTGRES_ADMIN_PASSWORD=admin-existing", state)
-            self.assertIn("RAG_KB_MIGRATION_PASSWORD=migration-existing", state)
-            self.assertIn("RAG_KB_RUNTIME_PASSWORD=runtime-existing", state)
-            self.assertNotIn("admin-existing", completed.stdout + completed.stderr)
             calls = log.read_text(encoding="utf-8")
-            self.assertIn("compose ps -aq postgres", calls)
-            self.assertIn("inspect --format", calls)
-            self.assertIn(
-                f"compose --env-file {state_file} up -d --wait postgres",
-                calls,
-            )
-            reconcile_call = (
-                f"compose --env-file {state_file} exec -T postgres "
-                "/docker-entrypoint-initdb.d/10-init-runtime.sh"
-            )
-            self.assertIn(reconcile_call, calls)
-            build_call = (
-                f"compose --env-file {state_file} build api frontend"
-            )
-            self.assertIn(build_call, calls)
-            self.assertNotIn("build api worker", calls)
-            self.assertIn(
-                f"compose --env-file {state_file} up storage-init",
-                calls,
-            )
-            self.assertNotIn("wait storage-init", calls)
-            self.assertIn(
-                f"compose --env-file {state_file} --profile tools run --rm migrate",
-                calls,
-            )
-            self.assertIn(
-                f"compose --env-file {state_file} up -d --wait api worker frontend",
-                calls,
-            )
-            self.assertLess(
-                calls.index(reconcile_call),
-                calls.index(
-                    f"compose --env-file {state_file} --profile tools run "
-                    "--rm migrate"
-                ),
-            )
-            self.assertLess(
-                calls.index(build_call),
-                calls.index(
-                    f"compose --env-file {state_file} --profile tools run "
-                    "--rm migrate"
-                ),
-            )
-            self.assertIn("User Chat: http://127.0.0.1:3000", completed.stdout)
-            self.assertNotIn("Diagnostic UI", completed.stdout)
+            prefix = f"docker compose --env-file {manifest} --project-name rag"
+            self.assertIn(f"project=rag revision=0123456789abcdef {prefix} up -d --wait postgres", calls)
+            self.assertIn(f"{prefix} exec -T postgres", calls)
+            self.assertIn(f"{prefix} build api frontend", calls)
+            self.assertIn(f"{prefix} --profile tools run --rm migrate", calls)
+            self.assertNotIn("inspect", calls)
+            self.assertNotIn("ps -aq", calls)
+            self.assertIn("User Chat: http://127.0.0.1:13000", completed.stdout)
+            self.assertIn("API docs: http://127.0.0.1:18000", completed.stdout)
 
-    def test_uses_git_common_config_and_project_across_worktrees(self) -> None:
+    def test_linked_worktree_stops_before_docker_or_doctor(self) -> None:
         with tempfile.TemporaryDirectory() as raw_directory:
-            directory = Path(raw_directory)
-            completed, state_file, log = self._run(
-                directory,
-                container=False,
-                use_shared_defaults=True,
-            )
+            completed, _, log = self._run(Path(raw_directory), linked=True)
 
-            self.assertEqual(completed.returncode, 0, completed.stderr)
-            self.assertEqual(state_file, directory / "primary" / ".env.local")
-            self.assertTrue(state_file.is_file())
-            state = state_file.read_text(encoding="utf-8")
-            self.assertIn(
-                f"RAG_KB_ENV_FILE={directory / 'primary' / '.env.example'}",
-                state,
-            )
-            calls = log.read_text(encoding="utf-8")
-            self.assertIn("project=primary compose ps -aq postgres", calls)
-            self.assertIn("Using shared Compose project primary", completed.stdout)
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn("linked worktrees are read-only", completed.stderr)
+            self.assertFalse(log.exists())
 
-    def test_persists_three_shell_credentials_and_reuses_them(self) -> None:
-        credentials = {
-            "POSTGRES_ADMIN_PASSWORD": "admin-shell",
-            "RAG_KB_MIGRATION_PASSWORD": "migration-shell",
-            "RAG_KB_RUNTIME_PASSWORD": "runtime-shell",
-        }
+    def test_doctor_failure_stops_before_compose(self) -> None:
         with tempfile.TemporaryDirectory() as raw_directory:
-            directory = Path(raw_directory)
-            first, state_file, _ = self._run(
-                directory, container=False, credentials=credentials
-            )
-            self.assertEqual(first.returncode, 0, first.stderr)
-
-            second = subprocess.run(
-                (str(SCRIPT),),
-                cwd=ROOT,
-                env={
-                    **os.environ,
-                    "PATH": f"{directory / 'bin'}:/usr/bin:/bin",
-                    "FAKE_DOCKER_LOG": str(directory / "docker.log"),
-                    "FAKE_CONTAINER": "0",
-                    "FAKE_VOLUME": "0",
-                    "RAG_KB_LOCAL_COMPOSE_ENV_FILE": str(state_file),
-                    "RAG_KB_LOCAL_APP_ENV_FILE": str(directory / ".env"),
-                },
-                capture_output=True,
-                text=True,
-            )
-            self.assertEqual(second.returncode, 0, second.stderr)
-            self.assertIn("saved local credentials", second.stdout)
-
-    def test_refuses_to_guess_credentials_for_an_existing_volume(self) -> None:
-        with tempfile.TemporaryDirectory() as raw_directory:
-            completed, state_file, _ = self._run(
-                Path(raw_directory), container=False, volume=True
+            completed, _, log = self._run(
+                Path(raw_directory),
+                doctor_ok=False,
             )
 
             self.assertNotEqual(completed.returncode, 0)
-            self.assertFalse(state_file.exists())
-            self.assertIn(
-                "existing database volume has no recoverable credentials",
-                completed.stderr,
-            )
+            self.assertIn("doctor found blocking drift", completed.stderr)
+            calls = log.read_text(encoding="utf-8")
+            self.assertIn("python3", calls)
+            self.assertIn("docker info", calls)
+            self.assertNotIn("docker compose", calls)
 
-    def test_accepts_one_shared_local_password(self) -> None:
+    def test_retired_env_override_stops_before_external_action(self) -> None:
         with tempfile.TemporaryDirectory() as raw_directory:
-            completed, state_file, _ = self._run(
+            completed, _, log = self._run(
                 Path(raw_directory),
-                container=False,
-                credentials={"RAG_KB_LOCAL_DATABASE_PASSWORD": "one-local-password"},
+                extra_environment={"RAG_KB_LOCAL_APP_ENV_FILE": "legacy.env"},
             )
 
-            self.assertEqual(completed.returncode, 0, completed.stderr)
-            state = state_file.read_text(encoding="utf-8")
-            self.assertEqual(state.count("=one-local-password"), 3)
-            self.assertNotIn("one-local-password", completed.stdout + completed.stderr)
-
-    def test_rejects_partial_role_credentials(self) -> None:
-        with tempfile.TemporaryDirectory() as raw_directory:
-            completed, state_file, _ = self._run(
-                Path(raw_directory),
-                container=False,
-                credentials={"POSTGRES_ADMIN_PASSWORD": "only-one"},
-            )
             self.assertNotEqual(completed.returncode, 0)
-            self.assertFalse(state_file.exists())
+            self.assertIn("is retired", completed.stderr)
+            self.assertFalse(log.exists())
 
 
 if __name__ == "__main__":

@@ -9,6 +9,8 @@ retrieval, and chatting with source citations.
 Run:
 
 ```bash
+cp .env.example .env.local  # first setup only; replace database placeholders
+PYTHONPATH=src:. .venv/bin/python tools/local_runtime.py doctor
 ./start-local.sh
 ```
 
@@ -17,22 +19,31 @@ Open:
 - User Chat: <http://127.0.0.1:3000>
 - API docs: <http://127.0.0.1:8000/api/v1/docs>
 
-The starter resolves the repository's primary worktree through Git, so linked
-worktrees use the same ignored `.env.local`, optional `.env`, and stable Compose
-project instead of inventing new credentials or databases. It reconciles the
-admin, migration, and runtime role credentials before running migrations,
-rebuilds the API/Worker and frontend images with Docker layer cache, starts all
-services, and waits for health. Existing database and file volumes are retained.
-Copy `.env.example` to the primary worktree's `.env` only when local application
-overrides are needed; database credentials remain starter-managed. Local image
-builds default to HTTPS TUNA mirrors for PyPI and the Debian main repository
-while retaining Debian's official security repository; build-only mirror URLs
-remain explicitly overridable.
+The personal runtime has one identity: primary checkout, `.env.local`, Compose
+project `rag`, and the four loopback ports recorded in that manifest. Linked
+worktrees are for code/test work and cannot rebuild or migrate the personal
+stack. The doctor reports stale env/override files and competing Compose
+projects without printing values. The starter never guesses project/ports,
+extracts credentials from containers, or rewrites the manifest; it reconciles
+the declared local database roles, applies migrations, builds revision-labelled
+images, starts the services, and waits for health. Existing volumes are retained.
 
-The default environment has no legacy model provider. After startup, use the
+For the one-time transition from the retired `.env.local` + `.env` layout, run
+the preview first, then apply the owner-only atomic merge:
+
+```bash
+PYTHONPATH=src:. .venv/bin/python tools/migrate_local_manifest.py
+PYTHONPATH=src:. .venv/bin/python tools/migrate_local_manifest.py --apply
+```
+
+The apply step keeps `.env`, creates a 0600 backup of the old `.env.local`, and
+does not touch Docker or PostgreSQL. Those legacy files are removed only in the
+later explicit cleanup. Local image builds still use the configured HTTPS TUNA
+mirrors while retaining Debian's official security repository.
+
+The environment has no model provider fallback. After startup, use the
 bottom-right model settings in Web Chat to add, validate, and select Chat and
-Embedding models. The commented `MODEL_PROVIDER` example is only an optional
-fallback for historical runs and Embedding Spaces.
+Embedding models.
 
 Chat model integration uses the LangChain adapter, and the single evidence-only
 Chat path is a bounded native tool-calling Agent loop. PostgreSQL
@@ -91,12 +102,11 @@ environment when the current linked worktree has no `.venv`.
 ## Useful Commands
 
 ```bash
-docker compose --env-file .env.local ps
-docker compose --env-file .env.local logs --no-color api worker
+docker compose --env-file .env.local --project-name rag ps
+docker compose --env-file .env.local --project-name rag logs --no-color api worker
 PYTHONPATH=src:. .venv/bin/python tools/collect_diagnostics.py
-docker compose --env-file .env.local down
+docker compose --env-file .env.local --project-name rag down
 PYTHONPATH=src:. .venv/bin/python tools/reset_local.py \
-  --env-file .env.local \
   --project-name rag \
   --inspect-only \
   --confirm DESTROY_RAG_KB_LOCAL_DATA
@@ -111,7 +121,7 @@ Search `.runtime/logs` with a response `X-Trace-ID`, Run/Job ID, or exception
 fingerprint to follow one issue across API and Worker events.
 
 After inspecting the exact project-owned volumes, repeat the reset command
-without `--inspect-only`. It permanently removes the selected Compose project's
+without `--inspect-only`. It permanently removes the canonical Compose project's
 PostgreSQL and source-data volumes while preserving its inference-model cache.
 
 See the [current architecture](docs/architecture.md) for configuration, runtime

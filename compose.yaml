@@ -15,24 +15,27 @@ x-local-logging: &local-logging
     max-file: "5"
 
 x-app-image: &app-image
-  image: rag-kb-app:docling-v1
+  image: rag-kb-app:local
   build:
     context: .
     dockerfile: Dockerfile
     args:
+      RAG_KB_BUILD_REVISION: ${RAG_KB_BUILD_REVISION:-unknown}
       RAG_KB_BUILD_DEBIAN_MIRROR: ${RAG_KB_BUILD_DEBIAN_MIRROR:-https://mirrors.tuna.tsinghua.edu.cn/debian}
       RAG_KB_BUILD_PYPI_INDEX_URL: ${RAG_KB_BUILD_PYPI_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
 
 x-user-frontend-image: &user-frontend-image
-  image: rag-kb-user-frontend:chat-v1
+  image: rag-kb-user-frontend:local
   build:
     context: ./apps/web-chat
     dockerfile: Dockerfile
+    args:
+      RAG_KB_BUILD_REVISION: ${RAG_KB_BUILD_REVISION:-unknown}
 
 x-runtime-service: &runtime-service
   <<: *app-image
   env_file:
-    - ${RAG_KB_ENV_FILE:-.env.example}
+    - .env.local
   environment: *runtime-environment
   depends_on:
     postgres:
