@@ -164,9 +164,7 @@ boundaries, validation, and troubleshooting commands.
 - [Concept-only roadmap](docs/roadmap/01-0819-project-roadmap.md)
 - [Historical archive](archive/README.md)
 
-The `.agent/` task system separates intent, concrete actions, progress, and
-actual history. `docs/architecture.md` is the only maintained architecture
-document; reviews, executed test reports, and concept-only roadmaps use their
-dedicated folders. Test reports record results and do not replace the validation
-rules in `AGENTS.md`. See that file for lifecycle, naming, authorization, and
-validation rules.
+`.agent/` is a lightweight handoff area: plans are only for multi-stage or risky
+work, and routine local work does not need repeated approval. `AGENTS.md` holds
+the concise maintenance and safety rules; `docs/architecture.md` remains the
+single maintained architecture record.

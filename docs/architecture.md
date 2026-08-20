@@ -567,7 +567,7 @@ PYTHONPATH=src:. .venv/bin/python -m unittest discover -s tests/basic -v
 ```
 
 `tools/reset_local.py` 会永久删除本地业务数据。执行前只能先用以下命令检查精确卷目标；
-CODE AGENTS 未获用户明确授权不得去掉 `--inspect-only`：
+未获用户对该精确 reset 的明确授权不得去掉 `--inspect-only`：
 
 ```bash
 PYTHONPATH=src:. .venv/bin/python tools/reset_local.py \
@@ -579,45 +579,24 @@ PYTHONPATH=src:. .venv/bin/python tools/reset_local.py \
 ## 14. 轻量维护协议
 
 项目任务只通过 [`.agent/`](../.agent/) 维护；旧的 `docs/implementation-plans/` 与
-`EXECUTION-TRACKER.md` 已归档并停用。四个根文件各自只有一种职责：
+`EXECUTION-TRACKER.md` 已归档并停用。`.agent/` 是交接便笺，不是审批系统：
 
-- `PLAN.md`：当前打算怎么做，包括目标、边界、策略、子计划和完成条件。
-- `TODO.md`：当前具体要做什么，只保留可执行且可验收的动作。
-- `TRACKER.md`：当前做到哪里，只写有证据的状态、阻塞、下一步与验证。
-- `LOG.md`：历史实际发生了什么，按日期追加结果、偏差和验证，不回写未来意图。
+- 多阶段、高风险或改变方向时才写一份 current `PLAN.md`；小型明确工作可直接实现。
+- `TODO.md` 只保留仍需执行的动作，`TRACKER.md` 只保留短状态/阻塞/下一步，`LOG.md` 追加实际结果。
+- 只有需要独立范围或验证的阶段才建短 subplan；不要把同一事实复制到所有状态文件和报告。
+- routine work 可在完成时一次更新状态，不要求为开始工作制造计划或 authorization gate。
 
-只有一个当前 PLAN。小型插入工作可作为 TODO 记录而不改项目方向；多阶段工作才在
-`subplans/` 使用 `NN-MMDD-short-plan.md` 拆分。替换计划前必须先把已发生结果写入 LOG，
-不得从旧计划、归档或 roadmap 自动恢复工作。
+Git 是恢复事实。小型可回退变更可以留在当前分支；大型、风险、并行或需独立 review 的工作才使用
+`feat/`、`fix/`、`refactor/`、`docs/` 或 `chore/` 短分支。只提交任务拥有的文件并做最小充分验证。
+local branch/commit/fast-forward merge 是普通实现动作；remote mutation 和 history rewrite 仍需确认。
 
-大型工作以 Git 作为代码历史与恢复事实：每个进入 `in_progress` 的 subplan 使用独立的
-`feat/`、`fix/`、`refactor/`、`docs/` 或 `chore/` 短名分支；提交保持小而完整，风险操作或
-切换上下文前建立可恢复 checkpoint。临时 `wip:` 只允许留在工作分支，不能进入最终合并历史。
-子计划只有在相关变更已提交、提交态验证通过、执行状态已同步后才能合并；远程 push/PR 仍需
-用户明确授权。
+只有依赖安装、不可恢复的本地数据操作、数据保留选择不清楚的 schema 变化、产品/架构扩张和远程
+Git 操作需要先问。只读检查、测试、可逆编辑、本地 build/restart 和 local Git 不重复请求授权；
+但一次 destructive 授权不能扩展到未列出的目标。
 
-整份 PLAN 完成、取消或被替换时，先确认所有应合并提交已从目标分支可达，再收口
-TODO/TRACKER/LOG，把最终 `PLAN.md` 和完整 `subplans/` 一起移入
-`archive/plans/NN-MMDD-short/`。随后创建下一份当前 PLAN，或明确写“无当前计划”，并清空
-只属于旧计划的 TODO 与 subplans。`.agent/` 不保留已经结束的 PLAN 或子计划副本；LOG 继续作为
-实际历史入口。若取消或替换时仍有未合并工作，最终记录必须保存准确 branch/commit 与处置；
-不得为了收口而强行合并，也不得静默删除恢复分支。
-
-| 变更 | 默认做法 |
-| --- | --- |
-| 小型 bug、内部重构、测试或文案 | 用短 TODO 跟踪，完成后更新 TRACKER/LOG；无需子计划或总架构更新 |
-| 单一用户功能，范围清楚且可回退 | 用最短垂直实现；只调整受影响的 TODO、TRACKER、LOG 与契约 |
-| schema、数据删除、跨进程/模块边界或多阶段高风险工作 | 更新 PLAN，并按需要建立少量子计划；执行期间持续更新 TRACKER |
-| 稳定产品边界、进程、主要数据模型或公开 API 发生变化 | 同步本文相关章节，不要求复制实现细节 |
-| 生产化、共享部署、多租户或 HA | 只有用户明确改变产品定位后才单独评估，不预建 |
-
-其他规则：
-
-- 没有活动工作时 PLAN 与 TRACKER 明确写“无”；不得把候选 roadmap 保持为默认下一步。
-- PLAN 只说明意图，实际结果只进入 TRACKER/LOG；不得在四个文件之间复制完整正文。
-- 配置、migration、profile、capability、ledger、监控和 UI 都不是新功能的自动配套项。
-- 当复杂方案与简单方案能达到相同本地效果时，选择模块更少、持久状态更少、运行分支更少的方案。
-- 若实现收益尚未验证，先做可删除的最小实验；不得让实验性路线反向扩大基础架构。
+PLAN 结束时记录实际结果，把 PLAN 和其 subplans 一起移入 `archive/plans/NN-MMDD-short/`，然后把
+PLAN/TODO/TRACKER 重置为“无当前工作”。roadmap、review 和 archive 都不会自动变成任务。实现默认选择
+模块更少、持久状态更少、运行分支更少的方案；稳定产品/进程/数据/API 边界变化时才同步本文。
 
 ## 15. 文档治理
 
