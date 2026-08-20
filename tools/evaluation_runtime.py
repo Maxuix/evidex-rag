@@ -986,7 +986,10 @@ def create_runtime(*, seed: Path, confirmation: str) -> dict[str, object]:
     )
     runtime = load_evaluation_runtime(require_adaptive_graph=True)
     _run(compose_command(runtime, "up", "-d", "--wait", "api", "worker", "frontend"), runtime=runtime)
-    return inspect_runtime(runtime)
+    result = inspect_runtime(runtime)
+    if result["status"] != "ready":
+        raise EvaluationRuntimeError("evaluation runtime did not become ready")
+    return result
 
 
 def _owned_project_objects(
@@ -1095,6 +1098,18 @@ def _services_ready(runtime: EvaluationRuntime, containers: Sequence[str]) -> bo
     return storage_state == "exited" and storage_exit == "0"
 
 
+def _falkor_restored(runtime: EvaluationRuntime) -> bool:
+    container = _container_id(runtime, "falkordb")
+    output = _run(
+        ["docker", "exec", container, "redis-cli", "--raw", "DBSIZE"],
+        capture=True,
+    )
+    try:
+        return int(output) > 0
+    except ValueError:
+        return False
+
+
 def inspect_runtime(runtime: EvaluationRuntime) -> dict[str, object]:
     containers, volumes, networks = _owned_project_objects(
         runtime,
@@ -1105,6 +1120,7 @@ def inspect_runtime(runtime: EvaluationRuntime) -> dict[str, object]:
         and len(volumes) == len(EXPECTED_VOLUMES)
         and len(networks) == len(EXPECTED_NETWORKS)
         and _services_ready(runtime, containers)
+        and _falkor_restored(runtime)
     )
     return {
         "schema_version": RUNTIME_SCHEMA_VERSION,

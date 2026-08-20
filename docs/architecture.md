@@ -288,6 +288,10 @@ READY 候选数量、名称或时间猜测，也不把 judge profile 替换为�
 symlink 的私有 runtime 目录全部匹配时删除 `rag-eval` 对象；不执行 prune，不读取、停止或挂载
 `rag` 的业务 volume。真实 lifecycle 演练与 Provider/Judge 调用仍分别受当前授权约束。
 
+eval 的冻结 Graph 备份是 RDB，不含 AOF 目录；`rag-eval` 因此以 `appendonly=no` 启动 FalkorDB，
+避免 Redis 优先加载新建的空 AOF 而跳过 RDB。lifecycle 的 ready 门除容器健康外还要求 FalkorDB
+恢复出非空 keyspace；这只影响短期 eval 副本，不改变正式 `rag` 的 AOF 持久化配置。
+
 Adaptive Graph 路由评测使用成对的
 `evaluation/routing-rag-v2/` 与 `evaluation/adaptive-graph-route-v2/` 合同；`v1` 仅保留为不可变
 历史身份。`tools/evaluate_adaptive_graph_route.py --dry-run` 只校验 corpus、locator、fixture、

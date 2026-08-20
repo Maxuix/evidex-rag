@@ -481,13 +481,38 @@ class EvaluationRuntimeTests(unittest.TestCase):
         with (
             patch.object(module, "_owned_project_objects", return_value=complete_objects),
             patch.object(module, "_services_ready", return_value=True),
+            patch.object(module, "_falkor_restored", return_value=True),
         ):
             self.assertEqual(module.inspect_runtime(runtime)["status"], "ready")
         with (
             patch.object(module, "_owned_project_objects", return_value=complete_objects),
             patch.object(module, "_services_ready", return_value=False),
+            patch.object(module, "_falkor_restored", return_value=True),
         ):
             self.assertEqual(module.inspect_runtime(runtime)["status"], "incomplete")
+
+    def test_inspect_requires_nonempty_restored_falkor_database(self) -> None:
+        runtime = EvaluationRuntime(
+            manifest=Path("runtime.json"),
+            runtime_root=Path("."),
+            env_file=Path("runtime.env"),
+            compose_env_file=Path("compose.env"),
+            owner=_OWNER,
+            build_revision="a" * 40,
+            api_base_url="http://127.0.0.1:28000/api/v1",
+            ports=dict(module.EVALUATION_PORTS),
+            adaptive_graph=None,
+        )
+        with (
+            patch.object(module, "_container_id", return_value="falkor-container"),
+            patch.object(module, "_run", return_value="10"),
+        ):
+            self.assertTrue(module._falkor_restored(runtime))
+        with (
+            patch.object(module, "_container_id", return_value="falkor-container"),
+            patch.object(module, "_run", return_value="0"),
+        ):
+            self.assertFalse(module._falkor_restored(runtime))
 
 
 if __name__ == "__main__":
