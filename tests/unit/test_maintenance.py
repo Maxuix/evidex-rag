@@ -95,6 +95,12 @@ class LocalResetTests(unittest.TestCase):
         settings = SimpleNamespace(
             app=SimpleNamespace(deployment_profile=DeploymentProfile.DEVELOPMENT)
         )
+        runtime = SimpleNamespace(
+            manifest=Path("local.env"),
+            compose_project="rag",
+            is_primary_checkout=True,
+            is_canonical_manifest=True,
+        )
         with (
             patch.object(
                 sys,
@@ -102,27 +108,28 @@ class LocalResetTests(unittest.TestCase):
                 [
                     "reset_local.py",
                     "--project-name",
-                    "rag-kb-local",
+                    "rag",
                     "--confirm",
                     CONFIRMATION,
                 ],
             ),
             patch("tools.reset_local.load_settings", return_value=settings),
+            patch("tools.reset_local.resolve_local_runtime", return_value=runtime),
             patch(
                 "tools.reset_local.resolve_volume_targets",
                 side_effect=(
                     VolumeTargets(
-                        project_name="rag-kb-local",
+                        project_name="rag",
                         remove=(
-                            "rag-kb-local_postgres-data",
-                            "rag-kb-local_source-data",
+                            "rag_postgres-data",
+                            "rag_source-data",
                         ),
-                        preserve=("rag-kb-local_inference-model-cache",),
+                        preserve=("rag_inference-model-cache",),
                     ),
                     VolumeTargets(
-                        project_name="rag-kb-local",
+                        project_name="rag",
                         remove=(),
-                        preserve=("rag-kb-local_inference-model-cache",),
+                        preserve=("rag_inference-model-cache",),
                     ),
                 ),
             ),
@@ -140,14 +147,20 @@ class LocalResetTests(unittest.TestCase):
                 "docker",
                 "volume",
                 "rm",
-                "rag-kb-local_postgres-data",
-                "rag-kb-local_source-data",
+                "rag_postgres-data",
+                "rag_source-data",
             ],
         )
 
-    def test_compose_and_application_environment_files_are_distinct(self) -> None:
+    def test_one_manifest_is_used_for_compose_and_application_settings(self) -> None:
         settings = SimpleNamespace(
             app=SimpleNamespace(deployment_profile=DeploymentProfile.DEVELOPMENT)
+        )
+        runtime = SimpleNamespace(
+            manifest=Path("one.env"),
+            compose_project="rag",
+            is_primary_checkout=True,
+            is_canonical_manifest=True,
         )
         with (
             patch.object(
@@ -156,11 +169,9 @@ class LocalResetTests(unittest.TestCase):
                 [
                     "reset_local.py",
                     "--env-file",
-                    "compose.env",
-                    "--app-env-file",
-                    "application.env",
+                    "one.env",
                     "--project-name",
-                    "rag-kb-local",
+                    "rag",
                     "--inspect-only",
                     "--confirm",
                     CONFIRMATION,
@@ -171,19 +182,53 @@ class LocalResetTests(unittest.TestCase):
                 return_value=settings,
             ) as load,
             patch(
+                "tools.reset_local.resolve_local_runtime",
+                return_value=runtime,
+            ) as resolve,
+            patch(
                 "tools.reset_local.resolve_volume_targets",
                 return_value=VolumeTargets(
-                    project_name="rag-kb-local",
-                    remove=("rag-kb-local_postgres-data",),
-                    preserve=("rag-kb-local_inference-model-cache",),
+                    project_name="rag",
+                    remove=("rag_postgres-data",),
+                    preserve=("rag_inference-model-cache",),
                 ),
             ),
             patch("tools.reset_local.subprocess.run") as run,
         ):
             self.assertEqual(main(), 0)
 
-        load.assert_called_once_with(env_file="application.env")
+        resolve.assert_called_once_with(
+            env_file=Path("one.env"),
+            require_manifest=True,
+        )
+        load.assert_called_once_with(env_file=Path("one.env"))
         run.assert_not_called()
+
+    def test_reset_rejects_noncanonical_project_before_volume_resolution(self) -> None:
+        runtime = SimpleNamespace(
+            manifest=Path("one.env"),
+            compose_project="rag",
+            is_primary_checkout=True,
+            is_canonical_manifest=True,
+        )
+        with (
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "reset_local.py",
+                    "--project-name",
+                    "rag-kb-p6-routing",
+                    "--confirm",
+                    CONFIRMATION,
+                ],
+            ),
+            patch("tools.reset_local.resolve_local_runtime", return_value=runtime),
+            patch("tools.reset_local.resolve_volume_targets") as resolve_targets,
+            self.assertRaises(SystemExit),
+        ):
+            main()
+        resolve_targets.assert_not_called()
 
     def test_volume_resolution_uses_exact_compose_labels(self) -> None:
         responses = (

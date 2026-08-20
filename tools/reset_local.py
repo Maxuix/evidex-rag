@@ -10,6 +10,11 @@ from pathlib import Path
 import subprocess
 
 from rag_kb.config import DeploymentProfile, load_settings
+from tools.local_runtime import (
+    CANONICAL_COMPOSE_PROJECT,
+    LocalRuntimeError,
+    resolve_local_runtime,
+)
 
 
 CONFIRMATION = "DESTROY_RAG_KB_LOCAL_DATA"
@@ -80,15 +85,14 @@ def main() -> int:
     parser.add_argument("--confirm", required=True)
     parser.add_argument(
         "--env-file",
-        default=".env.local",
-        help="Compose state/credential environment file",
+        type=Path,
+        help="single local runtime manifest (defaults to canonical .env.local)",
     )
     parser.add_argument(
-        "--app-env-file",
-        default=".env",
-        help="application settings file used for the development-profile gate",
+        "--project-name",
+        default=CANONICAL_COMPOSE_PROJECT,
+        help="exact Compose project target (defaults to canonical rag)",
     )
-    parser.add_argument("--project-name", required=True)
     parser.add_argument(
         "--inspect-only",
         action="store_true",
@@ -97,7 +101,20 @@ def main() -> int:
     arguments = parser.parse_args()
     if arguments.confirm != CONFIRMATION:
         parser.error(f"--confirm must equal {CONFIRMATION}")
-    settings = load_settings(env_file=arguments.app_env_file)
+    try:
+        runtime = resolve_local_runtime(
+            env_file=arguments.env_file,
+            require_manifest=True,
+        )
+    except (LocalRuntimeError, OSError, subprocess.SubprocessError):
+        parser.error("local runtime manifest is invalid")
+    if not runtime.is_primary_checkout:
+        parser.error("local reset must run from the primary checkout")
+    if not runtime.is_canonical_manifest:
+        parser.error("local reset requires the canonical .env.local manifest")
+    if arguments.project_name != runtime.compose_project:
+        parser.error("--project-name does not match the canonical local runtime")
+    settings = load_settings(env_file=runtime.manifest)
     if settings.app.deployment_profile is not DeploymentProfile.DEVELOPMENT:
         parser.error("local reset is restricted to the development profile")
 
@@ -118,7 +135,7 @@ def main() -> int:
 
     subprocess.run(
         compose_down_command(
-            env_file=arguments.env_file,
+            env_file=str(runtime.manifest),
             project_name=arguments.project_name,
         ),
         cwd=PROJECT_ROOT,

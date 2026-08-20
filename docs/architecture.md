@@ -208,8 +208,12 @@ progress reporter 的窄 Protocol，具体 `services` 实现由 Worker compositi
 
 ## 6. 配置与外部依赖
 
-配置由 `src/rag_kb/config/settings.py` 定义，以 `.env.example` 为支持面。当前设置对象严格、
-冻结并拒绝未知字段。环境配置只保留本机/容器差异、secret、真实行为调节和有价值的回退；
+配置由 `src/rag_kb/config/settings.py` 定义，以 `.env.example` 为支持面，本地默认文件为
+`.env.local`。同一 manifest 可以包含 Compose 身份/端口/数据库启动凭据与 `RAG_KB__...`
+应用设置；应用加载器只接收后一个命名空间，仍严格拒绝其中的未知字段，不会把 Compose-only
+键误当成应用配置。`tools/local_runtime.py doctor` 只输出 project、端口、枚举和计数，用于发现
+双 env、旧 override、linked worktree 或非 canonical Compose project，不回显任何配置值或路径。
+当前设置对象严格、冻结。环境配置只保留本机/容器差异、secret、真实行为调节和有价值的回退；
 单一实现身份、固定安全限制与兼容事实直接留在代码的单一来源，不再通过 Settings 重复转发。
 
 当前重要选择：

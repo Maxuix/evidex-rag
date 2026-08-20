@@ -300,6 +300,25 @@ class SettingsTests(unittest.TestCase):
         self.assertIsNone(settings.model_provider)
         self.assertTrue(settings.chat_delivery.preview_enabled)
 
+    def test_env_file_ignores_compose_keys_but_rejects_unknown_app_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            env_file = Path(directory) / ".env.local"
+            env_file.write_text(
+                "COMPOSE_PROJECT_NAME=rag\n"
+                "POSTGRES_ADMIN_PASSWORD=compose-only\n"
+                "RAG_KB__DATABASE__RUNTIME_DSN="
+                "postgresql+asyncpg://rag_kb_runtime:runtime@localhost/rag_kb\n"
+                "RAG_KB__DATABASE__MIGRATION_DSN="
+                "postgresql+asyncpg://rag_kb_migration:migration@localhost/rag_kb\n"
+                "RAG_KB__UNKNOWN__VALUE=still-invalid\n",
+                encoding="utf-8",
+            )
+            with (
+                patch.dict(os.environ, {}, clear=True),
+                self.assertRaises(ValidationError),
+            ):
+                load_settings(env_file=env_file)
+
     def test_non_development_and_non_loopback_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

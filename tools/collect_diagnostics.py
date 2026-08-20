@@ -19,6 +19,11 @@ from urllib.request import Request, urlopen
 import zipfile
 
 from rag_kb.observability.logging import SAFE_FIELDS
+from tools.local_runtime import (
+    LocalRuntime,
+    LocalRuntimeError,
+    resolve_local_runtime,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -45,6 +50,10 @@ ALLOWED_EVENT_FIELDS = CORE_EVENT_FIELDS | SAFE_FIELDS
 
 
 def main() -> int:
+    try:
+        runtime = resolve_local_runtime()
+    except (LocalRuntimeError, OSError, subprocess.SubprocessError):
+        raise SystemExit("local runtime manifest is invalid") from None
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--log-directory",
@@ -72,12 +81,12 @@ def main() -> int:
     )
     parser.add_argument(
         "--api-base-url",
-        default="http://127.0.0.1:8000",
+        default=runtime.api_origin,
         help="loopback API origin used only for status-code health probes",
     )
     parser.add_argument(
         "--frontend-base-url",
-        default="http://127.0.0.1:3000",
+        default=runtime.frontend_origin,
         help="loopback user frontend origin used only for a health probe",
     )
     arguments = parser.parse_args()
@@ -92,7 +101,7 @@ def main() -> int:
         since=now - timedelta(hours=arguments.since_hours),
         max_events=arguments.max_events,
     )
-    docker_state = collect_docker_state()
+    docker_state = collect_docker_state(runtime)
     health = collect_health(
         arguments.api_base_url,
         arguments.frontend_base_url,
@@ -111,6 +120,11 @@ def main() -> int:
             "python": platform.python_version(),
             "system": platform.system(),
             "machine": platform.machine(),
+        },
+        "local_identity": {
+            "compose_project": runtime.compose_project,
+            "api_port": runtime.api_port,
+            "frontend_port": runtime.frontend_port,
         },
     }
 
@@ -289,9 +303,14 @@ def _sanitize_scalar(value: Any) -> object:
     raise ValueError("unsafe non-scalar value")
 
 
-def collect_docker_state() -> dict[str, object]:
-    env_file = PROJECT_ROOT / ".env.local"
-    if not env_file.is_file():
+def collect_docker_state(
+    runtime: LocalRuntime | None = None,
+) -> dict[str, object]:
+    try:
+        resolved = runtime or resolve_local_runtime()
+    except (LocalRuntimeError, OSError, subprocess.SubprocessError):
+        return {"available": False, "reason": "local_runtime_invalid"}
+    if not resolved.manifest_present:
         return {"available": False, "reason": "compose_env_missing"}
     try:
         result = subprocess.run(
@@ -299,13 +318,15 @@ def collect_docker_state() -> dict[str, object]:
                 "docker",
                 "compose",
                 "--env-file",
-                str(env_file),
+                str(resolved.manifest),
+                "--project-name",
+                resolved.compose_project,
                 "ps",
                 "-a",
                 "--format",
                 "json",
             ],
-            cwd=PROJECT_ROOT,
+            cwd=resolved.canonical_checkout,
             check=True,
             capture_output=True,
             text=True,

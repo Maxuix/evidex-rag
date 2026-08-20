@@ -6,6 +6,7 @@ import json
 import logging
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 import zipfile
@@ -13,6 +14,7 @@ import zipfile
 from rag_kb.observability import ContentSafeJsonFormatter, log_event, log_exception
 from tools.collect_diagnostics import (
     _parse_compose_json,
+    collect_docker_state,
     collect_safe_events,
     main,
     sanitize_event,
@@ -20,6 +22,40 @@ from tools.collect_diagnostics import (
 
 
 class DiagnosticsBundleTests(unittest.TestCase):
+    def test_docker_collection_uses_canonical_manifest_and_project(self) -> None:
+        runtime = SimpleNamespace(
+            manifest=Path("/private/runtime/.env.local"),
+            manifest_present=True,
+            compose_project="rag",
+            canonical_checkout=Path("/private/runtime"),
+        )
+        completed = SimpleNamespace(stdout="[]")
+        with patch(
+            "tools.collect_diagnostics.subprocess.run",
+            return_value=completed,
+        ) as run:
+            self.assertEqual(
+                collect_docker_state(runtime),
+                {"available": True, "services": []},
+            )
+
+        self.assertEqual(
+            run.call_args.args[0],
+            [
+                "docker",
+                "compose",
+                "--env-file",
+                "/private/runtime/.env.local",
+                "--project-name",
+                "rag",
+                "ps",
+                "-a",
+                "--format",
+                "json",
+            ],
+        )
+        self.assertEqual(run.call_args.kwargs["cwd"], Path("/private/runtime"))
+
     def test_compose_json_lines_are_parsed_without_labels_or_environment(self) -> None:
         rows = _parse_compose_json(
             '{"Name":"rag-api-1","Service":"api"}\n'

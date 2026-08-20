@@ -486,13 +486,14 @@ class ObservabilitySettings(StrictSettingsModel):
 
 
 class Settings(BaseSettings):
-    """Supported local process settings loaded from environment or `.env`."""
+    """Supported local process settings loaded from environment or `.env.local`."""
 
     model_config = SettingsConfigDict(
         env_prefix="RAG_KB__",
         env_nested_delimiter="__",
-        env_file=".env",
+        env_file=".env.local",
         env_file_encoding="utf-8",
+        dotenv_filtering="match_prefix",
         extra="forbid",
         frozen=True,
         nested_model_default_partial_update=True,
@@ -593,7 +594,7 @@ class Settings(BaseSettings):
         return self
 
 
-def load_settings(*, env_file: str | Path | None = ".env") -> Settings:
+def load_settings(*, env_file: str | Path | None = ".env.local") -> Settings:
     """Load a fresh immutable settings graph without global import-time state."""
 
     return Settings(_env_file=env_file)  # type: ignore[call-arg]

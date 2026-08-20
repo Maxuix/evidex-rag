@@ -8,6 +8,8 @@ import json
 from urllib.error import URLError
 from urllib.request import urlopen
 
+from tools.local_runtime import LocalRuntimeError, resolve_local_runtime
+
 
 def read_json(url: str) -> dict:
     with urlopen(url, timeout=5) as response:
@@ -20,9 +22,14 @@ def read_json(url: str) -> dict:
 
 
 def main() -> int:
+    try:
+        runtime = resolve_local_runtime()
+    except (LocalRuntimeError, OSError):
+        print("Local smoke failed: local runtime manifest is invalid")
+        return 1
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--api", default="http://127.0.0.1:8000")
-    parser.add_argument("--frontend", default="http://127.0.0.1:3000")
+    parser.add_argument("--api", default=runtime.api_origin)
+    parser.add_argument("--frontend", default=runtime.frontend_origin)
     args = parser.parse_args()
 
     try:
