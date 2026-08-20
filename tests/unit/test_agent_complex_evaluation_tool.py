@@ -19,7 +19,6 @@ from tools.evaluate_agent_complex_qa import (
     _extract_decimal_values,
     _validate_options,
     evaluate_cases,
-    _validated_api_base,
     load_evaluation_artifact,
     load_document_identity_map,
     score_complex_case,
@@ -560,21 +559,6 @@ class AgentComplexEvaluationToolTests(unittest.TestCase):
                 _validate_options(
                     argparse.Namespace(**{**base, "parallelism": parallelism})
                 )
-
-    def test_loopback_api_validation_rejects_credentials_and_query(self) -> None:
-        self.assertEqual(
-            _validated_api_base("http://127.0.0.1:8000/api/v1/"),
-            "http://127.0.0.1:8000/api/v1",
-        )
-        for value in (
-            "https://127.0.0.1:8000/api/v1",
-            "http://user:secret@127.0.0.1:8000/api/v1",
-            "http://localhost:8000/api/v1?token=secret",
-            "http://localhost.evil:8000/api/v1",
-            "http://127.0.0.1:8000/v1",
-        ):
-            with self.subTest(value=value), self.assertRaises(ValueError):
-                _validated_api_base(value)
 
     def test_decimal_parser_preserves_parentheses_and_commas(self) -> None:
         self.assertIn(-1234.50, _extract_decimal_values("($1,234.50)"))

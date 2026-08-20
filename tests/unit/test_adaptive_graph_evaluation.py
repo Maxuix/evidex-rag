@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from uuid import uuid4
+from uuid import UUID, uuid4
 import json
 
 from apps.api.routers.chat import _public_agent_trace
@@ -49,6 +49,28 @@ from tools.run_adaptive_graph_r7_stage_a import (
     _runtime,
     _quality_tuple,
 )
+from tools.evaluation_runtime import AdaptiveGraphIdentity, EvaluationRuntime
+
+
+def _evaluation_runtime() -> EvaluationRuntime:
+    return EvaluationRuntime(
+        manifest=Path("runtime.json"),
+        runtime_root=Path("."),
+        env_file=Path("runtime.env"),
+        compose_env_file=Path("compose.env"),
+        owner="0123456789abcdef0123456789abcdef",
+        build_revision="a" * 40,
+        api_base_url="http://127.0.0.1:28000/api/v1",
+        ports={"api": 28000, "frontend": 23000, "postgres": 25432, "falkordb": 26379},
+        adaptive_graph=AdaptiveGraphIdentity(
+            workspace_id=UUID("01900000-0000-7000-8000-000000000001"),
+            knowledge_base_id=UUID("01900000-0000-7000-8000-000000000002"),
+            index_revision_id=UUID("01900000-0000-7000-8000-000000000003"),
+            graph_build_id=UUID("01900000-0000-7000-8000-000000000004"),
+            answer_profile_revision_id=UUID("01900000-0000-7000-8000-000000000005"),
+            judge_profile_revision_id=UUID("01900000-0000-7000-8000-000000000006"),
+        ),
+    )
 
 
 class _RecordingModel:
@@ -124,7 +146,7 @@ class AdaptiveGraphEvaluationTests(unittest.IsolatedAsyncioTestCase):
 
     def test_r7_resume_identity_covers_manifest_fixture_case_order_and_runtime(self) -> None:
         manifest = load_manifest()
-        runtime = _runtime(manifest)
+        runtime = _runtime(manifest, _evaluation_runtime())
         _assert_runtime_identity({"runtime": runtime}, runtime, artifact="answers")
         changed = dict(runtime)
         changed["case_order"] = list(runtime["case_order"])[::-1]
@@ -137,7 +159,7 @@ class AdaptiveGraphEvaluationTests(unittest.IsolatedAsyncioTestCase):
         legacy = dict(manifest)
         legacy["dataset_id"] = "routing-rag-v1"
         with self.assertRaisesRegex(RuntimeError, "r7_dataset_identity_changed"):
-            _runtime(legacy)
+            _runtime(legacy, _evaluation_runtime())
 
     def test_r7_stage_a_usage_and_judge_schema_are_closed(self) -> None:
         state = {

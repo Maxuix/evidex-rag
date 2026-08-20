@@ -66,6 +66,12 @@ from tools.evaluate_adaptive_graph_route import (
     load_cases,
     load_manifest,
     manifest_digest,
+    validate_evaluation_readiness,
+)
+from tools.evaluation_runtime import (
+    DEFAULT_RUNTIME_MANIFEST,
+    EvaluationRuntimeError,
+    load_evaluation_runtime,
 )
 
 
@@ -196,13 +202,14 @@ def _controller_mode(*, replay_mode: str, model_override: str | None) -> str:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--knowledge-base-id", type=UUID, required=True)
-    parser.add_argument("--index-revision-id", type=UUID, required=True)
-    parser.add_argument("--graph-build-id", type=UUID, required=True)
-    parser.add_argument("--chat-model-profile-revision-id", type=UUID, required=True)
-    parser.add_argument("--capture-output", type=Path, required=True)
-    parser.add_argument("--diagnostic-output", type=Path, required=True)
-    parser.add_argument("--checkpoint-output", type=Path, required=True)
+    parser.add_argument(
+        "--evaluation-runtime",
+        type=Path,
+        default=DEFAULT_RUNTIME_MANIFEST,
+    )
+    parser.add_argument("--capture-output", type=Path)
+    parser.add_argument("--diagnostic-output", type=Path)
+    parser.add_argument("--checkpoint-output", type=Path)
     parser.add_argument(
         "--replay-mode",
         choices=("forced", "actual-auto"),
@@ -220,13 +227,18 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--preflight-only", action="store_true")
     parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="validate the frozen corpus without Docker, database, Graph, or Provider access",
+    )
+    parser.add_argument(
         "--edge-limit",
         type=int,
         choices=EVALUATOR_EDGE_LIMITS,
         default=GRAPHITI_EDGE_LIMIT,
         help="Evaluator-only Graphiti edge K; production retrieval remains unchanged.",
     )
-    parser.add_argument("--confirm", required=True)
+    parser.add_argument("--confirm")
     return parser
 
 
@@ -945,6 +957,7 @@ def _checkpoint_identity(
             "replay_mode": arguments.replay_mode,
             "rerank_mode": rerank_mode.value,
             "forced_controller_mode": controller_mode,
+            "evaluation_owner": arguments.evaluation_owner,
             "runner_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
             "evaluator_sha256": hashlib.sha256(
                 Path(__file__).with_name("evaluate_adaptive_graph_route.py").read_bytes()
@@ -1257,7 +1270,7 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
     if len(cases) != 20:
         raise R4RunnerError("r4_graph_case_count_changed")
     rerank_mode = RerankMode(arguments.rerank_mode)
-    dependencies = build_worker_dependencies(env_file=None)
+    dependencies = build_worker_dependencies(env_file=arguments.evaluation_env_file)
     try:
         await dependencies.check_readiness()
         workspace_id = dependencies.settings.identity.workspace_id
@@ -1693,8 +1706,49 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
 def main() -> int:
     parser = _parser()
     arguments = parser.parse_args()
+    if arguments.dry_run:
+        if arguments.confirm is not None or arguments.preflight_only:
+            parser.error("--dry-run cannot be combined with execution options")
+        manifest = load_manifest()
+        readiness = validate_evaluation_readiness(DEFAULT_MANIFEST, manifest=manifest)
+        print(
+            json.dumps(
+                {
+                    "status": "offline_dry_run_ok",
+                    "dataset_id": manifest["dataset_id"],
+                    "case_count": manifest["case_count"],
+                    "readiness": readiness,
+                },
+                sort_keys=True,
+            )
+        )
+        return 0
     if arguments.confirm != CONFIRM_EXTERNAL_CALLS:
         parser.error(f"--confirm must equal {CONFIRM_EXTERNAL_CALLS}")
+    if any(
+        path is None
+        for path in (
+            arguments.capture_output,
+            arguments.diagnostic_output,
+            arguments.checkpoint_output,
+        )
+    ):
+        parser.error("capture, diagnostic, and checkpoint outputs are required")
+    try:
+        evaluation_runtime = load_evaluation_runtime(
+            arguments.evaluation_runtime,
+            require_adaptive_graph=True,
+        )
+    except (EvaluationRuntimeError, OSError):
+        parser.error("isolated evaluation runtime is unavailable")
+    identity = evaluation_runtime.adaptive_graph
+    assert identity is not None
+    arguments.knowledge_base_id = identity.knowledge_base_id
+    arguments.index_revision_id = identity.index_revision_id
+    arguments.graph_build_id = identity.graph_build_id
+    arguments.chat_model_profile_revision_id = identity.answer_profile_revision_id
+    arguments.evaluation_env_file = evaluation_runtime.env_file
+    arguments.evaluation_owner = evaluation_runtime.owner
     output_paths = {
         arguments.capture_output.resolve(),
         arguments.diagnostic_output.resolve(),

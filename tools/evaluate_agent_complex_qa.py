@@ -33,6 +33,11 @@ from tools.agent_complex_qa_judge import (
     semantic_score,
 )
 from rag_kb.domain import ChatModelExecutionError
+from tools.evaluation_runtime import (
+    DEFAULT_RUNTIME_MANIFEST,
+    EvaluationRuntimeError,
+    load_evaluation_runtime,
+)
 
 
 DEFAULT_CORPUS_ROOT = Path(__file__).resolve().parents[1] / "evaluation" / "document-qa-v1"
@@ -67,9 +72,13 @@ _NEGATIVE_WORDS = (
 )
 
 
-def main() -> int:
+def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--api", default="http://127.0.0.1:8000/api/v1")
+    parser.add_argument(
+        "--evaluation-runtime",
+        type=Path,
+        default=DEFAULT_RUNTIME_MANIFEST,
+    )
     parser.add_argument("--kb-id")
     parser.add_argument(
         "--strategy",
@@ -92,14 +101,18 @@ def main() -> int:
         type=Path,
         help="rejudge an existing evaluation artifact without calling the answer model",
     )
-    parser.add_argument("--judge-profile-revision-id", required=True)
+    parser.add_argument("--judge-profile-revision-id")
     parser.add_argument(
         "--judge-cache-dir",
         type=Path,
         default=DEFAULT_JUDGE_CACHE_ROOT,
         help="content-addressed cache for completed per-case judgements",
     )
-    parser.add_argument("--env-file", type=Path, default=Path(".env"))
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="validate corpus and options without API, database, or Provider access",
+    )
     parser.add_argument(
         "--preflight",
         action="store_true",
@@ -117,16 +130,42 @@ def main() -> int:
         dest="case_ids",
         help="run only this case; repeat the option for a subset",
     )
+    return parser
+
+
+def main() -> int:
+    parser = _parser()
     arguments = parser.parse_args()
     try:
-        api = _validated_api_base(arguments.api)
         _validate_options(arguments)
         cases = load_complex_cases(arguments.corpus_root)
         document_identity_map = load_document_identity_map(arguments.corpus_root)
         document_paths = load_document_paths(arguments.corpus_root)
-        judge_profile_revision_id = UUID(arguments.judge_profile_revision_id)
     except (ValueError, RuntimeError) as error:
         parser.error(str(error))
+
+    if arguments.dry_run:
+        corpus = validate_corpus(arguments.corpus_root)
+        print(
+            json.dumps(
+                {
+                    "status": "offline_dry_run_ok",
+                    "case_count": len(cases),
+                    "corpus_sha256": corpus["dataset_sha256"],
+                },
+                sort_keys=True,
+            )
+        )
+        return 0
+
+    if arguments.judge_profile_revision_id is None:
+        parser.error("--judge-profile-revision-id is required for execution")
+    try:
+        runtime = load_evaluation_runtime(arguments.evaluation_runtime)
+        api = runtime.api_base_url
+        judge_profile_revision_id = UUID(arguments.judge_profile_revision_id)
+    except (EvaluationRuntimeError, OSError, ValueError):
+        parser.error("isolated evaluation runtime is unavailable or profile identity is invalid")
 
     requested = tuple(arguments.case_ids or ())
     if arguments.preflight:
@@ -217,6 +256,7 @@ def main() -> int:
             "worker_chat_deadline_seconds": arguments.worker_chat_deadline_seconds,
             "code_commit": arguments.code_commit,
             "preflight": arguments.preflight,
+            "evaluation_owner": runtime.owner,
         }
         answer_checkpoint = _answer_checkpoint_path(output)
         _atomic_write_json(
@@ -239,7 +279,7 @@ def main() -> int:
                 document_identity_map=document_identity_map,
                 document_paths=document_paths,
                 profile_revision_id=judge_profile_revision_id,
-                env_file=arguments.env_file,
+                env_file=runtime.env_file,
                 cache_dir=arguments.judge_cache_dir,
             )
         )
@@ -262,6 +302,7 @@ def main() -> int:
             "source_artifact_sha256": source_artifact_sha256,
             "source_corpus_sha256": source_corpus_sha256,
             "source_corpus_compatibility": source_corpus_compatibility,
+            "evaluation_owner": runtime.owner,
             "judge": judge_config,
         },
         "cases": results,
@@ -291,7 +332,10 @@ def _validate_options(arguments: argparse.Namespace) -> None:
         raise ValueError("worker chat deadline must be positive")
     if arguments.strategy == "hybrid" and arguments.rerank_mode == "none":
         raise ValueError("hybrid retrieval requires classic reranking")
-    if hasattr(arguments, "rescore_input") or hasattr(arguments, "kb_id"):
+    if (
+        (hasattr(arguments, "rescore_input") or hasattr(arguments, "kb_id"))
+        and not getattr(arguments, "dry_run", False)
+    ):
         rescore_input = getattr(arguments, "rescore_input", None)
         kb_id = getattr(arguments, "kb_id", None)
         if rescore_input is None and not kb_id:
@@ -1341,22 +1385,6 @@ def _required_string(value: dict[str, Any], key: str) -> str:
     if not isinstance(candidate, str) or not candidate:
         raise _EvaluationRequestError("INVALID_API_RESPONSE")
     return candidate
-
-
-def _validated_api_base(value: str) -> str:
-    parsed = urlparse(value)
-    if (
-        parsed.scheme != "http"
-        or parsed.hostname not in {"127.0.0.1", "localhost"}
-        or parsed.username is not None
-        or parsed.password is not None
-        or parsed.query
-        or parsed.fragment
-        or parsed.path.rstrip("/") != "/api/v1"
-        or parsed.port is None
-    ):
-        raise ValueError("--api must be an exact loopback /api/v1 URL")
-    return f"http://{parsed.hostname}:{parsed.port}/api/v1"
 
 
 def _default_output(strategy: str) -> Path:

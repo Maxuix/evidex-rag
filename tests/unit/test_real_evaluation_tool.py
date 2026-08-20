@@ -14,7 +14,6 @@ from tools.evaluate_multimodal_real import (
     _ndcg,
     _percentile,
     _recall,
-    _validated_api_base,
 )
 
 
@@ -121,22 +120,6 @@ class RealEvaluationToolTests(unittest.TestCase):
             _attachment_metrics(cases),
             {"precision": 0.5, "accuracy": 0.666667},
         )
-
-    def test_api_base_accepts_only_exact_loopback_scope(self) -> None:
-        self.assertEqual(
-            _validated_api_base("http://127.0.0.1:58001/api/v1/"),
-            "http://127.0.0.1:58001/api/v1",
-        )
-        for value in (
-            "https://127.0.0.1:58001/api/v1",
-            "http://127.0.0.1:58001@provider.invalid/api/v1",
-            "http://localhost.evil:58001/api/v1",
-            "http://localhost:58001/api/v1?secret=value",
-            "http://localhost:58001/other",
-        ):
-            with self.subTest(value=value), self.assertRaises(ValueError):
-                _validated_api_base(value)
-
 
 if __name__ == "__main__":
     unittest.main()

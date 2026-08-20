@@ -124,7 +124,7 @@ class FrozenJudgeRuntime:
 async def load_frozen_judge_runtime(
     profile_revision_id: UUID,
     *,
-    env_file: str | Path = ".env",
+    env_file: str | Path,
 ) -> FrozenJudgeRuntime:
     """Resolve one immutable local model profile without exposing its secret."""
 

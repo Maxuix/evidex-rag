@@ -15,7 +15,7 @@ from pathlib import Path
 import time
 from typing import Any
 from urllib.request import Request, urlopen
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 from apps.worker.dependencies import build_worker_dependencies
 from rag_kb.adapters.model_api.langchain_chat import LangChainChatModelAdapter
@@ -45,15 +45,17 @@ from tools.evaluate_agent_complex_qa import (
     _wait_for_terminal,
 )
 from tools.run_adaptive_graph_r4 import _load_runtime_facts
+from tools.evaluation_runtime import (
+    DEFAULT_RUNTIME_MANIFEST,
+    AdaptiveGraphIdentity,
+    EvaluationRuntime,
+    EvaluationRuntimeError,
+    load_evaluation_runtime,
+)
 
 
 CONFIRM = "RUN_ROUTING_RAG_R7_STAGE_A"
 SCHEMA_VERSION = "adaptive_graph_r7_stage_a_v2"
-KB_ID = UUID("01a00fc2-2de3-7d42-adf3-003e7d83793a")
-INDEX_REVISION_ID = UUID("01a00fc2-2de9-7d8e-8dfc-4644e3daea8c")
-GRAPH_BUILD_ID = UUID("ca1a9671-d940-46a0-804c-307239b9d719")
-ANSWER_PROFILE_REVISION_ID = UUID("01a00fc0-759d-7c14-95cc-d46453c99030")
-JUDGE_PROFILE_REVISION_ID = UUID("01a00fd0-c86e-739f-a2ac-b76de6d320d8")
 JUDGE_MODEL_OVERRIDE = "deepseek-v4-flash"
 ANSWER_EXECUTION_LIMIT = 78
 JUDGE_CALL_LIMIT = 78
@@ -80,10 +82,19 @@ the corpus is complete. Call submit_routing_judgement exactly once."""
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--phase", choices=("preflight", "answers", "judge", "report"), required=True)
-    parser.add_argument("--api", default="http://127.0.0.1:8000/api/v1")
-    parser.add_argument("--output-root", type=Path, required=True)
-    parser.add_argument("--confirm", required=True)
+    parser.add_argument("--phase", choices=("preflight", "answers", "judge", "report"))
+    parser.add_argument(
+        "--evaluation-runtime",
+        type=Path,
+        default=DEFAULT_RUNTIME_MANIFEST,
+    )
+    parser.add_argument("--output-root", type=Path)
+    parser.add_argument("--confirm")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="validate the frozen corpus without API, database, Graph, or Provider access",
+    )
     return parser
 
 
@@ -127,9 +138,15 @@ def _load_checkpoint(path: Path) -> dict[str, Any]:
     return value
 
 
-def _runtime(manifest: Mapping[str, Any]) -> dict[str, Any]:
+def _runtime(
+    manifest: Mapping[str, Any],
+    runtime: EvaluationRuntime,
+) -> dict[str, Any]:
     if manifest.get("dataset_id") != "routing-rag-v2":
         raise RuntimeError("r7_dataset_identity_changed")
+    identity = runtime.adaptive_graph
+    if identity is None:
+        raise RuntimeError("r7_adaptive_graph_identity_missing")
     return {
         "schema_version": SCHEMA_VERSION,
         "created_at": datetime.now(UTC).isoformat(),
@@ -142,11 +159,12 @@ def _runtime(manifest: Mapping[str, Any]) -> dict[str, Any]:
         ),
         "evaluator_sha256": _digest_file(Path(__file__).with_name("evaluate_adaptive_graph_route.py")),
         "runner_sha256": _digest_file(Path(__file__)),
-        "knowledge_base_id": str(KB_ID),
-        "index_revision_id": str(INDEX_REVISION_ID),
-        "graph_build_id": str(GRAPH_BUILD_ID),
-        "answer_profile_revision_id": str(ANSWER_PROFILE_REVISION_ID),
-        "judge_source_profile_revision_id": str(JUDGE_PROFILE_REVISION_ID),
+        "evaluation_owner": runtime.owner,
+        "knowledge_base_id": str(identity.knowledge_base_id),
+        "index_revision_id": str(identity.index_revision_id),
+        "graph_build_id": str(identity.graph_build_id),
+        "answer_profile_revision_id": str(identity.answer_profile_revision_id),
+        "judge_source_profile_revision_id": str(identity.judge_profile_revision_id),
         "answer_model": "mimo-v2.5",
         "answer_model_source": "profile_revision",
         "judge_model": JUDGE_MODEL_OVERRIDE,
@@ -253,15 +271,27 @@ def _answer_totals(state: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _initial_answers(manifest: Mapping[str, Any]) -> dict[str, Any]:
-    return {"runtime": _runtime(manifest), "executions": {}, "status": "running"}
+def _initial_answers(
+    manifest: Mapping[str, Any],
+    runtime: EvaluationRuntime,
+) -> dict[str, Any]:
+    return {
+        "runtime": _runtime(manifest, runtime),
+        "executions": {},
+        "status": "running",
+    }
 
 
-def _session(api: str, case_id: str, lane: str) -> str:
+def _session(runtime: EvaluationRuntime, case_id: str, lane: str) -> str:
+    identity = runtime.adaptive_graph
+    assert identity is not None
     value = _json_request(
-        f"{api}/chat/sessions",
+        f"{runtime.api_base_url}/chat/sessions",
         method="POST",
-        payload={"knowledge_base_id": str(KB_ID), "title": f"r7a-{case_id}-{lane}"},
+        payload={
+            "knowledge_base_id": str(identity.knowledge_base_id),
+            "title": f"r7a-{case_id}-{lane}",
+        },
     )
     session_id = value.get("id")
     if not isinstance(session_id, str):
@@ -269,18 +299,25 @@ def _session(api: str, case_id: str, lane: str) -> str:
     return session_id
 
 
-def _poll_or_create(api: str, case: Mapping[str, Any], lane: str, item: dict[str, Any]) -> dict[str, Any]:
+def _poll_or_create(
+    runtime: EvaluationRuntime,
+    case: Mapping[str, Any],
+    lane: str,
+    item: dict[str, Any],
+) -> dict[str, Any]:
+    identity = runtime.adaptive_graph
+    assert identity is not None
     run_id = item.get("run_id")
     if not isinstance(run_id, str):
         payload = {
             "session_id": item["session_id"],
-            "knowledge_base_id": str(KB_ID),
+            "knowledge_base_id": str(identity.knowledge_base_id),
             "message": str(case["question"]),
             "retrieval": {"mode": "vector" if lane == "simple" else "auto", "top_k": 10, "rerank_mode": "classic"},
-            "model_profile_revision_id": str(ANSWER_PROFILE_REVISION_ID),
+            "model_profile_revision_id": str(identity.answer_profile_revision_id),
         }
         created = _json_request(
-            f"{api}/chat/runs",
+            f"{runtime.api_base_url}/chat/runs",
             method="POST",
             headers={"Idempotency-Key": item["idempotency_key"]},
             payload=payload,
@@ -289,11 +326,16 @@ def _poll_or_create(api: str, case: Mapping[str, Any], lane: str, item: dict[str
         if not isinstance(run_id, str):
             raise RuntimeError("r7_run_id_invalid")
         item["run_id"] = run_id
-    terminal = _wait_for_terminal(api, run_id, timeout_seconds=900.0, poll_seconds=1.0)
+    terminal = _wait_for_terminal(
+        runtime.api_base_url,
+        run_id,
+        timeout_seconds=900.0,
+        poll_seconds=1.0,
+    )
     if terminal.get("status") != "completed":
         code = (terminal.get("error") or {}).get("code")
         raise RuntimeError(f"r7_answer_not_completed:{case['case_id']}:{lane}:{code or 'unknown'}")
-    if str(terminal.get("index_revision_id")) != str(INDEX_REVISION_ID):
+    if str(terminal.get("index_revision_id")) != str(identity.index_revision_id):
         raise RuntimeError("r7_index_revision_changed")
     expected_profile = "adaptive_graphiti_v1" if lane == "auto" else "exact_vector_v2"
     retrieval = terminal.get("retrieval")
@@ -322,10 +364,19 @@ def _poll_or_create(api: str, case: Mapping[str, Any], lane: str, item: dict[str
     }
 
 
-def _run_answers(arguments: argparse.Namespace, manifest: Mapping[str, Any], cases: list[dict[str, Any]]) -> dict[str, Any]:
+def _run_answers(
+    arguments: argparse.Namespace,
+    manifest: Mapping[str, Any],
+    cases: list[dict[str, Any]],
+    runtime: EvaluationRuntime,
+) -> dict[str, Any]:
     path = arguments.output_root / "answers.json"
-    expected_runtime = _runtime(manifest)
-    state = _load_checkpoint(path) if path.exists() else _initial_answers(manifest)
+    expected_runtime = _runtime(manifest, runtime)
+    state = (
+        _load_checkpoint(path)
+        if path.exists()
+        else _initial_answers(manifest, runtime)
+    )
     _assert_runtime_identity(state, expected_runtime, artifact="answers")
     schedule: list[tuple[dict[str, Any], str]] = []
     for index, case in enumerate(cases):
@@ -342,13 +393,13 @@ def _run_answers(arguments: argparse.Namespace, manifest: Mapping[str, Any], cas
                 "case_id": str(case["case_id"]),
                 "lane": lane,
                 "status": "started",
-                "session_id": _session(arguments.api, str(case["case_id"]), lane),
+                "session_id": _session(runtime, str(case["case_id"]), lane),
                 "idempotency_key": str(uuid4()),
             }
             state["executions"][key] = item
             _write_checkpoint(path, state)
         started = time.perf_counter()
-        completed = _poll_or_create(arguments.api, case, lane, item)
+        completed = _poll_or_create(runtime, case, lane, item)
         completed["elapsed_seconds"] = round(time.perf_counter() - started, 3)
         state["executions"][key] = completed
         totals = _answer_totals(state)
@@ -365,11 +416,14 @@ def _run_answers(arguments: argparse.Namespace, manifest: Mapping[str, Any], cas
     return state
 
 
-async def _judge_adapter(dependencies):
+async def _judge_adapter(
+    dependencies,
+    identity: AdaptiveGraphIdentity,
+):
     _, bundle, _ = await _load_runtime_facts(
         dependencies,
-        kb_id=KB_ID,
-        model_revision_id=JUDGE_PROFILE_REVISION_ID,
+        kb_id=identity.knowledge_base_id,
+        model_revision_id=identity.judge_profile_revision_id,
     )
     secret = await asyncio.to_thread(
         LocalModelSecretStore(dependencies.settings.model_secrets.root_path).read,
@@ -414,9 +468,14 @@ def _judge_tool() -> ChatToolDefinition:
     )
 
 
-async def _run_judge(arguments: argparse.Namespace, manifest: Mapping[str, Any], cases: list[dict[str, Any]]) -> dict[str, Any]:
+async def _run_judge(
+    arguments: argparse.Namespace,
+    manifest: Mapping[str, Any],
+    cases: list[dict[str, Any]],
+    runtime: EvaluationRuntime,
+) -> dict[str, Any]:
     answers = _load_checkpoint(arguments.output_root / "answers.json")
-    expected_runtime = _runtime(manifest)
+    expected_runtime = _runtime(manifest, runtime)
     _assert_runtime_identity(answers, expected_runtime, artifact="answers")
     if answers.get("status") != "completed" or len(answers.get("executions", {})) != ANSWER_EXECUTION_LIMIT:
         raise RuntimeError("r7_answers_incomplete")
@@ -424,9 +483,11 @@ async def _run_judge(arguments: argparse.Namespace, manifest: Mapping[str, Any],
     state = _load_checkpoint(path) if path.exists() else {"runtime": expected_runtime, "judgements": {}, "status": "running"}
     _assert_runtime_identity(state, expected_runtime, artifact="judgements")
     by_case = {str(case["case_id"]): case for case in cases}
-    dependencies = build_worker_dependencies(env_file=None)
+    identity = runtime.adaptive_graph
+    assert identity is not None
+    dependencies = build_worker_dependencies(env_file=runtime.env_file)
     try:
-        model, expected_model = await _judge_adapter(dependencies)
+        model, expected_model = await _judge_adapter(dependencies, identity)
         for key, answer in answers["executions"].items():
             if key in state["judgements"]:
                 continue
@@ -458,7 +519,10 @@ async def _run_judge(arguments: argparse.Namespace, manifest: Mapping[str, Any],
             state["judgements"][key] = {
                 "case_id": answer["case_id"],
                 "lane": answer["lane"],
-                "cache_key": routing_judge_cache_key(packet, profile_revision=str(JUDGE_PROFILE_REVISION_ID)),
+                "cache_key": routing_judge_cache_key(
+                    packet,
+                    profile_revision=str(identity.judge_profile_revision_id),
+                ),
                 "judgement": judgement,
                 "usage": usage,
                 "estimated_cost_usd": _judge_cost(usage),
@@ -496,9 +560,14 @@ def _percentile(values: list[float], fraction: float) -> float:
     return round(ordered[index], 3)
 
 
-def _report(arguments: argparse.Namespace, manifest: Mapping[str, Any], cases: list[dict[str, Any]]) -> dict[str, Any]:
+def _report(
+    arguments: argparse.Namespace,
+    manifest: Mapping[str, Any],
+    cases: list[dict[str, Any]],
+    runtime: EvaluationRuntime,
+) -> dict[str, Any]:
     answers = _load_checkpoint(arguments.output_root / "answers.json")
-    expected_runtime = _runtime(manifest)
+    expected_runtime = _runtime(manifest, runtime)
     _assert_runtime_identity(answers, expected_runtime, artifact="answers")
     judge_path = arguments.output_root / "judgements.json"
     judges = _load_checkpoint(judge_path) if judge_path.exists() else None
@@ -574,7 +643,7 @@ def _report(arguments: argparse.Namespace, manifest: Mapping[str, Any], cases: l
     else:
         decision = "stage_a_no_go" if losses - wins > 2 else "stage_a_requires_rounds_2_3"
     report = {
-        "runtime": _runtime(manifest),
+        "runtime": _runtime(manifest, runtime),
         "artifacts": {"answers_sha256": _digest_file(arguments.output_root / "answers.json"), "judgements_sha256": _digest_file(judge_path) if judge_complete else None},
         "primary": {
             "metric_order": [
@@ -600,39 +669,91 @@ def _report(arguments: argparse.Namespace, manifest: Mapping[str, Any], cases: l
     return report
 
 
-async def _preflight(arguments: argparse.Namespace, manifest: Mapping[str, Any], cases: list[dict[str, Any]]) -> dict[str, Any]:
+async def _preflight(
+    arguments: argparse.Namespace,
+    manifest: Mapping[str, Any],
+    cases: list[dict[str, Any]],
+    runtime: EvaluationRuntime,
+) -> dict[str, Any]:
     if len(cases) != 39:
         raise RuntimeError("r7_case_count_changed")
-    with urlopen(Request(arguments.api.rsplit("/api/v1", 1)[0] + "/health/ready"), timeout=10) as response:
+    with urlopen(
+        Request(runtime.api_base_url.rsplit("/api/v1", 1)[0] + "/health/ready"),
+        timeout=10,
+    ) as response:
         if response.status != 200:
             raise RuntimeError("r7_api_not_ready")
-    dependencies = build_worker_dependencies(env_file=None)
+    identity = runtime.adaptive_graph
+    assert identity is not None
+    dependencies = build_worker_dependencies(env_file=runtime.env_file)
     try:
-        knowledge_base, bundle, _ = await _load_runtime_facts(dependencies, kb_id=KB_ID, model_revision_id=ANSWER_PROFILE_REVISION_ID)
-        if knowledge_base.active_index_revision_id != INDEX_REVISION_ID or bundle.current_revision.model != "mimo-v2.5":
+        knowledge_base, bundle, _ = await _load_runtime_facts(
+            dependencies,
+            kb_id=identity.knowledge_base_id,
+            model_revision_id=identity.answer_profile_revision_id,
+        )
+        if (
+            knowledge_base.active_index_revision_id != identity.index_revision_id
+            or bundle.current_revision.model != "mimo-v2.5"
+        ):
             raise RuntimeError("r7_runtime_identity_changed")
-        _, judge_bundle, _ = await _load_runtime_facts(dependencies, kb_id=KB_ID, model_revision_id=JUDGE_PROFILE_REVISION_ID)
+        _, judge_bundle, _ = await _load_runtime_facts(
+            dependencies,
+            kb_id=identity.knowledge_base_id,
+            model_revision_id=identity.judge_profile_revision_id,
+        )
         if judge_bundle.current_revision.model != "mimo-v2.5":
             raise RuntimeError("r7_judge_identity_changed")
     finally:
         await dependencies.close()
-    return {"status": "preflight_ok", "runtime": _runtime(manifest), "answer_executions": ANSWER_EXECUTION_LIMIT, "judge_calls": JUDGE_CALL_LIMIT}
+    return {
+        "status": "preflight_ok",
+        "runtime": _runtime(manifest, runtime),
+        "answer_executions": ANSWER_EXECUTION_LIMIT,
+        "judge_calls": JUDGE_CALL_LIMIT,
+    }
 
 
 def main() -> int:
     arguments = _parser().parse_args()
-    if arguments.confirm != CONFIRM:
-        raise SystemExit(f"--confirm must equal {CONFIRM}")
     manifest = load_manifest()
     cases = load_cases(Path(str(manifest["case_file"])))
+    if arguments.dry_run:
+        if arguments.confirm is not None or arguments.phase is not None:
+            raise SystemExit("--dry-run cannot be combined with execution options")
+        if len(cases) != 39:
+            raise SystemExit("r7_case_count_changed")
+        print(
+            _canonical(
+                {
+                    "status": "offline_dry_run_ok",
+                    "dataset_id": manifest["dataset_id"],
+                    "case_count": len(cases),
+                    "answer_executions": ANSWER_EXECUTION_LIMIT,
+                    "judge_calls": JUDGE_CALL_LIMIT,
+                }
+            )
+        )
+        return 0
+    if arguments.confirm != CONFIRM:
+        raise SystemExit(f"--confirm must equal {CONFIRM}")
+    if arguments.phase is None or arguments.output_root is None:
+        raise SystemExit("--phase and --output-root are required for execution")
+    try:
+        runtime = load_evaluation_runtime(
+            arguments.evaluation_runtime,
+            require_adaptive_graph=True,
+        )
+    except (EvaluationRuntimeError, OSError):
+        raise SystemExit("isolated evaluation runtime is unavailable") from None
     if arguments.phase == "preflight":
-        result = asyncio.run(_preflight(arguments, manifest, cases))
+        result = asyncio.run(_preflight(arguments, manifest, cases, runtime))
     elif arguments.phase == "answers":
-        result = _run_answers(arguments, manifest, cases)
+        result = _run_answers(arguments, manifest, cases, runtime)
     elif arguments.phase == "judge":
-        result = asyncio.run(_run_judge(arguments, manifest, cases))
+        result = asyncio.run(_run_judge(arguments, manifest, cases, runtime))
     else:
-        result = _report(arguments, manifest, cases)
+        result = _report(arguments, manifest, cases, runtime)
     print(_canonical({key: value for key, value in result.items() if key not in {"executions", "judgements"}}))
     return 0
 

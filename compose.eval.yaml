@@ -1,0 +1,69 @@
+x-evaluation-service: &evaluation-service
+  env_file: !override
+    - ${RAG_KB_EVAL_ENV_FILE:?evaluation runtime env file is required}
+  labels:
+    rag-kb.evaluation-owner: ${RAG_KB_EVAL_OWNER:?evaluation owner is required}
+
+services:
+  postgres:
+    labels:
+      rag-kb.evaluation-owner: ${RAG_KB_EVAL_OWNER:?evaluation owner is required}
+
+  falkordb:
+    labels:
+      rag-kb.evaluation-owner: ${RAG_KB_EVAL_OWNER:?evaluation owner is required}
+
+  storage-init:
+    <<: *evaluation-service
+    image: rag-kb-app:eval
+    volumes:
+      - ${RAG_KB_EVAL_RUNTIME_ROOT:?evaluation runtime root is required}/logs:/var/log/rag-kb
+
+  migrate:
+    <<: *evaluation-service
+    image: rag-kb-app:eval
+
+  maintenance:
+    <<: *evaluation-service
+    image: rag-kb-app:eval
+    volumes:
+      - ${RAG_KB_EVAL_RUNTIME_ROOT:?evaluation runtime root is required}/logs:/var/log/rag-kb
+
+  api:
+    <<: *evaluation-service
+    image: rag-kb-app:eval
+    volumes:
+      - ${RAG_KB_EVAL_RUNTIME_ROOT:?evaluation runtime root is required}/logs:/var/log/rag-kb
+
+  worker:
+    <<: *evaluation-service
+    image: rag-kb-app:eval
+    volumes:
+      - ${RAG_KB_EVAL_RUNTIME_ROOT:?evaluation runtime root is required}/logs:/var/log/rag-kb
+
+  frontend:
+    image: rag-kb-user-frontend:eval
+    labels:
+      rag-kb.evaluation-owner: ${RAG_KB_EVAL_OWNER:?evaluation owner is required}
+
+volumes:
+  postgres-data:
+    labels:
+      rag-kb.evaluation-owner: ${RAG_KB_EVAL_OWNER:?evaluation owner is required}
+  source-data:
+    labels:
+      rag-kb.evaluation-owner: ${RAG_KB_EVAL_OWNER:?evaluation owner is required}
+  inference-model-cache:
+    labels:
+      rag-kb.evaluation-owner: ${RAG_KB_EVAL_OWNER:?evaluation owner is required}
+  model-secrets:
+    labels:
+      rag-kb.evaluation-owner: ${RAG_KB_EVAL_OWNER:?evaluation owner is required}
+  falkordb-data:
+    labels:
+      rag-kb.evaluation-owner: ${RAG_KB_EVAL_OWNER:?evaluation owner is required}
+
+networks:
+  default:
+    labels:
+      rag-kb.evaluation-owner: ${RAG_KB_EVAL_OWNER:?evaluation owner is required}

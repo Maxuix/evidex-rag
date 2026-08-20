@@ -15,7 +15,6 @@ import tempfile
 import time
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
@@ -23,6 +22,11 @@ from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.shared import Inches
 from PIL import Image, ImageDraw, ImageFont
+from tools.evaluation_runtime import (
+    DEFAULT_RUNTIME_MANIFEST,
+    EvaluationRuntimeError,
+    load_evaluation_runtime,
+)
 
 
 _OOXML = "application/vnd.openxmlformats-officedocument"
@@ -38,12 +42,12 @@ MEDIA_TYPES = {
 }
 
 
-def main() -> int:
+def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--api",
-        default="http://127.0.0.1:8000/api/v1",
-        help="loopback API base URL ending in /api/v1",
+        "--evaluation-runtime",
+        type=Path,
+        default=DEFAULT_RUNTIME_MANIFEST,
     )
     parser.add_argument("--top-k", type=int, default=5)
     parser.add_argument("--timeout-seconds", type=float, default=600.0)
@@ -52,6 +56,11 @@ def main() -> int:
         "--skip-chat",
         action="store_true",
         help="run retrieval evaluation without provider-backed ChatRun cases",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="generate and validate the temporary corpus without API or Provider access",
     )
     parser.add_argument(
         "--retrieval-strategy",
@@ -63,6 +72,11 @@ def main() -> int:
             "(default: exact_vector)"
         ),
     )
+    return parser
+
+
+def main() -> int:
+    parser = _parser()
     arguments = parser.parse_args()
     if not 1 <= arguments.top_k <= 20:
         parser.error("--top-k must be between 1 and 20")
@@ -77,10 +91,26 @@ def main() -> int:
             "other than exact_vector"
         )
 
+    if arguments.dry_run:
+        with tempfile.TemporaryDirectory(prefix="rag-kb-real-evaluation-") as directory:
+            corpus = _generate_corpus(Path(directory))
+            print(
+                json.dumps(
+                    {
+                        "status": "offline_dry_run_ok",
+                        "file_count": len(corpus),
+                        "total_bytes": sum(path.stat().st_size for path in corpus.values()),
+                    },
+                    sort_keys=True,
+                )
+            )
+        return 0
+
     try:
-        api = _validated_api_base(arguments.api)
-    except ValueError as error:
-        parser.error(str(error))
+        runtime = load_evaluation_runtime(arguments.evaluation_runtime)
+        api = runtime.api_base_url
+    except (EvaluationRuntimeError, OSError):
+        parser.error("isolated evaluation runtime is unavailable")
 
     started = time.perf_counter()
     with tempfile.TemporaryDirectory(prefix="rag-kb-real-evaluation-") as directory:
@@ -96,6 +126,7 @@ def main() -> int:
             retrieval_strategies=retrieval_strategies,
         )
     report["elapsed_seconds"] = round(time.perf_counter() - started, 3)
+    report["evaluation_owner"] = runtime.owner
     print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
     metrics = report["metrics"]
     assert isinstance(metrics, dict)
@@ -763,26 +794,6 @@ def _required_string(value: dict[str, Any], key: str) -> str:
     if not isinstance(item, str) or not item:
         raise RuntimeError(f"API response omitted {key}")
     return item
-
-
-def _validated_api_base(value: str) -> str:
-    parsed = urlparse(value.rstrip("/"))
-    if (
-        parsed.scheme != "http"
-        or parsed.hostname not in {"127.0.0.1", "localhost"}
-        or parsed.username is not None
-        or parsed.password is not None
-        or parsed.path != "/api/v1"
-        or parsed.params
-        or parsed.query
-        or parsed.fragment
-    ):
-        raise ValueError("--api must be a loopback /api/v1 URL")
-    try:
-        parsed.port
-    except ValueError as error:
-        raise ValueError("--api contains an invalid port") from error
-    return parsed.geturl()
 
 
 def _recall(cases: list[dict[str, object]]) -> float:
