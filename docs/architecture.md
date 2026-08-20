@@ -523,11 +523,9 @@ migrate 或切换个人 stack。`./start-local.sh` 先执行 content-safe doctor
 PostgreSQL、幂等校准现有 admin/migration/runtime 角色、构建带 Git revision label 的应用镜像、
 准备 source storage、执行 Alembic 并等待 API/Worker/frontend 健康。现有业务卷不会因启动被重置。
 
-旧 `.env.local` Compose state 与 `.env` application settings 的一次性收敛由
-`tools/migrate_local_manifest.py` 负责：默认只输出键计数与安全状态；`--apply` 创建 0600 旧 manifest
-备份后原子写入合并结果，并把两条 DSN 与 manifest 中的 runtime/migration credential 对齐。
-该操作不访问 Docker/数据库且保留 `.env`，legacy 文件只在后续精确清理中删除。模型 provider/profile
-继续通过 Web Chat 和数据库维护，不存在当前环境 fallback。常用命令：
+旧双-env、worktree override 和迁移备份已经退役；它们不是 runtime input，重新出现时 doctor 只报告
+content-safe stale warning。唯一有效配置是 primary checkout 的 0600 `.env.local`，模型 provider/profile
+继续通过 Web Chat 和数据库维护，不存在环境 fallback。常用命令：
 
 ```bash
 ./start-local.sh

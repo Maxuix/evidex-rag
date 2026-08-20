@@ -28,18 +28,10 @@ extracts credentials from containers, or rewrites the manifest; it reconciles
 the declared local database roles, applies migrations, builds revision-labelled
 images, starts the services, and waits for health. Existing volumes are retained.
 
-For the one-time transition from the retired `.env.local` + `.env` layout, run
-the preview first, then apply the owner-only atomic merge:
-
-```bash
-PYTHONPATH=src:. .venv/bin/python tools/migrate_local_manifest.py
-PYTHONPATH=src:. .venv/bin/python tools/migrate_local_manifest.py --apply
-```
-
-The apply step keeps `.env`, creates a 0600 backup of the old `.env.local`, and
-does not touch Docker or PostgreSQL. Those legacy files are removed only in the
-later explicit cleanup. Local image builds still use the configured HTTPS TUNA
-mirrors while retaining Debian's official security repository.
+Retired `.env`, per-worktree overrides, and migration backups are not runtime
+inputs. The doctor reports them as stale if they reappear. Local image builds
+still use the configured HTTPS TUNA mirrors while retaining Debian's official
+security repository.
 
 The environment has no model provider fallback. After startup, use the
 bottom-right model settings in Web Chat to add, validate, and select Chat and
