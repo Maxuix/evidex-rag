@@ -12,6 +12,7 @@ from rag_kb.domain import (
     ChatModelMessage,
     ChatModelRequest,
     ChatModelResponse,
+    ChatToolCall,
     ChatToolDefinition,
     GraphitiSupplementResult,
 )
@@ -63,6 +64,18 @@ class _RecordingModel:
             provider_request_id=None,
             usage={"total_tokens": 1},
         )
+
+
+class _QueuedModel:
+    def __init__(self, responses: list[ChatModelResponse]) -> None:
+        self.requests: list[ChatModelRequest] = []
+        self.responses = list(responses)
+
+    async def complete(self, request: ChatModelRequest) -> ChatModelResponse:
+        self.requests.append(request)
+        if not self.responses:
+            raise AssertionError("queued model response was exhausted")
+        return self.responses.pop(0)
 
 
 class _RecordingRetriever:
@@ -556,7 +569,10 @@ class AdaptiveGraphEvaluationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_forced_controller_overrides_only_next_call_after_simple(self) -> None:
         delegate = _RecordingModel()
-        controller = ForcedGraphitiSupplementChatModelPort(delegate)
+        controller = ForcedGraphitiSupplementChatModelPort(
+            delegate,
+            controller_mode="specific_tool_choice",
+        )
         tools = _tools()
         first = ChatModelRequest(
             messages=(ChatModelMessage("user", "原始问题"),),
@@ -587,6 +603,126 @@ class AdaptiveGraphEvaluationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(delegate.requests[1].tool_choice, "graphiti_supplement")
         self.assertEqual(delegate.requests[2].tool_choice, "required")
         self.assertEqual(delegate.requests[1].messages, second.messages)
+
+    async def test_provider_safe_controller_uses_single_tool_auto_and_observes_call(self) -> None:
+        simple_call = ChatModelResponse(
+            content="",
+            model="fake-model",
+            finish_reason="tool_calls",
+            provider_request_id=None,
+            usage={"total_tokens": 1},
+            tool_calls=(
+                ChatToolCall(
+                    "simple-1",
+                    "search_knowledge_base",
+                    {"queries": ["simple"]},
+                ),
+            ),
+        )
+        supplement_call = ChatModelResponse(
+            content="",
+            model="fake-model",
+            finish_reason="tool_calls",
+            provider_request_id=None,
+            usage={"total_tokens": 2},
+            tool_calls=(
+                ChatToolCall(
+                    "graph-1",
+                    "graphiti_supplement",
+                    {
+                        "query": "relation gap",
+                        "route_reason_code": "cross_document_relation_gap",
+                    },
+                ),
+            ),
+        )
+        delegate = _QueuedModel([simple_call, supplement_call])
+        controller = ForcedGraphitiSupplementChatModelPort(delegate)
+        tools = _tools()
+        initial_tools = tuple(
+            item for item in tools if item.name != "graphiti_supplement"
+        )
+        first = ChatModelRequest(
+            messages=(ChatModelMessage("user", "原始问题"),),
+            tools=initial_tools,
+            tool_choice="required",
+        )
+        await controller.complete(first)
+        second = ChatModelRequest(
+            messages=(
+                first.messages[0],
+                ChatModelMessage(
+                    "tool",
+                    '{"status":"ok","groups":[]}',
+                    tool_call_id="simple-1",
+                ),
+            ),
+            tools=tools,
+            tool_choice="required",
+        )
+        await controller.complete(second)
+
+        self.assertEqual(controller.replacements, 1)
+        self.assertEqual(controller.model_calls, 2)
+        self.assertEqual(
+            tuple(item.name for item in delegate.requests[0].tools),
+            ("search_knowledge_base",),
+        )
+        self.assertEqual(delegate.requests[0].tool_choice, "auto")
+        self.assertEqual(
+            tuple(item.name for item in delegate.requests[1].tools),
+            ("graphiti_supplement",),
+        )
+        self.assertEqual(delegate.requests[1].tool_choice, "auto")
+
+    async def test_provider_safe_controller_retries_without_counting_unobserved_call(self) -> None:
+        invalid = ChatModelResponse(
+            content="不能确定",
+            model="fake-model",
+            finish_reason="stop",
+            provider_request_id=None,
+            usage={"total_tokens": 1},
+        )
+        valid = ChatModelResponse(
+            content="",
+            model="fake-model",
+            finish_reason="tool_calls",
+            provider_request_id=None,
+            usage={"total_tokens": 1},
+            tool_calls=(
+                ChatToolCall(
+                    "graph-1",
+                    "graphiti_supplement",
+                    {
+                        "query": "relation gap",
+                        "route_reason_code": "relation_chain_gap",
+                    },
+                ),
+            ),
+        )
+        delegate = _QueuedModel([invalid, valid])
+        controller = ForcedGraphitiSupplementChatModelPort(delegate)
+        request = ChatModelRequest(
+            messages=(
+                ChatModelMessage("user", "原始问题"),
+                ChatModelMessage(
+                    "tool",
+                    '{"status":"ok","groups":[]}',
+                    tool_call_id="simple-1",
+                ),
+            ),
+            tools=_tools(),
+            tool_choice="required",
+        )
+        response = await controller.complete(request)
+
+        self.assertEqual(response.tool_calls[0].name, "graphiti_supplement")
+        self.assertEqual(controller.replacements, 1)
+        self.assertEqual(controller.model_calls, 2)
+        self.assertEqual(delegate.requests[1].tool_choice, "auto")
+        self.assertEqual(delegate.requests[1].tools[0].name, "graphiti_supplement")
+        self.assertEqual(delegate.requests[1].messages[-1].role, "user")
+        self.assertNotEqual(delegate.requests[1].messages, request.messages)
 
     async def test_forced_controller_has_explicit_single_tool_provider_fallback(self) -> None:
         delegate = _RecordingModel()
@@ -741,6 +877,7 @@ class AdaptiveGraphEvaluationTests(unittest.IsolatedAsyncioTestCase):
             chat_model_max_retries=0,
         )
         self.assertEqual(artifact["schema_version"], "adaptive_graph_replay_capture_v2")
+        self.assertEqual(artifact["controller_mode"], "single_tool_auto_fallback")
         self.assertEqual(artifact["case_count"], 1)
         self.assertNotIn("query", artifact["cases"][0])
         self.assertNotIn("query_sha256", artifact["cases"][0])

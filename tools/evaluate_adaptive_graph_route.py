@@ -28,6 +28,7 @@ from rag_kb.domain import (
     CHAT_GRAPHITI_ROUTE_RESULTS,
     ChatModelMessage,
     ChatModelRequest,
+    ChatModelResponse,
 )
 from rag_kb.ports.model_api import ChatModelAdapter
 
@@ -55,8 +56,25 @@ REPLAY_QUERY_MAX_CHARS = 2048
 EVALUATOR_EDGE_LIMITS = (8, 16, 32, 64)
 GRAPH_ROUTE_LABELS = frozenset({"simple", "graph"})
 FORCED_CONTROLLER_MODES = frozenset(
-    {"specific_tool_choice", "single_tool_required_fallback", "actual_auto"}
+    {
+        "specific_tool_choice",
+        "single_tool_required_fallback",
+        "single_tool_auto_fallback",
+        "actual_auto",
+    }
 )
+PROVIDER_SAFE_TOOL_ATTEMPTS = 2
+_PROVIDER_SAFE_RETRY_PROMPT = {
+    "search_knowledge_base": (
+        "For this evaluator capture turn, call exactly the supplied "
+        "search_knowledge_base tool. Do not submit an answer."
+    ),
+    "graphiti_supplement": (
+        "For this evaluator capture turn, call exactly the supplied "
+        "graphiti_supplement tool with one concise query for the remaining "
+        "relation gap. Do not submit an answer."
+    ),
+}
 RERANK_MODES = frozenset({"none", "classic", "local_minilm_v1"})
 JUDGE_VERDICTS = frozenset({"correct", "partial", "incorrect"})
 JUDGE_GROUNDING = frozenset({"supported", "partial", "unsupported"})
@@ -615,10 +633,10 @@ def _successful_simple_result(messages: Sequence[ChatModelMessage]) -> bool:
 
 @dataclass
 class ForcedGraphitiSupplementChatModelPort:
-    """Evaluator-only decorator that overrides exactly one next tool choice."""
+    """Evaluator-only decorator that controls one bounded supplement turn."""
 
     delegate: ChatModelAdapter
-    controller_mode: str = "specific_tool_choice"
+    controller_mode: str = "single_tool_auto_fallback"
     replacements: int = 0
     model_calls: int = 0
     usage: dict[str, int] = field(default_factory=dict)
@@ -640,9 +658,106 @@ class ForcedGraphitiSupplementChatModelPort:
         self.response_route_reason_codes.clear()
         self._used = False
 
+    @staticmethod
+    def _single_tool_request(
+        request: ChatModelRequest,
+        *,
+        tool_name: str,
+        retry: bool = False,
+    ) -> ChatModelRequest:
+        tools = tuple(item for item in request.tools if item.name == tool_name)
+        if len(tools) != 1:
+            raise RuntimeError("Provider-safe tool cardinality is invalid")
+        messages = request.messages
+        if retry:
+            messages = messages + (
+                ChatModelMessage("user", _PROVIDER_SAFE_RETRY_PROMPT[tool_name]),
+            )
+        return replace(
+            request,
+            messages=messages,
+            tools=tools,
+            tool_choice="auto",
+        )
+
+    async def _complete_provider_safe(
+        self,
+        request: ChatModelRequest,
+        *,
+        expected_tool: str,
+    ) -> ChatModelResponse:
+        """Use only the provider-neutral ``auto`` contract for R4 control.
+
+        This is intentionally confined to the evaluator decorator.  The
+        production Agent still sends its normal multi-tool request and keeps
+        its existing native loop contract.
+        """
+        response: ChatModelResponse | None = None
+        for attempt in range(PROVIDER_SAFE_TOOL_ATTEMPTS):
+            response = await self.delegate.complete(
+                self._single_tool_request(
+                    request,
+                    tool_name=expected_tool,
+                    retry=attempt > 0,
+                )
+            )
+            self._record_response(response)
+            if (
+                len(response.tool_calls) == 1
+                and response.tool_calls[0].name == expected_tool
+            ):
+                return response
+        if response is None:
+            raise RuntimeError("Provider-safe tool attempt budget is invalid")
+        return response
+
+    def _record_response(self, response: ChatModelResponse) -> None:
+        self.model_calls += 1
+        self.response_tool_names.append(
+            tuple(tool_call.name for tool_call in response.tool_calls)
+        )
+        self.response_finish_reasons.append(response.finish_reason)
+        route_reason = None
+        if response.tool_calls:
+            candidate = response.tool_calls[0].arguments.get("route_reason_code")
+            if isinstance(candidate, str) and candidate in CHAT_GRAPHITI_ROUTE_REASONS:
+                route_reason = str(candidate)
+        self.response_route_reason_codes.append(route_reason)
+        for key, value in response.usage.items():
+            self.usage[key] = self.usage.get(key, 0) + value
+
     async def complete(self, request: ChatModelRequest):
         effective = request
         tool_names = {item.name for item in request.tools}
+        provider_safe_initial = (
+            self.controller_mode == "single_tool_auto_fallback"
+            and not self._used
+            and "graphiti_supplement" not in tool_names
+            and str(request.tool_choice) == "required"
+        )
+        provider_safe_supplement = (
+            self.controller_mode == "single_tool_auto_fallback"
+            and not self._used
+            and "graphiti_supplement" in tool_names
+            and _successful_simple_result(request.messages)
+        )
+        if provider_safe_initial:
+            return await self._complete_provider_safe(
+                request,
+                expected_tool="search_knowledge_base",
+            )
+        if provider_safe_supplement:
+            response = await self._complete_provider_safe(
+                request,
+                expected_tool="graphiti_supplement",
+            )
+            if (
+                len(response.tool_calls) == 1
+                and response.tool_calls[0].name == "graphiti_supplement"
+            ):
+                self._used = True
+                self.replacements += 1
+            return response
         if (
             self.controller_mode == "single_tool_required_fallback"
             and not self._used
@@ -683,19 +798,7 @@ class ForcedGraphitiSupplementChatModelPort:
             self._used = True
             self.replacements += 1
         response = await self.delegate.complete(effective)
-        self.model_calls += 1
-        self.response_tool_names.append(
-            tuple(tool_call.name for tool_call in response.tool_calls)
-        )
-        self.response_finish_reasons.append(response.finish_reason)
-        route_reason = None
-        if response.tool_calls:
-            candidate = response.tool_calls[0].arguments.get("route_reason_code")
-            if isinstance(candidate, str) and candidate in CHAT_GRAPHITI_ROUTE_REASONS:
-                route_reason = str(candidate)
-        self.response_route_reason_codes.append(route_reason)
-        for key, value in response.usage.items():
-            self.usage[key] = self.usage.get(key, 0) + value
+        self._record_response(response)
         return response
 
 
@@ -855,7 +958,7 @@ def build_replay_capture_artifact(
     graph_build_id: str,
     chat_model_profile_revision_id: str,
     captures: Sequence[GraphitiSupplementCapture | Mapping[str, Any]],
-    controller_mode: str = "specific_tool_choice",
+    controller_mode: str = "single_tool_auto_fallback",
     chat_model: str | None = None,
     chat_model_source: str | None = None,
     chat_model_max_output_tokens: int | None = None,

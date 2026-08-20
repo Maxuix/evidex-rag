@@ -84,7 +84,7 @@ class R4CheckpointTests(unittest.TestCase):
     def test_override_uses_single_tool_fallback_controller(self) -> None:
         self.assertEqual(
             _controller_mode(replay_mode="forced", model_override=None),
-            "specific_tool_choice",
+            "single_tool_auto_fallback",
         )
         self.assertEqual(
             _controller_mode(
