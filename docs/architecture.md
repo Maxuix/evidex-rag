@@ -541,6 +541,10 @@ Graphiti build 继续使用 immutable build 代际作为 retry 事实。外部 G
 但 PostgreSQL 映射尚未提交时，重试先删除该未提交 Episode，再以同一身份摄入；已提交映射不会重复
 调用 Provider。显式 retry 只有在 revision、serving digest、Chat/Embedding profile、model、dimension
 与 extractor 均未变化时原地恢复；输入变化或 force rebuild 才 supersede 旧 build 并建立新代际。
+Episode 写入后、mapping 提交前，Graphiti runtime 在当前 build-scoped Falkor graph 中删除
+`source.uuid = target.uuid` 的非法 `RELATES_TO` 自环；这是对 structured extraction prompt 的持久化边界
+保护，不依赖 Provider 永远服从提示。ready probe 仍检查自环为零，清理失败或 probe 不完整会保留 failed
+build 而不发布为 READY。
 失败持久码由 `preflight`、`episode_extraction` 或 `finalize` phase 加只基于异常类型链的短 fingerprint
 组成，因此可在没有旧日志时聚合故障位置，同时不保存异常消息、Provider payload、Chunk 正文或实体名称。
 
