@@ -172,6 +172,7 @@ class EvaluationRuntimeTests(unittest.TestCase):
                 self.assertIn("--dry-run", help_text)
                 self.assertNotIn("--api", help_text)
                 self.assertNotIn("--env-file", help_text)
+        self.assertTrue(r7_parser().parse_args(["--host-worker"]).host_worker)
 
     def test_eval_env_replaces_database_identity_and_drops_legacy_provider(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

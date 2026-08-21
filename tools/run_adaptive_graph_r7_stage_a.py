@@ -97,6 +97,14 @@ def _parser() -> argparse.ArgumentParser:
             "Simple path-completeness labels and complete-path layer metrics."
         ),
     )
+    parser.add_argument(
+        "--host-worker",
+        action="store_true",
+        help=(
+            "Process each newly-created ChatRun with one bounded host .venv "
+            "worker before polling its terminal result; never starts Docker."
+        ),
+    )
     parser.add_argument("--confirm")
     parser.add_argument(
         "--dry-run",
@@ -361,11 +369,55 @@ def _session(runtime: EvaluationRuntime, case_id: str, lane: str) -> str:
     return session_id
 
 
-def _poll_or_create(
+class _HostChatRunDriver:
+    """Run only the current R7 ChatRun through host Python dependencies."""
+
+    def __init__(self, runtime: EvaluationRuntime) -> None:
+        self._runtime = runtime
+        self._dependencies = None
+
+    async def start(self) -> None:
+        if self._dependencies is not None:
+            return
+        self._dependencies = build_worker_dependencies(
+            env_file=self._runtime.env_file,
+            worker_id=f"r7-host-{uuid4().hex}",
+        )
+        await self._dependencies.start()
+
+    async def close(self) -> None:
+        if self._dependencies is None:
+            return
+        dependencies = self._dependencies
+        self._dependencies = None
+        await dependencies.close()
+
+    async def process(self, run_id: str) -> None:
+        dependencies = self._dependencies
+        if dependencies is None:
+            raise RuntimeError("r7_host_worker_not_started")
+        lease = await dependencies.chat_scheduler.claim_once()
+        if lease is None:
+            # An already-running isolated worker may have claimed the run. The
+            # normal terminal poll below remains the source of truth.
+            return
+        if str(lease.run_id) != run_id:
+            raise RuntimeError("r7_host_worker_claimed_unexpected_run")
+        stopped = asyncio.Event()
+        timeout = dependencies.settings.job_poller.chat_deadline_seconds + 30.0
+        await asyncio.wait_for(
+            dependencies.chat_scheduler.execute(lease, stopped),
+            timeout=timeout,
+        )
+
+
+async def _poll_or_create(
     runtime: EvaluationRuntime,
     case: Mapping[str, Any],
     lane: str,
     item: dict[str, Any],
+    *,
+    host_worker: _HostChatRunDriver | None = None,
 ) -> dict[str, Any]:
     identity = runtime.adaptive_graph
     assert identity is not None
@@ -388,6 +440,8 @@ def _poll_or_create(
         if not isinstance(run_id, str):
             raise RuntimeError("r7_run_id_invalid")
         item["run_id"] = run_id
+    if host_worker is not None:
+        await host_worker.process(run_id)
     terminal = _wait_for_terminal(
         runtime.api_base_url,
         run_id,
@@ -426,7 +480,7 @@ def _poll_or_create(
     }
 
 
-def _run_answers(
+async def _run_answers(
     arguments: argparse.Namespace,
     manifest: Mapping[str, Any],
     cases: list[dict[str, Any]],
@@ -444,38 +498,51 @@ def _run_answers(
     for index, case in enumerate(cases):
         lanes = ("simple", "auto") if index % 2 == 0 else ("auto", "simple")
         schedule.extend((case, lane) for lane in lanes)
-    for case, lane in schedule:
-        key = f"{case['case_id']}:{lane}"
-        existing = state["executions"].get(key)
-        if isinstance(existing, Mapping) and existing.get("status") == "completed":
-            continue
-        item = dict(existing or {})
-        if "session_id" not in item:
-            item = {
-                "case_id": str(case["case_id"]),
-                "lane": lane,
-                "status": "started",
-                "session_id": _session(runtime, str(case["case_id"]), lane),
-                "idempotency_key": str(uuid4()),
-            }
-            state["executions"][key] = item
+    host_worker = _HostChatRunDriver(runtime) if arguments.host_worker else None
+    if host_worker is not None:
+        await host_worker.start()
+    try:
+        for case, lane in schedule:
+            key = f"{case['case_id']}:{lane}"
+            existing = state["executions"].get(key)
+            if isinstance(existing, Mapping) and existing.get("status") == "completed":
+                continue
+            item = dict(existing or {})
+            if "session_id" not in item:
+                item = {
+                    "case_id": str(case["case_id"]),
+                    "lane": lane,
+                    "status": "started",
+                    "session_id": _session(runtime, str(case["case_id"]), lane),
+                    "idempotency_key": str(uuid4()),
+                }
+                state["executions"][key] = item
+                _write_checkpoint(path, state)
+            started = time.perf_counter()
+            completed = await _poll_or_create(
+                runtime,
+                case,
+                lane,
+                item,
+                host_worker=host_worker,
+            )
+            completed["elapsed_seconds"] = round(time.perf_counter() - started, 3)
+            state["executions"][key] = completed
+            totals = _answer_totals(state)
+            state["totals"] = {key: value for key, value in totals.items() if key != "lane_elapsed"}
             _write_checkpoint(path, state)
-        started = time.perf_counter()
-        completed = _poll_or_create(runtime, case, lane, item)
-        completed["elapsed_seconds"] = round(time.perf_counter() - started, 3)
-        state["executions"][key] = completed
-        totals = _answer_totals(state)
-        state["totals"] = {key: value for key, value in totals.items() if key != "lane_elapsed"}
+            print(_canonical({"event": "r7_answer_completed", "case_id": case["case_id"], "lane": lane, "completed": totals["completed"], "total_tokens": totals["total_tokens"]}), flush=True)
+            if totals["completed"] > ANSWER_EXECUTION_LIMIT:
+                raise RuntimeError("r7_answer_execution_budget_exceeded")
+            if totals["total_tokens"] > ANSWER_TOKEN_LIMIT or totals["estimated_cost_usd"] > TOTAL_COST_LIMIT_USD * 0.8:
+                raise RuntimeError("r7_answer_budget_exceeded")
+        state["status"] = "completed"
+        state["totals"] = {key: value for key, value in _answer_totals(state).items() if key != "lane_elapsed"}
         _write_checkpoint(path, state)
-        print(_canonical({"event": "r7_answer_completed", "case_id": case["case_id"], "lane": lane, "completed": totals["completed"], "total_tokens": totals["total_tokens"]}), flush=True)
-        if totals["completed"] > ANSWER_EXECUTION_LIMIT:
-            raise RuntimeError("r7_answer_execution_budget_exceeded")
-        if totals["total_tokens"] > ANSWER_TOKEN_LIMIT or totals["estimated_cost_usd"] > TOTAL_COST_LIMIT_USD * 0.8:
-            raise RuntimeError("r7_answer_budget_exceeded")
-    state["status"] = "completed"
-    state["totals"] = {key: value for key, value in _answer_totals(state).items() if key != "lane_elapsed"}
-    _write_checkpoint(path, state)
-    return state
+        return state
+    finally:
+        if host_worker is not None:
+            await host_worker.close()
 
 
 async def _judge_adapter(
@@ -837,7 +904,7 @@ def main() -> int:
     if arguments.phase == "preflight":
         result = asyncio.run(_preflight(arguments, manifest, cases, runtime))
     elif arguments.phase == "answers":
-        result = _run_answers(arguments, manifest, cases, runtime)
+        result = asyncio.run(_run_answers(arguments, manifest, cases, runtime))
     elif arguments.phase == "judge":
         result = asyncio.run(_run_judge(arguments, manifest, cases, runtime))
     else:
