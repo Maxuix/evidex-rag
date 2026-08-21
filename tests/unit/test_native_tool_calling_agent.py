@@ -10,6 +10,7 @@ from uuid import uuid4
 from rag_kb.answering.agent import (
     AGENT_TRACE_ARTIFACT,
     NativeToolCallingAgent,
+    _has_graph_relation_signal,
     _initial_messages,
     _search_arguments,
     _supplement_arguments,
@@ -166,12 +167,12 @@ def _adaptive_context() -> ChatExecutionContext:
     return replace(
         _context(),
         retrieval_strategy={
-            "profile_version": "adaptive_graphiti_v1",
+            "profile_version": "adaptive_graphiti_v2",
             "strategy": "exact_vector",
             "top_k": 3,
             "rerank_mode": "none",
-            "router": "native_agent_evidence_aware_v1",
-            "augmentation": "graphiti_edge_v1",
+            "router": "native_agent_path_guard_v2",
+            "augmentation": "graphiti_path_v2",
         },
     )
 
@@ -214,6 +215,7 @@ def _graphiti_pack(
     context: ChatExecutionContext,
     *,
     text: str = "Graphiti source",
+    hop_count: int = 2,
 ) -> EvidencePack:
     base = _pack(context, text=text)
     source = base.evidence[0]
@@ -227,7 +229,7 @@ def _graphiti_pack(
                 vector_similarity=None,
                 graph_path_id="supplement-path",
                 graph_anchor_index_chunk_id=source.index_chunk_id,
-                graph_hop_count=1,
+                graph_hop_count=hop_count,
                 graph_path_rank=1,
                 matched_representations=("graph_path", "text"),
             ),
@@ -699,6 +701,203 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertNotIn("edge-fact", model.requests[2].messages[-1].content)
 
+    async def test_adaptive_submit_guard_uses_original_question_and_rechecks_draft(self) -> None:
+        context = replace(
+            _adaptive_context(),
+            query="WTC-7 最终属于哪个集团？",
+        )
+        retriever = _AdaptiveRetriever(
+            _pack(context, text="Simple source", count=1),
+            GraphitiSupplementResult(
+                "admitted",
+                _graphiti_pack(context, text="Missing path source").evidence,
+            ),
+        )
+        first_submission = {
+            "outcome": "answered",
+            "claims": [
+                {
+                    "text": "The Simple source appears sufficient.",
+                    "kind": "fact",
+                    "evidence_refs": ["ev_1"],
+                    "calculation_refs": [],
+                }
+            ],
+            "unanswered": [],
+        }
+        model = _Model(
+            ChatToolCall("simple", "search_knowledge_base", {"queries": ["short query"]}),
+            ChatToolCall("early-submit", "submit_answer", first_submission),
+            ChatToolCall(
+                "rechecked-submit",
+                "submit_answer",
+                {
+                    "outcome": "answered",
+                    "claims": [
+                        {
+                            "text": "The complete path uses both sources.",
+                            "kind": "fact",
+                            "evidence_refs": ["ev_1", "ev_2"],
+                            "calculation_refs": [],
+                        }
+                    ],
+                    "unanswered": [],
+                },
+            ),
+        )
+
+        state = await _agent(model, retriever).run(context)
+
+        self.assertEqual(retriever.supplement_queries, [context.query])
+        self.assertEqual(len(model.requests), 3)
+        self.assertIn("Missing path source", model.requests[2].messages[-1].content)
+        trace = state.artifacts[AGENT_TRACE_ARTIFACT]
+        graph_events = [
+            event
+            for event in trace.events
+            if event.retrieval_lane == "graphiti_supplement"
+        ]
+        self.assertEqual(len(graph_events), 1)
+        self.assertEqual(graph_events[0].route_result_code, "admitted")
+        self.assertEqual(trace.retrieval_calls, 2)
+        self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.ANSWERED)
+
+    async def test_adaptive_submit_guard_does_not_route_without_new_path_evidence(self) -> None:
+        context = replace(
+            _adaptive_context(),
+            query="甲公司最终属于哪个集团？",
+        )
+        retriever = _AdaptiveRetriever(
+            _pack(context, text="Direct source", count=1),
+            GraphitiSupplementResult("no_new_evidence"),
+        )
+        model = _Model(
+            ChatToolCall("simple", "search_knowledge_base", {"queries": ["direct fact"]}),
+            ChatToolCall(
+                "submit",
+                "submit_answer",
+                {
+                    "outcome": "answered",
+                    "claims": [
+                        {
+                            "text": "The direct fact is supported.",
+                            "kind": "fact",
+                            "evidence_refs": ["ev_1"],
+                            "calculation_refs": [],
+                        }
+                    ],
+                    "unanswered": [],
+                },
+            ),
+        )
+
+        state = await _agent(model, retriever).run(context)
+
+        self.assertEqual(retriever.supplement_queries, [context.query])
+        self.assertEqual(len(model.requests), 2)
+        graph_events = tuple(
+            event
+            for event in state.artifacts[AGENT_TRACE_ARTIFACT].events
+            if event.retrieval_lane == "graphiti_supplement"
+        )
+        self.assertEqual(len(graph_events), 1)
+        self.assertEqual(graph_events[0].route_result_code, "no_new_evidence")
+        self.assertEqual(graph_events[0].new_evidence_count, 0)
+        self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.ANSWERED)
+
+    async def test_adaptive_submit_guard_does_not_surface_a_single_hop(self) -> None:
+        context = replace(
+            _adaptive_context(),
+            query="甲公司控股的乙公司的母公司是谁？",
+        )
+        retriever = _AdaptiveRetriever(
+            _pack(context, text="Direct source", count=1),
+            GraphitiSupplementResult(
+                "admitted",
+                _graphiti_pack(
+                    context,
+                    text="Unrelated one-hop source",
+                    hop_count=1,
+                ).evidence,
+            ),
+        )
+        model = _Model(
+            ChatToolCall("simple", "search_knowledge_base", {"queries": ["direct fact"]}),
+            ChatToolCall(
+                "submit",
+                "submit_answer",
+                {
+                    "outcome": "answered",
+                    "claims": [
+                        {
+                            "text": "The direct fact is supported.",
+                            "kind": "fact",
+                            "evidence_refs": ["ev_1"],
+                            "calculation_refs": [],
+                        }
+                    ],
+                    "unanswered": [],
+                },
+            ),
+        )
+
+        state = await _agent(model, retriever).run(context)
+
+        self.assertEqual(len(model.requests), 2)
+        graph_events = tuple(
+            event
+            for event in state.artifacts[AGENT_TRACE_ARTIFACT].events
+            if event.retrieval_lane == "graphiti_supplement"
+        )
+        self.assertEqual(len(graph_events), 1)
+        self.assertEqual(graph_events[0].route_result_code, "no_new_evidence")
+        self.assertEqual(graph_events[0].new_evidence_count, 0)
+        self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.ANSWERED)
+
+    async def test_adaptive_submit_guard_skips_a_plain_direct_fact(self) -> None:
+        context = _adaptive_context()
+        retriever = _AdaptiveRetriever(
+            _pack(context, text="Revenue was 10.", count=1),
+            GraphitiSupplementResult("no_new_evidence"),
+        )
+        model = _Model(
+            ChatToolCall("simple", "search_knowledge_base", {"queries": ["revenue"]}),
+            ChatToolCall(
+                "submit",
+                "submit_answer",
+                {
+                    "outcome": "answered",
+                    "claims": [
+                        {
+                            "text": "Revenue was 10.",
+                            "kind": "fact",
+                            "evidence_refs": ["ev_1"],
+                            "calculation_refs": [],
+                        }
+                    ],
+                    "unanswered": [],
+                },
+            ),
+        )
+
+        state = await _agent(model, retriever).run(context)
+
+        self.assertEqual(retriever.supplement_queries, [])
+        self.assertEqual(state.artifacts[AGENT_TRACE_ARTIFACT].retrieval_calls, 1)
+        self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.ANSWERED)
+
+    def test_graph_relation_signal_covers_generic_relation_families(self) -> None:
+        questions = (
+            "某设备所属企业的总部在哪里？",
+            "某公司合作的服务商是谁？",
+            "某基金参股的企业承建了什么项目？",
+            "Which company developed and deployed this product?",
+        )
+
+        self.assertTrue(all(_has_graph_relation_signal(item) for item in questions))
+        self.assertFalse(_has_graph_relation_signal("Which team manages this product?"))
+        self.assertFalse(_has_graph_relation_signal("What was revenue in 2025?"))
+
     async def test_adaptive_graphiti_rejects_graph_before_simple_and_repeated_graph(self) -> None:
         context = _adaptive_context()
         retriever = _AdaptiveRetriever(
@@ -852,6 +1051,51 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(state.artifacts[AGENT_TRACE_ARTIFACT].events[-1].status, "salvaged")
 
+    async def test_yes_no_relation_submission_gets_open_world_support_review(self) -> None:
+        context = replace(
+            _context(),
+            query="甲公司是否控股乙公司？",
+        )
+        model = _Model(
+            ChatToolCall(
+                "search-1",
+                "search_knowledge_base",
+                {"queries": ["甲公司 乙公司 控股"]},
+            ),
+            ChatToolCall(
+                "submit-unreviewed",
+                "submit_answer",
+                {
+                    "outcome": "answered",
+                    "claims": [
+                        {
+                            "text": "另一家公司控股乙公司。",
+                            "kind": "fact",
+                            "evidence_refs": ["ev_1"],
+                            "calculation_refs": [],
+                        }
+                    ],
+                    "unanswered": [],
+                },
+            ),
+            ChatToolCall(
+                "submit-reviewed",
+                "submit_answer",
+                {"outcome": "refused", "claims": [], "unanswered": []},
+            ),
+        )
+
+        state = await _agent(model, _Retriever(_pack(context))).run(context)
+
+        self.assertEqual(len(model.requests), 3)
+        self.assertEqual(
+            tuple(tool.name for tool in model.requests[2].tools),
+            ("submit_answer",),
+        )
+        self.assertIn("exact proposition", model.requests[2].messages[-1].content)
+        self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.REFUSED)
+        self.assertEqual(state.answering.rendered.citations, ())
+
     async def test_all_invalid_claims_get_one_submit_only_repair_with_usable_pool(self) -> None:
         context = _context()
         model = _Model(
@@ -903,6 +1147,63 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
             1,
         )
         self.assertNotIn("ev_other_run", model.requests[2].messages[-1].content)
+
+    async def test_yes_no_support_review_still_runs_after_submission_repair(self) -> None:
+        context = replace(_context(), query="甲公司是否控股乙公司？")
+        model = _Model(
+            ChatToolCall(
+                "search-1",
+                "search_knowledge_base",
+                {"queries": ["甲公司 乙公司 控股"]},
+            ),
+            ChatToolCall(
+                "submit-invalid",
+                "submit_answer",
+                {
+                    "outcome": "answered",
+                    "claims": [
+                        {
+                            "text": "甲公司控股乙公司。",
+                            "kind": "fact",
+                            "evidence_refs": ["ev_other_run"],
+                            "calculation_refs": [],
+                        }
+                    ],
+                    "unanswered": [],
+                },
+            ),
+            ChatToolCall(
+                "submit-repaired",
+                "submit_answer",
+                {
+                    "outcome": "answered",
+                    "claims": [
+                        {
+                            "text": "另一家公司控股乙公司。",
+                            "kind": "fact",
+                            "evidence_refs": ["ev_1"],
+                            "calculation_refs": [],
+                        }
+                    ],
+                    "unanswered": [],
+                },
+            ),
+            ChatToolCall(
+                "submit-reviewed",
+                "submit_answer",
+                {"outcome": "refused", "claims": [], "unanswered": []},
+            ),
+        )
+
+        state = await _agent(model, _Retriever(_pack(context))).run(context)
+
+        self.assertEqual(len(model.requests), 4)
+        self.assertEqual(
+            tuple(tool.name for tool in model.requests[3].tools),
+            ("submit_answer",),
+        )
+        self.assertIn("exact proposition", model.requests[3].messages[-1].content)
+        self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.REFUSED)
 
     async def test_active_partial_submission_preserves_unanswered_aspects(self) -> None:
         context = _context()
@@ -1108,6 +1409,49 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.ANSWERED)
         self.assertEqual(len(state.answering.rendered.citations), 1)
+
+    async def test_forced_finalize_cannot_bypass_the_graph_path_guard(self) -> None:
+        context = replace(
+            _adaptive_context(),
+            query="甲公司控股的企业最终属于哪个集团？",
+            agent_configuration={
+                "version": "native_tool_calling_agent_v2",
+                "budget": ChatAgentBudget(max_model_rounds=1).as_dict(),
+            },
+        )
+        retriever = _AdaptiveRetriever(
+            _pack(context, text="Simple relation source"),
+            GraphitiSupplementResult("no_new_evidence"),
+        )
+        model = _Model(
+            ChatToolCall(
+                "search-1",
+                "search_knowledge_base",
+                {"queries": ["甲公司 集团"]},
+            ),
+            ChatToolCall(
+                "submit-final",
+                "submit_answer",
+                {
+                    "outcome": "answered",
+                    "claims": [
+                        {
+                            "text": "该集团可由 Simple 证据确定。",
+                            "kind": "fact",
+                            "evidence_refs": ["ev_1"],
+                            "calculation_refs": [],
+                        }
+                    ],
+                    "unanswered": [],
+                },
+            ),
+        )
+
+        state = await _agent(model, retriever).run(context)
+
+        self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.REFUSED)
+        self.assertEqual(state.answering.rendered.citations, ())
+        self.assertEqual(retriever.supplement_queries, [])
 
     async def test_forced_refusal_with_a_valid_claim_is_salvaged_as_partial(self) -> None:
         context = _context()

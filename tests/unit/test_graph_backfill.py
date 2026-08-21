@@ -15,7 +15,13 @@ from rag_kb.domain import (
     GraphWorkItem,
     GraphWorkKind,
 )
-from rag_kb.graph.service import GraphExtractionWorker
+from rag_kb.graph.service import GraphExtractionWorker, _graph_build_error_code
+from rag_kb.document_processing.profiles import (
+    SEMANTIC_CHUNKING_CONFIG,
+    SEMANTIC_CHUNKING_CONFIG_V3,
+    STRUCTURAL_CHUNKING_CONFIG_V4,
+)
+from rag_kb.repositories.sqlalchemy_graph import _graph_chunking_profile_compatible
 
 
 WORKSPACE = UUID("01900000-0000-7000-8000-000000000901")
@@ -30,6 +36,32 @@ DOCUMENT_VERSION_ID = UUID("01900000-0000-7000-8000-000000000909")
 
 
 class GraphitiBuildWorkerTests(unittest.IsolatedAsyncioTestCase):
+    def test_failure_fingerprint_is_stable_and_does_not_depend_on_message(self) -> None:
+        first = _graph_build_error_code(
+            GraphWorkKind.CHUNK,
+            RuntimeError("provider payload one"),
+        )
+        second = _graph_build_error_code(
+            GraphWorkKind.CHUNK,
+            RuntimeError("provider payload two"),
+        )
+
+        self.assertEqual(first, second)
+        self.assertNotIn("provider", first)
+
+    def test_graph_build_rejects_legacy_semantic_chunks_but_accepts_current_profiles(
+        self,
+    ) -> None:
+        self.assertTrue(
+            _graph_chunking_profile_compatible(SEMANTIC_CHUNKING_CONFIG)
+        )
+        self.assertTrue(
+            _graph_chunking_profile_compatible(STRUCTURAL_CHUNKING_CONFIG_V4)
+        )
+        self.assertFalse(
+            _graph_chunking_profile_compatible(SEMANTIC_CHUNKING_CONFIG_V3)
+        )
+
     async def test_chunk_is_ingested_before_mapping_is_saved(self) -> None:
         repository = _GraphRepository(
             GraphWorkItem(GraphWorkKind.CHUNK, _config(), _chunk())
@@ -85,8 +117,43 @@ class GraphitiBuildWorkerTests(unittest.IsolatedAsyncioTestCase):
             graphiti,
         ).process_next_work_item()
 
-        self.assertEqual(repository.failed_codes, ["GRAPH_BUILD_FAILED"])
+        self.assertRegex(
+            repository.failed_codes[0],
+            r"^graphiti_finalize_failed:[0-9a-f]{16}$",
+        )
         self.assertEqual(graphiti.deleted, [BUILD_ID])
+
+    async def test_preflight_failure_persists_a_phase_specific_code(self) -> None:
+        repository = _GraphRepository(
+            GraphWorkItem(GraphWorkKind.PREFLIGHT, _config())
+        )
+        graphiti = _FakeGraphiti(probe_error=RuntimeError("provider detail"))
+
+        await GraphExtractionWorker(
+            _factory(repository),
+            graphiti,
+        ).process_next_work_item()
+
+        self.assertRegex(
+            repository.failed_codes[0],
+            r"^graphiti_preflight_failed:[0-9a-f]{16}$",
+        )
+
+    async def test_episode_failure_persists_a_phase_specific_code(self) -> None:
+        repository = _GraphRepository(
+            GraphWorkItem(GraphWorkKind.CHUNK, _config(), _chunk())
+        )
+        graphiti = _FakeGraphiti(add_error=RuntimeError("provider detail"))
+
+        await GraphExtractionWorker(
+            _factory(repository),
+            graphiti,
+        ).process_next_work_item()
+
+        self.assertRegex(
+            repository.failed_codes[0],
+            r"^graphiti_episode_extraction_failed:[0-9a-f]{16}$",
+        )
 
 
 class _GraphRepository:
@@ -148,18 +215,30 @@ class _GraphRepository:
 
 
 class _FakeGraphiti:
-    def __init__(self, *, probe_success: bool = True) -> None:
+    def __init__(
+        self,
+        *,
+        probe_success: bool = True,
+        probe_error: Exception | None = None,
+        add_error: Exception | None = None,
+    ) -> None:
         self.added: list[tuple[UUID, UUID]] = []
         self.probes: list[tuple[UUID, str | None, bool]] = []
         self.deleted: list[UUID] = []
         self.probe_success = probe_success
+        self.probe_error = probe_error
+        self.add_error = add_error
 
     async def probe(self, build, *, episode_uuid=None, require_complete=False):
         self.probes.append((build.build_id, episode_uuid, require_complete))
+        if self.probe_error is not None:
+            raise self.probe_error
         return self.probe_success
 
     async def add_episode(self, build, chunk):
         self.added.append((build.build_id, chunk.index_chunk_id))
+        if self.add_error is not None:
+            raise self.add_error
         return "episode-1"
 
     async def delete_graph(self, build):

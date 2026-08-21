@@ -98,7 +98,7 @@ class CompositeEvidenceHydrator(Protocol):
 RetrievalMode = Literal["vector", "hybrid", "graph"]
 RetrievalCapabilityStrategy = Literal["exact_vector", "hybrid"]
 RetrievalCapabilityProfile = Literal[
-    "exact_vector_v2", "hybrid_fts_rrf_v2", "graphiti_edge_augmented_v1"
+    "exact_vector_v2", "hybrid_fts_rrf_v2", "graphiti_path_augmented_v2"
 ]
 
 
@@ -287,7 +287,7 @@ class RetrievalService:
                         RetrievalCapability(
                             mode="graph",
                             strategy="hybrid",
-                            profile_version="graphiti_edge_augmented_v1",
+                            profile_version="graphiti_path_augmented_v2",
                             enabled=True,
                         ),
                     )
@@ -479,7 +479,7 @@ class RetrievalService:
         except RetrievalExecutionError as error:
             if error.code is ErrorCode.GRAPH_NOT_READY:
                 check = error.diagnostic.get("check")
-                if check in {"graph_runtime_probe", "graph_edge_search"}:
+                if check in {"graph_runtime_probe", "graph_path_search"}:
                     log_exception(
                         LOGGER,
                         "adaptive_graphiti_runtime_unavailable",
@@ -586,7 +586,9 @@ class RetrievalService:
             dense_seed_count=seed_debug.text_candidate_count if seed_debug else 0,
             lexical_seed_count=seed_debug.lexical_candidate_count if seed_debug else 0,
             fused_seed_count=len(seed_pack.evidence),
-            query_entity_count=0,
+            query_entity_count=len(
+                {path.entry_entity_key for path in traversal.paths if path.seed_entry}
+            ),
             one_hop_path_count=sum(
                 path.hop_count == 1 for path in traversal.paths
             ),
@@ -602,8 +604,13 @@ class RetrievalService:
         )
         debug = None
         if request.include_debug and seed_debug is not None:
+            final_plan = replace(
+                seed_debug.query_plan,
+                top_k=request.top_k,
+            )
             debug = replace(
                 seed_debug,
+                query_plan=final_plan,
                 result_count=len(evidence),
                 graph=graph_debug,
             )
@@ -677,7 +684,7 @@ class RetrievalService:
                 diagnostic={"check": "graph_runtime_probe"},
             )
         try:
-            edges = await graphiti.search(
+            raw_paths = await graphiti.search_paths(
                 build,
                 GraphitiSearchQuery(
                     workspace_id=workspace_id,
@@ -691,15 +698,15 @@ class RetrievalService:
         except Exception as error:
             raise RetrievalExecutionError(
                 ErrorCode.GRAPH_NOT_READY,
-                diagnostic={"check": "graph_edge_search"},
+                diagnostic={"check": "graph_path_search"},
             ) from error
         edge_rank_by_path_id: dict[str, int] = {}
-        traversal = await graph_store.hydrate_graphiti_edges(
+        traversal = await graph_store.hydrate_graphiti_paths(
             workspace_id=workspace_id,
             knowledge_base_id=knowledge_base_id,
             build_id=build.build_id,
             index_revision_id=index_revision_id,
-            edges=edges,
+            paths=raw_paths,
         )
         if traversal is None:
             raise ResourceNotFoundError(
@@ -712,19 +719,29 @@ class RetrievalService:
             )
         for path in traversal.paths:
             edge_rank_by_path_id[path.path_id] = path.rank
-        raw_edge_uuids = tuple(str(edge.edge_uuid) for edge in edges)
+        raw_edge_uuids = tuple(
+            dict.fromkeys(
+                str(hop.edge_uuid) for path in raw_paths for hop in path.hops
+            )
+        )
         raw_episode_ids = tuple(
             dict.fromkeys(
                 episode_uuid
-                for edge in edges
-                for episode_uuid in edge.episode_uuids
+                for path in raw_paths
+                for hop in path.hops
+                for episode_uuid in hop.episode_uuids
             )
+        )
+        chunk_id_by_episode = dict(traversal.mapped_episode_chunks)
+        raw_mapped_episode_ids = tuple(
+            episode_uuid
+            for episode_uuid in raw_episode_ids
+            if episode_uuid in chunk_id_by_episode
         )
         raw_chunk_ids = tuple(
             dict.fromkeys(
-                chunk_id
-                for path in traversal.paths
-                for chunk_id in path.source_chunk_ids
+                chunk_id_by_episode[episode_uuid]
+                for episode_uuid in raw_mapped_episode_ids
             )
         )
         hydrated_chunk_ids = tuple(chunk.index_chunk_id for chunk in traversal.chunks)
@@ -746,7 +763,7 @@ class RetrievalService:
             rerank_score_by_chunk_id=rerank_score_by_chunk_id,
             raw_edge_uuids=raw_edge_uuids,
             raw_episode_ids=raw_episode_ids,
-            raw_mapped_episode_ids=traversal.mapped_episode_ids,
+            raw_mapped_episode_ids=raw_mapped_episode_ids,
             raw_chunk_ids=raw_chunk_ids,
             hydrated_chunk_ids=hydrated_chunk_ids,
         )
@@ -2392,41 +2409,38 @@ def _pack_graphiti_supplement_evidence(
     *,
     excluded_index_chunk_ids: frozenset[UUID],
 ) -> tuple[Evidence, ...]:
-    """Pack only new source chunks for the bounded adaptive supplement."""
+    """Pack complete query-grounded paths, returning only their new chunks."""
 
     chunk_by_id = {
         item.index_chunk_id: item for item in candidate_set.traversal.chunks
     }
-    candidates: list[tuple[float, int, int, str, Any, GraphChunkEvidence]] = []
-    for path in candidate_set.traversal.paths:
-        edge_rank = candidate_set.edge_rank_by_path_id.get(path.path_id, path.rank)
-        for chunk_id in path.source_chunk_ids:
-            chunk = chunk_by_id.get(chunk_id)
-            if chunk is None or chunk_id in excluded_index_chunk_ids:
-                continue
-            candidates.append(
-                (
-                    path.rank,
-                    edge_rank,
-                    chunk_id.int,
-                    path.path_id,
-                    path,
-                    chunk,
-                )
-            )
-    candidates.sort(key=lambda item: item[:4])
     selected: list[Evidence] = []
     selected_ids: set[UUID] = set()
-    per_edge_count: dict[UUID, int] = {}
-    for _, _, _, _, path, chunk in candidates:
-        if len(selected) >= 4 or chunk.index_chunk_id in selected_ids:
+    ordered_paths = sorted(
+        candidate_set.traversal.paths,
+        key=lambda path: (
+            path.rank,
+            candidate_set.edge_rank_by_path_id.get(path.path_id, path.rank),
+            path.path_id,
+        ),
+    )
+    for path in ordered_paths:
+        if not path.seed_entry:
             continue
-        relation_id = path.hops[0].relation_id
-        if per_edge_count.get(relation_id, 0) >= 2:
+        path_ids = path.source_chunk_ids
+        if any(chunk_id not in chunk_by_id for chunk_id in path_ids):
             continue
-        selected.append(_graph_evidence_from_chunk(chunk, path))
-        selected_ids.add(chunk.index_chunk_id)
-        per_edge_count[relation_id] = per_edge_count.get(relation_id, 0) + 1
+        new_ids = tuple(
+            chunk_id
+            for chunk_id in path_ids
+            if chunk_id not in excluded_index_chunk_ids
+            and chunk_id not in selected_ids
+        )
+        if not new_ids or len(selected) + len(new_ids) > 4:
+            continue
+        for chunk_id in new_ids:
+            selected.append(_graph_evidence_from_chunk(chunk_by_id[chunk_id], path))
+            selected_ids.add(chunk_id)
     return tuple(
         replace(item, rank=rank)
         for rank, item in enumerate(selected, start=1)

@@ -48,7 +48,11 @@ from rag_kb.document_processing.docling.assets import (
 from rag_kb.document_processing.docling.figures import normalize_figure_labels
 from rag_kb.document_processing.docling.traversal import iterate_chunking_items
 from rag_kb.document_processing.semantic_boundaries import build_chunk_plan
-from rag_kb.document_processing.profiles import profile_fingerprint, profile_for_preset
+from rag_kb.document_processing.profiles import (
+    SEMANTIC_CHUNKING_CONFIG_V3,
+    profile_fingerprint,
+    profile_for_preset,
+)
 from rag_kb.domain import (
     ChunkAssetRelationProvenance,
     ChunkAssetRelationType,
@@ -153,6 +157,16 @@ def markdown_document(source: str) -> DoclingDocument:
     )
     if result.status is not ConversionStatus.SUCCESS:
         raise AssertionError(f"synthetic Markdown conversion failed: {result.status}")
+    return result.document
+
+
+def plain_text_document(source: str) -> DoclingDocument:
+    result = DocumentConverter().convert(
+        DocumentStream(name="synthetic.txt", stream=BytesIO(source.encode("utf-8"))),
+        raises_on_error=False,
+    )
+    if result.status is not ConversionStatus.SUCCESS:
+        raise AssertionError(f"synthetic text conversion failed: {result.status}")
     return result.document
 
 
@@ -442,6 +456,89 @@ class StructuralAssemblyTests(unittest.TestCase):
 
 
 class SemanticUnitTests(unittest.TestCase):
+    def test_plain_text_records_are_not_merged_across_blank_line_headings(self) -> None:
+        document = plain_text_document(
+            """Operational records
+
+RECORD ALPHA
+Alpha product belongs to Alpha Company. This is explicit evidence.
+
+RECORD BETA
+Beta product belongs to Beta Company. This is explicit evidence.
+
+RECORD GAMMA
+Gamma product belongs to Gamma Company. This is explicit evidence.
+"""
+        )
+        profile = profile_for_preset(ChunkingPreset.SEMANTIC_BALANCED_V1)
+
+        current = docling_semantic_units(
+            document,
+            chunking_config=profile.chunking_config,
+        )
+        legacy = docling_semantic_units(
+            document,
+            chunking_config=SEMANTIC_CHUNKING_CONFIG_V3,
+        )
+        plan = build_chunk_plan(
+            indexed_document_version_id=VERSION_ID,
+            source_checksum_sha256="f" * 64,
+            profile_fingerprint=profile_fingerprint(
+                profile.parser_config,
+                profile.chunking_config,
+            ),
+            units=current,
+            vectors=tuple((1.0, 0.0) for _ in current),
+            sequence_hash=docling_unit_sequence_hash(current),
+        )
+
+        self.assertEqual(
+            [unit.hard_boundary_before for unit in current].count("record"),
+            2,
+        )
+        self.assertNotIn("record", [unit.hard_boundary_before for unit in legacy])
+        self.assertEqual(plan.chunk_count, 3)
+
+    def test_text_record_headings_survive_as_hard_chunk_boundaries(self) -> None:
+        document = markdown_document(
+            """Records
+
+ENTRY A
+Alpha product belongs to Alpha Company. This is explicit evidence.
+
+ENTRY B
+Beta product belongs to Beta Company. This is explicit evidence.
+"""
+        )
+        profile = profile_for_preset(ChunkingPreset.SEMANTIC_BALANCED_V1)
+
+        current = docling_semantic_units(
+            document,
+            chunking_config=profile.chunking_config,
+        )
+        legacy = docling_semantic_units(
+            document,
+            chunking_config=SEMANTIC_CHUNKING_CONFIG_V3,
+        )
+        plan = build_chunk_plan(
+            indexed_document_version_id=VERSION_ID,
+            source_checksum_sha256="e" * 64,
+            profile_fingerprint=profile_fingerprint(
+                profile.parser_config,
+                profile.chunking_config,
+            ),
+            units=current,
+            vectors=tuple((1.0, 0.0) for _ in current),
+            sequence_hash=docling_unit_sequence_hash(current),
+        )
+
+        self.assertEqual(
+            [unit.hard_boundary_before for unit in current].count("record"),
+            1,
+        )
+        self.assertNotIn("record", [unit.hard_boundary_before for unit in legacy])
+        self.assertEqual(plan.chunk_count, 2)
+
     def test_real_container_transitions_create_only_real_section_boundaries(
         self,
     ) -> None:

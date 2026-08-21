@@ -327,11 +327,11 @@ class ChatCreationServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             created["retrieval_strategy"],
             {
-                "profile_version": "graphiti_edge_augmented_v1",
+                "profile_version": "graphiti_path_augmented_v2",
                 "strategy": "hybrid",
                 "top_k": 4,
                 "rerank_mode": "classic",
-                "augmentation": "graphiti_edge_v1",
+                "augmentation": "graphiti_path_v2",
             },
         )
 
@@ -362,12 +362,12 @@ class ChatCreationServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             created["retrieval_strategy"],
             {
-                "profile_version": "adaptive_graphiti_v1",
+                "profile_version": "adaptive_graphiti_v2",
                 "strategy": "exact_vector",
                 "top_k": 8,
                 "rerank_mode": "local_minilm_v1",
-                "router": "native_agent_evidence_aware_v1",
-                "augmentation": "graphiti_edge_v1",
+                "router": "native_agent_path_guard_v2",
+                "augmentation": "graphiti_path_v2",
             },
         )
 

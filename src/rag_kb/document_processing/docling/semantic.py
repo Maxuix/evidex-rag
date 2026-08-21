@@ -41,11 +41,13 @@ from rag_kb.domain import (
 
 
 _SENTENCE_BREAK = re.compile(r"(?<=[。！？；.!?;])(?:[ \t]+|\n*)|\n+")
+_RECORD_BREAK = re.compile(r"\n[ \t]*\n+")
 
 _BOUNDARY_SECTION = "section"
 _BOUNDARY_SURFACE = "page"
 _BOUNDARY_TABLE = "table"
 _BOUNDARY_BLOCK = "block"
+_BOUNDARY_RECORD = "record"
 
 _BLOCK_KINDS = frozenset({ItemKind.CODE, ItemKind.FORMULA})
 
@@ -61,11 +63,18 @@ class _Fragment:
     boundary: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class _Piece:
+    text: str
+    boundary: str | None = None
+
+
 def docling_semantic_units(
     document: DoclingDocument,
     limits: ParserLimits | None = None,
     *,
     surface_labels: Mapping[int, str] | None = None,
+    chunking_config: Mapping[str, Any] | None = None,
 ) -> tuple[SemanticUnit, ...]:
     """Build bounded analysis units without provider or persistence I/O."""
 
@@ -78,6 +87,13 @@ def docling_semantic_units(
     previous_container: str | None = None
     previous_kind: ItemKind | None = None
     has_previous_content = False
+    recovered_record_has_body = False
+    preserve_internal_records = (
+        (chunking_config or SEMANTIC_CHUNKING_CONFIG).get(
+            "internal_record_boundary_policy"
+        )
+        == "blank_line_heading_record_v1"
+    )
 
     for item in iterate_chunking_items(document):
         item_kind = _effective_kind(item)
@@ -107,6 +123,13 @@ def docling_semantic_units(
             has_pending_titles=bool(pending_titles),
             has_previous_content=has_previous_content,
         )
+        projection_record = preserve_internal_records and _record_projection(item)
+        record_heading = preserve_internal_records and (
+            projection_record or _looks_like_record_heading(item_kind, text)
+        )
+        if boundary is None and record_heading and recovered_record_has_body:
+            boundary = _BOUNDARY_RECORD
+            recovered_record_has_body = False
 
         refs = (
             *pending_context,
@@ -123,27 +146,32 @@ def docling_semantic_units(
             pending_titles.clear()
 
         pieces = (
-            _table_pieces(text)
+            tuple(_Piece(piece) for piece in _table_pieces(text))
             if item_kind is ItemKind.TABLE
-            else _text_pieces(text)
+            else _text_pieces(
+                text,
+                preserve_internal_records=preserve_internal_records,
+            )
         )
         cursor = 0
         for position, piece in enumerate(pieces):
-            start = text.find(piece, cursor)
+            start = text.find(piece.text, cursor)
             charspan = (
-                (start, start + len(piece)) if start >= 0 and len(pieces) > 1 else None
+                (start, start + len(piece.text))
+                if start >= 0 and len(pieces) > 1
+                else None
             )
             if start >= 0:
-                cursor = start + len(piece)
+                cursor = start + len(piece.text)
             fragments.append(
                 _Fragment(
-                    text=piece,
-                    token_count=count_chunk_tokens(piece),
+                    text=piece.text,
+                    token_count=count_chunk_tokens(piece.text),
                     refs=refs,
                     fragment_index=position,
                     fragment_count=len(pieces),
                     charspan=charspan,
-                    boundary=boundary if position == 0 else None,
+                    boundary=(boundary if position == 0 else piece.boundary),
                 )
             )
         if surface is not None:
@@ -151,6 +179,8 @@ def docling_semantic_units(
         previous_container = container
         previous_kind = item_kind
         has_previous_content = True
+        if not record_heading or projection_record:
+            recovered_record_has_body = True
 
     if not fragments:
         raise ParserExecutionError(
@@ -303,22 +333,100 @@ def _unit_location(
     return location
 
 
-def _text_pieces(text: str) -> tuple[str, ...]:
-    canonical = canonical_text(text)
-    sentences = tuple(
-        part
-        for value in _SENTENCE_BREAK.split(canonical)
-        if (part := canonical_text(value))
-    )
-    if not sentences:
-        return ()
-    pieces: list[str] = []
-    for sentence in sentences:
-        if count_chunk_tokens(sentence) <= _max_unit_tokens():
-            pieces.append(sentence)
-        else:
-            pieces.extend(_split(sentence))
+def _text_pieces(
+    text: str,
+    *,
+    preserve_internal_records: bool,
+) -> tuple[_Piece, ...]:
+    blocks = _record_blocks(text) if preserve_internal_records else ((text, None),)
+    pieces: list[_Piece] = []
+    for block, block_boundary in blocks:
+        sentences = tuple(
+            part
+            for value in _SENTENCE_BREAK.split(canonical_text(block))
+            if (part := canonical_text(value))
+        )
+        for sentence_index, sentence in enumerate(sentences):
+            split_sentences = (
+                (sentence,)
+                if count_chunk_tokens(sentence) <= _max_unit_tokens()
+                else _split(sentence)
+            )
+            for split_index, split_sentence in enumerate(split_sentences):
+                pieces.append(
+                    _Piece(
+                        split_sentence,
+                        block_boundary
+                        if sentence_index == 0 and split_index == 0
+                        else None,
+                    )
+                )
     return tuple(pieces)
+
+
+def _record_blocks(text: str) -> tuple[tuple[str, str | None], ...]:
+    raw_blocks = tuple(
+        block
+        for value in _RECORD_BREAK.split(canonical_text(text))
+        if (block := canonical_text(value))
+    )
+    if len(raw_blocks) < 2:
+        return ((canonical_text(text), None),)
+    blocks = raw_blocks
+    if _standalone_heading(blocks[0]) and _heading_bearing_record(blocks[1]):
+        blocks = (canonical_text(f"{blocks[0]}\n{blocks[1]}"), *blocks[2:])
+    return tuple(
+        (
+            block,
+            _BOUNDARY_RECORD
+            if index > 0 and _heading_bearing_record(block)
+            else None,
+        )
+        for index, block in enumerate(blocks)
+    )
+
+
+def _standalone_heading(value: str) -> bool:
+    return "\n" not in value and 0 < count_chunk_tokens(value) <= 24
+
+
+def _heading_bearing_record(value: str) -> bool:
+    first_line, separator, remainder = value.partition("\n")
+    return bool(
+        separator
+        and canonical_text(remainder)
+        and 0 < count_chunk_tokens(first_line) <= 24
+        and len(first_line) <= 160
+    )
+
+
+def _looks_like_record_heading(item_kind: ItemKind, value: str) -> bool:
+    canonical = canonical_text(value)
+    return bool(
+        item_kind is ItemKind.TEXT
+        and canonical
+        and "\n" not in canonical
+        and len(canonical) <= 160
+        and not re.search(r"[。！？；.!?;:]$", canonical)
+    )
+
+
+def _record_projection(item: ChunkingItem) -> bool:
+    if len(item.items) < 2:
+        return False
+    first_value = getattr(item.items[0], "text", "")
+    first = canonical_text(first_value if isinstance(first_value, str) else "")
+    remainder = tuple(
+        canonical_text(value if isinstance(value, str) else "")
+        for child in item.items[1:]
+        for value in (getattr(child, "text", ""),)
+    )
+    return bool(
+        first
+        and len(first) <= 160
+        and not re.search(r"[。！？；.!?;:]$", first)
+        and any(remainder)
+    )
 
 
 def _table_pieces(text: str) -> tuple[str, ...]:

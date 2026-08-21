@@ -218,7 +218,7 @@ STRUCTURAL_CHUNKING_CONFIG_V4 = {
     "metadata_policy": "bounded_v3",
 }
 
-SEMANTIC_CHUNKING_CONFIG = {
+SEMANTIC_CHUNKING_CONFIG_V3 = {
     "profile": "semantic_breakpoint_v3",
     "preset": "semantic_balanced_v1",
     "strategy": "semantic_breakpoint",
@@ -247,6 +247,13 @@ SEMANTIC_CHUNKING_CONFIG = {
     "normal_overlap_tokens": 0,
     "oversized_element_overlap_tokens": 50,
     "metadata_policy": "bounded_v3",
+}
+
+SEMANTIC_CHUNKING_CONFIG = {
+    **SEMANTIC_CHUNKING_CONFIG_V3,
+    "profile": "semantic_breakpoint_v4",
+    "consumer_projection": "docling_effective_role_internal_record_v2",
+    "internal_record_boundary_policy": "blank_line_heading_record_v1",
 }
 
 def profile_for_preset(
@@ -297,7 +304,7 @@ def resolve(
         raise ValueError("unknown parser profile")
     if chunking_config == STRUCTURAL_CHUNKING_CONFIG_V4:
         return ChunkingStrategyKind.STRUCTURAL
-    if chunking_config == SEMANTIC_CHUNKING_CONFIG:
+    if chunking_config in (SEMANTIC_CHUNKING_CONFIG, SEMANTIC_CHUNKING_CONFIG_V3):
         return ChunkingStrategyKind.SEMANTIC
     raise ValueError("unknown chunking profile")
 
@@ -324,10 +331,10 @@ def public_descriptor(chunking_config: dict) -> dict[str, str]:
             "preset": ChunkingPreset.STRUCTURAL_BALANCED_V2.value,
             "profile": STRUCTURAL_CHUNKING_CONFIG_V4["profile"],
         }
-    if chunking_config == SEMANTIC_CHUNKING_CONFIG:
+    if chunking_config in (SEMANTIC_CHUNKING_CONFIG, SEMANTIC_CHUNKING_CONFIG_V3):
         return {
             "preset": ChunkingPreset.SEMANTIC_BALANCED_V1.value,
-            "profile": SEMANTIC_CHUNKING_CONFIG["profile"],
+            "profile": str(chunking_config["profile"]),
         }
     raise ValueError("unknown chunking profile")
 

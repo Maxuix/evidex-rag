@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import hashlib
 from typing import Any
+import unicodedata
 from uuid import UUID, NAMESPACE_URL, uuid4, uuid5
 
 from sqlalchemy import bindparam, text
@@ -16,6 +16,7 @@ from rag_kb.domain import (
     GraphitiBuildSnapshot,
     GraphitiBuildStatus,
     GraphitiEdgeResult,
+    GraphitiPathResult,
     GraphPathCandidate,
     GraphPathHop,
     GraphTraversalResult,
@@ -127,11 +128,48 @@ class PgGraphStore:
         index_revision_id: UUID,
         edges: tuple[GraphitiEdgeResult, ...],
     ) -> GraphTraversalResult | None:
+        """Compatibility hydration for evaluator edge probes.
+
+        Production retrieval uses ``hydrate_graphiti_paths``. Edges without
+        real endpoints are intentionally not converted into fabricated paths.
+        """
+
+        paths = tuple(
+            GraphitiPathResult(
+                path_id=str(uuid5(NAMESPACE_URL, f"graphiti:{edge.edge_uuid}")),
+                entry_entity_uuid=edge.source_entity_uuid,
+                hops=(edge,),
+                rank=edge.rank,
+                seed_entry=False,
+            )
+            for edge in edges
+            if edge.source_entity_uuid
+            and edge.target_entity_uuid
+            and edge.source_entity_uuid != edge.target_entity_uuid
+        )
+        return await self.hydrate_graphiti_paths(
+            workspace_id=workspace_id,
+            knowledge_base_id=knowledge_base_id,
+            build_id=build_id,
+            index_revision_id=index_revision_id,
+            paths=paths,
+        )
+
+    async def hydrate_graphiti_paths(
+        self,
+        *,
+        workspace_id: UUID,
+        knowledge_base_id: UUID,
+        build_id: UUID,
+        index_revision_id: UUID,
+        paths: tuple[GraphitiPathResult, ...],
+    ) -> GraphTraversalResult | None:
         episode_ids = tuple(
             dict.fromkeys(
                 episode_uuid
-                for edge in edges
-                for episode_uuid in edge.episode_uuids
+                for path in paths
+                for hop in path.hops
+                for episode_uuid in hop.episode_uuids
             )
         )
         if not episode_ids:
@@ -216,14 +254,26 @@ class PgGraphStore:
         chunks_by_episode = {
             row["episode_uuid"]: _chunk_from_values(dict(row)) for row in rows
         }
-        paths, chunks, rejected = _bounded_graphiti_paths(edges, chunks_by_episode)
+        hydrated_paths, chunks, rejected = _bounded_graphiti_paths(
+            paths,
+            chunks_by_episode,
+        )
         return GraphTraversalResult(
             resolved_active_revision_id=index_revision_id,
-            paths=paths,
+            paths=hydrated_paths,
             chunks=chunks,
             rejected_path_count=rejected,
             mapped_episode_ids=tuple(
                 dict.fromkeys(str(row["episode_uuid"]) for row in rows)
+            ),
+            mapped_episode_chunks=tuple(
+                dict.fromkeys(
+                    (
+                        str(row["episode_uuid"]),
+                        row["source_chunk_id"],
+                    )
+                    for row in rows
+                )
             ),
         )
 
@@ -391,48 +441,87 @@ class PgGraphStore:
 
 
 def _bounded_graphiti_paths(
-    edges: tuple[GraphitiEdgeResult, ...],
+    raw_paths: tuple[GraphitiPathResult, ...],
     chunks_by_episode: dict[str, GraphChunkEvidence],
 ) -> tuple[tuple[GraphPathCandidate, ...], tuple[GraphChunkEvidence, ...], int]:
     paths: list[GraphPathCandidate] = []
     chunks: dict[UUID, GraphChunkEvidence] = {}
     rejected = 0
-    for edge in edges:
-        for episode_uuid in edge.episode_uuids:
-            chunk = chunks_by_episode.get(episode_uuid)
-            if chunk is None:
-                rejected += 1
-                continue
-            if len(paths) >= GRAPH_MAX_PATHS:
-                rejected += 1
-                continue
-            relation_id = uuid5(NAMESPACE_URL, f"graphiti:{edge.edge_uuid}")
-            path_id = hashlib.sha256(
-                f"{edge.edge_uuid}:{episode_uuid}".encode("utf-8")
-            ).hexdigest()
-            chunks.setdefault(chunk.index_chunk_id, chunk)
-            paths.append(
-                GraphPathCandidate(
-                    path_id=path_id,
-                    entry_entity_key="graphiti",
-                    hops=(
-                        GraphPathHop(
-                            subject_entity_key="graphiti",
-                            object_entity_key=edge.edge_uuid,
-                            predicate=edge.fact or "graphiti_fact",
-                            normalized_predicate="graphiti_fact",
-                            relation_id=relation_id,
-                            source_chunk_id=chunk.index_chunk_id,
-                            source_index_revision_id=chunk.index_revision_id,
-                            source_location=chunk.source_location,
-                        ),
-                    ),
-                    anchor_chunk_id=chunk.index_chunk_id,
-                    rank=edge.rank,
-                    seed_entry=False,
+    for raw_path in raw_paths:
+        if len(paths) >= GRAPH_MAX_PATHS:
+            rejected += 1
+            continue
+        hydrated_hops: list[GraphPathHop] = []
+        path_chunks: dict[UUID, GraphChunkEvidence] = {}
+        complete = True
+        for edge in raw_path.hops:
+            mapped = tuple(
+                chunks_by_episode[episode_uuid]
+                for episode_uuid in edge.episode_uuids
+                if episode_uuid in chunks_by_episode
+            )
+            if not mapped:
+                complete = False
+                break
+            chunk = max(
+                mapped,
+                key=lambda candidate: _graph_support_key(edge, candidate),
+            )
+            path_chunks.setdefault(chunk.index_chunk_id, chunk)
+            hydrated_hops.append(
+                GraphPathHop(
+                    subject_entity_key=edge.source_entity_uuid,
+                    object_entity_key=edge.target_entity_uuid,
+                    predicate=edge.fact or "graphiti_fact",
+                    normalized_predicate="graphiti_fact",
+                    relation_id=uuid5(NAMESPACE_URL, f"graphiti:{edge.edge_uuid}"),
+                    source_chunk_id=chunk.index_chunk_id,
+                    source_index_revision_id=chunk.index_revision_id,
+                    source_location=chunk.source_location,
+                    support_count=len({item.index_chunk_id for item in mapped}),
                 )
             )
+        if not complete or len(hydrated_hops) != len(raw_path.hops):
+            rejected += 1
+            continue
+        chunks.update(path_chunks)
+        paths.append(
+            GraphPathCandidate(
+                path_id=raw_path.path_id,
+                entry_entity_key=raw_path.entry_entity_uuid,
+                hops=tuple(hydrated_hops),
+                anchor_chunk_id=hydrated_hops[0].source_chunk_id,
+                rank=raw_path.rank,
+                seed_entry=raw_path.seed_entry,
+            )
+        )
     return tuple(paths), tuple(chunks.values()), rejected
+
+
+def _graph_support_key(
+    edge: GraphitiEdgeResult,
+    chunk: GraphChunkEvidence,
+) -> tuple[int, int, int, int]:
+    """Prefer the mapped episode that most directly supports an edge fact."""
+
+    content = _normalized_graph_text(chunk.text)
+    fact = _normalized_graph_text(edge.fact)
+    source = _normalized_graph_text(edge.source_entity_name)
+    target = _normalized_graph_text(edge.target_entity_name)
+    fact_characters = set(fact)
+    overlap = len(fact_characters & set(content))
+    return (
+        int(bool(source) and source in content)
+        + int(bool(target) and target in content),
+        int(bool(fact) and fact in content),
+        overlap,
+        -chunk.ordinal,
+    )
+
+
+def _normalized_graph_text(value: str) -> str:
+    normalized = unicodedata.normalize("NFKC", value).casefold()
+    return "".join(character for character in normalized if character.isalnum())
 
 
 def _config_snapshot(row: Any) -> GraphConfigSnapshot:

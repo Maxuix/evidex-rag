@@ -1096,7 +1096,9 @@
               "hybrid_fts_rrf_v2",
               "graph_augmented_v1",
               "graphiti_edge_augmented_v1",
-              "adaptive_graphiti_v1"
+              "graphiti_path_augmented_v2",
+              "adaptive_graphiti_v1",
+              "adaptive_graphiti_v2"
             ],
             "title": "Profile Version",
             "type": "string"
@@ -3469,7 +3471,8 @@
           "profile": {
             "enum": [
               "structural_by_title_token_v4",
-              "semantic_breakpoint_v3"
+              "semantic_breakpoint_v3",
+              "semantic_breakpoint_v4"
             ],
             "title": "Profile",
             "type": "string"
@@ -4740,7 +4743,7 @@
             "enum": [
               "exact_vector_v2",
               "hybrid_fts_rrf_v2",
-              "graphiti_edge_augmented_v1"
+              "graphiti_path_augmented_v2"
             ],
             "title": "Profile Version",
             "type": "string"

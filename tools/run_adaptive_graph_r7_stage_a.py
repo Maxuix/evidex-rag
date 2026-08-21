@@ -55,7 +55,7 @@ from tools.evaluation_runtime import (
 
 
 CONFIRM = "RUN_ROUTING_RAG_R7_STAGE_A"
-SCHEMA_VERSION = "adaptive_graph_r7_stage_a_v2"
+SCHEMA_VERSION = "adaptive_graph_r7_stage_a_v3"
 JUDGE_MODEL_OVERRIDE = "deepseek-v4-flash"
 ANSWER_EXECUTION_LIMIT = 78
 JUDGE_CALL_LIMIT = 78
@@ -89,6 +89,14 @@ def _parser() -> argparse.ArgumentParser:
         default=DEFAULT_RUNTIME_MANIFEST,
     )
     parser.add_argument("--output-root", type=Path)
+    parser.add_argument(
+        "--r4-diagnostic",
+        type=Path,
+        help=(
+            "Owner-only R4 v3 diagnostic required by the report phase for "
+            "Simple path-completeness labels and complete-path layer metrics."
+        ),
+    )
     parser.add_argument("--confirm")
     parser.add_argument(
         "--dry-run",
@@ -138,6 +146,60 @@ def _load_checkpoint(path: Path) -> dict[str, Any]:
     return value
 
 
+def _r4_alignment_columns(
+    path: Path,
+    *,
+    manifest: Mapping[str, Any],
+    expected_runtime: Mapping[str, Any],
+) -> dict[str, dict[str, Mapping[str, Any]]]:
+    diagnostic = _load_checkpoint(path)
+    if (
+        diagnostic.get("schema_version") != "adaptive_graph_r4_diagnostic_v3"
+        or diagnostic.get("dataset_id") != manifest.get("dataset_id")
+        or diagnostic.get("manifest_sha256") != manifest_digest(manifest)
+    ):
+        raise RuntimeError("r7_r4_diagnostic_identity_mismatch")
+    r4_runtime = diagnostic.get("runtime")
+    if not isinstance(r4_runtime, Mapping) or any(
+        r4_runtime.get(r4_key) != expected_runtime.get(r7_key)
+        for r4_key, r7_key in (
+            ("knowledge_base_id", "knowledge_base_id"),
+            ("index_revision_id", "index_revision_id"),
+            ("graph_build_id", "graph_build_id"),
+            ("chat_model_profile_revision_id", "answer_profile_revision_id"),
+        )
+    ):
+        raise RuntimeError("r7_r4_diagnostic_runtime_mismatch")
+    records = diagnostic.get("records")
+    graph_case_ids = {
+        str(case["case_id"])
+        for case in load_cases(Path(str(manifest["case_file"])))
+        if case.get("expected_route", {}).get("route") == "graph"
+    }
+    if not isinstance(records, list) or {
+        str(item.get("case_id"))
+        for item in records
+        if isinstance(item, Mapping)
+    } != graph_case_ids:
+        raise RuntimeError("r7_r4_diagnostic_case_mismatch")
+    result: dict[str, dict[str, Mapping[str, Any]]] = {
+        "capability": {},
+        "agent_replay": {},
+    }
+    for record in records:
+        if not isinstance(record, Mapping) or not isinstance(
+            record.get("columns"), Mapping
+        ):
+            raise RuntimeError("r7_r4_diagnostic_layer_invalid")
+        case_id = str(record["case_id"])
+        for column in result:
+            alignment = record["columns"].get(column)
+            if not isinstance(alignment, Mapping):
+                raise RuntimeError("r7_r4_diagnostic_layer_invalid")
+            result[column][case_id] = alignment
+    return result
+
+
 def _runtime(
     manifest: Mapping[str, Any],
     runtime: EvaluationRuntime,
@@ -177,7 +239,7 @@ def _runtime(
         "answer_rerank_mode": "classic",
         "answer_retrieval_profiles": {
             "simple": "exact_vector_v2",
-            "auto": "adaptive_graphiti_v1",
+            "auto": "adaptive_graphiti_v2",
         },
         "budgets": {
             "answer_executions": ANSWER_EXECUTION_LIMIT,
@@ -337,7 +399,7 @@ def _poll_or_create(
         raise RuntimeError(f"r7_answer_not_completed:{case['case_id']}:{lane}:{code or 'unknown'}")
     if str(terminal.get("index_revision_id")) != str(identity.index_revision_id):
         raise RuntimeError("r7_index_revision_changed")
-    expected_profile = "adaptive_graphiti_v1" if lane == "auto" else "exact_vector_v2"
+    expected_profile = "adaptive_graphiti_v2" if lane == "auto" else "exact_vector_v2"
     retrieval = terminal.get("retrieval")
     if not isinstance(retrieval, Mapping) or retrieval.get("profile_version") != expected_profile:
         raise RuntimeError(f"r7_retrieval_profile_mismatch:{lane}")
@@ -568,6 +630,13 @@ def _report(
 ) -> dict[str, Any]:
     answers = _load_checkpoint(arguments.output_root / "answers.json")
     expected_runtime = _runtime(manifest, runtime)
+    if arguments.r4_diagnostic is None:
+        raise RuntimeError("r7_r4_diagnostic_required")
+    r4_columns = _r4_alignment_columns(
+        arguments.r4_diagnostic,
+        manifest=manifest,
+        expected_runtime=expected_runtime,
+    )
     _assert_runtime_identity(answers, expected_runtime, artifact="answers")
     judge_path = arguments.output_root / "judgements.json"
     judges = _load_checkpoint(judge_path) if judge_path.exists() else None
@@ -621,10 +690,19 @@ def _report(
     judge_cost = float(judges["totals"]["estimated_cost_usd"]) if judge_complete else 0.0
     total_tokens = int(answers["totals"]["total_tokens"]) + judge_tokens
     total_cost = round(float(answers["totals"]["estimated_cost_usd"]) + judge_cost, 8)
-    graph_metrics = aggregate_graph_routing_metrics(cases, auto_route_observations)
+    graph_metrics = aggregate_graph_routing_metrics(
+        cases,
+        auto_route_observations,
+        alignments=r4_columns["capability"],
+    )
+    actual_auto_layer_metrics = aggregate_graph_routing_metrics(
+        cases,
+        auto_route_observations,
+        alignments=r4_columns["agent_replay"],
+    )
     route = graph_metrics["route"]
     route_recall = route["graph_needed_route_recall"]["value"]
-    route_false_positive_rate = route["simple_false_positive_rate"]["value"]
+    route_false_positive_rate = route["graph_not_needed_route_rate"]["value"]
     primary_route_failed = (
         route_recall is not None
         and route_recall < 1.0
@@ -644,18 +722,28 @@ def _report(
         decision = "stage_a_no_go" if losses - wins > 2 else "stage_a_requires_rounds_2_3"
     report = {
         "runtime": _runtime(manifest, runtime),
-        "artifacts": {"answers_sha256": _digest_file(arguments.output_root / "answers.json"), "judgements_sha256": _digest_file(judge_path) if judge_complete else None},
+        "artifacts": {
+            "answers_sha256": _digest_file(arguments.output_root / "answers.json"),
+            "judgements_sha256": _digest_file(judge_path) if judge_complete else None,
+            "r4_diagnostic_sha256": _digest_file(arguments.r4_diagnostic),
+        },
         "primary": {
             "metric_order": [
                 "graph_needed_route_recall",
                 "graph_route_accuracy",
-                "packed_answer_gold_recall",
+                "packed_required_path_recall",
                 "benefit_capture",
             ],
             "routing": graph_metrics["route"],
             "graph_recall": graph_metrics["graph_recall"],
             "benefit_capture": graph_metrics["benefit_capture"],
+            "layer_source": "r4_capability",
             "decision_role": "primary_graph_routing_and_recall",
+        },
+        "actual_auto_layers": {
+            "source": "r4_agent_replay",
+            "graph_recall": actual_auto_layer_metrics["graph_recall"],
+            "benefit_capture": actual_auto_layer_metrics["benefit_capture"],
         },
         "paired": {"status": "completed" if judge_complete else "not_computed_judge_unavailable", "wins": wins if judge_complete else None, "losses": losses if judge_complete else None, "ties": ties if judge_complete else None, "net_wins": wins - losses if judge_complete else None, "by_category": {key: dict(value) for key, value in sorted(categories.items())} if judge_complete else {}},
         "performance": {"role": "secondary_budget_only", "used_for_primary_decision": False, "simple_tokens": lane_tokens["simple"], "auto_tokens": lane_tokens["auto"], "auto_to_simple_token_ratio": token_ratio, "simple_p95_seconds": simple_p95, "auto_p95_seconds": auto_p95, "auto_to_simple_p95_ratio": latency_ratio},

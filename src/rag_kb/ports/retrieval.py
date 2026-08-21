@@ -12,6 +12,7 @@ from rag_kb.domain import (
     GraphConfigSnapshot,
     GraphitiBuildSnapshot,
     GraphitiEdgeResult,
+    GraphitiPathResult,
     GraphTraversalResult,
     LexicalSearchResult,
     RetrievalQueryPlan,
@@ -98,6 +99,16 @@ class GraphStore(Protocol):
         build_id: UUID,
         index_revision_id: UUID,
         edges: tuple[GraphitiEdgeResult, ...],
+    ) -> GraphTraversalResult | None: ...
+
+    async def hydrate_graphiti_paths(
+        self,
+        *,
+        workspace_id: UUID,
+        knowledge_base_id: UUID,
+        build_id: UUID,
+        index_revision_id: UUID,
+        paths: tuple[GraphitiPathResult, ...],
     ) -> GraphTraversalResult | None: ...
 
     async def schedule_graphiti_rebuild(

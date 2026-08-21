@@ -258,7 +258,7 @@ class StubRetrievalService:
                 SimpleNamespace(
                     mode="graph",
                     strategy="hybrid",
-                    profile_version="graphiti_edge_augmented_v1",
+                    profile_version="graphiti_path_augmented_v2",
                     enabled=True,
                 ),
             ),
@@ -1030,7 +1030,7 @@ class RetrievalApiContractTests(unittest.IsolatedAsyncioTestCase):
                     {
                         "mode": "graph",
                         "strategy": "hybrid",
-                        "profile_version": "graphiti_edge_augmented_v1",
+                        "profile_version": "graphiti_path_augmented_v2",
                         "enabled": True,
                     },
                 ],
@@ -1604,7 +1604,7 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
             semantic.json()["chunking"],
             {
                 "preset": "semantic_balanced_v1",
-                "profile": "semantic_breakpoint_v3",
+                "profile": "semantic_breakpoint_v4",
             },
         )
 

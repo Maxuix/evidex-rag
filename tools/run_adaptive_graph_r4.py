@@ -63,6 +63,7 @@ from tools.evaluate_adaptive_graph_route import (
     align_chunk_layers,
     build_replay_capture_artifact,
     diagnostic_record,
+    evaluate_graph_extraction,
     load_cases,
     load_manifest,
     manifest_digest,
@@ -76,8 +77,8 @@ from tools.evaluation_runtime import (
 
 
 CONFIRM_EXTERNAL_CALLS = "RUN_ROUTING_RAG_R4_EXTERNAL_CALLS"
-R4_DIAGNOSTIC_SCHEMA_VERSION = "adaptive_graph_r4_diagnostic_v2"
-R4_CHECKPOINT_SCHEMA_VERSION = "adaptive_graph_r4_checkpoint_v2"
+R4_DIAGNOSTIC_SCHEMA_VERSION = "adaptive_graph_r4_diagnostic_v3"
+R4_CHECKPOINT_SCHEMA_VERSION = "adaptive_graph_r4_checkpoint_v3"
 GRAPHITI_EDGE_LIMIT = 8
 FORCED_CONTROLLER_MODE = "single_tool_auto_fallback"
 OVERRIDE_CONTROLLER_MODE = "single_tool_required_fallback"
@@ -251,6 +252,20 @@ def _canonical_json_bytes(value: Mapping[str, Any]) -> bytes:
         json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         + "\n"
     ).encode("utf-8")
+
+
+def _load_jsonl_rows(path: Path) -> tuple[Mapping[str, Any], ...]:
+    rows: list[Mapping[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        value = json.loads(line)
+        if not isinstance(value, Mapping):
+            raise ValueError("r4_gold_row_invalid")
+        rows.append(value)
+    if not rows:
+        raise ValueError("r4_gold_file_empty")
+    return tuple(rows)
 
 
 def _assert_checkpoint_content_safe(value: Any) -> None:
@@ -930,6 +945,8 @@ def _checkpoint_identity(
     manifest_file_sha256: str,
     cases_sha256: str,
     fixture_sha256: str,
+    graph_entities_sha256: str,
+    graph_relations_sha256: str,
     arguments: argparse.Namespace,
     chat_model_runtime: Mapping[str, Any],
     controller_mode: str,
@@ -944,6 +961,8 @@ def _checkpoint_identity(
         "manifest_file_sha256": manifest_file_sha256,
         "cases_sha256": cases_sha256,
         "fixture_sha256": fixture_sha256,
+        "graph_entities_sha256": graph_entities_sha256,
+        "graph_relations_sha256": graph_relations_sha256,
         "runtime": {
             "knowledge_base_id": str(arguments.knowledge_base_id),
             "index_revision_id": str(arguments.index_revision_id),
@@ -1269,6 +1288,20 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
     )
     if len(cases) != 20:
         raise R4RunnerError("r4_graph_case_count_changed")
+    graph_gold_root = (
+        Path(str(manifest["case_file"])).parent / "gold" / "graph-rag-v1"
+    )
+    graph_entities_path = graph_gold_root / "entities.jsonl"
+    graph_relations_path = graph_gold_root / "relations.jsonl"
+    graph_entity_rows = _load_jsonl_rows(graph_entities_path)
+    graph_relation_rows = _load_jsonl_rows(graph_relations_path)
+    focus_relation_ids = tuple(
+        dict.fromkeys(
+            str(relation_id)
+            for case in cases
+            for relation_id in case["source"]["gold_path"]
+        )
+    )
     rerank_mode = RerankMode(arguments.rerank_mode)
     dependencies = build_worker_dependencies(env_file=arguments.evaluation_env_file)
     try:
@@ -1307,12 +1340,17 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
             arguments.knowledge_base_id,
             build.build_id,
         )
-        if not await dependencies.graphiti_runtime.probe(
+        graph_runtime_ready = await dependencies.graphiti_runtime.probe(
             build,
             episode_uuid=episode_uuid,
             require_complete=True,
-        ):
-            raise R4RunnerError("r4_graph_runtime_not_ready")
+        )
+        graph_extraction = evaluate_graph_extraction(
+            await dependencies.graphiti_runtime.diagnostic_edges(build),
+            entity_rows=graph_entity_rows,
+            relation_rows=graph_relation_rows,
+            focus_relation_ids=focus_relation_ids,
+        )
         serving_rows = await _serving_chunk_rows(
             dependencies,
             workspace_id=workspace_id,
@@ -1332,7 +1370,11 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
         }
         if arguments.preflight_only:
             return {
-                "status": "preflight_ok",
+                "status": (
+                    "preflight_ok"
+                    if graph_runtime_ready
+                    else "preflight_graph_quality_failed"
+                ),
                 "case_count": len(cases),
                 "locator_count": sum(
                     len(value["answer"]) + len(value["path_context"])
@@ -1341,7 +1383,10 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
                 "knowledge_base_id": str(arguments.knowledge_base_id),
                 "index_revision_id": str(arguments.index_revision_id),
                 "graph_build_id": str(arguments.graph_build_id),
+                "graph_extraction": graph_extraction,
             }
+        if not graph_runtime_ready:
+            raise R4RunnerError("r4_graph_runtime_not_ready")
         controller_mode = _controller_mode(
             replay_mode=arguments.replay_mode,
             model_override=arguments.chat_model_override,
@@ -1354,12 +1399,20 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
         fixture_sha256 = hashlib.sha256(
             Path(str(manifest["empirical_need"]["fixture_file"])).read_bytes()
         ).hexdigest()
+        graph_entities_sha256 = hashlib.sha256(
+            graph_entities_path.read_bytes()
+        ).hexdigest()
+        graph_relations_sha256 = hashlib.sha256(
+            graph_relations_path.read_bytes()
+        ).hexdigest()
         identity = _checkpoint_identity(
             dataset_id=str(manifest["dataset_id"]),
             manifest_sha256=manifest_sha256,
             manifest_file_sha256=manifest_file_sha256,
             cases_sha256=cases_sha256,
             fixture_sha256=fixture_sha256,
+            graph_entities_sha256=graph_entities_sha256,
+            graph_relations_sha256=graph_relations_sha256,
             arguments=arguments,
             chat_model_runtime=chat_model_runtime,
             controller_mode=controller_mode,
@@ -1647,11 +1700,14 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
             "manifest_file_sha256": manifest_file_sha256,
             "cases_sha256": cases_sha256,
             "fixture_sha256": fixture_sha256,
+            "graph_entities_sha256": graph_entities_sha256,
+            "graph_relations_sha256": graph_relations_sha256,
             "capture_artifact_sha256": capture_digest,
             "runtime": dict(identity["runtime"]),
             "case_count": len(records),
             "records": records,
             "aggregate": aggregate,
+            "graph_extraction": graph_extraction,
             "decision": decision,
         }
         diagnostic_digest = _write_or_verify_json_artifact(
@@ -1685,9 +1741,12 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
             "graph_needed_route_recall": graph_metrics["route"][
                 "graph_needed_route_recall"
             ]["value"],
+            "packed_required_path_recall": graph_metrics["graph_recall"][
+                "by_layer"
+            ].get("packed", {}).get("required_path_recall", {}).get("value"),
             "packed_answer_gold_recall": graph_metrics["graph_recall"][
                 "by_layer"
-            ].get("packed", {}).get("gold_recall", {}).get("value"),
+            ].get("packed", {}).get("answer_gold_recall", {}).get("value"),
             "benefit_capture": graph_metrics["benefit_capture"].get(
                 "benefit_capture", {}
             ).get("value"),

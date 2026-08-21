@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 from uuid import UUID
 
 from rag_kb.auth import AccessPolicy, AuthContext
 from rag_kb.domain import (
     GRAPH_EXTRACTOR_VERSION,
-    ErrorCode,
     GraphConfigSnapshot,
     GraphitiBuildSnapshot,
     GraphWorkItem,
@@ -176,7 +176,10 @@ class GraphExtractionWorker:
             purpose=UnitOfWorkPurpose.REQUEST,
         )
         if build is None:
-            await self._mark_failed(work, ErrorCode.GRAPH_BUILD_FAILED.value)
+            await self._mark_failed(
+                work,
+                f"{_graph_build_phase_code(work.kind)}:build_missing",
+            )
             return
         try:
             if work.kind is GraphWorkKind.PREFLIGHT:
@@ -277,6 +280,7 @@ class GraphExtractionWorker:
             )
             await _recycle_graphiti_graphs(self._graphiti_graph, retired)
         except Exception as error:
+            error_code = _graph_build_error_code(work.kind, error)
             log_exception(
                 LOGGER,
                 "graphiti_build_failed",
@@ -284,9 +288,9 @@ class GraphExtractionWorker:
                 build_id=work.config.build_id,
                 knowledge_base_id=work.config.knowledge_base_id,
                 operation=work.kind.value,
-                error_code=ErrorCode.GRAPH_BUILD_FAILED.value,
+                error_code=error_code,
             )
-            await self._mark_failed(work, ErrorCode.GRAPH_BUILD_FAILED.value)
+            await self._mark_failed(work, error_code)
 
     async def _mark_failed(self, work: GraphWorkItem, error_code: str) -> None:
         async def persist(uow: UnitOfWork) -> tuple[GraphitiBuildSnapshot, ...]:
@@ -327,6 +331,29 @@ async def _recycle_graphiti_graphs(
 def _require_scope(uow: UnitOfWork, context: AuthContext) -> None:
     if uow.workspace_id != context.workspace_id:
         raise ResourceNotFoundError("resource was not found")
+
+
+def _graph_build_phase_code(kind: GraphWorkKind) -> str:
+    return {
+        GraphWorkKind.PREFLIGHT: "graphiti_preflight_failed",
+        GraphWorkKind.CHUNK: "graphiti_episode_extraction_failed",
+        GraphWorkKind.FINALIZE: "graphiti_finalize_failed",
+    }[kind]
+
+
+def _graph_build_error_code(kind: GraphWorkKind, error: BaseException) -> str:
+    """Persist a phase plus a content-free, stable exception-class fingerprint."""
+
+    chain: list[str] = []
+    current: BaseException | None = error
+    observed: set[int] = set()
+    while current is not None and id(current) not in observed and len(chain) < 4:
+        observed.add(id(current))
+        error_type = type(current)
+        chain.append(f"{error_type.__module__}.{error_type.__qualname__}")
+        current = current.__cause__ or current.__context__
+    fingerprint = hashlib.sha256("|".join(chain).encode("utf-8")).hexdigest()[:16]
+    return f"{_graph_build_phase_code(kind)}:{fingerprint}"
 
 
 async def _profile_bundle(uow: UnitOfWork, snapshot: GraphConfigSnapshot):

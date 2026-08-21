@@ -13,6 +13,7 @@ from rag_kb.domain import (
     GraphitiBuildSnapshot,
     GraphitiBuildStatus,
     GraphitiEdgeResult,
+    GraphitiPathResult,
     GraphitiSearchQuery,
     GraphPathCandidate,
     GraphPathHop,
@@ -50,6 +51,7 @@ from rag_kb.domain import LexicalSearchResult
 
 
 BUILD_ID = UUID("01900000-0000-7000-8000-000000000931")
+CHUNK_2 = UUID("01900000-0000-7000-8000-000000000939")
 CHUNK_3 = UUID("01900000-0000-7000-8000-000000000933")
 TARGET_ID = UUID("01900000-0000-7000-8000-000000000934")
 DOCUMENT_ID = UUID("01900000-0000-7000-8000-000000000935")
@@ -148,6 +150,36 @@ class GraphRetrievalTests(unittest.IsolatedAsyncioTestCase):
         assert pack.debug is not None
         self.assertIsNotNone(pack.debug.graph)
         self.assertEqual(pack.debug.graph.bundle_count, 1)
+
+    async def test_graph_debug_describes_the_final_graph_result_budget(self) -> None:
+        seed_a = UUID("01900000-0000-7000-8000-000000000941")
+        seed_b = UUID("01900000-0000-7000-8000-000000000942")
+        service = RetrievalService(
+            SingleWorkspaceAccessPolicy(WORKSPACE),
+            _Provider(),
+            _Store(
+                VectorSearchResult(
+                    REVISION_ID,
+                    (
+                        _hit(seed_a, ordinal=0),
+                        _hit(seed_b, ordinal=1),
+                    ),
+                )
+            ),
+            lexical_store=_LexicalStore(),
+            graph_store=_GraphStore(_ready_config(), _path_result()),
+            graphiti_graph=_Graphiti(),
+        )
+
+        pack = await service.retrieve_graph(
+            _context(), GraphRetrievalRequest(KB_ID, "Atlas", top_k=4, include_debug=True)
+        )
+
+        self.assertEqual(len(pack.evidence), 4)
+        self.assertIsNotNone(pack.debug)
+        assert pack.debug is not None
+        self.assertEqual(pack.debug.query_plan.top_k, 4)
+        self.assertEqual(pack.debug.result_count, 4)
 
     async def test_graph_building_fails_closed_before_embedding_or_graph_traversal(
         self,
@@ -294,6 +326,35 @@ class GraphRetrievalTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(result.paths), len(traversal.paths))
         self.assertEqual(set(scores), {CHUNK_1, CHUNK_3})
 
+    async def test_raw_layer_keeps_partial_episode_mapping_before_path_rejection(self) -> None:
+        traversal = GraphTraversalResult(
+            resolved_active_revision_id=REVISION_ID,
+            rejected_path_count=1,
+            mapped_episode_ids=("episode-1",),
+            mapped_episode_chunks=(("episode-1", CHUNK_1),),
+        )
+        service = RetrievalService(
+            SingleWorkspaceAccessPolicy(WORKSPACE),
+            _Provider(),
+            _Store(VectorSearchResult(REVISION_ID, ())),
+            graph_store=_GraphStore(_ready_config(), traversal),
+            graphiti_graph=_Graphiti(),
+        )
+
+        candidates = await service._search_graphiti_candidates(  # noqa: SLF001
+            WORKSPACE,
+            KB_ID,
+            build=_ready_build(),
+            index_revision_id=REVISION_ID,
+            query="bounded graph path",
+            edge_limit=8,
+            rerank_mode=RerankMode.CLASSIC,
+        )
+
+        self.assertEqual(candidates.raw_mapped_episode_ids, ("episode-1",))
+        self.assertEqual(candidates.raw_chunk_ids, (CHUNK_1,))
+        self.assertEqual(candidates.hydrated_chunk_ids, ())
+
     async def test_stale_ready_graph_fails_closed_before_model_or_traversal(self) -> None:
         graph_store = _GraphStore(
             replace(
@@ -335,8 +396,8 @@ class GraphRetrievalTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("ANY(", compiled)
 
     def test_hydration_caps_paths_at_the_domain_bound(self) -> None:
-        edges = tuple(
-            GraphitiEdgeResult(f"edge-{index}", "fact", (f"episode-{index}",), index)
+        paths = tuple(
+            _raw_path(index)
             for index in range(1, GRAPH_MAX_PATHS + 4)
         )
         chunks = {
@@ -344,7 +405,7 @@ class GraphRetrievalTests(unittest.IsolatedAsyncioTestCase):
             for index in range(1, GRAPH_MAX_PATHS + 4)
         }
 
-        paths, admitted, rejected = _bounded_graphiti_paths(edges, chunks)
+        paths, admitted, rejected = _bounded_graphiti_paths(paths, chunks)
 
         self.assertEqual(len(paths), GRAPH_MAX_PATHS)
         self.assertEqual(len(admitted), GRAPH_MAX_PATHS)
@@ -370,20 +431,50 @@ class GraphRetrievalTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(query.limit, 64)
 
     def test_hydration_keeps_distinct_edges_for_the_same_chunk(self) -> None:
-        edges = (
-            GraphitiEdgeResult("edge-1", "first fact", ("episode-1",), 1),
-            GraphitiEdgeResult("edge-2", "second fact", ("episode-1",), 2),
+        raw_paths = (
+            _raw_path(1, episode_uuid="episode-1"),
+            _raw_path(2, episode_uuid="episode-1"),
         )
         chunk = _graph_chunk(CHUNK_1)
 
         paths, admitted, rejected = _bounded_graphiti_paths(
-            edges,
+            raw_paths,
             {"episode-1": chunk},
         )
 
         self.assertEqual(len(paths), 2)
-        self.assertEqual({path.hops[0].object_entity_key for path in paths}, {"edge-1", "edge-2"})
+        self.assertEqual(
+            {path.hops[0].object_entity_key for path in paths},
+            {"target-1", "target-2"},
+        )
         self.assertEqual(admitted, (chunk,))
+        self.assertEqual(rejected, 0)
+
+    def test_hydration_selects_the_episode_that_best_supports_the_edge(self) -> None:
+        base_path = _raw_path(1)
+        edge = replace(
+            base_path.hops[0],
+            fact="Source 1 controls Target 1",
+            episode_uuids=("episode-noise", "episode-support"),
+        )
+        raw_path = replace(base_path, hops=(edge,))
+        noise = _graph_chunk(
+            CHUNK_1,
+            text_value="A different organization signed an unrelated agreement.",
+        )
+        support = _graph_chunk(
+            CHUNK_2,
+            text_value="Source 1 controls Target 1.",
+        )
+
+        paths, admitted, rejected = _bounded_graphiti_paths(
+            (raw_path,),
+            {"episode-noise": noise, "episode-support": support},
+        )
+
+        self.assertEqual(paths[0].hops[0].source_chunk_id, CHUNK_2)
+        self.assertEqual(paths[0].hops[0].support_count, 2)
+        self.assertEqual(admitted, (support,))
         self.assertEqual(rejected, 0)
 
     def test_seed_first_packing_keeps_a_path_whole(self) -> None:
@@ -479,6 +570,10 @@ class _GraphStore:
         del kwargs
         return self.traversal
 
+    async def hydrate_graphiti_paths(self, **kwargs):
+        del kwargs
+        return self.traversal
+
     async def schedule_graphiti_rebuild(
         self, workspace_id, knowledge_base_id, failed_build_id
     ):
@@ -503,6 +598,12 @@ class _Graphiti:
         if self.search_error is not None:
             raise self.search_error
         return (GraphitiEdgeResult("edge-1", "released", ("episode-1",), 1),)
+
+    async def search_paths(self, build, query):
+        del build, query
+        if self.search_error is not None:
+            raise self.search_error
+        return (_raw_path(1),)
 
     async def add_episode(self, build, chunk):
         raise AssertionError((build, chunk))
@@ -565,7 +666,11 @@ def _seed_evidence(chunk_id: UUID = CHUNK_3) -> Evidence:
     )
 
 
-def _graph_chunk(chunk_id: UUID) -> GraphChunkEvidence:
+def _graph_chunk(
+    chunk_id: UUID,
+    *,
+    text_value: str | None = None,
+) -> GraphChunkEvidence:
     return GraphChunkEvidence(
         workspace_id=WORKSPACE,
         knowledge_base_id=KB_ID,
@@ -575,7 +680,7 @@ def _graph_chunk(chunk_id: UUID) -> GraphChunkEvidence:
         document_id=DOCUMENT_ID,
         document_version_id=VERSION_ID,
         ordinal=0,
-        text=f"graph evidence {chunk_id}",
+        text=text_value or f"graph evidence {chunk_id}",
         source_location={"paragraph": 1},
         hierarchy={},
         source_metadata={},
@@ -609,6 +714,26 @@ def _path_result() -> GraphTraversalResult:
         resolved_active_revision_id=REVISION_ID,
         paths=(path,),
         chunks=(_graph_chunk(CHUNK_1), _graph_chunk(CHUNK_3)),
+    )
+
+
+def _raw_path(index: int, *, episode_uuid: str | None = None) -> GraphitiPathResult:
+    edge = GraphitiEdgeResult(
+        f"edge-{index}",
+        "released",
+        (episode_uuid or f"episode-{index}",),
+        index,
+        source_entity_uuid=f"source-{index}",
+        source_entity_name=f"Source {index}",
+        target_entity_uuid=f"target-{index}",
+        target_entity_name=f"Target {index}",
+    )
+    return GraphitiPathResult(
+        path_id=f"path-{index}",
+        entry_entity_uuid=edge.source_entity_uuid,
+        hops=(edge,),
+        rank=index,
+        seed_entry=True,
     )
 
 

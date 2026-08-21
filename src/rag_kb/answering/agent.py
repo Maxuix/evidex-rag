@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 import json
+import re
 from typing import Any, Protocol
 from uuid import UUID
 
@@ -69,6 +70,35 @@ _TRACE_REF_LIMIT = 100
 _SIMPLE_QUERY_MAX_COUNT = 3
 _QUERY_MAX_CHARS = 2048
 _SUBMIT_REPAIR_FEEDBACK = '{"status":"retry_submission"}'
+_OPEN_WORLD_REVIEW_FEEDBACK = (
+    '{"status":"review_submission","rule":"For a yes/no claim, cited evidence must '
+    "explicitly support or deny the exact proposition about the exact entities. "
+    "Nearby entities, a different positive relation, and retrieval absence never "
+    'prove the proposition false. Refuse when exact support is absent."}'
+)
+_GRAPH_RELATION_SIGNAL = re.compile(
+    r"(?:属于|所属|隶属|归属|关联|关系|母公司|子公司|控股|持有|参股|投资|收购|并购|"
+    r"供应|供货|供应商|供应链|合作|共建|参与|设立|成立|创办|交付|制造|生产|研发|开发|"
+    r"承建|建设|部署|服务|运营|安排|担任|董事|任职|负责|注册地|总部|位于|落在|旧称|曾用名|"
+    r"别名|对应|背后|最终|间接|上游|下游|通过|代号)"
+    r"|\b(?:belongs?\s+to|parent\s+(?:company|organization)|subsidiar(?:y|ies)|"
+    r"acquir(?:e|es|ed|ing)|suppl(?:y|ies|ied|ier|iers)|partner(?:s|ed|ship)?|"
+    r"owns?|ownership|controlled?\s+by|holds?\s+(?:a\s+)?stake|invest(?:s|ed|ment)?|"
+    r"director|appoint(?:s|ed|ment)?|serv(?:e|es|ed)\s+as|reports?\s+to|part\s+of|"
+    r"affiliat(?:e|es|ed|ion)|connect(?:s|ed|ion)?|"
+    r"co-?found(?:s|ed)?|establish(?:es|ed)?|found(?:s|ed)?|operat(?:e|es|ed|or)|"
+    r"manag(?:e|es|ed|er)|serv(?:e|es|ed)|deliver(?:s|ed)?|manufactur(?:e|es|ed|er)|"
+    r"produc(?:e|es|ed|er)|develop(?:s|ed|er)?|builds?|built|deploy(?:s|ed)?|"
+    r"headquarter(?:s|ed)?|located|formerly|alias|ultimately|indirectly|upstream|"
+    r"downstream|through)\b",
+    re.IGNORECASE,
+)
+_GRAPH_CHAIN_SIGNAL = re.compile(
+    r"(?:旧称|曾用名|别名|最终|间接|上游|下游|通过|背后|代号)"
+    r"|\b(?:formerly|alias|ultimately|indirectly|upstream|downstream|through|"
+    r"code[- ]?named)\b",
+    re.IGNORECASE,
+)
 _GENERIC_UNANSWERED = "Some requested parts remain unanswered"
 
 
@@ -164,6 +194,7 @@ class NativeToolCallingAgent:
         graphiti_attempted = False
         submit_only_repair_used = False
         submit_only_repair_pending = False
+        open_world_review_used = False
 
         for round_number in range(1, budget.max_model_rounds + 1):
             repair_round = submit_only_repair_pending
@@ -512,6 +543,119 @@ class NativeToolCallingAgent:
                         ChatModelMessage("tool", _ARGUMENT_ERROR, tool_call_id=call.id)
                     )
                     continue
+                if (
+                    adaptive_graphiti
+                    and simple_attempted
+                    and not graphiti_attempted
+                    and not repair_round
+                    and not result.repair_eligible
+                    and result.validated.outcome is not AnswerOutcome.REFUSED
+                    and _has_graph_relation_signal(context.query)
+                ):
+                    # A valid Simple-only draft is not proof that its cited
+                    # chunks contain a complete relation path. Probe once with
+                    # the original question and admit only query-grounded,
+                    # source-backed path chunks that were not already seen.
+                    graphiti_attempted = True
+                    try:
+                        graphiti_result = (
+                            await self._retriever.retrieve_graphiti_supplement(
+                                context,
+                                context.query,
+                                excluded_index_chunk_ids=tuple(evidence_ids),
+                            )
+                        )
+                    except ChatPipelineExecutionError as error:
+                        raise error.retain_model_calls(tuple(calls))
+                    retrieval_calls += 1
+                    new_items: tuple[Evidence, ...] = ()
+                    if graphiti_result.route_result_code == "admitted":
+                        graph_pack = EvidencePack(
+                            knowledge_base_id=context.knowledge_base_id,
+                            index_revision_id=context.index_revision_id,
+                            strategy=RetrievalStrategy.EXACT_VECTOR,
+                            evidence=graphiti_result.evidence,
+                        )
+                        graph_candidates = _query_candidates(
+                            (graph_pack,),
+                            eligibility=self._eligibility,
+                        )[0]
+                        guarded_path_ids = {
+                            item.graph_path_id
+                            for item in graph_candidates
+                            if item.graph_hop_count == 2
+                        }
+                        new_items = tuple(
+                            item
+                            for item in graph_candidates
+                            if item.graph_path_id in guarded_path_ids
+                            and item.index_chunk_id not in evidence_ids
+                        )
+                        if new_items:
+                            for item in new_items:
+                                evidence_ids.add(item.index_chunk_id)
+                                evidence.append(item)
+                            cumulative = _pack(context, evidence, strategy)
+                            envelope = build_evidence_envelope(cumulative)
+                            _assign_refs(
+                                envelope,
+                                cumulative.evidence,
+                                ref_by_prompt_id,
+                                prompt_by_ref,
+                                evidence_by_ref,
+                            )
+                            result_refs = tuple(
+                                ref_by_prompt_id[item.index_chunk_id]
+                                for item in new_items
+                            )
+                            tool_result, newly_sent_content_refs = _search_result(
+                                ((context.query, result_refs),),
+                                prompt_by_ref,
+                                loaded_visual_refs,
+                                sent_content_refs,
+                                status="graphiti_supplement",
+                                route_result_code="admitted",
+                                new_evidence_count=len(new_items),
+                            )
+                            messages.append(
+                                ChatModelMessage(
+                                    "tool",
+                                    tool_result,
+                                    tool_call_id=call.id,
+                                )
+                            )
+                            sent_content_refs.update(newly_sent_content_refs)
+                            events.append(
+                                ChatAgentTraceEvent(
+                                    tool="graphiti_supplement",
+                                    status="ok",
+                                    tool_call_id=f"guard_{round_number}",
+                                    refs=result_refs[:_TRACE_REF_LIMIT],
+                                    count=len(result_refs),
+                                    retrieval_lane="graphiti_supplement",
+                                    route_reason_code="relation_chain_gap",
+                                    route_result_code="admitted",
+                                    new_evidence_count=len(new_items),
+                                )
+                            )
+                            continue
+                    guard_route_result = graphiti_result.route_result_code
+                    if guard_route_result == "admitted":
+                        # Retrieval found source-backed Graph evidence, but the
+                        # guard did not find a complete new two-hop path to
+                        # surface. Record the final guard admission decision.
+                        guard_route_result = "no_new_evidence"
+                    events.append(
+                        ChatAgentTraceEvent(
+                            tool="graphiti_supplement",
+                            status="ok",
+                            tool_call_id=f"guard_{round_number}",
+                            retrieval_lane="graphiti_supplement",
+                            route_reason_code="relation_chain_gap",
+                            route_result_code=guard_route_result,
+                            new_evidence_count=0,
+                        )
+                    )
                 validated = result.validated
                 retained_refs = result.retained_refs
                 salvaged = result.salvaged
@@ -541,8 +685,21 @@ class NativeToolCallingAgent:
                         )
                     )
                     continue
-                if repair_round and validated.outcome is AnswerOutcome.REFUSED:
-                    break
+                if (
+                    validated.outcome is not AnswerOutcome.REFUSED
+                    and not open_world_review_used
+                    and _requires_open_world_support_review(context.query)
+                ):
+                    open_world_review_used = True
+                    submit_only_repair_pending = True
+                    messages.append(
+                        ChatModelMessage(
+                            "tool",
+                            _OPEN_WORLD_REVIEW_FEEDBACK,
+                            tool_call_id=call.id,
+                        )
+                    )
+                    continue
                 return _final_state(
                     context,
                     evidence,
@@ -606,6 +763,30 @@ class NativeToolCallingAgent:
             salvaged = result.salvaged
             rejected_claim_count = result.rejected_claim_count
             rejection_reasons = result.rejection_reasons
+        forced_guard_incomplete = (
+            validated.outcome is not AnswerOutcome.REFUSED
+            and (
+                (
+                    _requires_open_world_support_review(context.query)
+                    and not open_world_review_used
+                )
+                or (
+                    adaptive_graphiti
+                    and simple_attempted
+                    and not graphiti_attempted
+                    and _has_graph_relation_signal(context.query)
+                )
+            )
+        )
+        if forced_guard_incomplete:
+            # The emergency finalizer has no remaining round in which the
+            # model can review an exact proposition or newly found Graph path.
+            # Fail closed instead of bypassing either safety guard.
+            validated = _refusal_answer()
+            retained_refs = ()
+            salvaged = True
+            rejected_claim_count = 0
+            rejection_reasons = ()
         events.append(
             ChatAgentTraceEvent(
                 tool="submit_answer",
@@ -716,7 +897,10 @@ def _initial_messages(
         "Write a concise last-hop relation lookup; do not repeat the full "
         "question, mix two hops, request absence proof, or use Graphiti for "
         "tables, charts, calculations, images, or direct facts. Graphiti "
-        "returns source chunks only; never treat edge facts as answer evidence."
+        "returns source chunks only; never treat edge facts as answer evidence. "
+        "If you submit a non-refusal after Simple without using Graphiti, a "
+        "bounded server-side completeness guard may return new path evidence; "
+        "then reassess the draft and submit again."
         if adaptive
         else ""
     )
@@ -730,7 +914,10 @@ def _initial_messages(
             "knowledge-base, or citation scope. Prior assistant messages are never "
             "evidence. Every factual claim must cite issued "
             "EvidenceRefs or CalculationRefs. A retrieval miss never proves that a document "
-            "does not mention something. Call exactly one tool per turn; "
+            "does not mention something. For yes/no claims, evidence about a similarly named "
+            "entity, a different positive relation, or a different counterparty does not prove "
+            "the requested proposition false; require explicit support or denial for the exact "
+            "entities and relation, otherwise refuse. Call exactly one tool per turn; "
             "never emit multiple or parallel tool calls. Use calculate for arithmetic. "
             "Finish only with submit_answer. You may submit an answered, partial, or refused "
             "result as soon as further tool use would not improve it. "
@@ -1337,6 +1524,33 @@ def _strings(
     if require_nonempty and not result:
         return None
     return result
+
+
+def _requires_open_world_support_review(query: str) -> bool:
+    """Conservatively identify yes/no propositions needing an entailment review."""
+
+    normalized = query.strip().casefold()
+    if not normalized:
+        return False
+    if any(marker in normalized for marker in ("是否", "能否", "可否", "有没有", "是不是")):
+        return True
+    if re.search(r"[吗么嘛][？?]?$", normalized):
+        return True
+    return re.match(
+        r"^(?:is|are|was|were|do|does|did|has|have|had|can|could|will|would|should)\b",
+        normalized,
+    ) is not None
+
+
+def _has_graph_relation_signal(query: str) -> bool:
+    """Recognize generic relation composition without entity-specific rules."""
+
+    normalized = query.strip()
+    matches = tuple(_GRAPH_RELATION_SIGNAL.finditer(normalized))
+    distinct_signals = {match.group(0).casefold() for match in matches}
+    return len(distinct_signals) >= 2 or bool(
+        matches and _GRAPH_CHAIN_SIGNAL.search(normalized)
+    )
 
 
 def _normalized_unanswered(

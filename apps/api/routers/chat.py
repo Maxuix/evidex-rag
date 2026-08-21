@@ -353,7 +353,8 @@ def _run_response(value: ChatRun) -> ChatRunResponse:
 
 def _retrieval_response(value: ChatRun) -> dict[str, object]:
     strategy, top_k, rerank_mode, _execution_type = parse_chat_retrieval_snapshot(
-        value.retrieval_strategy
+        value.retrieval_strategy,
+        allow_legacy_display=True,
     )
     return {
         "profile_version": value.retrieval_strategy["profile_version"],

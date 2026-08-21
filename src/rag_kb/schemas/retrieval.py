@@ -62,7 +62,7 @@ class RetrievalCapabilityResponse(RetrievalPublicSchema):
     mode: Literal["vector", "hybrid", "graph"]
     strategy: Literal["exact_vector", "hybrid"]
     profile_version: Literal[
-        "exact_vector_v2", "hybrid_fts_rrf_v2", "graphiti_edge_augmented_v1"
+        "exact_vector_v2", "hybrid_fts_rrf_v2", "graphiti_path_augmented_v2"
     ]
     enabled: bool
 

@@ -10,6 +10,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import and_, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from rag_kb.document_processing.profiles import SEMANTIC_CHUNKING_CONFIG
 from rag_kb.db.models import (
     Document as DocumentRow,
     DocumentSourceStatus,
@@ -654,6 +655,10 @@ class SqlAlchemyGraphRepository:
         )
         if revision is None:
             raise ResourceStateConflictError("Graphiti build requires an active index revision")
+        if not _graph_chunking_profile_compatible(revision.chunking_config):
+            raise ResourceStateConflictError(
+                "Graphiti build requires reindexing with the current semantic chunking profile"
+            )
         space = await self._session.scalar(
             select(EmbeddingSpaceRow).where(
                 EmbeddingSpaceRow.workspace_id == self._workspace_id,
@@ -735,6 +740,14 @@ class SqlAlchemyGraphRepository:
             embedding_model=build.embedding_model if build is not None else None,
             embedding_dimension=build.embedding_dimension if build is not None else None,
         )
+
+
+def _graph_chunking_profile_compatible(chunking_config: object) -> bool:
+    if not isinstance(chunking_config, dict):
+        return False
+    if chunking_config.get("strategy") != "semantic_breakpoint":
+        return True
+    return chunking_config == SEMANTIC_CHUNKING_CONFIG
 
 
 def _eligible_chunk_statement(workspace_id: UUID, kb_id: UUID):

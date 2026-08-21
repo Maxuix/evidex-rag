@@ -9,9 +9,9 @@ from typing import Any
 from uuid import UUID
 
 
-GRAPH_EXTRACTOR_VERSION = "graphiti_v1"
-GRAPH_RETRIEVAL_PROFILE_VERSION = "graphiti_edge_augmented_v1"
-GRAPH_AUGMENTATION_VERSION = "graphiti_edge_v1"
+GRAPH_EXTRACTOR_VERSION = "graphiti_v2"
+GRAPH_RETRIEVAL_PROFILE_VERSION = "graphiti_path_augmented_v2"
+GRAPH_AUGMENTATION_VERSION = "graphiti_path_v2"
 GRAPH_MAX_PATHS = 20
 
 
@@ -33,8 +33,6 @@ class GraphWorkKind(StrEnum):
     PREFLIGHT = "preflight"
     CHUNK = "chunk"
     FINALIZE = "finalize"
-
-
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,6 +226,10 @@ class GraphitiEdgeResult:
     fact: str
     episode_uuids: tuple[str, ...]
     rank: int
+    source_entity_uuid: str = ""
+    source_entity_name: str = ""
+    target_entity_uuid: str = ""
+    target_entity_name: str = ""
 
     def __post_init__(self) -> None:
         if not self.edge_uuid or self.rank < 1:
@@ -237,6 +239,47 @@ class GraphitiEdgeResult:
             "episode_uuids",
             tuple(dict.fromkeys(self.episode_uuids)),
         )
+
+    @property
+    def endpoint_uuids(self) -> tuple[str, str]:
+        return self.source_entity_uuid, self.target_entity_uuid
+
+
+@dataclass(frozen=True, slots=True)
+class GraphitiPathResult:
+    """One bounded Graphiti path before source chunks are hydrated."""
+
+    path_id: str
+    entry_entity_uuid: str
+    hops: tuple[GraphitiEdgeResult, ...]
+    rank: int
+    seed_entry: bool
+
+    def __post_init__(self) -> None:
+        if (
+            not self.path_id
+            or not self.entry_entity_uuid
+            or not 1 <= len(self.hops) <= 2
+            or self.rank < 1
+        ):
+            raise ValueError("Graphiti path result is invalid")
+        if any(
+            not hop.source_entity_uuid
+            or not hop.target_entity_uuid
+            or hop.source_entity_uuid == hop.target_entity_uuid
+            for hop in self.hops
+        ):
+            raise ValueError("Graphiti path endpoints are invalid")
+        first_endpoints = set(self.hops[0].endpoint_uuids)
+        if self.entry_entity_uuid not in first_endpoints:
+            raise ValueError("Graphiti path entry is not grounded")
+        if len(self.hops) == 2:
+            second_endpoints = set(self.hops[1].endpoint_uuids)
+            if (
+                len(first_endpoints & second_endpoints) != 1
+                or len(first_endpoints | second_endpoints) != 3
+            ):
+                raise ValueError("Graphiti two-hop path is disconnected")
 
 
 @dataclass(frozen=True, slots=True)
@@ -283,8 +326,6 @@ class GraphWorkItem:
             raise ValueError("non-chunk graph work item cannot carry a chunk")
 
 
-
-
 @dataclass(frozen=True, slots=True)
 class GraphTraversalResult:
     resolved_active_revision_id: UUID
@@ -292,6 +333,7 @@ class GraphTraversalResult:
     chunks: tuple[GraphChunkEvidence, ...] = ()
     rejected_path_count: int = 0
     mapped_episode_ids: tuple[str, ...] = ()
+    mapped_episode_chunks: tuple[tuple[str, UUID], ...] = ()
 
     def __post_init__(self) -> None:
         if len(self.paths) > GRAPH_MAX_PATHS or self.rejected_path_count < 0:
@@ -301,6 +343,20 @@ class GraphTraversalResult:
             "mapped_episode_ids",
             tuple(dict.fromkeys(str(item) for item in self.mapped_episode_ids)),
         )
+        mapped_episode_chunks = tuple(dict.fromkeys(self.mapped_episode_chunks))
+        if (
+            any(
+                not episode_uuid
+                or not isinstance(chunk_id, UUID)
+                for episode_uuid, chunk_id in mapped_episode_chunks
+            )
+            or len({episode_uuid for episode_uuid, _ in mapped_episode_chunks})
+            != len(mapped_episode_chunks)
+            or {episode_uuid for episode_uuid, _ in mapped_episode_chunks}
+            != set(self.mapped_episode_ids)
+        ):
+            raise ValueError("graph traversal episode mapping is invalid")
+        object.__setattr__(self, "mapped_episode_chunks", mapped_episode_chunks)
         chunk_ids = {item.index_chunk_id for item in self.chunks}
         if any(
             source_chunk_id not in chunk_ids

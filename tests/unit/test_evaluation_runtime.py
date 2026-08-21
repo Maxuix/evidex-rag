@@ -244,44 +244,52 @@ class EvaluationRuntimeTests(unittest.TestCase):
             self.assertFalse(unsafe_target.exists())
 
     def test_seed_adaptive_identity_comes_from_frozen_r7_result(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            seed = Path(directory)
-            archive_path = seed / "adaptive-graph-route-v2.tar.gz"
-            payload = json.dumps(
-                {
-                    "status": "completed",
-                    "runtime": {
-                        "schema_version": "adaptive_graph_r7_stage_a_v2",
-                        "dataset_id": "routing-rag-v2",
-                        "knowledge_base_id": _IDENTITY["knowledge_base_id"],
-                        "index_revision_id": _IDENTITY["index_revision_id"],
-                        "graph_build_id": _IDENTITY["graph_build_id"],
-                        "answer_profile_revision_id": _IDENTITY[
-                            "answer_profile_revision_id"
-                        ],
-                        "judge_source_profile_revision_id": _IDENTITY[
-                            "judge_profile_revision_id"
-                        ],
-                    },
-                }
-            ).encode()
-            with tarfile.open(archive_path, "w:gz") as archive:
-                member = tarfile.TarInfo(module.FROZEN_ADAPTIVE_RESULT)
-                member.size = len(payload)
-                archive.addfile(member, BytesIO(payload))
-            archive_path.chmod(0o600)
+        for schema_version in (
+            "adaptive_graph_r7_stage_a_v2",
+            "adaptive_graph_r7_stage_a_v3",
+        ):
+            with self.subTest(schema_version=schema_version):
+                with tempfile.TemporaryDirectory() as directory:
+                    seed = Path(directory)
+                    archive_path = seed / "adaptive-graph-route-v2.tar.gz"
+                    payload = json.dumps(
+                        {
+                            "status": "completed",
+                            "runtime": {
+                                "schema_version": schema_version,
+                                "dataset_id": "routing-rag-v2",
+                                "knowledge_base_id": _IDENTITY["knowledge_base_id"],
+                                "index_revision_id": _IDENTITY["index_revision_id"],
+                                "graph_build_id": _IDENTITY["graph_build_id"],
+                                "answer_profile_revision_id": _IDENTITY[
+                                    "answer_profile_revision_id"
+                                ],
+                                "judge_source_profile_revision_id": _IDENTITY[
+                                    "judge_profile_revision_id"
+                                ],
+                            },
+                        }
+                    ).encode()
+                    with tarfile.open(archive_path, "w:gz") as archive:
+                        member = tarfile.TarInfo(module.FROZEN_ADAPTIVE_RESULT)
+                        member.size = len(payload)
+                        archive.addfile(member, BytesIO(payload))
+                    archive_path.chmod(0o600)
 
-            identity = module._seed_adaptive_identity(seed)
+                    identity = module._seed_adaptive_identity(seed)
 
-        self.assertEqual(identity.knowledge_base_id, UUID(_IDENTITY["knowledge_base_id"]))
-        self.assertEqual(
-            identity.answer_profile_revision_id,
-            UUID(_IDENTITY["answer_profile_revision_id"]),
-        )
-        self.assertEqual(
-            identity.judge_profile_revision_id,
-            UUID(_IDENTITY["judge_profile_revision_id"]),
-        )
+                self.assertEqual(
+                    identity.knowledge_base_id,
+                    UUID(_IDENTITY["knowledge_base_id"]),
+                )
+                self.assertEqual(
+                    identity.answer_profile_revision_id,
+                    UUID(_IDENTITY["answer_profile_revision_id"]),
+                )
+                self.assertEqual(
+                    identity.judge_profile_revision_id,
+                    UUID(_IDENTITY["judge_profile_revision_id"]),
+                )
 
     def test_adaptive_identity_validates_exact_frozen_database_relation(self) -> None:
         runtime = EvaluationRuntime(

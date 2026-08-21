@@ -20,8 +20,12 @@ from rag_kb.domain import (
 
 EXACT_PROFILE_VERSION = "exact_vector_v2"
 HYBRID_PROFILE_VERSION = "hybrid_fts_rrf_v2"
-ADAPTIVE_GRAPHITI_PROFILE_VERSION = "adaptive_graphiti_v1"
-ADAPTIVE_GRAPHITI_ROUTER_VERSION = "native_agent_evidence_aware_v1"
+ADAPTIVE_GRAPHITI_PROFILE_VERSION = "adaptive_graphiti_v2"
+ADAPTIVE_GRAPHITI_ROUTER_VERSION = "native_agent_path_guard_v2"
+LEGACY_ADAPTIVE_GRAPHITI_PROFILE_VERSION = "adaptive_graphiti_v1"
+LEGACY_ADAPTIVE_GRAPHITI_ROUTER_VERSION = "native_agent_evidence_aware_v1"
+LEGACY_GRAPHITI_PROFILE_VERSION = "graphiti_edge_augmented_v1"
+LEGACY_GRAPHITI_AUGMENTATION_VERSION = "graphiti_edge_v1"
 LEGACY_EXACT_PROFILE_VERSION = "exact_vector_v1"
 LEGACY_HYBRID_PROFILE_VERSION = "hybrid_fts_rrf_v1"
 LEGACY_GRAPH_PROFILE_VERSION = "graph_augmented_v1"
@@ -283,6 +287,8 @@ def parse_retrieval_snapshot(
 
 def parse_chat_retrieval_snapshot(
     value: Mapping[str, Any],
+    *,
+    allow_legacy_display: bool = False,
 ) -> tuple[RetrievalStrategy, int, RerankMode, RetrievalExecutionType]:
     """Parse a persisted ChatRun and return its explicit execution type."""
 
@@ -294,6 +300,12 @@ def parse_chat_retrieval_snapshot(
             profile.rerank_mode,
             "adaptive_graphiti",
         )
+
+    if value.get("profile_version") == LEGACY_ADAPTIVE_GRAPHITI_PROFILE_VERSION:
+        if not allow_legacy_display:
+            raise ValueError("legacy adaptive Graphiti snapshots cannot be executed")
+        strategy, top_k, rerank_mode = _parse_legacy_adaptive_graphiti(value)
+        return strategy, top_k, rerank_mode, "adaptive_graphiti"
 
     if value.get("augmentation") is not None:
         expected_fields = {
@@ -311,6 +323,11 @@ def parse_chat_retrieval_snapshot(
         ):
             strategy, top_k, rerank_mode, _ = _parse_legacy_graph_snapshot(value)
             return strategy, top_k, rerank_mode, "manual_graph"
+        if value["profile_version"] == LEGACY_GRAPHITI_PROFILE_VERSION:
+            if not allow_legacy_display:
+                raise ValueError("legacy Graphiti snapshots cannot be executed")
+            strategy, top_k, rerank_mode = _parse_legacy_graphiti(value)
+            return strategy, top_k, rerank_mode, "manual_graph"
         profile = GraphRetrievalProfile(
             profile_version=value["profile_version"],
             strategy=RetrievalStrategy(value["strategy"]),
@@ -326,6 +343,48 @@ def parse_chat_retrieval_snapshot(
         )
     strategy, top_k, rerank_mode = parse_retrieval_snapshot(value)
     return strategy, top_k, rerank_mode, "simple"
+
+
+def _parse_legacy_graphiti(
+    value: Mapping[str, Any],
+) -> tuple[RetrievalStrategy, int, RerankMode]:
+    if (
+        value.get("augmentation") != LEGACY_GRAPHITI_AUGMENTATION_VERSION
+        or value.get("strategy") != RetrievalStrategy.HYBRID.value
+        or value.get("rerank_mode") != RerankMode.CLASSIC.value
+    ):
+        raise ValueError("legacy Graphiti snapshot is invalid")
+    top_k = value.get("top_k")
+    if isinstance(top_k, bool) or not isinstance(top_k, int) or not 4 <= top_k <= 20:
+        raise ValueError("legacy Graphiti snapshot top_k is invalid")
+    return RetrievalStrategy.HYBRID, top_k, RerankMode.CLASSIC
+
+
+def _parse_legacy_adaptive_graphiti(
+    value: Mapping[str, Any],
+) -> tuple[RetrievalStrategy, int, RerankMode]:
+    if (
+        set(value)
+        != {
+            "profile_version",
+            "strategy",
+            "top_k",
+            "rerank_mode",
+            "router",
+            "augmentation",
+        }
+        or value.get("strategy") != RetrievalStrategy.EXACT_VECTOR.value
+        or value.get("router") != LEGACY_ADAPTIVE_GRAPHITI_ROUTER_VERSION
+        or value.get("augmentation") != LEGACY_GRAPHITI_AUGMENTATION_VERSION
+    ):
+        raise ValueError("legacy adaptive Graphiti snapshot is invalid")
+    top_k = value.get("top_k")
+    if isinstance(top_k, bool) or not isinstance(top_k, int) or not 1 <= top_k <= 100:
+        raise ValueError("legacy adaptive Graphiti snapshot top_k is invalid")
+    rerank_mode = RerankMode(value.get("rerank_mode"))
+    if rerank_mode is RerankMode.LOCAL_MINILM_V1 and top_k > 20:
+        raise ValueError("local reranking supports top_k up to 20")
+    return RetrievalStrategy.EXACT_VECTOR, top_k, rerank_mode
 
 
 def parse_adaptive_graphiti_snapshot(

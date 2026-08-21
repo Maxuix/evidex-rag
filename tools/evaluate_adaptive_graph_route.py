@@ -29,6 +29,7 @@ from rag_kb.domain import (
     ChatModelMessage,
     ChatModelRequest,
     ChatModelResponse,
+    GraphitiEdgeResult,
 )
 from rag_kb.ports.model_api import ChatModelAdapter
 
@@ -120,6 +121,180 @@ def normalize_term(value: str) -> str:
         raise TypeError("term must be a string")
     normalized = unicodedata.normalize("NFKC", value).translate(_TERM_PUNCTUATION)
     return re.sub(r"\s+", "", normalized)
+
+
+def evaluate_graph_extraction(
+    observed_edges: Sequence[GraphitiEdgeResult],
+    *,
+    entity_rows: Sequence[Mapping[str, Any]],
+    relation_rows: Sequence[Mapping[str, Any]],
+    focus_relation_ids: Iterable[str] = (),
+) -> dict[str, Any]:
+    """Align one extracted graph to relation gold without persisting content.
+
+    Endpoint aliases, relation facts, and entity names are used only in memory.
+    The returned diagnostic contains aggregate counts and synthetic relation
+    identifiers, so it is safe to add to the redacted evaluator artifact.
+    """
+
+    entity_surfaces: dict[str, tuple[str, ...]] = {}
+    entity_ids_by_surface: dict[str, set[str]] = {}
+    for row in entity_rows:
+        entity_id = str(row.get("entity_id", "")).strip()
+        canonical = row.get("canonical_name")
+        aliases = row.get("aliases", ())
+        if (
+            not entity_id
+            or not isinstance(canonical, str)
+            or not canonical.strip()
+            or not isinstance(aliases, (list, tuple))
+            or any(not isinstance(item, str) or not item.strip() for item in aliases)
+        ):
+            raise ValueError("graph extraction entity gold is invalid")
+        normalized_surfaces = tuple(
+            dict.fromkeys(
+                surface
+                for value in (canonical, *aliases)
+                if (surface := _normalize_graph_surface(value))
+            )
+        )
+        if not normalized_surfaces or entity_id in entity_surfaces:
+            raise ValueError("graph extraction entity gold is invalid")
+        entity_surfaces[entity_id] = normalized_surfaces
+        for surface in normalized_surfaces:
+            entity_ids_by_surface.setdefault(surface, set()).add(entity_id)
+
+    relations: dict[str, Mapping[str, Any]] = {}
+    for row in relation_rows:
+        relation_id = str(row.get("relation_id", "")).strip()
+        subject_id = str(row.get("subject_entity_id", "")).strip()
+        object_id = str(row.get("object_entity_id", "")).strip()
+        predicate = row.get("predicate")
+        if (
+            not relation_id
+            or relation_id in relations
+            or subject_id not in entity_surfaces
+            or object_id not in entity_surfaces
+            or not isinstance(predicate, str)
+            or not _normalize_graph_surface(predicate)
+        ):
+            raise ValueError("graph extraction relation gold is invalid")
+        relations[relation_id] = row
+    if not relations:
+        raise ValueError("graph extraction relation gold is empty")
+
+    focus = tuple(dict.fromkeys(str(item) for item in focus_relation_ids))
+    if any(item not in relations for item in focus):
+        raise ValueError("graph extraction focus relation is unknown")
+
+    endpoint_entity_ids: dict[str, frozenset[str]] = {}
+    endpoint_name_by_uuid: dict[str, str] = {}
+    ambiguous_endpoint_uuids: set[str] = set()
+    unmapped_endpoint_uuids: set[str] = set()
+    self_loop_edge_ids: set[str] = set()
+    observed: list[
+        tuple[GraphitiEdgeResult, frozenset[str], frozenset[str], str]
+    ] = []
+    for edge in observed_edges:
+        source_name = _normalize_graph_surface(edge.source_entity_name)
+        target_name = _normalize_graph_surface(edge.target_entity_name)
+        for entity_uuid, normalized_name in (
+            (edge.source_entity_uuid, source_name),
+            (edge.target_entity_uuid, target_name),
+        ):
+            endpoint_name_by_uuid.setdefault(entity_uuid, normalized_name)
+            matches = frozenset(entity_ids_by_surface.get(normalized_name, ()))
+            endpoint_entity_ids[entity_uuid] = matches
+            if len(matches) > 1:
+                ambiguous_endpoint_uuids.add(entity_uuid)
+            elif not matches:
+                unmapped_endpoint_uuids.add(entity_uuid)
+        if (
+            not edge.source_entity_uuid
+            or not edge.target_entity_uuid
+            or edge.source_entity_uuid == edge.target_entity_uuid
+            or source_name == target_name
+        ):
+            self_loop_edge_ids.add(edge.edge_uuid)
+        observed.append(
+            (
+                edge,
+                endpoint_entity_ids[edge.source_entity_uuid],
+                endpoint_entity_ids[edge.target_entity_uuid],
+                _normalize_graph_surface(edge.fact),
+            )
+        )
+
+    def score_scope(relation_ids: Iterable[str]) -> dict[str, Any]:
+        ids = tuple(dict.fromkeys(relation_ids))
+        directed_hits: set[str] = set()
+        undirected_hits: set[str] = set()
+        fact_surface_hits: set[str] = set()
+        complete_hits: set[str] = set()
+        matched_observed_edge_ids: set[str] = set()
+        for relation_id in ids:
+            row = relations[relation_id]
+            subject_id = str(row["subject_entity_id"])
+            object_id = str(row["object_entity_id"])
+            predicate = _normalize_graph_surface(str(row["predicate"]))
+            subject_surface = _normalize_graph_surface(
+                str(row.get("subject_surface", ""))
+            )
+            object_surface = _normalize_graph_surface(
+                str(row.get("object_surface", ""))
+            )
+            for edge, source_ids, target_ids, fact in observed:
+                directed = subject_id in source_ids and object_id in target_ids
+                undirected = directed or (
+                    subject_id in target_ids and object_id in source_ids
+                )
+                predicate_hit = predicate in fact
+                surface_hit = bool(
+                    subject_surface
+                    and object_surface
+                    and subject_surface in fact
+                    and object_surface in fact
+                    and predicate_hit
+                )
+                if directed:
+                    directed_hits.add(relation_id)
+                if undirected:
+                    undirected_hits.add(relation_id)
+                if surface_hit:
+                    fact_surface_hits.add(relation_id)
+                if directed and predicate_hit:
+                    complete_hits.add(relation_id)
+                    matched_observed_edge_ids.add(edge.edge_uuid)
+        total = len(ids)
+        return {
+            "gold_relation_count": total,
+            "directed_topology": _rate(len(directed_hits), total),
+            "undirected_topology": _rate(len(undirected_hits), total),
+            "fact_surface": _rate(len(fact_surface_hits), total),
+            "complete_relation": _rate(len(complete_hits), total),
+            "matched_observed_edge_count": len(matched_observed_edge_ids),
+            "missing_complete_relation_ids": sorted(set(ids) - complete_hits),
+        }
+
+    all_scope = score_scope(relations)
+    matched_count = int(all_scope["matched_observed_edge_count"])
+    observed_count = len(observed_edges)
+    return {
+        "schema_version": "graph_extraction_alignment_v1",
+        "observed_edge_count": observed_count,
+        "self_loop_edge_count": len(self_loop_edge_ids),
+        "unique_endpoint_count": len(endpoint_name_by_uuid),
+        "unmapped_endpoint_count": len(unmapped_endpoint_uuids),
+        "ambiguous_endpoint_count": len(ambiguous_endpoint_uuids),
+        "matched_observed_edge_precision": _rate(matched_count, observed_count),
+        "all_relations": all_scope,
+        "focus_relations": score_scope(focus) if focus else None,
+    }
+
+
+def _normalize_graph_surface(value: str) -> str:
+    normalized = unicodedata.normalize("NFKC", value).casefold()
+    return "".join(character for character in normalized if character.isalnum())
 
 
 def validate_evaluator_edge_limit(value: int) -> int:
@@ -223,6 +398,18 @@ def validate_case_contract(cases: Sequence[Mapping[str, Any]]) -> None:
             }
             if locator_ids & context_ids:
                 raise ValueError(f"{case_id}: answer/path locators overlap")
+            gold_path = source.get("gold_path")
+            if (
+                not isinstance(gold_path, (list, tuple))
+                or not 1 <= len(gold_path) <= 2
+                or any(not isinstance(item, str) or not item for item in gold_path)
+                or len(set(gold_path)) != len(gold_path)
+            ):
+                raise ValueError(f"{case_id}: graph gold path is invalid")
+            if set(gold_path) != locator_ids | context_ids:
+                raise ValueError(
+                    f"{case_id}: answer/path locators do not cover the gold path"
+                )
     if negative_kinds != set(NEGATIVE_CONTROL_KINDS):
         raise ValueError("negative controls must cover all three semantic kinds")
 
@@ -285,19 +472,47 @@ def load_manifest(path: Path = DEFAULT_MANIFEST) -> dict[str, Any]:
     contract = manifest.get("contract")
     primary_metrics = contract.get("primary_metrics") if isinstance(contract, Mapping) else None
     secondary_metrics = contract.get("secondary_metrics") if isinstance(contract, Mapping) else None
-    if primary_metrics != {
-        "route_label": "expected_route.route",
-        "route_recall": "graph_needed_route_recall",
-        "route_accuracy": "graph_route_accuracy",
-        "graph_recall": "packed_answer_gold_recall",
-        "benefit_capture": "packed_new_answer_gold_over_simple_missing",
-    }:
+    expected_primary_metrics = (
+        {
+            "route_label": "simple_required_path_completeness",
+            "route_recall": "graph_needed_route_recall",
+            "route_accuracy": "graph_route_accuracy",
+            "graph_recall": "packed_required_path_recall",
+            "benefit_capture": "packed_path_completion_over_simple_incomplete",
+        }
+        if manifest.get("dataset_id") == "routing-rag-v2"
+        else {
+            "route_label": "expected_route.route",
+            "route_recall": "graph_needed_route_recall",
+            "route_accuracy": "graph_route_accuracy",
+            "graph_recall": "packed_answer_gold_recall",
+            "benefit_capture": "packed_new_answer_gold_over_simple_missing",
+        }
+    )
+    if primary_metrics != expected_primary_metrics:
         raise ValueError("adaptive primary metric contract is not frozen")
     if secondary_metrics != {
         "token_ratio": "budget_context_only",
         "p95_latency_ratio": "budget_context_only",
     }:
         raise ValueError("adaptive secondary metric contract is not frozen")
+    expected_benefit = (
+        "simple_incomplete_required_path_and_agent_replay_completes_packed_path"
+        if manifest.get("dataset_id") == "routing-rag-v2"
+        else "simple_missing_answer_gold_and_agent_replay_packed_new_answer_gold"
+    )
+    if (
+        contract.get("benefit") != expected_benefit
+        or tuple(contract.get("layers", ())) != LAYERS
+    ):
+        raise ValueError("adaptive evidence layer contract is not frozen")
+    if manifest.get("dataset_id") == "routing-rag-v2" and (
+        contract.get("route_decision")
+        != "admitted_source_backed_new_evidence"
+        or contract.get("probe_diagnostic")
+        != "graph_attempt_reported_separately_from_route_decision"
+    ):
+        raise ValueError("adaptive route decision contract is not frozen")
     case_file = (path.parent / str(manifest.get("case_file", ""))).resolve()
     cases = load_cases(case_file)
     if manifest.get("case_count") != len(cases):
@@ -411,7 +626,21 @@ def validate_evaluation_readiness(
     ):
         raise ValueError("evaluation readiness corpus contract changed")
 
-    graph_relations_path = case_file.parent / "gold" / "graph-rag-v1" / "relations.jsonl"
+    graph_gold_root = case_file.parent / "gold" / "graph-rag-v1"
+    graph_entities_path = graph_gold_root / "entities.jsonl"
+    graph_relations_path = graph_gold_root / "relations.jsonl"
+    entity_rows = [
+        json.loads(line)
+        for line in graph_entities_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    entity_ids = {
+        str(row.get("entity_id", ""))
+        for row in entity_rows
+        if isinstance(row, Mapping)
+    }
+    if len(entity_rows) != 240 or len(entity_ids) != 240 or "" in entity_ids:
+        raise ValueError("evaluation readiness graph entities are invalid")
     relation_document_ids: dict[str, str] = {}
     relation_rows = []
     for line in graph_relations_path.read_text(encoding="utf-8").splitlines():
@@ -426,6 +655,11 @@ def validate_evaluation_readiness(
         document_id = str(row.get("document_id", ""))
         if not relation_id or not document_id:
             raise ValueError("evaluation readiness graph relation is invalid")
+        if (
+            str(row.get("subject_entity_id", "")) not in entity_ids
+            or str(row.get("object_entity_id", "")) not in entity_ids
+        ):
+            raise ValueError("evaluation readiness graph relation endpoint is invalid")
         if relation_id in relation_document_ids:
             raise ValueError("evaluation readiness relation source is ambiguous")
         relation_document_ids[relation_id] = document_id
@@ -473,8 +707,8 @@ def validate_evaluation_readiness(
         if "--rerank-mode" in action.option_strings
     )
     if (
-        r4_runner.R4_DIAGNOSTIC_SCHEMA_VERSION != "adaptive_graph_r4_diagnostic_v2"
-        or r4_runner.R4_CHECKPOINT_SCHEMA_VERSION != "adaptive_graph_r4_checkpoint_v2"
+        r4_runner.R4_DIAGNOSTIC_SCHEMA_VERSION != "adaptive_graph_r4_diagnostic_v3"
+        or r4_runner.R4_CHECKPOINT_SCHEMA_VERSION != "adaptive_graph_r4_checkpoint_v3"
         or rerank_action.default != "classic"
         or frozenset(rerank_action.choices or ()) != RERANK_MODES
         or not {
@@ -503,6 +737,7 @@ def validate_evaluation_readiness(
         "fixture_file_sha256": hashlib.sha256(fixture_file.read_bytes()).hexdigest(),
         "corpus_manifest_sha256": hashlib.sha256(corpus_manifest_path.read_bytes()).hexdigest(),
         "graph_relations_sha256": hashlib.sha256(graph_relations_path.read_bytes()).hexdigest(),
+        "graph_entities_sha256": hashlib.sha256(graph_entities_path.read_bytes()).hexdigest(),
         "rerank_modes": sorted(RERANK_MODES),
         "layers": list(LAYERS),
         "r4_contract": {
@@ -1053,11 +1288,17 @@ def write_replay_capture_artifact(path: Path, artifact: Mapping[str, Any]) -> st
 class ChunkAlignment:
     column: str
     answer_gold_chunk_ids: tuple[str, ...]
+    path_context_chunk_ids: tuple[str, ...]
+    required_path_chunk_ids: tuple[str, ...]
     simple_chunk_ids: tuple[str, ...]
     layer_chunk_ids: dict[str, tuple[str, ...]]
     first_loss_layer: str | None
     gold_hit_by_layer: dict[str, tuple[str, ...]]
+    required_path_hit_by_layer: dict[str, tuple[str, ...]]
     new_answer_gold_chunk_ids: tuple[str, ...]
+    new_required_path_chunk_ids: tuple[str, ...]
+    simple_path_complete: bool
+    packed_path_complete: bool
     redundant_hit: bool
     benefit: bool
     duplicate_count: int
@@ -1119,6 +1360,8 @@ def align_chunk_layers(
     if column not in {"capability", "agent_replay"}:
         raise ValueError("diagnostic column is invalid")
     gold = tuple(dict.fromkeys(str(item) for item in answer_gold_chunk_ids))
+    context = tuple(dict.fromkeys(str(item) for item in path_context_chunk_ids))
+    required = tuple(dict.fromkeys((*context, *gold)))
     simple = tuple(dict.fromkeys(str(item) for item in simple_chunk_ids))
     layers: dict[str, tuple[str, ...]] = {}
     for layer in LAYERS:
@@ -1129,38 +1372,54 @@ def align_chunk_layers(
         layer: tuple(item for item in gold if item in set(layers[layer]))
         for layer in LAYERS
     }
+    required_path_hit_by_layer = {
+        layer: tuple(
+            item
+            for item in required
+            if item in set(simple).union(layers[layer])
+        )
+        for layer in LAYERS
+    }
     first_loss: str | None = None
-    for gold_id in gold:
-        if gold_id in simple:
+    for required_id in required:
+        if required_id in simple:
             continue
         for layer in LAYERS:
-            if gold_id not in layers[layer]:
+            if required_id not in set(simple).union(layers[layer]):
                 first_loss = layer
                 break
         if first_loss is not None:
             break
     packed = layers["packed"]
     new_gold = tuple(item for item in gold if item not in simple and item in packed)
+    new_required = tuple(
+        item for item in required if item not in simple and item in packed
+    )
     graph_new = tuple(item for item in packed if item not in simple)
-    context_ids = set(str(item) for item in path_context_chunk_ids)
-    answer_already_in_simple = bool(gold) and set(gold) <= set(simple)
+    simple_path_complete = bool(required) and set(required) <= set(simple)
+    packed_path_complete = bool(required) and set(required) <= set(simple).union(packed)
     redundant = (
-        answer_already_in_simple
-        or bool(graph_new) and not new_gold
-        or bool(graph_new) and set(graph_new) <= context_ids
+        simple_path_complete
+        or bool(graph_new) and not new_required
     )
     return ChunkAlignment(
         column=column,
         answer_gold_chunk_ids=gold,
+        path_context_chunk_ids=context,
+        required_path_chunk_ids=required,
         simple_chunk_ids=simple,
         layer_chunk_ids=layers,
         first_loss_layer=first_loss,
         gold_hit_by_layer=gold_hit_by_layer,
+        required_path_hit_by_layer=required_path_hit_by_layer,
         new_answer_gold_chunk_ids=new_gold,
+        new_required_path_chunk_ids=new_required,
+        simple_path_complete=simple_path_complete,
+        packed_path_complete=packed_path_complete,
         redundant_hit=redundant,
-        benefit=bool(new_gold),
+        benefit=not simple_path_complete and packed_path_complete,
         duplicate_count=len(packed) - len(set(packed)),
-        non_gold_admitted_count=sum(item not in set(gold) for item in packed),
+        non_gold_admitted_count=sum(item not in set(required) for item in packed),
     )
 
 
@@ -1184,12 +1443,12 @@ def _graph_recall_metrics(
     graph_cases: Sequence[Mapping[str, Any]],
     alignments: Mapping[str, Any] | None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Aggregate answer-gold recall without retaining gold identifiers."""
+    """Aggregate complete-path recall without retaining gold identifiers."""
 
     if alignments is None:
         unavailable = {
             "status": "not_computed_missing_layer_evidence",
-            "primary_metric": "packed_answer_gold_recall",
+            "primary_metric": "packed_required_path_recall",
             "by_layer": {},
         }
         return unavailable, {
@@ -1207,7 +1466,7 @@ def _graph_recall_metrics(
     if missing_cases:
         incomplete = {
             "status": "not_computed_incomplete_layer_evidence",
-            "primary_metric": "packed_answer_gold_recall",
+            "primary_metric": "packed_required_path_recall",
             "observed_case_count": len(graph_cases) - len(missing_cases),
             "required_case_count": len(graph_cases),
             "by_layer": {},
@@ -1220,7 +1479,14 @@ def _graph_recall_metrics(
         }
 
     layer_counts = {
-        layer: {"gold_hits": 0, "gold_total": 0, "case_hits": 0, "case_total": len(graph_cases)}
+        layer: {
+            "answer_gold_hits": 0,
+            "answer_gold_total": 0,
+            "required_path_hits": 0,
+            "required_path_total": 0,
+            "case_complete": 0,
+            "case_total": len(graph_cases),
+        }
         for layer in LAYERS
     }
     recoverable = benefit = redundant = 0
@@ -1231,6 +1497,15 @@ def _graph_recall_metrics(
             dict.fromkeys(
                 str(item)
                 for item in (_alignment_value(alignment, "answer_gold_chunk_ids", ()) or ())
+            )
+        )
+        required = tuple(
+            dict.fromkeys(
+                str(item)
+                for item in (
+                    _alignment_value(alignment, "required_path_chunk_ids", gold)
+                    or gold
+                )
             )
         )
         simple = set(
@@ -1244,16 +1519,23 @@ def _graph_recall_metrics(
             raise ValueError("Graph recall alignment layers are invalid")
         for layer in LAYERS:
             layer_ids = set(str(item) for item in (layers.get(layer, ()) or ()))
-            hits = len(set(gold) & layer_ids)
-            layer_counts[layer]["gold_hits"] += hits
-            layer_counts[layer]["gold_total"] += len(gold)
-            layer_counts[layer]["case_hits"] += bool(set(gold) & layer_ids)
-        simple_missing = bool(gold) and not set(gold) <= simple
+            combined_ids = simple.union(layer_ids)
+            layer_counts[layer]["answer_gold_hits"] += len(
+                set(gold) & combined_ids
+            )
+            layer_counts[layer]["answer_gold_total"] += len(gold)
+            layer_counts[layer]["required_path_hits"] += len(
+                set(required) & combined_ids
+            )
+            layer_counts[layer]["required_path_total"] += len(required)
+            layer_counts[layer]["case_complete"] += bool(required) and set(
+                required
+            ) <= combined_ids
+        simple_missing = bool(required) and not set(required) <= simple
         if simple_missing:
             recoverable += 1
         packed_ids = set(str(item) for item in (layers.get("packed", ()) or ()))
-        new_gold = set(gold) - simple & packed_ids
-        if new_gold:
+        if simple_missing and set(required) <= simple.union(packed_ids):
             benefit += 1
         if bool(_alignment_value(alignment, "redundant_hit", False)):
             redundant += 1
@@ -1261,14 +1543,21 @@ def _graph_recall_metrics(
     recall_by_layer = {
         layer: {
             **counts,
-            "gold_recall": _rate(counts["gold_hits"], counts["gold_total"]),
-            "case_hit_rate": _rate(counts["case_hits"], counts["case_total"]),
+            "answer_gold_recall": _rate(
+                counts["answer_gold_hits"], counts["answer_gold_total"]
+            ),
+            "required_path_recall": _rate(
+                counts["required_path_hits"], counts["required_path_total"]
+            ),
+            "case_complete_rate": _rate(
+                counts["case_complete"], counts["case_total"]
+            ),
         }
         for layer, counts in layer_counts.items()
     }
     graph_recall = {
         "status": "computed",
-        "primary_metric": "packed_answer_gold_recall",
+        "primary_metric": "packed_required_path_recall",
         "by_layer": recall_by_layer,
     }
     benefit_status = "computed" if recoverable else "not_computed_no_recoverable_cases"
@@ -1303,8 +1592,12 @@ def aggregate_graph_routing_metrics(
     if set(observations) != set(expected_ids):
         raise ValueError("Graph routing observations must cover every case exactly once")
 
-    graph_needed = simple_cases = 0
+    manifest_graph = manifest_simple = 0
+    manifest_true_positive = manifest_false_negative = 0
+    manifest_true_negative = manifest_false_positive = 0
+    evidence_gap_needed = evidence_gap_not_needed = 0
     true_positive = false_negative = true_negative = false_positive = 0
+    evidence_gap_attempts = graph_not_needed_attempts = 0
     admitted_graph = effective_graph = 0
     route_result_counts: dict[str, int] = {}
     redundant_attempts = 0
@@ -1330,6 +1623,12 @@ def aggregate_graph_routing_metrics(
             raise ValueError(f"{case_id}: Graph route evidence count is invalid")
         if admitted and not attempted:
             raise ValueError(f"{case_id}: admitted Graph route was not attempted")
+        if admitted != (new_evidence_count > 0):
+            raise ValueError(f"{case_id}: Graph route admission evidence is inconsistent")
+        # Path-aware v2 evaluates the end-to-end route decision: a probe is
+        # successful only when source-backed new evidence is actually admitted.
+        # The legacy/no-layer contract keeps its historical attempt semantics.
+        routed = admitted if alignments is not None else attempted
         raw_counts = observation.get("graph_route_result_counts", {})
         if raw_counts:
             if not isinstance(raw_counts, Mapping):
@@ -1341,15 +1640,58 @@ def aggregate_graph_routing_metrics(
                     raise ValueError(f"{case_id}: Graph route result count is invalid")
                 route_result_counts[str(result)] = route_result_counts.get(str(result), 0) + count
         if label == "graph":
-            graph_needed += 1
-            true_positive += attempted
-            false_negative += not attempted
+            manifest_graph += 1
+            manifest_true_positive += attempted
+            manifest_false_negative += not attempted
+        else:
+            manifest_simple += 1
+            manifest_false_positive += attempted
+            manifest_true_negative += not attempted
+
+        alignment = alignments.get(case_id) if alignments is not None else None
+        if label == "graph" and alignment is not None:
+            simple_path_complete = _alignment_value(
+                alignment,
+                "simple_path_complete",
+            )
+            if simple_path_complete is None:
+                required = set(
+                    str(item)
+                    for item in (
+                        _alignment_value(
+                            alignment,
+                            "required_path_chunk_ids",
+                            _alignment_value(
+                                alignment,
+                                "answer_gold_chunk_ids",
+                                (),
+                            ),
+                        )
+                        or ()
+                    )
+                )
+                simple = set(
+                    str(item)
+                    for item in (
+                        _alignment_value(alignment, "simple_chunk_ids", ()) or ()
+                    )
+                )
+                simple_path_complete = bool(required) and required <= simple
+            needs_graph = not bool(simple_path_complete)
+        else:
+            needs_graph = label == "graph"
+        if needs_graph:
+            evidence_gap_needed += 1
+            evidence_gap_attempts += attempted
+            true_positive += routed
+            false_negative += not routed
             admitted_graph += admitted
             effective_graph += new_evidence_count > 0
         else:
-            simple_cases += 1
-            false_positive += attempted
-            true_negative += not attempted
+            evidence_gap_not_needed += 1
+            graph_not_needed_attempts += attempted
+            false_positive += routed
+            true_negative += not routed
 
     graph_cases = [case for case in cases if case["expected_route"]["route"] == "graph"]
     graph_recall, benefit = _graph_recall_metrics(graph_cases, alignments)
@@ -1362,22 +1704,63 @@ def aggregate_graph_routing_metrics(
 
     route_metrics = {
         "status": "computed",
-        "label_source": "manifest.expected_route.route",
+        "decision_source": (
+            "admitted_source_backed_new_evidence"
+            if alignments is not None
+            else "graph_route_attempted_legacy_fallback"
+        ),
+        "label_source": (
+            "simple_required_path_completeness"
+            if alignments is not None
+            else "manifest.expected_route.route_fallback"
+        ),
         "case_count": len(cases),
-        "graph_needed_case_count": graph_needed,
-        "simple_case_count": simple_cases,
+        "graph_needed_case_count": evidence_gap_needed,
+        "graph_not_needed_case_count": evidence_gap_not_needed,
+        "manifest_graph_case_count": manifest_graph,
+        "manifest_simple_case_count": manifest_simple,
         "confusion": {
-            "true_positive_graph_needed_and_routed": true_positive,
-            "false_negative_graph_needed_but_not_routed": false_negative,
-            "true_negative_simple_and_not_routed": true_negative,
-            "false_positive_simple_but_routed": false_positive,
+            "true_positive_evidence_gap_and_routed": true_positive,
+            "false_negative_evidence_gap_but_not_routed": false_negative,
+            "true_negative_complete_path_and_not_routed": true_negative,
+            "false_positive_complete_path_but_routed": false_positive,
         },
-        "graph_needed_route_recall": _rate(true_positive, graph_needed),
+        "manifest_confusion": {
+            "true_positive_graph_label_and_routed": manifest_true_positive,
+            "false_negative_graph_label_but_not_routed": manifest_false_negative,
+            "true_negative_simple_label_and_not_routed": manifest_true_negative,
+            "false_positive_simple_label_but_routed": manifest_false_positive,
+        },
+        "graph_needed_route_recall": _rate(true_positive, evidence_gap_needed),
         "graph_route_accuracy": _rate(true_positive + true_negative, len(cases)),
         "graph_route_precision": _rate(true_positive, true_positive + false_positive),
-        "simple_false_positive_rate": _rate(false_positive, simple_cases),
-        "graph_route_admission_recall": _rate(admitted_graph, graph_needed),
-        "graph_effective_evidence_recall": _rate(effective_graph, graph_needed),
+        "graph_not_needed_route_rate": _rate(false_positive, evidence_gap_not_needed),
+        "graph_needed_probe_rate": _rate(
+            evidence_gap_attempts,
+            evidence_gap_needed,
+        ),
+        "graph_not_needed_probe_rate": _rate(
+            graph_not_needed_attempts,
+            evidence_gap_not_needed,
+        ),
+        "manifest_graph_route_recall": _rate(
+            manifest_true_positive,
+            manifest_graph,
+        ),
+        "manifest_simple_false_positive_rate": _rate(
+            manifest_false_positive,
+            manifest_simple,
+        ),
+        "simple_false_positive_rate": _rate(
+            manifest_false_positive,
+            manifest_simple,
+        ),
+        "manifest_route_accuracy": _rate(
+            manifest_true_positive + manifest_true_negative,
+            len(cases),
+        ),
+        "graph_route_admission_recall": _rate(admitted_graph, evidence_gap_needed),
+        "graph_effective_evidence_recall": _rate(effective_graph, evidence_gap_needed),
         "route_result_counts": dict(sorted(route_result_counts.items())),
         "redundant_graph_route_rate": (
             _rate(
@@ -1429,12 +1812,23 @@ def diagnostic_record(
             name: {
                 "first_loss_layer": value.first_loss_layer,
                 "answer_gold_chunk_ids": list(value.answer_gold_chunk_ids),
+                "path_context_chunk_ids": list(value.path_context_chunk_ids),
+                "required_path_chunk_ids": list(value.required_path_chunk_ids),
                 "simple_chunk_ids": list(value.simple_chunk_ids),
                 "layers": {layer: list(ids) for layer, ids in value.layer_chunk_ids.items()},
                 "gold_hit_by_layer": {
                     layer: list(ids) for layer, ids in value.gold_hit_by_layer.items()
                 },
+                "required_path_hit_by_layer": {
+                    layer: list(ids)
+                    for layer, ids in value.required_path_hit_by_layer.items()
+                },
                 "new_answer_gold_chunk_ids": list(value.new_answer_gold_chunk_ids),
+                "new_required_path_chunk_ids": list(
+                    value.new_required_path_chunk_ids
+                ),
+                "simple_path_complete": value.simple_path_complete,
+                "packed_path_complete": value.packed_path_complete,
                 "redundant_hit": value.redundant_hit,
                 "benefit": value.benefit,
                 "duplicate_count": value.duplicate_count,

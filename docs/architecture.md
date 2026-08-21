@@ -63,11 +63,17 @@
 - 可选 Graphiti Graph 检索：由用户选择的 Chat Profile 在空闲 indexing lane 将每个 serving
   Chunk 串行摄入为一个 Episode，FalkorDB 保存图事实，PostgreSQL 保存不可变 build 代际、
   active 指针及 Episode→Chunk 映射。新 build staging 时旧 READY build 继续服务；覆盖门与
-  运行时探测通过后才原子切换。在线用 Graphiti edge RRF 扩展候选，但证据正文始终回映射到
-  当前 serving 原始 Chunk，fact 只进入调试投影，protected hybrid seed 不被图候选挤出。
+  运行时探测通过后才原子切换。当前 `graphiti_v2` 并行使用有界 node/edge RRF：题面明确出现的
+  命名实体可直接成为一跳邻接起点，不再要求某条 edge 先被相似搜索命中；随后沿相反端点做有界
+  邻接扩展，只形成真实连通的一至两跳路径。每一跳都必须回映射到当前 serving 原始 Chunk。fact
+  只进入内部路径/调试投影，protected hybrid seed 不被图候选挤出。
 - Chat 可选择 Chat-only 的 auto 模式：先执行冻结 revision 上的普通精确向量检索，只有原生
   Agent 在取得 Simple 结果后判断存在关系、别名、关系链或跨文档证据缺口时，才最多请求一次
-  Graphiti supplement。supplement 复用 Graphiti candidate search 和原始 Chunk hydration，
+  Graphiti supplement；若模型在多关系或明确 alias/chain 题面上用 Simple 证据提前提交非拒答，服务端
+  另执行一次同预算内的真实两跳 path completeness guard。该 guard 要求至少两个不同的通用关系信号，
+  或明确的 alias/chain 标记，只有发现 query-grounded 的新增完整路径才把来源交回模型重审；普通单关系
+  直接事实不触发该探测。
+  supplement 复用 Graphiti candidate search 和原始 Chunk hydration，
   不再发起第二次 vector/FTS seed；未配置、未就绪、运行时不可用和无新证据都以安全结果码返回，
   edge fact 不进入 prompt、Citation 或回答正文。
 - 持久 ChatSession / ChatRun、Session 短期上下文，以及动态提供当前可用工具的原生
@@ -221,10 +227,10 @@ progress reporter 的窄 Protocol，具体 `services` 实现由 Worker compositi
 - 身份固定为本地 development principal/workspace；调用者不能选择身份。
 - ChatRun 冻结所选 Chat profile revision；索引与检索按 EmbeddingSpace 绑定的 profile revision
   解析 adapter。Simple 与手动 Graph snapshot 保存 profile version、strategy、`top_k` 和
-  `rerank_mode`；Graph 外层模式额外冻结 `graphiti_edge_augmented_v1` 与 `graphiti_edge_v1`
+  `rerank_mode`；Graph 外层模式额外冻结 `graphiti_path_augmented_v2` 与 `graphiti_path_v2`
   augmentation，内部 seed 仍使用 hybrid。Chat-only auto 使用独立的
-  `adaptive_graphiti_v1` snapshot，冻结 exact-vector Simple、Agent evidence-aware router
-  和 `graphiti_edge_v1` supplement，最多一次 supplement，不改变默认 vector 或直连 Graph API。
+  `adaptive_graphiti_v2` snapshot，冻结 exact-vector Simple、Agent path guard
+  和 `graphiti_path_v2` supplement，最多一次 supplement，不改变默认 vector 或直连 Graph API。
   retry 按当前进程配置解析候选数、阈值和融合权重。Chat 只有一个固定原生 Agent 路径。
 - 检索默认 exact vector；hybrid FTS 由简单设置开关控制。
 - live Agent progress transport 默认关闭，只能通过进程级 `CHAT_DELIVERY` 配置显式开启；它不属于
@@ -295,9 +301,18 @@ eval 的冻结 Graph 备份是 RDB，不含 AOF 目录；`rag-eval` 因此以 `a
 Adaptive Graph 路由评测使用成对的
 `evaluation/routing-rag-v2/` 与 `evaluation/adaptive-graph-route-v2/` 合同；`v1` 仅保留为不可变
 历史身份。`tools/evaluate_adaptive_graph_route.py --dry-run` 只校验 corpus、locator、fixture、
-文件摘要以及 R4 参数/checkpoint 安全合同，不访问 Provider、数据库、Graph、Judge 或本地
-MiniLM。R4/R7 的外部运行仍是单独授权的评测入口，不属于 API、Worker 或业务 schema 的常规
-流程；其外部调用与本地评测工件保留边界按当前授权执行。
+关系端点、文件摘要以及 R4 参数/checkpoint 安全合同，不访问 Provider、数据库、Graph、Judge 或
+本地 MiniLM。v2 的 Graph 标签以 Simple 是否覆盖完整 required path 为准，不能以最后一跳 answer
+Chunk 代替路径完整度；主 route decision 要求 source-backed 新 Graph 证据实际准入，guard probe
+另报 attempt rate，不把无证据探测冒充成功或隐藏成本。R4 另在内存中把 Graph 端点/谓词与 relation
+gold 对齐，只把聚合计数和 synthetic relation id 写入安全工件。R7 主报告必须导入同 runtime 身份的 R4 分层工件。R4/R7 的
+外部运行仍是单独授权的评测入口，不属于 API、Worker 或业务 schema 的常规流程；其外部调用与
+本地评测工件保留边界按当前授权执行。
+
+修复后复测通过 `tools/provision_routing_rag_eval.py` 在已校验的 `rag-eval` 内创建一个新 KB，固定使用
+semantic v4 摄取 24 份合成文档，并仅在索引完成、`graphiti_v2` 的 processed/eligible 数一致时原子
+更新评测 identity。该入口要求显式确认，不删除旧评测 KB，运行前还会校验公开 Graph capability 已是
+当前 path v2；因此旧镜像或错误环境会 fail closed。
 
 没有要保留的数据时，本地 schema 变化可选择经用户确认后 reset；只有用户明确需要保留数据
 时才设计回填或兼容迁移。任何删除本地数据的命令仍需明确授权。
@@ -327,7 +342,11 @@ batch 1 和每段初始 20 页，这些值目前不是用户运行时配置项�
 让出索引 lane。保持 Docling 区域 OCR 和 TableFormer Accurate，不用“存在文本层”关闭整份
 OCR，也不提高 conversion/indexing 并发，以守住 6 GiB Worker 上限和混合页面、多模态资产质量。
 
-结构切分和语义切分都直接消费一次 Docling conversion 结果。多模态路径保存受限的 page、
+结构切分和语义切分都直接消费一次 Docling conversion 结果。当前 semantic v4 除 section、page、
+table 和非正文 block 外，还把空行分隔且带短标题的内部记录投影为 `record` 硬边界；这保留 TXT、
+Markdown 和 Docling inline group 中原本存在的独立记录，不按业务实体或评测 relation 识别内容。
+legacy semantic v3 可读取但不用于新索引；Graph v2 不允许直接建立在 v3 semantic revision 上。
+多模态路径保存受限的 page、
 picture 或 table image，并把文本与视觉表示投影到现有 Evidence/asset 关系。dual 模式分别
 使用文本和跨模态 space；unified 模式让文本、查询和图片复用同一已确认的多模态 profile 与
 space。精确 profile
@@ -370,14 +389,18 @@ workspace/knowledge-base/index revision、检索策略与 top-k 内执行并在�
 adaptive ChatRun 先只允许 Simple lane；一次合法 Simple 调用完成后，即使其准入结果为空，Agent
 也可按三个固定关系/证据缺口原因请求一次 `graphiti_supplement`，且该工具在最后一个普通模型
 轮次仍可用。补充从 active READY build 解析 serving 身份；配置进入 building 只表示 staging，
-不会遮蔽仍 active 的旧 READY build。补充复用 Graphiti candidate search、probe 和当前 serving
-Chunk hydration。`none`/`classic` 按 edge/path/chunk 身份稳定排序且不依赖 MiniLM；只有冻结模式
-为 `local_minilm_v1` 时才用 MiniLM 重排，低分或未打分 Chunk 不会因此被删除，模型分也不写入
-`GRAPH_PATH` Evidence。最终最多加入 4 条新 Chunk、同一 edge 最多 2 条，
-并排除已经在证据池中的 Chunk；它不执行第二次 vector/FTS seed。supplement 的 route result
+不会遮蔽仍 active 的旧 READY build。补充复用 Graphiti node/edge candidate search、真实端点的有界邻接扩展、
+probe 和当前 serving Chunk hydration；缺任意一跳来源时整条路径拒绝。`none`/`classic` 按
+path/chunk 身份稳定排序且不依赖 MiniLM；只有冻结模式为 `local_minilm_v1` 时才用路径最弱来源分
+重排，低分或未打分 Chunk 不会因此被删除，模型分也不写入 `GRAPH_PATH` Evidence。最终按 whole
+path 规则最多加入 4 条新 Chunk，并排除已经在证据池中的 Chunk；它不执行第二次 vector/FTS seed。
+模型 Simple-only 非拒答提交只有在题面存在至少两个不同通用关系 signal，或明确 alias/chain 标记时，
+才触发服务端 guard；guard 只采纳真实、query-grounded 两跳路径，一跳或无新增路径不改变 draft，
+但该次有界 probe 仍进入安全 trace，供成本与误探测诊断。supplement 的 route result
 只允许 `admitted`、`no_new_evidence`、`not_configured`、`not_ready`、`runtime_unavailable`
 等安全码，公开 trace 保留真实 `tool=graphiti_supplement` 与 lane，edge fact 永不进入 Agent tool
-result。
+result。若紧急 forced finalizer 已没有模型轮次完成 Graph path 或 open-world 精确命题复核，非拒答
+提交会 fail closed 为拒答，不得绕过这两个 guard。
 manual Graph 固定为最终 `top_k` 预留 2 个 Graph 槽：hybrid 候选查询宽度仍按
 `min(40, max(12, top_k * 2))` 计算，但 seed 输出最多为 `top_k - 2`；packing 先完整保留这些 seed，
 再按 path-whole 规则使用剩余至多 2 个槽，不会静默挤出已返回 seed。
@@ -409,6 +432,7 @@ load_context
   -> model chooses search_knowledge_base / calculate
   -> server executes bounded tool and returns stable refs
   -> adaptive mode may execute one Graphiti supplement after a completed Simple call
+  -> Simple-only non-refusal may receive one bounded two-hop completeness guard result
   -> model calls submit_answer when ready
   -> if the ordinary loop reaches its limit, one extra submit-only call finalizes
   -> claim-level deterministic validation and salvage
@@ -429,6 +453,8 @@ ChatRun 内部 trace 保存 claim salvage 的 rejected count、内部 reason 与
 回答边界保持：
 
 - 零准入证据时确定性拒答；有证据时模型仍可判断问题无法充分回答。
+- 是/否命题的非拒答提交会经过一次 submit-only 精确命题复核；相似名称、其他主体的正关系、不同
+  counterparty 或检索缺失都不能证明目标命题为否，缺少显式支持或否定时应拒答。
 - 文档、历史与图片都是 prompt 中的不可信数据，不能扩大权限或引用范围。
 - `submit_answer` 必须通过严格参数和逐 claim 校验；非法 claim 被局部删除，仍有合法 claim 时
   降级为 `partial`，零合法 claim 才确定性拒答。
@@ -502,6 +528,11 @@ plan/manifest/chunk/vector 等非资产
 执行；serving target 不参与该清理。它们只保证当前运行模式，不宣称 HA 或多 Worker
 takeover。新增本地功能若一次失败后重跑即可，默认复用现有 job/run 状态，不新建独立恢复
 子系统。
+
+Graphiti build 继续使用 immutable build 代际作为 retry 事实；每次 retry 产生新 build，不覆盖历史
+失败行。失败持久码由 `preflight`、`episode_extraction` 或 `finalize` phase 加只基于异常类型链的
+短 fingerprint 组成，因此可在没有旧日志时聚合故障位置，同时不保存异常消息、Provider payload、
+Chunk 正文或实体名称。
 
 ## 13. 可观测性、运行与测试
 

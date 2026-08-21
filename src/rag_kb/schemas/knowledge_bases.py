@@ -66,6 +66,7 @@ class KnowledgeBaseChunkingResponse(PublicSchema):
     profile: Literal[
         "structural_by_title_token_v4",
         "semantic_breakpoint_v3",
+        "semantic_breakpoint_v4",
     ]
 
 

@@ -511,6 +511,7 @@ class IndexingPipeline:
                 document,
                 self._parser_limits,
                 surface_labels=surface_labels,
+                chunking_config=target.chunking_config,
             )
         except ParserExecutionError as error:
             raise IndexingExecutionError(

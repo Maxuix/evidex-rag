@@ -5,6 +5,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from uuid import UUID, uuid4
 import json
+import os
 
 from apps.api.routers.chat import _public_agent_trace
 
@@ -14,6 +15,7 @@ from rag_kb.domain import (
     ChatModelResponse,
     ChatToolCall,
     ChatToolDefinition,
+    GraphitiEdgeResult,
     GraphitiSupplementResult,
 )
 from tools.evaluate_adaptive_graph_route import (
@@ -26,16 +28,19 @@ from tools.evaluate_adaptive_graph_route import (
     align_chunk_layers,
     build_replay_capture_artifact,
     diagnostic_record,
+    evaluate_graph_extraction,
     build_routing_judge_packet,
     EVALUATOR_EDGE_LIMITS,
     load_cases,
     load_manifest,
+    manifest_digest,
     normalize_term,
     routing_judge_cache_key,
     summarize_graph_route_trace,
     term_proxy,
     validate_evaluator_edge_limit,
     validate_evaluation_readiness,
+    validate_case_contract,
     validate_routing_judgement,
     write_replay_capture_artifact,
 )
@@ -48,6 +53,7 @@ from tools.run_adaptive_graph_r7_stage_a import (
     _judge_tool,
     _runtime,
     _quality_tuple,
+    _r4_alignment_columns,
 )
 from tools.evaluation_runtime import AdaptiveGraphIdentity, EvaluationRuntime
 
@@ -122,6 +128,75 @@ def _tools() -> tuple[ChatToolDefinition, ...]:
 
 
 class AdaptiveGraphEvaluationTests(unittest.IsolatedAsyncioTestCase):
+    def test_graph_extraction_alignment_scores_topology_fact_and_self_loops(self) -> None:
+        entities = (
+            {"entity_id": "a", "canonical_name": "甲公司", "aliases": ["甲集团"]},
+            {"entity_id": "b", "canonical_name": "乙公司", "aliases": []},
+            {"entity_id": "c", "canonical_name": "丙公司", "aliases": []},
+        )
+        relations = (
+            {
+                "relation_id": "R001",
+                "subject_entity_id": "a",
+                "subject_surface": "甲集团",
+                "predicate": "控股",
+                "object_entity_id": "b",
+                "object_surface": "乙公司",
+            },
+            {
+                "relation_id": "R002",
+                "subject_entity_id": "b",
+                "subject_surface": "乙公司",
+                "predicate": "供应",
+                "object_entity_id": "c",
+                "object_surface": "丙公司",
+            },
+        )
+        observed = (
+            GraphitiEdgeResult(
+                edge_uuid="edge-1",
+                fact="甲集团控股乙公司。",
+                episode_uuids=("episode-1",),
+                rank=1,
+                source_entity_uuid="node-a",
+                source_entity_name="甲集团",
+                target_entity_uuid="node-b",
+                target_entity_name="乙公司",
+            ),
+            GraphitiEdgeResult(
+                edge_uuid="edge-2",
+                fact="丙公司曾使用另一个名称。",
+                episode_uuids=("episode-2",),
+                rank=2,
+                source_entity_uuid="node-c",
+                source_entity_name="丙公司",
+                target_entity_uuid="node-c",
+                target_entity_name="丙公司",
+            ),
+        )
+
+        result = evaluate_graph_extraction(
+            observed,
+            entity_rows=entities,
+            relation_rows=relations,
+            focus_relation_ids=("R001",),
+        )
+
+        self.assertEqual(result["self_loop_edge_count"], 1)
+        self.assertEqual(
+            result["all_relations"]["complete_relation"],
+            {"numerator": 1, "denominator": 2, "value": 0.5},
+        )
+        self.assertEqual(
+            result["all_relations"]["missing_complete_relation_ids"],
+            ["R002"],
+        )
+        self.assertEqual(
+            result["focus_relations"]["fact_surface"]["value"],
+            1.0,
+        )
+        self.assertNotIn("甲集团", json.dumps(result, ensure_ascii=False))
+
     def test_r7_stage_a_budget_and_paired_order_are_frozen(self) -> None:
         self.assertEqual(ANSWER_EXECUTION_LIMIT, 78)
         self.assertEqual(JUDGE_CALL_LIMIT, 78)
@@ -160,6 +235,60 @@ class AdaptiveGraphEvaluationTests(unittest.IsolatedAsyncioTestCase):
         legacy["dataset_id"] = "routing-rag-v1"
         with self.assertRaisesRegex(RuntimeError, "r7_dataset_identity_changed"):
             _runtime(legacy, _evaluation_runtime())
+
+    def test_r7_imports_only_identity_bound_r4_layer_alignments(self) -> None:
+        manifest = load_manifest()
+        runtime = _runtime(manifest, _evaluation_runtime())
+        graph_cases = [
+            case
+            for case in load_cases(Path(str(manifest["case_file"])))
+            if case["expected_route"]["route"] == "graph"
+        ]
+        diagnostic = {
+            "schema_version": "adaptive_graph_r4_diagnostic_v3",
+            "dataset_id": manifest["dataset_id"],
+            "manifest_sha256": manifest_digest(manifest),
+            "runtime": {
+                "knowledge_base_id": runtime["knowledge_base_id"],
+                "index_revision_id": runtime["index_revision_id"],
+                "graph_build_id": runtime["graph_build_id"],
+                "chat_model_profile_revision_id": runtime[
+                    "answer_profile_revision_id"
+                ],
+            },
+            "records": [
+                {
+                    "case_id": case["case_id"],
+                    "columns": {
+                        "capability": {"column": "capability"},
+                        "agent_replay": {"column": "agent_replay"},
+                    },
+                }
+                for case in graph_cases
+            ],
+        }
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "r4.json"
+            path.write_text(json.dumps(diagnostic), encoding="utf-8")
+            os.chmod(path, 0o600)
+
+            columns = _r4_alignment_columns(
+                path,
+                manifest=manifest,
+                expected_runtime=runtime,
+            )
+            self.assertEqual(len(columns["capability"]), 20)
+            diagnostic["runtime"]["graph_build_id"] = str(uuid4())
+            path.write_text(json.dumps(diagnostic), encoding="utf-8")
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "r7_r4_diagnostic_runtime_mismatch",
+            ):
+                _r4_alignment_columns(
+                    path,
+                    manifest=manifest,
+                    expected_runtime=runtime,
+                )
 
     def test_r7_stage_a_usage_and_judge_schema_are_closed(self) -> None:
         state = {
@@ -256,6 +385,21 @@ class AdaptiveGraphEvaluationTests(unittest.IsolatedAsyncioTestCase):
             ["vector-only", "hybrid-control", "manual-graph", "auto-route"],
         )
 
+    def test_graph_case_locators_must_cover_the_complete_gold_path(self) -> None:
+        manifest = load_manifest()
+        cases = load_cases(Path(manifest["case_file"]))
+        mutated = json.loads(json.dumps(cases, ensure_ascii=False))
+        graph_case = next(
+            item for item in mutated if item["expected_route"]["route"] == "graph"
+        )
+        graph_case["path_context_locators"] = []
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "answer/path locators do not cover the gold path",
+        ):
+            validate_case_contract(mutated)
+
     def test_evaluation_readiness_is_offline_and_tracks_source_bytes(self) -> None:
         readiness = validate_evaluation_readiness()
         self.assertEqual(
@@ -272,6 +416,7 @@ class AdaptiveGraphEvaluationTests(unittest.IsolatedAsyncioTestCase):
             "cases_file_sha256",
             "fixture_file_sha256",
             "corpus_manifest_sha256",
+            "graph_entities_sha256",
             "graph_relations_sha256",
         ):
             self.assertRegex(readiness[key], r"^[0-9a-f]{64}$")
@@ -346,7 +491,9 @@ class AdaptiveGraphEvaluationTests(unittest.IsolatedAsyncioTestCase):
             1.0,
         )
         self.assertEqual(
-            with_layers["graph_recall"]["by_layer"]["packed"]["gold_recall"]["value"],
+            with_layers["graph_recall"]["by_layer"]["packed"][
+                "required_path_recall"
+            ]["value"],
             1.0,
         )
         self.assertEqual(
@@ -380,6 +527,40 @@ class AdaptiveGraphEvaluationTests(unittest.IsolatedAsyncioTestCase):
                 "graph_route_result_counts": {"admitted": 1},
             },
         )
+
+    def test_static_graph_case_needs_no_route_when_simple_has_the_full_path(self) -> None:
+        cases = [
+            {
+                "case_id": "graph-complete",
+                "expected_route": {"route": "graph"},
+            }
+        ]
+        result = aggregate_graph_routing_metrics(
+            cases,
+            {
+                "graph-complete": {
+                    "graph_route_attempted": True,
+                    "graph_route_admitted": False,
+                    "graph_new_evidence_count": 0,
+                }
+            },
+            alignments={
+                "graph-complete": {
+                    "answer_gold_chunk_ids": ["answer"],
+                    "required_path_chunk_ids": ["bridge", "answer"],
+                    "simple_chunk_ids": ["bridge", "answer"],
+                    "simple_path_complete": True,
+                    "layers": {layer: [] for layer in ("raw", "hydrated", "reranked", "packed")},
+                    "redundant_hit": True,
+                }
+            },
+        )
+
+        self.assertEqual(result["route"]["graph_needed_case_count"], 0)
+        self.assertEqual(result["route"]["graph_route_accuracy"]["value"], 1.0)
+        self.assertEqual(result["route"]["manifest_graph_route_recall"]["value"], 1.0)
+        self.assertEqual(result["route"]["graph_not_needed_route_rate"]["value"], 0.0)
+        self.assertEqual(result["route"]["graph_not_needed_probe_rate"]["value"], 1.0)
         self.assertNotIn("answer", result)
 
     def test_term_proxy_normalizes_spaces_unicode_and_brackets(self) -> None:
@@ -394,7 +575,7 @@ class AdaptiveGraphEvaluationTests(unittest.IsolatedAsyncioTestCase):
             },
         )
 
-    def test_chunk_benefit_is_answer_gold_only_and_tracks_first_loss(self) -> None:
+    def test_chunk_benefit_requires_the_complete_answer_and_bridge_path(self) -> None:
         capability = align_chunk_layers(
             column="capability",
             answer_gold_chunk_ids=("answer",),
@@ -418,9 +599,10 @@ class AdaptiveGraphEvaluationTests(unittest.IsolatedAsyncioTestCase):
                 "packed": ("answer",),
             },
         )
-        self.assertEqual(capability.first_loss_layer, "reranked")
-        self.assertTrue(capability.redundant_hit)
+        self.assertEqual(capability.first_loss_layer, "hydrated")
+        self.assertFalse(capability.redundant_hit)
         self.assertFalse(capability.benefit)
+        self.assertFalse(capability.packed_path_complete)
         self.assertIsNone(replay.first_loss_layer)
         self.assertTrue(replay.benefit)
         record = diagnostic_record(
@@ -438,6 +620,15 @@ class AdaptiveGraphEvaluationTests(unittest.IsolatedAsyncioTestCase):
                 "hydrated": ["answer"],
                 "reranked": [],
                 "packed": [],
+            },
+        )
+        self.assertEqual(
+            record["columns"]["capability"]["required_path_hit_by_layer"],
+            {
+                "raw": ["bridge", "answer"],
+                "hydrated": ["answer"],
+                "reranked": ["bridge"],
+                "packed": ["bridge"],
             },
         )
 

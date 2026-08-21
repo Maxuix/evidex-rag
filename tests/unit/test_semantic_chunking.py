@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 
 from rag_kb.document_processing.profiles import (
     SEMANTIC_CHUNKING_CONFIG,
+    SEMANTIC_CHUNKING_CONFIG_V3,
     profile_fingerprint,
     profile_for_preset,
     public_descriptor,
@@ -49,7 +50,7 @@ class SemanticProfileTests(unittest.TestCase):
             "structural_balanced_v2",
         )
         self.assertEqual(
-            semantic.chunking_config["profile"], "semantic_breakpoint_v3"
+            semantic.chunking_config["profile"], "semantic_breakpoint_v4"
         )
         self.assertEqual(
             semantic.chunking_config["selector"],
@@ -63,6 +64,10 @@ class SemanticProfileTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             resolve(semantic.parser_config, semantic.chunking_config)
         self.assertEqual(SEMANTIC_CHUNKING_CONFIG["max_chunk_tokens"], 800)
+        self.assertEqual(
+            resolve(semantic.parser_config, deepcopy(SEMANTIC_CHUNKING_CONFIG_V3)),
+            ChunkingStrategyKind.SEMANTIC,
+        )
 
     def test_unknown_semantic_profile_is_rejected(self) -> None:
         unknown = {"profile": "unknown_semantic_profile"}
@@ -122,7 +127,7 @@ class SemanticBoundaryTests(unittest.TestCase):
         self.assertTrue(boundaries)
         self.assertEqual(full_region_calls, 1)
 
-    def test_planner_optimization_has_stable_v3_plan_identity(self) -> None:
+    def test_planner_optimization_has_stable_v4_plan_identity(self) -> None:
         units = tuple(
             _unit(index, ("alpha " if index < 4 else "beta ") * 120)
             for index in range(8)
@@ -160,7 +165,7 @@ class SemanticBoundaryTests(unittest.TestCase):
         )
         self.assertEqual(
             plan.plan_hash,
-            "456719e05130d11062d2d1bf56380cf30f7ce925a7d86b8b3d9be656fbcd45c3",
+            "86e4178ad58358bb58eed40d5080affdf3d7af0e36f1fbe8aad4f083ad2f8b6d",
         )
 
     def test_no_section_boundaries_are_unchanged_but_profile_hash_changes(self) -> None:

@@ -39,7 +39,7 @@ export interface KnowledgeBase {
   };
   chunking: {
     preset: ChunkingPreset;
-    profile: "structural_by_title_token_v4" | "semantic_breakpoint_v3";
+    profile: "structural_by_title_token_v4" | "semantic_breakpoint_v3" | "semantic_breakpoint_v4";
   };
   retrieval_defaults: {
     strategy: "exact_vector";
@@ -302,7 +302,9 @@ export interface ChatRunRetrieval {
     | "hybrid_fts_rrf_v2"
     | "graph_augmented_v1"
     | "graphiti_edge_augmented_v1"
-    | "adaptive_graphiti_v1";
+    | "graphiti_path_augmented_v2"
+    | "adaptive_graphiti_v1"
+    | "adaptive_graphiti_v2";
   strategy: "exact_vector" | "hybrid";
   top_k: number;
   rerank_mode: RerankMode;
@@ -311,7 +313,7 @@ export interface ChatRunRetrieval {
 export interface RetrievalCapability {
   mode: "vector" | "hybrid" | "graph";
   strategy: "exact_vector" | "hybrid";
-  profile_version: "exact_vector_v2" | "hybrid_fts_rrf_v2" | "graphiti_edge_augmented_v1";
+  profile_version: "exact_vector_v2" | "hybrid_fts_rrf_v2" | "graphiti_path_augmented_v2";
   enabled: boolean;
 }
 

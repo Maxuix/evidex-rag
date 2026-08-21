@@ -8,6 +8,7 @@ from rag_kb.domain import (
     GraphChunkSource,
     GraphitiBuildSnapshot,
     GraphitiEdgeResult,
+    GraphitiPathResult,
     GraphitiSearchQuery,
 )
 
@@ -29,5 +30,9 @@ class GraphitiGraph(Protocol):
     async def search(
         self, build: GraphitiBuildSnapshot, query: GraphitiSearchQuery
     ) -> tuple[GraphitiEdgeResult, ...]: ...
+
+    async def search_paths(
+        self, build: GraphitiBuildSnapshot, query: GraphitiSearchQuery
+    ) -> tuple[GraphitiPathResult, ...]: ...
 
     async def delete_graph(self, build: GraphitiBuildSnapshot) -> None: ...

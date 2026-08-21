@@ -1660,7 +1660,9 @@ function answerProcessMetrics(run: ChatRun): AnswerProcessMetrics {
     ),
   ) ?? [];
   const lastGraphitiEvent = graphitiEvents[graphitiEvents.length - 1];
-  const graphitiStatus = run.retrieval.profile_version === "adaptive_graphiti_v1"
+  const graphitiStatus = ["adaptive_graphiti_v1", "adaptive_graphiti_v2"].includes(
+    run.retrieval.profile_version,
+  )
     ? graphitiStatusLabel(
       lastGraphitiEvent?.route_result_code,
       lastGraphitiEvent?.new_evidence_count ?? 0,
