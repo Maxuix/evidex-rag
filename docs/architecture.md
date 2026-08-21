@@ -66,7 +66,9 @@
   运行时探测通过后才原子切换。当前 `graphiti_v2` 并行使用有界 node/edge RRF：题面明确出现的
   命名实体可直接成为一跳邻接起点，不再要求某条 edge 先被相似搜索命中；随后沿相反端点做有界
   邻接扩展，只形成真实连通的一至两跳路径。每一跳都必须回映射到当前 serving 原始 Chunk。fact
-  只进入内部路径/调试投影，protected hybrid seed 不被图候选挤出。
+  只进入内部路径/调试投影，protected hybrid seed 不被图候选挤出。每个成功 Episode 的映射独立
+  短事务提交；Episode UUID 由 build、Chunk 与 content hash 确定。失败 build 保留其 group 与映射，
+  冻结输入未变化时显式 retry 复用同一 build 并只处理缺失 Chunk；输入变化或 force rebuild 才换代。
 - Chat 可选择 Chat-only 的 auto 模式：先执行冻结 revision 上的普通精确向量检索，只有原生
   Agent 在取得 Simple 结果后判断存在关系、别名、关系链或跨文档证据缺口时，才最多请求一次
   Graphiti supplement；若模型在多关系或明确 alias/chain 题面上用 Simple 证据提前提交非拒答，服务端
@@ -529,10 +531,12 @@ plan/manifest/chunk/vector 等非资产
 takeover。新增本地功能若一次失败后重跑即可，默认复用现有 job/run 状态，不新建独立恢复
 子系统。
 
-Graphiti build 继续使用 immutable build 代际作为 retry 事实；每次 retry 产生新 build，不覆盖历史
-失败行。失败持久码由 `preflight`、`episode_extraction` 或 `finalize` phase 加只基于异常类型链的
-短 fingerprint 组成，因此可在没有旧日志时聚合故障位置，同时不保存异常消息、Provider payload、
-Chunk 正文或实体名称。
+Graphiti build 继续使用 immutable build 代际作为 retry 事实。外部 Graph 已出现确定性 Episode UUID、
+但 PostgreSQL 映射尚未提交时，重试先删除该未提交 Episode，再以同一身份摄入；已提交映射不会重复
+调用 Provider。显式 retry 只有在 revision、serving digest、Chat/Embedding profile、model、dimension
+与 extractor 均未变化时原地恢复；输入变化或 force rebuild 才 supersede 旧 build 并建立新代际。
+失败持久码由 `preflight`、`episode_extraction` 或 `finalize` phase 加只基于异常类型链的短 fingerprint
+组成，因此可在没有旧日志时聚合故障位置，同时不保存异常消息、Provider payload、Chunk 正文或实体名称。
 
 ## 13. 可观测性、运行与测试
 

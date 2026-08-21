@@ -139,15 +139,22 @@ class SqlAlchemyGraphRepository:
             or row.status == GraphConfigStatus.DISABLED.value
         )
         if rotate:
+            previous_build_id = row.build_id
+            previous_status = row.status
             row.build_id = uuid4()
             row.preflight_extractor_version = None
+            if previous_status == GraphConfigStatus.FAILED.value:
+                await self._supersede_build(
+                    previous_build_id,
+                    successor_id=row.build_id,
+                )
         elif row.status in {
             GraphConfigStatus.BUILDING.value,
             GraphConfigStatus.READY.value,
+            GraphConfigStatus.FAILED.value,
         }:
-            # Repeating the same PUT is idempotent.  An explicit retry or
-            # force-rebuild operation is required to turn an unchanged ready
-            # build back into work.
+            # Repeating the same PUT is idempotent. Explicit retry resumes an
+            # unchanged failed build; force rebuild rotates any current state.
             return await self._snapshot(row)
         row.chat_profile_revision_id = chat_profile_revision_id
         row.extractor_version = extractor_version
@@ -178,16 +185,55 @@ class SqlAlchemyGraphRepository:
         if (
             not force_rebuild
             and not version_changed
+            and snapshot.status is GraphConfigStatus.BUILDING
+        ):
+            return snapshot
+        if (
+            not force_rebuild
+            and not version_changed
             and snapshot.status is GraphConfigStatus.READY
         ):
             raise ResourceStateConflictError(
                 "Graph retry of a ready build requires force_rebuild"
             )
+        if (
+            not force_rebuild
+            and not version_changed
+            and snapshot.status is GraphConfigStatus.FAILED
+        ):
+            build = await self._session.scalar(
+                select(GraphitiGraphBuildRow)
+                .where(
+                    GraphitiGraphBuildRow.workspace_id == self._workspace_id,
+                    GraphitiGraphBuildRow.kb_id == kb_id,
+                    GraphitiGraphBuildRow.build_id == row.build_id,
+                    GraphitiGraphBuildRow.status
+                    == GraphitiBuildStatus.FAILED.value,
+                    GraphitiGraphBuildRow.superseded_by.is_(None),
+                )
+                .with_for_update()
+            )
+            if build is not None and await self._matches_frozen_input(row, build):
+                row.status = GraphConfigStatus.BUILDING.value
+                row.last_error_code = None
+                row.updated_at = datetime.now(UTC)
+                build.status = GraphitiBuildStatus.BUILDING.value
+                build.last_error_code = None
+                build.completed_at = None
+                await self._session.flush()
+                return await self._snapshot(row)
+        previous_build_id = row.build_id
+        previous_status = row.status
         row.build_id = uuid4()
         row.preflight_extractor_version = None
         row.extractor_version = extractor_version
         row.status = GraphConfigStatus.BUILDING.value
         row.last_error_code = None
+        if previous_status == GraphConfigStatus.FAILED.value:
+            await self._supersede_build(
+                previous_build_id,
+                successor_id=row.build_id,
+            )
         await self._ensure_graphiti_build(row)
         await self._session.flush()
         return await self._snapshot(row)
@@ -197,11 +243,18 @@ class SqlAlchemyGraphRepository:
         row = await self._locked_config(kb_id)
         if row is None or row.status == GraphConfigStatus.DISABLED.value:
             return False
+        previous_build_id = row.build_id
+        previous_status = row.status
         row.build_id = uuid4()
         row.status = GraphConfigStatus.BUILDING.value
         row.preflight_extractor_version = None
         row.last_error_code = None
         row.updated_at = datetime.now(UTC)
+        if previous_status == GraphConfigStatus.FAILED.value:
+            await self._supersede_build(
+                previous_build_id,
+                successor_id=row.build_id,
+            )
         await self._ensure_graphiti_build(row)
         await self._session.flush()
         return True
@@ -476,9 +529,6 @@ class SqlAlchemyGraphRepository:
                 completed_at=datetime.now(UTC),
             )
         )
-        failed = await self._session.get(GraphitiGraphBuildRow, build_id)
-        if failed is not None:
-            self._remember_retired(failed)
         return result.rowcount > 0
 
     def take_retired_graphiti_builds(self) -> tuple[GraphitiBuildSnapshot, ...]:
@@ -683,6 +733,25 @@ class SqlAlchemyGraphRepository:
             space.model_profile_revision_id,
             space.resolved_model,
             space.dimension,
+        )
+
+    async def _matches_frozen_input(
+        self,
+        config: KnowledgeBaseGraphConfigRow,
+        build: GraphitiGraphBuildRow,
+    ) -> bool:
+        revision_id, digest, expected, profile_id, model, dimension = (
+            await self._graphiti_frozen_input(config.kb_id)
+        )
+        return (
+            build.index_revision_id == revision_id
+            and build.serving_chunk_digest == digest
+            and build.expected_episode_count == expected
+            and build.chat_profile_revision_id == config.chat_profile_revision_id
+            and build.embedding_profile_revision_id == profile_id
+            and build.embedding_model == model
+            and build.embedding_dimension == dimension
+            and build.extractor_version == config.extractor_version
         )
 
     async def _snapshot(

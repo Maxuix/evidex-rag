@@ -108,7 +108,7 @@ class GraphitiBuildWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(repository.failed_codes, [])
         self.assertEqual(graphiti.deleted, [])
 
-    async def test_failed_probe_recycles_the_retired_graph(self) -> None:
+    async def test_failed_probe_preserves_the_build_for_explicit_resume(self) -> None:
         repository = _GraphRepository(GraphWorkItem(GraphWorkKind.FINALIZE, _config()))
         graphiti = _FakeGraphiti(probe_success=False)
 
@@ -121,7 +121,7 @@ class GraphitiBuildWorkerTests(unittest.IsolatedAsyncioTestCase):
             repository.failed_codes[0],
             r"^graphiti_finalize_failed:[0-9a-f]{16}$",
         )
-        self.assertEqual(graphiti.deleted, [BUILD_ID])
+        self.assertEqual(graphiti.deleted, [])
 
     async def test_preflight_failure_persists_a_phase_specific_code(self) -> None:
         repository = _GraphRepository(
@@ -205,7 +205,6 @@ class _GraphRepository:
     async def mark_failed(self, kb_id, *, build_id, error_code):
         del kb_id
         self.failed_codes.append(error_code)
-        self._retired.append(_build(build_id))
         return True
 
     def take_retired_graphiti_builds(self):

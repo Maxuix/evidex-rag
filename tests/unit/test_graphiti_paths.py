@@ -76,32 +76,51 @@ class GraphitiPathResolutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(paths[0].seed_entry)
 
     async def test_episode_extraction_applies_the_v2_contract(self) -> None:
+        class NodeNotFoundError(RuntimeError):
+            pass
+
+        class EpisodicNode:
+            def __init__(self, **values) -> None:
+                self.uuid = values["uuid"]
+
+            @classmethod
+            async def get_by_uuid(cls, _driver, _episode_uuid):
+                raise NodeNotFoundError
+
+            async def save(self, _driver) -> None:
+                return None
+
         runtime = GraphitiRuntime.__new__(GraphitiRuntime)
         graphiti = SimpleNamespace(
             add_episode=AsyncMock(
-                return_value=SimpleNamespace(
-                    episode=SimpleNamespace(uuid="episode-1")
+                side_effect=lambda **values: SimpleNamespace(
+                    episode=SimpleNamespace(uuid=values["uuid"])
                 )
-            )
+            ),
+            retrieve_episodes=AsyncMock(return_value=[]),
         )
         runtime._client = AsyncMock(return_value=(graphiti, object()))
-        build = SimpleNamespace(group_id="graph-build")
+        build = SimpleNamespace(group_id="graph-build", build_id=uuid4())
         chunk = SimpleNamespace(
             ordinal=3,
             content="甲公司曾用名乙公司。",
             index_chunk_id="chunk-1",
+            content_hash="a" * 64,
             reference_time=None,
         )
 
         with patch(
             "rag_kb.adapters.graphiti.client._graphiti_modules",
             return_value=SimpleNamespace(
-                EpisodeType=SimpleNamespace(text="text")
+                EpisodeType=SimpleNamespace(text="text"),
+                EpisodicNode=EpisodicNode,
+                NodeNotFoundError=NodeNotFoundError,
+                RELEVANT_SCHEMA_LIMIT=10,
             ),
         ):
             episode_uuid = await runtime.add_episode(build, chunk)
 
-        self.assertEqual(episode_uuid, "episode-1")
+        self.assertEqual(episode_uuid, graphiti.add_episode.await_args.kwargs["uuid"])
         kwargs = graphiti.add_episode.await_args.kwargs
         self.assertEqual(
             kwargs["entity_types"],

@@ -230,6 +230,7 @@ def _wait_for_graph(
     answer_profile_revision_id: UUID,
     timeout_seconds: float,
     retry_failed: bool,
+    force_rebuild_failed: bool,
 ) -> dict[str, Any]:
     url = f"{runtime.api_base_url}/knowledge-bases/{kb_id}/graph-config"
     config = _request(url)
@@ -243,11 +244,17 @@ def _wait_for_graph(
                 "chat_profile_revision_id": str(answer_profile_revision_id),
             },
         )
-    elif status == "failed" and retry_failed:
+    elif status == "failed" and force_rebuild_failed:
         config = _request(
             url,
             method="PUT",
             payload={"enabled": True, "retry": True, "force_rebuild": True},
+        )
+    elif status == "failed" and retry_failed:
+        config = _request(
+            url,
+            method="PUT",
+            payload={"enabled": True, "retry": True},
         )
     elif status == "failed":
         raise ProvisioningError("evaluation Graph build failed; retry was not authorized")
@@ -310,6 +317,7 @@ def provision(
     confirmation: str,
     timeout_seconds: float,
     retry_failed_graph: bool,
+    force_rebuild_failed_graph: bool,
 ) -> dict[str, object]:
     if confirmation != CONFIRMATION:
         raise ProvisioningError("evaluation provisioning confirmation is invalid")
@@ -333,6 +341,7 @@ def provision(
         answer_profile_revision_id=runtime.adaptive_graph.answer_profile_revision_id,
         timeout_seconds=timeout_seconds,
         retry_failed=retry_failed_graph,
+        force_rebuild_failed=force_rebuild_failed_graph,
     )
     graph_build_id = UUID(str(config["build_id"]))
     _bind_runtime(
@@ -357,14 +366,18 @@ def main() -> int:
     parser.add_argument("--confirm", required=True)
     parser.add_argument("--timeout-seconds", type=float, default=7200.0)
     parser.add_argument("--retry-failed-graph", action="store_true")
+    parser.add_argument("--force-rebuild-failed-graph", action="store_true")
     arguments = parser.parse_args()
     if not 60.0 <= arguments.timeout_seconds <= 14_400.0:
         parser.error("timeout must be between 60 and 14400 seconds")
+    if arguments.retry_failed_graph and arguments.force_rebuild_failed_graph:
+        parser.error("resume and force rebuild are mutually exclusive")
     try:
         result = provision(
             confirmation=arguments.confirm,
             timeout_seconds=arguments.timeout_seconds,
             retry_failed_graph=arguments.retry_failed_graph,
+            force_rebuild_failed_graph=arguments.force_rebuild_failed_graph,
         )
     except (EvaluationRuntimeError, ProvisioningError, OSError, ValueError):
         print(

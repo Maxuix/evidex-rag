@@ -13,6 +13,7 @@ import os
 import unicodedata
 from types import SimpleNamespace
 from typing import Any
+from uuid import uuid5
 
 from pydantic import BaseModel
 
@@ -303,15 +304,48 @@ class GraphitiRuntime:
     async def add_episode(
         self, build: GraphitiBuildSnapshot, chunk: GraphChunkSource
     ) -> str:
-        graphiti, _ = await self._client(build)
+        graphiti, driver = await self._client(build)
         modules = _graphiti_modules()
+        reference_time = chunk.reference_time or datetime.now(UTC)
+        episode_uuid = graphiti_episode_uuid(build, chunk)
+        try:
+            await modules.EpisodicNode.get_by_uuid(driver, episode_uuid)
+        except modules.NodeNotFoundError:
+            pass
+        else:
+            # The external write may have completed before its PostgreSQL mapping.
+            # Replaying the same immutable chunk first removes that uncommitted
+            # Episode, then reuses the deterministic identity.
+            await graphiti.remove_episode(episode_uuid)
+        previous = await graphiti.retrieve_episodes(
+            reference_time,
+            last_n=modules.RELEVANT_SCHEMA_LIMIT,
+            group_ids=[build.group_id],
+            source=modules.EpisodeType.text,
+        )
+        name = f"chunk-{chunk.index_chunk_id}"
+        description = f"chunk {chunk.index_chunk_id}"
+        episode = modules.EpisodicNode(
+            uuid=episode_uuid,
+            name=name,
+            group_id=build.group_id,
+            labels=[],
+            source=modules.EpisodeType.text,
+            source_description=description,
+            content=chunk.content,
+            created_at=datetime.now(UTC),
+            valid_at=reference_time,
+        )
+        await episode.save(driver)
         result = await graphiti.add_episode(
-            name=f"chunk-{chunk.ordinal}",
+            name=name,
             episode_body=chunk.content,
-            source_description=f"chunk {chunk.index_chunk_id}",
-            reference_time=chunk.reference_time or datetime.now(UTC),
+            source_description=description,
+            reference_time=reference_time,
             source=modules.EpisodeType.text,
             group_id=build.group_id,
+            uuid=episode_uuid,
+            previous_episode_uuids=[str(item.uuid) for item in previous],
             entity_types={"AliasSurface": AliasSurfaceEntity},
             custom_extraction_instructions=GRAPHITI_V2_EXTRACTION_INSTRUCTIONS,
         )
@@ -890,6 +924,16 @@ def _graphiti_path_id(entry_uuid: str, edge_uuids: tuple[str, ...]) -> str:
     ).hexdigest()
 
 
+def graphiti_episode_uuid(
+    build: GraphitiBuildSnapshot,
+    chunk: GraphChunkSource,
+) -> str:
+    """Return the stable Graphiti identity for one immutable build chunk."""
+
+    identity = f"{chunk.index_chunk_id}:{chunk.content_hash}"
+    return str(uuid5(build.build_id, identity))
+
+
 def _graphiti_modules() -> SimpleNamespace:
     global _GRAPHITI
     if _GRAPHITI is not None:
@@ -899,7 +943,7 @@ def _graphiti_modules() -> SimpleNamespace:
     from graphiti_core.embedder.client import EmbedderClient
     from graphiti_core.embedder.openai import OpenAIEmbedder, OpenAIEmbedderConfig
     from graphiti_core.errors import NodeNotFoundError
-    from graphiti_core.graphiti import Graphiti
+    from graphiti_core.graphiti import Graphiti, RELEVANT_SCHEMA_LIMIT
     from graphiti_core.llm_client.config import LLMConfig
     from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
     from graphiti_core.nodes import EpisodeType, EpisodicNode
@@ -940,6 +984,7 @@ def _graphiti_modules() -> SimpleNamespace:
         EpisodicNode=EpisodicNode,
         FalkorDriver=FalkorDriver,
         Graphiti=Graphiti,
+        RELEVANT_SCHEMA_LIMIT=RELEVANT_SCHEMA_LIMIT,
         LLMConfig=LLMConfig,
         NeverRerank=NeverRerank,
         NodeNotFoundError=NodeNotFoundError,
