@@ -111,7 +111,7 @@ def _paged_items(api: str, resource: str) -> tuple[dict[str, Any], ...]:
 
 def _require_current_runtime(runtime: EvaluationRuntime) -> None:
     capabilities = _request(f"{runtime.api_base_url}/retrieval/capabilities")
-    rows = capabilities.get("capabilities")
+    rows = capabilities.get("modes")
     if not isinstance(rows, list) or not any(
         isinstance(row, dict)
         and row.get("mode") == "graph"

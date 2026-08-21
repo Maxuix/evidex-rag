@@ -5,13 +5,14 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import UUID
 
-from rag_kb.domain import GRAPH_EXTRACTOR_VERSION
+from rag_kb.domain import GRAPH_EXTRACTOR_VERSION, GRAPH_RETRIEVAL_PROFILE_VERSION
 from tools.provision_routing_rag_eval import (
     EXPECTED_DOCUMENT_COUNT,
     ProvisioningError,
     _corpus_digest,
     _corpus_paths,
     _paged_items,
+    _require_current_runtime,
     _wait_for_graph,
 )
 
@@ -31,6 +32,44 @@ class RoutingRagProvisioningTests(unittest.TestCase):
         ):
             with self.assertRaises(ProvisioningError):
                 _paged_items("http://127.0.0.1:28000/api/v1", "knowledge-bases")
+
+    def test_current_runtime_uses_public_modes_contract(self) -> None:
+        runtime = SimpleNamespace(api_base_url="http://127.0.0.1:28000/api/v1")
+        response = {
+            "default_mode": "vector",
+            "modes": [
+                {
+                    "mode": "graph",
+                    "profile_version": GRAPH_RETRIEVAL_PROFILE_VERSION,
+                    "enabled": True,
+                }
+            ],
+        }
+
+        with patch(
+            "tools.provision_routing_rag_eval._request",
+            return_value=response,
+        ):
+            _require_current_runtime(runtime)  # type: ignore[arg-type]
+
+    def test_current_runtime_rejects_wrong_capability_shape(self) -> None:
+        runtime = SimpleNamespace(api_base_url="http://127.0.0.1:28000/api/v1")
+        response = {
+            "capabilities": [
+                {
+                    "mode": "graph",
+                    "profile_version": GRAPH_RETRIEVAL_PROFILE_VERSION,
+                    "enabled": True,
+                }
+            ]
+        }
+
+        with patch(
+            "tools.provision_routing_rag_eval._request",
+            return_value=response,
+        ):
+            with self.assertRaises(ProvisioningError):
+                _require_current_runtime(runtime)  # type: ignore[arg-type]
 
     def test_ready_graph_requires_a_positive_eligible_chunk_count(self) -> None:
         config = {
