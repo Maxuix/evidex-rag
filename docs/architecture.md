@@ -276,13 +276,19 @@ Episode→Chunk 映射；`0014` 删除旧 `index_graph_chunk`、`graph_entity_me
 复用页段 checkpoint；下游 Chunk/Vector 仍完整重建，不提供跨 profile 恢复或历史兼容。不得由
 现有索引链路推导出“任何新流程都必须拥有 ledger/manifest/replay”。
 
-本地 evaluator 不属于个人正式 `rag` 的业务流程。纯 corpus 校验和 `--dry-run` 不加载 Docker、
-数据库、Graph 或 Provider；任何会访问 API、数据库、Graph 或 Provider 的模式都必须先加载
-owner-only、闭集校验的 `rag-eval` runtime，且只能使用该 runtime 的独立 Compose project、
-loopback 端口、数据库/Graph 连接、workspace/profile 身份和 source/model-secret 副本。不存在或伪造
-runtime 时，入口在发起外部 I/O 前失败；个人 API、`.env.local` 和源码 UUID 不是 evaluator fallback。
+本地 evaluator 不属于个人正式 `rag` 的业务流程。所有测试和 evaluator 入口都由宿主机 checkout 的
+`.venv` 执行，不在应用容器内运行。纯 corpus 校验和 `--dry-run` 不访问数据库、Graph 或 Provider；
+任何会访问 API、数据库、Graph 或 Provider 的模式都必须先加载 owner-only、闭集校验的 `rag-eval`
+runtime，且只能连接其已经运行的 loopback 端口、数据库/Graph、workspace/profile 身份和
+source/model-secret 副本。不存在或伪造 runtime 时，入口在发起外部 I/O 前失败；个人 API、
+`.env.local` 和源码 UUID 不是 evaluator fallback。
 
-`tools/evaluation_runtime.py` 提供 preview/create/inspect/destroy 的有界生命周期。create 只在 primary
+测试请求不包含 Docker lifecycle 权限：不得为了测试 build/pull/tag 镜像，也不得 create、recreate、
+restart、stop 或 remove 容器。已经运行的隔离服务只作为宿主机 Python 的外部依赖，测试不能改变其
+生命周期；依赖不存在或版本不兼容时记录未验证并停止，不以构建镜像或刷新容器补齐环境。
+
+`tools/evaluation_runtime.py` 提供 preview/create/inspect/destroy 的有界生命周期；这些是显式 runtime
+运维能力，不是测试准备步骤，也不能由“运行测试/评测”的请求隐式触发。create 只在 primary
 checkout 工作：先证明现有本地 `rag` app/frontend image 对应 revision 与当前 checkout 的相关构建输入
 无差异，再增加 eval-only tag；不一致时失败，不自动 rebuild、pull 或下载。随后从已校验的冻结备份
 恢复 eval-owned PostgreSQL、source、model secrets 和 FalkorDB，并给 container、volume、network
@@ -311,10 +317,10 @@ gold 对齐，只把聚合计数和 synthetic relation id 写入安全工件。R
 外部运行仍是单独授权的评测入口，不属于 API、Worker 或业务 schema 的常规流程；其外部调用与
 本地评测工件保留边界按当前授权执行。
 
-修复后复测通过 `tools/provision_routing_rag_eval.py` 在已校验的 `rag-eval` 内创建一个新 KB，固定使用
-semantic v4 摄取 24 份合成文档，并仅在索引完成、`graphiti_v2` 的 processed/eligible 数一致时原子
-更新评测 identity。该入口要求显式确认，不删除旧评测 KB，运行前还会校验公开 Graph capability 已是
-当前 path v2；因此旧镜像或错误环境会 fail closed。
+修复后复测由宿主机 `.venv` 执行 `tools/provision_routing_rag_eval.py`，连接已校验且已经运行的
+`rag-eval` 依赖，在其中创建一个新 KB，固定使用 semantic v4 摄取 24 份合成文档，并仅在索引完成、
+`graphiti_v2` 的 processed/eligible 数一致时原子更新评测 identity。该入口要求显式确认，不删除旧
+评测 KB，也不管理镜像或容器生命周期；依赖版本错误时 fail closed。
 
 没有要保留的数据时，本地 schema 变化可选择经用户确认后 reset；只有用户明确需要保留数据
 时才设计回填或兼容迁移。任何删除本地数据的命令仍需明确授权。
@@ -570,19 +576,22 @@ docker compose --env-file .env.local --project-name rag logs --no-color api work
 PYTHONPATH=src:. .venv/bin/python tools/collect_diagnostics.py
 PYTHONPATH=src:. .venv/bin/python tools/smoke_local.py
 docker compose --env-file .env.local --project-name rag down
-python3 tools/run_database_tests.py
 ```
+
+以上 Compose/start/diagnostics 命令属于个人 runtime 运维，不属于测试流程，不能从“测试”请求中推导。
 
 测试使用 `unittest`，现有目录包括 `tests/basic`、`tests/unit`、`tests/contract` 和
 `tests/integration`。验证按风险选择：
 
+- 所有 Python、后端和 evaluator 测试都从 checkout 使用 `.venv/bin/python` 与 `PYTHONPATH=src:.`
+  执行，不进入应用容器；前端只用宿主机 Node/npm 验证。
+- 测试不得 build/pull/tag 镜像，不得 create/recreate/restart/stop/remove 容器，也不得下载镜像依赖。
 - Python 行为变化至少运行 basic suite 和最接近变更的聚焦测试。
 - 数据库迁移、并发或 repository 行为变化才运行相关数据库 integration。
-- 数据库 integration 只通过 `tools/run_database_tests.py` 运行：每次创建唯一命名、Docker 动态
-  loopback 端口、tmpfs 数据目录和 `trust` 无密码认证的一次性 PostgreSQL，从空库迁移后注入
-  测试 DSN，结束时校验 owner label 并清理容器。它不读取持久库 `.env.local`，也不连接或
-  TRUNCATE 个人数据库，不自动拉取缺失镜像；linked worktree 缺少 `.venv` 时复用主 worktree
-  的 Python 3.12 环境。
+- 数据库 integration 由宿主机 Python 连接调用方明确提供、已经运行且可丢弃的测试库；只接受
+  `RAG_KB_TEST_MIGRATION_DSN` 与 `RAG_KB_TEST_RUNTIME_SQLALCHEMY_DSN`，不得从 `.env.local` 推断，
+  不得连接或 TRUNCATE 个人数据库。依赖不存在时记录未验证，不自动创建容器；skip 不算通过。
+- `tools/run_database_tests.py` 会管理 Docker 生命周期，因此不属于常规测试流程。
 - 改哪个前端就构建哪个前端；不要求无关前端同时构建。
 - 纯文档变更只需检查链接、路径和 Markdown/diff，不运行应用测试。
 - 每个不变量只在最低且最有证明力的层级保留测试：basic 负责导入和依赖边界，unit/contract
@@ -599,6 +608,12 @@ python3 tools/run_database_tests.py
 
 ```bash
 PYTHONPATH=src:. .venv/bin/python -m unittest discover -s tests/basic -v
+```
+
+显式提供隔离测试 DSN 后，数据库检查同样直接从宿主机运行：
+
+```bash
+PYTHONPATH=src:. .venv/bin/python -m unittest discover -s tests/integration/db -v
 ```
 
 `tools/reset_local.py` 会永久删除本地业务数据。执行前只能先用以下命令检查精确卷目标；
@@ -626,8 +641,8 @@ Git 是恢复事实。小型可回退变更可以留在当前分支；大型、�
 local branch/commit/fast-forward merge 是普通实现动作；remote mutation 和 history rewrite 仍需确认。
 
 只有依赖安装、不可恢复的本地数据操作、数据保留选择不清楚的 schema 变化、产品/架构扩张和远程
-Git 操作需要先问。只读检查、测试、可逆编辑、本地 build/restart 和 local Git 不重复请求授权；
-但一次 destructive 授权不能扩展到未列出的目标。
+Git 操作需要先问。只读检查、宿主机 `.venv` 测试、可逆编辑和 local Git 不重复请求授权；测试授权
+不包含 build/restart、镜像下载或容器生命周期操作，一次 destructive 授权也不能扩展到未列出的目标。
 
 PLAN 结束时记录实际结果，把 PLAN 和其 subplans 一起移入 `archive/plans/NN-MMDD-short/`，然后把
 PLAN/TODO/TRACKER 重置为“无当前工作”。roadmap、review 和 archive 都不会自动变成任务。实现默认选择

@@ -59,14 +59,16 @@ creates the required lexical rows and completeness manifest for every target.
 Existing requests remain exact unless they select `strategy=hybrid` or Chat
 `retrieval.mode=hybrid`.
 
-## Basic Check
+## Host Checks
 
 ```bash
 PYTHONPATH=src:. .venv/bin/python -m unittest discover -s tests/basic -v
-PYTHONPATH=src:. .venv/bin/python tools/smoke_local.py
 ```
 
-These are the default project checks. No quality, security, load, recovery,
+All Python, backend, and evaluator tests run directly in the repository `.venv`.
+Testing never builds, pulls, or tags Docker images and never creates, recreates,
+restarts, stops, or removes containers. Docker is a runtime/deployment concern,
+not a test prerequisite. No quality, security, load, recovery,
 compatibility, or release matrix is part of the normal workflow.
 The suite is intentionally layered: basic tests protect import and architecture
 boundaries, unit/contract tests protect behavior and public schemas, and
@@ -74,22 +76,19 @@ database integration tests own migration and catalog invariants. Redundant
 source-shape, ORM inventory, retired-setting, and example-file snapshot tests
 are not kept as parallel gates.
 
-Database integration tests use a dedicated runner instead of the personal
-database:
+Database integration tests also run from the host `.venv`. Before invoking
+them, explicitly provide a disposable, already-running host-access database in
+`RAG_KB_TEST_MIGRATION_DSN` and `RAG_KB_TEST_RUNTIME_SQLALCHEMY_DSN`:
 
 ```bash
-python3 tools/run_database_tests.py
-python3 tools/run_database_tests.py \
-  tests.integration.db.test_schema.DatabaseSchemaTests.test_runtime_role_is_dml_only_and_readiness_is_read_only \
-  -v
+PYTHONPATH=src:. .venv/bin/python -m unittest discover -s tests/integration/db -v
 ```
 
-Each invocation uses the already-present pinned PostgreSQL image without
-pulling, starts a uniquely named container on a Docker-chosen loopback port,
-uses passwordless `trust` authentication only inside that temporary instance,
-migrates its empty tmpfs database, runs the requested `unittest` targets, and
-removes the container. It finds the primary worktree's Python 3.12 virtual
-environment when the current linked worktree has no `.venv`.
+Never infer these DSNs from `.env.local` or connect tests to the personal `rag`
+database. If a disposable dependency is not already available, record the
+database integration check as unverified; do not start a container. Skipped
+tests do not count as verification. `tools/run_database_tests.py` is not part
+of the normal test workflow because it manages Docker lifecycle.
 
 ## Isolated Evaluation
 
@@ -104,15 +103,19 @@ PYTHONPATH=src:. .venv/bin/python tools/evaluate_agent_complex_qa.py --dry-run
 PYTHONPATH=src:. .venv/bin/python tools/evaluate_multimodal_real.py --dry-run
 ```
 
-Any mode that can access an API, database, Graph, or Provider requires the
-private runtime created for the fixed `rag-eval` Compose project. Preview is
-read-only:
+All evaluator commands, including real runs, execute in the host `.venv`. A
+mode that accesses an API, database, Graph, or Provider may connect only to an
+already-running isolated loopback dependency described by the private
+`rag-eval` runtime. Testing must not create, refresh, rebuild, or restart that
+runtime; if it is absent or incompatible, the run stops as unverified. Preview
+is read-only:
 
 ```bash
 PYTHONPATH=src:. .venv/bin/python tools/evaluation_runtime.py preview
 ```
 
-Create and destroy require their exact confirmation values shown by preview.
+Create and destroy are explicit runtime lifecycle operations, not test setup,
+and require their exact confirmation values shown by preview.
 Creation first proves that the existing local `rag` app/frontend images match
 the current checkout's corresponding build inputs, then adds eval-only tags;
 it fails instead of rebuilding, pulling, or downloading when they differ. It
@@ -125,12 +128,16 @@ volume/network set, and private runtime directory before removing those
 objects. Neither command targets the personal `rag` volumes. Provider and Judge
 execution remains a separate, per-run authorization decision.
 
-## Useful Commands
+## Runtime Operations (Not Tests)
+
+The following commands inspect or change the personal runtime. They are not
+part of code validation and must not be inferred from a request to test:
 
 ```bash
 docker compose --env-file .env.local --project-name rag ps
 docker compose --env-file .env.local --project-name rag logs --no-color api worker
 PYTHONPATH=src:. .venv/bin/python tools/collect_diagnostics.py
+PYTHONPATH=src:. .venv/bin/python tools/smoke_local.py
 docker compose --env-file .env.local --project-name rag down
 PYTHONPATH=src:. .venv/bin/python tools/reset_local.py \
   --project-name rag \
