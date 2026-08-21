@@ -91,6 +91,9 @@ class GraphitiPathResolutionTests(unittest.IsolatedAsyncioTestCase):
                 return None
 
         runtime = GraphitiRuntime.__new__(GraphitiRuntime)
+        driver = SimpleNamespace()
+        driver.clone = lambda **_kwargs: driver
+        driver.execute_query = AsyncMock(return_value=([], [], []))
         graphiti = SimpleNamespace(
             add_episode=AsyncMock(
                 side_effect=lambda **values: SimpleNamespace(
@@ -99,7 +102,7 @@ class GraphitiPathResolutionTests(unittest.IsolatedAsyncioTestCase):
             ),
             retrieve_episodes=AsyncMock(return_value=[]),
         )
-        runtime._client = AsyncMock(return_value=(graphiti, object()))
+        runtime._client = AsyncMock(return_value=(graphiti, driver))
         build = SimpleNamespace(group_id="graph-build", build_id=uuid4())
         chunk = SimpleNamespace(
             ordinal=3,
@@ -130,6 +133,9 @@ class GraphitiPathResolutionTests(unittest.IsolatedAsyncioTestCase):
             kwargs["custom_extraction_instructions"],
             GRAPHITI_V2_EXTRACTION_INSTRUCTIONS,
         )
+        cleanup_query = driver.execute_query.await_args.args[0]
+        self.assertIn("DELETE edge", cleanup_query)
+        self.assertEqual(driver.execute_query.await_args.kwargs["routing_"], "w")
 
     def test_query_grounded_seed_expands_only_through_the_opposite_endpoint(self) -> None:
         seed = _edge(1, "product", "WTC-7", "supplier", "梧桐芯片")

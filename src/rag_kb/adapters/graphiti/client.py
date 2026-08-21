@@ -349,7 +349,32 @@ class GraphitiRuntime:
             entity_types={"AliasSurface": AliasSurfaceEntity},
             custom_extraction_instructions=GRAPHITI_V2_EXTRACTION_INSTRUCTIONS,
         )
+        # The extraction contract rejects self-relations, but a provider can
+        # still emit one despite the prompt.  Remove that invalid topology at
+        # the build boundary before the PostgreSQL mapping is committed.  The
+        # query is scoped to this build's Falkor database, so it cannot touch
+        # another workspace or graph generation.  Test doubles that do not
+        # implement the driver query surface intentionally skip this I/O.
+        await self._remove_self_loop_edges(driver, build)
         return str(result.episode.uuid)
+
+    @staticmethod
+    async def _remove_self_loop_edges(driver: Any, build: GraphitiBuildSnapshot) -> None:
+        clone = getattr(driver, "clone", None)
+        if not callable(clone):
+            return
+        scoped_driver = clone(database=build.group_id)
+        execute_query = getattr(scoped_driver, "execute_query", None)
+        if not callable(execute_query):
+            return
+        await execute_query(
+            """
+            MATCH (source:Entity)-[edge:RELATES_TO]->(target:Entity)
+            WHERE source.uuid = target.uuid
+            DELETE edge
+            """,
+            routing_="w",
+        )
 
     async def search(
         self, build: GraphitiBuildSnapshot, query: GraphitiSearchQuery
