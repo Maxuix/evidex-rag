@@ -315,7 +315,9 @@ Chunk 代替路径完整度；主 route decision 要求 source-backed 新 Graph 
 另报 attempt rate，不把无证据探测冒充成功或隐藏成本。R4 另在内存中把 Graph 端点/谓词与 relation
 gold 对齐，只把聚合计数和 synthetic relation id 写入安全工件。R7 主报告必须导入同 runtime 身份的 R4 分层工件。R4/R7 的
 外部运行仍是单独授权的评测入口，不属于 API、Worker 或业务 schema 的常规流程；其外部调用与
-本地评测工件保留边界按当前授权执行。
+本地评测工件保留边界按当前授权执行。若隔离 API/Worker 的 provider 运行环境不可用，R7 answer 可显式使用
+`--host-worker`：宿主机 `.venv` 以有界方式处理当前 ChatRun 后再轮询 API 终态；该入口不创建或改变
+任何 Docker lifecycle，且不能绕过 R7 的 answer/judge/token budget。
 
 修复后复测由宿主机 `.venv` 执行 `tools/provision_routing_rag_eval.py`，连接已校验且已经运行的
 `rag-eval` 依赖，在其中创建一个新 KB，固定使用 semantic v4 摄取 24 份合成文档，并仅在索引完成、
