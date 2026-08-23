@@ -909,7 +909,7 @@ def _write_readme(output: Path) -> None:
 
             `tools/evaluate_open_source_rag_v3.py` 是纯离线锁定与计分器。`--dry-run` 校验语料身份和冻结配置；`--write-observation-template` 生成待 host runner 填充的观察合同；`--observations ... --output ...` 只接受覆盖全部 case、绑定明确 runtime/index/build 身份的完整观察，并生成独立 locked manifest。
 
-            冻结配置固定 semantic v4、text-only embedding、Simple exact-vector/classic `top_k=10`、Graph `adaptive_graphiti_v2`/`graphiti_v2`、classic rerank 和 `edge_limit=8`。locked manifest 以 Simple 是否完整覆盖任一 `valid_paths` 动态生成 Graph-needed 标签，分别报告 Simple path recall、Graph 四层 path recall、Graph benefit、Auto TP/FP、关系抽取对齐和负例拒答；不会把 `semantic_intent=graph` 直接提升为 route gold。
+            冻结配置固定 semantic v4、text-only embedding、Simple exact-vector/classic `top_k=10`、Graph `adaptive_graphiti_v2`/`graphiti_v2`、classic rerank 和 `edge_limit=8`。locked manifest 以 Simple 是否完整覆盖任一 `valid_paths` 动态生成 Graph-needed 标签，分别报告 Simple-only、Graph-only、Simple ∪ Graph augmented、Graph incremental、Graph benefit、Auto TP/FP、关系抽取对齐和负例拒答；不会把 `semantic_intent=graph` 直接提升为 route gold，也不会把 augmented recall 标为 Graph-only recall。
 
             观察模板本身不是已完成基线，也不能作为质量结果。填充它需要外部 Provider 或隔离数据库/Graph 时，必须先满足仓库的 host-only 和授权边界；依赖缺失时保持未验证，不能用 Docker 补环境。
 

@@ -38,7 +38,7 @@ ENTITIES_PATH = CORPUS_ROOT / "entities.jsonl"
 
 DATASET_ID = "routing-rag-v3-open-source"
 OBSERVATION_SCHEMA = "open_source_rag_v3_observations_v1"
-LOCKED_SCHEMA = "open_source_rag_v3_locked_evaluation_v1"
+LOCKED_SCHEMA = "open_source_rag_v3_locked_evaluation_v2"
 LAYERS = ("raw", "hydrated", "reranked", "packed")
 SIMPLE_TOP_K = 10
 GRAPH_EDGE_LIMIT = 8
@@ -291,6 +291,25 @@ def _aggregate_path(records: Sequence[Mapping[str, Any]], field: str) -> dict[st
     }
 
 
+def _incremental_observation(
+    paths: Sequence[Sequence[str]],
+    simple: Iterable[str],
+    graph: Iterable[str],
+) -> dict[str, Any]:
+    simple_set = set(simple)
+    graph_set = set(graph)
+    valid_path_relations = {
+        relation_id for path in paths for relation_id in path
+    }
+    new_relations = graph_set - simple_set
+    new_valid_path_relations = new_relations & valid_path_relations
+    return {
+        "new_relation_count": len(new_relations),
+        "new_valid_path_relation_count": len(new_valid_path_relations),
+        "adds_valid_path_relation": bool(new_valid_path_relations),
+    }
+
+
 def _validate_observations(
     value: object,
 ) -> tuple[
@@ -395,21 +414,41 @@ def evaluate(value: object) -> dict[str, Any]:
         paths = case["valid_paths"]
         simple_ids = observation["simple_relation_ids"]
         simple_path = _path_observation(paths, simple_ids)
-        layers = {
+        graph_only_layers = {
+            layer: _path_observation(
+                paths, observation["graph_relation_ids_by_layer"][layer]
+            )
+            for layer in LAYERS
+        }
+        augmented_layers = {
             layer: _path_observation(
                 paths,
                 (*simple_ids, *observation["graph_relation_ids_by_layer"][layer]),
             )
             for layer in LAYERS
         }
+        incremental_layers = {
+            layer: _incremental_observation(
+                paths,
+                simple_ids,
+                observation["graph_relation_ids_by_layer"][layer],
+            )
+            for layer in LAYERS
+        }
         graph_needed = not simple_path["complete"]
-        benefit = graph_needed and layers["packed"]["complete"]
+        benefit = (
+            graph_needed
+            and augmented_layers["packed"]["complete"]
+            and incremental_layers["packed"]["adds_valid_path_relation"]
+        )
         records.append(
             {
                 "case_id": case_id,
                 "graph_needed": graph_needed,
                 "simple": simple_path,
-                "graph": layers,
+                "graph_only": graph_only_layers,
+                "augmented": augmented_layers,
+                "incremental": incremental_layers,
                 "graph_benefit": benefit,
                 "auto": dict(observation["auto"]),
             }
@@ -492,9 +531,12 @@ def evaluate(value: object) -> dict[str, Any]:
         "route_gold_policy": {
             "source": "simple_complete_valid_path_observation",
             "semantic_intent_is_primary_gold": False,
+            "graph_only_excludes_simple_evidence": True,
+            "augmented_is_simple_union_graph": True,
             "graph_needed_rule": (
                 "Simple misses every complete valid path and packed Graph adds "
-                "source-backed relations that complete at least one valid path"
+                "at least one missing source-backed valid-path relation that "
+                "completes a valid path in the augmented evidence"
             ),
         },
         "case_labels": records,
@@ -503,14 +545,61 @@ def evaluate(value: object) -> dict[str, Any]:
                 "scope": "semantic_graph_candidates",
                 **_aggregate_path(records, "simple"),
             },
-            "graph_path_recall": {
+            "graph_only_path_recall": {
                 layer: _aggregate_path(
                     [
-                        {**record, "selected_graph_layer": record["graph"][layer]}
+                        {
+                            **record,
+                            "selected_graph_layer": record["graph_only"][layer],
+                        }
                         for record in records
                     ],
                     "selected_graph_layer",
                 )
+                for layer in LAYERS
+            },
+            "augmented_path_recall": {
+                layer: _aggregate_path(
+                    [
+                        {
+                            **record,
+                            "selected_augmented_layer": record["augmented"][layer],
+                        }
+                        for record in records
+                    ],
+                    "selected_augmented_layer",
+                )
+                for layer in LAYERS
+            },
+            "graph_incremental": {
+                layer: {
+                    "new_relation_count": sum(
+                        record["incremental"][layer]["new_relation_count"]
+                        for record in records
+                    ),
+                    "new_valid_path_relation_count": sum(
+                        record["incremental"][layer][
+                            "new_valid_path_relation_count"
+                        ]
+                        for record in records
+                    ),
+                    "case_with_new_relation_rate": _rate(
+                        sum(
+                            record["incremental"][layer]["new_relation_count"] > 0
+                            for record in records
+                        ),
+                        len(records),
+                    ),
+                    "case_with_new_valid_path_relation_rate": _rate(
+                        sum(
+                            record["incremental"][layer][
+                                "adds_valid_path_relation"
+                            ]
+                            for record in records
+                        ),
+                        len(records),
+                    ),
+                }
                 for layer in LAYERS
             },
             "graph_benefit": {

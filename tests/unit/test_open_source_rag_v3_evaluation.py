@@ -80,8 +80,59 @@ class OpenSourceRagV3EvaluationTests(unittest.TestCase):
         self.assertTrue(first["graph_needed"])
         self.assertTrue(first["graph_benefit"])
         self.assertFalse(first["simple"]["complete"])
-        self.assertTrue(first["graph"]["packed"]["complete"])
+        self.assertFalse(first["graph_only"]["packed"]["complete"])
+        self.assertTrue(first["augmented"]["packed"]["complete"])
+        self.assertEqual(
+            first["incremental"]["packed"]["new_valid_path_relation_count"], 1
+        )
         self.assertEqual(result["metrics"]["auto"]["true_positive"], 1)
+
+    def test_graph_only_recall_never_inherits_simple_relations(self) -> None:
+        value = _completed_observations()
+        row = value["case_observations"][0]
+        row["simple_relation_ids"] = ["OSR002", "OSR007", "OSR008"]
+        row["graph_relation_ids_by_layer"] = {
+            layer: ["OSR023"] for layer in evaluator.LAYERS
+        }
+
+        result = evaluator.evaluate(value)
+        first = result["case_labels"][0]
+
+        self.assertEqual(
+            result["schema_version"], "open_source_rag_v3_locked_evaluation_v2"
+        )
+        self.assertNotIn("graph_path_recall", result["metrics"])
+        self.assertTrue(first["simple"]["complete"])
+        self.assertFalse(first["graph_only"]["packed"]["complete"])
+        self.assertTrue(first["augmented"]["packed"]["complete"])
+        self.assertEqual(
+            result["metrics"]["graph_only_path_recall"]["packed"]
+            ["complete_path_rate"]["numerator"],
+            0,
+        )
+        self.assertEqual(
+            result["metrics"]["augmented_path_recall"]["packed"]
+            ["complete_path_rate"]["numerator"],
+            1,
+        )
+
+    def test_graph_benefit_requires_a_new_valid_path_relation(self) -> None:
+        value = _completed_observations()
+        row = value["case_observations"][0]
+        row["simple_relation_ids"] = ["OSR002", "OSR007"]
+        row["graph_relation_ids_by_layer"] = {
+            layer: ["OSR023"] for layer in evaluator.LAYERS
+        }
+
+        result = evaluator.evaluate(value)
+        first = result["case_labels"][0]
+
+        self.assertTrue(first["graph_needed"])
+        self.assertFalse(first["graph_benefit"])
+        self.assertFalse(first["augmented"]["packed"]["complete"])
+        self.assertEqual(
+            first["incremental"]["packed"]["new_valid_path_relation_count"], 0
+        )
 
     def test_semantic_graph_is_not_gold_when_simple_has_complete_path(self) -> None:
         value = _completed_observations()
