@@ -301,6 +301,43 @@ class RoutingRagProvisioningTests(unittest.TestCase):
             {"enabled": True, "retry": True},
         )
 
+    def test_host_graph_retry_uses_current_source_mutation_not_api_put(self) -> None:
+        failed = {"status": "failed"}
+        ready = {
+            "status": "ready",
+            "extractor_version": GRAPH_EXTRACTOR_VERSION,
+            "processed_chunk_count": 2,
+            "eligible_chunk_count": 2,
+            "build_id": "01900000-0000-7000-8000-000000000001",
+        }
+        runtime = SimpleNamespace(api_base_url="http://127.0.0.1:28000/api/v1")
+
+        with (
+            patch(
+                "tools.provision_routing_rag_eval._request",
+                return_value=failed,
+            ) as request,
+            patch(
+                "tools.provision_routing_rag_eval._host_graph_mutation",
+                return_value=ready,
+            ) as mutation,
+        ):
+            result = _wait_for_graph(
+                runtime,  # type: ignore[arg-type]
+                "01900000-0000-7000-8000-000000000002",
+                answer_profile_revision_id=UUID(
+                    "01900000-0000-7000-8000-000000000003"
+                ),
+                timeout_seconds=60.0,
+                retry_failed=True,
+                force_rebuild_failed=False,
+                host_runtime=runtime,  # type: ignore[arg-type]
+            )
+
+        self.assertEqual(result, ready)
+        mutation.assert_called_once()
+        self.assertEqual(request.call_count, 1)
+
     def test_failed_graph_retry_resumes_without_force_rebuild(self) -> None:
         failed = {"status": "failed"}
         ready = {

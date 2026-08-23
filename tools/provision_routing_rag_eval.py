@@ -28,6 +28,7 @@ from rag_kb.domain import (
     SourceFileDigest,
     SourceFileIdentity,
 )
+from rag_kb.graph import GraphConfigurationService
 from rag_kb.scheduling.worker import consume_lane
 from rag_kb.services.content import CREATE_DOCUMENT_ENDPOINT
 from tools.evaluation_runtime import (
@@ -473,31 +474,62 @@ def _wait_for_graph(
     timeout_seconds: float,
     retry_failed: bool,
     force_rebuild_failed: bool,
+    host_runtime: EvaluationRuntime | None = None,
 ) -> dict[str, Any]:
     url = f"{runtime.api_base_url}/knowledge-bases/{kb_id}/graph-config"
     config = _request(url)
     status = config.get("status")
     retry_attempted = False
     if status == "disabled":
-        config = _request(
-            url,
-            method="PUT",
-            payload={
-                "enabled": True,
-                "chat_profile_revision_id": str(answer_profile_revision_id),
-            },
+        config = (
+            _host_graph_mutation(
+                host_runtime,
+                kb_id,
+                answer_profile_revision_id=answer_profile_revision_id,
+                retry=False,
+                force_rebuild=False,
+            )
+            if host_runtime is not None
+            else _request(
+                url,
+                method="PUT",
+                payload={
+                    "enabled": True,
+                    "chat_profile_revision_id": str(answer_profile_revision_id),
+                },
+            )
         )
     elif status == "failed" and force_rebuild_failed:
-        config = _request(
-            url,
-            method="PUT",
-            payload={"enabled": True, "retry": True, "force_rebuild": True},
+        config = (
+            _host_graph_mutation(
+                host_runtime,
+                kb_id,
+                answer_profile_revision_id=answer_profile_revision_id,
+                retry=True,
+                force_rebuild=True,
+            )
+            if host_runtime is not None
+            else _request(
+                url,
+                method="PUT",
+                payload={"enabled": True, "retry": True, "force_rebuild": True},
+            )
         )
     elif status == "failed" and retry_failed:
-        config = _request(
-            url,
-            method="PUT",
-            payload={"enabled": True, "retry": True},
+        config = (
+            _host_graph_mutation(
+                host_runtime,
+                kb_id,
+                answer_profile_revision_id=answer_profile_revision_id,
+                retry=True,
+                force_rebuild=False,
+            )
+            if host_runtime is not None
+            else _request(
+                url,
+                method="PUT",
+                payload={"enabled": True, "retry": True},
+            )
         )
         retry_attempted = True
     elif status == "failed":
@@ -507,10 +539,20 @@ def _wait_for_graph(
     while config.get("status") != "ready":
         if config.get("status") == "failed":
             if retry_failed and not retry_attempted:
-                config = _request(
-                    url,
-                    method="PUT",
-                    payload={"enabled": True, "retry": True},
+                config = (
+                    _host_graph_mutation(
+                        host_runtime,
+                        kb_id,
+                        answer_profile_revision_id=answer_profile_revision_id,
+                        retry=True,
+                        force_rebuild=False,
+                    )
+                    if host_runtime is not None
+                    else _request(
+                        url,
+                        method="PUT",
+                        payload={"enabled": True, "retry": True},
+                    )
                 )
                 retry_attempted = True
                 continue
@@ -530,6 +572,56 @@ def _wait_for_graph(
     ):
         raise ProvisioningError("evaluation Graph build is incomplete")
     return config
+
+
+def _host_graph_mutation(
+    runtime: EvaluationRuntime,
+    kb_id: str,
+    *,
+    answer_profile_revision_id: UUID,
+    retry: bool,
+    force_rebuild: bool,
+) -> dict[str, Any]:
+    """Apply current-source Graph configuration against the isolated DB."""
+
+    async def mutate() -> None:
+        dependencies = build_worker_dependencies(
+            env_file=runtime.env_file,
+            worker_id=f"v3-host-graph-config-{uuid4().hex}",
+        )
+        try:
+            await dependencies.start()
+            context = dependencies.auth_provider.get_context()
+            service = GraphConfigurationService(
+                dependencies.unit_of_work,
+                dependencies.access_policy,
+                dependencies.graphiti_runtime,
+            )
+            before = await service.get(context, UUID(kb_id))
+            if retry:
+                after = await service.retry(
+                    context,
+                    UUID(kb_id),
+                    force_rebuild=force_rebuild,
+                )
+                if not force_rebuild and after.build_id != before.build_id:
+                    raise ProvisioningError(
+                        "evaluation host Graph retry changed build identity"
+                    )
+            else:
+                await service.configure(
+                    context,
+                    UUID(kb_id),
+                    enabled=True,
+                    chat_profile_revision_id=answer_profile_revision_id,
+                )
+        finally:
+            await dependencies.close()
+
+    asyncio.run(mutate())
+    return _request(
+        f"{runtime.api_base_url}/knowledge-bases/{kb_id}/graph-config"
+    )
 
 
 def _bind_runtime(
@@ -614,6 +706,7 @@ def provision(
             timeout_seconds=timeout_seconds,
             retry_failed=retry_failed_graph,
             force_rebuild_failed=force_rebuild_failed_graph,
+            host_runtime=runtime if host_worker else None,
         )
         graph_build_id = UUID(str(config["build_id"]))
         _bind_runtime(
