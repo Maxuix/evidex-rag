@@ -390,6 +390,55 @@ class DoclingArtifactManifestTests(unittest.TestCase):
             with self.assertRaises(ArtifactManifestError):
                 verify_docling_artifacts(root, manifest_path)
 
+    def test_text_conversion_does_not_require_pdf_models_but_pdf_still_does(self) -> None:
+        converter = _FakeConverter()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime = _DoclingRuntime(
+                ParserLimits(),
+                artifacts_path=root / "missing-artifacts",
+                artifact_manifest_path=root / "missing-manifest.json",
+                converter_factory=lambda *_args, **_kwargs: converter,
+            )
+
+            result = runtime.convert(
+                ParserSource("source.md", "text/markdown", b"# source"),
+                ParsingPreset.TEXT_LOCAL_V1,
+            )
+            self.assertEqual(result.name, "fixture")
+
+            with self.assertRaises(ParserExecutionError) as raised:
+                runtime.convert(
+                    ParserSource(
+                        "source.pdf",
+                        "application/pdf",
+                        _pdf_with_pages(1),
+                    ),
+                    ParsingPreset.TEXT_LOCAL_V1,
+                )
+
+        self.assertEqual(raised.exception.code, ErrorCode.PARSER_NOT_CONFIGURED)
+
+    def test_utf8_plain_text_has_a_deterministic_direct_conversion(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime = _DoclingRuntime(
+                ParserLimits(),
+                artifacts_path=root,
+                artifact_manifest_path=root / "missing-manifest.json",
+            )
+
+            document = runtime.convert(
+                ParserSource("source.txt", "text/plain", "第一段\n第二段".encode()),
+                ParsingPreset.TEXT_LOCAL_V1,
+            )
+
+        texts = [
+            item.text
+            for item, _level in document.iterate_items()
+            if hasattr(item, "text")
+        ]
+        self.assertEqual(texts, ["第一段\n第二段"])
 
 class DoclingConverterFactoryTests(unittest.TestCase):
     def test_freezes_local_cpu_rapidocr_and_preset_images(self) -> None:
@@ -678,7 +727,7 @@ class DoclingParserTests(unittest.IsolatedAsyncioTestCase):
         converter = _FakeConverter()
         harness = _ParserHarness(self, converter)
         self.addCleanup(harness.close)
-        source = ParserSource("guide.txt", "text/plain", b"Guide")
+        source = ParserSource("guide.md", "text/markdown", b"Guide")
 
         await harness.parser.parse(source, preset=ParsingPreset.TEXT_LOCAL_V1)
         await harness.parser.parse(source, preset=ParsingPreset.TEXT_LOCAL_V1)
@@ -887,7 +936,7 @@ class DoclingParserTests(unittest.IsolatedAsyncioTestCase):
         try:
             with self.assertRaises(ParserExecutionError) as raised:
                 await item_harness.parser.parse(
-                    ParserSource("guide.txt", "text/plain", b"body"),
+                    ParserSource("guide.md", "text/markdown", b"body"),
                     preset=ParsingPreset.TEXT_LOCAL_V1,
                 )
             self.assertEqual(raised.exception.diagnostic["limit_name"], "max_docling_items")
@@ -907,7 +956,7 @@ class DoclingParserTests(unittest.IsolatedAsyncioTestCase):
         try:
             with self.assertRaises(ParserExecutionError) as raised:
                 await character_harness.parser.parse(
-                    ParserSource("guide.txt", "text/plain", b"body"),
+                    ParserSource("guide.md", "text/markdown", b"body"),
                     preset=ParsingPreset.TEXT_LOCAL_V1,
                 )
             self.assertEqual(

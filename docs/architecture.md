@@ -342,7 +342,15 @@ runner 逐 case 写 owner-only、content-safe checkpoint，不保存
 `tools/provision_routing_rag_eval.py` 同时保留默认 v2 spec 和显式 v3 open-source spec；两者使用独立 KB
 名称、文档闭集、媒体类型与确认串。v3 spec 支持 Markdown/TXT/CSV，成功后才把 runtime identity 绑定到
 该 semantic-v4 index/Graph build。provision 会触发索引与建图 Provider 调用，不能由测试请求或 runner
-隐式执行。
+隐式执行。显式 `--host-worker` 用于已授权但隔离 Worker 无法访问 Provider 的场景：它先按 API
+checksum/size 闭集把冻结语料字节镜像到 owner-only host eval file store，再用宿主 `.venv` 消费隔离
+indexing/Graph lane；failed retry 有界且不 force rebuild。Graph retry 改变 build identity、冻结输入不匹配或
+仍失败时停止，不能借 host worker 绕过 runtime 版本或 identity 门。
+
+`text/plain` 是公开上传合同的一部分，不经过 Docling 不支持的 TXT converter，而是以严格 UTF-8 直接构造
+受同一 item/character 预算约束的 `DoclingDocument`。Markdown/CSV/Office simple pipeline 不消费 PDF
+OCR/layout/table 模型，因此只要求一个有效的本地 artifacts 目录；PDF 转换仍必须在 converter cache 前通过
+完整 frozen artifact manifest 校验，先处理文本不能绕过 PDF artifact 门。
 
 没有要保留的数据时，本地 schema 变化可选择经用户确认后 reset；只有用户明确需要保留数据
 时才设计回填或兼容迁移。任何删除本地数据的命令仍需明确授权。

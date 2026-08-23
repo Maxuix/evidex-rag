@@ -32,7 +32,7 @@ from docling.datamodel.base_models import (
     InputFormat,
 )
 from docling.document_converter import DocumentConverter
-from docling_core.types.doc import DoclingDocument
+from docling_core.types.doc import DocItemLabel, DoclingDocument
 from PIL import Image as PillowImage
 from pypdf import PdfReader
 
@@ -669,7 +669,28 @@ class _DoclingRuntime:
         resolved_profile = _resolve_profile(profile=profile, preset=None)
         try:
             _preflight_conversion_source(source, self._limits)
-            converter = self._get_converter(resolved_profile)
+            if source.media_type == "text/plain":
+                document = DoclingDocument(
+                    name=PurePath(source.original_filename).stem or "document"
+                )
+                try:
+                    text = source.content.decode("utf-8-sig")
+                except UnicodeDecodeError as error:
+                    raise ParserExecutionError(
+                        ErrorCode.FILE_CONTENT_INVALID,
+                        diagnostic={"check": "plain_text_utf8"},
+                    ) from error
+                document.add_text(label=DocItemLabel.TEXT, text=text)
+                _validate_document(document, self._limits)
+                return document
+
+            converter = self._get_converter(
+                resolved_profile,
+                require_artifacts=(
+                    source.media_type == "application/pdf"
+                    or PurePath(source.original_filename).suffix.lower() == ".pdf"
+                ),
+            )
             if source.media_type == MARKDOWN_BUNDLE_MEDIA_TYPE:
                 result = self._convert_markdown_bundle(converter, source.content)
             else:
@@ -750,11 +771,18 @@ class _DoclingRuntime:
                 max_file_size=self._limits.max_file_size,
             )
 
-    def _get_converter(self, profile: ParserProfile) -> DocumentConverter:
-        converter = self._converters.get(profile)
-        if converter is not None:
-            return converter
-        if not self._artifacts_verified:
+    def _get_converter(
+        self,
+        profile: ParserProfile,
+        *,
+        require_artifacts: bool,
+    ) -> DocumentConverter:
+        # Markdown/CSV/office simple pipelines do not load the PDF
+        # OCR/layout/table models.  Require the frozen model bundle only when
+        # a PDF conversion can actually consume it.  Keep this check ahead of
+        # the converter cache so a prior text conversion cannot bypass the PDF
+        # artifact gate.
+        if require_artifacts and not self._artifacts_verified:
             try:
                 manifest = verify_docling_artifacts(
                     self._artifacts_path,
@@ -768,6 +796,9 @@ class _DoclingRuntime:
                     diagnostic={"check": "docling_artifact_manifest"},
                 ) from error
             self._artifacts_verified = True
+        converter = self._converters.get(profile)
+        if converter is not None:
+            return converter
         try:
             factory_profile: ParserProfile | ParsingPreset = (
                 profile

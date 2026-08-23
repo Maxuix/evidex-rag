@@ -4,26 +4,39 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import base64
 from dataclasses import dataclass
 import hashlib
+from io import BytesIO
 import json
 from pathlib import Path
+import threading
 import time
 from typing import Any, Mapping
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
-from uuid import NAMESPACE_URL, UUID, uuid5
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
-from rag_kb.domain import GRAPH_EXTRACTOR_VERSION, GRAPH_RETRIEVAL_PROFILE_VERSION
+from apps.worker.dependencies import build_worker_dependencies
+from rag_kb.adapters.file_store.local import LocalFileStore
+from rag_kb.config import load_settings
+from rag_kb.domain import (
+    GRAPH_EXTRACTOR_VERSION,
+    GRAPH_RETRIEVAL_PROFILE_VERSION,
+    SourceFileDigest,
+    SourceFileIdentity,
+)
+from rag_kb.scheduling.worker import consume_lane
+from rag_kb.services.content import CREATE_DOCUMENT_ENDPOINT
 from tools.evaluation_runtime import (
     AdaptiveGraphIdentity,
-    DEFAULT_RUNTIME_MANIFEST,
     EvaluationRuntime,
     EvaluationRuntimeError,
     _runtime_value,
     _write_private,
+    canonical_evaluation_runtime_manifest,
     load_evaluation_runtime,
 )
 
@@ -73,6 +86,84 @@ MEDIA_TYPES = V2_SPEC.media_types
 
 class ProvisioningError(RuntimeError):
     """The isolated post-fix evaluator cannot be provisioned safely."""
+
+
+class _HostIndexingDriver:
+    """Consume only the isolated runtime's indexing/Graph lane on host Python."""
+
+    def __init__(self, runtime: EvaluationRuntime) -> None:
+        self._runtime = runtime
+        self._ready = threading.Event()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._failed = False
+
+    def start(self) -> None:
+        if self._thread is not None:
+            return
+        self._thread = threading.Thread(
+            target=self._thread_main,
+            name="rag-v3-host-indexing",
+            daemon=True,
+        )
+        self._thread.start()
+        if not self._ready.wait(timeout=30.0) or self._failed:
+            raise ProvisioningError("evaluation host indexing worker failed to start")
+
+    def close(self) -> None:
+        thread = self._thread
+        if thread is None:
+            return
+        self._stop.set()
+        thread.join(timeout=30.0)
+        self._thread = None
+        if thread.is_alive() or self._failed:
+            raise ProvisioningError("evaluation host indexing worker failed")
+
+    def _thread_main(self) -> None:
+        try:
+            asyncio.run(self._run())
+        except Exception:
+            self._failed = True
+            self._ready.set()
+
+    async def _run(self) -> None:
+        settings = load_settings(env_file=self._runtime.env_file)
+        host_text_artifacts = self._runtime.runtime_root / "host-text-artifacts"
+        host_text_artifacts.mkdir(mode=0o700, exist_ok=True)
+        host_text_artifacts.chmod(0o700)
+        parser_settings = settings.parser.model_copy(
+            update={
+                "docling_artifacts_path": host_text_artifacts,
+                "docling_artifact_manifest_path": (
+                    PROJECT_ROOT / "config/docling-artifacts-v1.json"
+                ),
+            }
+        )
+        settings = settings.model_copy(update={"parser": parser_settings})
+        dependencies = build_worker_dependencies(
+            settings,
+            worker_id=f"v3-host-{uuid4().hex}",
+        )
+        stopped = asyncio.Event()
+        try:
+            await dependencies.start()
+            self._ready.set()
+            consumer = asyncio.create_task(
+                consume_lane(
+                    "indexing",
+                    dependencies.indexing_scheduler,
+                    stopped,
+                    poll_interval_seconds=0.05,
+                )
+            )
+            while not self._stop.is_set():
+                await asyncio.sleep(0.05)
+            stopped.set()
+            await consumer
+        finally:
+            self._ready.set()
+            await dependencies.close()
 
 
 def _corpus_paths(spec: ProvisioningSpec = V2_SPEC) -> tuple[Path, ...]:
@@ -242,20 +333,124 @@ def _ensure_documents(
             _upload(runtime, kb_id, path, spec)
 
 
+def _host_source_identity(
+    runtime: EvaluationRuntime,
+    kb_id: str,
+    path: Path,
+    spec: ProvisioningSpec,
+) -> SourceFileIdentity:
+    identity = runtime.adaptive_graph
+    if identity is None:
+        raise ProvisioningError("evaluation workspace identity is unavailable")
+    idempotency_key = uuid5(NAMESPACE_URL, f"{spec.knowledge_base_name}:{path.name}")
+    key_material = hashlib.sha256(
+        "\x1f".join(
+            (
+                str(identity.workspace_id),
+                f"eval-{runtime.owner}",
+                "local-evaluator",
+                CREATE_DOCUMENT_ENDPOINT,
+                str(idempotency_key),
+                kb_id,
+                "new",
+            )
+        ).encode("utf-8")
+    ).hexdigest()
+    checksum = hashlib.sha256(path.read_bytes()).hexdigest()
+    return SourceFileIdentity(
+        workspace_id=identity.workspace_id,
+        key=hashlib.sha256(f"{key_material}\x1f{checksum}".encode("utf-8")).hexdigest(),
+    )
+
+
+def _mirror_host_sources(
+    runtime: EvaluationRuntime,
+    kb_id: str,
+    paths: tuple[Path, ...],
+    spec: ProvisioningSpec,
+) -> None:
+    """Mirror the frozen upload bytes into the host-visible eval file store."""
+    documents = _paged_items(
+        runtime.api_base_url,
+        f"knowledge-bases/{kb_id}/documents",
+    )
+    versions = {
+        str(row.get("current_version", {}).get("original_filename", "")): row.get(
+            "current_version", {}
+        )
+        for row in documents
+        if row.get("deleted_at") is None
+    }
+    if set(versions) != {path.name for path in paths}:
+        raise ProvisioningError("evaluation host source document set is invalid")
+    root = runtime.runtime_root / "source-data"
+    store = LocalFileStore(root / "staging", root / "final")
+
+    async def mirror() -> None:
+        for path in paths:
+            content = path.read_bytes()
+            checksum = hashlib.sha256(content).hexdigest()
+            version = versions[path.name]
+            if (
+                version.get("checksum_sha256") != checksum
+                or version.get("size_bytes") != len(content)
+            ):
+                raise ProvisioningError("evaluation host source digest changed")
+            source_identity = _host_source_identity(runtime, kb_id, path, spec)
+            expected = SourceFileDigest(checksum, len(content))
+            staged = await store.stage_at(source_identity, BytesIO(content))
+            if staged.digest != expected:
+                raise ProvisioningError("evaluation host source mirror is invalid")
+            await store.finalize(source_identity, expected)
+
+    asyncio.run(mirror())
+
+
 def _wait_for_indexing(
     runtime: EvaluationRuntime,
     kb_id: str,
     *,
     timeout_seconds: float,
     expected_document_count: int = EXPECTED_DOCUMENT_COUNT,
+    host_retry_spec: ProvisioningSpec | None = None,
 ) -> str:
     started = time.monotonic()
+    retry_rounds: dict[str, int] = {}
     while True:
         jobs = _paged_items(
             runtime.api_base_url,
             f"knowledge-bases/{kb_id}/indexing-jobs",
         )
-        if any(job.get("status") in {"failed", "cancelled"} for job in jobs):
+        failed = tuple(job for job in jobs if job.get("status") == "failed")
+        if failed and host_retry_spec is not None:
+            for job in failed:
+                job_id = str(UUID(str(job.get("job_id"))))
+                rounds = retry_rounds.get(job_id, 0)
+                if rounds >= 3 or job.get("can_retry") is not True:
+                    raise ProvisioningError("evaluation host indexing retry exhausted")
+                updated_at = str(job.get("updated_at", ""))
+                key = uuid5(
+                    NAMESPACE_URL,
+                    f"{host_retry_spec.knowledge_base_name}:host-retry:{job_id}:{updated_at}",
+                )
+                job_url = f"{runtime.api_base_url}/indexing-jobs/{job_id}"
+                try:
+                    _request(
+                        f"{job_url}/retry",
+                        method="POST",
+                        headers={"Idempotency-Key": str(key)},
+                    )
+                except ProvisioningError:
+                    # A concurrently running isolated/host worker can move a
+                    # job after the list snapshot.  Accept only a proven state
+                    # transition; a still-failed job remains a hard error.
+                    current = _request(job_url)
+                    if current.get("status") == "failed":
+                        raise
+                retry_rounds[job_id] = rounds + 1
+            time.sleep(0.1)
+            continue
+        if failed or any(job.get("status") == "cancelled" for job in jobs):
             raise ProvisioningError("evaluation indexing failed")
         completed = tuple(job for job in jobs if job.get("status") == "completed")
         revision_ids = {
@@ -282,6 +477,7 @@ def _wait_for_graph(
     url = f"{runtime.api_base_url}/knowledge-bases/{kb_id}/graph-config"
     config = _request(url)
     status = config.get("status")
+    retry_attempted = False
     if status == "disabled":
         config = _request(
             url,
@@ -303,12 +499,21 @@ def _wait_for_graph(
             method="PUT",
             payload={"enabled": True, "retry": True},
         )
+        retry_attempted = True
     elif status == "failed":
         raise ProvisioningError("evaluation Graph build failed; retry was not authorized")
 
     started = time.monotonic()
     while config.get("status") != "ready":
         if config.get("status") == "failed":
+            if retry_failed and not retry_attempted:
+                config = _request(
+                    url,
+                    method="PUT",
+                    payload={"enabled": True, "retry": True},
+                )
+                retry_attempted = True
+                continue
             raise ProvisioningError("evaluation Graph build failed")
         if time.monotonic() - started >= timeout_seconds:
             raise ProvisioningError("evaluation Graph build timed out")
@@ -356,7 +561,10 @@ def _bind_runtime(
         )
         + "\n"
     ).encode()
-    _write_private(DEFAULT_RUNTIME_MANIFEST, payload, replace=True)
+    # Bind the same owner-only manifest that was validated on load.  In a
+    # linked worktree this is the primary checkout's canonical eval runtime,
+    # never a new worktree-local .runtime directory.
+    _write_private(runtime.manifest, payload, replace=True)
 
 
 def provision(
@@ -366,6 +574,7 @@ def provision(
     timeout_seconds: float,
     retry_failed_graph: bool,
     force_rebuild_failed_graph: bool,
+    host_worker: bool = False,
 ) -> dict[str, object]:
     try:
         spec = PROVISIONING_SPECS[dataset_id]
@@ -373,36 +582,49 @@ def provision(
         raise ProvisioningError("evaluation dataset is unsupported") from error
     if confirmation != spec.confirmation:
         raise ProvisioningError("evaluation provisioning confirmation is invalid")
-    runtime = load_evaluation_runtime(require_adaptive_graph=True)
-    _require_current_runtime(runtime)
-    paths = _corpus_paths(spec)
-    corpus_digest = _corpus_digest(paths)
-    knowledge_base = _knowledge_base(runtime, spec)
-    kb_id = str(UUID(str(knowledge_base["id"])))
-    _ensure_documents(runtime, kb_id, paths, spec)
-    index_revision_id = UUID(
-        _wait_for_indexing(
+    runtime = load_evaluation_runtime(
+        canonical_evaluation_runtime_manifest(),
+        require_adaptive_graph=True,
+        allow_canonical_checkout=True,
+    )
+    driver = _HostIndexingDriver(runtime) if host_worker else None
+    try:
+        _require_current_runtime(runtime)
+        paths = _corpus_paths(spec)
+        corpus_digest = _corpus_digest(paths)
+        knowledge_base = _knowledge_base(runtime, spec)
+        kb_id = str(UUID(str(knowledge_base["id"])))
+        _ensure_documents(runtime, kb_id, paths, spec)
+        if driver is not None:
+            _mirror_host_sources(runtime, kb_id, paths, spec)
+            driver.start()
+        index_revision_id = UUID(
+            _wait_for_indexing(
+                runtime,
+                kb_id,
+                timeout_seconds=timeout_seconds,
+                expected_document_count=spec.expected_document_count,
+                host_retry_spec=spec if host_worker else None,
+            )
+        )
+        config = _wait_for_graph(
             runtime,
             kb_id,
+            answer_profile_revision_id=runtime.adaptive_graph.answer_profile_revision_id,
             timeout_seconds=timeout_seconds,
-            expected_document_count=spec.expected_document_count,
+            retry_failed=retry_failed_graph,
+            force_rebuild_failed=force_rebuild_failed_graph,
         )
-    )
-    config = _wait_for_graph(
-        runtime,
-        kb_id,
-        answer_profile_revision_id=runtime.adaptive_graph.answer_profile_revision_id,
-        timeout_seconds=timeout_seconds,
-        retry_failed=retry_failed_graph,
-        force_rebuild_failed=force_rebuild_failed_graph,
-    )
-    graph_build_id = UUID(str(config["build_id"]))
-    _bind_runtime(
-        runtime,
-        knowledge_base_id=UUID(kb_id),
-        index_revision_id=index_revision_id,
-        graph_build_id=graph_build_id,
-    )
+        graph_build_id = UUID(str(config["build_id"]))
+        _bind_runtime(
+            runtime,
+            knowledge_base_id=UUID(kb_id),
+            index_revision_id=index_revision_id,
+            graph_build_id=graph_build_id,
+        )
+    finally:
+        if driver is not None:
+            driver.close()
     return {
         "status": "ready",
         "dataset_id": spec.dataset_id,
@@ -426,6 +648,7 @@ def main() -> int:
     parser.add_argument("--timeout-seconds", type=float, default=7200.0)
     parser.add_argument("--retry-failed-graph", action="store_true")
     parser.add_argument("--force-rebuild-failed-graph", action="store_true")
+    parser.add_argument("--host-worker", action="store_true")
     arguments = parser.parse_args()
     if not 60.0 <= arguments.timeout_seconds <= 14_400.0:
         parser.error("timeout must be between 60 and 14400 seconds")
@@ -438,6 +661,7 @@ def main() -> int:
             timeout_seconds=arguments.timeout_seconds,
             retry_failed_graph=arguments.retry_failed_graph,
             force_rebuild_failed_graph=arguments.force_rebuild_failed_graph,
+            host_worker=arguments.host_worker,
         )
     except (EvaluationRuntimeError, ProvisioningError, OSError, ValueError):
         print(
