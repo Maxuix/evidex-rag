@@ -92,7 +92,7 @@ def _parser() -> argparse.ArgumentParser:
 
 def _normalized_text(value: object) -> str:
     text = unicodedata.normalize("NFKC", str(value or ""))
-    return re.sub(r"\s+", "", text).rstrip("。.!！")
+    return re.sub(r"\s+", "", text).replace("`", "").rstrip("。.!！")
 
 
 def _nested_strings(value: Any) -> Iterable[str]:

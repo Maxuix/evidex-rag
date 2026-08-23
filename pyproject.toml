@@ -30,6 +30,7 @@ dependencies = [
 # installs requirements.lock, but a clean checkout needs them to run the suites.
 [project.optional-dependencies]
 dev = [
+  "falkordblite==0.3.0",
   "httpx==0.28.1",
   "openpyxl==3.1.5",
   "python-docx==1.2.0",

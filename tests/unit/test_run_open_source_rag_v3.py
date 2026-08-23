@@ -96,6 +96,29 @@ class RunOpenSourceRagV3Tests(unittest.TestCase):
         self.assertEqual(result["R1"], str(UUID(int=11)))
         self.assertEqual(result["R2"], str(UUID(int=12)))
 
+    def test_relation_locator_ignores_markdown_inline_code_markers(self) -> None:
+        manifest = {"documents": [{"document_id": "doc", "filename": "one.md"}]}
+        relation = {
+            "relation_id": "R1",
+            "document_id": "doc",
+            "evidence_text": "公开仓库是 `numpy/numpy`。",
+            "source_locator": {"section_title": "仓库身份"},
+        }
+        row = {
+            "index_chunk_id": str(UUID(int=11)),
+            "original_filename": "one.md",
+            "content": "公开仓库是 numpy/numpy。",
+            "source_location": {},
+            "hierarchy": {"section": "仓库身份"},
+            "source_metadata": {},
+        }
+
+        result = runner.relation_chunk_map(
+            manifest=manifest, relations=[relation], serving_rows=[row]
+        )
+
+        self.assertEqual(result["R1"], str(UUID(int=11)))
+
     def test_relation_locator_rejects_ambiguous_or_missing_chunks(self) -> None:
         manifest = {"documents": [{"document_id": "doc", "filename": "one.md"}]}
         relation = {
