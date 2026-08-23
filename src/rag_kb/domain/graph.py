@@ -9,10 +9,11 @@ from typing import Any
 from uuid import UUID
 
 
-GRAPH_EXTRACTOR_VERSION = "graphiti_v2"
-GRAPH_RETRIEVAL_PROFILE_VERSION = "graphiti_path_augmented_v2"
-GRAPH_AUGMENTATION_VERSION = "graphiti_path_v2"
+GRAPH_EXTRACTOR_VERSION = "graphiti_v3"
+GRAPH_RETRIEVAL_PROFILE_VERSION = "graphiti_path_augmented_v3"
+GRAPH_AUGMENTATION_VERSION = "graphiti_path_v3"
 GRAPH_MAX_PATHS = 20
+GRAPH_MAX_HOPS = 3
 
 
 class GraphConfigStatus(StrEnum):
@@ -97,7 +98,7 @@ class GraphPathCandidate:
     seed_entry: bool
 
     def __post_init__(self) -> None:
-        if not self.path_id or not 1 <= len(self.hops) <= 2:
+        if not self.path_id or not 1 <= len(self.hops) <= GRAPH_MAX_HOPS:
             raise ValueError("graph path hop count is invalid")
         if self.rank < 1:
             raise ValueError("graph path rank must be positive")
@@ -230,6 +231,7 @@ class GraphitiEdgeResult:
     source_entity_name: str = ""
     target_entity_uuid: str = ""
     target_entity_name: str = ""
+    relation_type: str = ""
 
     def __post_init__(self) -> None:
         if not self.edge_uuid or self.rank < 1:
@@ -259,7 +261,7 @@ class GraphitiPathResult:
         if (
             not self.path_id
             or not self.entry_entity_uuid
-            or not 1 <= len(self.hops) <= 2
+            or not 1 <= len(self.hops) <= GRAPH_MAX_HOPS
             or self.rank < 1
         ):
             raise ValueError("Graphiti path result is invalid")
@@ -273,13 +275,14 @@ class GraphitiPathResult:
         first_endpoints = set(self.hops[0].endpoint_uuids)
         if self.entry_entity_uuid not in first_endpoints:
             raise ValueError("Graphiti path entry is not grounded")
-        if len(self.hops) == 2:
-            second_endpoints = set(self.hops[1].endpoint_uuids)
-            if (
-                len(first_endpoints & second_endpoints) != 1
-                or len(first_endpoints | second_endpoints) != 3
-            ):
-                raise ValueError("Graphiti two-hop path is disconnected")
+        visited = set(first_endpoints)
+        previous = first_endpoints
+        for hop in self.hops[1:]:
+            endpoints = set(hop.endpoint_uuids)
+            if len(previous & endpoints) != 1 or len(visited & endpoints) != 1:
+                raise ValueError("Graphiti path is disconnected or cyclic")
+            visited.update(endpoints)
+            previous = endpoints
 
 
 @dataclass(frozen=True, slots=True)
@@ -374,6 +377,7 @@ class GraphDebug:
     query_entity_count: int = 0
     one_hop_path_count: int = 0
     two_hop_path_count: int = 0
+    three_hop_path_count: int = 0
     rejected_path_count: int = 0
     bundle_count: int = 0
     protocol_skipped_count: int = 0
@@ -389,6 +393,7 @@ class GraphDebug:
             self.query_entity_count,
             self.one_hop_path_count,
             self.two_hop_path_count,
+            self.three_hop_path_count,
             self.rejected_path_count,
             self.bundle_count,
             self.protocol_skipped_count,

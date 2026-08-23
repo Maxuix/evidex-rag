@@ -258,7 +258,7 @@ class StubRetrievalService:
                 SimpleNamespace(
                     mode="graph",
                     strategy="hybrid",
-                    profile_version="graphiti_path_augmented_v2",
+                    profile_version="graphiti_path_augmented_v3",
                     enabled=True,
                 ),
             ),
@@ -1030,7 +1030,7 @@ class RetrievalApiContractTests(unittest.IsolatedAsyncioTestCase):
                     {
                         "mode": "graph",
                         "strategy": "hybrid",
-                        "profile_version": "graphiti_path_augmented_v2",
+                        "profile_version": "graphiti_path_augmented_v3",
                         "enabled": True,
                     },
                 ],
@@ -1038,7 +1038,7 @@ class RetrievalApiContractTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(self.service.requests, [])
 
-    async def test_graph_retrieval_routes_outer_mode_and_requires_classic(self) -> None:
+    async def test_graph_retrieval_routes_outer_mode_and_requires_reranking(self) -> None:
         response = await request(
             self.app,
             "POST",
@@ -1059,7 +1059,6 @@ class RetrievalApiContractTests(unittest.IsolatedAsyncioTestCase):
         for payload in (
             {"top_k": 3, "rerank_mode": "classic"},
             {"top_k": 4, "rerank_mode": "none"},
-            {"top_k": 4, "rerank_mode": "local_minilm_v1"},
         ):
             with self.subTest(payload=payload):
                 invalid = await request(

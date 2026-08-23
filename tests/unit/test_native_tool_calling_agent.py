@@ -376,7 +376,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertNotIn("three supplied tools", prompt)
         self.assertIn("currently supplied tools", prompt)
-        self.assertIn("last-hop relation", prompt)
+        self.assertIn("one-to-three-hop chains", prompt)
 
     def test_route_reason_contract_has_no_unreachable_reason(self) -> None:
         self.assertEqual(
@@ -882,8 +882,10 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
 
         state = await _agent(model, retriever).run(context)
 
-        self.assertEqual(retriever.supplement_queries, [])
-        self.assertEqual(state.artifacts[AGENT_TRACE_ARTIFACT].retrieval_calls, 1)
+        self.assertEqual(
+            retriever.supplement_queries, ["What was the revenue and change?"]
+        )
+        self.assertEqual(state.artifacts[AGENT_TRACE_ARTIFACT].retrieval_calls, 2)
         self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.ANSWERED)
 
     def test_graph_relation_signal_covers_generic_relation_families(self) -> None:

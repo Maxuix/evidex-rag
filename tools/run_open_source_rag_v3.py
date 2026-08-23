@@ -337,9 +337,10 @@ def _load_checkpoint(path: Path, expected: Mapping[str, Any]) -> dict[str, Any]:
             validation_value["case_observations"][index] = {
                 "case_id": expected_rows[index]["case_id"],
                 "simple_relation_ids": [],
-                "graph_relation_ids_by_layer": {
+                "graph_full_relation_ids_by_layer": {
                     layer: [] for layer in LAYERS
                 },
+                "graph_incremental_packed_relation_ids": [],
                 "auto": {
                     "attempted": False,
                     "admitted": False,
@@ -524,7 +525,7 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
             ):
                 raise V3RunnerError("v3_answer_observation_missing")
             if case["semantic_intent"] == "graph":
-                layers, _ = await _column_layers(
+                layers, graph_metrics = await _column_layers(
                     dependencies,
                     build=build,
                     query=str(case["question"]),
@@ -538,14 +539,20 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
                     )
                     for layer in LAYERS
                 }
+                incremental_packed_relation_ids = _relation_ids_for_chunks(
+                    graph_metrics["incremental_packed_chunk_ids"],
+                    relation_to_chunk=relation_to_chunk,
+                )
             else:
                 relation_layers = {layer: [] for layer in LAYERS}
+                incremental_packed_relation_ids = []
             checkpoint["case_observations"][index] = {
                 "case_id": case_id,
                 "simple_relation_ids": _relation_ids_for_chunks(
                     simple_chunk_ids, relation_to_chunk=relation_to_chunk
                 ),
-                "graph_relation_ids_by_layer": relation_layers,
+                "graph_full_relation_ids_by_layer": relation_layers,
+                "graph_incremental_packed_relation_ids": incremental_packed_relation_ids,
                 "auto": {
                     "attempted": bool(route["graph_route_attempted"]),
                     "admitted": bool(route["graph_route_admitted"]),

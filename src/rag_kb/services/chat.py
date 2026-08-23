@@ -211,7 +211,7 @@ class ChatService:
             )
         if retrieval_mode == "graph" and rerank_mode is None:
             raise ResourceStateConflictError(
-                "graph retrieval requires an explicit classic reranker"
+                "graph retrieval requires an explicit reranker"
             )
         resolved_rerank_mode = (
             self._default_rerank_mode
@@ -223,9 +223,12 @@ class ChatService:
                 raise ResourceStateConflictError(
                     "graph retrieval top_k must be between 4 and 20"
                 )
-            if resolved_rerank_mode is not RerankMode.CLASSIC:
+            if resolved_rerank_mode not in {
+                RerankMode.CLASSIC,
+                RerankMode.LOCAL_MINILM_V1,
+            }:
                 raise ResourceStateConflictError(
-                    "graph retrieval requires classic reranking"
+                    "graph retrieval requires an enabled reranker"
                 )
         if retrieval_mode == "hybrid" and resolved_rerank_mode is RerankMode.NONE:
             raise ResourceStateConflictError(
@@ -264,7 +267,7 @@ class ChatService:
             else RetrievalStrategy.EXACT_VECTOR
         )
         retrieval_strategy = (
-            graph_profile(top_k=top_k).as_dict()
+            graph_profile(top_k=top_k, rerank_mode=resolved_rerank_mode).as_dict()
             if retrieval_mode == "graph"
             else adaptive_graphiti_profile(
                 top_k=top_k, rerank_mode=resolved_rerank_mode

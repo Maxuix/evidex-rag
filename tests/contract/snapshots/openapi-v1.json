@@ -1097,6 +1097,7 @@
               "graph_augmented_v1",
               "graphiti_edge_augmented_v1",
               "graphiti_path_augmented_v2",
+              "graphiti_path_augmented_v3",
               "adaptive_graphiti_v1",
               "adaptive_graphiti_v2"
             ],
@@ -2513,7 +2514,8 @@
               {
                 "enum": [
                   1,
-                  2
+                  2,
+                  3
                 ],
                 "type": "integer"
               },
@@ -3030,6 +3032,10 @@
             "title": "Resource Skipped Count",
             "type": "integer"
           },
+          "three_hop_path_count": {
+            "title": "Three Hop Path Count",
+            "type": "integer"
+          },
           "two_hop_path_count": {
             "title": "Two Hop Path Count",
             "type": "integer"
@@ -3042,6 +3048,7 @@
           "query_entity_count",
           "one_hop_path_count",
           "two_hop_path_count",
+          "three_hop_path_count",
           "rejected_path_count",
           "bundle_count",
           "protocol_skipped_count",
@@ -3065,7 +3072,8 @@
           "hop_count": {
             "enum": [
               1,
-              2
+              2,
+              3
             ],
             "title": "Hop Count",
             "type": "integer"
@@ -4743,7 +4751,7 @@
             "enum": [
               "exact_vector_v2",
               "hybrid_fts_rrf_v2",
-              "graphiti_path_augmented_v2"
+              "graphiti_path_augmented_v3"
             ],
             "title": "Profile Version",
             "type": "string"

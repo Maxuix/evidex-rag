@@ -33,6 +33,10 @@ def build_evidence_envelope(pack: EvidencePack) -> EvidenceEnvelope:
                 matched_representations=item.matched_representations,
                 document_display_name=item.document_display_name or "document",
                 document_original_filename=item.document_original_filename or "document",
+                graph_path_id=item.graph_path_id,
+                graph_anchor_index_chunk_id=item.graph_anchor_index_chunk_id,
+                graph_hop_count=item.graph_hop_count,
+                graph_path_rank=item.graph_path_rank,
             )
             for item in pack.evidence
         ),

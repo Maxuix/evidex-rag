@@ -92,6 +92,12 @@ class RetrievalExecutionProfileTests(unittest.TestCase):
         self.assertEqual(top_k, 8)
         self.assertIs(rerank_mode, RerankMode.CLASSIC)
         self.assertEqual(execution_type, "manual_graph")
+        local = graph_profile(
+            top_k=8, rerank_mode=RerankMode.LOCAL_MINILM_V1
+        ).as_dict()
+        self.assertIs(
+            parse_chat_retrieval_snapshot(local)[2], RerankMode.LOCAL_MINILM_V1
+        )
         with self.assertRaises(ValueError):
             parse_chat_retrieval_snapshot({**snapshot, "rerank_mode": "none"})
 

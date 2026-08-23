@@ -10,12 +10,13 @@ from datetime import UTC, datetime
 import hashlib
 import logging
 import os
+import re
 import unicodedata
 from types import SimpleNamespace
 from typing import Any
 from uuid import uuid5
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 os.environ.setdefault("GRAPHITI_TELEMETRY_ENABLED", "false")
 
@@ -31,14 +32,19 @@ from rag_kb.domain import (
 )
 
 
-GRAPHITI_V2_EXTRACTION_INSTRUCTIONS = """
-Extract only factual relations explicitly stated in the episode. Treat names,
-aliases, organization names, people, places, products, projects, and stable
-identifiers as possible relation participants. Preserve codes and short product
-identifiers exactly. When the text explicitly states an alias, former name, or
-renaming, classify the alias/former/pre-rename surface as AliasSurface and keep
-both surface names as distinct nodes connected by that stated relation; do not
-collapse the relation into a self-loop.
+GRAPHITI_V3_EXTRACTION_INSTRUCTIONS = """
+Extract only factual relations explicitly stated in the episode. Use the custom
+entity and edge types whenever they apply. Preserve the stated direction: the
+grammatical subject/source is the source node and the object/target is the target
+node. Keep projects, organizations, repositories, services, licenses, and license
+expressions as distinct concepts. A repository path is a Repository, not a
+Project. A compound SPDX expression is one LicenseExpression and must not be
+silently reduced to one of its licenses.
+
+Preserve codes, short names, and aliases exactly. When an alias or short name is
+explicitly stated, create an AliasSurface node for that literal surface and link
+it to the canonical entity with HasShortName or AliasOf. Do not merge an alias
+edge into a self-loop.
 
 Do not extract document structure or authoring instructions as knowledge-graph
 facts. In particular, ignore section labels, relation IDs, evidence-unit IDs,
@@ -49,11 +55,98 @@ supported by a specific sentence in this episode and must connect two distinct
 participants named or unambiguously referenced in that sentence.
 """.strip()
 
+# Transitional import compatibility for local tooling; new builds are selected
+# by graphiti_v3 and always receive the v3 ontology below.
+GRAPHITI_V2_EXTRACTION_INSTRUCTIONS = GRAPHITI_V3_EXTRACTION_INSTRUCTIONS
+
 _GRAPHITI_ADJACENCY_MULTIPLIER = 8
+
+
+class OrganizationEntity(BaseModel):
+    """A foundation, company, standards body, or other organization."""
+
+    short_names: list[str] = Field(default_factory=list)
+
+
+class ProjectEntity(BaseModel):
+    """A software, research, or community project."""
+
+    aliases: list[str] = Field(default_factory=list)
+
+
+class RepositoryEntity(BaseModel):
+    """A source-code repository or explicit repository path."""
+
+    repository_path: str | None = None
+
+
+class ServiceEntity(BaseModel):
+    """A hosted website, documentation site, registry, or network service."""
+
+    service_kind: str | None = None
+
+
+class LicenseEntity(BaseModel):
+    """A named software or content license, preferably with its SPDX identifier."""
+
+    spdx_identifier: str | None = None
+
+
+class LicenseExpressionEntity(BaseModel):
+    """A complete SPDX-style license expression, including AND/OR operators."""
+
+    expression: str | None = None
 
 
 class AliasSurfaceEntity(BaseModel):
     """An explicit alias surface that remains distinct from its canonical node."""
+
+    canonical_surface: str | None = None
+
+
+class TypedRelation(BaseModel):
+    """An explicitly stated, directed relation between two typed entities."""
+
+    qualifier: str | None = None
+
+
+GRAPHITI_ENTITY_TYPES: dict[str, type[BaseModel]] = {
+    "Organization": OrganizationEntity,
+    "Project": ProjectEntity,
+    "Repository": RepositoryEntity,
+    "Service": ServiceEntity,
+    "License": LicenseEntity,
+    "LicenseExpression": LicenseExpressionEntity,
+    "AliasSurface": AliasSurfaceEntity,
+}
+
+# Names deliberately mirror the evaluation ontology. Graphiti stores this key
+# in EntityEdge.name, giving retrieval and evaluation a stable predicate rather
+# than forcing them to reverse-engineer the natural-language fact string.
+GRAPHITI_EDGE_TYPES: dict[str, type[BaseModel]] = {
+    name: TypedRelation
+    for name in (
+        "Stewards", "Hosts", "Maintains", "Operates", "HasRepository",
+        "DistributedUnder", "Lists", "HasLicenseExpression",
+        "DocumentationHostedAt", "UsesImportNamespace", "Requires", "BuiltOn",
+        "FoundationFor", "OriginatedFrom", "DevelopedOn", "Sponsors",
+        "GraduatedProjectOf", "PartOf", "HasShortName", "AliasOf",
+    )
+}
+
+GRAPHITI_EDGE_TYPE_MAP: dict[tuple[str, str], list[str]] = {
+    ("Organization", "Project"): ["Stewards", "Hosts", "Sponsors", "FoundationFor"],
+    ("Organization", "Service"): ["Operates", "Hosts"],
+    ("Organization", "Repository"): ["Maintains", "Hosts"],
+    ("Project", "Repository"): ["HasRepository", "Maintains", "DevelopedOn"],
+    ("Project", "Service"): ["DocumentationHostedAt", "Hosts"],
+    ("Project", "License"): ["DistributedUnder", "Lists"],
+    ("Project", "LicenseExpression"): ["HasLicenseExpression", "Lists"],
+    ("Project", "Project"): ["Requires", "BuiltOn", "OriginatedFrom", "PartOf"],
+    ("Project", "AliasSurface"): ["HasShortName", "AliasOf"],
+    ("Organization", "AliasSurface"): ["HasShortName", "AliasOf"],
+    ("Entity", "Entity"): list(GRAPHITI_EDGE_TYPES),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -287,6 +380,30 @@ class GraphitiRuntime:
                 self_loop_count = int(records[0]["count"]) if records else 0
                 if self_loop_count:
                     return False
+                result = await driver.execute_query(
+                    """
+                    MATCH (alias:Entity:AliasSurface)
+                    OPTIONAL MATCH (alias)-[edge:RELATES_TO]-(:Entity)
+                    WITH alias, count(edge) AS degree
+                    WHERE degree = 0
+                    RETURN count(alias) AS count
+                    """
+                )
+                records = result[0] if result else []
+                orphan_alias_count = int(records[0]["count"]) if records else 0
+                if orphan_alias_count:
+                    return False
+                result = await driver.execute_query(
+                    """
+                    MATCH (:Entity)-[edge:RELATES_TO]->(:Entity)
+                    WHERE edge.name IS NULL OR trim(edge.name) = ''
+                    RETURN count(edge) AS count
+                    """
+                )
+                records = result[0] if result else []
+                untyped_edge_count = int(records[0]["count"]) if records else 0
+                if untyped_edge_count:
+                    return False
             if episode_uuid is not None:
                 modules = _graphiti_modules()
                 await modules.EpisodicNode.get_by_uuid(driver, episode_uuid)
@@ -346,8 +463,10 @@ class GraphitiRuntime:
             group_id=build.group_id,
             uuid=episode_uuid,
             previous_episode_uuids=[str(item.uuid) for item in previous],
-            entity_types={"AliasSurface": AliasSurfaceEntity},
-            custom_extraction_instructions=GRAPHITI_V2_EXTRACTION_INSTRUCTIONS,
+            entity_types=GRAPHITI_ENTITY_TYPES,
+            edge_types=GRAPHITI_EDGE_TYPES,
+            edge_type_map=GRAPHITI_EDGE_TYPE_MAP,
+            custom_extraction_instructions=GRAPHITI_V3_EXTRACTION_INSTRUCTIONS,
         )
         # The extraction contract rejects self-relations, but a provider can
         # still emit one despite the prompt.  Remove that invalid topology at
@@ -406,51 +525,66 @@ class GraphitiRuntime:
                 )
             )
         )
-        first_hop_edges = (
-            await self._adjacent_edges(
-                driver,
-                build,
-                seed_entity_uuids,
-                limit=min(
-                    64,
-                    max(
-                        query.limit,
-                        query.limit * _GRAPHITI_ADJACENCY_MULTIPLIER,
-                    ),
-                ),
-            )
-            if seed_entity_uuids
-            else ()
+        native_edges = await self._search_centered_edges(
+            graphiti, driver, build, query, seed_entity_uuids
         )
-        ranked_first_hops = _merge_ranked_edges(ranked_edges, first_hop_edges)
-        bridge_ids = _outward_bridge_entity_ids(
-            query.query,
-            ranked_first_hops,
-            seed_entity_uuids=seed_entity_uuids,
+        native_edges = _with_endpoints(
+            native_edges,
+            await self._edges_by_uuid(
+                driver, build, tuple(edge.edge_uuid for edge in native_edges)
+            ),
         )
-        adjacent_edges = (
-            await self._adjacent_edges(
-                driver,
-                build,
-                bridge_ids,
-                limit=min(
-                    64,
-                    max(
-                        query.limit,
-                        query.limit * _GRAPHITI_ADJACENCY_MULTIPLIER,
-                    ),
-                ),
-            )
-            if bridge_ids
-            else ()
-        )
+        ranked_first_hops = _merge_ranked_edges(native_edges, ranked_edges)
         return _rank_graphiti_paths(
             query.query,
             ranked_first_hops,
-            adjacent_edges,
+            ranked_first_hops,
             limit=min(query.limit, 20),
             seed_entity_uuids=seed_entity_uuids,
         )
+
+    async def _search_centered_edges(
+        self,
+        graphiti: Any,
+        driver: Any,
+        build: GraphitiBuildSnapshot,
+        query: GraphitiSearchQuery,
+        seed_entity_uuids: tuple[str, ...],
+    ) -> tuple[GraphitiEdgeResult, ...]:
+        """Use Graphiti's node-distance reranker and native bounded BFS."""
+
+        if not seed_entity_uuids:
+            return ()
+        modules = _graphiti_modules()
+        limit = min(64, max(query.limit * _GRAPHITI_ADJACENCY_MULTIPLIER, 16))
+        config = modules.EDGE_HYBRID_SEARCH_NODE_DISTANCE.model_copy(deep=True)
+        config.limit = limit
+        config.edge_config.search_methods = [
+            modules.EdgeSearchMethod.bm25,
+            modules.EdgeSearchMethod.cosine_similarity,
+            modules.EdgeSearchMethod.bfs,
+        ]
+        config.edge_config.bfs_max_depth = 3
+        merged: list[GraphitiEdgeResult] = []
+        seen: set[str] = set()
+        for seed_uuid in seed_entity_uuids[:3]:
+            result = await graphiti.search_(
+                query.query,
+                config=config,
+                group_ids=[build.group_id],
+                center_node_uuid=seed_uuid,
+                bfs_origin_node_uuids=[seed_uuid],
+                driver=driver.clone(database=build.group_id),
+            )
+            for edge in result.edges:
+                edge_uuid = str(edge.uuid)
+                if edge_uuid in seen:
+                    continue
+                seen.add(edge_uuid)
+                merged.append(_edge_result_from_graphiti(edge, len(merged) + 1))
+                if len(merged) >= limit:
+                    return tuple(merged)
+        return tuple(merged)
 
     async def _search_edges(
         self,
@@ -468,20 +602,7 @@ class GraphitiRuntime:
             driver=driver.clone(database=build.group_id),
         )
         return tuple(
-            GraphitiEdgeResult(
-                edge_uuid=str(edge.uuid),
-                fact=str(edge.fact or ""),
-                episode_uuids=tuple(str(value) for value in (edge.episodes or ())),
-                rank=rank,
-                source_entity_uuid=(
-                    str(edge.source_node_uuid) if edge.source_node_uuid is not None else ""
-                ),
-                source_entity_name="",
-                target_entity_uuid=(
-                    str(edge.target_node_uuid) if edge.target_node_uuid is not None else ""
-                ),
-                target_entity_name="",
-            )
+            _edge_result_from_graphiti(edge, rank)
             for rank, edge in enumerate(result.edges[: query.limit], start=1)
         )
 
@@ -529,6 +650,7 @@ class GraphitiRuntime:
             RETURN source.uuid AS source_uuid,
                    source.name AS source_name,
                    edge.uuid AS edge_uuid,
+                   edge.name AS relation_type,
                    edge.fact AS fact,
                    edge.episodes AS episodes,
                    target.uuid AS target_uuid,
@@ -557,6 +679,7 @@ class GraphitiRuntime:
             RETURN source.uuid AS source_uuid,
                    source.name AS source_name,
                    edge.uuid AS edge_uuid,
+                   edge.name AS relation_type,
                    edge.fact AS fact,
                    edge.episodes AS episodes,
                    target.uuid AS target_uuid,
@@ -589,6 +712,7 @@ class GraphitiRuntime:
             RETURN source.uuid AS source_uuid,
                    source.name AS source_name,
                    edge.uuid AS edge_uuid,
+                   edge.name AS relation_type,
                    edge.fact AS fact,
                    edge.episodes AS episodes,
                    target.uuid AS target_uuid,
@@ -708,9 +832,25 @@ def _normalized_surface(value: str) -> str:
     return "".join(character for character in normalized if character.isalnum())
 
 
+def _entity_surface_variants(value: str) -> tuple[str, ...]:
+    variants = [_normalized_surface(value)]
+    words = re.findall(r"[A-Za-z0-9]+", value)
+    if len(words) >= 2:
+        variants.append("".join(word[0] for word in words).casefold())
+    variants.extend(
+        _normalized_surface(item)
+        for item in re.findall(r"[（(]([^）)]+)[）)]", value)
+    )
+    for suffix in ("基金会", "有限公司", "公司", "组织", "项目", "平台", "服务"):
+        if value.endswith(suffix):
+            variants.append(_normalized_surface(value[: -len(suffix)]))
+    return tuple(dict.fromkeys(item for item in variants if len(item) >= 2))
+
+
 def _edge_result_from_record(row: Any, rank: int) -> GraphitiEdgeResult:
     return GraphitiEdgeResult(
         edge_uuid=str(row["edge_uuid"]),
+        relation_type=str(row.get("relation_type") or ""),
         fact=str(row.get("fact") or ""),
         episode_uuids=tuple(str(value) for value in (row.get("episodes") or ())),
         rank=rank,
@@ -718,6 +858,24 @@ def _edge_result_from_record(row: Any, rank: int) -> GraphitiEdgeResult:
         source_entity_name=str(row.get("source_name") or ""),
         target_entity_uuid=str(row["target_uuid"]),
         target_entity_name=str(row.get("target_name") or ""),
+    )
+
+
+def _edge_result_from_graphiti(edge: Any, rank: int) -> GraphitiEdgeResult:
+    return GraphitiEdgeResult(
+        edge_uuid=str(edge.uuid),
+        relation_type=str(getattr(edge, "name", "") or ""),
+        fact=str(edge.fact or ""),
+        episode_uuids=tuple(str(value) for value in (edge.episodes or ())),
+        rank=rank,
+        source_entity_uuid=(
+            str(edge.source_node_uuid) if edge.source_node_uuid is not None else ""
+        ),
+        source_entity_name="",
+        target_entity_uuid=(
+            str(edge.target_node_uuid) if edge.target_node_uuid is not None else ""
+        ),
+        target_entity_name="",
     )
 
 
@@ -735,8 +893,10 @@ def _entry_endpoint(
         (edge.source_entity_uuid, edge.source_entity_name),
         (edge.target_entity_uuid, edge.target_entity_name),
     ):
-        normalized_name = _normalized_surface(entity_name)
-        if _query_mentions_entity(normalized_query, normalized_name):
+        if any(
+            _query_mentions_entity(normalized_query, surface)
+            for surface in _entity_surface_variants(entity_name)
+        ):
             return entity_uuid, True
     return edge.source_entity_uuid, False
 
@@ -788,9 +948,9 @@ def _grounded_entity_ids(
     return tuple(
         entity.entity_uuid
         for entity in entities
-        if _query_mentions_entity(
-            normalized_query,
-            _normalized_surface(entity.name),
+        if any(
+            _query_mentions_entity(normalized_query, surface)
+            for surface in _entity_surface_variants(entity.name)
         )
     )
 
@@ -829,6 +989,7 @@ def _with_endpoints(
     return tuple(
         replace(
             edge,
+            relation_type=hydrated.relation_type or edge.relation_type,
             source_entity_uuid=hydrated.source_entity_uuid,
             source_entity_name=hydrated.source_entity_name,
             target_entity_uuid=hydrated.target_entity_uuid,
@@ -848,85 +1009,136 @@ def _rank_graphiti_paths(
     limit: int,
     seed_entity_uuids: tuple[str, ...] = (),
 ) -> tuple[GraphitiPathResult, ...]:
-    """Create only connected paths that expand away from a query-grounded node."""
+    """Enumerate simple one-to-three-hop paths from query-grounded nodes."""
 
+    all_edges = _merge_ranked_edges(ranked_edges, adjacent_edges)
+    usable = tuple(
+        edge
+        for edge in all_edges
+        if edge.source_entity_uuid
+        and edge.target_entity_uuid
+        and edge.source_entity_uuid != edge.target_entity_uuid
+    )
+    adjacency: dict[str, list[GraphitiEdgeResult]] = {}
+    for edge in usable:
+        for endpoint in edge.endpoint_uuids:
+            adjacency.setdefault(endpoint, []).append(edge)
+    chain_query = any(
+        marker in query.casefold()
+        for marker in (
+            "最终", "通过", "经由", "间接", "依赖链", "关系链", "起源于",
+            "built on", "depends on", "through", "ultimately", "originated",
+        )
+    )
     candidates: list[
-        tuple[tuple[int, int, int, int, str], str, tuple[GraphitiEdgeResult, ...], bool]
+        tuple[tuple[int, int, int, int, int, str], str, tuple[GraphitiEdgeResult, ...], bool]
     ] = []
-    seen: set[tuple[str, ...]] = set()
-    ranked_edge_rank = {edge.edge_uuid: edge.rank for edge in ranked_edges}
-    adjacent_rank = {edge.edge_uuid: edge.rank for edge in adjacent_edges}
-    for edge in ranked_edges:
-        if (
-            not edge.source_entity_uuid
-            or not edge.target_entity_uuid
-            or edge.source_entity_uuid == edge.target_entity_uuid
-        ):
-            continue
-        entry_uuid, seed_entry = _entry_endpoint(
-            query,
-            edge,
-            seed_entity_uuids=seed_entity_uuids,
-        )
-        one_hop_key = (edge.edge_uuid,)
-        if one_hop_key not in seen:
-            seen.add(one_hop_key)
-            path_id = _graphiti_path_id(entry_uuid, one_hop_key)
-            candidates.append(
+    seen: set[tuple[str, tuple[str, ...]]] = set()
+
+    def add_path(
+        entry_uuid: str,
+        hops: tuple[GraphitiEdgeResult, ...],
+        *,
+        seed_entry: bool,
+        reverse_count: int,
+    ) -> None:
+        edge_ids = tuple(edge.edge_uuid for edge in hops)
+        key = (entry_uuid, edge_ids)
+        if key in seen:
+            return
+        seen.add(key)
+        path_id = _graphiti_path_id(entry_uuid, edge_ids)
+        depth_order = -len(hops) if chain_query else len(hops)
+        candidates.append(
+            (
                 (
-                    (
-                        0 if seed_entry else 1,
-                        1,
-                        edge.rank,
-                        edge.rank,
-                        path_id,
-                    ),
-                    entry_uuid,
-                    (edge,),
-                    seed_entry,
-                )
+                    0 if seed_entry else 1,
+                    depth_order,
+                    max(edge.rank for edge in hops),
+                    sum(edge.rank for edge in hops),
+                    reverse_count,
+                    path_id,
+                ),
+                entry_uuid,
+                hops,
+                seed_entry,
             )
-        if not seed_entry:
-            continue
-        bridge_uuid = (
-            edge.target_entity_uuid
-            if entry_uuid == edge.source_entity_uuid
-            else edge.source_entity_uuid
         )
-        for adjacent in adjacent_edges:
-            if adjacent.edge_uuid == edge.edge_uuid:
-                continue
-            endpoints = set(adjacent.endpoint_uuids)
-            if (
-                bridge_uuid not in endpoints
-                or entry_uuid in endpoints
-                or len(endpoints) != 2
-            ):
-                continue
-            path_key = tuple(sorted((edge.edge_uuid, adjacent.edge_uuid)))
-            if path_key in seen:
-                continue
-            seen.add(path_key)
-            path_id = _graphiti_path_id(entry_uuid, (edge.edge_uuid, adjacent.edge_uuid))
-            candidates.append(
-                (
-                    (
-                        0,
-                        0,
-                        edge.rank,
-                        ranked_edge_rank.get(
-                            adjacent.edge_uuid,
-                            len(ranked_edges)
-                            + adjacent_rank.get(adjacent.edge_uuid, limit + 1),
-                        ),
-                        path_id,
-                    ),
-                    entry_uuid,
-                    (edge, adjacent),
-                    True,
-                )
+
+    def walk(
+        entry_uuid: str,
+        current_uuid: str,
+        hops: tuple[GraphitiEdgeResult, ...],
+        visited_nodes: frozenset[str],
+        reverse_count: int,
+    ) -> None:
+        if len(candidates) >= max(limit * 32, 128):
+            return
+        if hops:
+            add_path(
+                entry_uuid,
+                hops,
+                seed_entry=True,
+                reverse_count=reverse_count,
             )
+        if len(hops) == 3:
+            return
+        for edge in adjacency.get(current_uuid, ()):
+            if any(edge.edge_uuid == hop.edge_uuid for hop in hops):
+                continue
+            source_uuid, target_uuid = edge.endpoint_uuids
+            next_uuid = target_uuid if current_uuid == source_uuid else source_uuid
+            if next_uuid in visited_nodes:
+                continue
+            walk(
+                entry_uuid,
+                next_uuid,
+                (*hops, edge),
+                visited_nodes | {next_uuid},
+                reverse_count + int(current_uuid != source_uuid),
+            )
+
+    resolved_seed_uuids = seed_entity_uuids or tuple(
+        dict.fromkeys(
+            entry_uuid
+            for edge in usable
+            for entry_uuid, grounded in (_entry_endpoint(query, edge),)
+            if grounded
+        )
+    )
+    if resolved_seed_uuids:
+        for entry_uuid in resolved_seed_uuids:
+            walk(entry_uuid, entry_uuid, (), frozenset({entry_uuid}), 0)
+    else:
+        usable_by_id = {edge.edge_uuid: edge for edge in usable}
+        for ranked_edge in ranked_edges:
+            edge = usable_by_id.get(ranked_edge.edge_uuid)
+            if edge is None:
+                continue
+            entry_uuid, grounded = _entry_endpoint(query, edge)
+            add_path(entry_uuid, (edge,), seed_entry=grounded, reverse_count=0)
+
     candidates.sort(key=lambda item: item[0])
+    # Preserve alternative first-hop hypotheses before filling the remaining
+    # slots; this prevents one dense neighborhood from monopolizing the limit.
+    selected = []
+    first_edges: set[str] = set()
+    for candidate in candidates:
+        first_edge = candidate[2][0].edge_uuid
+        if first_edge in first_edges:
+            continue
+        first_edges.add(first_edge)
+        selected.append(candidate)
+        if len(selected) == limit:
+            break
+    if len(selected) < limit:
+        selected_ids = {item[0][-1] for item in selected}
+        selected.extend(
+            item
+            for item in candidates
+            if item[0][-1] not in selected_ids
+        )
+    selected = selected[:limit]
     return tuple(
         GraphitiPathResult(
             path_id=path_id,
@@ -936,7 +1148,7 @@ def _rank_graphiti_paths(
             seed_entry=seed_entry,
         )
         for rank, (_sort_key, entry_uuid, hops, seed_entry) in enumerate(
-            candidates[:limit],
+            selected,
             start=1,
         )
         for path_id in (_graphiti_path_id(entry_uuid, tuple(hop.edge_uuid for hop in hops)),)
@@ -973,9 +1185,11 @@ def _graphiti_modules() -> SimpleNamespace:
     from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
     from graphiti_core.nodes import EpisodeType, EpisodicNode
     from graphiti_core.search.search_config_recipes import (
+        EDGE_HYBRID_SEARCH_NODE_DISTANCE,
         EDGE_HYBRID_SEARCH_RRF,
         NODE_HYBRID_SEARCH_RRF,
     )
+    from graphiti_core.search.search_config import EdgeSearchMethod
     from openai import AsyncOpenAI
 
     class NeverRerank(CrossEncoderClient):
@@ -1003,7 +1217,9 @@ def _graphiti_modules() -> SimpleNamespace:
     _GRAPHITI = SimpleNamespace(
         AsyncOpenAI=AsyncOpenAI,
         BoundedEmbedder=BoundedEmbedder,
+        EDGE_HYBRID_SEARCH_NODE_DISTANCE=EDGE_HYBRID_SEARCH_NODE_DISTANCE,
         EDGE_HYBRID_SEARCH_RRF=EDGE_HYBRID_SEARCH_RRF,
+        EdgeSearchMethod=EdgeSearchMethod,
         NODE_HYBRID_SEARCH_RRF=NODE_HYBRID_SEARCH_RRF,
         EpisodeType=EpisodeType,
         EpisodicNode=EpisodicNode,

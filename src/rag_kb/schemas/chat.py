@@ -215,6 +215,7 @@ class ChatRunRetrievalResponse(PublicSchema):
         "graph_augmented_v1",
         "graphiti_edge_augmented_v1",
         "graphiti_path_augmented_v2",
+        "graphiti_path_augmented_v3",
         "adaptive_graphiti_v1",
         "adaptive_graphiti_v2",
     ]

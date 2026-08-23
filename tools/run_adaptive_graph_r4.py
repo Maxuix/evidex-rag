@@ -745,7 +745,11 @@ async def _column_layers(
         edge_limit=edge_limit,
         rerank_mode=rerank_mode,
     )
-    packed = _pack_graphiti_supplement_evidence(
+    packed_full, _ = _pack_graphiti_supplement_evidence(
+        candidate_set,
+        excluded_index_chunk_ids=frozenset(),
+    )
+    packed_incremental, new_incremental_ids = _pack_graphiti_supplement_evidence(
         candidate_set,
         excluded_index_chunk_ids=frozenset(UUID(item) for item in excluded_chunk_ids),
     )
@@ -768,7 +772,7 @@ async def _column_layers(
         "raw": tuple(str(item) for item in candidate_set.raw_chunk_ids),
         "hydrated": hydrated_ids,
         "reranked": reranked_ids,
-        "packed": tuple(str(item.index_chunk_id) for item in packed),
+        "packed": tuple(str(item.index_chunk_id) for item in packed_full),
     }
     packed_ids = set(layers["packed"])
     excluded_ids = set(excluded_chunk_ids)
@@ -799,13 +803,17 @@ async def _column_layers(
         "rerank_reordered_chunk_count": rerank_reordered_chunk_count,
         "gold_rerank_scores": gold_rerank_scores,
         "top1_gold_rerank_score": max(gold_rerank_scores.values(), default=None),
-        "packed_chunk_count": len(packed),
+        "packed_chunk_count": len(packed_full),
+        "incremental_packed_chunk_ids": [
+            str(item.index_chunk_id) for item in packed_incremental
+        ],
+        "incremental_new_chunk_ids": [str(item) for item in new_incremental_ids],
         "budget_dropped_count": sum(
             str(item.index_chunk_id) not in packed_ids
             and str(item.index_chunk_id) not in excluded_ids
             for item in candidate_set.traversal.chunks
         ),
-        "route_result_code": "admitted" if packed else "no_new_evidence",
+        "route_result_code": "admitted" if packed_full else "no_new_evidence",
     }
     return layers, metrics
 

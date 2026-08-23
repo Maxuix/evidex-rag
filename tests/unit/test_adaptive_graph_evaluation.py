@@ -155,13 +155,14 @@ class AdaptiveGraphEvaluationTests(unittest.IsolatedAsyncioTestCase):
         observed = (
             GraphitiEdgeResult(
                 edge_uuid="edge-1",
-                fact="甲集团控股乙公司。",
+                fact="甲集团与乙公司存在所述关系。",
                 episode_uuids=("episode-1",),
                 rank=1,
                 source_entity_uuid="node-a",
                 source_entity_name="甲集团",
                 target_entity_uuid="node-b",
                 target_entity_name="乙公司",
+                relation_type="控股",
             ),
             GraphitiEdgeResult(
                 edge_uuid="edge-2",

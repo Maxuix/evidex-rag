@@ -50,6 +50,10 @@ class PromptEvidence:
     modality: str = "text"
     asset_snapshot: Mapping[str, Any] | None = None
     matched_representations: tuple[str, ...] = ("text",)
+    graph_path_id: str | None = None
+    graph_anchor_index_chunk_id: UUID | None = None
+    graph_hop_count: int | None = None
+    graph_path_rank: int | None = None
 
     def __post_init__(self) -> None:
         if self.citation_id != f"cite_{self.rank}" or self.rank < 1:
@@ -69,6 +73,20 @@ class PromptEvidence:
                 "asset_snapshot",
                 MappingProxyType(dict(self.asset_snapshot)),
             )
+        graph_values = (
+            self.graph_path_id,
+            self.graph_anchor_index_chunk_id,
+            self.graph_hop_count,
+            self.graph_path_rank,
+        )
+        if any(value is not None for value in graph_values) and (
+            self.graph_path_id is None
+            or self.graph_anchor_index_chunk_id is None
+            or self.graph_hop_count not in {1, 2, 3}
+            or self.graph_path_rank is None
+            or self.graph_path_rank < 1
+        ):
+            raise ValueError("prompt graph path metadata is incomplete")
 
 
 @dataclass(frozen=True, slots=True)

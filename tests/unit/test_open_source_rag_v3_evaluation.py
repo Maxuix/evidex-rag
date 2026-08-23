@@ -25,9 +25,10 @@ def _completed_observations() -> dict:
     for row in value["case_observations"]:
         case = cases[row["case_id"]]
         row["simple_relation_ids"] = []
-        row["graph_relation_ids_by_layer"] = {
+        row["graph_full_relation_ids_by_layer"] = {
             layer: [] for layer in evaluator.LAYERS
         }
+        row["graph_incremental_packed_relation_ids"] = []
         row["auto"] = {
             "attempted": False,
             "admitted": False,
@@ -62,12 +63,13 @@ class OpenSourceRagV3EvaluationTests(unittest.TestCase):
         value = _completed_observations()
         row = value["case_observations"][0]
         row["simple_relation_ids"] = ["OSR002", "OSR007"]
-        row["graph_relation_ids_by_layer"] = {
+        row["graph_full_relation_ids_by_layer"] = {
             "raw": ["OSR008"],
             "hydrated": ["OSR008"],
             "reranked": ["OSR008"],
             "packed": ["OSR008"],
         }
+        row["graph_incremental_packed_relation_ids"] = ["OSR008"]
         row["auto"] = {
             "attempted": True,
             "admitted": True,
@@ -91,7 +93,7 @@ class OpenSourceRagV3EvaluationTests(unittest.TestCase):
         value = _completed_observations()
         row = value["case_observations"][0]
         row["simple_relation_ids"] = ["OSR002", "OSR007", "OSR008"]
-        row["graph_relation_ids_by_layer"] = {
+        row["graph_full_relation_ids_by_layer"] = {
             layer: ["OSR023"] for layer in evaluator.LAYERS
         }
 
@@ -99,7 +101,7 @@ class OpenSourceRagV3EvaluationTests(unittest.TestCase):
         first = result["case_labels"][0]
 
         self.assertEqual(
-            result["schema_version"], "open_source_rag_v3_locked_evaluation_v2"
+            result["schema_version"], "open_source_rag_v3_locked_evaluation_v3"
         )
         self.assertNotIn("graph_path_recall", result["metrics"])
         self.assertTrue(first["simple"]["complete"])
@@ -120,7 +122,7 @@ class OpenSourceRagV3EvaluationTests(unittest.TestCase):
         value = _completed_observations()
         row = value["case_observations"][0]
         row["simple_relation_ids"] = ["OSR002", "OSR007"]
-        row["graph_relation_ids_by_layer"] = {
+        row["graph_full_relation_ids_by_layer"] = {
             layer: ["OSR023"] for layer in evaluator.LAYERS
         }
 
@@ -158,7 +160,7 @@ class OpenSourceRagV3EvaluationTests(unittest.TestCase):
         value = _completed_observations()
         row = value["case_observations"][0]
         row["simple_relation_ids"] = ["OSR002"]
-        row["graph_relation_ids_by_layer"] = {
+        row["graph_full_relation_ids_by_layer"] = {
             layer: ["OSR008"] for layer in evaluator.LAYERS
         }
 

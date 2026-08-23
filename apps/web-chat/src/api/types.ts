@@ -303,6 +303,7 @@ export interface ChatRunRetrieval {
     | "graph_augmented_v1"
     | "graphiti_edge_augmented_v1"
     | "graphiti_path_augmented_v2"
+    | "graphiti_path_augmented_v3"
     | "adaptive_graphiti_v1"
     | "adaptive_graphiti_v2";
   strategy: "exact_vector" | "hybrid";
@@ -313,7 +314,7 @@ export interface ChatRunRetrieval {
 export interface RetrievalCapability {
   mode: "vector" | "hybrid" | "graph";
   strategy: "exact_vector" | "hybrid";
-  profile_version: "exact_vector_v2" | "hybrid_fts_rrf_v2" | "graphiti_path_augmented_v2";
+  profile_version: "exact_vector_v2" | "hybrid_fts_rrf_v2" | "graphiti_path_augmented_v3";
   enabled: boolean;
 }
 

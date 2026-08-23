@@ -26,6 +26,8 @@ LEGACY_ADAPTIVE_GRAPHITI_PROFILE_VERSION = "adaptive_graphiti_v1"
 LEGACY_ADAPTIVE_GRAPHITI_ROUTER_VERSION = "native_agent_evidence_aware_v1"
 LEGACY_GRAPHITI_PROFILE_VERSION = "graphiti_edge_augmented_v1"
 LEGACY_GRAPHITI_AUGMENTATION_VERSION = "graphiti_edge_v1"
+PREVIOUS_GRAPHITI_PROFILE_VERSION = "graphiti_path_augmented_v2"
+PREVIOUS_GRAPHITI_AUGMENTATION_VERSION = "graphiti_path_v2"
 LEGACY_EXACT_PROFILE_VERSION = "exact_vector_v1"
 LEGACY_HYBRID_PROFILE_VERSION = "hybrid_fts_rrf_v1"
 LEGACY_GRAPH_PROFILE_VERSION = "graph_augmented_v1"
@@ -47,16 +49,30 @@ class GraphRetrievalProfile:
     augmentation: str
 
     def __post_init__(self) -> None:
-        if self.profile_version != GRAPH_RETRIEVAL_PROFILE_VERSION:
+        if self.profile_version not in {
+            GRAPH_RETRIEVAL_PROFILE_VERSION,
+            PREVIOUS_GRAPHITI_PROFILE_VERSION,
+        }:
             raise ValueError("unsupported graph retrieval profile version")
         if self.strategy is not RetrievalStrategy.HYBRID:
             raise ValueError("graph retrieval uses hybrid seeds")
         if not 4 <= self.top_k <= 20:
             raise ValueError("graph retrieval top_k is invalid")
-        if self.rerank_mode is not RerankMode.CLASSIC:
-            raise ValueError("graph retrieval requires classic reranking")
-        if self.augmentation != GRAPH_AUGMENTATION_VERSION:
+        if self.rerank_mode not in {
+            RerankMode.CLASSIC,
+            RerankMode.LOCAL_MINILM_V1,
+        }:
+            raise ValueError("graph retrieval requires an enabled reranker")
+        if self.augmentation not in {
+            GRAPH_AUGMENTATION_VERSION,
+            PREVIOUS_GRAPHITI_AUGMENTATION_VERSION,
+        }:
             raise ValueError("graph augmentation version is invalid")
+        if (self.profile_version, self.augmentation) not in {
+            (GRAPH_RETRIEVAL_PROFILE_VERSION, GRAPH_AUGMENTATION_VERSION),
+            (PREVIOUS_GRAPHITI_PROFILE_VERSION, PREVIOUS_GRAPHITI_AUGMENTATION_VERSION),
+        }:
+            raise ValueError("graph profile and augmentation versions disagree")
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -90,7 +106,10 @@ class AdaptiveGraphitiRetrievalProfile:
             raise ValueError("local reranking supports top_k up to 20")
         if self.router != ADAPTIVE_GRAPHITI_ROUTER_VERSION:
             raise ValueError("adaptive Graphiti router version is invalid")
-        if self.augmentation != GRAPH_AUGMENTATION_VERSION:
+        if self.augmentation not in {
+            GRAPH_AUGMENTATION_VERSION,
+            PREVIOUS_GRAPHITI_AUGMENTATION_VERSION,
+        }:
             raise ValueError("adaptive Graphiti augmentation version is invalid")
 
     def as_dict(self) -> dict[str, Any]:
@@ -415,12 +434,16 @@ def parse_adaptive_graphiti_snapshot(
     )
 
 
-def graph_profile(*, top_k: int = 10) -> GraphRetrievalProfile:
+def graph_profile(
+    *,
+    top_k: int = 10,
+    rerank_mode: RerankMode = RerankMode.CLASSIC,
+) -> GraphRetrievalProfile:
     return GraphRetrievalProfile(
         profile_version=GRAPH_RETRIEVAL_PROFILE_VERSION,
         strategy=RetrievalStrategy.HYBRID,
         top_k=top_k,
-        rerank_mode=RerankMode.CLASSIC,
+        rerank_mode=rerank_mode,
         augmentation=GRAPH_AUGMENTATION_VERSION,
     )
 

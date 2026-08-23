@@ -29,6 +29,7 @@ from rag_kb.domain import (
     SourceFileIdentity,
 )
 from rag_kb.graph import GraphConfigurationService
+from rag_kb.observability import configure_logging
 from rag_kb.scheduling.worker import consume_lane
 from rag_kb.services.content import CREATE_DOCUMENT_ENDPOINT
 from tools.evaluation_runtime import (
@@ -67,7 +68,7 @@ V3_SPEC = ProvisioningSpec(
     dataset_id="routing-rag-v3-open-source",
     corpus_root=PROJECT_ROOT / "evaluation/routing-rag-v3/documents",
     expected_document_count=14,
-    knowledge_base_name="routing-rag-v3-open-source-semantic-v4-graphiti-v2",
+    knowledge_base_name="routing-rag-v3-open-source-semantic-v4-graphiti-v3",
     confirmation="PROVISION_ROUTING_RAG_V3_OPEN_SOURCE",
     media_types={
         ".md": "text/markdown",
@@ -129,6 +130,11 @@ class _HostIndexingDriver:
             self._ready.set()
 
     async def _run(self) -> None:
+        configure_logging(
+            level="INFO",
+            process="v3-host-worker",
+            log_directory=self._runtime.runtime_root / "logs",
+        )
         settings = load_settings(env_file=self._runtime.env_file)
         host_text_artifacts = self._runtime.runtime_root / "host-text-artifacts"
         host_text_artifacts.mkdir(mode=0o700, exist_ok=True)

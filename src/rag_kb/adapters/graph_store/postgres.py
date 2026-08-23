@@ -472,8 +472,10 @@ def _bounded_graphiti_paths(
                 GraphPathHop(
                     subject_entity_key=edge.source_entity_uuid,
                     object_entity_key=edge.target_entity_uuid,
-                    predicate=edge.fact or "graphiti_fact",
-                    normalized_predicate="graphiti_fact",
+                    predicate=edge.fact or edge.relation_type or "graphiti_fact",
+                    normalized_predicate=_normalized_graph_text(
+                        edge.relation_type or edge.fact or "graphiti_fact"
+                    ),
                     relation_id=uuid5(NAMESPACE_URL, f"graphiti:{edge.edge_uuid}"),
                     source_chunk_id=chunk.index_chunk_id,
                     source_index_revision_id=chunk.index_revision_id,

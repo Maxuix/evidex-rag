@@ -3,11 +3,12 @@ from __future__ import annotations
 from dataclasses import replace
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from uuid import UUID
 
 from rag_kb.adapters.graphiti.client import (
-    GRAPHITI_V2_EXTRACTION_INSTRUCTIONS,
+    GRAPHITI_ENTITY_TYPES,
+    GRAPHITI_V3_EXTRACTION_INSTRUCTIONS,
     GraphitiRuntime,
     graphiti_episode_uuid,
 )
@@ -31,6 +32,19 @@ DOCUMENT_VERSION_ID = UUID("01900000-0000-7000-8000-000000000a09")
 
 
 class GraphitiEpisodeResumeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_complete_probe_rejects_orphan_aliases_and_untyped_edges(self) -> None:
+        for counts in ((1, 0, 1), (1, 0, 0, 1)):
+            with self.subTest(counts=counts):
+                driver = SimpleNamespace(
+                    execute_query=AsyncMock(
+                        side_effect=[([{"count": count}], [], []) for count in counts]
+                    )
+                )
+                runtime = GraphitiRuntime(_unused_credentials)
+                runtime._client = AsyncMock(return_value=(object(), driver))
+
+                self.assertFalse(await runtime.probe(_build(), require_complete=True))
+
     async def test_replay_removes_uncommitted_episode_with_same_identity(self) -> None:
         driver = _Driver()
         graphiti = _Graphiti(driver)
@@ -63,9 +77,9 @@ class GraphitiEpisodeResumeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(graphiti.added[0]["previous_episode_uuids"], ["previous"])
         self.assertEqual(
             graphiti.added[0]["custom_extraction_instructions"],
-            GRAPHITI_V2_EXTRACTION_INSTRUCTIONS,
+            GRAPHITI_V3_EXTRACTION_INSTRUCTIONS,
         )
-        self.assertEqual(set(graphiti.added[0]["entity_types"]), {"AliasSurface"})
+        self.assertEqual(graphiti.added[0]["entity_types"], GRAPHITI_ENTITY_TYPES)
         self.assertEqual(driver.episode_ids, {first})
 
     def test_identity_is_scoped_to_build_chunk_and_content(self) -> None:

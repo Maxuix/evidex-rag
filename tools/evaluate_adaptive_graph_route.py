@@ -193,7 +193,7 @@ def evaluate_graph_extraction(
     unmapped_endpoint_uuids: set[str] = set()
     self_loop_edge_ids: set[str] = set()
     observed: list[
-        tuple[GraphitiEdgeResult, frozenset[str], frozenset[str], str]
+        tuple[GraphitiEdgeResult, frozenset[str], frozenset[str], str, str]
     ] = []
     for edge in observed_edges:
         source_name = _normalize_graph_surface(edge.source_entity_name)
@@ -222,6 +222,7 @@ def evaluate_graph_extraction(
                 endpoint_entity_ids[edge.source_entity_uuid],
                 endpoint_entity_ids[edge.target_entity_uuid],
                 _normalize_graph_surface(edge.fact),
+                _normalize_graph_surface(edge.relation_type),
             )
         )
 
@@ -237,23 +238,17 @@ def evaluate_graph_extraction(
             subject_id = str(row["subject_entity_id"])
             object_id = str(row["object_entity_id"])
             predicate = _normalize_graph_surface(str(row["predicate"]))
-            subject_surface = _normalize_graph_surface(
-                str(row.get("subject_surface", ""))
-            )
-            object_surface = _normalize_graph_surface(
-                str(row.get("object_surface", ""))
-            )
-            for edge, source_ids, target_ids, fact in observed:
+            for edge, source_ids, target_ids, fact, relation_type in observed:
                 directed = subject_id in source_ids and object_id in target_ids
                 undirected = directed or (
                     subject_id in target_ids and object_id in source_ids
                 )
-                predicate_hit = predicate in fact
+                predicate_hit = relation_type == predicate or (
+                    not relation_type and predicate in fact
+                )
                 surface_hit = bool(
-                    subject_surface
-                    and object_surface
-                    and subject_surface in fact
-                    and object_surface in fact
+                    any(surface in fact for surface in entity_surfaces[subject_id])
+                    and any(surface in fact for surface in entity_surfaces[object_id])
                     and predicate_hit
                 )
                 if directed:
@@ -282,7 +277,7 @@ def evaluate_graph_extraction(
     matched_count = int(all_scope["matched_observed_edge_count"])
     observed_count = len(observed_edges)
     return {
-        "schema_version": "graph_extraction_alignment_v1",
+        "schema_version": "graph_extraction_alignment_v2",
         "observed_edge_count": observed_count,
         "self_loop_edge_count": len(self_loop_edge_ids),
         "unique_endpoint_count": len(endpoint_name_by_uuid),

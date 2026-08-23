@@ -37,8 +37,8 @@ RELATIONS_PATH = CORPUS_ROOT / "relations.jsonl"
 ENTITIES_PATH = CORPUS_ROOT / "entities.jsonl"
 
 DATASET_ID = "routing-rag-v3-open-source"
-OBSERVATION_SCHEMA = "open_source_rag_v3_observations_v1"
-LOCKED_SCHEMA = "open_source_rag_v3_locked_evaluation_v2"
+OBSERVATION_SCHEMA = "open_source_rag_v3_observations_v2"
+LOCKED_SCHEMA = "open_source_rag_v3_locked_evaluation_v3"
 LAYERS = ("raw", "hydrated", "reranked", "packed")
 SIMPLE_TOP_K = 10
 GRAPH_EDGE_LIMIT = 8
@@ -150,9 +150,10 @@ def observation_template() -> dict[str, Any]:
             {
                 "case_id": str(case["case_id"]),
                 "simple_relation_ids": None,
-                "graph_relation_ids_by_layer": {
+                "graph_full_relation_ids_by_layer": {
                     layer: None for layer in LAYERS
                 },
+                "graph_incremental_packed_relation_ids": None,
                 "auto": {
                     "attempted": None,
                     "admitted": None,
@@ -343,7 +344,8 @@ def _validate_observations(
         if not isinstance(row, Mapping) or set(row) != {
             "case_id",
             "simple_relation_ids",
-            "graph_relation_ids_by_layer",
+            "graph_full_relation_ids_by_layer",
+            "graph_incremental_packed_relation_ids",
             "auto",
             "actual_outcome",
             "forbidden_claim_hit",
@@ -354,7 +356,7 @@ def _validate_observations(
         simple = _relation_ids(
             row.get("simple_relation_ids"), allowed=allowed, field="simple_relation_ids"
         )
-        raw_layers = row.get("graph_relation_ids_by_layer")
+        raw_layers = row.get("graph_full_relation_ids_by_layer")
         if not isinstance(raw_layers, Mapping) or set(raw_layers) != set(LAYERS):
             raise V3EvaluationError("Graph observation layers are invalid")
         layers = {
@@ -363,6 +365,11 @@ def _validate_observations(
             )
             for layer in LAYERS
         }
+        incremental_packed = _relation_ids(
+            row.get("graph_incremental_packed_relation_ids"),
+            allowed=allowed,
+            field="graph.incremental_packed",
+        )
         auto = row.get("auto")
         if not isinstance(auto, Mapping) or set(auto) != {
             "attempted",
@@ -378,8 +385,6 @@ def _validate_observations(
         )
         if admitted and not attempted:
             raise V3EvaluationError("Auto admission requires an attempt")
-        if admitted != (new_count > 0):
-            raise V3EvaluationError("Auto admission and new evidence disagree")
         outcome = row.get("actual_outcome")
         if outcome not in {"answered", "partial", "refused"}:
             raise V3EvaluationError("answer outcome observation is invalid")
@@ -390,7 +395,8 @@ def _validate_observations(
             {
                 "case_id": expected_id,
                 "simple_relation_ids": simple,
-                "graph_relation_ids_by_layer": layers,
+                "graph_full_relation_ids_by_layer": layers,
+                "graph_incremental_packed_relation_ids": incremental_packed,
                 "auto": {
                     "attempted": attempted,
                     "admitted": admitted,
@@ -416,14 +422,14 @@ def evaluate(value: object) -> dict[str, Any]:
         simple_path = _path_observation(paths, simple_ids)
         graph_only_layers = {
             layer: _path_observation(
-                paths, observation["graph_relation_ids_by_layer"][layer]
+                paths, observation["graph_full_relation_ids_by_layer"][layer]
             )
             for layer in LAYERS
         }
         augmented_layers = {
             layer: _path_observation(
                 paths,
-                (*simple_ids, *observation["graph_relation_ids_by_layer"][layer]),
+                (*simple_ids, *observation["graph_full_relation_ids_by_layer"][layer]),
             )
             for layer in LAYERS
         }
@@ -431,7 +437,11 @@ def evaluate(value: object) -> dict[str, Any]:
             layer: _incremental_observation(
                 paths,
                 simple_ids,
-                observation["graph_relation_ids_by_layer"][layer],
+                (
+                    observation["graph_incremental_packed_relation_ids"]
+                    if layer == "packed"
+                    else observation["graph_full_relation_ids_by_layer"][layer]
+                ),
             )
             for layer in LAYERS
         }
@@ -531,7 +541,8 @@ def evaluate(value: object) -> dict[str, Any]:
         "route_gold_policy": {
             "source": "simple_complete_valid_path_observation",
             "semantic_intent_is_primary_gold": False,
-            "graph_only_excludes_simple_evidence": True,
+            "graph_full_is_independent_of_simple_evidence": True,
+            "incremental_packed_is_reported_separately": True,
             "augmented_is_simple_union_graph": True,
             "graph_needed_rule": (
                 "Simple misses every complete valid path and packed Graph adds "

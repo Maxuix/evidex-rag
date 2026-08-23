@@ -479,7 +479,7 @@ class Evidence:
                 ))
                 or self.graph_path_id is None
                 or self.graph_anchor_index_chunk_id is None
-                or self.graph_hop_count not in {1, 2}
+                or self.graph_hop_count not in {1, 2, 3}
                 or self.graph_path_rank is None
                 or self.graph_path_rank < 1
                 or not math.isclose(
@@ -630,6 +630,7 @@ class GraphitiSupplementResult:
 
     route_result_code: str
     evidence: tuple[Evidence, ...] = ()
+    new_index_chunk_ids: tuple[UUID, ...] | None = None
 
     def __post_init__(self) -> None:
         if self.route_result_code not in GRAPHITI_SUPPLEMENT_ROUTE_RESULTS:
@@ -645,6 +646,14 @@ class GraphitiSupplementResult:
             if item.index_chunk_id in chunk_ids:
                 raise ValueError("Graphiti supplement evidence chunks must be unique")
             chunk_ids.add(item.index_chunk_id)
+        new_ids = (
+            tuple(item.index_chunk_id for item in self.evidence)
+            if self.new_index_chunk_ids is None
+            else tuple(dict.fromkeys(self.new_index_chunk_ids))
+        )
+        if any(item not in chunk_ids for item in new_ids):
+            raise ValueError("Graphiti supplement new evidence is not in its path")
+        object.__setattr__(self, "new_index_chunk_ids", new_ids)
         if self.route_result_code == "admitted":
             if not self.evidence:
                 raise ValueError("admitted Graphiti supplement requires evidence")
@@ -653,7 +662,7 @@ class GraphitiSupplementResult:
 
     @property
     def new_evidence_count(self) -> int:
-        return len(self.evidence)
+        return len(self.new_index_chunk_ids or ())
 
 
 class RetrievalExecutionError(RuntimeError):

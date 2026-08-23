@@ -6,8 +6,10 @@ from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 from rag_kb.adapters.graphiti.client import (
-    AliasSurfaceEntity,
-    GRAPHITI_V2_EXTRACTION_INSTRUCTIONS,
+    GRAPHITI_EDGE_TYPE_MAP,
+    GRAPHITI_EDGE_TYPES,
+    GRAPHITI_ENTITY_TYPES,
+    GRAPHITI_V3_EXTRACTION_INSTRUCTIONS,
     GraphitiRuntime,
     _GraphitiEntityResult,
     _rank_graphiti_paths,
@@ -16,6 +18,46 @@ from rag_kb.domain import GraphitiEdgeResult, GraphitiSearchQuery
 
 
 class GraphitiPathResolutionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_centered_search_uses_native_node_distance_and_three_hop_bfs(self) -> None:
+        runtime = GraphitiRuntime.__new__(GraphitiRuntime)
+        driver = SimpleNamespace(clone=lambda **_kwargs: driver)
+        edge = SimpleNamespace(
+            uuid="edge-native",
+            name="Hosts",
+            fact="PSF hosts a service",
+            episodes=["episode-1"],
+            source_node_uuid="psf",
+            target_node_uuid="service",
+        )
+        graphiti = SimpleNamespace(
+            search_=AsyncMock(return_value=SimpleNamespace(edges=[edge]))
+        )
+        query = GraphitiSearchQuery(
+            workspace_id=uuid4(),
+            knowledge_base_id=uuid4(),
+            build_id=uuid4(),
+            group_id="graph-build",
+            query="What does PSF host?",
+            limit=8,
+        )
+
+        results = await runtime._search_centered_edges(
+            graphiti,
+            driver,
+            SimpleNamespace(group_id="graph-build"),
+            query,
+            ("psf",),
+        )
+
+        kwargs = graphiti.search_.await_args.kwargs
+        self.assertEqual(kwargs["center_node_uuid"], "psf")
+        self.assertEqual(kwargs["bfs_origin_node_uuids"], ["psf"])
+        self.assertEqual(kwargs["config"].edge_config.bfs_max_depth, 3)
+        self.assertIn("breadth_first_search", {
+            method.value for method in kwargs["config"].edge_config.search_methods
+        })
+        self.assertEqual(results[0].relation_type, "Hosts")
+
     async def test_search_paths_resolves_a_named_node_before_edge_expansion(self) -> None:
         runtime = GraphitiRuntime.__new__(GraphitiRuntime)
         driver = SimpleNamespace(clone=lambda **_kwargs: driver)
@@ -26,9 +68,8 @@ class GraphitiPathResolutionTests(unittest.IsolatedAsyncioTestCase):
         )
         seed = _edge(1, "product", "WTC-7", "supplier", "梧桐芯片")
         outward = _edge(2, "supplier", "梧桐芯片", "group", "星澜集团")
-        runtime._adjacent_edges = AsyncMock(
-            side_effect=((seed,), (seed, outward))
-        )
+        runtime._search_centered_edges = AsyncMock(return_value=(seed, outward))
+        runtime._edges_by_uuid = AsyncMock(return_value=(seed, outward))
 
         paths = await runtime.search_paths(
             SimpleNamespace(group_id="graph-build"),
@@ -45,7 +86,7 @@ class GraphitiPathResolutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(paths[0].hops, (seed, outward))
         self.assertTrue(paths[0].seed_entry)
         self.assertEqual(
-            runtime._adjacent_edges.await_args_list[0].args[2],
+            runtime._search_centered_edges.await_args.args[4],
             ("product",),
         )
 
@@ -58,7 +99,7 @@ class GraphitiPathResolutionTests(unittest.IsolatedAsyncioTestCase):
         runtime._search_edges = AsyncMock(return_value=(projected,))
         runtime._search_entities = AsyncMock(return_value=())
         runtime._edges_by_uuid = AsyncMock(return_value=(hydrated,))
-        runtime._adjacent_edges = AsyncMock(side_effect=((hydrated,), (hydrated,)))
+        runtime._search_centered_edges = AsyncMock(return_value=(hydrated,))
 
         paths = await runtime.search_paths(
             SimpleNamespace(group_id="graph-build"),
@@ -75,7 +116,7 @@ class GraphitiPathResolutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(paths[0].hops[0].endpoint_uuids, ("source", "target"))
         self.assertTrue(paths[0].seed_entry)
 
-    async def test_episode_extraction_applies_the_v2_contract(self) -> None:
+    async def test_episode_extraction_applies_the_v3_contract(self) -> None:
         class NodeNotFoundError(RuntimeError):
             pass
 
@@ -125,13 +166,12 @@ class GraphitiPathResolutionTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(episode_uuid, graphiti.add_episode.await_args.kwargs["uuid"])
         kwargs = graphiti.add_episode.await_args.kwargs
-        self.assertEqual(
-            kwargs["entity_types"],
-            {"AliasSurface": AliasSurfaceEntity},
-        )
+        self.assertEqual(kwargs["entity_types"], GRAPHITI_ENTITY_TYPES)
+        self.assertEqual(kwargs["edge_types"], GRAPHITI_EDGE_TYPES)
+        self.assertEqual(kwargs["edge_type_map"], GRAPHITI_EDGE_TYPE_MAP)
         self.assertEqual(
             kwargs["custom_extraction_instructions"],
-            GRAPHITI_V2_EXTRACTION_INSTRUCTIONS,
+            GRAPHITI_V3_EXTRACTION_INSTRUCTIONS,
         )
         cleanup_query = driver.execute_query.await_args.args[0]
         self.assertIn("DELETE edge", cleanup_query)
@@ -149,9 +189,9 @@ class GraphitiPathResolutionTests(unittest.IsolatedAsyncioTestCase):
             limit=8,
         )
 
-        self.assertEqual([path.hops for path in paths[:2]], [(seed, outward), (seed,)])
+        self.assertEqual(paths[0].hops, (seed, outward))
         self.assertTrue(all(path.seed_entry for path in paths))
-        self.assertNotIn(wrong_direction, tuple(hop for path in paths for hop in path.hops))
+        self.assertIn(wrong_direction, tuple(hop for path in paths for hop in path.hops))
 
     def test_ungrounded_ranked_fact_is_not_expanded_into_a_chain(self) -> None:
         seed = _edge(1, "a", "甲公司", "b", "乙公司")
@@ -204,6 +244,21 @@ class GraphitiPathResolutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(paths[0].hops, (seed, outward))
         self.assertTrue(paths[0].seed_entry)
 
+    def test_acronym_grounding_returns_a_connected_three_hop_path(self) -> None:
+        first = _edge(1, "psf", "Python Software Foundation", "python", "Python")
+        second = _edge(2, "python", "Python", "packaging", "Python Packaging")
+        third = _edge(3, "packaging", "Python Packaging", "pypi", "PyPI")
+
+        paths = _rank_graphiti_paths(
+            "What service does PSF ultimately support through Python Packaging?",
+            (first, second, third),
+            (first, second, third),
+            limit=8,
+        )
+
+        self.assertEqual(paths[0].hops, (first, second, third))
+        self.assertTrue(paths[0].seed_entry)
+
     def test_short_latin_prefix_does_not_ground_an_unrelated_entity(self) -> None:
         seed = _edge(
             1,
@@ -236,9 +291,9 @@ class GraphitiPathResolutionTests(unittest.IsolatedAsyncioTestCase):
         )
 
     def test_extraction_contract_rejects_structure_and_alias_self_loops(self) -> None:
-        self.assertIn("section labels", GRAPHITI_V2_EXTRACTION_INSTRUCTIONS)
-        self.assertIn("distinct nodes", GRAPHITI_V2_EXTRACTION_INSTRUCTIONS)
-        self.assertIn("do not infer", GRAPHITI_V2_EXTRACTION_INSTRUCTIONS.lower())
+        self.assertIn("section labels", GRAPHITI_V3_EXTRACTION_INSTRUCTIONS)
+        self.assertIn("distinct concepts", GRAPHITI_V3_EXTRACTION_INSTRUCTIONS)
+        self.assertIn("do not infer", GRAPHITI_V3_EXTRACTION_INSTRUCTIONS.lower())
 
 
 def _edge(

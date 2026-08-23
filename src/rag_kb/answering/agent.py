@@ -351,6 +351,11 @@ class NativeToolCallingAgent:
                             continue
                         item = items[offset]
                         if item.index_chunk_id in evidence_ids:
+                            if item.graph_path_id is not None:
+                                for index, existing in enumerate(evidence):
+                                    if existing.index_chunk_id == item.index_chunk_id:
+                                        evidence[index] = replace(item, rank=existing.rank)
+                                        break
                             continue
                         evidence_ids.add(item.index_chunk_id)
                         evidence.append(item)
@@ -550,7 +555,6 @@ class NativeToolCallingAgent:
                     and not repair_round
                     and not result.repair_eligible
                     and result.validated.outcome is not AnswerOutcome.REFUSED
-                    and _has_graph_relation_signal(context.query)
                 ):
                     # A valid Simple-only draft is not proof that its cited
                     # chunks contain a complete relation path. Probe once with
@@ -583,18 +587,23 @@ class NativeToolCallingAgent:
                         guarded_path_ids = {
                             item.graph_path_id
                             for item in graph_candidates
-                            if item.graph_hop_count == 2
+                            if item.graph_hop_count in {2, 3}
                         }
                         new_items = tuple(
                             item
                             for item in graph_candidates
                             if item.graph_path_id in guarded_path_ids
-                            and item.index_chunk_id not in evidence_ids
                         )
                         if new_items:
                             for item in new_items:
-                                evidence_ids.add(item.index_chunk_id)
-                                evidence.append(item)
+                                if item.index_chunk_id in evidence_ids:
+                                    for index, existing in enumerate(evidence):
+                                        if existing.index_chunk_id == item.index_chunk_id:
+                                            evidence[index] = replace(item, rank=existing.rank)
+                                            break
+                                else:
+                                    evidence_ids.add(item.index_chunk_id)
+                                    evidence.append(item)
                             cumulative = _pack(context, evidence, strategy)
                             envelope = build_evidence_envelope(cumulative)
                             _assign_refs(
@@ -774,7 +783,6 @@ class NativeToolCallingAgent:
                     adaptive_graphiti
                     and simple_attempted
                     and not graphiti_attempted
-                    and _has_graph_relation_signal(context.query)
                 )
             )
         )
@@ -892,10 +900,11 @@ def _initial_messages(
         "search_knowledge_base with only the queries field first. After a "
         "completed Simple search, even when it returns no evidence, the separate "
         "graphiti_supplement tool may "
-        "appear at most once only for a missing last-hop relation, "
+        "appear at most once for a missing relation, "
         "cross-document relation gap, entity alias gap, or relation-chain gap. "
-        "Write a concise last-hop relation lookup; do not repeat the full "
-        "question, mix two hops, request absence proof, or use Graphiti for "
+        "Use the original question or an explicit anchor-to-target chain query; "
+        "one-to-three-hop chains are supported. Do not request absence proof or "
+        "use Graphiti for "
         "tables, charts, calculations, images, or direct facts. Graphiti "
         "returns source chunks only; never treat edge facts as answer evidence. "
         "If you submit a non-refusal after Simple without using Graphiti, a "
@@ -1168,6 +1177,13 @@ def _merge_prompt_evidence(
         rank=existing.rank,
         asset_snapshot=(asset_snapshot or None),
         matched_representations=representations,
+        graph_path_id=incoming.graph_path_id or existing.graph_path_id,
+        graph_anchor_index_chunk_id=(
+            incoming.graph_anchor_index_chunk_id
+            or existing.graph_anchor_index_chunk_id
+        ),
+        graph_hop_count=incoming.graph_hop_count or existing.graph_hop_count,
+        graph_path_rank=incoming.graph_path_rank or existing.graph_path_rank,
     )
 
 
@@ -1205,17 +1221,31 @@ def _search_result(
     for query, refs in groups:
         items: list[dict[str, Any]] = []
         for ref in refs:
+            prompt = prompt_by_ref[ref]
+            graph_metadata = (
+                {
+                    "graph_path_id": prompt.graph_path_id,
+                    "graph_hop_count": prompt.graph_hop_count,
+                    "graph_path_rank": prompt.graph_path_rank,
+                    "graph_anchor_index_chunk_id": str(
+                        prompt.graph_anchor_index_chunk_id
+                    ),
+                }
+                if prompt.graph_path_id is not None
+                and prompt.graph_anchor_index_chunk_id is not None
+                else {}
+            )
             if ref in observed_refs:
                 items.append(
                     {
                         "evidence_ref": ref,
                         "content_already_provided": True,
+                        **graph_metadata,
                     }
                 )
                 continue
             observed_refs.add(ref)
             newly_sent_refs.append(ref)
-            prompt = prompt_by_ref[ref]
             items.append(
                 {
                     "evidence_ref": ref,
@@ -1226,6 +1256,7 @@ def _search_result(
                     "location": dict(prompt.source_location),
                     "content": prompt.excerpt,
                     "visual_attached": ref in loaded_visual_refs,
+                    **graph_metadata,
                 }
             )
         result_groups.append({"query": query, "results": items})

@@ -33,7 +33,7 @@ class EvidenceEligibilityPolicy:
             return (
                 item.graph_path_id is not None
                 and item.graph_anchor_index_chunk_id is not None
-                and item.graph_hop_count in {1, 2}
+                and item.graph_hop_count in {1, 2, 3}
                 and item.graph_path_rank is not None
                 and item.score > 0.0
             )

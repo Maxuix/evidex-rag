@@ -156,9 +156,10 @@ class RunOpenSourceRagV3Tests(unittest.TestCase):
         completed.update(
             {
                 "simple_relation_ids": [],
-                "graph_relation_ids_by_layer": {
+                "graph_full_relation_ids_by_layer": {
                     layer: [] for layer in runner.LAYERS
                 },
+                "graph_incremental_packed_relation_ids": [],
                 "auto": {
                     "attempted": False,
                     "admitted": False,

@@ -34,8 +34,11 @@ class RetrievalQueryRequest(RetrievalPublicSchema):
         if self.mode == "graph":
             if not 4 <= self.top_k <= 20:
                 raise ValueError("graph retrieval top_k must be between 4 and 20")
-            if self.rerank_mode is not RerankMode.CLASSIC:
-                raise ValueError("graph retrieval requires classic reranking")
+            if self.rerank_mode not in {
+                RerankMode.CLASSIC,
+                RerankMode.LOCAL_MINILM_V1,
+            }:
+                raise ValueError("graph retrieval requires an enabled reranker")
             return self
         if (
             self.strategy is RetrievalStrategy.HYBRID
@@ -62,7 +65,7 @@ class RetrievalCapabilityResponse(RetrievalPublicSchema):
     mode: Literal["vector", "hybrid", "graph"]
     strategy: Literal["exact_vector", "hybrid"]
     profile_version: Literal[
-        "exact_vector_v2", "hybrid_fts_rrf_v2", "graphiti_path_augmented_v2"
+        "exact_vector_v2", "hybrid_fts_rrf_v2", "graphiti_path_augmented_v3"
     ]
     enabled: bool
 
@@ -114,7 +117,7 @@ class EvidenceResponse(RetrievalPublicSchema):
     related_visuals: tuple["RelatedVisualEvidenceResponse", ...] = ()
     graph_path_id: str | None = None
     graph_anchor_index_chunk_id: UUID | None = None
-    graph_hop_count: Literal[1, 2] | None = None
+    graph_hop_count: Literal[1, 2, 3] | None = None
     graph_path_rank: int | None = None
 
 
@@ -162,7 +165,7 @@ class RetrievalDebugResponse(RetrievalPublicSchema):
 class GraphPathDebugResponse(RetrievalPublicSchema):
     path_id: str
     entry_entity_key: str
-    hop_count: Literal[1, 2]
+    hop_count: Literal[1, 2, 3]
     seed_entry: bool
     anchor_chunk_id: UUID
     rank: int
@@ -182,6 +185,7 @@ class GraphDebugResponse(RetrievalPublicSchema):
     query_entity_count: int
     one_hop_path_count: int
     two_hop_path_count: int
+    three_hop_path_count: int
     rejected_path_count: int
     bundle_count: int
     protocol_skipped_count: int

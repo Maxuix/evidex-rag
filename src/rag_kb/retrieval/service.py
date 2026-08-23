@@ -80,7 +80,6 @@ from rag_kb.retrieval.profile import (
 
 
 LOGGER = get_logger(__name__)
-GRAPH_RESERVE = 2
 
 
 class CompositeEvidenceHydrator(Protocol):
@@ -98,7 +97,7 @@ class CompositeEvidenceHydrator(Protocol):
 RetrievalMode = Literal["vector", "hybrid", "graph"]
 RetrievalCapabilityStrategy = Literal["exact_vector", "hybrid"]
 RetrievalCapabilityProfile = Literal[
-    "exact_vector_v2", "hybrid_fts_rrf_v2", "graphiti_path_augmented_v2"
+    "exact_vector_v2", "hybrid_fts_rrf_v2", "graphiti_path_augmented_v3"
 ]
 
 
@@ -287,7 +286,7 @@ class RetrievalService:
                         RetrievalCapability(
                             mode="graph",
                             strategy="hybrid",
-                            profile_version="graphiti_path_augmented_v2",
+                            profile_version="graphiti_path_augmented_v3",
                             enabled=True,
                         ),
                     )
@@ -499,13 +498,15 @@ class RetrievalService:
                 )
                 return GraphitiSupplementResult("runtime_unavailable")
             raise
-        evidence = _pack_graphiti_supplement_evidence(
+        evidence, new_index_chunk_ids = _pack_graphiti_supplement_evidence(
             candidate_set,
             excluded_index_chunk_ids=frozenset(excluded_index_chunk_ids),
         )
         if not evidence:
             return GraphitiSupplementResult("no_new_evidence")
-        return GraphitiSupplementResult("admitted", evidence)
+        return GraphitiSupplementResult(
+            "admitted", evidence, new_index_chunk_ids=new_index_chunk_ids
+        )
 
     async def _retrieve_graph(
         self,
@@ -533,7 +534,7 @@ class RetrievalService:
             )
 
         seed_count = min(40, max(12, request.top_k * 2))
-        seed_output_count = request.top_k - GRAPH_RESERVE
+        seed_output_count = request.top_k
         seed_profile = replace(
             self._hybrid_profile,
             top_k=seed_output_count,
@@ -594,6 +595,9 @@ class RetrievalService:
             ),
             two_hop_path_count=sum(
                 path.hop_count == 2 for path in traversal.paths
+            ),
+            three_hop_path_count=sum(
+                path.hop_count == 3 for path in traversal.paths
             ),
             rejected_path_count=traversal.rejected_path_count,
             bundle_count=len(bundles),
@@ -2319,7 +2323,7 @@ def _validate_graph_traversal(
                 diagnostic={"check": "graph_chunk_scope"},
             )
     for path in traversal.paths:
-        if not 1 <= path.hop_count <= 2 or path.rank > 20:
+        if not 1 <= path.hop_count <= 3 or path.rank > 20:
             raise RetrievalExecutionError(
                 ErrorCode.GRAPH_CONFIG_INVALID,
                 diagnostic={"check": "graph_path_bound"},
@@ -2353,19 +2357,17 @@ def _validate_graph_traversal(
                 ErrorCode.GRAPH_CONFIG_INVALID,
                 diagnostic={"check": "graph_entry_grounding"},
             )
-        if path.hop_count == 2:
-            second_endpoints = {
-                path.hops[1].subject_entity_key,
-                path.hops[1].object_entity_key,
-            }
-            if (
-                len(first_endpoints & second_endpoints) != 1
-                or len(first_endpoints | second_endpoints) != 3
-            ):
+        visited = set(first_endpoints)
+        previous = first_endpoints
+        for hop in path.hops[1:]:
+            endpoints = {hop.subject_entity_key, hop.object_entity_key}
+            if len(previous & endpoints) != 1 or len(endpoints - visited) != 1:
                 raise RetrievalExecutionError(
                     ErrorCode.GRAPH_CONFIG_INVALID,
-                    diagnostic={"check": "graph_two_hop_shape"},
+                    diagnostic={"check": "graph_path_shape"},
                 )
+            visited.update(endpoints)
+            previous = endpoints
 
 
 def _pack_graph_evidence(
@@ -2374,14 +2376,15 @@ def _pack_graph_evidence(
     *,
     top_k: int,
 ) -> tuple[tuple[Evidence, ...], tuple[GraphEvidenceBundle, ...]]:
-    seed_budget = top_k - GRAPH_RESERVE
-    if len(seed_evidence) > seed_budget:
-        raise AssertionError("graph seed evidence exceeds its reserved budget")
+    """Pack complete graph paths first, then backfill with hybrid evidence."""
+
     chunk_by_id = {item.index_chunk_id: item for item in traversal.chunks}
-    selected: list[Evidence] = list(seed_evidence)
-    selected_ids = {item.index_chunk_id for item in selected}
+    selected: list[Evidence] = []
+    selected_ids: set[UUID] = set()
     bundles: list[GraphEvidenceBundle] = []
     for path in traversal.paths:
+        if not path.seed_entry:
+            continue
         bundle = GraphEvidenceBundle(path=path, chunk_ids=path.source_chunk_ids)
         new_ids = tuple(
             chunk_id for chunk_id in bundle.chunk_ids if chunk_id not in selected_ids
@@ -2398,6 +2401,13 @@ def _pack_graph_evidence(
             selected_ids.add(chunk_id)
         if len(selected) >= top_k:
             break
+    for item in seed_evidence:
+        if len(selected) >= top_k:
+            break
+        if item.index_chunk_id in selected_ids:
+            continue
+        selected.append(item)
+        selected_ids.add(item.index_chunk_id)
     return tuple(
         replace(item, rank=rank)
         for rank, item in enumerate(selected[:top_k], start=1)
@@ -2408,8 +2418,8 @@ def _pack_graphiti_supplement_evidence(
     candidate_set: GraphitiCandidateSet,
     *,
     excluded_index_chunk_ids: frozenset[UUID],
-) -> tuple[Evidence, ...]:
-    """Pack complete query-grounded paths, returning only their new chunks."""
+) -> tuple[tuple[Evidence, ...], tuple[UUID, ...]]:
+    """Pack complete paths and separately identify chunks new to Simple."""
 
     chunk_by_id = {
         item.index_chunk_id: item for item in candidate_set.traversal.chunks
@@ -2430,20 +2440,22 @@ def _pack_graphiti_supplement_evidence(
         path_ids = path.source_chunk_ids
         if any(chunk_id not in chunk_by_id for chunk_id in path_ids):
             continue
-        new_ids = tuple(
-            chunk_id
-            for chunk_id in path_ids
-            if chunk_id not in excluded_index_chunk_ids
-            and chunk_id not in selected_ids
+        path_new_to_selection = tuple(
+            chunk_id for chunk_id in path_ids if chunk_id not in selected_ids
         )
-        if not new_ids or len(selected) + len(new_ids) > 4:
+        if not path_new_to_selection or len(selected) + len(path_new_to_selection) > 4:
             continue
-        for chunk_id in new_ids:
+        for chunk_id in path_new_to_selection:
             selected.append(_graph_evidence_from_chunk(chunk_by_id[chunk_id], path))
             selected_ids.add(chunk_id)
-    return tuple(
+    evidence = tuple(
         replace(item, rank=rank)
         for rank, item in enumerate(selected, start=1)
+    )
+    return evidence, tuple(
+        item.index_chunk_id
+        for item in evidence
+        if item.index_chunk_id not in excluded_index_chunk_ids
     )
 
 
