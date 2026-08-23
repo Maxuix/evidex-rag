@@ -273,6 +273,8 @@ def evaluate_graph_extraction(
             "fact_surface": _rate(len(fact_surface_hits), total),
             "complete_relation": _rate(len(complete_hits), total),
             "matched_observed_edge_count": len(matched_observed_edge_ids),
+            "directed_relation_ids": sorted(directed_hits),
+            "complete_relation_ids": sorted(complete_hits),
             "missing_complete_relation_ids": sorted(set(ids) - complete_hits),
         }
 

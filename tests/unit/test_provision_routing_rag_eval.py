@@ -9,6 +9,7 @@ from rag_kb.domain import GRAPH_EXTRACTOR_VERSION, GRAPH_RETRIEVAL_PROFILE_VERSI
 from tools.provision_routing_rag_eval import (
     EXPECTED_DOCUMENT_COUNT,
     ProvisioningError,
+    V3_SPEC,
     _corpus_digest,
     _corpus_paths,
     _paged_items,
@@ -24,6 +25,15 @@ class RoutingRagProvisioningTests(unittest.TestCase):
         self.assertEqual(len(paths), EXPECTED_DOCUMENT_COUNT)
         self.assertEqual(_corpus_digest(paths), _corpus_digest(paths))
         self.assertEqual({path.suffix for path in paths}, {".md", ".txt"})
+
+    def test_v3_frozen_corpus_is_exact_and_supports_csv(self) -> None:
+        paths = _corpus_paths(V3_SPEC)
+
+        self.assertEqual(len(paths), 14)
+        self.assertEqual(
+            {path.suffix for path in paths}, {".md", ".txt", ".csv"}
+        )
+        self.assertEqual(_corpus_digest(paths), _corpus_digest(paths))
 
     def test_pagination_rejects_a_non_string_cursor(self) -> None:
         with patch(

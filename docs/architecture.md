@@ -324,6 +324,23 @@ gold 对齐，只把聚合计数和 synthetic relation id 写入安全工件。R
 `graphiti_v2` 的 processed/eligible 数一致时原子更新评测 identity。该入口要求显式确认，不删除旧
 评测 KB，也不管理镜像或容器生命周期；依赖版本错误时 fail closed。
 
+公开来源 `routing-rag-v3-open-source` 的事实 gold 与运行观察分离。纯离线
+`tools/evaluate_open_source_rag_v3.py` 固定 semantic v4、索引/检索 profile、Simple `top_k` 和 Graph K，
+并要求完整观察绑定明确的 workspace、KB、index、Graph build、model profile 与配置/document-set digest
+后才生成独立 locked manifest。v3 route gold 由 Simple 是否完整覆盖任一有效关系路径动态产生；
+`semantic_intent=graph` 只保留为候选设计事实。Graph benefit 必须由 packed 层 source-backed 新关系补齐
+完整路径，四层 path recall、Auto 混淆矩阵、关系抽取和拒答指标分别报告。空观察模板不构成完成评测，
+运行依赖或 Provider 授权缺失时保持未验证。
+`tools/run_open_source_rag_v3.py` 复用生产 Agent 的一次 actual-auto 执行，同时观察 Simple chunk、真实
+Graph admission 和最终 outcome；Graph candidate 另以同一冻结 query/profile 采集四层 replay。runner
+只接受已绑定且身份匹配的 owner-only `rag-eval`，逐 case 写 owner-only、content-safe checkpoint，不保存
+问题、回答、正文、文件名或 Provider payload；它不 provision KB、不管理容器，真实执行仍需显式 Provider
+确认。中断恢复只跳过身份一致的完整 case，避免重复流量。
+`tools/provision_routing_rag_eval.py` 同时保留默认 v2 spec 和显式 v3 open-source spec；两者使用独立 KB
+名称、文档闭集、媒体类型与确认串。v3 spec 支持 Markdown/TXT/CSV，成功后才把 runtime identity 绑定到
+该 semantic-v4 index/Graph build。provision 会触发索引与建图 Provider 调用，不能由测试请求或 runner
+隐式执行。
+
 没有要保留的数据时，本地 schema 变化可选择经用户确认后 reset；只有用户明确需要保留数据
 时才设计回填或兼容迁移。任何删除本地数据的命令仍需明确授权。
 

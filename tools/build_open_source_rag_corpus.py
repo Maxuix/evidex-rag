@@ -904,6 +904,18 @@ def _write_readme(output: Path) -> None:
             2. 用 semantic v4 解析和固定索引配置完成一次 Simple baseline；记录每个 Graph case 是否覆盖所有 `valid_paths` 中的一条路径。
             3. 再执行 Graph replay，只有 source-backed 新答案证据补齐路径时才记录 Graph benefit。
             4. 将 baseline 配置 hash 写入独立的 locked evaluation manifest，不修改本目录中的事实 gold。
+
+            ## Locked evaluation 合同
+
+            `tools/evaluate_open_source_rag_v3.py` 是纯离线锁定与计分器。`--dry-run` 校验语料身份和冻结配置；`--write-observation-template` 生成待 host runner 填充的观察合同；`--observations ... --output ...` 只接受覆盖全部 case、绑定明确 runtime/index/build 身份的完整观察，并生成独立 locked manifest。
+
+            冻结配置固定 semantic v4、text-only embedding、Simple exact-vector/classic `top_k=10`、Graph `adaptive_graphiti_v2`/`graphiti_v2`、classic rerank 和 `edge_limit=8`。locked manifest 以 Simple 是否完整覆盖任一 `valid_paths` 动态生成 Graph-needed 标签，分别报告 Simple path recall、Graph 四层 path recall、Graph benefit、Auto TP/FP、关系抽取对齐和负例拒答；不会把 `semantic_intent=graph` 直接提升为 route gold。
+
+            观察模板本身不是已完成基线，也不能作为质量结果。填充它需要外部 Provider 或隔离数据库/Graph 时，必须先满足仓库的 host-only 和授权边界；依赖缺失时保持未验证，不能用 Docker 补环境。
+
+            `tools/run_open_source_rag_v3.py` 是对应的 host observation runner。它只读取已经绑定到 v3 KB/index/Graph build 的 owner-only `rag-eval` runtime，不创建 KB、不管理容器；逐 case 原子保存 content-safe checkpoint，完成后直接生成 immutable locked manifest。真实执行会调用 Provider，必须显式传入 `--confirm RUN_ROUTING_RAG_V3_EXTERNAL_CALLS`；`--dry-run` 仍保持纯离线。
+
+            已运行且身份匹配的 `rag-eval` 可通过现有 provisioner 的 v3 冻结 spec 建立并绑定 KB：`--dataset routing-rag-v3-open-source --confirm PROVISION_ROUTING_RAG_V3_OPEN_SOURCE`。该入口会产生索引与 Graph Provider 流量，不属于测试准备步骤；没有单独授权时不得执行。
             """
         ),
         encoding="utf-8",
