@@ -9,6 +9,7 @@ from rag_kb.adapters.graphiti.client import (
     GraphitiSchemaEchoError,
     SchemaEchoRepairingLLMClient,
     as_graphiti_llm_client,
+    is_invalid_model_payload,
     is_schema_echo_payload,
     required_model_field_names,
 )
@@ -25,6 +26,10 @@ class _EdgeDuplicate(BaseModel):
 
 class _OptionalOnly(BaseModel):
     note: str | None = None
+
+
+class _OrganizationAttributes(BaseModel):
+    short_names: list[str] = Field(default_factory=list)
 
 
 class _FakeLLM:
@@ -84,6 +89,66 @@ class SchemaEchoHelperTests(unittest.TestCase):
             is_schema_echo_payload(
                 {"extracted_entities": []},
                 _ExtractedEntities,
+            )
+        )
+
+    def test_optional_attribute_schema_document_is_detected(self) -> None:
+        self.assertTrue(
+            is_schema_echo_payload(
+                {
+                    "description": "An organization",
+                    "properties": {
+                        "short_names": {
+                            "items": {"type": "string"},
+                            "title": "Short Names",
+                            "type": "array",
+                        }
+                    },
+                    "title": "OrganizationEntity",
+                    "type": "object",
+                },
+                _OrganizationAttributes,
+            )
+        )
+
+    def test_valid_optional_attribute_payload_is_not_echo(self) -> None:
+        self.assertFalse(
+            is_schema_echo_payload(
+                {"short_names": ["ASF"]},
+                _OrganizationAttributes,
+            )
+        )
+
+    def test_field_level_schema_fragment_is_invalid(self) -> None:
+        self.assertTrue(
+            is_invalid_model_payload(
+                {
+                    "short_names": {
+                        "items": {"type": "string"},
+                        "title": "Short Names",
+                        "type": "array",
+                    }
+                },
+                _OrganizationAttributes,
+            )
+        )
+
+    def test_attribute_payload_with_schema_metadata_is_strictly_invalid(self) -> None:
+        payload = {
+            "short_names": [],
+            "description": None,
+            "properties": {"short_names": []},
+            "title": "ProjectEntity",
+            "type": "object",
+        }
+        self.assertFalse(
+            is_invalid_model_payload(payload, _OrganizationAttributes)
+        )
+        self.assertTrue(
+            is_invalid_model_payload(
+                payload,
+                _OrganizationAttributes,
+                strict_fields=True,
             )
         )
 
@@ -158,6 +223,84 @@ class SchemaEchoRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, {"extracted_entities": ["A"]})
         self.assertEqual(len(inner.raw_calls), 1)
 
+    async def test_optional_attribute_schema_echo_is_repaired(self) -> None:
+        inner = _FakeLLM(
+            [
+                {
+                    "description": "An organization",
+                    "properties": {
+                        "short_names": {
+                            "items": {"type": "string"},
+                            "title": "Short Names",
+                            "type": "array",
+                        }
+                    },
+                    "title": "OrganizationEntity",
+                    "type": "object",
+                },
+                {"short_names": ["ASF"]},
+            ]
+        )
+        client = SchemaEchoRepairingLLMClient(inner)
+
+        result = await client.generate_response(
+            [SimpleNamespace(role="user", content="extract attributes")],
+            response_model=_OrganizationAttributes,
+            attribute_extraction=True,
+        )
+
+        self.assertEqual(result, {"short_names": ["ASF"]})
+        self.assertEqual(len(inner.raw_calls), 1)
+        self.assertIn("short_names", inner.raw_calls[0][0][-1].content)
+
+    async def test_field_level_schema_fragment_is_repaired(self) -> None:
+        inner = _FakeLLM(
+            [
+                {
+                    "short_names": {
+                        "items": {"type": "string"},
+                        "title": "Short Names",
+                        "type": "array",
+                    }
+                },
+                {"short_names": ["PSF"]},
+            ]
+        )
+        client = SchemaEchoRepairingLLMClient(inner)
+
+        result = await client.generate_response(
+            [SimpleNamespace(role="user", content="extract attributes")],
+            response_model=_OrganizationAttributes,
+            attribute_extraction=True,
+        )
+
+        self.assertEqual(result, {"short_names": ["PSF"]})
+        self.assertEqual(len(inner.raw_calls), 1)
+
+    async def test_attribute_schema_metadata_contamination_is_repaired(self) -> None:
+        inner = _FakeLLM(
+            [
+                {
+                    "short_names": [],
+                    "description": None,
+                    "properties": {"short_names": []},
+                    "title": "OrganizationEntity",
+                    "type": "object",
+                },
+                {"short_names": ["ASF"]},
+            ]
+        )
+        client = SchemaEchoRepairingLLMClient(inner)
+
+        result = await client.generate_response(
+            [SimpleNamespace(role="user", content="extract attributes")],
+            response_model=_OrganizationAttributes,
+            attribute_extraction=True,
+        )
+
+        self.assertEqual(result, {"short_names": ["ASF"]})
+        self.assertEqual(len(inner.raw_calls), 1)
+
     async def test_exhausted_repairs_fail_closed(self) -> None:
         echo = {"$defs": {}, "properties": {}, "type": "object"}
         inner = _FakeLLM([echo, echo, echo])
@@ -171,6 +314,25 @@ class SchemaEchoRepairTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(inner.generate_calls), 1)
         self.assertEqual(len(inner.raw_calls), 2)
+
+    async def test_default_budget_repairs_four_consecutive_echoes(self) -> None:
+        echo = {
+            "properties": {"short_names": {"type": "array"}},
+            "title": "OrganizationEntity",
+            "type": "object",
+        }
+        inner = _FakeLLM([echo, echo, echo, echo, {"short_names": ["ASF"]}])
+        client = SchemaEchoRepairingLLMClient(inner)
+
+        result = await client.generate_response(
+            [SimpleNamespace(role="user", content="extract attributes")],
+            response_model=_OrganizationAttributes,
+            attribute_extraction=True,
+        )
+
+        self.assertEqual(result, {"short_names": ["ASF"]})
+        self.assertEqual(len(inner.generate_calls), 1)
+        self.assertEqual(len(inner.raw_calls), 4)
 
     async def test_provider_errors_are_not_repaired(self) -> None:
         class _Broken(_FakeLLM):

@@ -67,7 +67,7 @@ from tools.run_adaptive_graph_r4 import (
 
 
 CONFIRM_EXTERNAL_CALLS = "RUN_ROUTING_RAG_V3_EXTERNAL_CALLS"
-EXPECTED_KB_NAME = "routing-rag-v3-open-source-semantic-v4-graphiti-v2"
+EXPECTED_KB_NAME = "routing-rag-v3-open-source-semantic-v4-graphiti-v3"
 MAX_CHECKPOINT_BYTES = 2 * 1024 * 1024
 
 

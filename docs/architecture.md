@@ -67,7 +67,10 @@
   License、LicenseExpression 与 AliasSurface 类型化抽取，并保存稳定的有向关系类型。检索先用
   Graphiti node hybrid search 解析题面实体，再以实体 UUID 为中心执行 node-distance、BM25、向量与
   原生 BFS 的组合搜索，最后只形成真实连通、无环的一至三跳路径。每一跳都必须回映射到当前 serving
-  原始 Chunk。fact 只进入内部水合，不进入 Agent tool result；手动 Graph 先完整打包图路径，再用
+  原始 Chunk。实体搜索窗口独立于最终路径 K；显式“最终/经由”问题优先完整长链，仅由多个关系词
+  推断出的复合问题先为每个题面实体保留最短直接事实，再用剩余 K 补长链，避免单个稠密邻域或三跳
+  路径耗尽证据预算。
+  fact 只进入内部水合，不进入 Agent tool result；手动 Graph 先完整打包图路径，再用
   hybrid Evidence 回填余额。每个成功 Episode 的映射独立
   短事务提交；Episode UUID 由 build、Chunk 与 content hash 确定。失败 build 保留其 group 与映射，
   冻结输入未变化时显式 retry 复用同一 build 并只处理缺失 Chunk；输入变化或 force rebuild 才换代。
@@ -332,6 +335,9 @@ lifecycle；依赖或 Provider 身份错误时 fail closed。
 `semantic_intent=graph` 只保留为候选设计事实。Graph benefit 必须由 packed 层 source-backed 新关系补齐
 完整路径，四层 path recall、Auto 混淆矩阵、关系抽取和拒答指标分别报告。空观察模板不构成完成评测，
 运行依赖或 Provider 授权缺失时保持未验证。
+真实 LLM 评测固定使用 OpenCode Go 的 `mimo-v2.5`；Provider secret 只保存在本机私有 secret store，
+不进入 runtime manifest、checkpoint、locked manifest、日志或 Git。文本与多模态 embedding 模型仍按
+仓库环境约束固定，禁止静默替换 Provider 或模型。
 `tools/run_open_source_rag_v3.py` 复用生产 Agent 的一次 actual-auto 执行，同时观察 Simple chunk、真实
 Graph admission 和最终 outcome；Graph candidate 另以同一冻结 query/profile 采集四层 replay。runner
 从 Git canonical checkout 定位并只读加载已绑定且身份匹配的 owner-only `rag-eval`，因此 linked worktree
@@ -577,6 +583,10 @@ Episode 写入后、mapping 提交前，Graphiti runtime 在当前 build-scoped 
 AliasSurface 至少连接一个 canonical 节点；清理失败或 probe 不完整会保留 failed build 而不发布为 READY。
 失败持久码由 `preflight`、`episode_extraction` 或 `finalize` phase 加只基于异常类型链的短 fingerprint
 组成，因此可在没有旧日志时聚合故障位置，同时不保存异常消息、Provider payload、Chunk 正文或实体名称。
+OpenCode-compatible structured output 还可能返回完整 JSON Schema、字段级 schema fragment，或把合法
+字段与 `title/type/properties/description` 元数据混在同一对象。Graphiti adapter 在 optional typed
+attribute model 边界执行字段白名单和 Pydantic 验证，识别上述 schema echo 后有界重试，连续失败则
+fail closed，绝不把 schema 对象写成 FalkorDB property。
 
 ## 13. 可观测性、运行与测试
 

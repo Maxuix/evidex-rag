@@ -229,15 +229,18 @@ class ChatEvidenceRetriever:
                 diagnostic=error.diagnostic,
             ) from error
         evidence_ids = tuple(item.index_chunk_id for item in result.evidence)
+        new_evidence_ids = tuple(result.new_index_chunk_ids or ())
+        excluded_ids = set(excluded_index_chunk_ids)
         if (
             len(result.evidence) > 4
             or result.route_result_code == "admitted" and not result.evidence
             or any(
                 item.index_revision_id != context.index_revision_id
-                or item.index_chunk_id in excluded_index_chunk_ids
                 for item in result.evidence
             )
             or len(evidence_ids) != len(set(evidence_ids))
+            or any(item not in evidence_ids for item in new_evidence_ids)
+            or any(item in excluded_ids for item in new_evidence_ids)
         ):
             raise ChatPipelineExecutionError(
                 ErrorCode.CHAT_REVISION_MISMATCH,

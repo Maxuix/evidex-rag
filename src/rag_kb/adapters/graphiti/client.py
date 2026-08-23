@@ -16,12 +16,15 @@ from types import SimpleNamespace
 from typing import Any
 from uuid import uuid5
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 os.environ.setdefault("GRAPHITI_TELEMETRY_ENABLED", "false")
 
 _GRAPHITI: SimpleNamespace | None = None
-SCHEMA_ECHO_MAX_ATTEMPTS = 3
+# OpenCode Go / mimo-v2.5 has produced four consecutive schema-shaped
+# attribute payloads in a real v3 build. Keep the repair loop bounded while
+# allowing one more clean response before failing the entire episode closed.
+SCHEMA_ECHO_MAX_ATTEMPTS = 5
 
 from rag_kb.domain import (
     GraphChunkSource,
@@ -176,11 +179,63 @@ def required_model_field_names(response_model: Any) -> tuple[str, ...]:
     return tuple(names)
 
 
+def model_field_names(response_model: Any) -> tuple[str, ...]:
+    fields = getattr(response_model, "model_fields", None)
+    if not isinstance(fields, dict):
+        return ()
+    return tuple(str(name) for name in fields)
+
+
 def is_schema_echo_payload(result: Any, response_model: Any) -> bool:
     if response_model is None or not isinstance(result, dict):
         return False
+    fields = model_field_names(response_model)
+    # Attribute models intentionally use optional/defaulted fields, so checking
+    # only required keys misses the most common OpenAI-compatible fallback
+    # failure: the model returns model_json_schema() itself. Graphiti otherwise
+    # accepts these unknown schema keys because Pydantic ignores extras, then
+    # attempts to persist the nested ``properties`` map into FalkorDB.
+    looks_like_schema = (
+        result.get("type") == "object"
+        and isinstance(result.get("properties"), dict)
+        and any(
+            key in result
+            for key in ("title", "description", "required", "$defs", "additionalProperties")
+        )
+    )
+    if looks_like_schema and not any(field in result for field in fields):
+        return True
     required = required_model_field_names(response_model)
     return bool(required) and any(name not in result for name in required)
+
+
+def is_invalid_model_payload(
+    result: Any,
+    response_model: Any,
+    *,
+    strict_fields: bool = False,
+) -> bool:
+    if is_schema_echo_payload(result, response_model):
+        return True
+    validator = getattr(response_model, "model_validate", None)
+    if not callable(validator) or not isinstance(result, dict):
+        return False
+    if strict_fields:
+        allowed = set(model_field_names(response_model))
+        if any(str(key) not in allowed for key in result):
+            # Graphiti persists the raw attribute response after a capped merge.
+            # Pydantic's default extra="ignore" would otherwise let schema
+            # metadata such as type/title/properties leak into graph properties.
+            return True
+    try:
+        validator(result)
+    except ValidationError:
+        # OpenAI-compatible json_object fallbacks also return field-level schema
+        # fragments (for example {"short_names": {"items": ...}}). They are
+        # not recognizable as a complete JSON Schema document, but validating
+        # before Graphiti consumes the payload catches them at the retry boundary.
+        return True
+    return False
 
 
 def append_schema_echo_repair_note(messages: Any, response_model: Any) -> None:
@@ -190,7 +245,7 @@ def append_schema_echo_repair_note(messages: Any, response_model: Any) -> None:
     content = getattr(last, "content", None)
     if not isinstance(content, str):
         return
-    fields = required_model_field_names(response_model)
+    fields = required_model_field_names(response_model) or model_field_names(response_model)
     field_names = ", ".join(fields) if fields else "the required fields"
     last.content = (
         content
@@ -264,7 +319,11 @@ class SchemaEchoRepairingLLMClient:
                 if model_size is not None:
                     raw_kwargs["model_size"] = model_size
                 result = await raw(repaired, response_model, **raw_kwargs)
-            if is_schema_echo_payload(result, response_model):
+            if is_invalid_model_payload(
+                result,
+                response_model,
+                strict_fields=attribute_extraction,
+            ):
                 last_error = GraphitiSchemaEchoError(
                     "graphiti structured output missing required fields"
                 )
@@ -614,8 +673,9 @@ class GraphitiRuntime:
         query: GraphitiSearchQuery,
     ) -> tuple[_GraphitiEntityResult, ...]:
         modules = _graphiti_modules()
+        entity_limit = min(32, max(query.limit * 4, 16))
         config = modules.NODE_HYBRID_SEARCH_RRF.model_copy(
-            update={"limit": query.limit}
+            update={"limit": entity_limit}
         )
         result = await graphiti.search_(
             query.query,
@@ -629,7 +689,7 @@ class GraphitiRuntime:
                 name=str(node.name or ""),
                 rank=rank,
             )
-            for rank, node in enumerate(result.nodes[: query.limit], start=1)
+            for rank, node in enumerate(result.nodes[:entity_limit], start=1)
             if node.uuid is not None and str(node.name or "").strip()
         )
 
@@ -904,20 +964,11 @@ def _entry_endpoint(
 def _query_mentions_entity(normalized_query: str, normalized_name: str) -> bool:
     if len(normalized_name) < 2:
         return False
-    if normalized_name in normalized_query:
-        return True
-    # Corporate/legal suffixes are frequently omitted in questions. Match the
-    # longest available leading surface instead of a fixed short prefix: four
-    # Han characters or eight other alphanumerics are the minimum. This keeps
-    # the rule language-shape based and avoids a benchmark/legal-suffix list.
-    has_han = any(
-        "\u3400" <= character <= "\u9fff" for character in normalized_name
-    )
-    minimum = 4 if has_han else 8
-    return any(
-        normalized_name[:length] in normalized_query
-        for length in range(len(normalized_name) - 1, minimum - 1, -1)
-    )
+    # Legal/corporate suffix omission is handled explicitly by
+    # _entity_surface_variants. A generic leading-prefix match incorrectly
+    # grounds repositories such as scikit-learn/scikit-learn when the question
+    # names the project scikit-learn, duplicating seeds and path budgets.
+    return normalized_name in normalized_query
 
 
 def _outward_bridge_entity_ids(
@@ -1023,13 +1074,22 @@ def _rank_graphiti_paths(
     for edge in usable:
         for endpoint in edge.endpoint_uuids:
             adjacency.setdefault(endpoint, []).append(edge)
-    chain_query = any(
-        marker in query.casefold()
-        for marker in (
-            "最终", "通过", "经由", "间接", "依赖链", "关系链", "起源于",
-            "built on", "depends on", "through", "ultimately", "originated",
-        )
+    folded_query = query.casefold()
+    explicit_chain_markers = (
+        "最终", "通过", "经由", "间接", "依赖链", "关系链", "起源于",
+        "through", "ultimately", "originated",
     )
+    relation_markers = (
+        "托管", "支持", "负责", "依赖", "建立在", "采用", "许可证", "仓库",
+        "文档", "属于", "host", "support", "depend", "built on", "license",
+        "repository", "documentation", "belong",
+    )
+    explicit_chain_query = any(
+        marker in folded_query for marker in explicit_chain_markers
+    )
+    chain_query = explicit_chain_query or sum(
+        marker in folded_query for marker in relation_markers
+    ) >= 2
     candidates: list[
         tuple[tuple[int, int, int, int, int, str], str, tuple[GraphitiEdgeResult, ...], bool]
     ] = []
@@ -1071,8 +1131,12 @@ def _rank_graphiti_paths(
         hops: tuple[GraphitiEdgeResult, ...],
         visited_nodes: frozenset[str],
         reverse_count: int,
+        candidate_start: int,
     ) -> None:
-        if len(candidates) >= max(limit * 32, 128):
+        # A dense early seed must not consume the entire enumeration budget and
+        # suppress later query-grounded entities. Keep each seed independently
+        # bounded; the seed list itself is bounded below.
+        if len(candidates) - candidate_start >= max(limit * 16, 64):
             return
         if hops:
             add_path(
@@ -1096,6 +1160,7 @@ def _rank_graphiti_paths(
                 (*hops, edge),
                 visited_nodes | {next_uuid},
                 reverse_count + int(current_uuid != source_uuid),
+                candidate_start,
             )
 
     resolved_seed_uuids = seed_entity_uuids or tuple(
@@ -1107,8 +1172,16 @@ def _rank_graphiti_paths(
         )
     )
     if resolved_seed_uuids:
-        for entry_uuid in resolved_seed_uuids:
-            walk(entry_uuid, entry_uuid, (), frozenset({entry_uuid}), 0)
+        for entry_uuid in resolved_seed_uuids[:8]:
+            candidate_start = len(candidates)
+            walk(
+                entry_uuid,
+                entry_uuid,
+                (),
+                frozenset({entry_uuid}),
+                0,
+                candidate_start,
+            )
     else:
         usable_by_id = {edge.edge_uuid: edge for edge in usable}
         for ranked_edge in ranked_edges:
@@ -1119,20 +1192,56 @@ def _rank_graphiti_paths(
             add_path(entry_uuid, (edge,), seed_entry=grounded, reverse_count=0)
 
     candidates.sort(key=lambda item: item[0])
-    # Preserve alternative first-hop hypotheses before filling the remaining
-    # slots; this prevents one dense neighborhood from monopolizing the limit.
+    # Preserve query-grounded seed diversity first, then alternative first-hop
+    # hypotheses. This prevents one dense neighborhood from monopolizing K.
     selected = []
+    selected_ids: set[str] = set()
+    selected_entries: set[str] = set()
+    reservation_order = (
+        resolved_seed_uuids[:8]
+        if resolved_seed_uuids
+        else tuple(dict.fromkeys(candidate[1] for candidate in candidates))
+    )
+    for entry_uuid in reservation_order:
+        entry_candidates = tuple(
+            item for item in candidates if item[1] == entry_uuid
+        )
+        if explicit_chain_query:
+            candidate = entry_candidates[0] if entry_candidates else None
+        else:
+            # An inferred compound query can mention several independent
+            # relations. Reserve the cheapest direct fact for every grounded
+            # entity before spending the evidence budget on longer paths.
+            candidate = min(
+                entry_candidates,
+                key=lambda item: (
+                    len(item[2]),
+                    max(edge.rank for edge in item[2]),
+                    sum(edge.rank for edge in item[2]),
+                    item[0][-1],
+                ),
+                default=None,
+            )
+        if candidate is None:
+            continue
+        path_id = candidate[0][-1]
+        selected_entries.add(entry_uuid)
+        selected_ids.add(path_id)
+        selected.append(candidate)
+        if len(selected) == limit:
+            break
     first_edges: set[str] = set()
     for candidate in candidates:
+        path_id = candidate[0][-1]
         first_edge = candidate[2][0].edge_uuid
-        if first_edge in first_edges:
+        if path_id in selected_ids or first_edge in first_edges:
             continue
         first_edges.add(first_edge)
+        selected_ids.add(path_id)
         selected.append(candidate)
         if len(selected) == limit:
             break
     if len(selected) < limit:
-        selected_ids = {item[0][-1] for item in selected}
         selected.extend(
             item
             for item in candidates

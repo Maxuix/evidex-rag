@@ -12,12 +12,44 @@ from rag_kb.adapters.graphiti.client import (
     GRAPHITI_V3_EXTRACTION_INSTRUCTIONS,
     GraphitiRuntime,
     _GraphitiEntityResult,
+    _grounded_entity_ids,
     _rank_graphiti_paths,
 )
 from rag_kb.domain import GraphitiEdgeResult, GraphitiSearchQuery
 
 
 class GraphitiPathResolutionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_entity_grounding_window_is_wider_than_final_path_limit(self) -> None:
+        runtime = GraphitiRuntime.__new__(GraphitiRuntime)
+        driver = SimpleNamespace(clone=lambda **_kwargs: driver)
+        graphiti = SimpleNamespace(
+            search_=AsyncMock(return_value=SimpleNamespace(nodes=[]))
+        )
+        query = GraphitiSearchQuery(
+            workspace_id=uuid4(),
+            knowledge_base_id=uuid4(),
+            build_id=uuid4(),
+            group_id="graph-build",
+            query="PSF 托管的包索引中，scikit-learn 依赖什么？",
+            limit=8,
+        )
+        recipe = SimpleNamespace(
+            model_copy=lambda *, update: SimpleNamespace(**update)
+        )
+
+        with patch(
+            "rag_kb.adapters.graphiti.client._graphiti_modules",
+            return_value=SimpleNamespace(NODE_HYBRID_SEARCH_RRF=recipe),
+        ):
+            await runtime._search_entities(
+                graphiti,
+                driver,
+                SimpleNamespace(group_id="graph-build"),
+                query,
+            )
+
+        self.assertEqual(graphiti.search_.await_args.kwargs["config"].limit, 32)
+
     async def test_centered_search_uses_native_node_distance_and_three_hop_bfs(self) -> None:
         runtime = GraphitiRuntime.__new__(GraphitiRuntime)
         driver = SimpleNamespace(clone=lambda **_kwargs: driver)
@@ -259,6 +291,57 @@ class GraphitiPathResolutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(paths[0].hops, (first, second, third))
         self.assertTrue(paths[0].seed_entry)
 
+    def test_inferred_compound_query_reserves_direct_facts_per_seed(self) -> None:
+        hosts = _edge(11, "psf", "Python Software Foundation", "pypi", "PyPI")
+        lists = _edge(12, "pypi", "PyPI", "sklearn", "scikit-learn")
+        requires = _edge(2, "sklearn", "scikit-learn", "scipy", "SciPy")
+
+        paths = _rank_graphiti_paths(
+            "PSF 托管的 Python 包索引中，scikit-learn 依赖的科学计算库是什么？",
+            (requires, hosts, lists),
+            (requires, hosts, lists),
+            limit=8,
+            seed_entity_uuids=("psf", "sklearn"),
+        )
+
+        self.assertEqual(
+            tuple(hop.edge_uuid for hop in paths[0].hops),
+            (hosts.edge_uuid,),
+        )
+        self.assertEqual(
+            tuple(hop.edge_uuid for hop in paths[1].hops),
+            (requires.edge_uuid,),
+        )
+        self.assertTrue(
+            any(
+                {hop.edge_uuid for hop in path.hops}
+                == {hosts.edge_uuid, lists.edge_uuid, requires.edge_uuid}
+                for path in paths
+            )
+        )
+
+    def test_top_k_reserves_paths_for_distinct_grounded_seeds(self) -> None:
+        dense_first = _edge(1, "sklearn", "scikit-learn", "scipy", "SciPy")
+        dense_second = _edge(2, "scipy", "SciPy", "numpy", "NumPy")
+        psf_path = _edge(20, "psf", "PSF", "pypi", "PyPI")
+
+        paths = _rank_graphiti_paths(
+            "PSF 托管的包索引中，scikit-learn 依赖什么？",
+            (dense_first, dense_second, psf_path),
+            (dense_first, dense_second, psf_path),
+            limit=2,
+            seed_entity_uuids=("sklearn", "psf"),
+        )
+
+        self.assertEqual(
+            {path.entry_entity_uuid for path in paths},
+            {"sklearn", "psf"},
+        )
+        self.assertEqual(
+            tuple(path.entry_entity_uuid for path in paths),
+            ("sklearn", "psf"),
+        )
+
     def test_short_latin_prefix_does_not_ground_an_unrelated_entity(self) -> None:
         seed = _edge(
             1,
@@ -276,6 +359,17 @@ class GraphitiPathResolutionTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertFalse(paths[0].seed_entry)
+
+    def test_project_name_does_not_ground_repository_path_prefix(self) -> None:
+        grounded = _grounded_entity_ids(
+            "scikit-learn 依赖什么？",
+            (
+                _GraphitiEntityResult("repository", "scikit-learn/scikit-learn", 1),
+                _GraphitiEntityResult("project", "scikit-learn", 2),
+            ),
+        )
+
+        self.assertEqual(grounded, ("project",))
 
     def test_self_loop_is_never_returned_as_a_path(self) -> None:
         self_loop = _edge(1, "alias", "星澜工厂", "alias", "星澜工厂")

@@ -120,8 +120,8 @@ class ChatAgentTraceEvent:
                 or self.new_evidence_count is None
             ):
                 raise ValueError("Graphiti trace route fields are incomplete")
-            if self.route_result_code == "admitted" and self.new_evidence_count < 1:
-                raise ValueError("admitted Graphiti trace must add evidence")
+            if self.route_result_code == "admitted" and self.count < 1:
+                raise ValueError("admitted Graphiti trace must carry path evidence")
             if self.route_result_code != "admitted" and self.new_evidence_count != 0:
                 raise ValueError("non-admitted Graphiti trace cannot add evidence")
 

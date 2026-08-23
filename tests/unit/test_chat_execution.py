@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from rag_kb.domain import (
     ChatExecutionContext,
+    ChatAgentTraceEvent,
     ChatPipelineExecutionError,
     ChatRunLease,
     ErrorCode,
@@ -53,6 +54,35 @@ def _context() -> ChatExecutionContext:
 
 
 class ChatExecutionServiceTests(unittest.IsolatedAsyncioTestCase):
+    def test_admitted_graph_trace_can_reuse_all_simple_evidence(self) -> None:
+        event = ChatAgentTraceEvent(
+            tool="graphiti_supplement",
+            status="ok",
+            tool_call_id="graph-overlap",
+            refs=("ev_1",),
+            count=1,
+            retrieval_lane="graphiti_supplement",
+            route_reason_code="cross_document_relation_gap",
+            route_result_code="admitted",
+            new_evidence_count=0,
+        )
+
+        self.assertEqual(event.new_evidence_count, 0)
+
+    def test_admitted_graph_trace_still_requires_path_evidence(self) -> None:
+        with self.assertRaisesRegex(ValueError, "must carry path evidence"):
+            ChatAgentTraceEvent(
+                tool="graphiti_supplement",
+                status="ok",
+                tool_call_id="graph-empty",
+                refs=(),
+                count=0,
+                retrieval_lane="graphiti_supplement",
+                route_reason_code="cross_document_relation_gap",
+                route_result_code="admitted",
+                new_evidence_count=0,
+            )
+
     async def test_adaptive_snapshot_uses_exact_simple_and_supplement_method(self) -> None:
         context = _context()
         context = replace(
@@ -134,6 +164,52 @@ class ChatExecutionServiceTests(unittest.IsolatedAsyncioTestCase):
             await retriever.retrieve(context)
 
         self.assertEqual(raised.exception.code, ErrorCode.CHAT_REVISION_MISMATCH)
+
+    async def test_adaptive_supplement_accepts_complete_path_overlap(self) -> None:
+        context = replace(
+            _context(),
+            retrieval_strategy=adaptive_graphiti_profile(top_k=3).as_dict(),
+        )
+        chunk_id = uuid4()
+        evidence = Evidence(
+            rank=1,
+            index_chunk_id=chunk_id,
+            indexed_document_version_id=uuid4(),
+            document_id=uuid4(),
+            document_version_id=uuid4(),
+            index_revision_id=context.index_revision_id,
+            ordinal=0,
+            text="complete overlapping path",
+            source_location={},
+            hierarchy={},
+            source_metadata={},
+            score=1.0,
+            score_kind=EvidenceScoreKind.GRAPH_PATH,
+            graph_path_id="path",
+            graph_anchor_index_chunk_id=chunk_id,
+            graph_hop_count=1,
+            graph_path_rank=1,
+        )
+
+        class Retrieval:
+            async def retrieve_graphiti_supplement(self, auth, **kwargs):
+                del auth, kwargs
+                return GraphitiSupplementResult(
+                    "admitted",
+                    (evidence,),
+                    new_index_chunk_ids=(),
+                )
+
+        result = await ChatEvidenceRetriever(  # type: ignore[arg-type]
+            Retrieval()
+        ).retrieve_graphiti_supplement(
+            context,
+            "relation",
+            excluded_index_chunk_ids=(chunk_id,),
+        )
+
+        self.assertEqual(result.evidence, (evidence,))
+        self.assertEqual(result.new_evidence_count, 0)
 
     async def test_native_image_only_evidence_is_retained_for_visual_preparation(
         self,
