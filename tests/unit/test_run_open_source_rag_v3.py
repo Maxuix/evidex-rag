@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import AsyncMock, patch
 from uuid import UUID
 
 from tools import run_open_source_rag_v3 as runner
@@ -34,6 +35,20 @@ def _extraction() -> dict:
 
 
 class RunOpenSourceRagV3Tests(unittest.TestCase):
+    def test_preflight_does_not_require_external_provider_confirmation(self) -> None:
+        with (
+            patch("sys.argv", ["run_open_source_rag_v3.py", "--preflight-only"]),
+            patch.object(
+                runner,
+                "_run",
+                new=AsyncMock(return_value={"status": "preflight_ok"}),
+            ) as run,
+            patch("builtins.print"),
+        ):
+            self.assertEqual(runner.main(), 0)
+
+        run.assert_awaited_once()
+
     def test_relation_locator_maps_public_evidence_without_relation_id_leakage(self) -> None:
         manifest = {
             "documents": [

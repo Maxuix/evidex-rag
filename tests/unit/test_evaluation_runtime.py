@@ -90,6 +90,29 @@ class EvaluationRuntimeTests(unittest.TestCase):
         self.assertEqual(runtime.adaptive_graph.knowledge_base_id, UUID(_IDENTITY["knowledge_base_id"]))
         self.assertNotIn("secret", repr(runtime))
 
+    def test_read_only_loader_can_accept_git_canonical_checkout_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "primary" / ".runtime/evaluations/rag-eval"
+            root.parent.mkdir(parents=True)
+            manifest = self._runtime_files(root)
+            with (
+                patch.object(module, "DEFAULT_RUNTIME_ROOT", Path(directory) / "linked"),
+                patch.object(
+                    module,
+                    "canonical_evaluation_runtime_manifest",
+                    return_value=manifest,
+                ),
+            ):
+                with self.assertRaises(EvaluationRuntimeError):
+                    load_evaluation_runtime(manifest)
+                runtime = load_evaluation_runtime(
+                    manifest,
+                    require_adaptive_graph=True,
+                    allow_canonical_checkout=True,
+                )
+
+        self.assertEqual(runtime.owner, _OWNER)
+
     def test_rejects_personal_project_ports_api_and_open_permissions(self) -> None:
         changes = (
             {"compose_project": "rag"},

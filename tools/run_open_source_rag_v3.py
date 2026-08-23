@@ -51,8 +51,8 @@ from tools.evaluate_open_source_rag_v3 import (
     observation_template,
 )
 from tools.evaluation_runtime import (
-    DEFAULT_RUNTIME_MANIFEST,
     EvaluationRuntimeError,
+    canonical_evaluation_runtime_manifest,
     load_evaluation_runtime,
 )
 from tools.run_adaptive_graph_r4 import (
@@ -78,7 +78,9 @@ class V3RunnerError(RuntimeError):
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--evaluation-runtime", type=Path, default=DEFAULT_RUNTIME_MANIFEST
+        "--evaluation-runtime",
+        type=Path,
+        default=canonical_evaluation_runtime_manifest(),
     )
     parser.add_argument("--checkpoint-output", type=Path)
     parser.add_argument("--locked-output", type=Path)
@@ -355,7 +357,9 @@ def _load_checkpoint(path: Path, expected: Mapping[str, Any]) -> dict[str, Any]:
 
 async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
     runtime = load_evaluation_runtime(
-        arguments.evaluation_runtime, require_adaptive_graph=True
+        arguments.evaluation_runtime,
+        require_adaptive_graph=True,
+        allow_canonical_checkout=True,
     )
     identity = runtime.adaptive_graph
     if identity is None:
@@ -607,7 +611,10 @@ def main() -> int:
             )
         )
         return 0
-    if arguments.confirm != CONFIRM_EXTERNAL_CALLS:
+    # Preflight only inspects the already-isolated runtime and never executes a
+    # case or calls a Provider.  Keep the external-traffic confirmation scoped
+    # to the path that can actually generate that traffic.
+    if not arguments.preflight_only and arguments.confirm != CONFIRM_EXTERNAL_CALLS:
         parser.error(f"--confirm must equal {CONFIRM_EXTERNAL_CALLS}")
     if not arguments.preflight_only and (
         arguments.checkpoint_output is None or arguments.locked_output is None

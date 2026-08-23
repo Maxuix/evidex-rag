@@ -123,6 +123,15 @@ class EvaluationRuntimeError(ValueError):
     """The evaluator runtime cannot be proven isolated."""
 
 
+def canonical_evaluation_runtime_manifest() -> Path:
+    """Return the primary checkout's isolated evaluator manifest path."""
+    try:
+        checkout = discover_canonical_checkout(PROJECT_ROOT)
+    except (LocalRuntimeError, OSError, subprocess.SubprocessError):
+        return DEFAULT_RUNTIME_MANIFEST
+    return checkout / ".runtime/evaluations/rag-eval/runtime.json"
+
+
 @dataclass(frozen=True, slots=True)
 class AdaptiveGraphIdentity:
     workspace_id: UUID
@@ -159,9 +168,13 @@ def load_evaluation_runtime(
     path: Path = DEFAULT_RUNTIME_MANIFEST,
     *,
     require_adaptive_graph: bool = False,
+    allow_canonical_checkout: bool = False,
 ) -> EvaluationRuntime:
     runtime_directory = path.absolute().parent
-    if runtime_directory != DEFAULT_RUNTIME_ROOT.absolute():
+    allowed_directory = DEFAULT_RUNTIME_ROOT.absolute()
+    if allow_canonical_checkout:
+        allowed_directory = canonical_evaluation_runtime_manifest().absolute().parent
+    if runtime_directory != allowed_directory:
         raise EvaluationRuntimeError("evaluation runtime directory is not canonical")
     try:
         runtime_status = runtime_directory.lstat()

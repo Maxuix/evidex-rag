@@ -333,7 +333,10 @@ gold 对齐，只把聚合计数和 synthetic relation id 写入安全工件。R
 运行依赖或 Provider 授权缺失时保持未验证。
 `tools/run_open_source_rag_v3.py` 复用生产 Agent 的一次 actual-auto 执行，同时观察 Simple chunk、真实
 Graph admission 和最终 outcome；Graph candidate 另以同一冻结 query/profile 采集四层 replay。runner
-只接受已绑定且身份匹配的 owner-only `rag-eval`，逐 case 写 owner-only、content-safe checkpoint，不保存
+从 Git canonical checkout 定位并只读加载已绑定且身份匹配的 owner-only `rag-eval`，因此 linked worktree
+不复制 env/runtime 也能执行 host evaluator；这一 opt-in 不放宽 lifecycle 的 primary-checkout 限制。
+`--preflight-only` 只验证既有数据库/Graph 身份，不要求 Provider 流量确认；真实 case 执行仍需显式确认。
+runner 逐 case 写 owner-only、content-safe checkpoint，不保存
 问题、回答、正文、文件名或 Provider payload；它不 provision KB、不管理容器，真实执行仍需显式 Provider
 确认。中断恢复只跳过身份一致的完整 case，避免重复流量。
 `tools/provision_routing_rag_eval.py` 同时保留默认 v2 spec 和显式 v3 open-source spec；两者使用独立 KB
