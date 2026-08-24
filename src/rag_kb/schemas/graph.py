@@ -10,6 +10,13 @@ from pydantic import Field, model_validator
 from rag_kb.schemas.common import PublicSchema
 
 
+class GraphSchemaProfileResponse(PublicSchema):
+    key: str
+    display_name: str
+    description: str
+    is_default: bool
+
+
 class GraphConfigResponse(PublicSchema):
     knowledge_base_id: UUID
     enabled: bool
@@ -20,6 +27,11 @@ class GraphConfigResponse(PublicSchema):
     provider_name: str | None
     model: str | None
     extractor_version: str
+    schema_profile_key: str
+    schema_profile_name: str
+    schema_profile_digest: str
+    active_build_schema_profile_key: str | None
+    active_build_schema_profile_digest: str | None
     last_error_code: str | None
     eligible_chunk_count: Annotated[int, Field(ge=0)]
     processed_chunk_count: Annotated[int, Field(ge=0)]
@@ -34,6 +46,7 @@ class GraphConfigResponse(PublicSchema):
 class GraphConfigUpdate(PublicSchema):
     enabled: bool = True
     chat_profile_revision_id: UUID | None = None
+    schema_profile_key: str | None = None
     retry: bool = False
     force_rebuild: bool = False
 
@@ -45,4 +58,6 @@ class GraphConfigUpdate(PublicSchema):
             )
         if self.retry and self.chat_profile_revision_id is not None:
             raise ValueError("retry must not include a Chat Profile Revision")
+        if self.retry and self.schema_profile_key is not None:
+            raise ValueError("retry must not include a Graph Schema Profile")
         return self

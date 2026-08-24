@@ -17,6 +17,7 @@ import type {
   ChatSession,
   GraphConfig,
   GraphConfigUpdate,
+  GraphSchemaProfile,
   KnowledgeBase,
   ModelSettings,
   RerankMode,
@@ -169,6 +170,8 @@ function KnowledgeChat({
   const [graphConfig, setGraphConfig] = useState<GraphConfig | null>(null);
   const [graphConfigLoading, setGraphConfigLoading] = useState(false);
   const [graphConfigError, setGraphConfigError] = useState<string | null>(null);
+  const [graphSchemaProfiles, setGraphSchemaProfiles] = useState<GraphSchemaProfile[]>([]);
+  const [graphSchemaProfilesError, setGraphSchemaProfilesError] = useState<string | null>(null);
   const [modelSettings, setModelSettings] = useState<ModelSettings | null>(null);
   const [modelSettingsLoading, setModelSettingsLoading] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -381,6 +384,21 @@ function KnowledgeChat({
       setGraphConfigLoading(false);
     }
     return value;
+  }, [client]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void client.getGraphSchemaProfiles().then((profiles) => {
+      if (!cancelled) {
+        setGraphSchemaProfiles(profiles);
+        setGraphSchemaProfilesError(null);
+      }
+    }).catch((error) => {
+      if (!cancelled) setGraphSchemaProfilesError(errorMessage(error));
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [client]);
 
   useEffect(() => {
@@ -920,6 +938,8 @@ function KnowledgeChat({
           hybridEnabled={hybridEnabled}
           graphCapabilityEnabled={graphCapabilityEnabled}
           graphConfig={graphConfig}
+          graphSchemaProfiles={graphSchemaProfiles}
+          graphSchemaProfilesError={graphSchemaProfilesError}
           graphConfigLoading={graphConfigLoading}
           graphConfigError={graphConfigError}
           onRefreshGraphConfig={() => selectedKnowledgeBaseId

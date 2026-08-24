@@ -334,6 +334,11 @@ export interface GraphConfig {
   provider_name: string | null;
   model: string | null;
   extractor_version: string;
+  schema_profile_key: string;
+  schema_profile_name: string;
+  schema_profile_digest: string;
+  active_build_schema_profile_key: string | null;
+  active_build_schema_profile_digest: string | null;
   last_error_code: string | null;
   eligible_chunk_count: number;
   processed_chunk_count: number;
@@ -348,8 +353,16 @@ export interface GraphConfig {
 export interface GraphConfigUpdate {
   enabled: boolean;
   chat_profile_revision_id?: UUID | null;
+  schema_profile_key?: string | null;
   retry?: boolean;
   force_rebuild?: boolean;
+}
+
+export interface GraphSchemaProfile {
+  key: string;
+  display_name: string;
+  description: string;
+  is_default: boolean;
 }
 
 export interface ChatAgentTraceEvent {

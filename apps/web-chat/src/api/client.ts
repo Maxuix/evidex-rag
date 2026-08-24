@@ -14,6 +14,7 @@ import type {
   DocumentUpload,
   GraphConfig,
   GraphConfigUpdate,
+  GraphSchemaProfile,
   IndexingJob,
   KnowledgeBase,
   KnowledgeBaseEmbeddingSelection,
@@ -245,6 +246,10 @@ export class ApiClient {
 
   getGraphConfig(knowledgeBaseId: UUID): Promise<GraphConfig> {
     return this.request(`/knowledge-bases/${knowledgeBaseId}/graph-config`);
+  }
+
+  getGraphSchemaProfiles(): Promise<GraphSchemaProfile[]> {
+    return this.request("/graph-schema-profiles");
   }
 
   updateGraphConfig(

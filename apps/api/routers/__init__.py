@@ -7,6 +7,7 @@ from apps.api.routers.knowledge_bases import router as knowledge_bases_router
 from apps.api.routers.retrieval import router as retrieval_router
 from apps.api.routers.assets import router as assets_router
 from apps.api.routers.model_settings import router as model_settings_router
+from apps.api.routers.graph import profile_router as graph_profile_router
 from apps.api.routers.graph import router as graph_router
 
 
@@ -19,6 +20,7 @@ BUSINESS_ROUTERS = (
     chat_router,
     model_settings_router,
     graph_router,
+    graph_profile_router,
 )
 
 __all__ = ["BUSINESS_ROUTERS"]

@@ -900,6 +900,7 @@ class CommonContractTests(unittest.TestCase):
                 "/api/v1/knowledge-bases/{kb_id}",
                 "/api/v1/knowledge-bases/{kb_id}/documents",
                 "/api/v1/knowledge-bases/{kb_id}/graph-config",
+                "/api/v1/graph-schema-profiles",
                 "/api/v1/knowledge-bases/{kb_id}/indexing-jobs",
                 "/api/v1/indexing-jobs/{job_id}",
                 "/api/v1/indexing-jobs/{job_id}/retry",

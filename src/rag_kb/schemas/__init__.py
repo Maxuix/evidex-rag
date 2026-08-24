@@ -42,7 +42,11 @@ from rag_kb.schemas.documents import (
     DocumentUploadResponse,
     DocumentVersionResponse,
 )
-from rag_kb.schemas.graph import GraphConfigResponse, GraphConfigUpdate
+from rag_kb.schemas.graph import (
+    GraphConfigResponse,
+    GraphConfigUpdate,
+    GraphSchemaProfileResponse,
+)
 from rag_kb.schemas.indexing import (
     IndexingErrorResponse,
     IndexingJobPage,
@@ -126,6 +130,7 @@ __all__ = [
     "DocumentUploadResponse",
     "GraphConfigResponse",
     "GraphConfigUpdate",
+    "GraphSchemaProfileResponse",
     "DocumentVersionResponse",
     "IndexingErrorResponse",
     "IndexingJobPage",

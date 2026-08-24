@@ -20,6 +20,7 @@ from rag_kb.domain import (
 )
 from rag_kb.observability import get_logger, log_event, log_exception
 from rag_kb.ports.graphiti import GraphitiGraph
+from rag_kb.graph.schema_profiles import get_graph_schema_registry
 from rag_kb.uow import (
     UnitOfWork,
     UnitOfWorkFactory,
@@ -37,6 +38,7 @@ class GraphConfigView:
     profile_name: str | None = None
     provider_name: str | None = None
     model: str | None = None
+    schema_profile_name: str = "Generic open-domain knowledge"
 
 
 class GraphConfigurationService:
@@ -463,11 +465,17 @@ async def _profile_bundle(uow: UnitOfWork, snapshot: GraphConfigSnapshot):
 
 
 def _config_view(snapshot: GraphConfigSnapshot, bundle) -> GraphConfigView:
+    schema_profile = get_graph_schema_registry().resolve(
+        snapshot.schema_profile_key,
+        digest=snapshot.schema_profile_digest,
+        extractor_version=snapshot.extractor_version,
+    )
     if bundle is None:
-        return GraphConfigView(snapshot)
+        return GraphConfigView(snapshot, schema_profile_name=schema_profile.display_name)
     return GraphConfigView(
         snapshot=snapshot,
         profile_name=bundle.profile.name,
         provider_name=bundle.provider.name,
         model=bundle.current_revision.model,
+        schema_profile_name=schema_profile.display_name,
     )

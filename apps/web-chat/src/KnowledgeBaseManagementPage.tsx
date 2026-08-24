@@ -17,6 +17,7 @@ import type {
   DocumentRecord,
   GraphConfig,
   GraphConfigUpdate,
+  GraphSchemaProfile,
   IndexingJob,
   KnowledgeBase,
   KnowledgeBaseEmbeddingSelection,
@@ -69,6 +70,8 @@ export function KnowledgeBaseManagementPage({
   hybridEnabled,
   graphCapabilityEnabled,
   graphConfig,
+  graphSchemaProfiles,
+  graphSchemaProfilesError,
   graphConfigLoading,
   graphConfigError,
   onRefreshGraphConfig,
@@ -85,6 +88,8 @@ export function KnowledgeBaseManagementPage({
   hybridEnabled: boolean;
   graphCapabilityEnabled: boolean;
   graphConfig: GraphConfig | null;
+  graphSchemaProfiles: GraphSchemaProfile[];
+  graphSchemaProfilesError: string | null;
   graphConfigLoading: boolean;
   graphConfigError: string | null;
   onRefreshGraphConfig: () => Promise<GraphConfig | null>;
@@ -394,6 +399,8 @@ export function KnowledgeBaseManagementPage({
                 modelSettings={modelSettings}
                 capabilityEnabled={graphCapabilityEnabled}
                 config={graphConfig}
+                schemaProfiles={graphSchemaProfiles}
+                schemaProfilesError={graphSchemaProfilesError}
                 loading={graphConfigLoading}
                 error={graphConfigError}
                 onRefresh={onRefreshGraphConfig}
@@ -558,6 +565,8 @@ function GraphSettingsPanel({
   modelSettings,
   capabilityEnabled,
   config,
+  schemaProfiles,
+  schemaProfilesError,
   loading,
   error,
   onRefresh,
@@ -568,6 +577,8 @@ function GraphSettingsPanel({
   modelSettings: ModelSettings | null;
   capabilityEnabled: boolean;
   config: GraphConfig | null;
+  schemaProfiles: GraphSchemaProfile[];
+  schemaProfilesError: string | null;
   loading: boolean;
   error: string | null;
   onRefresh: () => Promise<GraphConfig | null>;
@@ -580,6 +591,7 @@ function GraphSettingsPanel({
     [modelSettings],
   );
   const [profileRevisionId, setProfileRevisionId] = useState("");
+  const [schemaProfileKey, setSchemaProfileKey] = useState("");
   const [busyAction, setBusyAction] = useState<GraphAction | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -601,6 +613,17 @@ function GraphSettingsPanel({
     modelSettings?.selection.chat_profile_revision_id,
   ]);
 
+  useEffect(() => {
+    const configured = currentConfig?.schema_profile_key;
+    const preferred = schemaProfiles.find((profile) => profile.is_default)?.key
+      ?? "generic_open_domain_v1";
+    setSchemaProfileKey(
+      schemaProfiles.some((profile) => profile.key === configured)
+        ? configured!
+        : preferred,
+    );
+  }, [currentConfig?.schema_profile_key, knowledgeBase.id, schemaProfiles]);
+
   const runAction = async (action: GraphAction) => {
     if (busyAction) return;
     if (action === "configure" && !profileRevisionId) return;
@@ -613,6 +636,7 @@ function GraphSettingsPanel({
         await onUpdate({
           enabled: true,
           chat_profile_revision_id: profileRevisionId,
+          schema_profile_key: schemaProfileKey,
         });
       } else if (action === "retry") {
         await onUpdate({ enabled: true, retry: true });
@@ -634,6 +658,14 @@ function GraphSettingsPanel({
     currentConfig?.enabled
     && profileRevisionId
     && profileRevisionId !== currentConfig.chat_profile_revision_id,
+  );
+  const schemaProfileChanged = Boolean(
+    currentConfig?.enabled
+    && schemaProfileKey
+    && schemaProfileKey !== currentConfig.schema_profile_key,
+  );
+  const selectedSchemaProfile = schemaProfiles.find(
+    (profile) => profile.key === schemaProfileKey,
   );
   const progress = currentConfig
     ? currentConfig.eligible_chunk_count > 0
@@ -679,6 +711,7 @@ function GraphSettingsPanel({
       ) : null}
 
       {error ? <InlineError message={`Graph 配置读取失败：${error}`} /> : null}
+      {schemaProfilesError ? <InlineError message={`Graph 类型读取失败：${schemaProfilesError}`} /> : null}
       {actionError ? <InlineError message={`Graph 操作失败：${actionError}`} /> : null}
 
       {currentConfig ? (
@@ -710,6 +743,37 @@ function GraphSettingsPanel({
             )}
           </div>
 
+          <div className="graph-model-row graph-schema-row">
+            <label className="management-field">
+              知识图谱类型
+              <select
+                value={schemaProfileKey}
+                disabled={!capabilityEnabled || controlsBusy || !schemaProfiles.length}
+                onChange={(event) => setSchemaProfileKey(event.target.value)}
+                aria-describedby="graph-schema-profile-help"
+              >
+                {schemaProfiles.map((profile) => (
+                  <option key={profile.key} value={profile.key}>
+                    {profile.display_name}{profile.is_default ? "（默认）" : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="graph-current-model">
+              <span>当前选择</span>
+              <strong>{selectedSchemaProfile?.display_name ?? currentConfig.schema_profile_name}</strong>
+              <small id="graph-schema-profile-help">
+                {selectedSchemaProfile?.description ?? "Profile 信息不可用"}
+              </small>
+            </div>
+          </div>
+
+          {schemaProfileChanged ? (
+            <div className="graph-runtime-note">
+              更换知识图谱类型会创建新的 Graph 构建；旧的 READY 构建会继续服务，普通向量/关键词索引不受影响。
+            </div>
+          ) : null}
+
           {!chatProfiles.length ? (
             <div className="model-required-note graph-model-required">
               Graph 需要一个已启用且验证通过的 Chat 模型。
@@ -728,6 +792,12 @@ function GraphSettingsPanel({
                 {currentConfig.last_error_code ? (
                   <small>错误码：{currentConfig.last_error_code}</small>
                 ) : null}
+                <small>
+                  目标类型：{currentConfig.schema_profile_name}
+                  {currentConfig.active_build_schema_profile_key
+                    ? ` · 当前服务：${currentConfig.active_build_schema_profile_key}`
+                    : " · 尚无 READY 构建"}
+                </small>
               </div>
               <dl className="graph-stat-grid">
                 <div>
@@ -766,14 +836,14 @@ function GraphSettingsPanel({
               </button>
             ) : (
               <>
-                {profileChanged ? (
+                {profileChanged || schemaProfileChanged ? (
                   <button
                     className="primary-button"
                     type="button"
                     disabled={!capabilityEnabled || controlsBusy}
                     onClick={() => void runAction("configure")}
                   >
-                    {busyAction === "configure" ? "正在应用…" : "应用模型并重新构建"}
+                    {busyAction === "configure" ? "正在应用…" : "应用配置并重新构建"}
                   </button>
                 ) : null}
                 {currentConfig.requires_rebuild ? (

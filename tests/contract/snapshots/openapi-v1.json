@@ -2929,6 +2929,28 @@
       "GraphConfigResponse": {
         "additionalProperties": false,
         "properties": {
+          "active_build_schema_profile_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active Build Schema Profile Digest"
+          },
+          "active_build_schema_profile_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active Build Schema Profile Key"
+          },
           "allowed_skipped_count": {
             "minimum": 0.0,
             "title": "Allowed Skipped Count",
@@ -3042,6 +3064,18 @@
             "title": "Resource Skipped Count",
             "type": "integer"
           },
+          "schema_profile_digest": {
+            "title": "Schema Profile Digest",
+            "type": "string"
+          },
+          "schema_profile_key": {
+            "title": "Schema Profile Key",
+            "type": "string"
+          },
+          "schema_profile_name": {
+            "title": "Schema Profile Name",
+            "type": "string"
+          },
           "status": {
             "enum": [
               "disabled",
@@ -3063,6 +3097,11 @@
           "provider_name",
           "model",
           "extractor_version",
+          "schema_profile_key",
+          "schema_profile_name",
+          "schema_profile_digest",
+          "active_build_schema_profile_key",
+          "active_build_schema_profile_digest",
           "last_error_code",
           "eligible_chunk_count",
           "processed_chunk_count",
@@ -3105,6 +3144,17 @@
             "default": false,
             "title": "Retry",
             "type": "boolean"
+          },
+          "schema_profile_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Schema Profile Key"
           }
         },
         "title": "GraphConfigUpdate",
@@ -3250,6 +3300,35 @@
           "source_chunk_ids"
         ],
         "title": "GraphPathDebugResponse",
+        "type": "object"
+      },
+      "GraphSchemaProfileResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "is_default": {
+            "title": "Is Default",
+            "type": "boolean"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "display_name",
+          "description",
+          "is_default"
+        ],
+        "title": "GraphSchemaProfileResponse",
         "type": "object"
       },
       "HTTPValidationError": {
@@ -6227,6 +6306,41 @@
         "summary": "Upload Document Version",
         "tags": [
           "documents"
+        ]
+      }
+    },
+    "/api/v1/graph-schema-profiles": {
+      "get": {
+        "operationId": "list_graph_schema_profiles_api_v1_graph_schema_profiles_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/GraphSchemaProfileResponse"
+                  },
+                  "title": "Response List Graph Schema Profiles Api V1 Graph Schema Profiles Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "description": "Access denied"
+          }
+        },
+        "summary": "List Graph Schema Profiles",
+        "tags": [
+          "graph"
         ]
       }
     },
