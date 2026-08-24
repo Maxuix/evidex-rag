@@ -38,6 +38,7 @@ from rag_kb.scheduling.worker import consume_lane
 from rag_kb.services.content import CREATE_DOCUMENT_ENDPOINT
 from tools.evaluation_runtime import (
     AdaptiveGraphIdentity,
+    EVALUATION_PROJECT,
     EvaluationRuntime,
     EvaluationRuntimeError,
     _runtime_value,
@@ -372,7 +373,7 @@ def _ensure_documents(
     kb_id: str,
     paths: tuple[Path, ...],
     spec: ProvisioningSpec = V2_SPEC,
-) -> None:
+) -> frozenset[str]:
     resource = f"knowledge-bases/{kb_id}/documents"
     existing = _paged_items(runtime.api_base_url, resource)
     filenames = {
@@ -386,6 +387,22 @@ def _ensure_documents(
     for path in paths:
         if path.name not in filenames:
             _upload(runtime, kb_id, path, spec)
+    current = _paged_items(runtime.api_base_url, resource)
+    current_filenames = {
+        str(row.get("current_version", {}).get("original_filename", ""))
+        for row in current
+        if row.get("deleted_at") is None
+    }
+    if current_filenames != expected:
+        raise ProvisioningError("evaluation knowledge base document set is incomplete")
+    version_ids = frozenset(
+        str(row.get("current_version", {}).get("id", ""))
+        for row in current
+        if row.get("deleted_at") is None
+    )
+    if len(version_ids) != len(expected) or "" in version_ids:
+        raise ProvisioningError("evaluation current document versions are invalid")
+    return version_ids
 
 
 def _host_source_identity(
@@ -468,6 +485,7 @@ def _wait_for_indexing(
     timeout_seconds: float,
     expected_document_count: int = EXPECTED_DOCUMENT_COUNT,
     host_retry_spec: ProvisioningSpec | None = None,
+    expected_document_version_ids: frozenset[str] | None = None,
 ) -> str:
     started = time.monotonic()
     retry_rounds: dict[str, int] = {}
@@ -476,7 +494,13 @@ def _wait_for_indexing(
             runtime.api_base_url,
             f"knowledge-bases/{kb_id}/indexing-jobs",
         )
-        failed = tuple(job for job in jobs if job.get("status") == "failed")
+        scoped_jobs = tuple(
+            job
+            for job in jobs
+            if expected_document_version_ids is None
+            or str(job.get("document_version_id", "")) in expected_document_version_ids
+        )
+        failed = tuple(job for job in scoped_jobs if job.get("status") == "failed")
         if failed and host_retry_spec is not None:
             for job in failed:
                 job_id = str(UUID(str(job.get("job_id"))))
@@ -505,15 +529,15 @@ def _wait_for_indexing(
                 retry_rounds[job_id] = rounds + 1
             time.sleep(0.1)
             continue
-        if failed or any(job.get("status") == "cancelled" for job in jobs):
+        if failed or any(job.get("status") == "cancelled" for job in scoped_jobs):
             raise ProvisioningError("evaluation indexing failed")
-        completed = tuple(job for job in jobs if job.get("status") == "completed")
+        completed = tuple(job for job in scoped_jobs if job.get("status") == "completed")
         revision_ids = {
             str(job.get("index_revision_id", "")) for job in completed
         }
         if len(completed) == expected_document_count and len(revision_ids) == 1:
             return revision_ids.pop()
-        if len(jobs) > expected_document_count:
+        if len(scoped_jobs) > expected_document_count:
             raise ProvisioningError("evaluation indexing job set is ambiguous")
         if time.monotonic() - started >= timeout_seconds:
             raise ProvisioningError("evaluation indexing timed out")
@@ -736,12 +760,25 @@ def _bind_runtime(
         schema_profile_digest=schema_profile_digest,
         extractor_version=extractor_version,
     )
+    runtime_project = EVALUATION_PROJECT
+    try:
+        runtime_project = json.loads(
+            runtime.manifest.read_text(encoding="utf-8")
+        )["compose_project"]
+    except FileNotFoundError:
+        # Keep the small legacy unit fixture (which only supplies the
+        # canonical manifest path) compatible.  A loaded runtime always has
+        # the manifest, so the real host binding still preserves its project.
+        pass
+    except (OSError, KeyError, TypeError, json.JSONDecodeError) as error:
+        raise EvaluationRuntimeError("evaluation runtime project is unavailable") from error
     payload = (
         json.dumps(
             _runtime_value(
                 owner=runtime.owner,
                 build_revision=runtime.build_revision,
                 adaptive_graph=identity,
+                compose_project=runtime_project,
             ),
             sort_keys=True,
         )
@@ -782,7 +819,7 @@ def provision(
         corpus_digest = _corpus_digest(paths)
         knowledge_base = _knowledge_base(runtime, spec)
         kb_id = str(UUID(str(knowledge_base["id"])))
-        _ensure_documents(runtime, kb_id, paths, spec)
+        current_document_version_ids = _ensure_documents(runtime, kb_id, paths, spec)
         if driver is not None:
             _mirror_host_sources(runtime, kb_id, paths, spec)
             driver.start()
@@ -793,6 +830,7 @@ def provision(
                 timeout_seconds=timeout_seconds,
                 expected_document_count=spec.expected_document_count,
                 host_retry_spec=spec if host_worker else None,
+                expected_document_version_ids=current_document_version_ids,
             )
         )
         config = _wait_for_graph(

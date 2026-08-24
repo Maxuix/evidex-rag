@@ -245,6 +245,38 @@ class RoutingRagProvisioningTests(unittest.TestCase):
         self.assertEqual(result, revision_id)
         self.assertIn(f"/indexing-jobs/{job_id}/retry", request.call_args.args[0])
 
+    def test_indexing_ignores_historical_jobs_outside_current_versions(self) -> None:
+        revision_id = "01900000-0000-7000-8000-000000000012"
+        jobs = (
+            {
+                "document_version_id": "01900000-0000-7000-8000-000000000099",
+                "status": "completed",
+                "index_revision_id": revision_id,
+            },
+            {
+                "document_version_id": "01900000-0000-7000-8000-000000000013",
+                "status": "completed",
+                "index_revision_id": revision_id,
+            },
+        )
+        runtime = SimpleNamespace(api_base_url="http://127.0.0.1:28000/api/v1")
+
+        with patch(
+            "tools.provision_routing_rag_eval._paged_items",
+            return_value=jobs,
+        ):
+            result = _wait_for_indexing(
+                runtime,  # type: ignore[arg-type]
+                "01900000-0000-7000-8000-000000000014",
+                timeout_seconds=60.0,
+                expected_document_count=1,
+                expected_document_version_ids=frozenset(
+                    {"01900000-0000-7000-8000-000000000013"}
+                ),
+            )
+
+        self.assertEqual(result, revision_id)
+
     def test_host_retry_accepts_only_a_proven_concurrent_state_change(self) -> None:
         job_id = "01900000-0000-7000-8000-000000000011"
         revision_id = "01900000-0000-7000-8000-000000000012"

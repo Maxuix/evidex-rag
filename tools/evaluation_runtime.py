@@ -32,10 +32,15 @@ from rag_kb.graph.schema_profiles import get_graph_schema_registry
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+# `rag-eval` is retained below only for legacy lifecycle compatibility.  The
+# current evaluator identity is a host-Python runtime and must never create a
+# second Compose project.
 EVALUATION_PROJECT = "rag-eval"
+HOST_TEST_PROJECT = "python-host-test"
+ACCEPTED_RUNTIME_PROJECTS = frozenset({EVALUATION_PROJECT, HOST_TEST_PROJECT})
 EVALUATION_OWNER_LABEL = "rag-kb.evaluation-owner"
 RUNTIME_SCHEMA_VERSION = 1
-DEFAULT_RUNTIME_ROOT = PROJECT_ROOT / ".runtime/evaluations/rag-eval"
+DEFAULT_RUNTIME_ROOT = PROJECT_ROOT / ".runtime/evaluations/graph-schema-profiles-host"
 DEFAULT_RUNTIME_MANIFEST = DEFAULT_RUNTIME_ROOT / "runtime.json"
 DEFAULT_RUNTIME_ENV = DEFAULT_RUNTIME_ROOT / "runtime.env"
 DEFAULT_COMPOSE_ENV = DEFAULT_RUNTIME_ROOT / "compose.env"
@@ -130,12 +135,12 @@ class EvaluationRuntimeError(ValueError):
 
 
 def canonical_evaluation_runtime_manifest() -> Path:
-    """Return the primary checkout's isolated evaluator manifest path."""
+    """Return the primary checkout's host-Python evaluator manifest path."""
     try:
         checkout = discover_canonical_checkout(PROJECT_ROOT)
     except (LocalRuntimeError, OSError, subprocess.SubprocessError):
         return DEFAULT_RUNTIME_MANIFEST
-    return checkout / ".runtime/evaluations/rag-eval/runtime.json"
+    return checkout / ".runtime/evaluations/graph-schema-profiles-host/runtime.json"
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,8 +218,8 @@ def load_evaluation_runtime(
         raise EvaluationRuntimeError("evaluation runtime schema is invalid")
     if value["schema_version"] != RUNTIME_SCHEMA_VERSION:
         raise EvaluationRuntimeError("evaluation runtime schema version is unsupported")
-    if value["compose_project"] != EVALUATION_PROJECT:
-        raise EvaluationRuntimeError("evaluation Compose project is invalid")
+    if value["compose_project"] not in ACCEPTED_RUNTIME_PROJECTS:
+        raise EvaluationRuntimeError("evaluation runtime project is invalid")
     owner = value["owner"]
     if not isinstance(owner, str) or _OWNER_PATTERN.fullmatch(owner) is None:
         raise EvaluationRuntimeError("evaluation owner is invalid")
@@ -369,10 +374,11 @@ def _runtime_value(
     owner: str,
     build_revision: str,
     adaptive_graph: AdaptiveGraphIdentity | None,
+    compose_project: str = EVALUATION_PROJECT,
 ) -> dict[str, object]:
     return {
         "schema_version": RUNTIME_SCHEMA_VERSION,
-        "compose_project": EVALUATION_PROJECT,
+        "compose_project": compose_project,
         "owner": owner,
         "build_revision": build_revision,
         "env_file": DEFAULT_RUNTIME_ENV.name,

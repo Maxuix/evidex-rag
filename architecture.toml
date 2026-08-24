@@ -20,6 +20,7 @@ scan_roots = ["src", "apps"]
   "rag_kb.domain",
   "rag_kb.db",
   "rag_kb.document_processing",
+  "rag_kb.graph",
   "rag_kb.memory",
 ]
 "rag_kb.uow" = ["rag_kb.repositories"]
@@ -29,6 +30,7 @@ scan_roots = ["src", "apps"]
   "rag_kb.db",
   "rag_kb.document_processing",
   "rag_kb.domain",
+  "rag_kb.graph",
   "rag_kb.observability",
   "rag_kb.ports",
 ]
@@ -49,6 +51,7 @@ scan_roots = ["src", "apps"]
   "rag_kb.auth",
   "rag_kb.document_processing",
   "rag_kb.domain",
+  "rag_kb.graph",
   "rag_kb.observability",
   "rag_kb.ports",
 ]

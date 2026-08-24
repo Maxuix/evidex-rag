@@ -200,6 +200,10 @@ import edge。`answering` 只依赖 context loader、retriever、visual preparer
 progress reporter 的窄 Protocol，具体 `services` 实现由 Worker composition root 注入，因此
 `answering` 与 `services` 不形成 runtime import 环。
 
+Graph schema profiles 是 `graph/` 下的代码所有、不可变 registry；adapter、repository 和
+retrieval 只读取 registry 以解析冻结的 Profile identity 或编译后的 Graphiti 类型，具体依赖边
+由根目录 `architecture.toml` 明确登记。
+
 ### 5.1 保留的基础边界
 
 - `domain` 不依赖 FastAPI、SQLAlchemy、LangChain、Agent/graph framework 或具体 adapter。
