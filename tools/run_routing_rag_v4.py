@@ -29,7 +29,12 @@ from uuid import UUID, uuid4
 
 from apps.worker.dependencies import build_worker_dependencies
 from rag_kb.answering.agent import AGENT_TRACE_ARTIFACT, NativeToolCallingAgent
-from rag_kb.domain import RerankMode
+from rag_kb.domain import (
+    GRAPH_EXTRACTOR_VERSION,
+    RerankMode,
+    SOFTWARE_GRAPH_SCHEMA_PROFILE_DIGEST,
+    SOFTWARE_GRAPH_SCHEMA_PROFILE_KEY,
+)
 from rag_kb.retrieval.profile import adaptive_graphiti_profile, exact_profile
 from rag_kb.retrieval.service import _pack_graph_search_evidence  # noqa: SLF001
 from rag_kb.services.chat_execution import ChatEvidenceRetriever
@@ -305,6 +310,12 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
             build is None
             or build.build_id != identity.graph_build_id
             or build.index_revision_id != identity.index_revision_id
+            or build.extractor_version != GRAPH_EXTRACTOR_VERSION
+            or build.schema_profile_key != SOFTWARE_GRAPH_SCHEMA_PROFILE_KEY
+            or build.schema_profile_digest != SOFTWARE_GRAPH_SCHEMA_PROFILE_DIGEST
+            or identity.schema_profile_key != SOFTWARE_GRAPH_SCHEMA_PROFILE_KEY
+            or identity.schema_profile_digest != SOFTWARE_GRAPH_SCHEMA_PROFILE_DIGEST
+            or identity.extractor_version != GRAPH_EXTRACTOR_VERSION
         ):
             raise V4RunnerError("v4_graph_build_identity_changed")
         episode_uuid = await graph_store.first_graphiti_episode_uuid(

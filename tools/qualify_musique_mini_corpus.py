@@ -15,7 +15,14 @@ from uuid import UUID
 from apps.worker.dependencies import build_worker_dependencies
 from rag_kb.adapters.graph_store.postgres import PgGraphStore
 from rag_kb.auth import AuthContext
-from rag_kb.domain import RerankMode, RetrievalRequest, RetrievalStrategy
+from rag_kb.domain import (
+    GENERIC_GRAPH_SCHEMA_PROFILE_DIGEST,
+    GENERIC_GRAPH_SCHEMA_PROFILE_KEY,
+    GRAPH_EXTRACTOR_VERSION,
+    RerankMode,
+    RetrievalRequest,
+    RetrievalStrategy,
+)
 from rag_kb.retrieval.service import _pack_graph_search_evidence  # noqa: SLF001
 from rag_kb.uow import UnitOfWorkPurpose, execute_in_transaction
 from tools.evaluation_runtime import DEFAULT_RUNTIME_MANIFEST, load_evaluation_runtime
@@ -30,6 +37,9 @@ DOCUMENTS_PATH = CORPUS_ROOT / "documents.jsonl"
 DEFAULT_OUTPUT = CORPUS_ROOT / "qualification.json"
 EXPECTED_DATASET_ID = "routing-rag-musique-full-mini-v1"
 EXPECTED_KB_NAME = "routing-rag-musique-full-mini-semantic-v4-graphiti-v3"
+EXPECTED_SCHEMA_PROFILE_KEY = GENERIC_GRAPH_SCHEMA_PROFILE_KEY
+EXPECTED_SCHEMA_PROFILE_DIGEST = GENERIC_GRAPH_SCHEMA_PROFILE_DIGEST
+EXPECTED_EXTRACTOR_VERSION = GRAPH_EXTRACTOR_VERSION
 CONFIRM = "QUALIFY_ROUTING_RAG_MUSIQUE_MINI"
 SIMPLE_TOP_K = 10
 GRAPH_EDGE_LIMIT = 16
@@ -105,6 +115,12 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
     identity = runtime.adaptive_graph
     if identity is None:
         raise QualificationError("musique_runtime_identity_missing")
+    if (
+        identity.schema_profile_key != EXPECTED_SCHEMA_PROFILE_KEY
+        or identity.schema_profile_digest != EXPECTED_SCHEMA_PROFILE_DIGEST
+        or identity.extractor_version != EXPECTED_EXTRACTOR_VERSION
+    ):
+        raise QualificationError("musique_runtime_profile_identity_changed")
     dependencies = build_worker_dependencies(env_file=runtime.env_file)
     try:
         await dependencies.check_readiness()
@@ -133,6 +149,9 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
             build is None
             or build.build_id != identity.graph_build_id
             or build.index_revision_id != identity.index_revision_id
+            or build.schema_profile_key != EXPECTED_SCHEMA_PROFILE_KEY
+            or build.schema_profile_digest != EXPECTED_SCHEMA_PROFILE_DIGEST
+            or build.extractor_version != EXPECTED_EXTRACTOR_VERSION
         ):
             raise QualificationError("musique_graph_build_identity_changed")
         episode_uuid = await graph_store.first_graphiti_episode_uuid(
@@ -239,7 +258,9 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
                 "knowledge_base_id": str(identity.knowledge_base_id),
                 "index_revision_id": str(identity.index_revision_id),
                 "graph_build_id": str(identity.graph_build_id),
-                "graph_extractor_version": build.extractor_version,
+                "schema_profile_key": build.schema_profile_key,
+                "schema_profile_digest": build.schema_profile_digest,
+                "extractor_version": build.extractor_version,
             },
             "budgets": {
                 "simple_top_k": SIMPLE_TOP_K,

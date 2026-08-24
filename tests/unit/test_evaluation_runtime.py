@@ -35,6 +35,11 @@ _IDENTITY = {
     "answer_profile_revision_id": "01900000-0000-7000-8000-000000000005",
     "judge_profile_revision_id": "01900000-0000-7000-8000-000000000006",
 }
+_PROFILE_IDENTITY = {
+    "schema_profile_key": "software_knowledge_v1",
+    "schema_profile_digest": "6cae93809f060d21f0c85ba04cde955abdc5259fd93e1b1757fb7445d51eaf38",
+    "extractor_version": "graphiti_v4",
+}
 
 
 class EvaluationRuntimeTests(unittest.TestCase):
@@ -67,7 +72,7 @@ class EvaluationRuntimeTests(unittest.TestCase):
                 "postgres": 25432,
                 "falkordb": 26379,
             },
-            "adaptive_graph": dict(_IDENTITY),
+            "adaptive_graph": {**_IDENTITY, **_PROFILE_IDENTITY},
         }
         value.update(changes or {})
         manifest = root / "runtime.json"
@@ -164,6 +169,23 @@ class EvaluationRuntimeTests(unittest.TestCase):
                 target.chmod(0o600)
                 with self.assertRaises(EvaluationRuntimeError):
                     load_evaluation_runtime(target, require_adaptive_graph=True)
+
+    def test_rejects_unknown_graph_schema_profile_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "rag-eval"
+            manifest = self._runtime_files(
+                root,
+                changes={
+                    "adaptive_graph": {
+                        **_IDENTITY,
+                        **_PROFILE_IDENTITY,
+                        "schema_profile_key": "unknown_profile",
+                    }
+                },
+            )
+            with patch.object(module, "DEFAULT_RUNTIME_ROOT", root):
+                with self.assertRaises(EvaluationRuntimeError):
+                    load_evaluation_runtime(manifest, require_adaptive_graph=True)
 
     def test_compose_command_fixes_project_and_both_files(self) -> None:
         runtime = EvaluationRuntime(
@@ -343,6 +365,13 @@ class EvaluationRuntimeTests(unittest.TestCase):
                 "graph_build_id",
                 "answer_profile_revision_id",
                 "judge_profile_revision_id",
+            )
+        ) + "\t" + "\t".join(
+            _PROFILE_IDENTITY[name]
+            for name in (
+                "schema_profile_key",
+                "schema_profile_digest",
+                "extractor_version",
             )
         )
         with (

@@ -25,6 +25,10 @@ from rag_kb.config import load_settings
 from rag_kb.domain import (
     GRAPH_EXTRACTOR_VERSION,
     GRAPH_RETRIEVAL_PROFILE_VERSION,
+    GENERIC_GRAPH_SCHEMA_PROFILE_DIGEST,
+    GENERIC_GRAPH_SCHEMA_PROFILE_KEY,
+    SOFTWARE_GRAPH_SCHEMA_PROFILE_DIGEST,
+    SOFTWARE_GRAPH_SCHEMA_PROFILE_KEY,
     SourceFileDigest,
     SourceFileIdentity,
 )
@@ -54,6 +58,9 @@ class ProvisioningSpec:
     knowledge_base_name: str
     confirmation: str
     media_types: Mapping[str, str]
+    schema_profile_key: str
+    schema_profile_digest: str
+    extractor_version: str
 
 
 V2_SPEC = ProvisioningSpec(
@@ -63,6 +70,9 @@ V2_SPEC = ProvisioningSpec(
     knowledge_base_name="routing-rag-v2-semantic-v4-graphiti-v2",
     confirmation="PROVISION_ROUTING_RAG_V2_POST_FIX",
     media_types={".md": "text/markdown", ".txt": "text/plain"},
+    schema_profile_key=SOFTWARE_GRAPH_SCHEMA_PROFILE_KEY,
+    schema_profile_digest=SOFTWARE_GRAPH_SCHEMA_PROFILE_DIGEST,
+    extractor_version=GRAPH_EXTRACTOR_VERSION,
 )
 V3_SPEC = ProvisioningSpec(
     dataset_id="routing-rag-v3-open-source",
@@ -75,6 +85,9 @@ V3_SPEC = ProvisioningSpec(
         ".txt": "text/plain",
         ".csv": "text/csv",
     },
+    schema_profile_key=SOFTWARE_GRAPH_SCHEMA_PROFILE_KEY,
+    schema_profile_digest=SOFTWARE_GRAPH_SCHEMA_PROFILE_DIGEST,
+    extractor_version=GRAPH_EXTRACTOR_VERSION,
 )
 MUSIQUE_MINI_SPEC = ProvisioningSpec(
     dataset_id="routing-rag-musique-full-mini-v1",
@@ -83,6 +96,9 @@ MUSIQUE_MINI_SPEC = ProvisioningSpec(
     knowledge_base_name="routing-rag-musique-full-mini-semantic-v4-graphiti-v3",
     confirmation="PROVISION_ROUTING_RAG_MUSIQUE_MINI",
     media_types={".md": "text/markdown"},
+    schema_profile_key=GENERIC_GRAPH_SCHEMA_PROFILE_KEY,
+    schema_profile_digest=GENERIC_GRAPH_SCHEMA_PROFILE_DIGEST,
+    extractor_version=GRAPH_EXTRACTOR_VERSION,
 )
 PROVISIONING_SPECS = {
     spec.dataset_id: spec for spec in (V2_SPEC, V3_SPEC, MUSIQUE_MINI_SPEC)
@@ -264,6 +280,26 @@ def _require_current_runtime(runtime: EvaluationRuntime) -> None:
         for row in rows
     ):
         raise ProvisioningError("evaluation API is not running the current Graph profile")
+
+
+def _graph_config_matches_profile(
+    config: Mapping[str, Any],
+    spec: ProvisioningSpec,
+    *,
+    require_active: bool = False,
+) -> bool:
+    if (
+        config.get("schema_profile_key") != spec.schema_profile_key
+        or config.get("schema_profile_digest") != spec.schema_profile_digest
+        or config.get("extractor_version") != spec.extractor_version
+    ):
+        return False
+    if not require_active:
+        return True
+    return (
+        config.get("active_build_schema_profile_key") == spec.schema_profile_key
+        and config.get("active_build_schema_profile_digest") == spec.schema_profile_digest
+    )
 
 
 def _knowledge_base(
@@ -490,6 +526,7 @@ def _wait_for_graph(
     timeout_seconds: float,
     retry_failed: bool,
     force_rebuild_failed: bool,
+    spec: ProvisioningSpec = V2_SPEC,
     host_runtime: EvaluationRuntime | None = None,
 ) -> dict[str, Any]:
     url = f"{runtime.api_base_url}/knowledge-bases/{kb_id}/graph-config"
@@ -504,6 +541,7 @@ def _wait_for_graph(
                 answer_profile_revision_id=answer_profile_revision_id,
                 retry=False,
                 force_rebuild=False,
+                schema_profile_key=spec.schema_profile_key,
             )
             if host_runtime is not None
             else _request(
@@ -512,6 +550,32 @@ def _wait_for_graph(
                 payload={
                     "enabled": True,
                     "chat_profile_revision_id": str(answer_profile_revision_id),
+                    "schema_profile_key": spec.schema_profile_key,
+                },
+            )
+        )
+    elif not _graph_config_matches_profile(config, spec) or (
+        config.get("status") == "ready"
+        and not _graph_config_matches_profile(config, spec, require_active=True)
+    ):
+        config = (
+            _host_graph_mutation(
+                host_runtime,
+                kb_id,
+                answer_profile_revision_id=answer_profile_revision_id,
+                retry=False,
+                force_rebuild=True,
+                schema_profile_key=spec.schema_profile_key,
+            )
+            if host_runtime is not None
+            else _request(
+                url,
+                method="PUT",
+                payload={
+                    "enabled": True,
+                    "chat_profile_revision_id": str(answer_profile_revision_id),
+                    "schema_profile_key": spec.schema_profile_key,
+                    "force_rebuild": True,
                 },
             )
         )
@@ -523,6 +587,7 @@ def _wait_for_graph(
                 answer_profile_revision_id=answer_profile_revision_id,
                 retry=True,
                 force_rebuild=True,
+                schema_profile_key=spec.schema_profile_key,
             )
             if host_runtime is not None
             else _request(
@@ -539,6 +604,7 @@ def _wait_for_graph(
                 answer_profile_revision_id=answer_profile_revision_id,
                 retry=True,
                 force_rebuild=False,
+                schema_profile_key=spec.schema_profile_key,
             )
             if host_runtime is not None
             else _request(
@@ -562,6 +628,7 @@ def _wait_for_graph(
                         answer_profile_revision_id=answer_profile_revision_id,
                         retry=True,
                         force_rebuild=False,
+                        schema_profile_key=spec.schema_profile_key,
                     )
                     if host_runtime is not None
                     else _request(
@@ -579,7 +646,7 @@ def _wait_for_graph(
         config = _request(url)
     eligible_chunk_count = config.get("eligible_chunk_count")
     if (
-        config.get("extractor_version") != GRAPH_EXTRACTOR_VERSION
+        not _graph_config_matches_profile(config, spec, require_active=True)
         or not isinstance(eligible_chunk_count, int)
         or isinstance(eligible_chunk_count, bool)
         or eligible_chunk_count <= 0
@@ -597,6 +664,7 @@ def _host_graph_mutation(
     answer_profile_revision_id: UUID,
     retry: bool,
     force_rebuild: bool,
+    schema_profile_key: str,
 ) -> dict[str, Any]:
     """Apply current-source Graph configuration against the isolated DB."""
 
@@ -630,6 +698,8 @@ def _host_graph_mutation(
                     UUID(kb_id),
                     enabled=True,
                     chat_profile_revision_id=answer_profile_revision_id,
+                    schema_profile_key=schema_profile_key,
+                    force_rebuild=force_rebuild,
                 )
         finally:
             await dependencies.close()
@@ -646,6 +716,9 @@ def _bind_runtime(
     knowledge_base_id: UUID,
     index_revision_id: UUID,
     graph_build_id: UUID,
+    schema_profile_key: str = SOFTWARE_GRAPH_SCHEMA_PROFILE_KEY,
+    schema_profile_digest: str = SOFTWARE_GRAPH_SCHEMA_PROFILE_DIGEST,
+    extractor_version: str = GRAPH_EXTRACTOR_VERSION,
 ) -> None:
     previous = runtime.adaptive_graph
     if previous is None:
@@ -657,6 +730,9 @@ def _bind_runtime(
         graph_build_id=graph_build_id,
         answer_profile_revision_id=previous.answer_profile_revision_id,
         judge_profile_revision_id=previous.judge_profile_revision_id,
+        schema_profile_key=schema_profile_key,
+        schema_profile_digest=schema_profile_digest,
+        extractor_version=extractor_version,
     )
     payload = (
         json.dumps(
@@ -722,6 +798,7 @@ def provision(
             timeout_seconds=timeout_seconds,
             retry_failed=retry_failed_graph,
             force_rebuild_failed=force_rebuild_failed_graph,
+            spec=spec,
             host_runtime=runtime if host_worker else None,
         )
         graph_build_id = UUID(str(config["build_id"]))
@@ -730,6 +807,9 @@ def provision(
             knowledge_base_id=UUID(kb_id),
             index_revision_id=index_revision_id,
             graph_build_id=graph_build_id,
+            schema_profile_key=str(config["schema_profile_key"]),
+            schema_profile_digest=str(config["schema_profile_digest"]),
+            extractor_version=str(config["extractor_version"]),
         )
     finally:
         if driver is not None:
@@ -742,7 +822,9 @@ def provision(
         "knowledge_base_id": kb_id,
         "index_revision_id": str(index_revision_id),
         "graph_build_id": str(graph_build_id),
-        "extractor_version": GRAPH_EXTRACTOR_VERSION,
+        "schema_profile_key": str(config["schema_profile_key"]),
+        "schema_profile_digest": str(config["schema_profile_digest"]),
+        "extractor_version": str(config["extractor_version"]),
     }
 
 

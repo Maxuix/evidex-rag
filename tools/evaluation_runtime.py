@@ -23,6 +23,12 @@ from tools.local_runtime import (
     _parse_manifest,
     discover_canonical_checkout,
 )
+from rag_kb.domain import (
+    GRAPH_EXTRACTOR_VERSION,
+    SOFTWARE_GRAPH_SCHEMA_PROFILE_DIGEST,
+    SOFTWARE_GRAPH_SCHEMA_PROFILE_KEY,
+)
+from rag_kb.graph.schema_profiles import get_graph_schema_registry
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -140,6 +146,9 @@ class AdaptiveGraphIdentity:
     graph_build_id: UUID
     answer_profile_revision_id: UUID
     judge_profile_revision_id: UUID
+    schema_profile_key: str = SOFTWARE_GRAPH_SCHEMA_PROFILE_KEY
+    schema_profile_digest: str = SOFTWARE_GRAPH_SCHEMA_PROFILE_DIGEST
+    extractor_version: str = GRAPH_EXTRACTOR_VERSION
 
 
 @dataclass(frozen=True, slots=True)
@@ -316,14 +325,43 @@ def _adaptive_graph_identity(value: object) -> AdaptiveGraphIdentity | None:
         "graph_build_id",
         "answer_profile_revision_id",
         "judge_profile_revision_id",
+        "schema_profile_key",
+        "schema_profile_digest",
+        "extractor_version",
     }
     if not isinstance(value, dict) or set(value) != fields:
         raise EvaluationRuntimeError("adaptive Graph identity is invalid")
     try:
-        identifiers = {name: UUID(str(value[name])) for name in fields}
+        identifiers = {
+            name: UUID(str(value[name]))
+            for name in fields
+            if name.endswith("_id")
+        }
     except (TypeError, ValueError) as error:
         raise EvaluationRuntimeError("adaptive Graph identity is invalid") from error
-    return AdaptiveGraphIdentity(**identifiers)
+    profile_key = value["schema_profile_key"]
+    profile_digest = value["schema_profile_digest"]
+    extractor_version = value["extractor_version"]
+    if (
+        not isinstance(profile_key, str)
+        or not isinstance(profile_digest, str)
+        or not isinstance(extractor_version, str)
+    ):
+        raise EvaluationRuntimeError("adaptive Graph identity is invalid")
+    try:
+        get_graph_schema_registry().resolve(
+            profile_key,
+            digest=profile_digest,
+            extractor_version=extractor_version,
+        )
+    except ValueError as error:
+        raise EvaluationRuntimeError("adaptive Graph identity is invalid") from error
+    return AdaptiveGraphIdentity(
+        **identifiers,
+        schema_profile_key=profile_key,
+        schema_profile_digest=profile_digest,
+        extractor_version=extractor_version,
+    )
 
 
 def _runtime_value(
@@ -349,6 +387,9 @@ def _runtime_value(
                 "graph_build_id": str(adaptive_graph.graph_build_id),
                 "answer_profile_revision_id": str(adaptive_graph.answer_profile_revision_id),
                 "judge_profile_revision_id": str(adaptive_graph.judge_profile_revision_id),
+                "schema_profile_key": adaptive_graph.schema_profile_key,
+                "schema_profile_digest": adaptive_graph.schema_profile_digest,
+                "extractor_version": adaptive_graph.extractor_version,
             }
             if adaptive_graph is not None
             else None
@@ -865,7 +906,8 @@ def _adaptive_identity(
     container = _container_id(runtime, "postgres")
     query = (
         "SELECT config.workspace_id, config.kb_id, kb.active_index_revision_id, config.active_build_id, "
-        "answer.id, judge.id "
+        "answer.id, judge.id, build.schema_profile_key, build.schema_profile_digest, "
+        "build.extractor_version "
         "FROM knowledge_base_graph_config config "
         "JOIN knowledge_base kb ON kb.workspace_id = config.workspace_id AND kb.id = config.kb_id "
         "JOIN graphiti_graph_build build ON build.workspace_id = config.workspace_id "
@@ -912,11 +954,20 @@ def _adaptive_identity(
         capture=True,
     )
     rows = [line.split("\t") for line in output.splitlines() if line]
-    if len(rows) != 1 or len(rows[0]) != 6:
+    if len(rows) != 1 or len(rows[0]) != 9:
         raise EvaluationRuntimeError("evaluation adaptive Graph identity is unavailable")
     try:
         workspace_id, kb_id, revision_id, build_id, answer_profile_id, judge_profile_id = (
-            UUID(item) for item in rows[0]
+            UUID(item) for item in rows[0][:6]
+        )
+    except ValueError as error:
+        raise EvaluationRuntimeError("evaluation adaptive Graph identity is invalid") from error
+    schema_profile_key, schema_profile_digest, extractor_version = rows[0][6:]
+    try:
+        get_graph_schema_registry().resolve(
+            schema_profile_key,
+            digest=schema_profile_digest,
+            extractor_version=extractor_version,
         )
     except ValueError as error:
         raise EvaluationRuntimeError("evaluation adaptive Graph identity is invalid") from error
@@ -927,6 +978,9 @@ def _adaptive_identity(
         graph_build_id=build_id,
         answer_profile_revision_id=answer_profile_id,
         judge_profile_revision_id=judge_profile_id,
+        schema_profile_key=schema_profile_key,
+        schema_profile_digest=schema_profile_digest,
+        extractor_version=extractor_version,
     )
 
 

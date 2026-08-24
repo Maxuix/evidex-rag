@@ -19,6 +19,9 @@ def _runtime_identity() -> dict[str, str]:
         "graph_build_id": str(UUID(int=4)),
         "embedding_profile_revision_id": str(UUID(int=5)),
         "graph_chat_profile_revision_id": str(UUID(int=6)),
+        "schema_profile_key": "software_knowledge_v1",
+        "schema_profile_digest": "6cae93809f060d21f0c85ba04cde955abdc5259fd93e1b1757fb7445d51eaf38",
+        "extractor_version": "graphiti_v4",
         "index_configuration_sha256": "a" * 64,
         "serving_document_set_sha256": "b" * 64,
     }

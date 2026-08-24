@@ -18,6 +18,9 @@ def _completed_observations() -> dict:
         "graph_build_id": str(UUID(int=4)),
         "embedding_profile_revision_id": str(UUID(int=5)),
         "graph_chat_profile_revision_id": str(UUID(int=6)),
+        "schema_profile_key": "software_knowledge_v1",
+        "schema_profile_digest": "6cae93809f060d21f0c85ba04cde955abdc5259fd93e1b1757fb7445d51eaf38",
+        "extractor_version": "graphiti_v4",
         "index_configuration_sha256": "a" * 64,
         "serving_document_set_sha256": "b" * 64,
     }
@@ -56,6 +59,10 @@ class OpenSourceRagV3EvaluationTests(unittest.TestCase):
         )
         self.assertEqual(template["configuration"]["simple"]["top_k"], 10)
         self.assertEqual(template["configuration"]["graph"]["edge_limit"], 8)
+        self.assertEqual(
+            template["configuration"]["graph"]["schema_profile_key"],
+            "software_knowledge_v1",
+        )
         self.assertEqual(len(template["case_observations"]), 28)
         self.assertIsNone(template["runtime_identity"])
 
@@ -101,7 +108,7 @@ class OpenSourceRagV3EvaluationTests(unittest.TestCase):
         first = result["case_labels"][0]
 
         self.assertEqual(
-            result["schema_version"], "open_source_rag_v3_locked_evaluation_v3"
+            result["schema_version"], "open_source_rag_v3_software_locked_evaluation_v1"
         )
         self.assertNotIn("graph_path_recall", result["metrics"])
         self.assertTrue(first["simple"]["complete"])
@@ -194,6 +201,13 @@ class OpenSourceRagV3EvaluationTests(unittest.TestCase):
         partial["case_observations"][0]["actual_outcome"] = "partial"
         result = evaluator.evaluate(partial)
         self.assertEqual(result["status"], "computed")
+
+        wrong_profile = copy.deepcopy(value)
+        wrong_profile["runtime_identity"]["schema_profile_key"] = "generic_open_domain_v1"
+        with self.assertRaisesRegex(
+            evaluator.V3EvaluationError, "profile identity is invalid"
+        ):
+            evaluator.evaluate(wrong_profile)
 
     def test_relation_and_negative_control_metrics_are_separate(self) -> None:
         value = _completed_observations()

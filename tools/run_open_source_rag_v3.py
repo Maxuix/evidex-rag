@@ -25,7 +25,12 @@ from uuid import UUID, uuid4
 from apps.worker.dependencies import build_worker_dependencies
 from rag_kb.adapters.graph_store.postgres import PgGraphStore
 from rag_kb.answering.agent import AGENT_TRACE_ARTIFACT, NativeToolCallingAgent
-from rag_kb.domain import GRAPH_EXTRACTOR_VERSION, RerankMode
+from rag_kb.domain import (
+    GRAPH_EXTRACTOR_VERSION,
+    RerankMode,
+    SOFTWARE_GRAPH_SCHEMA_PROFILE_DIGEST,
+    SOFTWARE_GRAPH_SCHEMA_PROFILE_KEY,
+)
 from rag_kb.retrieval.profile import adaptive_graphiti_profile
 from rag_kb.services.chat_execution import ChatEvidenceRetriever
 from tools.evaluate_adaptive_graph_route import (
@@ -222,6 +227,9 @@ def _runtime_identity(
         "graph_build_id": str(build.build_id),
         "embedding_profile_revision_id": str(build.embedding_profile_revision_id),
         "graph_chat_profile_revision_id": str(build.chat_profile_revision_id),
+        "schema_profile_key": str(build.schema_profile_key),
+        "schema_profile_digest": str(build.schema_profile_digest),
+        "extractor_version": str(build.extractor_version),
         "index_configuration_sha256": hashlib.sha256(
             _canonical_bytes(configuration)
         ).hexdigest(),
@@ -390,6 +398,11 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
             or build.build_id != identity.graph_build_id
             or build.index_revision_id != identity.index_revision_id
             or build.extractor_version != GRAPH_EXTRACTOR_VERSION
+            or build.schema_profile_key != SOFTWARE_GRAPH_SCHEMA_PROFILE_KEY
+            or build.schema_profile_digest != SOFTWARE_GRAPH_SCHEMA_PROFILE_DIGEST
+            or identity.schema_profile_key != SOFTWARE_GRAPH_SCHEMA_PROFILE_KEY
+            or identity.schema_profile_digest != SOFTWARE_GRAPH_SCHEMA_PROFILE_DIGEST
+            or identity.extractor_version != GRAPH_EXTRACTOR_VERSION
         ):
             raise V3RunnerError("v3_graph_build_identity_changed")
         episode_uuid = await graph_store.first_graphiti_episode_uuid(

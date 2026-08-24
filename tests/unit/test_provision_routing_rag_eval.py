@@ -125,6 +125,17 @@ class RoutingRagProvisioningTests(unittest.TestCase):
         self.assertEqual({path.suffix for path in paths}, {".md"})
         self.assertEqual(_corpus_digest(paths), _corpus_digest(paths))
 
+    def test_dataset_specs_freeze_their_graph_schema_profiles(self) -> None:
+        self.assertEqual(V3_SPEC.schema_profile_key, "software_knowledge_v1")
+        self.assertEqual(
+            MUSIQUE_MINI_SPEC.schema_profile_key,
+            "generic_open_domain_v1",
+        )
+        self.assertNotEqual(
+            V3_SPEC.schema_profile_digest,
+            MUSIQUE_MINI_SPEC.schema_profile_digest,
+        )
+
     def test_pagination_rejects_a_non_string_cursor(self) -> None:
         with patch(
             "tools.provision_routing_rag_eval._request",
@@ -275,10 +286,19 @@ class RoutingRagProvisioningTests(unittest.TestCase):
     def test_graph_failure_after_enable_gets_one_authorized_resume(self) -> None:
         disabled = {"status": "disabled"}
         processing = {"status": "processing"}
-        failed = {"status": "failed"}
+        failed = {
+            "status": "failed",
+            "extractor_version": V3_SPEC.extractor_version,
+            "schema_profile_key": V3_SPEC.schema_profile_key,
+            "schema_profile_digest": V3_SPEC.schema_profile_digest,
+        }
         ready = {
             "status": "ready",
             "extractor_version": GRAPH_EXTRACTOR_VERSION,
+            "schema_profile_key": V3_SPEC.schema_profile_key,
+            "schema_profile_digest": V3_SPEC.schema_profile_digest,
+            "active_build_schema_profile_key": V3_SPEC.schema_profile_key,
+            "active_build_schema_profile_digest": V3_SPEC.schema_profile_digest,
             "processed_chunk_count": 2,
             "eligible_chunk_count": 2,
             "build_id": "01900000-0000-7000-8000-000000000001",
@@ -310,10 +330,19 @@ class RoutingRagProvisioningTests(unittest.TestCase):
         )
 
     def test_host_graph_retry_uses_current_source_mutation_not_api_put(self) -> None:
-        failed = {"status": "failed"}
+        failed = {
+            "status": "failed",
+            "extractor_version": V3_SPEC.extractor_version,
+            "schema_profile_key": V3_SPEC.schema_profile_key,
+            "schema_profile_digest": V3_SPEC.schema_profile_digest,
+        }
         ready = {
             "status": "ready",
             "extractor_version": GRAPH_EXTRACTOR_VERSION,
+            "schema_profile_key": V3_SPEC.schema_profile_key,
+            "schema_profile_digest": V3_SPEC.schema_profile_digest,
+            "active_build_schema_profile_key": V3_SPEC.schema_profile_key,
+            "active_build_schema_profile_digest": V3_SPEC.schema_profile_digest,
             "processed_chunk_count": 2,
             "eligible_chunk_count": 2,
             "build_id": "01900000-0000-7000-8000-000000000001",
@@ -347,10 +376,19 @@ class RoutingRagProvisioningTests(unittest.TestCase):
         self.assertEqual(request.call_count, 1)
 
     def test_failed_graph_retry_resumes_without_force_rebuild(self) -> None:
-        failed = {"status": "failed"}
+        failed = {
+            "status": "failed",
+            "extractor_version": V3_SPEC.extractor_version,
+            "schema_profile_key": V3_SPEC.schema_profile_key,
+            "schema_profile_digest": V3_SPEC.schema_profile_digest,
+        }
         ready = {
             "status": "ready",
             "extractor_version": GRAPH_EXTRACTOR_VERSION,
+            "schema_profile_key": V3_SPEC.schema_profile_key,
+            "schema_profile_digest": V3_SPEC.schema_profile_digest,
+            "active_build_schema_profile_key": V3_SPEC.schema_profile_key,
+            "active_build_schema_profile_digest": V3_SPEC.schema_profile_digest,
             "processed_chunk_count": 2,
             "eligible_chunk_count": 2,
             "build_id": "01900000-0000-7000-8000-000000000001",
@@ -379,10 +417,19 @@ class RoutingRagProvisioningTests(unittest.TestCase):
         )
 
     def test_legacy_failed_graph_force_rebuild_is_explicit(self) -> None:
-        failed = {"status": "failed"}
+        failed = {
+            "status": "failed",
+            "extractor_version": V3_SPEC.extractor_version,
+            "schema_profile_key": V3_SPEC.schema_profile_key,
+            "schema_profile_digest": V3_SPEC.schema_profile_digest,
+        }
         ready = {
             "status": "ready",
             "extractor_version": GRAPH_EXTRACTOR_VERSION,
+            "schema_profile_key": V3_SPEC.schema_profile_key,
+            "schema_profile_digest": V3_SPEC.schema_profile_digest,
+            "active_build_schema_profile_key": V3_SPEC.schema_profile_key,
+            "active_build_schema_profile_digest": V3_SPEC.schema_profile_digest,
             "processed_chunk_count": 2,
             "eligible_chunk_count": 2,
             "build_id": "01900000-0000-7000-8000-000000000001",

@@ -21,7 +21,10 @@ from uuid import UUID, uuid4
 from rag_kb.domain import (
     GRAPH_AUGMENTATION_VERSION,
     GRAPH_EXTRACTOR_VERSION,
+    SOFTWARE_GRAPH_SCHEMA_PROFILE_DIGEST,
+    SOFTWARE_GRAPH_SCHEMA_PROFILE_KEY,
 )
+from rag_kb.graph.schema_profiles import get_graph_schema_registry
 from rag_kb.retrieval.profile import (
     ADAPTIVE_GRAPHITI_PROFILE_VERSION,
     ADAPTIVE_GRAPHITI_ROUTER_VERSION,
@@ -37,8 +40,8 @@ RELATIONS_PATH = CORPUS_ROOT / "relations.jsonl"
 ENTITIES_PATH = CORPUS_ROOT / "entities.jsonl"
 
 DATASET_ID = "routing-rag-v3-open-source"
-OBSERVATION_SCHEMA = "open_source_rag_v3_observations_v2"
-LOCKED_SCHEMA = "open_source_rag_v3_locked_evaluation_v3"
+OBSERVATION_SCHEMA = "open_source_rag_v3_software_observations_v1"
+LOCKED_SCHEMA = "open_source_rag_v3_software_locked_evaluation_v1"
 LAYERS = ("raw", "hydrated", "reranked", "packed")
 SIMPLE_TOP_K = 10
 GRAPH_EDGE_LIMIT = 8
@@ -90,6 +93,8 @@ def frozen_configuration() -> dict[str, Any]:
             "router_version": ADAPTIVE_GRAPHITI_ROUTER_VERSION,
             "augmentation_version": GRAPH_AUGMENTATION_VERSION,
             "extractor_version": GRAPH_EXTRACTOR_VERSION,
+            "schema_profile_key": SOFTWARE_GRAPH_SCHEMA_PROFILE_KEY,
+            "schema_profile_digest": SOFTWARE_GRAPH_SCHEMA_PROFILE_DIGEST,
             "edge_limit": GRAPH_EDGE_LIMIT,
             "rerank_mode": "classic",
             "layers": list(LAYERS),
@@ -186,8 +191,13 @@ def _require_uuid_map(value: object) -> dict[str, str]:
     digest_fields = {
         "index_configuration_sha256",
         "serving_document_set_sha256",
+        "schema_profile_digest",
     }
-    if not isinstance(value, Mapping) or set(value) != uuid_fields | digest_fields:
+    string_fields = {
+        "schema_profile_key",
+        "extractor_version",
+    }
+    if not isinstance(value, Mapping) or set(value) != uuid_fields | digest_fields | string_fields:
         raise V3EvaluationError("runtime identity is incomplete")
     result: dict[str, str] = {}
     for field in sorted(uuid_fields):
@@ -204,6 +214,25 @@ def _require_uuid_map(value: object) -> dict[str, str]:
         ):
             raise V3EvaluationError("runtime identity digest is invalid")
         result[field] = candidate
+    for field in sorted(string_fields):
+        candidate = value[field]
+        if not isinstance(candidate, str) or not candidate:
+            raise V3EvaluationError("runtime identity profile identity is invalid")
+        result[field] = candidate
+    if (
+        result["schema_profile_key"] != SOFTWARE_GRAPH_SCHEMA_PROFILE_KEY
+        or result["schema_profile_digest"] != SOFTWARE_GRAPH_SCHEMA_PROFILE_DIGEST
+        or result["extractor_version"] != GRAPH_EXTRACTOR_VERSION
+    ):
+        raise V3EvaluationError("runtime identity profile identity is invalid")
+    try:
+        get_graph_schema_registry().resolve(
+            result["schema_profile_key"],
+            digest=result["schema_profile_digest"],
+            extractor_version=result["extractor_version"],
+        )
+    except ValueError as error:
+        raise V3EvaluationError("runtime identity profile identity is invalid") from error
     return result
 
 
