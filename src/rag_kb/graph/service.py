@@ -11,7 +11,9 @@ from uuid import UUID
 from rag_kb.auth import AccessPolicy, AuthContext
 from rag_kb.domain import (
     GRAPH_EXTRACTOR_VERSION,
+    GRAPH_LEGACY_EXTRACTOR_VERSION,
     GraphConfigSnapshot,
+    GraphConfigStatus,
     GraphitiBuildSnapshot,
     GRAPH_WORK_HEARTBEAT_SECONDS,
     GraphWorkItem,
@@ -20,7 +22,10 @@ from rag_kb.domain import (
 )
 from rag_kb.observability import get_logger, log_event, log_exception
 from rag_kb.ports.graphiti import GraphitiGraph
-from rag_kb.graph.schema_profiles import get_graph_schema_registry
+from rag_kb.graph.schema_profiles import (
+    GraphSchemaProfileMismatch,
+    get_graph_schema_registry,
+)
 from rag_kb.uow import (
     UnitOfWork,
     UnitOfWorkFactory,
@@ -465,11 +470,30 @@ async def _profile_bundle(uow: UnitOfWork, snapshot: GraphConfigSnapshot):
 
 
 def _config_view(snapshot: GraphConfigSnapshot, bundle) -> GraphConfigView:
-    schema_profile = get_graph_schema_registry().resolve(
-        snapshot.schema_profile_key,
-        digest=snapshot.schema_profile_digest,
-        extractor_version=snapshot.extractor_version,
-    )
+    registry = get_graph_schema_registry()
+    try:
+        schema_profile = registry.resolve(
+            snapshot.schema_profile_key,
+            digest=snapshot.schema_profile_digest,
+            extractor_version=snapshot.extractor_version,
+        )
+    except GraphSchemaProfileMismatch:
+        # Migration 0014 deliberately left disabled legacy rows marked with
+        # graphiti_v1.  They must remain visible so a user can select the
+        # current profile and explicitly start a graphiti_v4 build, but the
+        # legacy marker must never make an old graph executable.  Resolving
+        # without the extractor checks the immutable profile identity while
+        # the API response exposes the current-version rebuild requirement for
+        # any enabled configuration.
+        if (
+            snapshot.status is not GraphConfigStatus.DISABLED
+            or snapshot.extractor_version != GRAPH_LEGACY_EXTRACTOR_VERSION
+        ):
+            raise
+        schema_profile = registry.resolve(
+            snapshot.schema_profile_key,
+            digest=snapshot.schema_profile_digest,
+        )
     if bundle is None:
         return GraphConfigView(snapshot, schema_profile_name=schema_profile.display_name)
     return GraphConfigView(

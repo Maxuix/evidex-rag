@@ -10,6 +10,10 @@ from uuid import UUID
 
 
 GRAPH_EXTRACTOR_VERSION = "graphiti_v4"
+# Migration 0014 uses this marker for disabled legacy Graph configuration
+# rows.  It is readable for configuration display only; it is not a serving
+# or build-compatible extractor version.
+GRAPH_LEGACY_EXTRACTOR_VERSION = "graphiti_v1"
 GRAPH_HISTORICAL_EXTRACTOR_VERSIONS = frozenset({"graphiti_v3"})
 GRAPH_SUPPORTED_EXTRACTOR_VERSIONS = frozenset(
     {GRAPH_EXTRACTOR_VERSION, *GRAPH_HISTORICAL_EXTRACTOR_VERSIONS}

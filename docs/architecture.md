@@ -64,7 +64,8 @@
   indexing lane 将每个 serving Chunk 串行摄入为一个 Episode，FalkorDB 保存图事实，PostgreSQL
   保存不可变 build 代际、active 指针、冻结的 profile key/digest 及 Episode→Chunk 映射。
   新 build staging 时旧 READY build 继续服务；覆盖门与运行时探测通过后才原子切换。新 build
-  使用 `graphiti_v4`，历史 `graphiti_v3` Software build 只按兼容路径读取。默认的
+  使用 `graphiti_v4`，历史 `graphiti_v3` Software build 只按兼容路径读取；迁移 `0014` 留下的
+  `graphiti_v1` 仅作为 disabled 配置标记读取，不参与 Graph serving 或 build。默认的
   `generic_open_domain_v1` 不传自定义 Graphiti ontology/instructions；`software_knowledge_v1`
   保留 Organization、Project、Repository、Service、
   License、LicenseExpression 与 AliasSurface 类型化抽取，并保存稳定的有向关系类型。检索先用

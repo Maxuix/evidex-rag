@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 import unittest
+from uuid import UUID
 
 from rag_kb.graph.schema_profiles import (
     GENERIC_GRAPH_SCHEMA_PROFILE_KEY,
@@ -11,8 +12,12 @@ from rag_kb.graph.schema_profiles import (
 )
 from rag_kb.domain import (
     GENERIC_GRAPH_SCHEMA_PROFILE_DIGEST,
+    GRAPH_LEGACY_EXTRACTOR_VERSION,
     SOFTWARE_GRAPH_SCHEMA_PROFILE_DIGEST,
+    GraphConfigSnapshot,
+    GraphConfigStatus,
 )
+from rag_kb.graph.service import _config_view
 
 
 class GraphSchemaProfileTests(unittest.TestCase):
@@ -126,6 +131,34 @@ class GraphSchemaProfileTests(unittest.TestCase):
             registry.resolve(GENERIC_GRAPH_SCHEMA_PROFILE_KEY, digest="0" * 64)
         with self.assertRaisesRegex(GraphSchemaProfileMismatch, "extractor"):
             registry.compile(GENERIC_GRAPH_SCHEMA_PROFILE_KEY, extractor_version="graphiti_v3")
+
+    def test_disabled_legacy_v1_config_is_readable_but_not_executable(self) -> None:
+        snapshot = GraphConfigSnapshot(
+            workspace_id=UUID(int=1),
+            knowledge_base_id=UUID(int=2),
+            status=GraphConfigStatus.DISABLED,
+            build_id=UUID(int=3),
+            chat_profile_revision_id=None,
+            extractor_version=GRAPH_LEGACY_EXTRACTOR_VERSION,
+            preflight_extractor_version=None,
+            last_error_code=None,
+            schema_profile_key=SOFTWARE_GRAPH_SCHEMA_PROFILE_KEY,
+            schema_profile_digest=SOFTWARE_GRAPH_SCHEMA_PROFILE_DIGEST,
+        )
+
+        view = _config_view(snapshot, None)
+
+        self.assertEqual(view.schema_profile_name, "Software and project knowledge")
+
+        with self.assertRaisesRegex(GraphSchemaProfileMismatch, "extractor"):
+            _config_view(replace(snapshot, status=GraphConfigStatus.READY), None)
+
+        with self.assertRaisesRegex(GraphSchemaProfileMismatch, "extractor"):
+            get_graph_schema_registry().compile(
+                SOFTWARE_GRAPH_SCHEMA_PROFILE_KEY,
+                digest=SOFTWARE_GRAPH_SCHEMA_PROFILE_DIGEST,
+                extractor_version=GRAPH_LEGACY_EXTRACTOR_VERSION,
+            )
 
 
 if __name__ == "__main__":
