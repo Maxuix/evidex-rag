@@ -30,6 +30,7 @@ from rag_kb.domain import (
     GraphSearchResult,
     GraphRetrievalRequest,
     GraphitiSearchQuery,
+    GRAPH_SUPPORTED_EXTRACTOR_VERSIONS,
     IndexChunkAssetRelationSnapshot,
     IndexingExecutionError,
     LexicalSearchResult,
@@ -46,7 +47,7 @@ from rag_kb.domain import (
     VectorSearchResult,
     validate_embedding_vector,
 )
-from rag_kb.domain.graph import GRAPH_EXTRACTOR_VERSION
+from rag_kb.graph.schema_profiles import GraphSchemaProfileError, get_graph_schema_registry
 from rag_kb.document_processing.lexical import (
     LEXICAL_ANALYZER_VERSION,
     LEXICAL_QUERY_VERSION,
@@ -446,7 +447,8 @@ class RetrievalService:
                 or build.workspace_id != workspace_id
                 or build.knowledge_base_id != knowledge_base_id
                 or build.index_revision_id != index_revision_id
-                or build.extractor_version != GRAPH_EXTRACTOR_VERSION
+                or build.extractor_version not in GRAPH_SUPPORTED_EXTRACTOR_VERSIONS
+                or not _graph_build_profile_matches(build)
                 or build.status.value != "ready"
             ):
                 return False
@@ -509,7 +511,11 @@ class RetrievalService:
                 ErrorCode.INDEX_REVISION_INCOMPATIBLE,
                 diagnostic={"check": "graph_frozen_revision"},
             )
-        if build.extractor_version != GRAPH_EXTRACTOR_VERSION or build.status.value != "ready":
+        if (
+            build.extractor_version not in GRAPH_SUPPORTED_EXTRACTOR_VERSIONS
+            or not _graph_build_profile_matches(build)
+            or build.status.value != "ready"
+        ):
             return GraphSearchResult("not_ready")
         try:
             async with asyncio.timeout(call_timeout_seconds):
@@ -739,7 +745,8 @@ class RetrievalService:
             )
         if (
             build.status.value != "ready"
-            or build.extractor_version != GRAPH_EXTRACTOR_VERSION
+            or build.extractor_version not in GRAPH_SUPPORTED_EXTRACTOR_VERSIONS
+            or not _graph_build_profile_matches(build)
         ):
             raise RetrievalExecutionError(
                 ErrorCode.GRAPH_NOT_READY,
@@ -2682,3 +2689,15 @@ def _relation_priority(
         relation.ordinal,
         relation.id.int,
     )
+
+
+def _graph_build_profile_matches(build: GraphitiBuildSnapshot) -> bool:
+    try:
+        get_graph_schema_registry().resolve(
+            build.schema_profile_key,
+            digest=build.schema_profile_digest,
+            extractor_version=build.extractor_version,
+        )
+    except GraphSchemaProfileError:
+        return False
+    return True

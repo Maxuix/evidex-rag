@@ -191,6 +191,7 @@ class GraphSchemaRegistry:
         if len(defaults) != 1 or defaults[0].key != GENERIC_GRAPH_SCHEMA_PROFILE_KEY:
             raise GraphSchemaProfileError("graph_schema_profile_default_invalid")
         self._profiles = MappingProxyType(dict(sorted(by_key.items())))
+        self._compiled_cache: dict[tuple[str, str, str], CompiledGraphSchema] = {}
 
     def list(self) -> tuple[GraphSchemaProfile, ...]:
         return tuple(self._profiles.values())
@@ -223,7 +224,13 @@ class GraphSchemaRegistry:
             digest=digest,
             extractor_version=extractor_version,
         )
-        return profile.compile(extractor_version=extractor_version or "graphiti_v4")
+        resolved_extractor_version = extractor_version or "graphiti_v4"
+        cache_key = (profile.key, profile.digest, resolved_extractor_version)
+        compiled = self._compiled_cache.get(cache_key)
+        if compiled is None:
+            compiled = profile.compile(extractor_version=resolved_extractor_version)
+            self._compiled_cache[cache_key] = compiled
+        return compiled
 
 
 def _compile_model(

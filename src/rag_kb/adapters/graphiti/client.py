@@ -16,7 +16,7 @@ from types import SimpleNamespace
 from typing import Any
 from uuid import uuid5
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import ValidationError
 
 os.environ.setdefault("GRAPHITI_TELEMETRY_ENABLED", "false")
 
@@ -32,124 +32,33 @@ from rag_kb.domain import (
     GraphitiEdgeResult,
     GraphitiPathResult,
     GraphitiSearchQuery,
+    SOFTWARE_GRAPH_SCHEMA_PROFILE_DIGEST,
+    SOFTWARE_GRAPH_SCHEMA_PROFILE_KEY,
+)
+from rag_kb.graph.schema_profiles import (
+    CompiledGraphSchema,
+    GraphSchemaProfileError,
+    get_graph_schema_registry,
 )
 
 
-GRAPHITI_V3_EXTRACTION_INSTRUCTIONS = """
-Extract only factual relations explicitly stated in the episode. Use the custom
-entity and edge types whenever they apply. Preserve the stated direction: the
-grammatical subject/source is the source node and the object/target is the target
-node. Keep projects, organizations, repositories, services, licenses, and license
-expressions as distinct concepts. A repository path is a Repository, not a
-Project. A compound SPDX expression is one LicenseExpression and must not be
-silently reduced to one of its licenses.
+_GRAPH_SCHEMA_REGISTRY = get_graph_schema_registry()
+_SOFTWARE_SCHEMA = _GRAPH_SCHEMA_REGISTRY.compile(
+    SOFTWARE_GRAPH_SCHEMA_PROFILE_KEY,
+    digest=SOFTWARE_GRAPH_SCHEMA_PROFILE_DIGEST,
+    extractor_version="graphiti_v4",
+)
 
-Preserve codes, short names, and aliases exactly. When an alias or short name is
-explicitly stated, create an AliasSurface node for that literal surface and link
-it to the canonical entity with HasShortName or AliasOf. Do not merge an alias
-edge into a self-loop.
-
-Do not extract document structure or authoring instructions as knowledge-graph
-facts. In particular, ignore section labels, relation IDs, evidence-unit IDs,
-filenames, headings that only organize the document, and generic descriptions
-of how evidence or graph extraction should work. Do not infer missing entities,
-relations, directions, dates, or world knowledge. Every extracted edge must be
-supported by a specific sentence in this episode and must connect two distinct
-participants named or unambiguously referenced in that sentence.
-""".strip()
-
-# Transitional import compatibility for local tooling; new builds are selected
-# by graphiti_v3 and always receive the v3 ontology below.
+# Transitional import compatibility for locked software evaluation tooling.
+# Runtime calls resolve the profile from each immutable build instead of using
+# these aliases as a global extraction choice.
+GRAPHITI_V3_EXTRACTION_INSTRUCTIONS = _SOFTWARE_SCHEMA.extraction_instructions
 GRAPHITI_V2_EXTRACTION_INSTRUCTIONS = GRAPHITI_V3_EXTRACTION_INSTRUCTIONS
+GRAPHITI_ENTITY_TYPES = _SOFTWARE_SCHEMA.entity_types
+GRAPHITI_EDGE_TYPES = _SOFTWARE_SCHEMA.edge_types
+GRAPHITI_EDGE_TYPE_MAP = _SOFTWARE_SCHEMA.edge_type_map
 
 _GRAPHITI_ADJACENCY_MULTIPLIER = 8
-
-
-class OrganizationEntity(BaseModel):
-    """A foundation, company, standards body, or other organization."""
-
-    short_names: list[str] = Field(default_factory=list)
-
-
-class ProjectEntity(BaseModel):
-    """A software, research, or community project."""
-
-    aliases: list[str] = Field(default_factory=list)
-
-
-class RepositoryEntity(BaseModel):
-    """A source-code repository or explicit repository path."""
-
-    repository_path: str | None = None
-
-
-class ServiceEntity(BaseModel):
-    """A hosted website, documentation site, registry, or network service."""
-
-    service_kind: str | None = None
-
-
-class LicenseEntity(BaseModel):
-    """A named software or content license, preferably with its SPDX identifier."""
-
-    spdx_identifier: str | None = None
-
-
-class LicenseExpressionEntity(BaseModel):
-    """A complete SPDX-style license expression, including AND/OR operators."""
-
-    expression: str | None = None
-
-
-class AliasSurfaceEntity(BaseModel):
-    """An explicit alias surface that remains distinct from its canonical node."""
-
-    canonical_surface: str | None = None
-
-
-class TypedRelation(BaseModel):
-    """An explicitly stated, directed relation between two typed entities."""
-
-    qualifier: str | None = None
-
-
-GRAPHITI_ENTITY_TYPES: dict[str, type[BaseModel]] = {
-    "Organization": OrganizationEntity,
-    "Project": ProjectEntity,
-    "Repository": RepositoryEntity,
-    "Service": ServiceEntity,
-    "License": LicenseEntity,
-    "LicenseExpression": LicenseExpressionEntity,
-    "AliasSurface": AliasSurfaceEntity,
-}
-
-# Names deliberately mirror the evaluation ontology. Graphiti stores this key
-# in EntityEdge.name, giving retrieval and evaluation a stable predicate rather
-# than forcing them to reverse-engineer the natural-language fact string.
-GRAPHITI_EDGE_TYPES: dict[str, type[BaseModel]] = {
-    name: TypedRelation
-    for name in (
-        "Stewards", "Hosts", "Maintains", "Operates", "HasRepository",
-        "DistributedUnder", "Lists", "HasLicenseExpression",
-        "DocumentationHostedAt", "UsesImportNamespace", "Requires", "BuiltOn",
-        "FoundationFor", "OriginatedFrom", "DevelopedOn", "Sponsors",
-        "GraduatedProjectOf", "PartOf", "HasShortName", "AliasOf",
-    )
-}
-
-GRAPHITI_EDGE_TYPE_MAP: dict[tuple[str, str], list[str]] = {
-    ("Organization", "Project"): ["Stewards", "Hosts", "Sponsors", "FoundationFor"],
-    ("Organization", "Service"): ["Operates", "Hosts"],
-    ("Organization", "Repository"): ["Maintains", "Hosts"],
-    ("Project", "Repository"): ["HasRepository", "Maintains", "DevelopedOn"],
-    ("Project", "Service"): ["DocumentationHostedAt", "Hosts"],
-    ("Project", "License"): ["DistributedUnder", "Lists"],
-    ("Project", "LicenseExpression"): ["HasLicenseExpression", "Lists"],
-    ("Project", "Project"): ["Requires", "BuiltOn", "OriginatedFrom", "PartOf"],
-    ("Project", "AliasSurface"): ["HasShortName", "AliasOf"],
-    ("Organization", "AliasSurface"): ["HasShortName", "AliasOf"],
-    ("Entity", "Entity"): list(GRAPHITI_EDGE_TYPES),
-}
 
 
 @dataclass(frozen=True, slots=True)
@@ -396,6 +305,7 @@ class GraphitiRuntime:
         host: str = "127.0.0.1",
         port: int = 6379,
         probe_ttl_seconds: float = 15.0,
+        schema_registry=None,
     ) -> None:
         self._credentials = credentials
         self._host = host
@@ -405,6 +315,7 @@ class GraphitiRuntime:
         self._client_lock = asyncio.Lock()
         self._probe_until: dict[str, float] = {}
         self._complete_probe_until: dict[str, float] = {}
+        self._schema_registry = schema_registry or _GRAPH_SCHEMA_REGISTRY
         _shield_upstream_logs()
 
     async def probe(
@@ -414,6 +325,7 @@ class GraphitiRuntime:
         episode_uuid: str | None = None,
         require_complete: bool = False,
     ) -> bool:
+        compiled = self._compiled_schema(build)
         _, driver = await self._client(build)
         loop = asyncio.get_running_loop()
         cache = self._complete_probe_until if require_complete else self._probe_until
@@ -439,19 +351,20 @@ class GraphitiRuntime:
                 self_loop_count = int(records[0]["count"]) if records else 0
                 if self_loop_count:
                     return False
-                result = await driver.execute_query(
-                    """
-                    MATCH (alias:Entity:AliasSurface)
-                    OPTIONAL MATCH (alias)-[edge:RELATES_TO]-(:Entity)
-                    WITH alias, count(edge) AS degree
-                    WHERE degree = 0
-                    RETURN count(alias) AS count
-                    """
-                )
-                records = result[0] if result else []
-                orphan_alias_count = int(records[0]["count"]) if records else 0
-                if orphan_alias_count:
-                    return False
+                if compiled.validation_policy.standalone_alias_orphan_check:
+                    result = await driver.execute_query(
+                        """
+                        MATCH (alias:Entity:AliasSurface)
+                        OPTIONAL MATCH (alias)-[edge:RELATES_TO]-(:Entity)
+                        WITH alias, count(edge) AS degree
+                        WHERE degree = 0
+                        RETURN count(alias) AS count
+                        """
+                    )
+                    records = result[0] if result else []
+                    orphan_alias_count = int(records[0]["count"]) if records else 0
+                    if orphan_alias_count:
+                        return False
                 result = await driver.execute_query(
                     """
                     MATCH (:Entity)-[edge:RELATES_TO]->(:Entity)
@@ -480,6 +393,7 @@ class GraphitiRuntime:
     async def add_episode(
         self, build: GraphitiBuildSnapshot, chunk: GraphChunkSource
     ) -> str:
+        compiled = self._compiled_schema(build)
         graphiti, driver = await self._client(build)
         modules = _graphiti_modules()
         reference_time = chunk.reference_time or datetime.now(UTC)
@@ -522,10 +436,10 @@ class GraphitiRuntime:
             group_id=build.group_id,
             uuid=episode_uuid,
             previous_episode_uuids=[str(item.uuid) for item in previous],
-            entity_types=GRAPHITI_ENTITY_TYPES,
-            edge_types=GRAPHITI_EDGE_TYPES,
-            edge_type_map=GRAPHITI_EDGE_TYPE_MAP,
-            custom_extraction_instructions=GRAPHITI_V3_EXTRACTION_INSTRUCTIONS,
+            entity_types=compiled.entity_types,
+            edge_types=compiled.edge_types,
+            edge_type_map=compiled.edge_type_map,
+            custom_extraction_instructions=compiled.extraction_instructions,
         )
         # The extraction contract rejects self-relations, but a provider can
         # still emit one despite the prompt.  Remove that invalid topology at
@@ -533,8 +447,33 @@ class GraphitiRuntime:
         # query is scoped to this build's Falkor database, so it cannot touch
         # another workspace or graph generation.  Test doubles that do not
         # implement the driver query surface intentionally skip this I/O.
-        await self._remove_self_loop_edges(driver, build)
+        if compiled.validation_policy.reject_entity_self_loops:
+            await self._remove_self_loop_edges(driver, build)
         return str(result.episode.uuid)
+
+    def _compiled_schema(self, build: GraphitiBuildSnapshot) -> CompiledGraphSchema:
+        """Resolve the exact build identity before touching Graphiti."""
+
+        key = getattr(build, "schema_profile_key", SOFTWARE_GRAPH_SCHEMA_PROFILE_KEY)
+        digest = getattr(
+            build,
+            "schema_profile_digest",
+            SOFTWARE_GRAPH_SCHEMA_PROFILE_DIGEST,
+        )
+        extractor_version = getattr(
+            build,
+            "extractor_version",
+            "graphiti_v4",
+        )
+        try:
+            registry = getattr(self, "_schema_registry", _GRAPH_SCHEMA_REGISTRY)
+            return registry.compile(
+                key,
+                digest=digest,
+                extractor_version=extractor_version,
+            )
+        except GraphSchemaProfileError as error:
+            raise RuntimeError("graph_schema_profile_mismatch") from error
 
     @staticmethod
     async def _remove_self_loop_edges(driver: Any, build: GraphitiBuildSnapshot) -> None:
@@ -557,6 +496,7 @@ class GraphitiRuntime:
     async def search(
         self, build: GraphitiBuildSnapshot, query: GraphitiSearchQuery
     ) -> tuple[GraphitiEdgeResult, ...]:
+        self._compiled_schema(build)
         graphiti, driver = await self._client(build)
         return await self._search_edges(graphiti, driver, build, query)
 
@@ -565,6 +505,7 @@ class GraphitiRuntime:
     ) -> tuple[GraphitiPathResult, ...]:
         """Resolve named query entities into bounded, connected graph paths."""
 
+        self._compiled_schema(build)
         graphiti, driver = await self._client(build)
         ranked_edges, ranked_entities = await asyncio.gather(
             self._search_edges(graphiti, driver, build, query),
@@ -703,6 +644,7 @@ class GraphitiRuntime:
         synthetic relation IDs before persisting diagnostics.
         """
 
+        self._compiled_schema(build)
         _, driver = await self._client(build)
         records, _, _ = await driver.clone(database=build.group_id).execute_query(
             """
