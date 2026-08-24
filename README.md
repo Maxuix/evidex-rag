@@ -90,7 +90,7 @@ database integration check as unverified; do not start a container. Skipped
 tests do not count as verification. `tools/run_database_tests.py` is not part
 of the normal test workflow because it manages Docker lifecycle.
 
-## Isolated Evaluation
+## Host-Python Evaluation
 
 Evaluator dry-runs are offline and do not need the personal stack or an
 evaluation runtime:
@@ -104,29 +104,16 @@ PYTHONPATH=src:. .venv/bin/python tools/evaluate_multimodal_real.py --dry-run
 ```
 
 All evaluator commands, including real runs, execute in the host `.venv`. A
-mode that accesses an API, database, Graph, or Provider may connect only to an
-already-running isolated loopback dependency described by the private
-`rag-eval` runtime. Testing must not create, refresh, rebuild, or restart that
-runtime; if it is absent or incompatible, the run stops as unverified. Preview
-is read-only:
+mode that accesses an API, database, Graph, or Provider may connect only to
+user-provided, already-running, disposable host-side test dependencies with a
+matching identity. If those dependencies are absent or incompatible, the run
+stops as unverified. The retired `rag-eval` runtime and any second Compose
+project are not test prerequisites and must not be created for evaluation.
 
-```bash
-PYTHONPATH=src:. .venv/bin/python tools/evaluation_runtime.py preview
-```
-
-Create and destroy are explicit runtime lifecycle operations, not test setup,
-and require their exact confirmation values shown by preview.
-Creation first proves that the existing local `rag` app/frontend images match
-the current checkout's corresponding build inputs, then adds eval-only tags;
-it fails instead of rebuilding, pulling, or downloading when they differ. It
-restores only the verified frozen evaluation backup into eval-owned volumes.
-The Adaptive Graph identity comes from the checksummed completed R7 artifact
-in that same backup and must exactly match the restored database's serving
-KB/index/build and answer/judge profiles.
-Destruction validates the project, per-create owner labels, known container/
-volume/network set, and private runtime directory before removing those
-objects. Neither command targets the personal `rag` volumes. Provider and Judge
-execution remains a separate, per-run authorization decision.
+Real model acceptance remains separately authorized and must use the repository
+Provider/model requirements. Docker lifecycle belongs to the formal `rag`
+runtime and the user's actual end-to-end operation; it is not part of test or
+evaluator setup.
 
 ## Runtime Operations (Not Tests)
 
