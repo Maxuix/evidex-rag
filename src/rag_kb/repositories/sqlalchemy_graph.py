@@ -35,6 +35,7 @@ from rag_kb.domain import (
     GENERIC_GRAPH_SCHEMA_PROFILE_DIGEST,
     GENERIC_GRAPH_SCHEMA_PROFILE_KEY,
     GRAPH_EXTRACTOR_VERSION,
+    GRAPH_LEGACY_EXTRACTOR_VERSION,
     GRAPH_WORK_LEASE_SECONDS,
     GraphConfigSnapshot,
     GraphConfigStatus,
@@ -968,6 +969,9 @@ class SqlAlchemyGraphRepository:
             row.schema_profile_key,
             digest=row.schema_profile_digest,
             extractor_version=row.extractor_version,
+            allow_disabled_legacy=(
+                row.status == GraphConfigStatus.DISABLED.value
+            ),
         )
         eligible_statement = _eligible_chunk_statement(self._workspace_id, row.kb_id)
         eligible_count = int(
@@ -1050,6 +1054,7 @@ def _resolve_schema_profile(
     *,
     digest: str | None = None,
     extractor_version: str | None = None,
+    allow_disabled_legacy: bool = False,
 ):
     try:
         return SCHEMA_PROFILES.resolve(
@@ -1058,6 +1063,14 @@ def _resolve_schema_profile(
             extractor_version=extractor_version,
         )
     except GraphSchemaProfileMismatch as error:
+        if (
+            allow_disabled_legacy
+            and extractor_version == GRAPH_LEGACY_EXTRACTOR_VERSION
+        ):
+            try:
+                return SCHEMA_PROFILES.resolve(key, digest=digest)
+            except GraphSchemaProfileMismatch:
+                pass
         raise ResourceStateConflictError(str(error)) from error
 
 

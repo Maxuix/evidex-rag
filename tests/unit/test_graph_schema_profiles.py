@@ -13,11 +13,13 @@ from rag_kb.graph.schema_profiles import (
 from rag_kb.domain import (
     GENERIC_GRAPH_SCHEMA_PROFILE_DIGEST,
     GRAPH_LEGACY_EXTRACTOR_VERSION,
+    ResourceStateConflictError,
     SOFTWARE_GRAPH_SCHEMA_PROFILE_DIGEST,
     GraphConfigSnapshot,
     GraphConfigStatus,
 )
 from rag_kb.graph.service import _config_view
+from rag_kb.repositories.sqlalchemy_graph import _resolve_schema_profile
 
 
 class GraphSchemaProfileTests(unittest.TestCase):
@@ -149,6 +151,22 @@ class GraphSchemaProfileTests(unittest.TestCase):
         view = _config_view(snapshot, None)
 
         self.assertEqual(view.schema_profile_name, "Software and project knowledge")
+
+        self.assertEqual(
+            _resolve_schema_profile(
+                SOFTWARE_GRAPH_SCHEMA_PROFILE_KEY,
+                digest=SOFTWARE_GRAPH_SCHEMA_PROFILE_DIGEST,
+                extractor_version=GRAPH_LEGACY_EXTRACTOR_VERSION,
+                allow_disabled_legacy=True,
+            ).key,
+            SOFTWARE_GRAPH_SCHEMA_PROFILE_KEY,
+        )
+        with self.assertRaises(ResourceStateConflictError):
+            _resolve_schema_profile(
+                SOFTWARE_GRAPH_SCHEMA_PROFILE_KEY,
+                digest=SOFTWARE_GRAPH_SCHEMA_PROFILE_DIGEST,
+                extractor_version=GRAPH_LEGACY_EXTRACTOR_VERSION,
+            )
 
         with self.assertRaisesRegex(GraphSchemaProfileMismatch, "extractor"):
             _config_view(replace(snapshot, status=GraphConfigStatus.READY), None)
