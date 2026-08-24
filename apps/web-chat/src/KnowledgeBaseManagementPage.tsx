@@ -653,7 +653,9 @@ function GraphSettingsPanel({
   };
 
   const status = currentConfig?.status ?? null;
-  const statusLabel = status ? graphStatusLabel(status) : loading ? "读取中" : "未读取";
+  const statusLabel = status
+    ? graphStatusLabel(status, currentConfig?.requires_rebuild ?? false)
+    : loading ? "读取中" : "未读取";
   const profileChanged = Boolean(
     currentConfig?.enabled
     && profileRevisionId
@@ -1559,7 +1561,11 @@ function EmptyState({ text }: { text: string }) {
   return <div className="management-empty">{text}</div>;
 }
 
-function graphStatusLabel(status: GraphConfig["status"]): string {
+function graphStatusLabel(
+  status: GraphConfig["status"],
+  requiresRebuild = false,
+): string {
+  if (status === "ready" && requiresRebuild) return "需重建";
   const labels: Record<GraphConfig["status"], string> = {
     disabled: "未启用",
     building: "构建中",
@@ -1570,6 +1576,9 @@ function graphStatusLabel(status: GraphConfig["status"]): string {
 }
 
 function graphProgressTitle(config: GraphConfig): string {
+  if (config.status === "ready" && config.requires_rebuild) {
+    return "历史构建已完成，请重建为当前 Graph 代际";
+  }
   if (config.status === "ready") return "构建完成，Graph 检索已可用";
   if (config.status === "failed") return "构建中止，可重试或更换模型";
   if (config.eligible_chunk_count === 0) return "正在验证模型并扫描现有 chunks";
