@@ -124,7 +124,8 @@ def upgrade() -> None:
                     IF (
                       event_row.value->>'route_reason_code'
                          NOT IN ('cross_document_relation_gap', 'entity_alias_gap',
-                                 'relation_chain_gap')
+                                 'relation_chain_gap',
+                                 'relational_query_without_simple_evidence')
                       OR event_row.value->>'route_result_code'
                          NOT IN ('admitted', 'no_new_evidence', 'not_configured',
                                  'not_ready', 'runtime_unavailable', 'rejected')
@@ -251,6 +252,7 @@ def upgrade() -> None:
                     WHEN 'cross_document_relation_gap' THEN 'cross_document_relation'
                     WHEN 'entity_alias_gap' THEN 'entity_alias'
                     WHEN 'relation_chain_gap' THEN 'relation_chain'
+                    WHEN 'relational_query_without_simple_evidence' THEN 'relation_chain'
                     ELSE NULL
                   END;
                   new_result := CASE new_event->>'route_result_code'
