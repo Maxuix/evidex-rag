@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
+from datetime import UTC, datetime
 import hashlib
 from uuid import UUID
 
@@ -11,6 +13,7 @@ from rag_kb.domain import (
     GRAPH_EXTRACTOR_VERSION,
     GraphConfigSnapshot,
     GraphitiBuildSnapshot,
+    GRAPH_WORK_HEARTBEAT_SECONDS,
     GraphWorkItem,
     GraphWorkKind,
     ResourceNotFoundError,
@@ -141,9 +144,16 @@ class GraphExtractionWorker:
         self,
         unit_of_work: UnitOfWorkFactory,
         graphiti_graph: GraphitiGraph,
+        *,
+        worker_id: str | None = None,
+        heartbeat_interval_seconds: float = GRAPH_WORK_HEARTBEAT_SECONDS,
     ) -> None:
+        if heartbeat_interval_seconds <= 0:
+            raise ValueError("Graph work heartbeat interval must be positive")
         self._unit_of_work = unit_of_work
         self._graphiti_graph = graphiti_graph
+        self._worker_id = worker_id
+        self._heartbeat_interval_seconds = heartbeat_interval_seconds
 
     async def recycle_retired(
         self, builds: tuple[GraphitiBuildSnapshot, ...]
@@ -154,7 +164,10 @@ class GraphExtractionWorker:
         async def claim(
             uow: UnitOfWork,
         ) -> tuple[GraphWorkItem | None, tuple[GraphitiBuildSnapshot, ...]]:
-            work = await uow.graph.next_work_item()
+            if self._worker_id is None:
+                work = await uow.graph.next_work_item()
+            else:
+                work = await uow.graph.next_work_item(worker_id=self._worker_id)
             return work, uow.graph.take_retired_graphiti_builds()
 
         work, retired = await execute_in_transaction(
@@ -169,21 +182,27 @@ class GraphExtractionWorker:
         return True
 
     async def process_work_item(self, work: GraphWorkItem) -> None:
-        build = await execute_in_transaction(
-            self._unit_of_work,
-            lambda uow: uow.graph.get_graphiti_build(
-                work.config.knowledge_base_id,
-                build_id=work.config.build_id,
-            ),
-            purpose=UnitOfWorkPurpose.REQUEST,
+        stop_heartbeat = asyncio.Event()
+        heartbeat_task = (
+            asyncio.create_task(self._heartbeat(work, stop_heartbeat))
+            if work.lease_token is not None
+            else None
         )
-        if build is None:
-            await self._mark_failed(
-                work,
-                f"{_graph_build_phase_code(work.kind)}:build_missing",
-            )
-            return
         try:
+            build = await execute_in_transaction(
+                self._unit_of_work,
+                lambda uow: uow.graph.get_graphiti_build(
+                    work.config.knowledge_base_id,
+                    build_id=work.config.build_id,
+                ),
+                purpose=UnitOfWorkPurpose.REQUEST,
+            )
+            if build is None:
+                await self._mark_failed(
+                    work,
+                    f"{_graph_build_phase_code(work.kind)}:build_missing",
+                )
+                return
             if work.kind is GraphWorkKind.PREFLIGHT:
                 if not await self._graphiti_graph.probe(build):
                     raise RuntimeError("Graphiti preflight probe failed")
@@ -198,9 +217,10 @@ class GraphExtractionWorker:
                 await execute_in_transaction(
                     self._unit_of_work,
                     lambda uow: uow.graph.save_preflight_success(
-                        work.config.knowledge_base_id,
+                        kb_id=work.config.knowledge_base_id,
                         build_id=build.build_id,
                         extractor_version=build.extractor_version,
+                        **_lease_kwargs(work),
                     ),
                     purpose=UnitOfWorkPurpose.INDEXING,
                 )
@@ -218,6 +238,7 @@ class GraphExtractionWorker:
                         index_chunk_id=chunk.index_chunk_id,
                         content_hash=chunk.content_hash,
                         episode_uuid=episode_uuid,
+                        **_lease_kwargs(work),
                     ),
                     purpose=UnitOfWorkPurpose.INDEXING,
                 )
@@ -272,6 +293,7 @@ class GraphExtractionWorker:
                 snapshot = await uow.graph.finalize_graphiti_if_complete(
                     work.config.knowledge_base_id,
                     build_id=build.build_id,
+                    **_lease_kwargs(work),
                 )
                 return snapshot, uow.graph.take_retired_graphiti_builds()
 
@@ -293,6 +315,12 @@ class GraphExtractionWorker:
                 error_code=error_code,
             )
             await self._mark_failed(work, error_code)
+        finally:
+            if heartbeat_task is not None:
+                stop_heartbeat.set()
+                heartbeat_task.cancel()
+                await asyncio.gather(heartbeat_task, return_exceptions=True)
+            await self._release(work)
 
     async def _mark_failed(self, work: GraphWorkItem, error_code: str) -> None:
         async def persist(uow: UnitOfWork) -> tuple[GraphitiBuildSnapshot, ...]:
@@ -300,6 +328,7 @@ class GraphExtractionWorker:
                 work.config.knowledge_base_id,
                 build_id=work.config.build_id,
                 error_code=error_code,
+                **_lease_kwargs(work),
             )
             return uow.graph.take_retired_graphiti_builds()
 
@@ -309,6 +338,67 @@ class GraphExtractionWorker:
             purpose=UnitOfWorkPurpose.INDEXING,
         )
         await _recycle_graphiti_graphs(self._graphiti_graph, retired)
+
+    async def _heartbeat(
+        self,
+        work: GraphWorkItem,
+        stopped: asyncio.Event,
+    ) -> None:
+        while not stopped.is_set():
+            try:
+                await asyncio.wait_for(
+                    stopped.wait(), timeout=self._heartbeat_interval_seconds
+                )
+                return
+            except TimeoutError:
+                pass
+            try:
+                owned = await execute_in_transaction(
+                    self._unit_of_work,
+                    lambda uow: uow.graph.heartbeat_graph_work(
+                        work,
+                        observed_at=datetime.now(UTC),
+                    ),
+                    purpose=UnitOfWorkPurpose.HEARTBEAT,
+                )
+            except Exception as error:
+                log_exception(
+                    LOGGER,
+                    "graphiti_work_lease_heartbeat_failed",
+                    error,
+                    build_id=work.config.build_id,
+                    knowledge_base_id=work.config.knowledge_base_id,
+                    operation=work.kind.value,
+                )
+                continue
+            if not owned:
+                log_event(
+                    LOGGER,
+                    "graphiti_work_lease_lost",
+                    build_id=work.config.build_id,
+                    knowledge_base_id=work.config.knowledge_base_id,
+                    operation=work.kind.value,
+                )
+                return
+
+    async def _release(self, work: GraphWorkItem) -> None:
+        if work.lease_token is None:
+            return
+        try:
+            await execute_in_transaction(
+                self._unit_of_work,
+                lambda uow: uow.graph.release_graph_work(work),
+                purpose=UnitOfWorkPurpose.RECONCILIATION,
+            )
+        except Exception as error:
+            log_exception(
+                LOGGER,
+                "graphiti_work_lease_release_failed",
+                error,
+                build_id=work.config.build_id,
+                knowledge_base_id=work.config.knowledge_base_id,
+                operation=work.kind.value,
+            )
 
 
 async def _recycle_graphiti_graphs(
@@ -356,6 +446,12 @@ def _graph_build_error_code(kind: GraphWorkKind, error: BaseException) -> str:
         current = current.__cause__ or current.__context__
     fingerprint = hashlib.sha256("|".join(chain).encode("utf-8")).hexdigest()[:16]
     return f"{_graph_build_phase_code(kind)}:{fingerprint}"
+
+
+def _lease_kwargs(work: GraphWorkItem) -> dict[str, UUID]:
+    if work.lease_token is None:
+        return {}
+    return {"lease_token": work.lease_token}
 
 
 async def _profile_bundle(uow: UnitOfWork, snapshot: GraphConfigSnapshot):

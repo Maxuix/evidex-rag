@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+import inspect
 import logging
 from typing import TYPE_CHECKING
 
@@ -107,7 +108,11 @@ class IndexingJobScheduler:
             )
             if lease is not None or self._graph_worker is None:
                 return lease, ()
-            work = await uow.graph.next_work_item()
+            work = await _claim_graph_work_item(
+                uow.graph,
+                worker_id=self._worker_id,
+                observed_at=observed_at,
+            )
             return work, uow.graph.take_retired_graphiti_builds()
 
         claimed, retired = await execute_in_transaction(
@@ -125,16 +130,32 @@ class IndexingJobScheduler:
             self._retry.retry_at(attempt, observed_at)
             for attempt in range(1, self._retry.max_attempts + 1)
         )
-        return await execute_in_transaction(
-            self._unit_of_work,
-            lambda uow: uow.indexing.reconcile_stale(
+        async def reconcile(uow: UnitOfWork) -> ReconciliationResult:
+            result = await uow.indexing.reconcile_stale(
                 stale_before=observed_at
                 - timedelta(seconds=self._stale_after_seconds),
                 observed_at=observed_at,
                 max_attempts=self._retry.max_attempts,
                 retry_at_by_attempt=retry_schedule,
                 limit=self._reconciliation_batch_size,
-            ),
+            )
+            reconcile_graph = getattr(uow.graph, "reconcile_graph_work_leases", None)
+            if callable(reconcile_graph):
+                recovered = await reconcile_graph(
+                    observed_at=observed_at,
+                    limit=self._reconciliation_batch_size,
+                )
+                if recovered:
+                    log_event(
+                        LOGGER,
+                        "graphiti_work_lease_reconciled",
+                        recovered_count=recovered,
+                    )
+            return result
+
+        return await execute_in_transaction(
+            self._unit_of_work,
+            reconcile,
             purpose=UnitOfWorkPurpose.RECONCILIATION,
         )
 
@@ -404,3 +425,19 @@ async def _cancel(task: asyncio.Task) -> None:
     if not task.done():
         task.cancel()
     await asyncio.gather(task, return_exceptions=True)
+
+
+async def _claim_graph_work_item(graph, *, worker_id: str, observed_at: datetime):
+    """Pass lease identity while keeping lightweight scheduler fakes compatible."""
+
+    method = graph.next_work_item
+    try:
+        parameters = inspect.signature(method).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    if "worker_id" in parameters or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    ):
+        return await method(worker_id=worker_id, observed_at=observed_at)
+    return await method()

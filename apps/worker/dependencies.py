@@ -362,6 +362,7 @@ def build_worker_dependencies(
     graph_extraction_worker = GraphExtractionWorker(
         unit_of_work,
         graphiti_runtime,
+        worker_id=resolved_worker_id,
     )
     indexing_scheduler = IndexingJobScheduler(
         unit_of_work,

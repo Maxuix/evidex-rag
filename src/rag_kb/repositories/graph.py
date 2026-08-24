@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Protocol, runtime_checkable
 from uuid import UUID
 
@@ -41,10 +42,30 @@ class GraphRepository(Protocol):
 
     async def invalidate_for_indexed_target(self, target_id: UUID) -> bool: ...
 
-    async def next_work_item(self) -> GraphWorkItem | None: ...
+    async def next_work_item(
+        self,
+        *,
+        worker_id: str = "unknown",
+        observed_at: datetime | None = None,
+    ) -> GraphWorkItem | None: ...
+
+    async def heartbeat_graph_work(
+        self, work: GraphWorkItem, *, observed_at: datetime
+    ) -> bool: ...
+
+    async def release_graph_work(self, work: GraphWorkItem) -> bool: ...
+
+    async def reconcile_graph_work_leases(
+        self, *, observed_at: datetime, limit: int
+    ) -> int: ...
 
     async def save_preflight_success(
-        self, kb_id: UUID, *, build_id: UUID, extractor_version: str
+        self,
+        kb_id: UUID,
+        *,
+        build_id: UUID,
+        extractor_version: str,
+        lease_token: UUID | None = None,
     ) -> bool: ...
 
     async def get_graphiti_build(
@@ -59,6 +80,7 @@ class GraphRepository(Protocol):
         index_chunk_id: UUID,
         content_hash: str,
         episode_uuid: str,
+        lease_token: UUID | None = None,
     ) -> bool: ...
 
     async def first_graphiti_episode_uuid(
@@ -66,7 +88,11 @@ class GraphRepository(Protocol):
     ) -> str | None: ...
 
     async def finalize_graphiti_if_complete(
-        self, kb_id: UUID, *, build_id: UUID
+        self,
+        kb_id: UUID,
+        *,
+        build_id: UUID,
+        lease_token: UUID | None = None,
     ) -> GraphConfigSnapshot | None: ...
 
     async def mark_failed(
@@ -75,6 +101,7 @@ class GraphRepository(Protocol):
         *,
         build_id: UUID,
         error_code: str,
+        lease_token: UUID | None = None,
     ) -> bool: ...
 
     def take_retired_graphiti_builds(self) -> tuple[GraphitiBuildSnapshot, ...]: ...

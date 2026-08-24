@@ -29,6 +29,8 @@ GRAPH_RETRIEVAL_PROFILE_VERSION = "graphiti_path_augmented_v3"
 GRAPH_AUGMENTATION_VERSION = "graphiti_path_v3"
 GRAPH_MAX_PATHS = 20
 GRAPH_MAX_HOPS = 3
+GRAPH_WORK_LEASE_SECONDS = 180
+GRAPH_WORK_HEARTBEAT_SECONDS = 30
 
 
 class GraphConfigStatus(StrEnum):
@@ -343,6 +345,9 @@ class GraphWorkItem:
     kind: GraphWorkKind
     config: GraphConfigSnapshot
     chunk: GraphChunkSource | None = None
+    lease_token: UUID | None = None
+    lease_owner: str | None = None
+    lease_expires_at: datetime | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "kind", GraphWorkKind(self.kind))
@@ -350,6 +355,8 @@ class GraphWorkItem:
             raise ValueError("chunk work item requires a chunk")
         if self.kind is not GraphWorkKind.CHUNK and self.chunk is not None:
             raise ValueError("non-chunk graph work item cannot carry a chunk")
+        if self.lease_token is not None and not self.lease_owner:
+            raise ValueError("leased graph work item requires an owner")
 
 
 @dataclass(frozen=True, slots=True)

@@ -566,6 +566,50 @@ class GraphitiGraphBuild(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class GraphitiGraphWorkLease(Base):
+    __tablename__ = "graphiti_graph_work_lease"
+    __table_args__ = (
+        UniqueConstraint("lease_token", name="uq_graphiti_work_lease_token"),
+        ForeignKeyConstraint(
+            ["workspace_id", "kb_id", "build_id"],
+            [
+                "graphiti_graph_build.workspace_id",
+                "graphiti_graph_build.kb_id",
+                "graphiti_graph_build.build_id",
+            ],
+            name="fk_graphiti_work_lease_build",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "kb_id", "index_chunk_id"],
+            ["index_chunk.workspace_id", "index_chunk.kb_id", "index_chunk.id"],
+            name="fk_graphiti_work_lease_chunk",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "work_kind IN ('preflight','chunk','finalize')",
+            name="graphiti_work_lease_kind_supported",
+        ),
+        Index(
+            "ix_graphiti_work_lease_expiry",
+            "lease_expires_at",
+        ),
+    )
+
+    build_id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), primary_key=True)
+    workspace_id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), nullable=False)
+    kb_id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), nullable=False)
+    lease_token: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), nullable=False)
+    claimed_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    claimed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    lease_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    work_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    index_chunk_id: Mapped[UUID | None] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), nullable=True
+    )
+
+
 class GraphitiEpisodeChunk(Base):
     __tablename__ = "graphiti_episode_chunk"
     __table_args__ = (

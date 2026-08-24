@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 import hashlib
 from uuid import UUID, uuid4
 
-from sqlalchemy import and_, func, select, update
+from sqlalchemy import and_, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from rag_kb.document_processing.profiles import SEMANTIC_CHUNKING_CONFIG
@@ -18,6 +18,7 @@ from rag_kb.db.models import (
     EmbeddingSpace as EmbeddingSpaceRow,
     GraphitiEpisodeChunk as GraphitiEpisodeChunkRow,
     GraphitiGraphBuild as GraphitiGraphBuildRow,
+    GraphitiGraphWorkLease as GraphitiGraphWorkLeaseRow,
     IndexBuildStatus,
     IndexChunk as IndexChunkRow,
     IndexRevision as IndexRevisionRow,
@@ -34,6 +35,7 @@ from rag_kb.domain import (
     GENERIC_GRAPH_SCHEMA_PROFILE_DIGEST,
     GENERIC_GRAPH_SCHEMA_PROFILE_KEY,
     GRAPH_EXTRACTOR_VERSION,
+    GRAPH_WORK_LEASE_SECONDS,
     GraphConfigSnapshot,
     GraphConfigStatus,
     GraphitiBuildSnapshot,
@@ -238,6 +240,7 @@ class SqlAlchemyGraphRepository:
                 .with_for_update()
             )
             if build is not None and await self._matches_frozen_input(row, build):
+                await self._release_legacy_graph_work_lease(build.build_id)
                 row.status = GraphConfigStatus.BUILDING.value
                 row.last_error_code = None
                 row.updated_at = datetime.now(UTC)
@@ -296,8 +299,16 @@ class SqlAlchemyGraphRepository:
             return False
         return await self.invalidate_for_serving_change(kb_id)
 
-    async def next_work_item(self) -> GraphWorkItem | None:
+    async def next_work_item(
+        self,
+        *,
+        worker_id: str = "unknown",
+        observed_at: datetime | None = None,
+    ) -> GraphWorkItem | None:
         self._ensure_active()
+        if not worker_id:
+            raise ValueError("Graph work lease owner is required")
+        observed_at = observed_at or datetime.now(UTC)
         configs = (
             await self._session.scalars(
                 select(KnowledgeBaseGraphConfigRow)
@@ -309,6 +320,7 @@ class SqlAlchemyGraphRepository:
                     KnowledgeBaseGraphConfigRow.updated_at,
                     KnowledgeBaseGraphConfigRow.kb_id,
                 )
+                .with_for_update(skip_locked=True)
             )
         ).all()
         for row in configs:
@@ -327,6 +339,18 @@ class SqlAlchemyGraphRepository:
                 row.updated_at = datetime.now(UTC)
                 await self._session.flush()
                 continue
+            lease = await self._session.scalar(
+                select(GraphitiGraphWorkLeaseRow)
+                .where(GraphitiGraphWorkLeaseRow.build_id == row.build_id)
+                .with_for_update()
+            )
+            if lease is not None:
+                if lease.lease_expires_at > observed_at:
+                    continue
+                await self._session.delete(lease)
+                await self._session.flush()
+            work_kind: GraphWorkKind
+            chunk = None
             try:
                 _resolve_schema_profile(
                     row.schema_profile_key,
@@ -347,17 +371,107 @@ class SqlAlchemyGraphRepository:
                 continue
             config = await self._snapshot(row)
             if config.preflight_extractor_version != config.extractor_version:
-                return GraphWorkItem(GraphWorkKind.PREFLIGHT, config)
-            chunk = await self._next_missing_chunk(config)
-            if chunk is not None:
-                return GraphWorkItem(GraphWorkKind.CHUNK, config, chunk)
-            return GraphWorkItem(GraphWorkKind.FINALIZE, config)
+                work_kind = GraphWorkKind.PREFLIGHT
+            else:
+                chunk = await self._next_missing_chunk(config)
+                work_kind = GraphWorkKind.CHUNK if chunk is not None else GraphWorkKind.FINALIZE
+            token = uuid4()
+            expires_at = observed_at + timedelta(seconds=GRAPH_WORK_LEASE_SECONDS)
+            self._session.add(
+                GraphitiGraphWorkLeaseRow(
+                    build_id=row.build_id,
+                    workspace_id=self._workspace_id,
+                    kb_id=row.kb_id,
+                    lease_token=token,
+                    claimed_by=worker_id,
+                    claimed_at=observed_at,
+                    heartbeat_at=observed_at,
+                    lease_expires_at=expires_at,
+                    work_kind=work_kind.value,
+                    index_chunk_id=chunk.index_chunk_id if chunk is not None else None,
+                )
+            )
+            await self._session.flush()
+            return GraphWorkItem(
+                work_kind,
+                config,
+                chunk,
+                lease_token=token,
+                lease_owner=worker_id,
+                lease_expires_at=expires_at,
+            )
         return None
 
-    async def save_preflight_success(
-        self, kb_id: UUID, *, build_id: UUID, extractor_version: str
+    async def heartbeat_graph_work(
+        self,
+        work: GraphWorkItem,
+        *,
+        observed_at: datetime,
     ) -> bool:
         self._ensure_active()
+        if work.lease_token is None or work.lease_owner is None:
+            return False
+        result = await self._session.execute(
+            update(GraphitiGraphWorkLeaseRow)
+            .where(
+                GraphitiGraphWorkLeaseRow.build_id == work.config.build_id,
+                GraphitiGraphWorkLeaseRow.lease_token == work.lease_token,
+                GraphitiGraphWorkLeaseRow.claimed_by == work.lease_owner,
+                GraphitiGraphWorkLeaseRow.lease_expires_at > observed_at,
+            )
+            .values(
+                heartbeat_at=observed_at,
+                lease_expires_at=observed_at
+                + timedelta(seconds=GRAPH_WORK_LEASE_SECONDS),
+            )
+        )
+        return result.rowcount > 0
+
+    async def release_graph_work(self, work: GraphWorkItem) -> bool:
+        self._ensure_active()
+        if work.lease_token is None:
+            return True
+        result = await self._session.execute(
+            _delete_graph_work_lease_statement(work)
+        )
+        return result.rowcount > 0
+
+    async def reconcile_graph_work_leases(
+        self,
+        *,
+        observed_at: datetime,
+        limit: int,
+    ) -> int:
+        self._ensure_active()
+        if limit <= 0:
+            raise ValueError("Graph work lease reconciliation limit is invalid")
+        rows = (
+            await self._session.scalars(
+                select(GraphitiGraphWorkLeaseRow)
+                .where(GraphitiGraphWorkLeaseRow.lease_expires_at <= observed_at)
+                .order_by(GraphitiGraphWorkLeaseRow.lease_expires_at)
+                .limit(limit)
+                .with_for_update(skip_locked=True)
+            )
+        ).all()
+        for row in rows:
+            await self._session.delete(row)
+        await self._session.flush()
+        return len(rows)
+
+    async def save_preflight_success(
+        self,
+        kb_id: UUID,
+        *,
+        build_id: UUID,
+        extractor_version: str,
+        lease_token: UUID | None = None,
+    ) -> bool:
+        self._ensure_active()
+        if lease_token is not None and not await self._owns_graph_work_lease(
+            build_id, lease_token, GraphWorkKind.PREFLIGHT
+        ):
+            return False
         result = await self._session.execute(
             update(KnowledgeBaseGraphConfigRow)
             .where(
@@ -396,8 +510,13 @@ class SqlAlchemyGraphRepository:
         index_chunk_id: UUID,
         content_hash: str,
         episode_uuid: str,
+        lease_token: UUID | None = None,
     ) -> bool:
         self._ensure_active()
+        if lease_token is not None and not await self._owns_graph_work_lease(
+            build_id, lease_token, GraphWorkKind.CHUNK
+        ):
+            return False
         build = await self._session.scalar(
             select(GraphitiGraphBuildRow)
             .where(
@@ -450,9 +569,17 @@ class SqlAlchemyGraphRepository:
         return True
 
     async def finalize_graphiti_if_complete(
-        self, kb_id: UUID, *, build_id: UUID
+        self,
+        kb_id: UUID,
+        *,
+        build_id: UUID,
+        lease_token: UUID | None = None,
     ) -> GraphConfigSnapshot | None:
         self._ensure_active()
+        if lease_token is not None and not await self._owns_graph_work_lease(
+            build_id, lease_token, GraphWorkKind.FINALIZE
+        ):
+            return None
         config = await self._locked_config(kb_id)
         build = await self._session.scalar(
             select(GraphitiGraphBuildRow)
@@ -538,8 +665,12 @@ class SqlAlchemyGraphRepository:
         *,
         build_id: UUID,
         error_code: str,
+        lease_token: UUID | None = None,
     ) -> bool:
         self._ensure_active()
+        if lease_token is not None:
+            if not await self._owns_graph_work_lease(build_id, lease_token, None):
+                return False
         result = await self._session.execute(
             update(KnowledgeBaseGraphConfigRow)
             .where(
@@ -568,6 +699,8 @@ class SqlAlchemyGraphRepository:
                 completed_at=datetime.now(UTC),
             )
         )
+        if lease_token is None:
+            await self._release_legacy_graph_work_lease(build_id)
         return result.rowcount > 0
 
     def take_retired_graphiti_builds(self) -> tuple[GraphitiBuildSnapshot, ...]:
@@ -617,6 +750,32 @@ class SqlAlchemyGraphRepository:
                 KnowledgeBaseGraphConfigRow.kb_id == kb_id,
             )
             .with_for_update()
+        )
+
+    async def _owns_graph_work_lease(
+        self,
+        build_id: UUID,
+        lease_token: UUID,
+        work_kind: GraphWorkKind | None,
+    ) -> bool:
+        statement = select(GraphitiGraphWorkLeaseRow.build_id).where(
+            GraphitiGraphWorkLeaseRow.build_id == build_id,
+            GraphitiGraphWorkLeaseRow.workspace_id == self._workspace_id,
+            GraphitiGraphWorkLeaseRow.lease_token == lease_token,
+            GraphitiGraphWorkLeaseRow.lease_expires_at > datetime.now(UTC),
+        )
+        if work_kind is not None:
+            statement = statement.where(
+                GraphitiGraphWorkLeaseRow.work_kind == work_kind.value
+            )
+        return (await self._session.scalar(statement)) is not None
+
+    async def _release_legacy_graph_work_lease(self, build_id: UUID) -> None:
+        await self._session.execute(
+            delete(GraphitiGraphWorkLeaseRow).where(
+                GraphitiGraphWorkLeaseRow.build_id == build_id,
+                GraphitiGraphWorkLeaseRow.workspace_id == self._workspace_id,
+            )
         )
 
     async def _require_valid_chat_profile(self, revision_id: UUID) -> None:
@@ -900,6 +1059,14 @@ def _resolve_schema_profile(
         )
     except GraphSchemaProfileMismatch as error:
         raise ResourceStateConflictError(str(error)) from error
+
+
+def _delete_graph_work_lease_statement(work: GraphWorkItem):
+    return delete(GraphitiGraphWorkLeaseRow).where(
+        GraphitiGraphWorkLeaseRow.build_id == work.config.build_id,
+        GraphitiGraphWorkLeaseRow.lease_token == work.lease_token,
+        GraphitiGraphWorkLeaseRow.claimed_by == work.lease_owner,
+    )
 
 
 def _eligible_chunk_statement(workspace_id: UUID, kb_id: UUID):
