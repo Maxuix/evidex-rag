@@ -60,7 +60,8 @@ def upgrade() -> None:
             'graph_augmented_v1',
             'graphiti_edge_augmented_v1',
             'graphiti_path_augmented_v2', 'graphiti_path_augmented_v3',
-            'adaptive_graphiti_v1', 'adaptive_graphiti_v2'
+            'adaptive_graphiti_v1', 'adaptive_graphiti_v2',
+            'adaptive_graph_route_v1'
           ];
 
           FOR run_row IN
@@ -108,6 +109,27 @@ def upgrade() -> None:
                 run_row.retrieval_strategy->>'profile_version' IS NOT NULL
                 AND NOT (
                   run_row.retrieval_strategy->>'profile_version' = ANY(known_profiles)
+                )
+              )
+              OR (
+                run_row.retrieval_strategy->>'profile_version'
+                   = 'adaptive_graph_route_v1'
+                AND (
+                  (SELECT count(*)
+                     FROM jsonb_object_keys(run_row.retrieval_strategy)) <> 6
+                  OR run_row.retrieval_strategy->>'strategy' <> 'exact_vector'
+                  OR run_row.retrieval_strategy->>'rerank_mode' <> 'classic'
+                  OR run_row.retrieval_strategy->>'augmentation'
+                     <> 'entity_graph_v1'
+                  OR run_row.retrieval_strategy->>'route_policy'
+                     <> 'agent_evidence_aware_v1'
+                  OR jsonb_typeof(run_row.retrieval_strategy->'top_k') <> 'number'
+                  OR CASE
+                       WHEN (run_row.retrieval_strategy->>'top_k') ~ '^[1-9][0-9]*$'
+                       THEN (run_row.retrieval_strategy->>'top_k')::integer
+                              NOT BETWEEN 1 AND 100
+                       ELSE TRUE
+                     END
                 )
               )
             ) THEN
@@ -198,6 +220,14 @@ def upgrade() -> None:
         """
         UPDATE chat_run
            SET retrieval_strategy = CASE
+                 WHEN retrieval_strategy->>'profile_version'
+                      = 'adaptive_graph_route_v1'
+                 THEN jsonb_build_object(
+                   'profile_version', 'exact_vector_v2',
+                   'strategy', 'exact_vector',
+                   'top_k', retrieval_strategy->'top_k',
+                   'rerank_mode', 'classic'
+                 )
                  WHEN retrieval_strategy->>'profile_version'
                       IN ('adaptive_graphiti_v1', 'adaptive_graphiti_v2')
                  THEN jsonb_build_object(

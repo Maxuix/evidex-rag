@@ -1013,6 +1013,14 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
             "router": "native_agent_path_guard_v2",
             "augmentation": "graphiti_path_v3",
         }
+        legacy_adaptive_route_retrieval = {
+            "profile_version": "adaptive_graph_route_v1",
+            "strategy": "exact_vector",
+            "top_k": 10,
+            "rerank_mode": "classic",
+            "augmentation": "entity_graph_v1",
+            "route_policy": "agent_evidence_aware_v1",
+        }
         first_class_migration = importlib.import_module(
             "rag_kb.db.migrations.versions.0016_first_class_graph_tool"
         )
@@ -1125,6 +1133,12 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
                     trace=None,
                     retrieval=v2_retrieval,
                 )
+                legacy_adaptive_route_run_id = await insert_run(
+                    suffix="legacy-route-x",
+                    configuration=v2_configuration,
+                    trace=None,
+                    retrieval=legacy_adaptive_route_retrieval,
+                )
                 await connection.close()
 
                 # Upgrade to v3 transforms every snapshot deterministically.
@@ -1217,6 +1231,39 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn("duration_ms", events[1])
                 self.assertNotIn("candidate_count", events[1])
                 self.assertNotIn("hop1_count", events[1])
+
+                connection = await asyncpg.connect(MIGRATION_DSN)
+                try:
+                    legacy_route = await connection.fetchrow(
+                        """
+                        SELECT agent_configuration, agent_trace, retrieval_strategy
+                          FROM chat_run
+                         WHERE id = $1
+                        """,
+                        legacy_adaptive_route_run_id,
+                    )
+                finally:
+                    await connection.close()
+                self.assertEqual(
+                    json.loads(legacy_route["agent_configuration"]),
+                    {
+                        "version": "native_tool_calling_agent_v3",
+                        "budget": {
+                            "max_model_rounds": 8,
+                            "max_graph_calls": 2,
+                        },
+                    },
+                )
+                self.assertEqual(
+                    json.loads(legacy_route["retrieval_strategy"]),
+                    {
+                        "profile_version": "exact_vector_v2",
+                        "strategy": "exact_vector",
+                        "top_k": 10,
+                        "rerank_mode": "classic",
+                    },
+                )
+                self.assertIsNone(legacy_route["agent_trace"])
 
                 # Downgrade back to v2 restores the historical v2 names.
                 async with engine.begin() as migration_connection:
