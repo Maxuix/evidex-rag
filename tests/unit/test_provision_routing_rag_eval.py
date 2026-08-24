@@ -11,6 +11,7 @@ from rag_kb.domain import GRAPH_EXTRACTOR_VERSION, GRAPH_RETRIEVAL_PROFILE_VERSI
 from tools.evaluation_runtime import AdaptiveGraphIdentity
 from tools.provision_routing_rag_eval import (
     EXPECTED_DOCUMENT_COUNT,
+    MUSIQUE_MINI_SPEC,
     ProvisioningError,
     V3_SPEC,
     _bind_runtime,
@@ -115,6 +116,13 @@ class RoutingRagProvisioningTests(unittest.TestCase):
         self.assertEqual(
             {path.suffix for path in paths}, {".md", ".txt", ".csv"}
         )
+        self.assertEqual(_corpus_digest(paths), _corpus_digest(paths))
+
+    def test_musique_mini_corpus_is_exact_and_markdown_only(self) -> None:
+        paths = _corpus_paths(MUSIQUE_MINI_SPEC)
+
+        self.assertEqual(len(paths), 80)
+        self.assertEqual({path.suffix for path in paths}, {".md"})
         self.assertEqual(_corpus_digest(paths), _corpus_digest(paths))
 
     def test_pagination_rejects_a_non_string_cursor(self) -> None:

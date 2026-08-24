@@ -76,7 +76,17 @@ V3_SPEC = ProvisioningSpec(
         ".csv": "text/csv",
     },
 )
-PROVISIONING_SPECS = {spec.dataset_id: spec for spec in (V2_SPEC, V3_SPEC)}
+MUSIQUE_MINI_SPEC = ProvisioningSpec(
+    dataset_id="routing-rag-musique-full-mini-v1",
+    corpus_root=PROJECT_ROOT / "evaluation/routing-rag-musique-mini/documents",
+    expected_document_count=80,
+    knowledge_base_name="routing-rag-musique-full-mini-semantic-v4-graphiti-v3",
+    confirmation="PROVISION_ROUTING_RAG_MUSIQUE_MINI",
+    media_types={".md": "text/markdown"},
+)
+PROVISIONING_SPECS = {
+    spec.dataset_id: spec for spec in (V2_SPEC, V3_SPEC, MUSIQUE_MINI_SPEC)
+}
 
 # Backward-compatible names used by the existing v2 unit contract.
 CORPUS_ROOT = V2_SPEC.corpus_root
