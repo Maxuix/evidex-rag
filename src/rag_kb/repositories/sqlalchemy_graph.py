@@ -31,6 +31,8 @@ from rag_kb.db.models import (
     ModelProvider as ModelProviderRow,
 )
 from rag_kb.domain import (
+    GENERIC_GRAPH_SCHEMA_PROFILE_DIGEST,
+    GENERIC_GRAPH_SCHEMA_PROFILE_KEY,
     GRAPH_EXTRACTOR_VERSION,
     GraphConfigSnapshot,
     GraphConfigStatus,
@@ -41,6 +43,10 @@ from rag_kb.domain import (
     ResourceNotFoundError,
     ResourceStateConflictError,
 )
+from rag_kb.graph.schema_profiles import GraphSchemaProfileMismatch, get_graph_schema_registry
+
+
+SCHEMA_PROFILES = get_graph_schema_registry()
 
 
 class SqlAlchemyGraphRepository:
@@ -93,6 +99,8 @@ class SqlAlchemyGraphRepository:
                 status=GraphConfigStatus.DISABLED.value,
                 build_id=uuid4(),
                 extractor_version=GRAPH_EXTRACTOR_VERSION,
+                schema_profile_key=GENERIC_GRAPH_SCHEMA_PROFILE_KEY,
+                schema_profile_digest=GENERIC_GRAPH_SCHEMA_PROFILE_DIGEST,
             )
             self._session.add(row)
             await self._session.flush()
@@ -105,6 +113,7 @@ class SqlAlchemyGraphRepository:
         chat_profile_revision_id: UUID | None,
         enabled: bool,
         extractor_version: str,
+        schema_profile_key: str | None = None,
         force_rebuild: bool = False,
     ) -> GraphConfigSnapshot:
         self._ensure_active()
@@ -124,6 +133,8 @@ class SqlAlchemyGraphRepository:
             row.preflight_extractor_version = None
             row.last_error_code = None
             row.extractor_version = extractor_version
+            row.schema_profile_key = GENERIC_GRAPH_SCHEMA_PROFILE_KEY
+            row.schema_profile_digest = GENERIC_GRAPH_SCHEMA_PROFILE_DIGEST
             await self._session.flush()
             return await self._snapshot(row)
 
@@ -132,10 +143,16 @@ class SqlAlchemyGraphRepository:
                 "an enabled Graph configuration requires a Chat Profile Revision"
             )
         await self._require_valid_chat_profile(chat_profile_revision_id)
+        selected_profile = _resolve_schema_profile(
+            schema_profile_key or row.schema_profile_key or GENERIC_GRAPH_SCHEMA_PROFILE_KEY,
+            extractor_version=extractor_version,
+        )
         rotate = (
             force_rebuild
             or row.chat_profile_revision_id != chat_profile_revision_id
             or row.extractor_version != extractor_version
+            or row.schema_profile_key != selected_profile.key
+            or row.schema_profile_digest != selected_profile.digest
             or row.status == GraphConfigStatus.DISABLED.value
         )
         if rotate:
@@ -160,6 +177,8 @@ class SqlAlchemyGraphRepository:
         row.extractor_version = extractor_version
         row.status = GraphConfigStatus.BUILDING.value
         row.last_error_code = None
+        row.schema_profile_key = selected_profile.key
+        row.schema_profile_digest = selected_profile.digest
         await self._ensure_graphiti_build(row)
         await self._session.flush()
         return await self._snapshot(row)
@@ -180,6 +199,11 @@ class SqlAlchemyGraphRepository:
         await self._require_valid_chat_profile(row.chat_profile_revision_id)
         if extractor_version != GRAPH_EXTRACTOR_VERSION:
             raise ValueError("only the Graphiti extractor is supported")
+        _resolve_schema_profile(
+            row.schema_profile_key,
+            digest=row.schema_profile_digest,
+            extractor_version=extractor_version,
+        )
         version_changed = row.extractor_version != extractor_version
         snapshot = await self._snapshot(row)
         if (
@@ -247,6 +271,7 @@ class SqlAlchemyGraphRepository:
         previous_status = row.status
         row.build_id = uuid4()
         row.status = GraphConfigStatus.BUILDING.value
+        row.extractor_version = GRAPH_EXTRACTOR_VERSION
         row.preflight_extractor_version = None
         row.last_error_code = None
         row.updated_at = datetime.now(UTC)
@@ -299,6 +324,18 @@ class SqlAlchemyGraphRepository:
                 row.chat_profile_revision_id = None
                 row.active_build_id = None
                 row.last_error_code = None
+                row.updated_at = datetime.now(UTC)
+                await self._session.flush()
+                continue
+            try:
+                _resolve_schema_profile(
+                    row.schema_profile_key,
+                    digest=row.schema_profile_digest,
+                    extractor_version=row.extractor_version,
+                )
+            except ResourceStateConflictError:
+                row.status = GraphConfigStatus.FAILED.value
+                row.last_error_code = "graph_schema_profile_mismatch"
                 row.updated_at = datetime.now(UTC)
                 await self._session.flush()
                 continue
@@ -457,6 +494,8 @@ class SqlAlchemyGraphRepository:
             or count != expected
             or config.chat_profile_revision_id != build.chat_profile_revision_id
             or config.extractor_version != build.extractor_version
+            or config.schema_profile_key != build.schema_profile_key
+            or config.schema_profile_digest != build.schema_profile_digest
             or profile_id != build.embedding_profile_revision_id
             or model != build.embedding_model
             or dimension != build.embedding_dimension
@@ -674,6 +713,11 @@ class SqlAlchemyGraphRepository:
         )
         if row.chat_profile_revision_id is None:
             raise ResourceStateConflictError("Graphiti Chat Profile Revision is missing")
+        selected_profile = _resolve_schema_profile(
+            row.schema_profile_key,
+            digest=row.schema_profile_digest,
+            extractor_version=row.extractor_version,
+        )
         build = GraphitiGraphBuildRow(
             build_id=row.build_id,
             workspace_id=self._workspace_id,
@@ -688,6 +732,8 @@ class SqlAlchemyGraphRepository:
             embedding_model=model,
             embedding_dimension=dimension,
             extractor_version=row.extractor_version,
+            schema_profile_key=selected_profile.key,
+            schema_profile_digest=selected_profile.digest,
         )
         self._session.add(build)
         await self._session.flush()
@@ -752,11 +798,18 @@ class SqlAlchemyGraphRepository:
             and build.embedding_model == model
             and build.embedding_dimension == dimension
             and build.extractor_version == config.extractor_version
+            and build.schema_profile_key == config.schema_profile_key
+            and build.schema_profile_digest == config.schema_profile_digest
         )
 
     async def _snapshot(
         self, row: KnowledgeBaseGraphConfigRow
     ) -> GraphConfigSnapshot:
+        _resolve_schema_profile(
+            row.schema_profile_key,
+            digest=row.schema_profile_digest,
+            extractor_version=row.extractor_version,
+        )
         eligible_statement = _eligible_chunk_statement(self._workspace_id, row.kb_id)
         eligible_count = int(
             await self._session.scalar(
@@ -788,6 +841,12 @@ class SqlAlchemyGraphRepository:
             or 0
         )
         build = await self._session.get(GraphitiGraphBuildRow, row.build_id)
+        active_build = None
+        if row.active_build_id is not None:
+            active_build = await self._session.get(
+                GraphitiGraphBuildRow,
+                row.active_build_id,
+            )
         return GraphConfigSnapshot(
             workspace_id=row.workspace_id,
             knowledge_base_id=row.kb_id,
@@ -808,6 +867,14 @@ class SqlAlchemyGraphRepository:
             ),
             embedding_model=build.embedding_model if build is not None else None,
             embedding_dimension=build.embedding_dimension if build is not None else None,
+            schema_profile_key=row.schema_profile_key,
+            schema_profile_digest=row.schema_profile_digest,
+            active_build_schema_profile_key=(
+                active_build.schema_profile_key if active_build is not None else None
+            ),
+            active_build_schema_profile_digest=(
+                active_build.schema_profile_digest if active_build is not None else None
+            ),
         )
 
 
@@ -817,6 +884,22 @@ def _graph_chunking_profile_compatible(chunking_config: object) -> bool:
     if chunking_config.get("strategy") != "semantic_breakpoint":
         return True
     return chunking_config == SEMANTIC_CHUNKING_CONFIG
+
+
+def _resolve_schema_profile(
+    key: str,
+    *,
+    digest: str | None = None,
+    extractor_version: str | None = None,
+):
+    try:
+        return SCHEMA_PROFILES.resolve(
+            key,
+            digest=digest,
+            extractor_version=extractor_version,
+        )
+    except GraphSchemaProfileMismatch as error:
+        raise ResourceStateConflictError(str(error)) from error
 
 
 def _eligible_chunk_statement(workspace_id: UUID, kb_id: UUID):
@@ -925,4 +1008,6 @@ def _graphiti_build_snapshot(row: GraphitiGraphBuildRow) -> GraphitiBuildSnapsho
         embedding_dimension=row.embedding_dimension,
         extractor_version=row.extractor_version,
         superseded_by=row.superseded_by,
+        schema_profile_key=row.schema_profile_key,
+        schema_profile_digest=row.schema_profile_digest,
     )

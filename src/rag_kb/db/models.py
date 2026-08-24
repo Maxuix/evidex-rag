@@ -455,6 +455,14 @@ class KnowledgeBaseGraphConfig(Base):
             "length(btrim(extractor_version)) > 0",
             name="graph_config_extractor_version_nonempty",
         ),
+        CheckConstraint(
+            "length(btrim(schema_profile_key)) > 0",
+            name="graph_config_schema_profile_key_nonempty",
+        ),
+        CheckConstraint(
+            "schema_profile_digest ~ '^[0-9a-f]{64}$'",
+            name="graph_config_schema_profile_digest_valid",
+        ),
     )
 
     kb_id: Mapped[UUID] = mapped_column(
@@ -477,6 +485,18 @@ class KnowledgeBaseGraphConfig(Base):
     )
     extractor_version: Mapped[str] = mapped_column(
         String(128), nullable=False, server_default=text("'graphiti_v1'")
+    )
+    schema_profile_key: Mapped[str] = mapped_column(
+        String(128),
+        nullable=False,
+        server_default=text("'generic_open_domain_v1'"),
+    )
+    schema_profile_digest: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        server_default=text(
+            "'3b351f4e2c601226f922d12b60d4c9f98a4770f4ec04e94b08f5a3f0d021eaf0'"
+        ),
     )
     preflight_extractor_version: Mapped[str | None] = mapped_column(String(128))
     last_error_code: Mapped[str | None] = mapped_column(String(128))
@@ -515,6 +535,14 @@ class GraphitiGraphBuild(Base):
             "expected_episode_count >= 0 AND embedding_dimension BETWEEN 64 AND 4096",
             name="graphiti_build_counts_valid",
         ),
+        CheckConstraint(
+            "length(btrim(schema_profile_key)) > 0",
+            name="graphiti_build_schema_profile_key_nonempty",
+        ),
+        CheckConstraint(
+            "schema_profile_digest ~ '^[0-9a-f]{64}$'",
+            name="graphiti_build_schema_profile_digest_valid",
+        ),
     )
 
     build_id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), primary_key=True)
@@ -530,6 +558,8 @@ class GraphitiGraphBuild(Base):
     embedding_model: Mapped[str] = mapped_column(String(255), nullable=False)
     embedding_dimension: Mapped[int] = mapped_column(Integer, nullable=False)
     extractor_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    schema_profile_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    schema_profile_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     superseded_by: Mapped[UUID | None] = mapped_column(PostgreSQLUUID(as_uuid=True))
     last_error_code: Mapped[str | None] = mapped_column(String(128))
     started_at: Mapped[datetime] = created_timestamp()

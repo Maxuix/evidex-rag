@@ -25,6 +25,7 @@ class GraphRepository(Protocol):
         chat_profile_revision_id: UUID | None,
         enabled: bool,
         extractor_version: str,
+        schema_profile_key: str | None = None,
         force_rebuild: bool = False,
     ) -> GraphConfigSnapshot: ...
 

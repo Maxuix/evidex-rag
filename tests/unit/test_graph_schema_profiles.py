@@ -9,6 +9,10 @@ from rag_kb.graph.schema_profiles import (
     SOFTWARE_GRAPH_SCHEMA_PROFILE_KEY,
     get_graph_schema_registry,
 )
+from rag_kb.domain import (
+    GENERIC_GRAPH_SCHEMA_PROFILE_DIGEST,
+    SOFTWARE_GRAPH_SCHEMA_PROFILE_DIGEST,
+)
 
 
 class GraphSchemaProfileTests(unittest.TestCase):
@@ -19,6 +23,14 @@ class GraphSchemaProfileTests(unittest.TestCase):
         self.assertEqual(
             [profile.key for profile in profiles if profile.is_default],
             [GENERIC_GRAPH_SCHEMA_PROFILE_KEY],
+        )
+        self.assertEqual(
+            registry.resolve(GENERIC_GRAPH_SCHEMA_PROFILE_KEY).digest,
+            GENERIC_GRAPH_SCHEMA_PROFILE_DIGEST,
+        )
+        self.assertEqual(
+            registry.resolve(SOFTWARE_GRAPH_SCHEMA_PROFILE_KEY).digest,
+            SOFTWARE_GRAPH_SCHEMA_PROFILE_DIGEST,
         )
         self.assertEqual(
             {profile.key for profile in profiles},

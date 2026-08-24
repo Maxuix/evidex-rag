@@ -91,6 +91,8 @@ class PgGraphStore:
             embedding_dimension=row["embedding_dimension"],
             extractor_version=row["extractor_version"],
             superseded_by=row["superseded_by"],
+            schema_profile_key=row["schema_profile_key"],
+            schema_profile_digest=row["schema_profile_digest"],
         )
 
     async def first_graphiti_episode_uuid(
@@ -297,7 +299,9 @@ class PgGraphStore:
                                    build.embedding_profile_revision_id,
                                    build.embedding_model,
                                    build.embedding_dimension,
-                                   build.extractor_version
+                                   build.extractor_version,
+                                   build.schema_profile_key,
+                                   build.schema_profile_digest
                             FROM knowledge_base_graph_config config
                             JOIN graphiti_graph_build build
                               ON build.workspace_id = config.workspace_id
@@ -328,13 +332,15 @@ class PgGraphStore:
                             index_revision_id, serving_chunk_digest,
                             expected_episode_count, chat_profile_revision_id,
                             embedding_profile_revision_id, embedding_model,
-                            embedding_dimension, extractor_version
+                            embedding_dimension, extractor_version,
+                            schema_profile_key, schema_profile_digest
                         ) VALUES (
                             :build_id, :workspace_id, :kb_id, :group_id, 'building',
                             :index_revision_id, :serving_chunk_digest,
                             :expected_episode_count, :chat_profile_revision_id,
                             :embedding_profile_revision_id, :embedding_model,
-                            :embedding_dimension, :extractor_version
+                            :embedding_dimension, :extractor_version,
+                            :schema_profile_key, :schema_profile_digest
                         )
                         """
                     ),
@@ -424,9 +430,12 @@ class PgGraphStore:
                    config.chat_profile_revision_id,
                    config.extractor_version, config.preflight_extractor_version,
                    config.last_error_code,
+                   config.schema_profile_key, config.schema_profile_digest,
                    build.group_id, build.index_revision_id,
                    build.embedding_profile_revision_id, build.embedding_model,
                    build.embedding_dimension,
+                   active_build.schema_profile_key AS active_build_schema_profile_key,
+                   active_build.schema_profile_digest AS active_build_schema_profile_digest,
                    (SELECT count(*) FROM eligible) AS eligible_chunk_count,
                    (SELECT count(*) FROM completed) AS processed_chunk_count
             FROM knowledge_base_graph_config config
@@ -434,6 +443,10 @@ class PgGraphStore:
               ON build.workspace_id = config.workspace_id
              AND build.kb_id = config.kb_id
              AND build.build_id = config.build_id
+            LEFT JOIN graphiti_graph_build active_build
+              ON active_build.workspace_id = config.workspace_id
+             AND active_build.kb_id = config.kb_id
+             AND active_build.build_id = config.active_build_id
             WHERE config.workspace_id = :workspace_id
               AND config.kb_id = :kb_id
             """
@@ -546,6 +559,10 @@ def _config_snapshot(row: Any) -> GraphConfigSnapshot:
         embedding_profile_revision_id=row["embedding_profile_revision_id"],
         embedding_model=row["embedding_model"],
         embedding_dimension=row["embedding_dimension"],
+        schema_profile_key=row["schema_profile_key"],
+        schema_profile_digest=row["schema_profile_digest"],
+        active_build_schema_profile_key=row["active_build_schema_profile_key"],
+        active_build_schema_profile_digest=row["active_build_schema_profile_digest"],
     )
 
 

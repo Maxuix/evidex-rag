@@ -81,6 +81,7 @@ class GraphConfigurationService:
         *,
         enabled: bool,
         chat_profile_revision_id: UUID | None,
+        schema_profile_key: str | None = None,
         extractor_version: str = GRAPH_EXTRACTOR_VERSION,
         force_rebuild: bool = False,
     ) -> GraphConfigSnapshot:
@@ -94,6 +95,7 @@ class GraphConfigurationService:
                 kb_id,
                 chat_profile_revision_id=chat_profile_revision_id,
                 enabled=enabled,
+                schema_profile_key=schema_profile_key,
                 extractor_version=extractor_version,
                 force_rebuild=force_rebuild,
             )

@@ -9,7 +9,22 @@ from typing import Any
 from uuid import UUID
 
 
-GRAPH_EXTRACTOR_VERSION = "graphiti_v3"
+GRAPH_EXTRACTOR_VERSION = "graphiti_v4"
+GRAPH_HISTORICAL_EXTRACTOR_VERSIONS = frozenset({"graphiti_v3"})
+GRAPH_SUPPORTED_EXTRACTOR_VERSIONS = frozenset(
+    {GRAPH_EXTRACTOR_VERSION, *GRAPH_HISTORICAL_EXTRACTOR_VERSIONS}
+)
+GENERIC_GRAPH_SCHEMA_PROFILE_KEY = "generic_open_domain_v1"
+SOFTWARE_GRAPH_SCHEMA_PROFILE_KEY = "software_knowledge_v1"
+# These literals are the migration/backfill contract.  The registry test keeps
+# them aligned with the canonical manifests without making the domain import
+# the graph package during application bootstrap.
+GENERIC_GRAPH_SCHEMA_PROFILE_DIGEST = (
+    "3b351f4e2c601226f922d12b60d4c9f98a4770f4ec04e94b08f5a3f0d021eaf0"
+)
+SOFTWARE_GRAPH_SCHEMA_PROFILE_DIGEST = (
+    "6cae93809f060d21f0c85ba04cde955abdc5259fd93e1b1757fb7445d51eaf38"
+)
 GRAPH_RETRIEVAL_PROFILE_VERSION = "graphiti_path_augmented_v3"
 GRAPH_AUGMENTATION_VERSION = "graphiti_path_v3"
 GRAPH_MAX_PATHS = 20
@@ -161,6 +176,10 @@ class GraphConfigSnapshot:
     embedding_profile_revision_id: UUID | None = None
     embedding_model: str | None = None
     embedding_dimension: int | None = None
+    schema_profile_key: str = GENERIC_GRAPH_SCHEMA_PROFILE_KEY
+    schema_profile_digest: str = GENERIC_GRAPH_SCHEMA_PROFILE_DIGEST
+    active_build_schema_profile_key: str | None = None
+    active_build_schema_profile_digest: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "status", GraphConfigStatus(self.status))
@@ -194,11 +213,15 @@ class GraphitiBuildSnapshot:
     embedding_dimension: int
     extractor_version: str
     superseded_by: UUID | None = None
+    schema_profile_key: str = SOFTWARE_GRAPH_SCHEMA_PROFILE_KEY
+    schema_profile_digest: str = SOFTWARE_GRAPH_SCHEMA_PROFILE_DIGEST
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "status", GraphitiBuildStatus(self.status))
         if not self.group_id or not self.serving_chunk_digest:
             raise ValueError("Graphiti build identity is incomplete")
+        if not self.schema_profile_key or len(self.schema_profile_digest) != 64:
+            raise ValueError("Graphiti schema profile identity is incomplete")
         if self.expected_episode_count < 0:
             raise ValueError("Graphiti expected episode count is invalid")
         if not 64 <= self.embedding_dimension <= 4096:
