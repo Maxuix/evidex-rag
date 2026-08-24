@@ -244,8 +244,8 @@ class ChatRun:
     contextualized_query: dict[str, Any] | None = None
     agent_configuration: dict[str, Any] = field(
         default_factory=lambda: {
-            "version": "native_tool_calling_agent_v2",
-            "budget": {"max_model_rounds": 8},
+            "version": "native_tool_calling_agent_v3",
+            "budget": {"max_model_rounds": 8, "max_graph_calls": 2},
         }
     )
     agent_trace: dict[str, Any] | None = None

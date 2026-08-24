@@ -27,7 +27,7 @@ from rag_kb.domain import (
     GraphDebug,
     GraphEvidenceBundle,
     GraphitiBuildSnapshot,
-    GraphitiSupplementResult,
+    GraphSearchResult,
     GraphRetrievalRequest,
     GraphitiSearchQuery,
     IndexChunkAssetRelationSnapshot,
@@ -363,7 +363,7 @@ class RetrievalService:
                 diagnostic={"check": "graph_absolute_deadline"},
             ) from error
 
-    async def retrieve_graphiti_supplement(
+    async def search_graph_relations(
         self,
         context: AuthContext,
         *,
@@ -372,21 +372,29 @@ class RetrievalService:
         query: str,
         rerank_mode: RerankMode,
         excluded_index_chunk_ids: tuple[UUID, ...],
-    ) -> GraphitiSupplementResult:
+        edge_limit: int,
+        source_chunk_target: int,
+        source_chunk_limit: int,
+        call_timeout_seconds: int,
+    ) -> GraphSearchResult:
         deadline = asyncio.timeout(self._deadline_seconds)
         try:
             async with deadline:
-                result = await self._retrieve_graphiti_supplement(
+                result = await self._search_graph_relations(
                     context,
                     knowledge_base_id=knowledge_base_id,
                     index_revision_id=index_revision_id,
                     query=query,
                     rerank_mode=rerank_mode,
                     excluded_index_chunk_ids=excluded_index_chunk_ids,
+                    edge_limit=edge_limit,
+                    source_chunk_target=source_chunk_target,
+                    source_chunk_limit=source_chunk_limit,
+                    call_timeout_seconds=call_timeout_seconds,
                 )
                 log_event(
                     LOGGER,
-                    "adaptive_graphiti_supplement",
+                    "graph_relations_search",
                     outcome=result.route_result_code,
                     knowledge_base_id=str(knowledge_base_id),
                     index_revision_id=str(index_revision_id),
@@ -397,10 +405,56 @@ class RetrievalService:
                 raise
             raise RetrievalExecutionError(
                 ErrorCode.RETRIEVAL_DEADLINE_EXCEEDED,
-                diagnostic={"check": "adaptive_graphiti_absolute_deadline"},
+                diagnostic={"check": "graph_relations_absolute_deadline"},
             ) from error
 
-    async def _retrieve_graphiti_supplement(
+    async def search_graph_relations_capable(
+        self,
+        context: AuthContext,
+        *,
+        knowledge_base_id: UUID,
+        index_revision_id: UUID,
+    ) -> bool:
+        """Read-only active READY build capability for first-round exposure.
+
+        Never probes the external Graph runtime and never calls a model.  A
+        build that becomes invalid before execution is handled by the
+        structured fail-closed statuses of search_graph_relations.
+        """
+
+        try:
+            metadata_filter = self._access_policy.metadata_filter(context)
+            workspace_id = metadata_filter.workspace_id
+            graph_store = self._graph_store
+            if graph_store is None or self._graphiti_graph is None:
+                return False
+            config = await graph_store.get_config(workspace_id, knowledge_base_id)
+            if (
+                config is None
+                or config.workspace_id != workspace_id
+                or config.knowledge_base_id != knowledge_base_id
+                or config.status.value == "disabled"
+                or config.active_build_id is None
+            ):
+                return False
+            build = await graph_store.get_active_graphiti_build(
+                workspace_id, knowledge_base_id
+            )
+            if (
+                build is None
+                or build.build_id != config.active_build_id
+                or build.workspace_id != workspace_id
+                or build.knowledge_base_id != knowledge_base_id
+                or build.index_revision_id != index_revision_id
+                or build.extractor_version != GRAPH_EXTRACTOR_VERSION
+                or build.status.value != "ready"
+            ):
+                return False
+            return True
+        except Exception:
+            return False
+
+    async def _search_graph_relations(
         self,
         context: AuthContext,
         *,
@@ -409,15 +463,19 @@ class RetrievalService:
         query: str,
         rerank_mode: RerankMode,
         excluded_index_chunk_ids: tuple[UUID, ...],
-    ) -> GraphitiSupplementResult:
+        edge_limit: int,
+        source_chunk_target: int,
+        source_chunk_limit: int,
+        call_timeout_seconds: int,
+    ) -> GraphSearchResult:
         metadata_filter = self._access_policy.metadata_filter(context)
         workspace_id = metadata_filter.workspace_id
         graph_store = self._graph_store
         if graph_store is None:
-            return GraphitiSupplementResult("not_configured")
+            return GraphSearchResult("not_ready")
         config = await graph_store.get_config(workspace_id, knowledge_base_id)
         if config is None:
-            return GraphitiSupplementResult("not_configured")
+            return GraphSearchResult("not_ready")
         if (
             config.workspace_id != workspace_id
             or config.knowledge_base_id != knowledge_base_id
@@ -427,16 +485,16 @@ class RetrievalService:
                 diagnostic={"check": "graph_config_scope"},
             )
         if config.status.value == "disabled":
-            return GraphitiSupplementResult("not_configured")
+            return GraphSearchResult("not_ready")
         if config.active_build_id is None:
-            return GraphitiSupplementResult("not_ready")
+            return GraphSearchResult("not_ready")
         if self._graphiti_graph is None:
-            return GraphitiSupplementResult("runtime_unavailable")
+            return GraphSearchResult("unavailable")
         build = await graph_store.get_active_graphiti_build(
             workspace_id, knowledge_base_id
         )
         if build is None:
-            return GraphitiSupplementResult("not_ready")
+            return GraphSearchResult("not_ready")
         if build.build_id != config.active_build_id:
             raise RetrievalExecutionError(
                 ErrorCode.GRAPH_CONFIG_INVALID,
@@ -452,21 +510,31 @@ class RetrievalService:
                 diagnostic={"check": "graph_frozen_revision"},
             )
         if build.extractor_version != GRAPH_EXTRACTOR_VERSION or build.status.value != "ready":
-            return GraphitiSupplementResult("not_ready")
+            return GraphSearchResult("not_ready")
         try:
-            candidate_set = await self._search_graphiti_candidates(
-                workspace_id,
-                knowledge_base_id,
-                build=build,
-                index_revision_id=index_revision_id,
-                query=query,
-                edge_limit=8,
-                rerank_mode=rerank_mode,
+            async with asyncio.timeout(call_timeout_seconds):
+                candidate_set = await self._search_graphiti_candidates(
+                    workspace_id,
+                    knowledge_base_id,
+                    build=build,
+                    index_revision_id=index_revision_id,
+                    query=query,
+                    edge_limit=edge_limit,
+                    rerank_mode=rerank_mode,
+                )
+        except TimeoutError as error:
+            log_event(
+                LOGGER,
+                "graph_relations_timeout",
+                knowledge_base_id=str(knowledge_base_id),
+                index_revision_id=str(index_revision_id),
+                timeout_seconds=call_timeout_seconds,
             )
+            return GraphSearchResult("timeout")
         except ResourceNotFoundError as error:
             log_exception(
                 LOGGER,
-                "adaptive_graphiti_mapping_unavailable",
+                "graph_relations_mapping_unavailable",
                 error,
                 knowledge_base_id=str(knowledge_base_id),
                 index_revision_id=str(index_revision_id),
@@ -481,31 +549,47 @@ class RetrievalService:
                 if check in {"graph_runtime_probe", "graph_path_search"}:
                     log_exception(
                         LOGGER,
-                        "adaptive_graphiti_runtime_unavailable",
+                        "graph_relations_runtime_unavailable",
                         error,
                         knowledge_base_id=str(knowledge_base_id),
                         index_revision_id=str(index_revision_id),
                     )
-                    return GraphitiSupplementResult("runtime_unavailable")
-                return GraphitiSupplementResult("not_ready")
+                    return GraphSearchResult("unavailable")
+                return GraphSearchResult("not_ready")
             if error.code is ErrorCode.LOCAL_RERANKER_UNAVAILABLE:
                 log_exception(
                     LOGGER,
-                    "adaptive_graphiti_reranker_unavailable",
+                    "graph_relations_reranker_unavailable",
                     error,
                     knowledge_base_id=str(knowledge_base_id),
                     index_revision_id=str(index_revision_id),
                 )
-                return GraphitiSupplementResult("runtime_unavailable")
+                return GraphSearchResult("unavailable")
             raise
-        evidence, new_index_chunk_ids = _pack_graphiti_supplement_evidence(
+        evidence, new_index_chunk_ids = _pack_graph_search_evidence(
             candidate_set,
             excluded_index_chunk_ids=frozenset(excluded_index_chunk_ids),
+            source_chunk_target=source_chunk_target,
+            source_chunk_limit=source_chunk_limit,
         )
-        if not evidence:
-            return GraphitiSupplementResult("no_new_evidence")
-        return GraphitiSupplementResult(
-            "admitted", evidence, new_index_chunk_ids=new_index_chunk_ids
+        result_code = "admitted" if new_index_chunk_ids else "no_evidence"
+        hydrated_ids = {
+            item.index_chunk_id for item in candidate_set.traversal.chunks
+        }
+        full_path_count = sum(
+            1
+            for path in candidate_set.traversal.paths
+            if path.seed_entry
+            and all(chunk_id in hydrated_ids for chunk_id in path.source_chunk_ids)
+        )
+        return GraphSearchResult(
+            result_code,
+            evidence,
+            new_index_chunk_ids=new_index_chunk_ids,
+            candidate_count=len(candidate_set.traversal.paths),
+            path_count=full_path_count,
+            hydrated_chunk_count=len(candidate_set.traversal.chunks),
+            **_graph_search_hop_counts(evidence),
         )
 
     async def _retrieve_graph(
@@ -2414,49 +2498,87 @@ def _pack_graph_evidence(
     ), tuple(bundles)
 
 
-def _pack_graphiti_supplement_evidence(
+def _pack_graph_search_evidence(
     candidate_set: GraphitiCandidateSet,
     *,
     excluded_index_chunk_ids: frozenset[UUID],
+    source_chunk_target: int,
+    source_chunk_limit: int,
 ) -> tuple[tuple[Evidence, ...], tuple[UUID, ...]]:
-    """Pack complete paths and separately identify chunks new to Simple."""
+    """Pack complete one-to-three-hop paths atomically.
+
+    Complete paths are the packing unit: a path is never split.  Candidate
+    order follows question relevance first (Graphiti native rank and rerank
+    score), then evidence cost and hop count only as tiebreakers; every packed
+    path must be fully source-backed.  The deduplicated per-call chunk budget
+    is the caller's frozen soft target / hard ceiling: paths keep being
+    accepted whole until the target is reached, and the first complete path
+    that would exceed the ceiling stops packing.  Full paths may reuse chunks
+    already seen by Simple or an earlier Graph call; new_index_chunk_ids
+    counts only chunks not previously exposed to the ChatRun.
+    """
 
     chunk_by_id = {
         item.index_chunk_id: item for item in candidate_set.traversal.chunks
     }
-    selected: list[Evidence] = []
-    selected_ids: set[UUID] = set()
     ordered_paths = sorted(
         candidate_set.traversal.paths,
         key=lambda path: (
+            not path.seed_entry,
             path.rank,
             candidate_set.edge_rank_by_path_id.get(path.path_id, path.rank),
+            len(path.source_chunk_ids),
+            path.hop_count,
             path.path_id,
         ),
     )
+    selected: list[Evidence] = []
+    selected_ids: set[UUID] = set()
+    new_index_chunk_ids: set[UUID] = set()
     for path in ordered_paths:
         if not path.seed_entry:
             continue
         path_ids = path.source_chunk_ids
         if any(chunk_id not in chunk_by_id for chunk_id in path_ids):
             continue
-        path_new_to_selection = tuple(
+        path_fresh_ids = tuple(
             chunk_id for chunk_id in path_ids if chunk_id not in selected_ids
         )
-        if not path_new_to_selection or len(selected) + len(path_new_to_selection) > 4:
+        if len(selected_ids) + len(path_fresh_ids) > source_chunk_limit:
+            if len(selected_ids) >= source_chunk_target:
+                break
             continue
-        for chunk_id in path_new_to_selection:
+        for chunk_id in path_fresh_ids:
             selected.append(_graph_evidence_from_chunk(chunk_by_id[chunk_id], path))
             selected_ids.add(chunk_id)
+            if chunk_id not in excluded_index_chunk_ids:
+                new_index_chunk_ids.add(chunk_id)
     evidence = tuple(
         replace(item, rank=rank)
         for rank, item in enumerate(selected, start=1)
     )
     return evidence, tuple(
-        item.index_chunk_id
-        for item in evidence
-        if item.index_chunk_id not in excluded_index_chunk_ids
+        item.index_chunk_id for item in evidence
+        if item.index_chunk_id in new_index_chunk_ids
     )
+
+
+def _graph_search_hop_counts(
+    evidence: Sequence[Evidence],
+) -> dict[str, int]:
+    """Return the hop distribution of the packed returned evidence chunks."""
+
+    counts = {"hop1_count": 0, "hop2_count": 0, "hop3_count": 0}
+    for item in evidence:
+        if item.graph_hop_count == 1:
+            counts["hop1_count"] += 1
+        elif item.graph_hop_count == 2:
+            counts["hop2_count"] += 1
+        elif item.graph_hop_count == 3:
+            counts["hop3_count"] += 1
+        else:
+            raise ValueError("graph search evidence lacks a valid hop count")
+    return counts
 
 
 def _graph_evidence_from_chunk(

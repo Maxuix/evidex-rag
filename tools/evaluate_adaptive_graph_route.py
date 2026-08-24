@@ -24,8 +24,8 @@ from typing import Any
 from uuid import UUID
 
 from rag_kb.domain import (
-    CHAT_GRAPHITI_ROUTE_REASONS,
-    CHAT_GRAPHITI_ROUTE_RESULTS,
+    CHAT_GRAPH_SEARCH_REASONS,
+    CHAT_GRAPH_SEARCH_RESULTS,
     ChatModelMessage,
     ChatModelRequest,
     ChatModelResponse,
@@ -70,9 +70,9 @@ _PROVIDER_SAFE_RETRY_PROMPT = {
         "For this evaluator capture turn, call exactly the supplied "
         "search_knowledge_base tool. Do not submit an answer."
     ),
-    "graphiti_supplement": (
+    "search_graph_relations": (
         "For this evaluator capture turn, call exactly the supplied "
-        "graphiti_supplement tool with one concise query for the remaining "
+        "search_graph_relations tool with one concise query for the remaining "
         "relation gap. Do not submit an answer."
     ),
 }
@@ -864,7 +864,7 @@ def _successful_simple_result(messages: Sequence[ChatModelMessage]) -> bool:
 
 
 @dataclass
-class ForcedGraphitiSupplementChatModelPort:
+class ForcedGraphSearchChatModelPort:
     """Evaluator-only decorator that controls one bounded supplement turn."""
 
     delegate: ChatModelAdapter
@@ -951,8 +951,8 @@ class ForcedGraphitiSupplementChatModelPort:
         self.response_finish_reasons.append(response.finish_reason)
         route_reason = None
         if response.tool_calls:
-            candidate = response.tool_calls[0].arguments.get("route_reason_code")
-            if isinstance(candidate, str) and candidate in CHAT_GRAPHITI_ROUTE_REASONS:
+            candidate = response.tool_calls[0].arguments.get("reason")
+            if isinstance(candidate, str) and candidate in CHAT_GRAPH_SEARCH_REASONS:
                 route_reason = str(candidate)
         self.response_route_reason_codes.append(route_reason)
         for key, value in response.usage.items():
@@ -964,13 +964,13 @@ class ForcedGraphitiSupplementChatModelPort:
         provider_safe_initial = (
             self.controller_mode == "single_tool_auto_fallback"
             and not self._used
-            and "graphiti_supplement" not in tool_names
+            and not _successful_simple_result(request.messages)
             and str(request.tool_choice) == "required"
         )
         provider_safe_supplement = (
             self.controller_mode == "single_tool_auto_fallback"
             and not self._used
-            and "graphiti_supplement" in tool_names
+            and "search_graph_relations" in tool_names
             and _successful_simple_result(request.messages)
         )
         if provider_safe_initial:
@@ -981,11 +981,11 @@ class ForcedGraphitiSupplementChatModelPort:
         if provider_safe_supplement:
             response = await self._complete_provider_safe(
                 request,
-                expected_tool="graphiti_supplement",
+                expected_tool="search_graph_relations",
             )
             if (
                 len(response.tool_calls) == 1
-                and response.tool_calls[0].name == "graphiti_supplement"
+                and response.tool_calls[0].name == "search_graph_relations"
             ):
                 self._used = True
                 self.replacements += 1
@@ -993,7 +993,7 @@ class ForcedGraphitiSupplementChatModelPort:
         if (
             self.controller_mode == "single_tool_required_fallback"
             and not self._used
-            and "graphiti_supplement" not in tool_names
+            and "search_graph_relations" not in tool_names
             and str(request.tool_choice) == "required"
         ):
             # Some thinking-capable providers reject a multi-tool REQUIRED
@@ -1009,14 +1009,14 @@ class ForcedGraphitiSupplementChatModelPort:
         elif (
             self.controller_mode != "actual_auto"
             and not self._used
-            and "graphiti_supplement" in tool_names
+            and "search_graph_relations" in tool_names
             and _successful_simple_result(request.messages)
         ):
             if self.controller_mode == "single_tool_required_fallback":
                 supplement_tools = tuple(
                     item
                     for item in request.tools
-                    if item.name == "graphiti_supplement"
+                    if item.name == "search_graph_relations"
                 )
                 if len(supplement_tools) != 1:
                     raise RuntimeError("Forced supplement tool cardinality is invalid")
@@ -1026,7 +1026,7 @@ class ForcedGraphitiSupplementChatModelPort:
                     tool_choice="required",
                 )
             else:
-                effective = replace(request, tool_choice="graphiti_supplement")
+                effective = replace(request, tool_choice="search_graph_relations")
             self._used = True
             self.replacements += 1
         response = await self.delegate.complete(effective)
@@ -1034,12 +1034,12 @@ class ForcedGraphitiSupplementChatModelPort:
         return response
 
 
-class GraphitiSupplementCaptureComplete(RuntimeError):
+class GraphSearchCaptureComplete(RuntimeError):
     """Content-safe evaluator stop after one validated supplement invocation."""
 
 
 @dataclass(frozen=True, slots=True)
-class GraphitiSupplementCapture:
+class GraphSearchCapture:
     """One post-validation supplement call captured outside production trace."""
 
     case_id: str
@@ -1076,13 +1076,13 @@ class GraphitiSupplementCapture:
 
 
 @dataclass
-class CapturingGraphitiSupplementRetriever:
+class CapturingGraphSearchRetriever:
     """Evaluator-only retriever wrapper capturing the accepted Agent query."""
 
     delegate: Any
     stop_after_capture: bool = False
     _active_case_id: str | None = field(default=None, init=False, repr=False)
-    _active_capture: GraphitiSupplementCapture | None = field(
+    _active_capture: GraphSearchCapture | None = field(
         default=None, init=False, repr=False
     )
     _simple_index_chunk_ids: list[str] = field(
@@ -1099,7 +1099,7 @@ class CapturingGraphitiSupplementRetriever:
         self._active_capture = None
         self._simple_index_chunk_ids.clear()
 
-    def finish_case(self) -> GraphitiSupplementCapture:
+    def finish_case(self) -> GraphSearchCapture:
         capture, _ = self.finish_observed_case()
         if capture is None:
             raise RuntimeError("supplement capture case is incomplete")
@@ -1107,7 +1107,7 @@ class CapturingGraphitiSupplementRetriever:
 
     def finish_observed_case(
         self,
-    ) -> tuple[GraphitiSupplementCapture | None, tuple[str, ...]]:
+    ) -> tuple[GraphSearchCapture | None, tuple[str, ...]]:
         if self._active_case_id is None:
             raise RuntimeError("supplement capture case is not active")
         capture = self._active_capture
@@ -1130,7 +1130,7 @@ class CapturingGraphitiSupplementRetriever:
                 self._simple_index_chunk_ids.append(chunk_id)
         return result
 
-    async def retrieve_graphiti_supplement(
+    async def search_graph_relations(
         self,
         context,
         query: str,
@@ -1141,7 +1141,7 @@ class CapturingGraphitiSupplementRetriever:
             raise RuntimeError("supplement capture has no active case")
         if self._active_capture is not None:
             raise RuntimeError("supplement capture received more than one call")
-        capture = GraphitiSupplementCapture(
+        capture = GraphSearchCapture(
             case_id=self._active_case_id,
             query=query,
             excluded_index_chunk_ids=tuple(
@@ -1150,8 +1150,8 @@ class CapturingGraphitiSupplementRetriever:
         )
         self._active_capture = capture
         if self.stop_after_capture:
-            raise GraphitiSupplementCaptureComplete("graphiti_supplement_captured")
-        return await self.delegate.retrieve_graphiti_supplement(
+            raise GraphSearchCaptureComplete("graph_relations_captured")
+        return await self.delegate.search_graph_relations(
             context,
             capture.query,
             excluded_index_chunk_ids=tuple(
@@ -1160,8 +1160,8 @@ class CapturingGraphitiSupplementRetriever:
         )
 
 
-def _redacted_capture_dict(value: GraphitiSupplementCapture | Mapping[str, Any]) -> dict[str, Any]:
-    if isinstance(value, GraphitiSupplementCapture):
+def _redacted_capture_dict(value: GraphSearchCapture | Mapping[str, Any]) -> dict[str, Any]:
+    if isinstance(value, GraphSearchCapture):
         return value.as_dict()
     if set(value) != {"case_id", "excluded_index_chunk_ids"}:
         raise ValueError("replay capture redaction is invalid")
@@ -1189,7 +1189,7 @@ def build_replay_capture_artifact(
     index_revision_id: str,
     graph_build_id: str,
     chat_model_profile_revision_id: str,
-    captures: Sequence[GraphitiSupplementCapture | Mapping[str, Any]],
+    captures: Sequence[GraphSearchCapture | Mapping[str, Any]],
     controller_mode: str = "single_tool_auto_fallback",
     chat_model: str | None = None,
     chat_model_source: str | None = None,
@@ -1326,10 +1326,10 @@ def summarize_graph_route_trace(
     for event in events:
         if not isinstance(event, Mapping):
             continue
-        if event.get("retrieval_lane") != "graphiti_supplement":
+        if event.get("retrieval_lane") != "graph_relations":
             continue
         route_result = event.get("route_result_code")
-        if route_result not in CHAT_GRAPHITI_ROUTE_RESULTS:
+        if route_result not in CHAT_GRAPH_SEARCH_RESULTS:
             raise ValueError("Graph route result is outside the closed enum")
         count = event.get("new_evidence_count", 0)
         if isinstance(count, bool) or not isinstance(count, int) or count < 0:
@@ -1631,7 +1631,7 @@ def aggregate_graph_routing_metrics(
             if not isinstance(raw_counts, Mapping):
                 raise ValueError(f"{case_id}: Graph route result counts are invalid")
             for result, count in raw_counts.items():
-                if result not in CHAT_GRAPHITI_ROUTE_RESULTS:
+                if result not in CHAT_GRAPH_SEARCH_RESULTS:
                     raise ValueError(f"{case_id}: Graph route result is invalid")
                 if isinstance(count, bool) or not isinstance(count, int) or count < 0:
                     raise ValueError(f"{case_id}: Graph route result count is invalid")
@@ -1918,10 +1918,10 @@ def _validate_layer_diagnostic(value: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("rerank reordered chunk count is invalid")
 
     route_reason = value.get("route_reason_code")
-    if route_reason is not None and route_reason not in CHAT_GRAPHITI_ROUTE_REASONS:
+    if route_reason is not None and route_reason not in CHAT_GRAPH_SEARCH_REASONS:
         raise ValueError("layer route reason is invalid")
     route_result = value.get("route_result_code", "not_requested")
-    if route_result not in CHAT_GRAPHITI_ROUTE_RESULTS:
+    if route_result not in CHAT_GRAPH_SEARCH_RESULTS:
         raise ValueError("layer route result is invalid")
     salvage_status = value.get("salvage_status", "not_attempted")
     if salvage_status not in {"not_attempted", "none", "salvaged", "refused"}:

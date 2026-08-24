@@ -3,7 +3,7 @@
 from rag_kb.domain import (
     Evidence,
     EvidencePack,
-    GraphitiSupplementResult,
+    GraphSearchResult,
     RetrievalDebug,
     RetrievalExecutionError,
     RetrievalQueryPlan,
@@ -20,7 +20,7 @@ from rag_kb.retrieval.reranker import RerankedHit, rerank_hits
 __all__ = [
     "Evidence",
     "EvidencePack",
-    "GraphitiSupplementResult",
+    "GraphSearchResult",
     "RetrievalDebug",
     "RetrievalExecutionError",
     "RetrievalQueryPlan",

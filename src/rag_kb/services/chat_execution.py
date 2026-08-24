@@ -16,15 +16,18 @@ from rag_kb.domain import (
     ErrorCode,
     Evidence,
     EvidencePack,
-    GraphitiSupplementResult,
     GraphRetrievalRequest,
+    GraphSearchResult,
     RetrievalRequest,
     RetrievalExecutionError,
     RetrievalStrategy,
     ReconciliationResult,
 )
 from rag_kb.retrieval import RetrievalService
-from rag_kb.retrieval.profile import parse_chat_retrieval_snapshot
+from rag_kb.retrieval.profile import (
+    parse_adaptive_graphiti_snapshot,
+    parse_chat_retrieval_snapshot,
+)
 from rag_kb.uow import (
     UnitOfWork,
     UnitOfWorkFactory,
@@ -190,19 +193,17 @@ class ChatEvidenceRetriever:
             debug=pack.debug,
         )
 
-    async def retrieve_graphiti_supplement(
+    async def search_graph_relations(
         self,
         context: ChatExecutionContext,
         query: str,
         *,
         excluded_index_chunk_ids: tuple[UUID, ...],
-    ) -> GraphitiSupplementResult:
+    ) -> GraphSearchResult:
         try:
-            _, _, rerank_mode, execution_type = parse_chat_retrieval_snapshot(
+            profile = parse_adaptive_graphiti_snapshot(
                 context.retrieval_strategy,
             )
-            if execution_type != "adaptive_graphiti":
-                raise ValueError
         except (KeyError, TypeError, ValueError) as error:
             raise ChatPipelineExecutionError(
                 ErrorCode.CHAT_CONTEXT_INVALID,
@@ -210,7 +211,7 @@ class ChatEvidenceRetriever:
                 diagnostic={"check": "adaptive_retrieval_snapshot"},
             ) from error
         try:
-            result = await self._retrieval.retrieve_graphiti_supplement(
+            result = await self._retrieval.search_graph_relations(
                 AuthContext(
                     principal_id=context.principal_id,
                     client_id=context.client_id,
@@ -219,8 +220,12 @@ class ChatEvidenceRetriever:
                 knowledge_base_id=context.knowledge_base_id,
                 index_revision_id=context.index_revision_id,
                 query=query,
-                rerank_mode=rerank_mode,
+                rerank_mode=profile.rerank_mode,
                 excluded_index_chunk_ids=excluded_index_chunk_ids,
+                edge_limit=profile.graph_edge_limit,
+                source_chunk_target=profile.graph_source_chunk_target,
+                source_chunk_limit=profile.graph_source_chunk_limit,
+                call_timeout_seconds=profile.graph_call_timeout_seconds,
             )
         except RetrievalExecutionError as error:
             raise ChatPipelineExecutionError(
@@ -232,7 +237,7 @@ class ChatEvidenceRetriever:
         new_evidence_ids = tuple(result.new_index_chunk_ids or ())
         excluded_ids = set(excluded_index_chunk_ids)
         if (
-            len(result.evidence) > 4
+            len(result.evidence) > profile.graph_source_chunk_limit
             or result.route_result_code == "admitted" and not result.evidence
             or any(
                 item.index_revision_id != context.index_revision_id
@@ -245,6 +250,33 @@ class ChatEvidenceRetriever:
             raise ChatPipelineExecutionError(
                 ErrorCode.CHAT_REVISION_MISMATCH,
                 phase=ChatPipelinePhase.RETRIEVE_EVIDENCE,
-                diagnostic={"check": "adaptive_supplement_evidence"},
+                diagnostic={"check": "graph_search_evidence"},
             )
         return result
+
+    async def graph_relations_capable(
+        self,
+        context: ChatExecutionContext,
+    ) -> bool:
+        """Read active READY build capability without calling any model."""
+
+        try:
+            parse_adaptive_graphiti_snapshot(context.retrieval_strategy)
+        except (KeyError, TypeError, ValueError) as error:
+            raise ChatPipelineExecutionError(
+                ErrorCode.CHAT_CONTEXT_INVALID,
+                phase=ChatPipelinePhase.RETRIEVE_EVIDENCE,
+                diagnostic={"check": "adaptive_retrieval_snapshot"},
+            ) from error
+        try:
+            return await self._retrieval.search_graph_relations_capable(
+                AuthContext(
+                    principal_id=context.principal_id,
+                    client_id=context.client_id,
+                    workspace_id=context.workspace_id,
+                ),
+                knowledge_base_id=context.knowledge_base_id,
+                index_revision_id=context.index_revision_id,
+            )
+        except RetrievalExecutionError:
+            return False

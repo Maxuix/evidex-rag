@@ -247,7 +247,7 @@ def _runtime(
         "answer_rerank_mode": "classic",
         "answer_retrieval_profiles": {
             "simple": "exact_vector_v2",
-            "auto": "adaptive_graphiti_v2",
+            "auto": "adaptive_graphiti_v3",
         },
         "budgets": {
             "answer_executions": ANSWER_EXECUTION_LIMIT,
@@ -453,7 +453,7 @@ async def _poll_or_create(
         raise RuntimeError(f"r7_answer_not_completed:{case['case_id']}:{lane}:{code or 'unknown'}")
     if str(terminal.get("index_revision_id")) != str(identity.index_revision_id):
         raise RuntimeError("r7_index_revision_changed")
-    expected_profile = "adaptive_graphiti_v2" if lane == "auto" else "exact_vector_v2"
+    expected_profile = "adaptive_graphiti_v3" if lane == "auto" else "exact_vector_v2"
     retrieval = terminal.get("retrieval")
     if not isinstance(retrieval, Mapping) or retrieval.get("profile_version") != expected_profile:
         raise RuntimeError(f"r7_retrieval_profile_mismatch:{lane}")
@@ -462,11 +462,11 @@ async def _poll_or_create(
     trace = ((safe.get("agent") or {}).get("trace") or {})
     events = trace.get("events") if isinstance(trace, Mapping) else ()
     supplement_count = sum(
-        isinstance(event, Mapping) and event.get("retrieval_lane") == "graphiti_supplement"
+        isinstance(event, Mapping) and event.get("retrieval_lane") == "graph_relations"
         for event in events or ()
     )
-    if supplement_count > (1 if lane == "auto" else 0):
-        raise RuntimeError("r7_supplement_call_cardinality")
+    if supplement_count > (2 if lane == "auto" else 0):
+        raise RuntimeError("r7_graph_call_cardinality")
     return {
         **item,
         "status": "completed",

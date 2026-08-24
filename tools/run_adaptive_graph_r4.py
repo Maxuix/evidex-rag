@@ -44,7 +44,7 @@ from rag_kb.domain import (
 )
 from rag_kb.retrieval.profile import adaptive_graphiti_profile
 from rag_kb.retrieval.service import (
-    _pack_graphiti_supplement_evidence,
+    _pack_graph_search_evidence,
 )
 from rag_kb.services.chat_execution import ChatEvidenceRetriever
 from rag_kb.uow import (
@@ -53,12 +53,12 @@ from rag_kb.uow import (
     execute_in_transaction,
 )
 from tools.evaluate_adaptive_graph_route import (
-    CapturingGraphitiSupplementRetriever,
+    CapturingGraphSearchRetriever,
     DEFAULT_MANIFEST,
     EVALUATOR_EDGE_LIMITS,
-    ForcedGraphitiSupplementChatModelPort,
-    GraphitiSupplementCapture,
-    GraphitiSupplementCaptureComplete,
+    ForcedGraphSearchChatModelPort,
+    GraphSearchCapture,
+    GraphSearchCaptureComplete,
     aggregate_graph_routing_metrics,
     align_chunk_layers,
     build_replay_capture_artifact,
@@ -639,15 +639,15 @@ async def _capture_queries(
     rerank_mode: RerankMode,
     controller_mode: str,
 ) -> tuple[
-    tuple[GraphitiSupplementCapture, ...],
+    tuple[GraphSearchCapture, ...],
     dict[str, Mapping[str, Any]],
     dict[str, tuple[str, ...]],
 ]:
-    forced_model = ForcedGraphitiSupplementChatModelPort(
+    forced_model = ForcedGraphSearchChatModelPort(
         chat_model_adapter,
         controller_mode=controller_mode,
     )
-    capture_retriever = CapturingGraphitiSupplementRetriever(
+    capture_retriever = CapturingGraphSearchRetriever(
         ChatEvidenceRetriever(dependencies.retrieval_service),
         stop_after_capture=True,
     )
@@ -662,7 +662,7 @@ async def _capture_queries(
             retrieval_settings.cross_modal_min_cosine_similarity
         ),
     )
-    captures: list[GraphitiSupplementCapture] = []
+    captures: list[GraphSearchCapture] = []
     metrics: dict[str, Mapping[str, Any]] = {}
     simple_ids_by_case: dict[str, tuple[str, ...]] = {}
     for case in cases:
@@ -680,7 +680,7 @@ async def _capture_queries(
                     rerank_mode=rerank_mode,
                 )
             )
-        except GraphitiSupplementCaptureComplete:
+        except GraphSearchCaptureComplete:
             pass
         except BaseException:
             capture_retriever.abandon_case()
@@ -745,13 +745,17 @@ async def _column_layers(
         edge_limit=edge_limit,
         rerank_mode=rerank_mode,
     )
-    packed_full, _ = _pack_graphiti_supplement_evidence(
+    packed_full, _ = _pack_graph_search_evidence(
         candidate_set,
         excluded_index_chunk_ids=frozenset(),
+        source_chunk_target=12,
+        source_chunk_limit=16,
     )
-    packed_incremental, new_incremental_ids = _pack_graphiti_supplement_evidence(
+    packed_incremental, new_incremental_ids = _pack_graph_search_evidence(
         candidate_set,
         excluded_index_chunk_ids=frozenset(UUID(item) for item in excluded_chunk_ids),
+        source_chunk_target=12,
+        source_chunk_limit=16,
     )
     hydrated_ids = tuple(str(item) for item in candidate_set.hydrated_chunk_ids)
     reranked_ids = _ordered_reranked_chunk_ids(
@@ -813,7 +817,7 @@ async def _column_layers(
             and str(item.index_chunk_id) not in excluded_ids
             for item in candidate_set.traversal.chunks
         ),
-        "route_result_code": "admitted" if packed_full else "no_new_evidence",
+        "route_result_code": "admitted" if packed_full else "no_evidence",
     }
     return layers, metrics
 
@@ -1251,7 +1255,7 @@ def _checkpoint_complete_case(
     path: Path,
     *,
     case_id: str,
-    capture: GraphitiSupplementCapture | Mapping[str, Any] | None,
+    capture: GraphSearchCapture | Mapping[str, Any] | None,
     record: Mapping[str, Any],
 ) -> str:
     completed = checkpoint["completed_cases"]
@@ -1260,7 +1264,7 @@ def _checkpoint_complete_case(
         raise R4RunnerError("r4_checkpoint_completion_order_invalid")
     if capture is None:
         redacted_capture = None
-    elif isinstance(capture, GraphitiSupplementCapture):
+    elif isinstance(capture, GraphSearchCapture):
         redacted_capture = capture.as_dict()
     else:
         redacted_capture = dict(capture)

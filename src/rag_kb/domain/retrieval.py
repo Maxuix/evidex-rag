@@ -613,38 +613,47 @@ class EvidencePack:
                 raise ValueError("debug result_count must match evidence cardinality")
 
 
-GRAPHITI_SUPPLEMENT_ROUTE_RESULTS = frozenset(
+GRAPH_SEARCH_RESULT_CODES = frozenset(
     {
         "admitted",
-        "no_new_evidence",
-        "not_configured",
+        "no_evidence",
         "not_ready",
-        "runtime_unavailable",
+        "timeout",
+        "unavailable",
+        "rejected",
     }
 )
+# One Graph tool call may return at most this many source chunks.
+GRAPH_SEARCH_SOURCE_CHUNK_LIMIT = 16
 
 
 @dataclass(frozen=True, slots=True)
-class GraphitiSupplementResult:
-    """Bounded, source-only evidence returned by one adaptive supplement."""
+class GraphSearchResult:
+    """Bounded, source-only evidence returned by one first-class Graph search."""
 
     route_result_code: str
     evidence: tuple[Evidence, ...] = ()
     new_index_chunk_ids: tuple[UUID, ...] | None = None
+    candidate_count: int | None = None
+    path_count: int | None = None
+    hydrated_chunk_count: int | None = None
+    hop1_count: int | None = None
+    hop2_count: int | None = None
+    hop3_count: int | None = None
 
     def __post_init__(self) -> None:
-        if self.route_result_code not in GRAPHITI_SUPPLEMENT_ROUTE_RESULTS:
-            raise ValueError("Graphiti supplement route result is invalid")
-        if len(self.evidence) > 4:
-            raise ValueError("Graphiti supplement evidence is unbounded")
+        if self.route_result_code not in GRAPH_SEARCH_RESULT_CODES:
+            raise ValueError("Graph search result code is invalid")
+        if len(self.evidence) > GRAPH_SEARCH_SOURCE_CHUNK_LIMIT:
+            raise ValueError("Graph search evidence is unbounded")
         chunk_ids: set[UUID] = set()
         for expected_rank, item in enumerate(self.evidence, start=1):
             if item.rank != expected_rank:
-                raise ValueError("Graphiti supplement evidence ranks are invalid")
+                raise ValueError("Graph search evidence ranks are invalid")
             if item.score_kind is not EvidenceScoreKind.GRAPH_PATH:
-                raise ValueError("Graphiti supplement evidence must be graph grounded")
+                raise ValueError("Graph search evidence must be graph grounded")
             if item.index_chunk_id in chunk_ids:
-                raise ValueError("Graphiti supplement evidence chunks must be unique")
+                raise ValueError("Graph search evidence chunks must be unique")
             chunk_ids.add(item.index_chunk_id)
         new_ids = (
             tuple(item.index_chunk_id for item in self.evidence)
@@ -652,13 +661,22 @@ class GraphitiSupplementResult:
             else tuple(dict.fromkeys(self.new_index_chunk_ids))
         )
         if any(item not in chunk_ids for item in new_ids):
-            raise ValueError("Graphiti supplement new evidence is not in its path")
+            raise ValueError("Graph search new evidence is not in its paths")
         object.__setattr__(self, "new_index_chunk_ids", new_ids)
+        hop_counts = (self.hop1_count, self.hop2_count, self.hop3_count)
+        if any(value is not None for value in hop_counts) and not all(
+            value is not None for value in hop_counts
+        ):
+            raise ValueError("Graph search hop counts must be reported together")
+        if all(value is not None for value in hop_counts):
+            if sum(hop_counts) != len(self.evidence):  # type: ignore[arg-type]
+                raise ValueError("Graph search hop counts must match evidence")
         if self.route_result_code == "admitted":
-            if not self.evidence:
-                raise ValueError("admitted Graphiti supplement requires evidence")
-        elif self.evidence:
-            raise ValueError("unadmitted Graphiti supplement cannot carry evidence")
+            if not self.evidence or not new_ids:
+                raise ValueError("admitted Graph search requires new evidence")
+        elif self.route_result_code != "no_evidence":
+            if self.evidence or new_ids:
+                raise ValueError("unavailable Graph search cannot carry evidence")
 
     @property
     def new_evidence_count(self) -> int:

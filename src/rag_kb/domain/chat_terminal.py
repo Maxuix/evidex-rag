@@ -53,7 +53,7 @@ class ChatTerminalSuccessCommand:
         )
         if self.agent_trace is not None:
             if (
-                self.agent_trace.get("version") != "native_tool_calling_agent_v2"
+                self.agent_trace.get("version") != "native_tool_calling_agent_v3"
                 or not isinstance(self.agent_trace.get("events"), (list, tuple))
                 or len(self.agent_trace["events"]) > 32
             ):

@@ -16,13 +16,13 @@ from rag_kb.domain import (
     ChatToolCall,
     ChatToolDefinition,
     GraphitiEdgeResult,
-    GraphitiSupplementResult,
+    GraphSearchResult,
 )
 from tools.evaluate_adaptive_graph_route import (
-    CapturingGraphitiSupplementRetriever,
-    ForcedGraphitiSupplementChatModelPort,
-    GraphitiSupplementCapture,
-    GraphitiSupplementCaptureComplete,
+    CapturingGraphSearchRetriever,
+    ForcedGraphSearchChatModelPort,
+    GraphSearchCapture,
+    GraphSearchCaptureComplete,
     aggregate_graph_routing_metrics,
     aggregate_usage,
     align_chunk_layers,
@@ -115,15 +115,15 @@ class _RecordingRetriever:
         self.simple_calls += 1
         return (args, kwargs)
 
-    async def retrieve_graphiti_supplement(self, *args, **kwargs):
+    async def search_graph_relations(self, *args, **kwargs):
         self.supplement_calls += 1
-        return GraphitiSupplementResult("no_new_evidence")
+        return GraphSearchResult("no_evidence")
 
 
 def _tools() -> tuple[ChatToolDefinition, ...]:
     return (
         ChatToolDefinition("search_knowledge_base", "simple", {"type": "object"}),
-        ChatToolDefinition("graphiti_supplement", "graph", {"type": "object"}),
+        ChatToolDefinition("search_graph_relations", "graph", {"type": "object"}),
     )
 
 
@@ -341,8 +341,8 @@ class AdaptiveGraphEvaluationTests(unittest.IsolatedAsyncioTestCase):
             {
                 "events": [
                     {
-                        "tool": "graphiti_supplement",
-                        "retrieval_lane": "graphiti_supplement",
+                        "tool": "search_graph_relations",
+                        "retrieval_lane": "graph_relations",
                         "route_result_code": "admitted",
                         "rejected_claim_count": 1,
                         "rejection_reasons": ["evidence_ref"],
@@ -351,10 +351,10 @@ class AdaptiveGraphEvaluationTests(unittest.IsolatedAsyncioTestCase):
                 ]
             }
         )
-        self.assertEqual(trace["events"][0]["tool"], "graphiti_supplement")
+        self.assertEqual(trace["events"][0]["tool"], "search_graph_relations")
         self.assertEqual(
             trace["events"][0]["retrieval_lane"],
-            "graphiti_supplement",
+            "graph_relations",
         )
         self.assertNotIn("rejected_claim_count", trace["events"][0])
         self.assertNotIn("rejection_reasons", trace["events"][0])
@@ -366,7 +366,7 @@ class AdaptiveGraphEvaluationTests(unittest.IsolatedAsyncioTestCase):
                 "events": [
                     {
                         "tool": "search_knowledge_base",
-                        "retrieval_lane": "graphiti_supplement",
+                        "retrieval_lane": "graph_relations",
                         "route_reason_code": "relational_query_without_simple_evidence",
                         "route_result_code": "rejected",
                         "new_evidence_count": 0,
@@ -511,7 +511,7 @@ class AdaptiveGraphEvaluationTests(unittest.IsolatedAsyncioTestCase):
                         "route_result_code": "not_requested",
                     },
                     {
-                        "retrieval_lane": "graphiti_supplement",
+                        "retrieval_lane": "graph_relations",
                         "route_result_code": "admitted",
                         "new_evidence_count": 2,
                     },
@@ -677,7 +677,7 @@ class AdaptiveGraphEvaluationTests(unittest.IsolatedAsyncioTestCase):
                     "top1_gold_rerank_score": None,
                     "rerank_score_state": "not_applicable",
                     "rerank_reordered_chunk_count": 0,
-                    "route_reason_code": "relation_chain_gap",
+                    "route_reason_code": "relation_chain",
                     "route_result_code": "admitted",
                     "salvage_status": "not_attempted",
                     "final_outcome": "not_run",
@@ -783,7 +783,7 @@ class AdaptiveGraphEvaluationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_forced_controller_overrides_only_next_call_after_simple(self) -> None:
         delegate = _RecordingModel()
-        controller = ForcedGraphitiSupplementChatModelPort(
+        controller = ForcedGraphSearchChatModelPort(
             delegate,
             controller_mode="specific_tool_choice",
         )
@@ -814,7 +814,7 @@ class AdaptiveGraphEvaluationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(controller.usage, {"total_tokens": 3})
         self.assertEqual(controller.response_tool_names, [(), (), ()])
         self.assertEqual(delegate.requests[0].tool_choice, "required")
-        self.assertEqual(delegate.requests[1].tool_choice, "graphiti_supplement")
+        self.assertEqual(delegate.requests[1].tool_choice, "search_graph_relations")
         self.assertEqual(delegate.requests[2].tool_choice, "required")
         self.assertEqual(delegate.requests[1].messages, second.messages)
 
@@ -842,19 +842,19 @@ class AdaptiveGraphEvaluationTests(unittest.IsolatedAsyncioTestCase):
             tool_calls=(
                 ChatToolCall(
                     "graph-1",
-                    "graphiti_supplement",
+                    "search_graph_relations",
                     {
                         "query": "relation gap",
-                        "route_reason_code": "cross_document_relation_gap",
+                        "route_reason_code": "cross_document_relation",
                     },
                 ),
             ),
         )
         delegate = _QueuedModel([simple_call, supplement_call])
-        controller = ForcedGraphitiSupplementChatModelPort(delegate)
+        controller = ForcedGraphSearchChatModelPort(delegate)
         tools = _tools()
         initial_tools = tuple(
-            item for item in tools if item.name != "graphiti_supplement"
+            item for item in tools if item.name != "search_graph_relations"
         )
         first = ChatModelRequest(
             messages=(ChatModelMessage("user", "原始问题"),),
@@ -885,7 +885,7 @@ class AdaptiveGraphEvaluationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(delegate.requests[0].tool_choice, "auto")
         self.assertEqual(
             tuple(item.name for item in delegate.requests[1].tools),
-            ("graphiti_supplement",),
+            ("search_graph_relations",),
         )
         self.assertEqual(delegate.requests[1].tool_choice, "auto")
 
@@ -906,16 +906,16 @@ class AdaptiveGraphEvaluationTests(unittest.IsolatedAsyncioTestCase):
             tool_calls=(
                 ChatToolCall(
                     "graph-1",
-                    "graphiti_supplement",
+                    "search_graph_relations",
                     {
                         "query": "relation gap",
-                        "route_reason_code": "relation_chain_gap",
+                        "route_reason_code": "relation_chain",
                     },
                 ),
             ),
         )
         delegate = _QueuedModel([invalid, valid])
-        controller = ForcedGraphitiSupplementChatModelPort(delegate)
+        controller = ForcedGraphSearchChatModelPort(delegate)
         request = ChatModelRequest(
             messages=(
                 ChatModelMessage("user", "原始问题"),
@@ -930,17 +930,17 @@ class AdaptiveGraphEvaluationTests(unittest.IsolatedAsyncioTestCase):
         )
         response = await controller.complete(request)
 
-        self.assertEqual(response.tool_calls[0].name, "graphiti_supplement")
+        self.assertEqual(response.tool_calls[0].name, "search_graph_relations")
         self.assertEqual(controller.replacements, 1)
         self.assertEqual(controller.model_calls, 2)
         self.assertEqual(delegate.requests[1].tool_choice, "auto")
-        self.assertEqual(delegate.requests[1].tools[0].name, "graphiti_supplement")
+        self.assertEqual(delegate.requests[1].tools[0].name, "search_graph_relations")
         self.assertEqual(delegate.requests[1].messages[-1].role, "user")
         self.assertNotEqual(delegate.requests[1].messages, request.messages)
 
     async def test_forced_controller_has_explicit_single_tool_provider_fallback(self) -> None:
         delegate = _RecordingModel()
-        controller = ForcedGraphitiSupplementChatModelPort(
+        controller = ForcedGraphSearchChatModelPort(
             delegate,
             controller_mode="single_tool_required_fallback",
         )
@@ -962,20 +962,20 @@ class AdaptiveGraphEvaluationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(effective.tool_choice, "required")
         self.assertEqual(
             tuple(item.name for item in effective.tools),
-            ("graphiti_supplement",),
+            ("search_graph_relations",),
         )
         self.assertEqual(tuple(item.name for item in original.tools), (
             "search_knowledge_base",
-            "graphiti_supplement",
+            "search_graph_relations",
         ))
 
     async def test_single_tool_fallback_restricts_initial_required_choice(self) -> None:
         delegate = _RecordingModel()
-        controller = ForcedGraphitiSupplementChatModelPort(
+        controller = ForcedGraphSearchChatModelPort(
             delegate,
             controller_mode="single_tool_required_fallback",
         )
-        tools = tuple(item for item in _tools() if item.name != "graphiti_supplement")
+        tools = tuple(item for item in _tools() if item.name != "search_graph_relations")
         request = ChatModelRequest(
             messages=(ChatModelMessage("user", "原始问题"),),
             tools=tools,
@@ -990,7 +990,7 @@ class AdaptiveGraphEvaluationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_actual_auto_observer_does_not_change_model_request(self) -> None:
         delegate = _RecordingModel()
-        controller = ForcedGraphitiSupplementChatModelPort(
+        controller = ForcedGraphSearchChatModelPort(
             delegate,
             controller_mode="actual_auto",
         )
@@ -1028,15 +1028,15 @@ class AdaptiveGraphEvaluationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_capture_wraps_post_validation_retrieval_boundary_once(self) -> None:
         delegate = _RecordingRetriever()
-        capture = CapturingGraphitiSupplementRetriever(
+        capture = CapturingGraphSearchRetriever(
             delegate,
             stop_after_capture=True,
         )
         excluded = (uuid4(), uuid4())
         capture.begin_case("route-graph-001")
         await capture.retrieve_query("context", "simple")
-        with self.assertRaises(GraphitiSupplementCaptureComplete):
-            await capture.retrieve_graphiti_supplement(
+        with self.assertRaises(GraphSearchCaptureComplete):
+            await capture.search_graph_relations(
                 "context",
                 "  星澜工厂 控股方 法定代表人  ",
                 excluded_index_chunk_ids=excluded,
@@ -1052,15 +1052,15 @@ class AdaptiveGraphEvaluationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_capture_rejects_duplicate_supplement_call(self) -> None:
         delegate = _RecordingRetriever()
-        capture = CapturingGraphitiSupplementRetriever(delegate)
+        capture = CapturingGraphSearchRetriever(delegate)
         capture.begin_case("route-graph-001")
-        await capture.retrieve_graphiti_supplement(
+        await capture.search_graph_relations(
             "context",
             "first relation query",
             excluded_index_chunk_ids=(),
         )
         with self.assertRaises(RuntimeError):
-            await capture.retrieve_graphiti_supplement(
+            await capture.search_graph_relations(
                 "context",
                 "second relation query",
                 excluded_index_chunk_ids=(),
@@ -1071,7 +1071,7 @@ class AdaptiveGraphEvaluationTests(unittest.IsolatedAsyncioTestCase):
 
     def test_replay_capture_artifact_is_versioned_immutable_and_secret_free(self) -> None:
         runtime_ids = [str(uuid4()) for _ in range(4)]
-        capture = GraphitiSupplementCapture(
+        capture = GraphSearchCapture(
             case_id="route-graph-001",
             query="relation query",
             excluded_index_chunk_ids=(str(uuid4()),),

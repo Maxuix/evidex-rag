@@ -26,6 +26,7 @@ class ChatProgressActivity(StrEnum):
     LOAD_CONTEXT = "load_context"
     TOOL_DECISION = "tool_decision"
     SEARCH_KNOWLEDGE_BASE = "search_knowledge_base"
+    SEARCH_GRAPH_RELATIONS = "search_graph_relations"
     CALCULATE = "calculate"
     SUBMIT_ANSWER = "submit_answer"
     RETRIEVAL_COMPLETE = "retrieval_complete"

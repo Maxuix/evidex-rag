@@ -362,12 +362,16 @@ class ChatCreationServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             created["retrieval_strategy"],
             {
-                "profile_version": "adaptive_graphiti_v2",
+                "profile_version": "adaptive_graphiti_v3",
                 "strategy": "exact_vector",
                 "top_k": 8,
                 "rerank_mode": "local_minilm_v1",
-                "router": "native_agent_path_guard_v2",
+                "router": "native_agent_graph_tool_v1",
                 "augmentation": "graphiti_path_v3",
+                "graph_edge_limit": 16,
+                "graph_source_chunk_target": 12,
+                "graph_source_chunk_limit": 16,
+                "graph_call_timeout_seconds": 90,
             },
         )
 

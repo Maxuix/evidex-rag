@@ -305,7 +305,8 @@ export interface ChatRunRetrieval {
     | "graphiti_path_augmented_v2"
     | "graphiti_path_augmented_v3"
     | "adaptive_graphiti_v1"
-    | "adaptive_graphiti_v2";
+    | "adaptive_graphiti_v2"
+    | "adaptive_graphiti_v3";
   strategy: "exact_vector" | "hybrid";
   top_k: number;
   rerank_mode: RerankMode;
@@ -352,34 +353,46 @@ export interface GraphConfigUpdate {
 }
 
 export interface ChatAgentTraceEvent {
-  tool: "search_knowledge_base" | "calculate" | "submit_answer" | "protocol";
+  tool: "search_knowledge_base" | "search_graph_relations" | "calculate" | "submit_answer" | "protocol";
   status: "ok" | "rejected" | "salvaged" | "refused";
   tool_call_id: string;
   refs: string[];
   count: number;
-  retrieval_lane?: "simple" | "graphiti_supplement";
+  retrieval_lane?: "simple" | "graph_relations";
   route_reason_code?:
-    | "cross_document_relation_gap"
-    | "entity_alias_gap"
-    | "relation_chain_gap";
+    | "direct_relation"
+    | "relation_chain"
+    | "entity_alias"
+    | "cross_document_relation";
   route_result_code?:
     | "not_requested"
     | "admitted"
-    | "no_new_evidence"
-    | "not_configured"
+    | "no_evidence"
     | "not_ready"
-    | "runtime_unavailable"
+    | "timeout"
+    | "unavailable"
     | "rejected";
   new_evidence_count?: number;
+  call_index?: number;
+  invocation_source?: "agent" | "legacy_guard";
+  duration_ms?: number;
+  candidate_count?: number;
+  path_count?: number;
+  hydrated_chunk_count?: number;
+  returned_chunk_count?: number;
+  hop1_count?: number;
+  hop2_count?: number;
+  hop3_count?: number;
 }
 
 export interface ChatAgent {
-  version: "native_tool_calling_agent_v2";
+  version: "native_tool_calling_agent_v3";
   budget: {
     max_model_rounds: number;
+    max_graph_calls: number;
   };
   trace: {
-    version: "native_tool_calling_agent_v2";
+    version: "native_tool_calling_agent_v3";
     events: ChatAgentTraceEvent[];
     budget: ChatAgent["budget"];
     usage: Record<string, number>;
@@ -557,6 +570,7 @@ export type ChatProgressActivity =
   | "load_context"
   | "tool_decision"
   | "search_knowledge_base"
+  | "search_graph_relations"
   | "calculate"
   | "submit_answer"
   | "retrieval_complete"

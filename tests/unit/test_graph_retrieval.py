@@ -219,13 +219,17 @@ class GraphRetrievalTests(unittest.IsolatedAsyncioTestCase):
             graphiti_graph=_Graphiti(),
         )
 
-        result = await service.retrieve_graphiti_supplement(
+        result = await service.search_graph_relations(
             _context(),
             knowledge_base_id=KB_ID,
             index_revision_id=REVISION_ID,
             query="Atlas relation",
             rerank_mode=RerankMode.CLASSIC,
             excluded_index_chunk_ids=(CHUNK_3,),
+            edge_limit=16,
+            source_chunk_target=12,
+            source_chunk_limit=16,
+            call_timeout_seconds=90,
         )
 
         self.assertEqual(result.route_result_code, "admitted")
@@ -233,6 +237,7 @@ class GraphRetrievalTests(unittest.IsolatedAsyncioTestCase):
             [item.index_chunk_id for item in result.evidence], [CHUNK_1, CHUNK_3]
         )
         self.assertEqual(result.new_index_chunk_ids, (CHUNK_1,))
+        self.assertEqual(result.hop1_count, 2)
         self.assertEqual(provider.queries, [])
         self.assertEqual(graph_store.traversal_queries, [])
 
@@ -251,13 +256,17 @@ class GraphRetrievalTests(unittest.IsolatedAsyncioTestCase):
             graphiti_graph=_Graphiti(),
         )
 
-        result = await service.retrieve_graphiti_supplement(
+        result = await service.search_graph_relations(
             _context(),
             knowledge_base_id=KB_ID,
             index_revision_id=REVISION_ID,
             query="Atlas relation",
             rerank_mode=RerankMode.CLASSIC,
             excluded_index_chunk_ids=(),
+            edge_limit=16,
+            source_chunk_target=12,
+            source_chunk_limit=16,
+            call_timeout_seconds=90,
         )
 
         self.assertEqual(result.route_result_code, "not_ready")
@@ -276,13 +285,17 @@ class GraphRetrievalTests(unittest.IsolatedAsyncioTestCase):
             graphiti_graph=_Graphiti(),
         )
 
-        result = await service.retrieve_graphiti_supplement(
+        result = await service.search_graph_relations(
             _context(),
             knowledge_base_id=KB_ID,
             index_revision_id=REVISION_ID,
             query="Atlas relation",
             rerank_mode=RerankMode.CLASSIC,
             excluded_index_chunk_ids=(),
+            edge_limit=16,
+            source_chunk_target=12,
+            source_chunk_limit=16,
+            call_timeout_seconds=90,
         )
 
         self.assertEqual(result.route_result_code, "admitted")

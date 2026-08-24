@@ -29,8 +29,8 @@ from rag_kb.domain import GRAPH_EXTRACTOR_VERSION, RerankMode
 from rag_kb.retrieval.profile import adaptive_graphiti_profile
 from rag_kb.services.chat_execution import ChatEvidenceRetriever
 from tools.evaluate_adaptive_graph_route import (
-    CapturingGraphitiSupplementRetriever,
-    ForcedGraphitiSupplementChatModelPort,
+    CapturingGraphSearchRetriever,
+    ForcedGraphSearchChatModelPort,
     evaluate_graph_extraction,
     normalize_term,
     summarize_graph_route_trace,
@@ -472,10 +472,10 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
         chat_model, _ = await _evaluator_chat_model(
             dependencies, bundle=bundle, model_override=None
         )
-        observing_model = ForcedGraphitiSupplementChatModelPort(
+        observing_model = ForcedGraphSearchChatModelPort(
             chat_model, controller_mode=ACTUAL_AUTO_CONTROLLER_MODE
         )
-        observing_retriever = CapturingGraphitiSupplementRetriever(
+        observing_retriever = CapturingGraphSearchRetriever(
             ChatEvidenceRetriever(dependencies.retrieval_service),
             stop_after_capture=False,
         )

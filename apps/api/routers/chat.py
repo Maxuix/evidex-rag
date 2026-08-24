@@ -17,7 +17,7 @@ from apps.api.pagination import decode_cursor, encode_cursor
 from apps.api.security import get_auth_context
 from rag_kb.auth import AuthContext
 from rag_kb.domain import (
-    CHAT_GRAPHITI_ROUTE_REASONS,
+    CHAT_GRAPH_SEARCH_REASONS,
     ChatMessage,
     ChatProgressSnapshot,
     ChatRun,
@@ -486,8 +486,8 @@ def _public_agent_trace(value: dict[str, object] | None) -> dict[str, object] | 
             public_event = {
                 key: item for key, item in event.items() if key not in internal_keys
             }
-            if event.get("retrieval_lane") == "graphiti_supplement":
-                if public_event.get("route_reason_code") not in CHAT_GRAPHITI_ROUTE_REASONS:
+            if event.get("retrieval_lane") == "graph_relations":
+                if public_event.get("route_reason_code") not in CHAT_GRAPH_SEARCH_REASONS:
                     public_event.pop("route_reason_code", None)
             public_events.append(public_event)
         trace["events"] = public_events

@@ -7,6 +7,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 import json
 import re
+import time
 from typing import Any, Protocol
 from uuid import UUID
 
@@ -27,7 +28,7 @@ from rag_kb.domain import (
     AnswerOutcome,
     CHAT_AGENT_REJECTION_REASONS,
     CHAT_AGENT_TRACE_ARTIFACT,
-    CHAT_GRAPHITI_ROUTE_REASONS,
+    CHAT_GRAPH_SEARCH_REASONS,
     ChatAgentBudget,
     ChatAgentTrace,
     ChatAgentTraceEvent,
@@ -48,6 +49,7 @@ from rag_kb.domain import (
     EvidenceEnvelope,
     EvidencePack,
     ErrorCode,
+    GraphSearchResult,
     PromptEvidence,
     RetrievalStrategy,
     ValidatedAnswer,
@@ -76,29 +78,6 @@ _OPEN_WORLD_REVIEW_FEEDBACK = (
     "Nearby entities, a different positive relation, and retrieval absence never "
     'prove the proposition false. Refuse when exact support is absent."}'
 )
-_GRAPH_RELATION_SIGNAL = re.compile(
-    r"(?:属于|所属|隶属|归属|关联|关系|母公司|子公司|控股|持有|参股|投资|收购|并购|"
-    r"供应|供货|供应商|供应链|合作|共建|参与|设立|成立|创办|交付|制造|生产|研发|开发|"
-    r"承建|建设|部署|服务|运营|安排|担任|董事|任职|负责|注册地|总部|位于|落在|旧称|曾用名|"
-    r"别名|对应|背后|最终|间接|上游|下游|通过|代号)"
-    r"|\b(?:belongs?\s+to|parent\s+(?:company|organization)|subsidiar(?:y|ies)|"
-    r"acquir(?:e|es|ed|ing)|suppl(?:y|ies|ied|ier|iers)|partner(?:s|ed|ship)?|"
-    r"owns?|ownership|controlled?\s+by|holds?\s+(?:a\s+)?stake|invest(?:s|ed|ment)?|"
-    r"director|appoint(?:s|ed|ment)?|serv(?:e|es|ed)\s+as|reports?\s+to|part\s+of|"
-    r"affiliat(?:e|es|ed|ion)|connect(?:s|ed|ion)?|"
-    r"co-?found(?:s|ed)?|establish(?:es|ed)?|found(?:s|ed)?|operat(?:e|es|ed|or)|"
-    r"manag(?:e|es|ed|er)|serv(?:e|es|ed)|deliver(?:s|ed)?|manufactur(?:e|es|ed|er)|"
-    r"produc(?:e|es|ed|er)|develop(?:s|ed|er)?|builds?|built|deploy(?:s|ed)?|"
-    r"headquarter(?:s|ed)?|located|formerly|alias|ultimately|indirectly|upstream|"
-    r"downstream|through)\b",
-    re.IGNORECASE,
-)
-_GRAPH_CHAIN_SIGNAL = re.compile(
-    r"(?:旧称|曾用名|别名|最终|间接|上游|下游|通过|背后|代号)"
-    r"|\b(?:formerly|alias|ultimately|indirectly|upstream|downstream|through|"
-    r"code[- ]?named)\b",
-    re.IGNORECASE,
-)
 _GENERIC_UNANSWERED = "Some requested parts remain unanswered"
 
 
@@ -121,13 +100,18 @@ class EvidenceRetriever(Protocol):
         top_k_override: int | None = None,
     ) -> EvidencePack: ...
 
-    async def retrieve_graphiti_supplement(
+    async def search_graph_relations(
         self,
         context: ChatExecutionContext,
         query: str,
         *,
         excluded_index_chunk_ids: tuple[UUID, ...],
-    ): ...
+    ) -> GraphSearchResult: ...
+
+    async def graph_relations_capable(
+        self,
+        context: ChatExecutionContext,
+    ) -> bool: ...
 
 
 class VisualEvidencePreparer(Protocol):
@@ -164,13 +148,12 @@ class NativeToolCallingAgent:
     async def run(self, context: ChatExecutionContext) -> ChatPipelineState:
         budget = _budget_from_context(context)
         adaptive_graphiti = _adaptive_graphiti_enabled(context)
-        messages = _initial_messages(context, budget, adaptive=adaptive_graphiti)
-        tools = _tools(
-            adaptive=adaptive_graphiti,
-            graphiti_enabled=False,
-            round_number=1,
-            max_model_rounds=budget.max_model_rounds,
+        graph_ready = (
+            await self._retriever.graph_relations_capable(context)
+            if adaptive_graphiti
+            else False
         )
+        messages = _initial_messages(context, budget, adaptive=adaptive_graphiti)
         evidence: list[Evidence] = []
         evidence_ids: set[object] = set()
         prompt_by_ref: dict[str, PromptEvidence] = {}
@@ -188,10 +171,9 @@ class NativeToolCallingAgent:
         events: list[ChatAgentTraceEvent] = []
         retrieval_calls = 0
         calculation_calls = 0
+        graph_call_count = 0
         latest_visual_state: ChatAnsweringState | None = None
         strategy = None
-        simple_attempted = False
-        graphiti_attempted = False
         submit_only_repair_used = False
         submit_only_repair_pending = False
         open_world_review_used = False
@@ -204,9 +186,8 @@ class NativeToolCallingAgent:
                 if repair_round
                 else _tools(
                     adaptive=adaptive_graphiti,
-                    graphiti_enabled=simple_attempted and not graphiti_attempted,
-                    round_number=round_number,
-                    max_model_rounds=budget.max_model_rounds,
+                    graph_ready=graph_ready,
+                    graph_calls_remaining=budget.max_graph_calls - graph_call_count,
                 )
             )
             response = await self._complete_round(
@@ -256,9 +237,10 @@ class NativeToolCallingAgent:
             if repair_round and response.tool_calls[0].name != "submit_answer":
                 events.append(_rejected_event(call))
                 break
-            if call.name in {"search_knowledge_base", "graphiti_supplement"}:
+            if call.name in {"search_knowledge_base", "search_graph_relations"}:
+                graph_search_result = None
+                graph_duration_ms: int | None = None
                 route_reason_code: str | None = None
-                graphiti_result = None
                 if call.name == "search_knowledge_base":
                     queries = _search_arguments(call.arguments)
                     lane = "simple"
@@ -268,47 +250,34 @@ class NativeToolCallingAgent:
                             ChatModelMessage("tool", _ARGUMENT_ERROR, tool_call_id=call.id)
                         )
                         continue
-                elif not adaptive_graphiti:
+                elif (
+                    not adaptive_graphiti
+                    or not graph_ready
+                    or graph_call_count >= budget.max_graph_calls
+                ):
+                    # The model invoked a Graph tool that is not currently
+                    # available; fail closed without any external query.
                     events.append(_rejected_event(call))
                     messages.append(
                         ChatModelMessage("tool", _ARGUMENT_ERROR, tool_call_id=call.id)
                     )
                     continue
                 else:
-                    supplement = _supplement_arguments(call.arguments)
-                    if supplement is None:
+                    graph_request = _graph_arguments(call.arguments)
+                    if graph_request is None:
                         events.append(_rejected_event(call))
                         messages.append(
                             ChatModelMessage("tool", _ARGUMENT_ERROR, tool_call_id=call.id)
                         )
                         continue
-                    if not simple_attempted or graphiti_attempted:
-                        messages.append(
-                            ChatModelMessage(
-                                "tool",
-                                _ARGUMENT_ERROR,
-                                tool_call_id=call.id,
-                            )
-                        )
-                        events.append(
-                            ChatAgentTraceEvent(
-                                tool="graphiti_supplement",
-                                status="rejected",
-                                tool_call_id=call.id,
-                                retrieval_lane="graphiti_supplement",
-                                route_reason_code=supplement[1],
-                                route_result_code="rejected",
-                                new_evidence_count=0,
-                            )
-                        )
-                        continue
-                    query, route_reason_code = supplement
+                    query, route_reason_code = graph_request
                     queries = (query,)
-                    lane = "graphiti_supplement"
-                    graphiti_attempted = True
+                    lane = "graph_relations"
+                    graph_call_count += 1
+                    started = time.monotonic()
                     try:
-                        graphiti_result = (
-                            await self._retriever.retrieve_graphiti_supplement(
+                        graph_search_result = (
+                            await self._retriever.search_graph_relations(
                                 context,
                                 queries[0],
                                 excluded_index_chunk_ids=tuple(evidence_ids),
@@ -316,12 +285,13 @@ class NativeToolCallingAgent:
                         )
                     except ChatPipelineExecutionError as error:
                         raise error.retain_model_calls(tuple(calls))
+                    graph_duration_ms = int((time.monotonic() - started) * 1000)
                     packs = (
                         EvidencePack(
                             knowledge_base_id=context.knowledge_base_id,
                             index_revision_id=context.index_revision_id,
                             strategy=RetrievalStrategy.EXACT_VECTOR,
-                            evidence=graphiti_result.evidence,
+                            evidence=graph_search_result.evidence,
                         ),
                     )
                 if lane == "simple":
@@ -343,8 +313,6 @@ class NativeToolCallingAgent:
                     packs,
                     eligibility=self._eligibility,
                 )
-                if lane == "simple":
-                    simple_attempted = True
                 for offset in range(max((len(items) for items in query_candidates), default=0)):
                     for items in query_candidates:
                         if offset >= len(items):
@@ -413,18 +381,18 @@ class NativeToolCallingAgent:
                     visible_visual_refs,
                     sent_content_refs,
                     status=(
-                        "graphiti_supplement"
-                        if graphiti_result is not None
+                        "graph_relations"
+                        if graph_search_result is not None
                         else "ok"
                     ),
                     route_result_code=(
-                        graphiti_result.route_result_code
-                        if graphiti_result is not None
+                        graph_search_result.route_result_code
+                        if graph_search_result is not None
                         else None
                     ),
                     new_evidence_count=(
-                        graphiti_result.new_evidence_count
-                        if graphiti_result is not None
+                        graph_search_result.new_evidence_count
+                        if graph_search_result is not None
                         else None
                     ),
                 )
@@ -471,15 +439,59 @@ class NativeToolCallingAgent:
                             route_reason_code if adaptive_graphiti else None
                         ),
                         route_result_code=(
-                            graphiti_result.route_result_code
-                            if graphiti_result is not None
+                            graph_search_result.route_result_code
+                            if graph_search_result is not None
                             else "not_requested"
                             if adaptive_graphiti
                             else None
                         ),
                         new_evidence_count=(
-                            graphiti_result.new_evidence_count
-                            if graphiti_result is not None
+                            graph_search_result.new_evidence_count
+                            if graph_search_result is not None
+                            else None
+                        ),
+                        call_index=(
+                            graph_call_count
+                            if graph_search_result is not None
+                            else None
+                        ),
+                        invocation_source=(
+                            "agent" if graph_search_result is not None else None
+                        ),
+                        duration_ms=graph_duration_ms,
+                        candidate_count=(
+                            graph_search_result.candidate_count
+                            if graph_search_result is not None
+                            else None
+                        ),
+                        path_count=(
+                            graph_search_result.path_count
+                            if graph_search_result is not None
+                            else None
+                        ),
+                        hydrated_chunk_count=(
+                            graph_search_result.hydrated_chunk_count
+                            if graph_search_result is not None
+                            else None
+                        ),
+                        returned_chunk_count=(
+                            len(graph_search_result.evidence)
+                            if graph_search_result is not None
+                            else None
+                        ),
+                        hop1_count=(
+                            graph_search_result.hop1_count
+                            if graph_search_result is not None
+                            else None
+                        ),
+                        hop2_count=(
+                            graph_search_result.hop2_count
+                            if graph_search_result is not None
+                            else None
+                        ),
+                        hop3_count=(
+                            graph_search_result.hop3_count
+                            if graph_search_result is not None
                             else None
                         ),
                     )
@@ -548,123 +560,6 @@ class NativeToolCallingAgent:
                         ChatModelMessage("tool", _ARGUMENT_ERROR, tool_call_id=call.id)
                     )
                     continue
-                if (
-                    adaptive_graphiti
-                    and simple_attempted
-                    and not graphiti_attempted
-                    and not repair_round
-                    and not result.repair_eligible
-                    and result.validated.outcome is not AnswerOutcome.REFUSED
-                ):
-                    # A valid Simple-only draft is not proof that its cited
-                    # chunks contain a complete relation path. Probe once with
-                    # the original question and admit only query-grounded,
-                    # source-backed path chunks that were not already seen.
-                    graphiti_attempted = True
-                    try:
-                        graphiti_result = (
-                            await self._retriever.retrieve_graphiti_supplement(
-                                context,
-                                context.query,
-                                excluded_index_chunk_ids=tuple(evidence_ids),
-                            )
-                        )
-                    except ChatPipelineExecutionError as error:
-                        raise error.retain_model_calls(tuple(calls))
-                    retrieval_calls += 1
-                    new_items: tuple[Evidence, ...] = ()
-                    if graphiti_result.route_result_code == "admitted":
-                        graph_pack = EvidencePack(
-                            knowledge_base_id=context.knowledge_base_id,
-                            index_revision_id=context.index_revision_id,
-                            strategy=RetrievalStrategy.EXACT_VECTOR,
-                            evidence=graphiti_result.evidence,
-                        )
-                        graph_candidates = _query_candidates(
-                            (graph_pack,),
-                            eligibility=self._eligibility,
-                        )[0]
-                        guarded_path_ids = {
-                            item.graph_path_id
-                            for item in graph_candidates
-                            if item.graph_hop_count in {2, 3}
-                        }
-                        new_items = tuple(
-                            item
-                            for item in graph_candidates
-                            if item.graph_path_id in guarded_path_ids
-                        )
-                        if new_items:
-                            for item in new_items:
-                                if item.index_chunk_id in evidence_ids:
-                                    for index, existing in enumerate(evidence):
-                                        if existing.index_chunk_id == item.index_chunk_id:
-                                            evidence[index] = replace(item, rank=existing.rank)
-                                            break
-                                else:
-                                    evidence_ids.add(item.index_chunk_id)
-                                    evidence.append(item)
-                            cumulative = _pack(context, evidence, strategy)
-                            envelope = build_evidence_envelope(cumulative)
-                            _assign_refs(
-                                envelope,
-                                cumulative.evidence,
-                                ref_by_prompt_id,
-                                prompt_by_ref,
-                                evidence_by_ref,
-                            )
-                            result_refs = tuple(
-                                ref_by_prompt_id[item.index_chunk_id]
-                                for item in new_items
-                            )
-                            tool_result, newly_sent_content_refs = _search_result(
-                                ((context.query, result_refs),),
-                                prompt_by_ref,
-                                loaded_visual_refs,
-                                sent_content_refs,
-                                status="graphiti_supplement",
-                                route_result_code="admitted",
-                                new_evidence_count=len(new_items),
-                            )
-                            messages.append(
-                                ChatModelMessage(
-                                    "tool",
-                                    tool_result,
-                                    tool_call_id=call.id,
-                                )
-                            )
-                            sent_content_refs.update(newly_sent_content_refs)
-                            events.append(
-                                ChatAgentTraceEvent(
-                                    tool="graphiti_supplement",
-                                    status="ok",
-                                    tool_call_id=f"guard_{round_number}",
-                                    refs=result_refs[:_TRACE_REF_LIMIT],
-                                    count=len(result_refs),
-                                    retrieval_lane="graphiti_supplement",
-                                    route_reason_code="relation_chain_gap",
-                                    route_result_code="admitted",
-                                    new_evidence_count=len(new_items),
-                                )
-                            )
-                            continue
-                    guard_route_result = graphiti_result.route_result_code
-                    if guard_route_result == "admitted":
-                        # Retrieval found source-backed Graph evidence, but the
-                        # guard did not find a complete new two-hop path to
-                        # surface. Record the final guard admission decision.
-                        guard_route_result = "no_new_evidence"
-                    events.append(
-                        ChatAgentTraceEvent(
-                            tool="graphiti_supplement",
-                            status="ok",
-                            tool_call_id=f"guard_{round_number}",
-                            retrieval_lane="graphiti_supplement",
-                            route_reason_code="relation_chain_gap",
-                            route_result_code=guard_route_result,
-                            new_evidence_count=0,
-                        )
-                    )
                 validated = result.validated
                 retained_refs = result.retained_refs
                 salvaged = result.salvaged
@@ -774,22 +669,13 @@ class NativeToolCallingAgent:
             rejection_reasons = result.rejection_reasons
         forced_guard_incomplete = (
             validated.outcome is not AnswerOutcome.REFUSED
-            and (
-                (
-                    _requires_open_world_support_review(context.query)
-                    and not open_world_review_used
-                )
-                or (
-                    adaptive_graphiti
-                    and simple_attempted
-                    and not graphiti_attempted
-                )
-            )
+            and _requires_open_world_support_review(context.query)
+            and not open_world_review_used
         )
         if forced_guard_incomplete:
             # The emergency finalizer has no remaining round in which the
-            # model can review an exact proposition or newly found Graph path.
-            # Fail closed instead of bypassing either safety guard.
+            # model can review an exact proposition. Fail closed instead of
+            # bypassing the open-world support guard.
             validated = _refusal_answer()
             retained_refs = ()
             salvaged = True
@@ -896,20 +782,15 @@ def _initial_messages(
     adaptive: bool = False,
 ) -> list[ChatModelMessage]:
     adaptive_instruction = (
-        " This ChatRun uses Simple-first adaptive Graphiti routing: call "
-        "search_knowledge_base with only the queries field first. After a "
-        "completed Simple search, even when it returns no evidence, the separate "
-        "graphiti_supplement tool may "
-        "appear at most once for a missing relation, "
-        "cross-document relation gap, entity alias gap, or relation-chain gap. "
-        "Use the original question or an explicit anchor-to-target chain query; "
-        "one-to-three-hop chains are supported. Do not request absence proof or "
-        "use Graphiti for "
-        "tables, charts, calculations, images, or direct facts. Graphiti "
-        "returns source chunks only; never treat edge facts as answer evidence. "
-        "If you submit a non-refusal after Simple without using Graphiti, a "
-        "bounded server-side completeness guard may return new path evidence; "
-        "then reassess the draft and submit again."
+        " This ChatRun exposes the first-class search_graph_relations tool up "
+        "to twice per run: use it when a direct relation between question "
+        "entities, an entity alias, a relation chain, or a cross-document "
+        "relation is needed and Simple retrieval alone is not enough. A "
+        "single hop is already a complete path; one-to-three-hop chains are "
+        "supported. Simple retrieval is never a prerequisite for Graph, and "
+        "either tool may be used in any order. search_graph_relations "
+        "returns source chunks only; never treat edge facts as answer "
+        "evidence. A Graph miss never proves that a relation does not exist."
         if adaptive
         else ""
     )
@@ -949,9 +830,8 @@ def _initial_messages(
 def _tools(
     *,
     adaptive: bool = False,
-    graphiti_enabled: bool = False,
-    round_number: int = 1,
-    max_model_rounds: int = 8,
+    graph_ready: bool = False,
+    graph_calls_remaining: int = 0,
 ) -> tuple[ChatToolDefinition, ...]:
     search_properties: dict[str, Any] = {
         "queries": {
@@ -963,9 +843,8 @@ def _tools(
     }
     search_required = ["queries"]
     search_description = (
-        "Search the frozen scope. Use Simple first; after a completed Simple "
-        "result, a Graphiti supplement may appear at most once when a last-hop "
-        "relation, cross-document relation, entity alias, or relation-chain gap remains."
+        "Search the frozen ChatRun knowledge-base scope with one to three "
+        "queries. Not a prerequisite for search_graph_relations."
         if adaptive
         else "Search only the frozen ChatRun knowledge-base scope with one to three queries."
     )
@@ -979,22 +858,25 @@ def _tools(
             "additionalProperties": False,
         },
     )
-    supplement = ChatToolDefinition(
-        "graphiti_supplement",
-        "After a completed Simple search, issue at most one concise last-hop relation "
-        "lookup for a remaining cross-document, alias, or relation-chain gap. Do not "
-        "repeat the full question, mix two hops, request absence proof, or ask for "
-        "tables, charts, calculations, images, or direct facts.",
+    graph = ChatToolDefinition(
+        "search_graph_relations",
+        "Search the frozen knowledge base's entity-relation graph for a "
+        "complete one-to-three-hop source-backed path. Available at most "
+        "twice per run; a direct one-hop relation is already complete. Use "
+        "for a direct relation, a relation chain, an entity alias, or a "
+        "cross-document relation. Returns source chunks only; never treat "
+        "edge facts as answer evidence. A miss never proves that a relation "
+        "does not exist.",
         {
             "type": "object",
             "properties": {
                 "query": {"type": "string", "minLength": 1, "maxLength": _QUERY_MAX_CHARS},
-                "route_reason_code": {
+                "reason": {
                     "type": "string",
-                    "enum": sorted(CHAT_GRAPHITI_ROUTE_REASONS),
+                    "enum": sorted(CHAT_GRAPH_SEARCH_REASONS),
                 },
             },
-            "required": ["query", "route_reason_code"],
+            "required": ["query", "reason"],
             "additionalProperties": False,
         },
     )
@@ -1043,8 +925,8 @@ def _tools(
             "additionalProperties": False,
         },
     )
-    if adaptive and graphiti_enabled:
-        return search, calculate, supplement, submit
+    if adaptive and graph_ready and graph_calls_remaining > 0:
+        return search, graph, calculate, submit
     return search, calculate, submit
 
 
@@ -1074,18 +956,18 @@ def _search_arguments(
     return queries
 
 
-def _supplement_arguments(
+def _graph_arguments(
     value: Mapping[str, Any],
 ) -> tuple[str, str] | None:
-    if not isinstance(value, Mapping) or set(value) != {"query", "route_reason_code"}:
+    if not isinstance(value, Mapping) or set(value) != {"query", "reason"}:
         return None
     query = value.get("query")
-    reason = value.get("route_reason_code")
+    reason = value.get("reason")
     if (
         not isinstance(query, str)
         or not query.strip()
         or len(query.strip()) > _QUERY_MAX_CHARS
-        or reason not in CHAT_GRAPHITI_ROUTE_REASONS
+        or reason not in CHAT_GRAPH_SEARCH_REASONS
     ):
         return None
     return query.strip(), str(reason)
@@ -1573,17 +1455,6 @@ def _requires_open_world_support_review(query: str) -> bool:
     ) is not None
 
 
-def _has_graph_relation_signal(query: str) -> bool:
-    """Recognize generic relation composition without entity-specific rules."""
-
-    normalized = query.strip()
-    matches = tuple(_GRAPH_RELATION_SIGNAL.finditer(normalized))
-    distinct_signals = {match.group(0).casefold() for match in matches}
-    return len(distinct_signals) >= 2 or bool(
-        matches and _GRAPH_CHAIN_SIGNAL.search(normalized)
-    )
-
-
 def _normalized_unanswered(
     value: object,
     *,
@@ -1606,7 +1477,7 @@ def _rejected_event(call: ChatToolCall, tool: str | None = None) -> ChatAgentTra
     return ChatAgentTraceEvent(
         tool=resolved_tool
         if resolved_tool
-        in {"search_knowledge_base", "graphiti_supplement", "calculate", "submit_answer", "protocol"}
+        in {"search_knowledge_base", "search_graph_relations", "calculate", "submit_answer", "protocol"}
         else "protocol",
         status="rejected",
         tool_call_id=call.id,
@@ -1652,17 +1523,21 @@ def _budget_from_context(
     raw = value.get("budget")
     try:
         max_model_rounds = raw["max_model_rounds"]
+        max_graph_calls = raw["max_graph_calls"]
         if (
             set(value) != {"version", "budget"}
-            or value.get("version") != "native_tool_calling_agent_v2"
+            or value.get("version") != "native_tool_calling_agent_v3"
             or not isinstance(raw, Mapping)
-            or set(raw) != {"max_model_rounds"}
+            or set(raw) != {"max_model_rounds", "max_graph_calls"}
             or isinstance(max_model_rounds, bool)
             or not isinstance(max_model_rounds, int)
+            or isinstance(max_graph_calls, bool)
+            or not isinstance(max_graph_calls, int)
         ):
             raise ValueError
         return ChatAgentBudget(
             max_model_rounds=max_model_rounds,
+            max_graph_calls=max_graph_calls,
         )
     except (KeyError, TypeError, ValueError):
         raise ChatPipelineExecutionError(

@@ -127,12 +127,13 @@ class ChatRetrievalRequest(PublicSchema):
 
 class ChatAgentBudgetResponse(PublicSchema):
     max_model_rounds: Annotated[int, Field(ge=1, le=12)]
+    max_graph_calls: Annotated[int, Field(ge=1, le=2)]
 
 
 class ChatAgentTraceEventResponse(PublicSchema):
     tool: Literal[
         "search_knowledge_base",
-        "graphiti_supplement",
+        "search_graph_relations",
         "calculate",
         "submit_answer",
         "protocol",
@@ -141,26 +142,37 @@ class ChatAgentTraceEventResponse(PublicSchema):
     tool_call_id: Annotated[str, Field(min_length=1, max_length=128)]
     refs: tuple[Annotated[str, Field(min_length=1, max_length=128)], ...] = ()
     count: Annotated[int, Field(ge=0)] = 0
-    retrieval_lane: Literal["simple", "graphiti_supplement"] | None = None
+    retrieval_lane: Literal["simple", "graph_relations"] | None = None
     route_reason_code: Literal[
-        "cross_document_relation_gap",
-        "entity_alias_gap",
-        "relation_chain_gap",
+        "direct_relation",
+        "relation_chain",
+        "entity_alias",
+        "cross_document_relation",
     ] | None = None
     route_result_code: Literal[
         "not_requested",
         "admitted",
-        "no_new_evidence",
-        "not_configured",
+        "no_evidence",
         "not_ready",
-        "runtime_unavailable",
+        "timeout",
+        "unavailable",
         "rejected",
     ] | None = None
-    new_evidence_count: Annotated[int, Field(ge=0, le=4)] | None = None
+    new_evidence_count: Annotated[int, Field(ge=0, le=16)] | None = None
+    call_index: Annotated[int, Field(ge=1, le=2)] | None = None
+    invocation_source: Literal["agent", "legacy_guard"] | None = None
+    duration_ms: Annotated[int, Field(ge=0)] | None = None
+    candidate_count: Annotated[int, Field(ge=0)] | None = None
+    path_count: Annotated[int, Field(ge=0)] | None = None
+    hydrated_chunk_count: Annotated[int, Field(ge=0)] | None = None
+    returned_chunk_count: Annotated[int, Field(ge=0)] | None = None
+    hop1_count: Annotated[int, Field(ge=0)] | None = None
+    hop2_count: Annotated[int, Field(ge=0)] | None = None
+    hop3_count: Annotated[int, Field(ge=0)] | None = None
 
 
 class ChatAgentTraceResponse(PublicSchema):
-    version: Literal["native_tool_calling_agent_v2"]
+    version: Literal["native_tool_calling_agent_v3"]
     events: tuple[ChatAgentTraceEventResponse, ...]
     budget: ChatAgentBudgetResponse
     usage: dict[str, Annotated[int, Field(ge=0)]]
@@ -168,7 +180,7 @@ class ChatAgentTraceResponse(PublicSchema):
 
 
 class ChatAgentResponse(PublicSchema):
-    version: Literal["native_tool_calling_agent_v2"]
+    version: Literal["native_tool_calling_agent_v3"]
     budget: ChatAgentBudgetResponse
     trace: ChatAgentTraceResponse | None = None
 
@@ -218,6 +230,7 @@ class ChatRunRetrievalResponse(PublicSchema):
         "graphiti_path_augmented_v3",
         "adaptive_graphiti_v1",
         "adaptive_graphiti_v2",
+        "adaptive_graphiti_v3",
     ]
     strategy: Literal["exact_vector", "hybrid"]
     top_k: Annotated[int, Field(ge=1, le=100)]

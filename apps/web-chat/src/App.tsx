@@ -1123,9 +1123,9 @@ function KnowledgeChat({
                     },
                     {
                       value: "auto",
-                      label: "自动（按需 Graphiti）",
+                      label: "自动（图谱关系检索）",
                       description: graphReady
-                        ? "先普通检索，证据不足且适合关系扩展时按需补充 Graphiti。"
+                        ? "首轮同时提供普通检索与图谱关系检索，由 Agent 自主选择；每个回答最多调用两次图谱。"
                         : "当前将仅使用普通检索，不会自动开始建图。",
                     },
                     {
@@ -1499,8 +1499,14 @@ interface AnswerProcessMetrics {
   citationCount: number;
   calculationCalls: number;
   modelRounds: number;
-  graphitiStatus: string | null;
-  graphitiNewEvidenceCount: number;
+  graphRelationsStatus: string | null;
+  graphRelationsNewEvidenceCount: number;
+  graphRelationsCallCount: number;
+  graphRelationsHopCounts: {
+    hop1Count: number;
+    hop2Count: number;
+    hop3Count: number;
+  };
 }
 
 interface AnswerProcessStep {
@@ -1551,8 +1557,8 @@ function AnswerProcessMetricList({ metrics }: { metrics: AnswerProcessMetrics })
       <li className="retrieval"><span>检索</span><strong>{metrics.retrievalCalls} 次</strong></li>
       <li className="candidate"><span>候选资料</span><strong>{metrics.candidateCount} 条</strong></li>
       <li className="citation"><span>最终引用</span><strong>{metrics.citationCount} 条</strong></li>
-      {metrics.graphitiStatus ? (
-        <li className="retrieval"><span>Graphiti 补充</span><strong>{metrics.graphitiStatus}</strong></li>
+      {metrics.graphRelationsStatus ? (
+        <li className="retrieval"><span>图谱关系检索</span><strong>{metrics.graphRelationsStatus}</strong></li>
       ) : null}
     </ul>
   );
@@ -1630,8 +1636,11 @@ function AnswerProcessTechnicalDetails({
             <div><dt>Agent</dt><dd>Native Tool-Calling</dd></div>
             <div><dt>模型</dt><dd>{modelName}</dd></div>
             <div><dt>检索调用</dt><dd>{metrics.retrievalCalls} 次</dd></div>
-            {metrics.graphitiStatus ? (
-              <div><dt>Graphiti 补充</dt><dd>{metrics.graphitiStatus}</dd></div>
+            {metrics.graphRelationsStatus ? (
+              <div><dt>图谱关系检索</dt><dd>{metrics.graphRelationsStatus}</dd></div>
+            ) : null}
+            {metrics.graphRelationsCallCount > 0 ? (
+              <div><dt>图谱调用</dt><dd>{metrics.graphRelationsCallCount} 次</dd></div>
             ) : null}
             <div><dt>计算调用</dt><dd>{metrics.calculationCalls} 次</dd></div>
             {hiddenDiagnosticCount > 0 ? (
@@ -1653,19 +1662,19 @@ function answerProcessMetrics(run: ChatRun): AnswerProcessMetrics {
     (event) => event.tool === "search_knowledge_base" && event.status === "ok",
   ) ?? [];
   const eventCandidateCount = Math.max(0, ...searchEvents.map((event) => event.count));
-  const graphitiEvents = trace?.events.filter(
-    (event) => (
-      event.tool === "search_knowledge_base"
-      && event.retrieval_lane === "graphiti_supplement"
-    ),
+  const graphEvents = trace?.events.filter(
+    (event) => event.tool === "search_graph_relations",
   ) ?? [];
-  const lastGraphitiEvent = graphitiEvents[graphitiEvents.length - 1];
-  const graphitiStatus = ["adaptive_graphiti_v1", "adaptive_graphiti_v2"].includes(
-    run.retrieval.profile_version,
-  )
-    ? graphitiStatusLabel(
-      lastGraphitiEvent?.route_result_code,
-      lastGraphitiEvent?.new_evidence_count ?? 0,
+  const lastGraphEvent = graphEvents[graphEvents.length - 1];
+  const adaptiveProfile = [
+    "adaptive_graphiti_v1",
+    "adaptive_graphiti_v2",
+    "adaptive_graphiti_v3",
+  ].includes(run.retrieval.profile_version);
+  const graphRelationsStatus = adaptiveProfile
+    ? graphRelationsStatusLabel(
+      lastGraphEvent?.route_result_code,
+      lastGraphEvent?.new_evidence_count ?? 0,
     )
     : null;
   return {
@@ -1680,26 +1689,32 @@ function answerProcessMetrics(run: ChatRun): AnswerProcessMetrics {
       ).length ?? 0,
     ),
     modelRounds: safeUsageCount(run, "model_rounds", 0),
-    graphitiStatus,
-    graphitiNewEvidenceCount: lastGraphitiEvent?.new_evidence_count ?? 0,
+    graphRelationsStatus,
+    graphRelationsNewEvidenceCount: lastGraphEvent?.new_evidence_count ?? 0,
+    graphRelationsCallCount: graphEvents.length,
+    graphRelationsHopCounts: {
+      hop1Count: lastGraphEvent?.hop1_count ?? 0,
+      hop2Count: lastGraphEvent?.hop2_count ?? 0,
+      hop3Count: lastGraphEvent?.hop3_count ?? 0,
+    },
   };
 }
 
-function graphitiStatusLabel(
+function graphRelationsStatusLabel(
   status: ChatAgentTraceEvent["route_result_code"] | undefined,
   count: number,
 ): string {
   switch (status) {
     case "admitted":
-      return `新增 ${count} 条`;
-    case "no_new_evidence":
-      return "已请求但无新证据";
-    case "not_configured":
-      return "当前未配置";
+      return `已返回 · 新增 ${count} 条`;
+    case "no_evidence":
+      return "已检索但无新增证据";
     case "not_ready":
-      return "当前未就绪";
-    case "runtime_unavailable":
-      return "当前不可用";
+      return "图谱当前未就绪";
+    case "timeout":
+      return "图谱检索超时";
+    case "unavailable":
+      return "图谱当前不可用";
     case "rejected":
       return "未执行";
     case "not_requested":
@@ -1755,11 +1770,26 @@ function candidateSummaryDescription(metrics: AnswerProcessMetrics): string {
 }
 
 function graphitiSummaryDescription(metrics: AnswerProcessMetrics): string {
-  if (!metrics.graphitiStatus) return "";
-  if (metrics.graphitiNewEvidenceCount > 0) {
-    return ` Graphiti 补充新增 ${metrics.graphitiNewEvidenceCount} 条来源候选。`;
+  const { graphRelationsStatus: status } = metrics;
+  if (!status) return "";
+  const hopSummary = [
+    metrics.graphRelationsHopCounts.hop1Count > 0
+      ? `一跳 ${metrics.graphRelationsHopCounts.hop1Count} 条`
+      : "",
+    metrics.graphRelationsHopCounts.hop2Count > 0
+      ? `两跳 ${metrics.graphRelationsHopCounts.hop2Count} 条`
+      : "",
+    metrics.graphRelationsHopCounts.hop3Count > 0
+      ? `三跳 ${metrics.graphRelationsHopCounts.hop3Count} 条`
+      : "",
+  ].filter(Boolean).join("、");
+  const hopText = metrics.graphRelationsCallCount > 0 && hopSummary
+    ? `（${hopSummary}）`
+    : "";
+  if (metrics.graphRelationsNewEvidenceCount > 0) {
+    return ` 图谱关系检索新增 ${metrics.graphRelationsNewEvidenceCount} 条来源候选${hopText}。`;
   }
-  return ` Graphiti 补充：${metrics.graphitiStatus}。`;
+  return ` 图谱关系检索（第 ${metrics.graphRelationsCallCount} 次）：${status}${hopText}。`;
 }
 
 function completedAnswerSteps(
@@ -1839,6 +1869,11 @@ function liveActivityView(
       step: 2,
       title: "查找资料",
       description: "正在知识库中查找与问题相关的候选内容。",
+    },
+    search_graph_relations: {
+      step: 2,
+      title: "图谱关系检索",
+      description: "正在图谱中查找完整的关系路径证据。",
     },
     retrieval_complete: {
       step: 2,

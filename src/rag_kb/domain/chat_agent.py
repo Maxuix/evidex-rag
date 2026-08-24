@@ -6,14 +6,15 @@ from dataclasses import dataclass
 from typing import Any
 
 
-CHAT_AGENT_VERSION = "native_tool_calling_agent_v2"
+CHAT_AGENT_VERSION = "native_tool_calling_agent_v3"
 CHAT_AGENT_TRACE_ARTIFACT = "chat_agent_trace"
-CHAT_RETRIEVAL_LANES = frozenset({"simple", "graphiti_supplement"})
-CHAT_GRAPHITI_ROUTE_REASONS = frozenset(
+CHAT_RETRIEVAL_LANES = frozenset({"simple", "graph_relations"})
+CHAT_GRAPH_SEARCH_REASONS = frozenset(
     {
-        "cross_document_relation_gap",
-        "entity_alias_gap",
-        "relation_chain_gap",
+        "direct_relation",
+        "relation_chain",
+        "entity_alias",
+        "cross_document_relation",
     }
 )
 CHAT_AGENT_REJECTION_REASONS = frozenset(
@@ -25,22 +26,28 @@ CHAT_AGENT_REJECTION_REASONS = frozenset(
         "visual_ref",
     }
 )
-CHAT_GRAPHITI_ROUTE_RESULTS = frozenset(
+CHAT_GRAPH_SEARCH_RESULTS = frozenset(
     {
         "not_requested",
         "admitted",
-        "no_new_evidence",
-        "not_configured",
+        "no_evidence",
         "not_ready",
-        "runtime_unavailable",
+        "timeout",
+        "unavailable",
         "rejected",
     }
 )
+CHAT_AGENT_INVOCATION_SOURCES = frozenset({"agent", "legacy_guard"})
+# Per-run ceiling matched by ChatAgentBudget.max_graph_calls.
+CHAT_GRAPH_CALL_LIMIT = 2
+# Per-call hard ceiling for new source chunks returned by one Graph search.
+CHAT_GRAPH_NEW_CHUNK_LIMIT = 16
 
 
 @dataclass(frozen=True, slots=True)
 class ChatAgentBudget:
     max_model_rounds: int = 8
+    max_graph_calls: int = 2
 
     def __post_init__(self) -> None:
         if (
@@ -49,9 +56,18 @@ class ChatAgentBudget:
             or not 1 <= self.max_model_rounds <= 12
         ):
             raise ValueError("chat agent budget is invalid")
+        if (
+            isinstance(self.max_graph_calls, bool)
+            or not isinstance(self.max_graph_calls, int)
+            or not 1 <= self.max_graph_calls <= CHAT_GRAPH_CALL_LIMIT
+        ):
+            raise ValueError("chat agent graph budget is invalid")
 
     def as_dict(self) -> dict[str, int]:
-        return {"max_model_rounds": self.max_model_rounds}
+        return {
+            "max_model_rounds": self.max_model_rounds,
+            "max_graph_calls": self.max_graph_calls,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,13 +84,23 @@ class ChatAgentTraceEvent:
     rejected_claim_count: int = 0
     rejection_reasons: tuple[str, ...] = ()
     submit_only_repair: bool = False
+    call_index: int | None = None
+    invocation_source: str | None = None
+    duration_ms: int | None = None
+    candidate_count: int | None = None
+    path_count: int | None = None
+    hydrated_chunk_count: int | None = None
+    returned_chunk_count: int | None = None
+    hop1_count: int | None = None
+    hop2_count: int | None = None
+    hop3_count: int | None = None
 
     def __post_init__(self) -> None:
         if (
             self.tool
             not in {
                 "search_knowledge_base",
-                "graphiti_supplement",
+                "search_graph_relations",
                 "calculate",
                 "submit_answer",
                 "protocol",
@@ -91,20 +117,62 @@ class ChatAgentTraceEvent:
             or len(self.rejection_reasons) != len(set(self.rejection_reasons))
             or any(item not in CHAT_AGENT_REJECTION_REASONS for item in self.rejection_reasons)
             or self.retrieval_lane not in CHAT_RETRIEVAL_LANES | {None}
-            or self.route_reason_code not in CHAT_GRAPHITI_ROUTE_REASONS | {None}
-            or self.route_result_code not in CHAT_GRAPHITI_ROUTE_RESULTS | {None}
+            or self.route_reason_code not in CHAT_GRAPH_SEARCH_REASONS | {None}
+            or self.route_result_code not in CHAT_GRAPH_SEARCH_RESULTS | {None}
             or (
                 self.new_evidence_count is not None
-                and not 0 <= self.new_evidence_count <= 4
+                and not 0 <= self.new_evidence_count <= CHAT_GRAPH_NEW_CHUNK_LIMIT
+            )
+            or (
+                self.call_index is not None
+                and (
+                    isinstance(self.call_index, bool)
+                    or not isinstance(self.call_index, int)
+                    or not 1 <= self.call_index <= CHAT_GRAPH_CALL_LIMIT
+                )
+            )
+            or self.invocation_source not in CHAT_AGENT_INVOCATION_SOURCES | {None}
+            or (
+                self.duration_ms is not None
+                and (
+                    isinstance(self.duration_ms, bool)
+                    or not isinstance(self.duration_ms, int)
+                    or self.duration_ms < 0
+                )
             )
         ):
             raise ValueError("chat agent trace event is invalid")
+        for counter in (
+            self.candidate_count,
+            self.path_count,
+            self.hydrated_chunk_count,
+            self.returned_chunk_count,
+            self.hop1_count,
+            self.hop2_count,
+            self.hop3_count,
+        ):
+            if counter is not None and (
+                isinstance(counter, bool)
+                or not isinstance(counter, int)
+                or counter < 0
+            ):
+                raise ValueError("chat agent trace counters are invalid")
         if self.retrieval_lane is None and any(
             value is not None
             for value in (
                 self.route_reason_code,
                 self.route_result_code,
                 self.new_evidence_count,
+                self.call_index,
+                self.invocation_source,
+                self.duration_ms,
+                self.candidate_count,
+                self.path_count,
+                self.hydrated_chunk_count,
+                self.returned_chunk_count,
+                self.hop1_count,
+                self.hop2_count,
+                self.hop3_count,
             )
         ):
             raise ValueError("trace route fields require a retrieval lane")
@@ -112,18 +180,63 @@ class ChatAgentTraceEvent:
             if self.route_reason_code is not None or self.route_result_code != "not_requested":
                 raise ValueError("simple trace route fields are invalid")
             if self.new_evidence_count is not None:
-                raise ValueError("simple trace cannot report supplement evidence")
-        if self.retrieval_lane == "graphiti_supplement":
+                raise ValueError("simple trace cannot report graph evidence")
+            if any(
+                value is not None
+                for value in (
+                    self.call_index,
+                    self.invocation_source,
+                    self.duration_ms,
+                    self.candidate_count,
+                    self.path_count,
+                    self.hydrated_chunk_count,
+                    self.returned_chunk_count,
+                    self.hop1_count,
+                    self.hop2_count,
+                    self.hop3_count,
+                )
+            ):
+                raise ValueError("simple trace cannot report graph counters")
+        if self.retrieval_lane == "graph_relations":
             if (
                 self.route_reason_code is None
                 or self.route_result_code is None
                 or self.new_evidence_count is None
+                or self.call_index is None
+                or self.invocation_source is None
             ):
-                raise ValueError("Graphiti trace route fields are incomplete")
-            if self.route_result_code == "admitted" and self.count < 1:
-                raise ValueError("admitted Graphiti trace must carry path evidence")
-            if self.route_result_code != "admitted" and self.new_evidence_count != 0:
-                raise ValueError("non-admitted Graphiti trace cannot add evidence")
+                raise ValueError("Graph trace route fields are incomplete")
+            if self.route_result_code == "admitted":
+                if self.count < 1 or self.new_evidence_count < 1:
+                    raise ValueError("admitted Graph trace must carry new evidence")
+            elif self.new_evidence_count != 0:
+                raise ValueError("non-admitted Graph trace cannot add evidence")
+            if self.invocation_source == "legacy_guard":
+                if self.duration_ms is not None:
+                    raise ValueError("legacy guard events cannot fake a duration")
+            elif self.duration_ms is None:
+                raise ValueError("agent-invoked Graph trace requires a duration")
+            if (
+                self.returned_chunk_count is not None
+                and self.returned_chunk_count != self.count
+            ):
+                raise ValueError("Graph returned chunk count must match event refs")
+            hop_counts = (
+                self.hop1_count,
+                self.hop2_count,
+                self.hop3_count,
+            )
+            if any(value is not None for value in hop_counts) and not all(
+                value is not None for value in hop_counts
+            ):
+                raise ValueError("Graph hop counts must be reported together")
+            if all(value is not None for value in hop_counts):
+                total = sum(hop_counts)  # type: ignore[arg-type]
+                returned = self.returned_chunk_count
+                if returned is None:
+                    returned = self.count
+                if total != returned:
+                    raise ValueError("Graph hop counts must match returned evidence")
 
     def as_dict(self) -> dict[str, Any]:
         value = {
@@ -140,6 +253,21 @@ class ChatAgentTraceEvent:
                     "route_reason_code": self.route_reason_code,
                     "route_result_code": self.route_result_code,
                     "new_evidence_count": self.new_evidence_count,
+                }
+            )
+        if self.retrieval_lane == "graph_relations":
+            value.update(
+                {
+                    "call_index": self.call_index,
+                    "invocation_source": self.invocation_source,
+                    "duration_ms": self.duration_ms,
+                    "candidate_count": self.candidate_count,
+                    "path_count": self.path_count,
+                    "hydrated_chunk_count": self.hydrated_chunk_count,
+                    "returned_chunk_count": self.returned_chunk_count,
+                    "hop1_count": self.hop1_count,
+                    "hop2_count": self.hop2_count,
+                    "hop3_count": self.hop3_count,
                 }
             )
         if self.rejected_claim_count or self.rejection_reasons or self.submit_only_repair:

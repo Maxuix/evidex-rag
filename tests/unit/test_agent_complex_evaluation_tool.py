@@ -699,11 +699,12 @@ class AgentComplexEvaluationToolTests(unittest.TestCase):
         )
         self.assertTrue(score["strict_correct"])
 
-    def test_protocol_diagnostic_accepts_native_agent_v1_and_v2(self) -> None:
+    def test_protocol_diagnostic_accepts_native_agent_versions(self) -> None:
         case = _minimal_case()
         for version in (
             "native_tool_calling_agent_v1",
             "native_tool_calling_agent_v2",
+            "native_tool_calling_agent_v3",
         ):
             with self.subTest(version=version):
                 score = score_complex_case(

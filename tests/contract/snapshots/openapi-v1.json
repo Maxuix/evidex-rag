@@ -39,6 +39,12 @@
       "ChatAgentBudgetResponse": {
         "additionalProperties": false,
         "properties": {
+          "max_graph_calls": {
+            "maximum": 2.0,
+            "minimum": 1.0,
+            "title": "Max Graph Calls",
+            "type": "integer"
+          },
           "max_model_rounds": {
             "maximum": 12.0,
             "minimum": 1.0,
@@ -47,7 +53,8 @@
           }
         },
         "required": [
-          "max_model_rounds"
+          "max_model_rounds",
+          "max_graph_calls"
         ],
         "title": "ChatAgentBudgetResponse",
         "type": "object"
@@ -69,7 +76,7 @@
             ]
           },
           "version": {
-            "const": "native_tool_calling_agent_v2",
+            "const": "native_tool_calling_agent_v3",
             "title": "Version",
             "type": "string"
           }
@@ -84,16 +91,116 @@
       "ChatAgentTraceEventResponse": {
         "additionalProperties": false,
         "properties": {
+          "call_index": {
+            "anyOf": [
+              {
+                "maximum": 2.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Call Index"
+          },
+          "candidate_count": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Candidate Count"
+          },
           "count": {
             "default": 0,
             "minimum": 0.0,
             "title": "Count",
             "type": "integer"
           },
+          "duration_ms": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Ms"
+          },
+          "hop1_count": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hop1 Count"
+          },
+          "hop2_count": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hop2 Count"
+          },
+          "hop3_count": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hop3 Count"
+          },
+          "hydrated_chunk_count": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hydrated Chunk Count"
+          },
+          "invocation_source": {
+            "anyOf": [
+              {
+                "enum": [
+                  "agent",
+                  "legacy_guard"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Invocation Source"
+          },
           "new_evidence_count": {
             "anyOf": [
               {
-                "maximum": 4.0,
+                "maximum": 16.0,
                 "minimum": 0.0,
                 "type": "integer"
               },
@@ -102,6 +209,18 @@
               }
             ],
             "title": "New Evidence Count"
+          },
+          "path_count": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Path Count"
           },
           "refs": {
             "default": [],
@@ -118,7 +237,7 @@
               {
                 "enum": [
                   "simple",
-                  "graphiti_supplement"
+                  "graph_relations"
                 ],
                 "type": "string"
               },
@@ -128,13 +247,26 @@
             ],
             "title": "Retrieval Lane"
           },
+          "returned_chunk_count": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Returned Chunk Count"
+          },
           "route_reason_code": {
             "anyOf": [
               {
                 "enum": [
-                  "cross_document_relation_gap",
-                  "entity_alias_gap",
-                  "relation_chain_gap"
+                  "direct_relation",
+                  "relation_chain",
+                  "entity_alias",
+                  "cross_document_relation"
                 ],
                 "type": "string"
               },
@@ -150,10 +282,10 @@
                 "enum": [
                   "not_requested",
                   "admitted",
-                  "no_new_evidence",
-                  "not_configured",
+                  "no_evidence",
                   "not_ready",
-                  "runtime_unavailable",
+                  "timeout",
+                  "unavailable",
                   "rejected"
                 ],
                 "type": "string"
@@ -177,7 +309,7 @@
           "tool": {
             "enum": [
               "search_knowledge_base",
-              "graphiti_supplement",
+              "search_graph_relations",
               "calculate",
               "submit_answer",
               "protocol"
@@ -231,7 +363,7 @@
             "type": "object"
           },
           "version": {
-            "const": "native_tool_calling_agent_v2",
+            "const": "native_tool_calling_agent_v3",
             "title": "Version",
             "type": "string"
           }
@@ -1099,7 +1231,8 @@
               "graphiti_path_augmented_v2",
               "graphiti_path_augmented_v3",
               "adaptive_graphiti_v1",
-              "adaptive_graphiti_v2"
+              "adaptive_graphiti_v2",
+              "adaptive_graphiti_v3"
             ],
             "title": "Profile Version",
             "type": "string"

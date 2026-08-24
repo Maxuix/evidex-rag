@@ -5,7 +5,7 @@ from __future__ import annotations
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-EXPECTED_REVISION = "0015_remove_retired_chat_state"
+EXPECTED_REVISION = "0016_first_class_graph_tool"
 
 
 class DatabaseReadinessError(RuntimeError):

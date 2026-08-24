@@ -14,7 +14,7 @@ from rag_kb.domain import (
     Evidence,
     EvidencePack,
     EvidenceScoreKind,
-    GraphitiSupplementResult,
+    GraphSearchResult,
     RetrievalDebug,
     RetrievalQueryPlan,
     RerankMode,
@@ -53,37 +53,116 @@ def _context() -> ChatExecutionContext:
     )
 
 
+def _graph_evidence(
+    context: ChatExecutionContext,
+    *,
+    chunk_id,
+    rank: int = 1,
+    graph_hop_count: int = 1,
+) -> Evidence:
+    return Evidence(
+        rank=rank,
+        index_chunk_id=chunk_id,
+        indexed_document_version_id=uuid4(),
+        document_id=uuid4(),
+        document_version_id=uuid4(),
+        index_revision_id=context.index_revision_id,
+        ordinal=0,
+        text="graph path evidence",
+        source_location={},
+        hierarchy={},
+        source_metadata={},
+        score=1.0,
+        score_kind=EvidenceScoreKind.GRAPH_PATH,
+        graph_path_id="path",
+        graph_anchor_index_chunk_id=uuid4(),
+        graph_hop_count=graph_hop_count,
+        graph_path_rank=1,
+    )
+
+
 class ChatExecutionServiceTests(unittest.IsolatedAsyncioTestCase):
-    def test_admitted_graph_trace_can_reuse_all_simple_evidence(self) -> None:
+    def test_admitted_graph_trace_counts_only_new_path_chunks(self) -> None:
         event = ChatAgentTraceEvent(
-            tool="graphiti_supplement",
+            tool="search_graph_relations",
             status="ok",
             tool_call_id="graph-overlap",
-            refs=("ev_1",),
-            count=1,
-            retrieval_lane="graphiti_supplement",
-            route_reason_code="cross_document_relation_gap",
+            refs=("ev_1", "ev_2"),
+            count=2,
+            retrieval_lane="graph_relations",
+            route_reason_code="direct_relation",
             route_result_code="admitted",
-            new_evidence_count=0,
+            new_evidence_count=1,
+            call_index=1,
+            invocation_source="agent",
+            duration_ms=42,
+            candidate_count=16,
+            path_count=1,
+            returned_chunk_count=2,
+            hop1_count=2,
+            hop2_count=0,
+            hop3_count=0,
         )
 
-        self.assertEqual(event.new_evidence_count, 0)
+        self.assertEqual(event.new_evidence_count, 1)
+        self.assertEqual(event.call_index, 1)
 
-    def test_admitted_graph_trace_still_requires_path_evidence(self) -> None:
-        with self.assertRaisesRegex(ValueError, "must carry path evidence"):
+    def test_admitted_graph_trace_still_requires_new_evidence(self) -> None:
+        with self.assertRaisesRegex(ValueError, "must carry new evidence"):
             ChatAgentTraceEvent(
-                tool="graphiti_supplement",
+                tool="search_graph_relations",
                 status="ok",
                 tool_call_id="graph-empty",
                 refs=(),
                 count=0,
-                retrieval_lane="graphiti_supplement",
-                route_reason_code="cross_document_relation_gap",
+                retrieval_lane="graph_relations",
+                route_reason_code="direct_relation",
                 route_result_code="admitted",
                 new_evidence_count=0,
+                call_index=1,
+                invocation_source="agent",
+                duration_ms=10,
             )
 
-    async def test_adaptive_snapshot_uses_exact_simple_and_supplement_method(self) -> None:
+    def test_graph_trace_requires_call_index_and_duration_for_agent_calls(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Graph trace route fields are incomplete"):
+            ChatAgentTraceEvent(
+                tool="search_graph_relations",
+                status="ok",
+                tool_call_id="graph-call",
+                retrieval_lane="graph_relations",
+                route_reason_code="relation_chain",
+                route_result_code="no_evidence",
+                new_evidence_count=0,
+                duration_ms=10,
+            )
+        with self.assertRaisesRegex(ValueError, "requires a duration"):
+            ChatAgentTraceEvent(
+                tool="search_graph_relations",
+                status="ok",
+                tool_call_id="graph-call",
+                retrieval_lane="graph_relations",
+                route_reason_code="relation_chain",
+                route_result_code="no_evidence",
+                new_evidence_count=0,
+                call_index=1,
+                invocation_source="agent",
+            )
+        with self.assertRaisesRegex(ValueError, "cannot fake a duration"):
+            ChatAgentTraceEvent(
+                tool="search_graph_relations",
+                status="ok",
+                tool_call_id="guard_3",
+                retrieval_lane="graph_relations",
+                route_reason_code="relation_chain",
+                route_result_code="no_evidence",
+                new_evidence_count=0,
+                call_index=1,
+                invocation_source="legacy_guard",
+                duration_ms=5,
+            )
+
+    async def test_adaptive_snapshot_uses_exact_simple_and_graph_method(self) -> None:
         context = _context()
         context = replace(
             context,
@@ -91,29 +170,12 @@ class ChatExecutionServiceTests(unittest.IsolatedAsyncioTestCase):
                 top_k=3,
             ).as_dict(),
         )
-        evidence = Evidence(
-            rank=1,
-            index_chunk_id=uuid4(),
-            indexed_document_version_id=uuid4(),
-            document_id=uuid4(),
-            document_version_id=uuid4(),
-            index_revision_id=context.index_revision_id,
-            ordinal=0,
-            text="supplement",
-            source_location={},
-            hierarchy={},
-            source_metadata={},
-            score=1.0,
-            score_kind=EvidenceScoreKind.GRAPH_PATH,
-            graph_path_id="path",
-            graph_anchor_index_chunk_id=uuid4(),
-            graph_hop_count=1,
-            graph_path_rank=1,
-        )
+        chunk_id = uuid4()
+        evidence = _graph_evidence(context, chunk_id=chunk_id)
 
         class Retrieval:
             request = None
-            supplement_call = None
+            graph_call = None
 
             async def retrieve(self, auth, request):
                 del auth
@@ -124,15 +186,29 @@ class ChatExecutionServiceTests(unittest.IsolatedAsyncioTestCase):
                     strategy=RetrievalStrategy.EXACT_VECTOR,
                 )
 
-            async def retrieve_graphiti_supplement(self, auth, **kwargs):
+            async def search_graph_relations(self, auth, **kwargs):
                 del auth
-                self.supplement_call = kwargs
-                return GraphitiSupplementResult("admitted", (evidence,))
+                self.graph_call = kwargs
+                return GraphSearchResult(
+                    "admitted",
+                    (evidence,),
+                    new_index_chunk_ids=(chunk_id,),
+                    candidate_count=16,
+                    path_count=1,
+                    hydrated_chunk_count=2,
+                    hop1_count=1,
+                    hop2_count=0,
+                    hop3_count=0,
+                )
+
+            async def search_graph_relations_capable(self, auth, **kwargs):
+                del auth, kwargs
+                return True
 
         retrieval = Retrieval()
         retriever = ChatEvidenceRetriever(retrieval)  # type: ignore[arg-type]
         await retriever.retrieve_query(context, "query")
-        supplement = await retriever.retrieve_graphiti_supplement(
+        result = await retriever.search_graph_relations(
             context,
             "relation",
             excluded_index_chunk_ids=(),
@@ -140,11 +216,17 @@ class ChatExecutionServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNotNone(retrieval.request)
         self.assertIs(retrieval.request.strategy, RetrievalStrategy.EXACT_VECTOR)
-        self.assertEqual(supplement.evidence, (evidence,))
-        assert retrieval.supplement_call is not None
-        self.assertEqual(retrieval.supplement_call["index_revision_id"], context.index_revision_id)
+        self.assertEqual(result.evidence, (evidence,))
+        assert retrieval.graph_call is not None
         self.assertEqual(
-            retrieval.supplement_call["rerank_mode"],
+            retrieval.graph_call["index_revision_id"], context.index_revision_id
+        )
+        self.assertEqual(retrieval.graph_call["edge_limit"], 16)
+        self.assertEqual(retrieval.graph_call["source_chunk_target"], 12)
+        self.assertEqual(retrieval.graph_call["source_chunk_limit"], 16)
+        self.assertEqual(retrieval.graph_call["call_timeout_seconds"], 90)
+        self.assertEqual(
+            retrieval.graph_call["rerank_mode"],
             RerankMode.NONE,
         )
 
@@ -165,44 +247,34 @@ class ChatExecutionServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(raised.exception.code, ErrorCode.CHAT_REVISION_MISMATCH)
 
-    async def test_adaptive_supplement_accepts_complete_path_overlap(self) -> None:
+    async def test_graph_result_accepts_complete_path_overlap_with_zero_new(
+        self,
+    ) -> None:
         context = replace(
             _context(),
             retrieval_strategy=adaptive_graphiti_profile(top_k=3).as_dict(),
         )
         chunk_id = uuid4()
-        evidence = Evidence(
-            rank=1,
-            index_chunk_id=chunk_id,
-            indexed_document_version_id=uuid4(),
-            document_id=uuid4(),
-            document_version_id=uuid4(),
-            index_revision_id=context.index_revision_id,
-            ordinal=0,
-            text="complete overlapping path",
-            source_location={},
-            hierarchy={},
-            source_metadata={},
-            score=1.0,
-            score_kind=EvidenceScoreKind.GRAPH_PATH,
-            graph_path_id="path",
-            graph_anchor_index_chunk_id=chunk_id,
-            graph_hop_count=1,
-            graph_path_rank=1,
-        )
+        evidence = _graph_evidence(context, chunk_id=chunk_id)
 
         class Retrieval:
-            async def retrieve_graphiti_supplement(self, auth, **kwargs):
+            async def search_graph_relations(self, auth, **kwargs):
                 del auth, kwargs
-                return GraphitiSupplementResult(
-                    "admitted",
+                return GraphSearchResult(
+                    "no_evidence",
                     (evidence,),
                     new_index_chunk_ids=(),
+                    candidate_count=1,
+                    path_count=1,
+                    hydrated_chunk_count=1,
+                    hop1_count=1,
+                    hop2_count=0,
+                    hop3_count=0,
                 )
 
         result = await ChatEvidenceRetriever(  # type: ignore[arg-type]
             Retrieval()
-        ).retrieve_graphiti_supplement(
+        ).search_graph_relations(
             context,
             "relation",
             excluded_index_chunk_ids=(chunk_id,),
@@ -210,6 +282,47 @@ class ChatExecutionServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result.evidence, (evidence,))
         self.assertEqual(result.new_evidence_count, 0)
+        self.assertEqual(result.route_result_code, "no_evidence")
+
+    async def test_graph_admission_cannot_report_excluded_chunks_as_new(self) -> None:
+        context = replace(
+            _context(),
+            retrieval_strategy=adaptive_graphiti_profile(top_k=3).as_dict(),
+        )
+        chunk_id = uuid4()
+
+        class Retrieval:
+            async def search_graph_relations(self, auth, **kwargs):
+                del auth, kwargs
+                return GraphSearchResult(
+                    "admitted",
+                    (_graph_evidence(context, chunk_id=chunk_id),),
+                    new_index_chunk_ids=(chunk_id,),
+                )
+
+        with self.assertRaises(ChatPipelineExecutionError) as raised:
+            await ChatEvidenceRetriever(Retrieval()).search_graph_relations(  # type: ignore[arg-type]
+                context,
+                "relation",
+                excluded_index_chunk_ids=(chunk_id,),
+            )
+
+        self.assertEqual(raised.exception.code, ErrorCode.CHAT_REVISION_MISMATCH)
+
+    async def test_graph_relations_capable_requires_adaptive_profile(self) -> None:
+        context = _context()
+
+        class Retrieval:
+            async def search_graph_relations_capable(self, auth, **kwargs):
+                del auth, kwargs
+                return True
+
+        with self.assertRaises(ChatPipelineExecutionError) as raised:
+            await ChatEvidenceRetriever(Retrieval()).graph_relations_capable(  # type: ignore[arg-type]
+                context,
+            )
+
+        self.assertEqual(raised.exception.code, ErrorCode.CHAT_CONTEXT_INVALID)
 
     async def test_native_image_only_evidence_is_retained_for_visual_preparation(
         self,

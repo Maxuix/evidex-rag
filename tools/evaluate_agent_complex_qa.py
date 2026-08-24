@@ -977,6 +977,7 @@ def score_complex_case(
     agent_protocol_ok = isinstance(agent, dict) and agent.get("version") in {
         "native_tool_calling_agent_v1",
         "native_tool_calling_agent_v2",
+        "native_tool_calling_agent_v3",
     }
     status_ok = run.get("status") == "completed"
     trace = agent.get("trace") if isinstance(agent, dict) else None

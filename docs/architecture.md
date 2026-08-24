@@ -74,17 +74,17 @@
   hybrid Evidence 回填余额。每个成功 Episode 的映射独立
   短事务提交；Episode UUID 由 build、Chunk 与 content hash 确定。失败 build 保留其 group 与映射，
   冻结输入未变化时显式 retry 复用同一 build 并只处理缺失 Chunk；输入变化或 force rebuild 才换代。
-- Chat 可选择 Chat-only 的 auto 模式：先执行冻结 revision 上的普通精确向量检索，只有原生
-  Agent 在取得 Simple 结果后判断存在关系、别名、关系链或跨文档证据缺口时，才最多请求一次
-  Graphiti supplement；若模型用 Simple 证据提前提交非拒答，服务端固定执行一次同预算内的 path
-  completeness guard，不再用脆弱的题面关键词决定是否检索。guard 只把 query-grounded 的完整二跳或
-  三跳路径交回模型重审；路径可复用 Simple 已发送的 Chunk，并通过 path metadata 告知模型其角色。
-  supplement 复用 Graphiti candidate search 和原始 Chunk hydration，
-  不再发起第二次 vector/FTS seed；未配置、未就绪、运行时不可用和无新证据都以安全结果码返回，
-  edge fact 不进入 prompt、Citation 或回答正文。
+- Chat 可选择 Chat-only 的 auto 模式：在冻结 revision 上首轮同时暴露普通 Simple 检索与一等
+  `search_graph_relations` Graph Tool，由原生 Agent 自主选择，Simple 不是 Graph 的前置条件。
+  Graph Tool 只在存在 active READY build 时可见；每个 ChatRun 最多两次 Graph 调用，Graph 单次
+  90 秒（ChatRun 绝对 deadline 仍为 420 秒形成 `min(90, remaining)`），候选 K 冻结为 16，完整
+  一至三跳路径按 soft 12 / hard 16 去重 source chunk 原子打包，两次调用累计最多新增 32。
+  不存在服务端提交 completeness guard，也不存在累计 token quota 或按 token 截断。Graph Tool
+  只返回 source chunk；edge fact 不进入 prompt、Citation 或回答正文；未配置、未就绪、
+  运行时不可用、超时、被拒绝和无新增证据都以安全结果码返回，取消与超时可区分。
 - 持久 ChatSession / ChatRun、Session 短期上下文，以及动态提供当前可用工具的原生
-  Tool-Calling Agent。常规工具为检索、计算和提交回答；满足门控时临时出现一次 Graphiti
-  supplement。所有运行共享证据约束回答、拒答与引用边界。
+  Tool-Calling Agent。常规工具为检索、计算和提交回答；Graph READY 时首轮同时暴露
+  `search_graph_relations`，Graph 用完后从工具集移除。所有运行共享证据约束回答、拒答与引用边界。
 - 本地用户 Chat 前端，以及文件协调、数据清理和本地评测工具。
 
 ### 2.3 当前明确不具备
@@ -107,7 +107,7 @@
 | 范围 | 当前选择 |
 | --- | --- |
 | 后端 | Python 3.12、FastAPI、Pydantic、异步 SQLAlchemy、asyncpg、Alembic |
-| 数据库 | PostgreSQL 18 + pgvector；当前 migration head 为 `0015_remove_retired_chat_state` |
+| 数据库 | PostgreSQL 18 + pgvector；当前 migration head 为 `0016_first_class_graph_relations_tool` |
 | 文档解析 | 原生 Docling；当前 PDF profile 在 Worker 管理的可终止子进程内按确定性页段解析 |
 | Chat 执行 | 普通异步原生 Tool-Calling loop；无 Agent 框架或图运行时 |
 | 模型接入 | OpenAI-compatible Chat/文本 Embedding；Tongyi 多模态 Embedding；固定离线 MiniLM reranker；已验证 Embedding 维度 64..4096 |
@@ -235,8 +235,10 @@ progress reporter 的窄 Protocol，具体 `services` 实现由 Worker compositi
   解析 adapter。Simple 与手动 Graph snapshot 保存 profile version、strategy、`top_k` 和
   `rerank_mode`；Graph 外层模式额外冻结 `graphiti_path_augmented_v3` 与 `graphiti_path_v3`
   augmentation，内部 seed 仍使用 hybrid。Chat-only auto 使用独立的
-  `adaptive_graphiti_v2` snapshot，冻结 exact-vector Simple、Agent path guard
-  和 `graphiti_path_v3` supplement，最多一次 supplement，不改变默认 vector 或直连 Graph API。
+  `adaptive_graphiti_v3` snapshot，冻结 exact-vector Simple、一等 Graph Tool 参数
+  （`graph_edge_limit=16`、`graph_source_chunk_target=12`、`graph_source_chunk_limit=16`、
+  `graph_call_timeout_seconds=90`）与 router `native_agent_graph_tool_v1`，最多两次 Graph 调用，
+  不改变默认 vector 或直连 Graph API。
   retry 按当前进程配置解析候选数、阈值和融合权重。Chat 只有一个固定原生 Agent 路径。
 - 检索默认 exact vector；hybrid FTS 由简单设置开关控制。
 - live Agent progress transport 默认关闭，只能通过进程级 `CHAT_DELIVERY` 配置显式开启；它不属于
@@ -259,9 +261,12 @@ Alembic 是 schema 来源。当前迁移链可从空数据库建立 head；`0004
 budget/trace，`0010` 删除旧 workflow configuration/state 及其中的 ResearchResult/SearchTrace
 诊断，`0011` 将原生 Agent 收敛为仅保留模型循环轮次上限并原样迁移历史 usage/trace 观测，
 `0012` 曾增加旧自研实体图投影；`0013` 增加不可变 Graphiti build、active build 指针和
-Episode→Chunk 映射；`0014` 删除旧 `index_graph_chunk`、`graph_entity_mention` 与
-`graph_relation_assertion`，并把旧 Graph 配置安全降为 disabled；`0015` 删除 native Agent 从未
-写入的 ChatRun `final_llm_context` 列。Graphiti 派生事实不阻塞
+ Episode→Chunk 映射；`0014` 删除旧 `index_graph_chunk`、`graph_entity_mention` 与
+ `graph_relation_assertion`，并把旧 Graph 配置安全降为 disabled；`0015` 删除 native Agent 从未
+ 写入的 ChatRun `final_llm_context` 列；`0016` 把 ChatRun 的 agent/retrieval/trace snapshot
+ 确定性升级为 v3 一等 Graph Relations Tool（budget 增加 `max_graph_calls`，trace 增加
+ `call_index`、`invocation_source`、`duration_ms` 与各计数/跳数，旧 guard 事件标记
+ `invocation_source=legacy_guard`，不算 duration 或计数）。Graphiti 派生事实不阻塞
 普通索引发布，只有 build ready、覆盖完整且运行时探测通过时才可用于在线检索。
 除此之外不承诺任意历史版本兼容。主要持久事实为：
 
@@ -431,21 +436,22 @@ Retrieval Debug 都可使用该冻结模式；模型不可用时明确失败且�
 
 Native Agent 可通过 `search_knowledge_base` 每轮提交一至三条 Query，服务端在冻结的
 workspace/knowledge-base/index revision、检索策略与 top-k 内执行并在证据池中按 chunk 去重。
-adaptive ChatRun 先只允许 Simple lane；一次合法 Simple 调用完成后，即使其准入结果为空，Agent
-也可按三个固定关系/证据缺口原因请求一次 `graphiti_supplement`，且该工具在最后一个普通模型
-轮次仍可用。补充从 active READY build 解析 serving 身份；配置进入 building 只表示 staging，
-不会遮蔽仍 active 的旧 READY build。补充复用 Graphiti node-distance/BFS candidate search、
-probe 和当前 serving Chunk hydration；缺任意一跳来源时整条路径拒绝。`classic` 保留 Graphiti 原生
+adaptive ChatRun 在存在 active READY build 时首轮同时暴露一等 `search_graph_relations` Tool；
+Graph 调用数达到冻结上限（默认 2）后该 Tool 从后续轮次移除，超限调用被拒绝且不发起外部查询。
+Graph 每次沿冻结的 build/extractor 身份执行，配置进入 building 只表示 staging，不会遮蔽仍
+active 的旧 READY build。Graph 复用 Graphiti node-distance/BFS candidate search、probe 和当前
+serving Chunk hydration；缺任意一跳来源时整条路径拒绝。`classic` 保留 Graphiti 原生
 搜索顺序；显式 `local_minilm_v1` 在水合后按路径最弱来源分重排。低分或未打分 Chunk 不会因此被
-删除，模型分也不写入 `GRAPH_PATH` Evidence。最终按 whole-path 规则最多返回 4 条 Chunk；其中可
-包含已经在 Simple 证据池中的路径来源，新增 Chunk ID 则独立记录。它不执行第二次 vector/FTS seed。
-模型 Simple-only 非拒答提交固定触发一次服务端 guard；guard 只采纳真实、query-grounded 二至三跳路径，
-一跳或无完整路径不改变 draft，
-但该次有界 probe 仍进入安全 trace，供成本与误探测诊断。supplement 的 route result
-只允许 `admitted`、`no_new_evidence`、`not_configured`、`not_ready`、`runtime_unavailable`
-等安全码，公开 trace 保留真实 `tool=graphiti_supplement` 与 lane，edge fact 永不进入 Agent tool
-result。若紧急 forced finalizer 已没有模型轮次完成 Graph path 或 open-world 精确命题复核，非拒答
-提交会 fail closed 为拒答，不得绕过这两个 guard。
+删除，模型分也不写入 `GRAPH_PATH` Evidence。候选 K 与 soft/hard source chunk 上限来自冻结的
+`adaptive_graphiti_v3` snapshot；完整一至三跳路径是唯一打包原子，不拆断路径，path 可复用
+Simple/上一次 Graph 已发送 Chunk（重复结果合并 provenance），`new_evidence_count` 只计真正新增
+Chunk；达到 soft 12 后下一条完整路径加入后不超过 hard 16 则整条接收，超过才停止。它不执行
+第二次 vector/FTS seed，也没有服务端提交 guard：submit 永远不再隐式触发 Graph 调用。
+Graph 的 route result 只允许 `admitted`、`no_evidence`、`not_ready`、`timeout`、
+`unavailable`、`rejected` 等安全码，公开 trace 保留 `tool=search_graph_relations` 与
+`graph_relations` lane，edge fact 永不进入 Agent tool result。Graph 单次内层 90 秒 timeout 与该
+结果码可区分外层 ChatRun 取消。若紧急 forced finalizer 已没有模型轮次完成 open-world 精确命题
+复核，非拒答提交会 fail closed 为拒答，不绕过该 guard。
 manual Graph 的 hybrid 候选查询宽度按 `min(40, max(12, top_k * 2))` 计算；packing 按 path-whole
 规则优先保留完整图路径，再用未重复的 hybrid Evidence 回填到 `top_k`。
 Agent 只保留最多 8 个普通模型轮次的有限循环护栏，不限制 Query、计算或 EvidenceRef 的累计数，
@@ -462,7 +468,8 @@ Agent 只保留最多 8 个普通模型轮次的有限循环护栏，不限制 Q
 ## 10. Chat 与回答
 
 API 创建 ChatRun 时在短事务内冻结知识库/revision、检索 preset 的 version/strategy/`top_k`/
-`rerank_mode`（auto 另含 router/augmentation）、原生 Agent 模型循环轮次上限、回答策略、不可变模型修订和最近已完成 Session turns，然后
+`rerank_mode`（auto 另含 router/augmentation 与 Graph Tool 参数）、原生 Agent 模型循环轮次上限
+与 Graph 调用上限、回答策略、不可变模型修订和最近已完成 Session turns，然后
 返回 `202`；模型调用由 Worker 执行。公开请求没有 workflow 模式。
 
 回答策略中的 `answer_style` 与 `insufficiency_policy` 当前会被校验、冻结并通过 API 返回，但原生
@@ -473,10 +480,10 @@ Agent 尚未读取它们来改变 prompt、工具循环或确定性渲染；当�
 
 ```text
 load_context
-  -> model chooses search_knowledge_base / calculate
+  -> active READY build capability read without any model call
+  -> model chooses search_knowledge_base / search_graph_relations / calculate
   -> server executes bounded tool and returns stable refs
-  -> adaptive mode may execute one Graphiti supplement after a completed Simple call
-  -> Simple-only non-refusal receives one bounded two-to-three-hop completeness probe
+  -> adaptive mode: Graph visible from the first round, at most twice per run
   -> model calls submit_answer when ready
   -> if the ordinary loop reaches its limit, one extra submit-only call finalizes
   -> claim-level deterministic validation and salvage
@@ -503,7 +510,7 @@ ChatRun 内部 trace 保存 claim salvage 的 rejected count、内部 reason 与
 - `submit_answer` 必须通过严格参数和逐 claim 校验；非法 claim 被局部删除，仍有合法 claim 时
   降级为 `partial`，零合法 claim 才确定性拒答。
 - 事实 claim 只能引用本次已授权 Evidence；实际未加载的图片不能产生视觉引用。
-- Graphiti supplement 水合后的 text/table Chunk 同时保留 `graph_path` provenance 与对应的
+- Graph 关系检索水合后的 text/table Chunk 同时保留 `graph_path` provenance 与对应的
   `text`/`table_text` 表示；路径 provenance 不是视觉形态，只有缺少可引用文本表示的纯视觉
   Evidence 才必须先实际加载资产。
 - 视觉开关和图片数、单图 bytes、运行总 bytes、pixels 限额取自 ChatRun 创建时冻结的模型配置，

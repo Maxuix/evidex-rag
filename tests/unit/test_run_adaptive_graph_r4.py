@@ -104,7 +104,7 @@ class R4CheckpointTests(unittest.TestCase):
     def test_column_layers_is_bound_to_production_candidate_and_pack_paths(self) -> None:
         source = inspect.getsource(r4_runner._column_layers)
         self.assertIn("_search_graphiti_candidates", source)
-        self.assertIn("_pack_graphiti_supplement_evidence", source)
+        self.assertIn("_pack_graph_search_evidence", source)
         self.assertNotIn("graphiti_runtime.search", source)
         self.assertNotIn("_rerank_graphiti_candidates_with_scores", source)
 

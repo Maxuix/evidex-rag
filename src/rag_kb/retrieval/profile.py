@@ -20,8 +20,10 @@ from rag_kb.domain import (
 
 EXACT_PROFILE_VERSION = "exact_vector_v2"
 HYBRID_PROFILE_VERSION = "hybrid_fts_rrf_v2"
-ADAPTIVE_GRAPHITI_PROFILE_VERSION = "adaptive_graphiti_v2"
-ADAPTIVE_GRAPHITI_ROUTER_VERSION = "native_agent_path_guard_v2"
+ADAPTIVE_GRAPHITI_PROFILE_VERSION = "adaptive_graphiti_v3"
+ADAPTIVE_GRAPHITI_ROUTER_VERSION = "native_agent_graph_tool_v1"
+PREVIOUS_ADAPTIVE_GRAPHITI_PROFILE_VERSION = "adaptive_graphiti_v2"
+PREVIOUS_ADAPTIVE_GRAPHITI_ROUTER_VERSION = "native_agent_path_guard_v2"
 LEGACY_ADAPTIVE_GRAPHITI_PROFILE_VERSION = "adaptive_graphiti_v1"
 LEGACY_ADAPTIVE_GRAPHITI_ROUTER_VERSION = "native_agent_evidence_aware_v1"
 LEGACY_GRAPHITI_PROFILE_VERSION = "graphiti_edge_augmented_v1"
@@ -32,6 +34,12 @@ LEGACY_EXACT_PROFILE_VERSION = "exact_vector_v1"
 LEGACY_HYBRID_PROFILE_VERSION = "hybrid_fts_rrf_v1"
 LEGACY_GRAPH_PROFILE_VERSION = "graph_augmented_v1"
 LEGACY_GRAPH_AUGMENTATION_VERSION = "entity_graph_v1"
+
+# Frozen Graph Tool parameters added to the v3 adaptive Chat profile.
+GRAPH_EDGE_LIMIT_DEFAULT = 16
+GRAPH_SOURCE_CHUNK_TARGET_DEFAULT = 12
+GRAPH_SOURCE_CHUNK_LIMIT_DEFAULT = 16
+GRAPH_CALL_TIMEOUT_SECONDS_DEFAULT = 90
 
 RetrievalExecutionType = Literal[
     "simple", "manual_graph", "adaptive_graphiti"
@@ -86,7 +94,7 @@ class GraphRetrievalProfile:
 
 @dataclass(frozen=True, slots=True)
 class AdaptiveGraphitiRetrievalProfile:
-    """Chat-only Simple-first profile with one bounded Graphiti supplement."""
+    """Chat-only profile with one first-class bounded Graph Relations tool."""
 
     profile_version: str
     strategy: RetrievalStrategy
@@ -94,6 +102,10 @@ class AdaptiveGraphitiRetrievalProfile:
     rerank_mode: RerankMode
     router: str
     augmentation: str
+    graph_edge_limit: int = GRAPH_EDGE_LIMIT_DEFAULT
+    graph_source_chunk_target: int = GRAPH_SOURCE_CHUNK_TARGET_DEFAULT
+    graph_source_chunk_limit: int = GRAPH_SOURCE_CHUNK_LIMIT_DEFAULT
+    graph_call_timeout_seconds: int = GRAPH_CALL_TIMEOUT_SECONDS_DEFAULT
 
     def __post_init__(self) -> None:
         if self.profile_version != ADAPTIVE_GRAPHITI_PROFILE_VERSION:
@@ -111,6 +123,25 @@ class AdaptiveGraphitiRetrievalProfile:
             PREVIOUS_GRAPHITI_AUGMENTATION_VERSION,
         }:
             raise ValueError("adaptive Graphiti augmentation version is invalid")
+        for name, value in (
+            ("graph_edge_limit", self.graph_edge_limit),
+            ("graph_source_chunk_target", self.graph_source_chunk_target),
+            ("graph_source_chunk_limit", self.graph_source_chunk_limit),
+            ("graph_call_timeout_seconds", self.graph_call_timeout_seconds),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise ValueError("adaptive Graphiti Graph parameter is invalid")
+        if not 8 <= self.graph_edge_limit <= 32:
+            raise ValueError("adaptive Graphiti edge limit is invalid")
+        if not (
+            1
+            <= self.graph_source_chunk_target
+            <= self.graph_source_chunk_limit
+            <= 32
+        ):
+            raise ValueError("adaptive Graphiti source chunk bounds are invalid")
+        if not 1 <= self.graph_call_timeout_seconds <= 120:
+            raise ValueError("adaptive Graphiti call timeout is invalid")
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -120,6 +151,10 @@ class AdaptiveGraphitiRetrievalProfile:
             "rerank_mode": self.rerank_mode.value,
             "router": self.router,
             "augmentation": self.augmentation,
+            "graph_edge_limit": self.graph_edge_limit,
+            "graph_source_chunk_target": self.graph_source_chunk_target,
+            "graph_source_chunk_limit": self.graph_source_chunk_limit,
+            "graph_call_timeout_seconds": self.graph_call_timeout_seconds,
         }
 
 
@@ -320,7 +355,10 @@ def parse_chat_retrieval_snapshot(
             "adaptive_graphiti",
         )
 
-    if value.get("profile_version") == LEGACY_ADAPTIVE_GRAPHITI_PROFILE_VERSION:
+    if value.get("profile_version") in {
+        LEGACY_ADAPTIVE_GRAPHITI_PROFILE_VERSION,
+        PREVIOUS_ADAPTIVE_GRAPHITI_PROFILE_VERSION,
+    }:
         if not allow_legacy_display:
             raise ValueError("legacy adaptive Graphiti snapshots cannot be executed")
         strategy, top_k, rerank_mode = _parse_legacy_adaptive_graphiti(value)
@@ -393,9 +431,15 @@ def _parse_legacy_adaptive_graphiti(
             "augmentation",
         }
         or value.get("strategy") != RetrievalStrategy.EXACT_VECTOR.value
-        or value.get("router") != LEGACY_ADAPTIVE_GRAPHITI_ROUTER_VERSION
-        or value.get("augmentation") != LEGACY_GRAPHITI_AUGMENTATION_VERSION
     ):
+        raise ValueError("legacy adaptive Graphiti snapshot is invalid")
+    profile_version = value.get("profile_version")
+    expected_router = (
+        PREVIOUS_ADAPTIVE_GRAPHITI_ROUTER_VERSION
+        if profile_version == PREVIOUS_ADAPTIVE_GRAPHITI_PROFILE_VERSION
+        else LEGACY_ADAPTIVE_GRAPHITI_ROUTER_VERSION
+    )
+    if value.get("router") != expected_router:
         raise ValueError("legacy adaptive Graphiti snapshot is invalid")
     top_k = value.get("top_k")
     if isinstance(top_k, bool) or not isinstance(top_k, int) or not 1 <= top_k <= 100:
@@ -418,6 +462,10 @@ def parse_adaptive_graphiti_snapshot(
         "rerank_mode",
         "router",
         "augmentation",
+        "graph_edge_limit",
+        "graph_source_chunk_target",
+        "graph_source_chunk_limit",
+        "graph_call_timeout_seconds",
     }
     if set(value) != expected_fields:
         raise ValueError("adaptive Graphiti retrieval snapshot fields are invalid")
@@ -431,6 +479,10 @@ def parse_adaptive_graphiti_snapshot(
         rerank_mode=RerankMode(value["rerank_mode"]),
         router=value["router"],
         augmentation=value["augmentation"],
+        graph_edge_limit=value["graph_edge_limit"],
+        graph_source_chunk_target=value["graph_source_chunk_target"],
+        graph_source_chunk_limit=value["graph_source_chunk_limit"],
+        graph_call_timeout_seconds=value["graph_call_timeout_seconds"],
     )
 
 
