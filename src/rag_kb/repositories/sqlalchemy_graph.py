@@ -969,8 +969,8 @@ class SqlAlchemyGraphRepository:
             row.schema_profile_key,
             digest=row.schema_profile_digest,
             extractor_version=row.extractor_version,
-            allow_disabled_legacy=(
-                row.status == GraphConfigStatus.DISABLED.value
+            allow_legacy_read=(
+                row.extractor_version == GRAPH_LEGACY_EXTRACTOR_VERSION
             ),
         )
         eligible_statement = _eligible_chunk_statement(self._workspace_id, row.kb_id)
@@ -1054,7 +1054,7 @@ def _resolve_schema_profile(
     *,
     digest: str | None = None,
     extractor_version: str | None = None,
-    allow_disabled_legacy: bool = False,
+    allow_legacy_read: bool = False,
 ):
     try:
         return SCHEMA_PROFILES.resolve(
@@ -1064,7 +1064,7 @@ def _resolve_schema_profile(
         )
     except GraphSchemaProfileMismatch as error:
         if (
-            allow_disabled_legacy
+            allow_legacy_read
             and extractor_version == GRAPH_LEGACY_EXTRACTOR_VERSION
         ):
             try:

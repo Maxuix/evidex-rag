@@ -157,7 +157,7 @@ class GraphSchemaProfileTests(unittest.TestCase):
                 SOFTWARE_GRAPH_SCHEMA_PROFILE_KEY,
                 digest=SOFTWARE_GRAPH_SCHEMA_PROFILE_DIGEST,
                 extractor_version=GRAPH_LEGACY_EXTRACTOR_VERSION,
-                allow_disabled_legacy=True,
+                allow_legacy_read=True,
             ).key,
             SOFTWARE_GRAPH_SCHEMA_PROFILE_KEY,
         )
@@ -168,8 +168,14 @@ class GraphSchemaProfileTests(unittest.TestCase):
                 extractor_version=GRAPH_LEGACY_EXTRACTOR_VERSION,
             )
 
-        with self.assertRaisesRegex(GraphSchemaProfileMismatch, "extractor"):
-            _config_view(replace(snapshot, status=GraphConfigStatus.READY), None)
+        ready_view = _config_view(
+            replace(snapshot, status=GraphConfigStatus.READY),
+            None,
+        )
+        self.assertEqual(
+            ready_view.schema_profile_name,
+            "Software and project knowledge",
+        )
 
         with self.assertRaisesRegex(GraphSchemaProfileMismatch, "extractor"):
             get_graph_schema_registry().compile(

@@ -13,7 +13,6 @@ from rag_kb.domain import (
     GRAPH_EXTRACTOR_VERSION,
     GRAPH_LEGACY_EXTRACTOR_VERSION,
     GraphConfigSnapshot,
-    GraphConfigStatus,
     GraphitiBuildSnapshot,
     GRAPH_WORK_HEARTBEAT_SECONDS,
     GraphWorkItem,
@@ -478,17 +477,14 @@ def _config_view(snapshot: GraphConfigSnapshot, bundle) -> GraphConfigView:
             extractor_version=snapshot.extractor_version,
         )
     except GraphSchemaProfileMismatch:
-        # Migration 0014 deliberately left disabled legacy rows marked with
-        # graphiti_v1.  They must remain visible so a user can select the
+        # Migration 0014 deliberately left legacy rows marked with
+        # graphiti_v1. They must remain visible so a user can select the
         # current profile and explicitly start a graphiti_v4 build, but the
-        # legacy marker must never make an old graph executable.  Resolving
+        # legacy marker must never make an old graph executable. Resolving
         # without the extractor checks the immutable profile identity while
         # the API response exposes the current-version rebuild requirement for
-        # any enabled configuration.
-        if (
-            snapshot.status is not GraphConfigStatus.DISABLED
-            or snapshot.extractor_version != GRAPH_LEGACY_EXTRACTOR_VERSION
-        ):
+        # an enabled legacy configuration.
+        if snapshot.extractor_version != GRAPH_LEGACY_EXTRACTOR_VERSION:
             raise
         schema_profile = registry.resolve(
             snapshot.schema_profile_key,
