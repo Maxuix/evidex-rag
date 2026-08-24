@@ -148,9 +148,15 @@ async def _run_janitor(dependencies, stopped: asyncio.Event, interval: float) ->
         while not stopped.is_set():
             try:
                 result = await dependencies.reconciliation_service.run_once(context)
+                secret_result = await dependencies.model_secret_reconciliation_service.run_once(context)
                 changed = any(
                     (
                         result.pending_activated,
+                        result.pending_waiting,
+                        result.pending_failed,
+                        result.pending_conflicted,
+                        secret_result.removed,
+                        secret_result.failed,
                         result.missing_compensated,
                         result.cleanup_completed,
                         result.cleanup_failed,
@@ -162,6 +168,13 @@ async def _run_janitor(dependencies, stopped: asyncio.Event, interval: float) ->
                     "source_file_reconciliation_completed",
                     level=logging.INFO if changed else logging.DEBUG,
                     pending_activated=result.pending_activated,
+                    pending_waiting=result.pending_waiting,
+                    pending_failed=result.pending_failed,
+                    pending_conflicted=result.pending_conflicted,
+                    orphan_secrets_removed=secret_result.removed,
+                    orphan_secrets_retained=secret_result.retained,
+                    orphan_secrets_failed=secret_result.failed,
+                    orphan_secrets_invalid=secret_result.invalid,
                     missing_compensated=result.missing_compensated,
                     cleanup_completed=result.cleanup_completed,
                     cleanup_failed=result.cleanup_failed,

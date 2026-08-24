@@ -40,6 +40,7 @@ from rag_kb.config import (
     load_settings,
     validate_startup_environment,
 )
+from rag_kb.config.settings import ChatProviderSettings
 from rag_kb.db import (
     DatabaseProcess,
     DatabaseResources,
@@ -144,7 +145,7 @@ class ApiDependencies:
 def build_api_dependencies(
     settings: Settings | None = None,
     *,
-    env_file: str | Path | None = ".env",
+    env_file: str | Path | None = ".env.local",
 ) -> ApiDependencies:
     """Load configuration explicitly and fail before constructing an API app."""
 
@@ -359,6 +360,9 @@ async def _validate_model_profile(
             sampling_top_k=parameters.get("sampling_top_k", 40),
             max_tokens=parameters.get("max_output_tokens", 4096),
             reasoning_effort=parameters.get("reasoning_effort", "off"),
+            max_visual_images=ChatProviderSettings.max_visual_images,
+            max_visual_image_bytes=ChatProviderSettings.max_visual_image_bytes,
+            max_visual_total_bytes=ChatProviderSettings.max_visual_total_bytes,
         )
         search_tool = ChatToolDefinition(
             name="search_knowledge_base",

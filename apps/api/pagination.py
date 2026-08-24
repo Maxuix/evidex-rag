@@ -12,6 +12,11 @@ from apps.api.errors import ApiProblem
 from rag_kb.schemas import CursorPayload, ErrorCode
 
 
+API_PAGINATION_DEFAULT_LIMIT = 50
+API_PAGINATION_MAX_LIMIT = 100
+API_CURSOR_MAX_LENGTH = 2048
+
+
 def encode_cursor(payload: CursorPayload) -> str:
     raw = payload.model_dump_json(exclude_none=True).encode("utf-8")
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
@@ -19,7 +24,7 @@ def encode_cursor(payload: CursorPayload) -> str:
 
 def decode_cursor(value: str) -> CursorPayload:
     try:
-        if not value or len(value) > 2048:
+        if not value or len(value) > API_CURSOR_MAX_LENGTH:
             raise ValueError("cursor length is invalid")
         padding = "=" * (-len(value) % 4)
         raw = base64.b64decode(

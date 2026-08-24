@@ -13,7 +13,13 @@ from fastapi import APIRouter, Depends, Header, Query, Request
 from apps.api.errors import ApiProblem
 from apps.api.idempotency import RequiredIdempotencyKey
 from apps.api.openapi import problem_responses
-from apps.api.pagination import decode_cursor, encode_cursor
+from apps.api.pagination import (
+    API_CURSOR_MAX_LENGTH,
+    API_PAGINATION_DEFAULT_LIMIT,
+    API_PAGINATION_MAX_LIMIT,
+    decode_cursor,
+    encode_cursor,
+)
 from apps.api.security import get_auth_context
 from apps.api.upload_metadata import resolve_upload_metadata
 from rag_kb.auth import AuthContext
@@ -140,8 +146,8 @@ async def list_documents(
     request: Request,
     kb_id: UUID,
     context: Annotated[AuthContext, Depends(get_auth_context)],
-    limit: Annotated[int, Query(ge=1, le=100)] = 50,
-    cursor: Annotated[str | None, Query(min_length=1, max_length=2048)] = None,
+    limit: Annotated[int, Query(ge=1, le=API_PAGINATION_MAX_LIMIT)] = API_PAGINATION_DEFAULT_LIMIT,
+    cursor: Annotated[str | None, Query(min_length=1, max_length=API_CURSOR_MAX_LENGTH)] = None,
     sort: DocumentSort = "created_at",
 ) -> DocumentPage:
     after = _after(cursor, sort)
@@ -168,8 +174,8 @@ async def inspect_document_chunks(
     request: Request,
     document_id: UUID,
     context: Annotated[AuthContext, Depends(get_auth_context)],
-    limit: Annotated[int, Query(ge=1, le=100)] = 50,
-    cursor: Annotated[str | None, Query(min_length=1, max_length=2048)] = None,
+    limit: Annotated[int, Query(ge=1, le=API_PAGINATION_MAX_LIMIT)] = API_PAGINATION_DEFAULT_LIMIT,
+    cursor: Annotated[str | None, Query(min_length=1, max_length=API_CURSOR_MAX_LENGTH)] = None,
 ) -> DocumentChunkInspectionResponse:
     inspection = await request.app.state.dependencies.document_service.inspect_chunks(
         context,

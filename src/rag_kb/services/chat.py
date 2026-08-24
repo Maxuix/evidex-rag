@@ -456,15 +456,11 @@ def _chat_profile_configuration(
         "vision_enabled": parameters.get("vision_enabled", False),
         "configuration_fingerprint": revision.configuration_fingerprint,
         "capability_fingerprint": revision.capability_fingerprint,
-        "max_visual_images": safety_defaults.get("max_visual_images", 4),
-        "max_visual_image_bytes": safety_defaults.get(
-            "max_visual_image_bytes", 5 * 1024 * 1024
-        ),
-        "max_visual_total_bytes": safety_defaults.get(
-            "max_visual_total_bytes", 12 * 1024 * 1024
-        ),
-        "max_visual_pixels": safety_defaults.get("max_visual_pixels", 16_000_000),
-        "visual_media_profile": safety_defaults.get("visual_media_profile"),
+        "max_visual_images": safety_defaults["max_visual_images"],
+        "max_visual_image_bytes": safety_defaults["max_visual_image_bytes"],
+        "max_visual_total_bytes": safety_defaults["max_visual_total_bytes"],
+        "max_visual_pixels": safety_defaults["max_visual_pixels"],
+        "visual_media_profile": safety_defaults["visual_media_profile"],
     }
 
 

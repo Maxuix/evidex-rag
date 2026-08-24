@@ -9,6 +9,14 @@ import {
 } from "react";
 
 import { ApiClient, ApiClientError } from "./api/client";
+import { UI_POLICY } from "./uiPolicy";
+import {
+  isDocumentScopeCurrent,
+  isManagementKbScopeCurrent,
+  isRequestSequenceCurrent,
+  type DocumentScope,
+  type ManagementKbScope,
+} from "./requestScope";
 import type {
   ChunkingPreset,
   DocumentChunk,
@@ -119,12 +127,30 @@ export function KnowledgeBaseManagementPage({
   const [confirmName, setConfirmName] = useState("");
   const [confirming, setConfirming] = useState(false);
   const uploadInput = useRef<HTMLInputElement>(null);
+  const kbGeneration = useRef(0);
+  const documentsSequence = useRef(0);
+  const jobsSequence = useRef(0);
+  const chunksSequence = useRef(0);
+  const knowledgeBaseIdRef = useRef(selectedKnowledgeBaseId);
+  const selectedDocumentIdRef = useRef(selectedDocumentId);
+  knowledgeBaseIdRef.current = selectedKnowledgeBaseId;
+  selectedDocumentIdRef.current = selectedDocumentId;
 
   const loadDocuments = useCallback(async (kbId: string) => {
+    const token: ManagementKbScope = {
+      generation: kbGeneration.current,
+      knowledgeBaseId: kbId,
+    };
+    const sequence = ++documentsSequence.current;
+    const isCurrent = () => isManagementKbScopeCurrent(token, {
+      generation: kbGeneration.current,
+      knowledgeBaseId: knowledgeBaseIdRef.current,
+    }) && isRequestSequenceCurrent(sequence, documentsSequence.current);
     setDocumentsLoading(true);
     setDocumentsError(null);
     try {
       const page = await client.listDocuments(kbId);
+      if (!isCurrent()) return;
       setDocuments(page.items);
       setSelectedDocumentId((current) => (
         current && page.items.some((item) => item.id === current)
@@ -132,30 +158,49 @@ export function KnowledgeBaseManagementPage({
           : null
       ));
     } catch (error) {
-      setDocumentsError(managementError(error));
+      if (isCurrent()) setDocumentsError(managementError(error));
     } finally {
-      setDocumentsLoading(false);
+      if (isCurrent()) setDocumentsLoading(false);
     }
   }, [client]);
 
   const loadJobs = useCallback(async (kbId: string, quiet = false) => {
+    const token: ManagementKbScope = {
+      generation: kbGeneration.current,
+      knowledgeBaseId: kbId,
+    };
+    const sequence = ++jobsSequence.current;
+    const isCurrent = () => isManagementKbScopeCurrent(token, {
+      generation: kbGeneration.current,
+      knowledgeBaseId: knowledgeBaseIdRef.current,
+    }) && isRequestSequenceCurrent(sequence, jobsSequence.current);
     if (!quiet) setJobsError(null);
     try {
       const page = await client.listIndexingJobs(kbId);
+      if (!isCurrent()) return;
       setJobs(page.items);
     } catch (error) {
-      if (!quiet) setJobsError(managementError(error));
+      if (!quiet && isCurrent()) setJobsError(managementError(error));
     }
   }, [client]);
 
   useEffect(() => {
+    ++kbGeneration.current;
+    documentsSequence.current += 1;
+    jobsSequence.current += 1;
+    chunksSequence.current += 1;
     setDocuments([]);
+    setDocumentsLoading(false);
     setJobs([]);
     setUploadItems([]);
+    setUploading(false);
     setSelectedDocumentId(null);
     setDocumentDetail(null);
     setChunks(null);
+    setChunksLoading(false);
     setActionError(null);
+    setConfirmation(null);
+    setConfirming(false);
     if (!selectedKnowledgeBaseId) return;
     void loadDocuments(selectedKnowledgeBaseId);
     void loadJobs(selectedKnowledgeBaseId);
@@ -166,11 +211,22 @@ export function KnowledgeBaseManagementPage({
     if (!selectedKnowledgeBaseId || !hasActiveJobs) return;
     const timer = window.setInterval(() => {
       void loadJobs(selectedKnowledgeBaseId, true);
-    }, 1800);
+    }, UI_POLICY.indexingPollMs);
     return () => window.clearInterval(timer);
   }, [hasActiveJobs, loadJobs, selectedKnowledgeBaseId]);
 
   const loadChunks = useCallback(async (documentId: string, cursor?: string) => {
+    const token: DocumentScope = {
+      generation: kbGeneration.current,
+      knowledgeBaseId: knowledgeBaseIdRef.current,
+      documentId,
+    };
+    const sequence = ++chunksSequence.current;
+    const isCurrent = () => isDocumentScopeCurrent(token, {
+      generation: kbGeneration.current,
+      knowledgeBaseId: knowledgeBaseIdRef.current,
+      documentId: selectedDocumentIdRef.current ?? "",
+    }) && isRequestSequenceCurrent(sequence, chunksSequence.current);
     setChunksLoading(true);
     setChunksError(null);
     try {
@@ -178,6 +234,8 @@ export function KnowledgeBaseManagementPage({
         cursor ? Promise.resolve(null) : client.getDocument(documentId),
         client.getDocumentChunks(documentId, cursor),
       ]);
+      if (!isCurrent()) return;
+      if (cursor && chunks?.next_cursor !== cursor) return;
       if (detail) setDocumentDetail(detail);
       setChunks((current) => cursor && current
         ? {
@@ -186,15 +244,18 @@ export function KnowledgeBaseManagementPage({
         }
         : inspection);
     } catch (error) {
-      setChunksError(managementError(error));
-      if (!cursor) setChunks(null);
+      if (isCurrent()) {
+        setChunksError(managementError(error));
+        if (!cursor) setChunks(null);
+      }
     } finally {
-      setChunksLoading(false);
+      if (isCurrent()) setChunksLoading(false);
     }
   }, [client]);
 
   const inspectDocument = (documentId: string, job: IndexingJob | null) => {
     if (!chunkPreviewReady(job)) return;
+    selectedDocumentIdRef.current = documentId;
     setSelectedDocumentId(documentId);
     setDocumentDetail(null);
     setChunks(null);
@@ -205,6 +266,14 @@ export function KnowledgeBaseManagementPage({
     const files = Array.from(event.target.files ?? []);
     event.target.value = "";
     if (!knowledgeBase || files.length === 0 || uploading) return;
+    const target: ManagementKbScope = {
+      generation: kbGeneration.current,
+      knowledgeBaseId: knowledgeBase.id,
+    };
+    const isCurrent = () => isManagementKbScopeCurrent(target, {
+      generation: kbGeneration.current,
+      knowledgeBaseId: knowledgeBaseIdRef.current,
+    });
     const items: UploadItem[] = files.map((file) => ({
       id: crypto.randomUUID(),
       file,
@@ -220,6 +289,7 @@ export function KnowledgeBaseManagementPage({
       (left, right) => left.file.size - right.file.size,
     );
     for (const item of uploadOrder) {
+      if (!isCurrent()) return;
       setUploadItems((current) => updateUpload(current, item.id, {
         status: "uploading",
       }));
@@ -229,18 +299,21 @@ export function KnowledgeBaseManagementPage({
           item.file,
           crypto.randomUUID(),
         );
+        if (!isCurrent()) return;
         setUploadItems((current) => updateUpload(current, item.id, {
           status: "accepted",
           jobId: accepted.job_id,
           documentId: accepted.document.id,
         }));
       } catch (error) {
+        if (!isCurrent()) return;
         setUploadItems((current) => updateUpload(current, item.id, {
           status: "failed",
           error: managementError(error),
         }));
       }
     }
+    if (!isCurrent()) return;
     setUploading(false);
     await Promise.all([
       loadDocuments(knowledgeBase.id),
@@ -255,6 +328,16 @@ export function KnowledgeBaseManagementPage({
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file || uploading) return;
+    const target: DocumentScope = {
+      generation: kbGeneration.current,
+      knowledgeBaseId: knowledgeBaseIdRef.current,
+      documentId: document.id,
+    };
+    const isCurrent = () => isDocumentScopeCurrent(target, {
+      generation: kbGeneration.current,
+      knowledgeBaseId: knowledgeBaseIdRef.current,
+      documentId: selectedDocumentIdRef.current ?? document.id,
+    });
     setUploading(true);
     setActionError(null);
     try {
@@ -264,34 +347,43 @@ export function KnowledgeBaseManagementPage({
         document.display_name,
         crypto.randomUUID(),
       );
+      if (!isCurrent()) return;
       if (selectedDocumentId === document.id) {
         setSelectedDocumentId(null);
         setDocumentDetail(null);
         setChunks(null);
       }
-      if (knowledgeBase) {
+      if (knowledgeBase && isCurrent()) {
         await Promise.all([
           loadDocuments(knowledgeBase.id),
           loadJobs(knowledgeBase.id),
         ]);
       }
     } catch (error) {
-      setActionError(`更新“${document.display_name}”失败：${managementError(error)}`);
+      if (isCurrent()) setActionError(`更新“${document.display_name}”失败：${managementError(error)}`);
     } finally {
-      setUploading(false);
+      if (isCurrent()) setUploading(false);
     }
   };
 
   const runConfirmation = async () => {
     if (!confirmation) return;
+    const targetKbId = knowledgeBaseIdRef.current;
+    const targetGeneration = kbGeneration.current;
+    const isCurrent = () => isManagementKbScopeCurrent(
+      { generation: targetGeneration, knowledgeBaseId: targetKbId },
+      { generation: kbGeneration.current, knowledgeBaseId: knowledgeBaseIdRef.current },
+    );
     setConfirming(true);
     setActionError(null);
     try {
       if (confirmation.kind === "knowledge-base") {
         await client.deleteKnowledgeBase(confirmation.id, crypto.randomUUID());
+        if (!isCurrent()) return;
         onKnowledgeBaseDeleted(confirmation.id);
       } else if (confirmation.kind === "document") {
         await client.deleteDocument(confirmation.id, crypto.randomUUID());
+        if (!isCurrent()) return;
         if (knowledgeBase) {
           await Promise.all([
             loadDocuments(knowledgeBase.id),
@@ -308,24 +400,33 @@ export function KnowledgeBaseManagementPage({
           confirmation.documentId!,
           confirmation.id,
         );
-        await loadChunks(confirmation.documentId!);
+        if (isCurrent()) await loadChunks(confirmation.documentId!);
       }
+      if (!isCurrent()) return;
       setConfirmation(null);
       setConfirmName("");
     } catch (error) {
-      setActionError(managementError(error));
+      if (isCurrent()) setActionError(managementError(error));
     } finally {
-      setConfirming(false);
+      if (isCurrent()) setConfirming(false);
     }
   };
 
   const retryJob = async (job: IndexingJob) => {
+    const target: ManagementKbScope = {
+      generation: kbGeneration.current,
+      knowledgeBaseId: knowledgeBaseIdRef.current,
+    };
+    const isCurrent = () => isManagementKbScopeCurrent(target, {
+      generation: kbGeneration.current,
+      knowledgeBaseId: knowledgeBaseIdRef.current,
+    });
     setActionError(null);
     try {
       await client.retryIndexingJob(job.job_id, crypto.randomUUID());
-      if (knowledgeBase) await loadJobs(knowledgeBase.id);
+      if (knowledgeBase && isCurrent()) await loadJobs(knowledgeBase.id);
     } catch (error) {
-      setActionError(`重试失败：${managementError(error)}`);
+      if (isCurrent()) setActionError(`重试失败：${managementError(error)}`);
     }
   };
 
@@ -1364,6 +1465,7 @@ function RetrievalDebugger({
   knowledgeBase: KnowledgeBase;
   hybridEnabled: boolean;
 }) {
+  const scopeGeneration = useRef(0);
   const [query, setQuery] = useState("");
   const [topK, setTopK] = useState(knowledgeBase.retrieval_defaults.top_k);
   const [strategy, setStrategy] = useState<"exact_vector" | "hybrid">("exact_vector");
@@ -1375,6 +1477,7 @@ function RetrievalDebugger({
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    ++scopeGeneration.current;
     setQuery("");
     setResult(null);
     setError(null);
@@ -1389,21 +1492,32 @@ function RetrievalDebugger({
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (!query.trim() || loading) return;
+    const token: ManagementKbScope = {
+      generation: scopeGeneration.current,
+      knowledgeBaseId: knowledgeBase.id,
+    };
+    const isCurrent = () => isManagementKbScopeCurrent(token, {
+      generation: scopeGeneration.current,
+      knowledgeBaseId: knowledgeBase.id,
+    });
     setLoading(true);
     setError(null);
     try {
-      setResult(await client.queryRetrievalDebug(
+      const value = await client.queryRetrievalDebug(
         knowledgeBase.id,
         query.trim(),
         topK,
         strategy,
         rerankMode,
-      ));
+      );
+      if (isCurrent()) setResult(value);
     } catch (caught) {
-      setError(managementError(caught));
-      setResult(null);
+      if (isCurrent()) {
+        setError(managementError(caught));
+        setResult(null);
+      }
     } finally {
-      setLoading(false);
+      if (isCurrent()) setLoading(false);
     }
   };
 
@@ -1593,6 +1707,7 @@ function validProfiles(
     profile.kind === kind
     && profile.enabled
     && profile.validation_status === "valid"
+    && profile.provider_secret_available
   )) ?? [];
 }
 

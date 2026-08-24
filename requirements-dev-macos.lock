@@ -479,6 +479,10 @@ idna==3.18 \
     #   anyio
     #   httpx
     #   requests
+iniconfig==2.3.0 \
+    --hash=sha256:c76315c77db068650d49c5b56314774a7804df16fee4402c1f19d6d15d8c4730 \
+    --hash=sha256:f631c04d2c48c52b84d0d0549c99ff3859c98df65b3101406327ecc7d53fbf12
+    # via pytest
 jinja2==3.1.6 \
     --hash=sha256:0137fb05990d35f1275a587e9aee6d56da821fc83491a0fb838183be43f66d6d \
     --hash=sha256:85ece4451f492d0c13c5dd7c13a64681a86afae63a5f347908daf103ce6d2f67
@@ -1142,6 +1146,7 @@ packaging==26.3 \
     #   langchain-core
     #   langsmith
     #   onnxruntime
+    #   pytest
     #   transformers
 pandas==3.0.5 \
     --hash=sha256:08d24fe11a17dc33bd6e937dc9c665f9cba08fbdc9f657f405713515febe300d \
@@ -1291,7 +1296,9 @@ pillow==12.3.0 \
 pluggy==1.6.0 \
     --hash=sha256:7dcc130b76258d33b90f61b658791dede3486c3e6bfb003ee5c9bfb396dd22f3 \
     --hash=sha256:e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746
-    # via docling-slim
+    # via
+    #   docling-slim
+    #   pytest
 polyfactory==3.3.0 \
     --hash=sha256:237258b6ff43edf362ffd1f68086bb796466f786adfa002b0ac256dbf2246e9a \
     --hash=sha256:686abcaa761930d3df87b91e95b26b8d8cb9fdbbbe0b03d5f918acff5c72606e
@@ -1522,6 +1529,7 @@ pygments==2.20.0 \
     --hash=sha256:81a9e26dd42fd28a23a2d169d86d7ac03b46e2f8b59ed4698fb4785f946d0176
     # via
     #   mpire
+    #   pytest
     #   rich
 pylatexenc==2.11 \
     --hash=sha256:305a072a99ce736246049c9da05841b9d718c0f7ea8888f5f596cf15cb621053 \
@@ -1555,6 +1563,10 @@ pypdfium2==5.12.1 \
     --hash=sha256:e10cbf41b21233ec5e20adfc170cf60edd77abead86a97dc708fff55a8a886c7 \
     --hash=sha256:e5358d2ce4ebc5c899aab1df9ca5d215357244e9168aa443225d3c1e649c7eac
     # via docling-slim
+pytest==8.4.1 \
+    --hash=sha256:539c70ba6fcead8e78eebbf1115e8b589e7565830d7d006a8723f19ac8a0afb7 \
+    --hash=sha256:7c67fd69174877359ed9371ec3af8a3d2b04741818c51e5e99cc1742251fa93c
+    # via rag-kb (pyproject.toml)
 python-dateutil==2.9.0.post0 \
     --hash=sha256:37dd54208da7e1cd875388217d5e00ebd4179249f90fb72437e91a35459a0ad3 \
     --hash=sha256:a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427

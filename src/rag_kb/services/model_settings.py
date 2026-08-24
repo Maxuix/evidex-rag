@@ -6,6 +6,8 @@ import asyncio
 import hashlib
 import json
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+import logging
 from typing import Any
 from uuid import UUID
 
@@ -38,6 +40,18 @@ ModelProviderCatalog = Callable[
 ]
 
 
+LOGGER = logging.getLogger("rag_kb.model_settings.secrets")
+
+
+@dataclass(frozen=True, slots=True)
+class ModelSettingsSnapshot:
+    providers: tuple[ModelProviderBundle, ...]
+    profiles: tuple[ModelProfileBundle, ...]
+    selection: ModelSelection
+    provider_secret_health: dict[UUID, bool]
+    profile_secret_health: dict[UUID, bool]
+
+
 class ModelSettingsService:
     def __init__(
         self,
@@ -56,11 +70,7 @@ class ModelSettingsService:
 
     async def snapshot(
         self, context: AuthContext
-    ) -> tuple[
-        tuple[ModelProviderBundle, ...],
-        tuple[ModelProfileBundle, ...],
-        ModelSelection,
-    ]:
+    ) -> ModelSettingsSnapshot:
         self._authorize(context)
 
         async def load(uow: UnitOfWork):
@@ -70,9 +80,54 @@ class ModelSettingsService:
             selection = await uow.model_settings.get_selection()
             return providers, profiles, selection
 
-        return await execute_in_transaction(
+        providers, profiles, selection = await execute_in_transaction(
             self._unit_of_work, load, purpose=UnitOfWorkPurpose.REQUEST
         )
+        health: dict[UUID, bool] = {}
+        for provider in providers:
+            health[provider.current_revision.id] = await self._secret_available(
+                provider.current_revision.secret_reference
+            )
+        for profile in profiles:
+            health[profile.provider_revision.id] = await self._secret_available(
+                profile.provider_revision.secret_reference
+            )
+        return ModelSettingsSnapshot(
+            providers=providers,
+            profiles=profiles,
+            selection=selection,
+            provider_secret_health={
+                provider.current_revision.id: health[provider.current_revision.id]
+                for provider in providers
+            },
+            profile_secret_health={
+                profile.current_revision.id: health[profile.provider_revision.id]
+                for profile in profiles
+            },
+        )
+
+    async def provider_secret_available(
+        self, context: AuthContext, value: ModelProviderBundle
+    ) -> bool:
+        self._authorize(context)
+        return await self._secret_available(value.current_revision.secret_reference)
+
+    async def profile_secret_available(
+        self, context: AuthContext, value: ModelProfileBundle
+    ) -> bool:
+        self._authorize(context)
+        return await self._secret_available(value.provider_revision.secret_reference)
+
+    async def _secret_available(self, reference: str) -> bool:
+        try:
+            value = await asyncio.to_thread(self._secret_store.read, reference)
+            return bool(value.strip())
+        except (FileNotFoundError, PermissionError, OSError, UnicodeError, ValueError):
+            LOGGER.warning(
+                "model_secret_unavailable reason_code=%s",
+                "SECRET_NOT_READABLE",
+            )
+            return False
 
     async def create_provider(
         self,

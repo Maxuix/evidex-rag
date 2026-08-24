@@ -78,6 +78,7 @@ class PendingFileMutation:
     storage_uri: str
     checksum_sha256: str
     size_bytes: int
+    reserved_at: datetime
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +95,9 @@ class SourceFileCleanup:
 @dataclass(frozen=True, slots=True)
 class FileReconciliationResult:
     pending_activated: int = 0
+    pending_waiting: int = 0
+    pending_failed: int = 0
+    pending_conflicted: int = 0
     missing_compensated: int = 0
     cleanup_completed: int = 0
     cleanup_failed: int = 0

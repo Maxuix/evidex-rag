@@ -27,6 +27,23 @@ class ModelValidationStatus(StrEnum):
     INVALID = "invalid"
 
 
+@dataclass(frozen=True, slots=True)
+class ModelSecretEntry:
+    canonical_reference: str | None
+    opaque_name: str
+    is_regular_file: bool
+    modified_at: datetime
+    is_temporary: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ModelSecretReconciliationResult:
+    removed: int = 0
+    retained: int = 0
+    failed: int = 0
+    invalid: int = 0
+
+
 MIN_EMBEDDING_DIMENSION = 64
 MAX_EMBEDDING_DIMENSION = 4096
 EMBEDDING_VALIDATION_SCHEMA_VERSION = "embedding_validation_v1"

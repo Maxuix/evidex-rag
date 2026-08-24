@@ -13,7 +13,13 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 from apps.api.errors import ApiProblem
 from apps.api.idempotency import RequiredIdempotencyKey
 from apps.api.openapi import problem_responses
-from apps.api.pagination import decode_cursor, encode_cursor
+from apps.api.pagination import (
+    API_CURSOR_MAX_LENGTH,
+    API_PAGINATION_DEFAULT_LIMIT,
+    API_PAGINATION_MAX_LIMIT,
+    decode_cursor,
+    encode_cursor,
+)
 from apps.api.security import get_auth_context
 from rag_kb.auth import AuthContext
 from rag_kb.domain import (
@@ -85,8 +91,8 @@ async def create_chat_session(
 async def list_chat_sessions(
     request: Request,
     context: Annotated[AuthContext, Depends(get_auth_context)],
-    limit: Annotated[int, Query(ge=1, le=100)] = 50,
-    cursor: Annotated[str | None, Query(min_length=1, max_length=2048)] = None,
+    limit: Annotated[int, Query(ge=1, le=API_PAGINATION_MAX_LIMIT)] = API_PAGINATION_DEFAULT_LIMIT,
+    cursor: Annotated[str | None, Query(min_length=1, max_length=API_CURSOR_MAX_LENGTH)] = None,
     sort: SessionSort = "-updated_at",
     knowledge_base_id: UUID | None = None,
 ) -> ChatSessionPage:
@@ -113,8 +119,8 @@ async def list_chat_messages(
     request: Request,
     session_id: UUID,
     context: Annotated[AuthContext, Depends(get_auth_context)],
-    limit: Annotated[int, Query(ge=1, le=100)] = 50,
-    cursor: Annotated[str | None, Query(min_length=1, max_length=2048)] = None,
+    limit: Annotated[int, Query(ge=1, le=API_PAGINATION_MAX_LIMIT)] = API_PAGINATION_DEFAULT_LIMIT,
+    cursor: Annotated[str | None, Query(min_length=1, max_length=API_CURSOR_MAX_LENGTH)] = None,
     sort: MessageSort = "created_at",
 ) -> ChatMessagePage:
     after = _after(cursor, sort)

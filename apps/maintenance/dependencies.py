@@ -7,6 +7,7 @@ from pathlib import Path
 
 from apps.model_asset_runtime import assemble_model_asset_runtime
 from rag_kb.adapters.file_store.local import LocalFileStore
+from rag_kb.adapters.model_secrets.local import LocalModelSecretStore
 from rag_kb.auth import DevelopmentAuthProvider, SingleWorkspaceAccessPolicy
 from rag_kb.config import (
     Settings,
@@ -19,6 +20,7 @@ from rag_kb.ports.files import IndexAssetStore
 from rag_kb.services.content import build_content_services
 from rag_kb.services.files import FileReconciliationService
 from rag_kb.services.maintenance import MaintenanceCleanupService
+from rag_kb.services.secrets import ModelSecretReconciliationService
 from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWorkFactory
 
 
@@ -38,7 +40,7 @@ class MaintenanceDependencies:
 def build_maintenance_dependencies(
     settings: Settings | None = None,
     *,
-    env_file: str | Path | None = ".env",
+    env_file: str | Path | None = ".env.local",
 ) -> MaintenanceDependencies:
     resolved = settings or load_settings(env_file=env_file)
     startup = validate_startup_environment(resolved)
@@ -81,6 +83,13 @@ def build_maintenance_dependencies(
         cleanup_max_attempts=resolved.file_store.cleanup_max_attempts,
         cleanup_base_delay_seconds=resolved.file_store.cleanup_base_delay_seconds,
     )
+    model_secrets = LocalModelSecretStore(resolved.model_secrets.root_path)
+    secret_reconciliation = ModelSecretReconciliationService(
+        unit_of_work,
+        model_secrets,
+        batch_size=resolved.model_secrets.reconciliation_batch_size,
+        orphan_grace_seconds=resolved.model_secrets.orphan_grace_seconds,
+    )
     maintenance = resolved.maintenance
     return MaintenanceDependencies(
         settings=resolved,
@@ -100,5 +109,6 @@ def build_maintenance_dependencies(
             retired_data_grace_seconds=maintenance.retired_data_grace_seconds,
             task_retention_seconds=maintenance.task_retention_seconds,
             asset_store=model_assets.asset_store,
+            model_secret_reconciliation=secret_reconciliation,
         ),
     )

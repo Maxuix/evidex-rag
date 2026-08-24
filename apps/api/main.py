@@ -43,8 +43,10 @@ def main() -> int:
             settings,
             container_listen=arguments.container_listen,
         )
+        from apps.api.app import create_app
+
         uvicorn.run(
-            "apps.api.app:application",
+            create_app(settings=settings),
             host=host,
             port=port,
             access_log=False,

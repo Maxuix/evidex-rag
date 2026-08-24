@@ -9,7 +9,13 @@ from uuid import UUID
 from pydantic import Field, field_validator, model_validator
 from pydantic_core import PydanticCustomError
 
-from rag_kb.domain import AnswerStyle, InsufficiencyPolicy, RerankMode
+from rag_kb.domain import (
+    CHAT_AGENT_MAX_GRAPH_CALLS,
+    CHAT_AGENT_MAX_MODEL_ROUNDS,
+    AnswerStyle,
+    InsufficiencyPolicy,
+    RerankMode,
+)
 from rag_kb.schemas.common import OpaqueCursor, PublicSchema
 
 
@@ -126,8 +132,8 @@ class ChatRetrievalRequest(PublicSchema):
 
 
 class ChatAgentBudgetResponse(PublicSchema):
-    max_model_rounds: Annotated[int, Field(ge=1, le=12)]
-    max_graph_calls: Annotated[int, Field(ge=1, le=2)]
+    max_model_rounds: Annotated[int, Field(ge=1, le=CHAT_AGENT_MAX_MODEL_ROUNDS)]
+    max_graph_calls: Annotated[int, Field(ge=1, le=CHAT_AGENT_MAX_GRAPH_CALLS)]
 
 
 class ChatAgentTraceEventResponse(PublicSchema):

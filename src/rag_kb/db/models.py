@@ -806,8 +806,13 @@ class ContentMutation(Base):
             name="uq_content_mutation_idempotency_scope",
         ),
         CheckConstraint(
-            "status IN ('pending', 'completed')",
+            "status IN ('pending', 'completed', 'failed')",
             name="content_mutation_status_supported",
+        ),
+        CheckConstraint(
+            "(status = 'failed' AND failure_code IS NOT NULL AND failed_at IS NOT NULL) OR "
+            "(status <> 'failed' AND failure_code IS NULL AND failed_at IS NULL)",
+            name="content_mutation_failure_facts_match_status",
         ),
         CheckConstraint(
             "kb_id IS NOT NULL OR document_id IS NOT NULL",
@@ -828,6 +833,8 @@ class ContentMutation(Base):
     request_hash: Mapped[str] = mapped_column(String(71), nullable=False)
     operation: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
+    failure_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     kb_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("knowledge_base.id", ondelete="CASCADE"), nullable=True
     )

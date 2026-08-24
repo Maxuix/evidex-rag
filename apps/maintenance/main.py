@@ -7,14 +7,15 @@ import asyncio
 import json
 
 from apps.maintenance.dependencies import build_maintenance_dependencies
+from rag_kb.config import Settings, load_settings
 from rag_kb.observability import configure_logging, get_logger, log_event, log_exception
 
 
 LOGGER = get_logger("rag_kb.maintenance.runtime")
 
 
-async def cleanup() -> dict[str, int]:
-    dependencies = build_maintenance_dependencies()
+async def cleanup(settings: Settings | None = None) -> dict[str, int]:
+    dependencies = build_maintenance_dependencies(settings=settings)
     configure_logging(
         level=dependencies.settings.observability.log_level,
         process="maintenance",
@@ -26,10 +27,17 @@ async def cleanup() -> dict[str, int]:
         )
         summary = {
             "pending_activated": result.files.pending_activated,
+            "pending_waiting": result.files.pending_waiting,
+            "pending_failed": result.files.pending_failed,
+            "pending_conflicted": result.files.pending_conflicted,
             "missing_compensated": result.files.missing_compensated,
             "file_cleanup_completed": result.files.cleanup_completed,
             "file_cleanup_failed": result.files.cleanup_failed,
             "orphan_files_removed": result.files.orphans_removed,
+            "orphan_secrets_removed": result.secrets.removed,
+            "orphan_secrets_retained": result.secrets.retained,
+            "orphan_secrets_failed": result.secrets.failed,
+            "orphan_secrets_invalid": result.secrets.invalid,
             "retired_targets_cleaned": result.index.retired_targets_cleaned,
             "vectors_deleted": result.index.vectors_deleted,
             "chunks_deleted": result.index.chunks_deleted,
@@ -54,7 +62,8 @@ def main() -> int:
     configure_logging(level="INFO", process="maintenance")
     try:
         if arguments.command == "cleanup":
-            print(json.dumps(asyncio.run(cleanup()), separators=(",", ":")))
+            settings = load_settings()
+            print(json.dumps(asyncio.run(cleanup(settings)), separators=(",", ":")))
     except Exception as error:
         log_exception(LOGGER, "process_failed", error)
         return 1

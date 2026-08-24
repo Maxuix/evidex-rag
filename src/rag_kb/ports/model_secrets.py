@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
+from rag_kb.domain import ModelSecretEntry
+
 
 @runtime_checkable
 class ModelSecretStore(Protocol):
@@ -12,3 +14,7 @@ class ModelSecretStore(Protocol):
     def read(self, reference: str) -> str: ...
 
     def delete(self, reference: str) -> None: ...
+
+    def list_entries(self) -> tuple[ModelSecretEntry, ...]: ...
+
+    def delete_entry(self, entry: ModelSecretEntry) -> None: ...

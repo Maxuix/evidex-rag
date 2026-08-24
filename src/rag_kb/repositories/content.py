@@ -179,4 +179,13 @@ class FileConsistencyRepository(Protocol):
         terminal: bool,
     ) -> bool: ...
 
+    async def fail_pending_file_mutation(
+        self,
+        *,
+        scope: IdempotencyScope,
+        document_version_id: UUID,
+        failure_code: str,
+        failed_at: datetime,
+    ) -> bool: ...
+
     async def compensate_missing_file(self, document_version_id: UUID) -> bool: ...

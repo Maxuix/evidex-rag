@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 from datetime import UTC, datetime, timedelta
 from io import BytesIO
+import logging
 from typing import TYPE_CHECKING, BinaryIO
 from uuid import UUID
 
@@ -16,6 +17,7 @@ from rag_kb.domain import (
     FileReconciliationResult,
     FileStoreError,
     InvalidStorageIdentityError,
+    ResourceStateConflictError,
     SourceFileDigest,
     SourceFileIdentity,
     StagedSourceFile,
@@ -31,6 +33,9 @@ from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, UnitOfWorkPurpose, execute
 
 if TYPE_CHECKING:
     from rag_kb.services.markdown_media import MarkdownMediaNormalizer
+
+
+LOGGER = logging.getLogger("rag_kb.files.reconciliation")
 
 
 class SourceFileService:
@@ -200,15 +205,43 @@ class FileReconciliationService:
         )
 
         activated = 0
+        pending_waiting = 0
+        pending_failed = 0
+        pending_conflicted = 0
+        staging_references = {item.storage_uri for item in pending}
+        final_references = {
+            item.storage_uri
+            for item in references
+            if item.source_status == "available"
+        }
+
+        async def fail_pending(
+            mutation: PendingFileMutation,
+            failure_code: str,
+        ) -> bool:
+            async def fail(uow: UnitOfWork) -> bool:
+                return await uow.file_consistency.fail_pending_file_mutation(
+                    scope=mutation.scope,
+                    document_version_id=mutation.document_version_id,
+                    failure_code=failure_code,
+                    failed_at=observed_at,
+                )
+
+            return await execute_in_transaction(
+                self._unit_of_work,
+                fail,
+                purpose=UnitOfWorkPurpose.RECONCILIATION,
+            )
+
         for mutation in pending:
-            if (
-                mutation.scope.principal_id != context.principal_id
-                or mutation.scope.client_id != context.client_id
-            ):
-                continue
             expected = SourceFileDigest(
                 mutation.checksum_sha256,
                 mutation.size_bytes,
+            )
+            mutation_context = AuthContext(
+                mutation.scope.principal_id,
+                mutation.scope.client_id,
+                context.workspace_id,
             )
             try:
                 identity = self._checked_identity(
@@ -217,33 +250,90 @@ class FileReconciliationService:
                 final = await self._file_store.inspect(identity, FileLocation.FINAL)
                 if final is not None:
                     if final != expected:
-                        await self._schedule_cleanup(
-                            mutation.document_version_id,
-                            mutation.storage_uri,
-                            "integrity_mismatch",
-                        )
+                        changed = await fail_pending(mutation, "SOURCE_FILE_INTEGRITY")
+                        pending_failed += int(changed)
+                        if changed:
+                            staging_references.discard(mutation.storage_uri)
+                            final_references.discard(mutation.storage_uri)
                         continue
                 else:
                     staged = await self._file_store.inspect(
                         identity, FileLocation.STAGING
                     )
                     if staged is None:
-                        continue
-                    if staged != expected:
-                        await self._schedule_cleanup(
-                            mutation.document_version_id,
-                            mutation.storage_uri,
-                            "integrity_mismatch",
+                        # A rename can happen between the two inspections.
+                        final = await self._file_store.inspect(
+                            identity, FileLocation.FINAL
                         )
-                        continue
-                    await self._file_store.finalize(identity, expected)
+                        if final is None:
+                            if observed_at < mutation.reserved_at + self._orphan_grace:
+                                pending_waiting += 1
+                                continue
+                            changed = await fail_pending(
+                                mutation, "SOURCE_FILE_MISSING"
+                            )
+                            pending_failed += int(changed)
+                            if changed:
+                                staging_references.discard(mutation.storage_uri)
+                                final_references.discard(mutation.storage_uri)
+                            continue
+                    if final is None:
+                        assert staged is not None
+                        if staged != expected:
+                            changed = await fail_pending(
+                                mutation, "SOURCE_FILE_INTEGRITY"
+                            )
+                            pending_failed += int(changed)
+                            if changed:
+                                staging_references.discard(mutation.storage_uri)
+                                final_references.discard(mutation.storage_uri)
+                            continue
+                        await self._file_store.finalize(identity, expected)
+                        final = await self._file_store.inspect(
+                            identity, FileLocation.FINAL
+                        )
+                        if final != expected:
+                            changed = await fail_pending(
+                                mutation, "SOURCE_FILE_INTEGRITY"
+                            )
+                            pending_failed += int(changed)
+                            if changed:
+                                staging_references.discard(mutation.storage_uri)
+                                final_references.discard(mutation.storage_uri)
+                            continue
                 await self._documents.activate_reserved_version(
-                    context,
+                    mutation_context,
                     mutation.scope.idempotency_key,
                     document_id=mutation.document_id,
                 )
                 activated += 1
+                staging_references.discard(mutation.storage_uri)
+                final_references.add(mutation.storage_uri)
+            except ResourceStateConflictError:
+                pending_conflicted += 1
+                changed = await fail_pending(
+                    mutation, "RESERVED_VERSION_STATE_CONFLICT"
+                )
+                pending_failed += int(changed)
+                if changed:
+                    staging_references.discard(mutation.storage_uri)
+                    final_references.discard(mutation.storage_uri)
+            except InvalidStorageIdentityError:
+                changed = await fail_pending(
+                    mutation, "FILE_STORAGE_IDENTITY_INVALID"
+                )
+                pending_failed += int(changed)
+                if changed:
+                    staging_references.discard(mutation.storage_uri)
+                    final_references.discard(mutation.storage_uri)
             except (FileStoreError, OSError):
+                LOGGER.debug(
+                    "pending_file_mutation_deferred reason_code=%s document_id=%s "
+                    "document_version_id=%s",
+                    "FILE_STORAGE_TEMPORARILY_UNAVAILABLE",
+                    mutation.document_id,
+                    mutation.document_version_id,
+                )
                 continue
 
         missing_compensated = 0
@@ -339,8 +429,6 @@ class FileReconciliationService:
             )
             cleanup_completed += int(changed)
 
-        staging_references = {item.storage_uri for item in pending}
-        final_references = {item.storage_uri for item in references}
         cutoff = observed_at - self._orphan_grace
         orphans_removed = 0
         for stored in await self._file_store.list_files():
@@ -370,6 +458,9 @@ class FileReconciliationService:
 
         return FileReconciliationResult(
             pending_activated=activated,
+            pending_waiting=pending_waiting,
+            pending_failed=pending_failed,
+            pending_conflicted=pending_conflicted,
             missing_compensated=missing_compensated,
             cleanup_completed=cleanup_completed,
             cleanup_failed=cleanup_failed,

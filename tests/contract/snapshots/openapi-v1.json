@@ -4203,6 +4203,10 @@
             "title": "Provider Revision Id",
             "type": "string"
           },
+          "provider_secret_available": {
+            "title": "Provider Secret Available",
+            "type": "boolean"
+          },
           "revision": {
             "title": "Revision",
             "type": "integer"
@@ -4255,6 +4259,7 @@
           "model",
           "parameters",
           "enabled",
+          "provider_secret_available",
           "validation_status",
           "validation_error_code",
           "validated_at",

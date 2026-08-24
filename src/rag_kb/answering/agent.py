@@ -30,6 +30,11 @@ from rag_kb.domain import (
     CHAT_AGENT_TRACE_ARTIFACT,
     CHAT_GRAPH_SEARCH_REASONS,
     ChatAgentBudget,
+    CHAT_AGENT_CLAIM_LIMIT,
+    CHAT_AGENT_EVIDENCE_REF_LIMIT,
+    CHAT_AGENT_TRACE_EVENT_LIMIT,
+    CHAT_AGENT_TRACE_REF_LIMIT,
+    CHAT_AGENT_UNANSWERED_LIMIT,
     ChatAgentTrace,
     ChatAgentTraceEvent,
     ChatAnsweringState,
@@ -68,7 +73,7 @@ from rag_kb.retrieval.profile import parse_chat_retrieval_snapshot
 AGENT_TRACE_ARTIFACT = CHAT_AGENT_TRACE_ARTIFACT
 _PROTOCOL_ERROR = '{"status":"error","code":"invalid_tool_protocol"}'
 _ARGUMENT_ERROR = '{"status":"error","code":"invalid_tool_arguments"}'
-_TRACE_REF_LIMIT = 100
+_TRACE_REF_LIMIT = CHAT_AGENT_TRACE_REF_LIMIT
 _SIMPLE_QUERY_MAX_COUNT = 3
 _QUERY_MAX_CHARS = 2048
 _SUBMIT_REPAIR_FEEDBACK = '{"status":"retry_submission"}'
@@ -547,7 +552,6 @@ class NativeToolCallingAgent:
             if call.name == "submit_answer":
                 result = _validate_submission(
                     call.arguments,
-                    context=context,
                     prompt_by_ref=prompt_by_ref,
                     loaded_visual_refs=loaded_visual_refs,
                     calculations=calculations,
@@ -616,7 +620,6 @@ class NativeToolCallingAgent:
                     round_number,
                     retrieval_calls,
                     calculation_calls,
-                    latest_visual_state,
                     sent_visuals,
                     tuple(visual_decisions.values()),
                     call.arguments,
@@ -650,7 +653,6 @@ class NativeToolCallingAgent:
             forced_payload = forced_call.arguments
             result = _validate_submission(
                 forced_call.arguments,
-                context=context,
                 prompt_by_ref=prompt_by_ref,
                 loaded_visual_refs=loaded_visual_refs,
                 calculations=calculations,
@@ -710,7 +712,6 @@ class NativeToolCallingAgent:
             forced_round,
             retrieval_calls,
             calculation_calls,
-            latest_visual_state,
             sent_visuals,
             tuple(visual_decisions.values()),
             forced_payload,
@@ -891,7 +892,7 @@ def _tools(
                     "type": "array",
                     "items": {"type": "string"},
                     "minItems": 1,
-                    "maxItems": 4,
+                    "maxItems": CHAT_AGENT_EVIDENCE_REF_LIMIT,
                 },
             },
             "required": ["expression", "evidence_refs"],
@@ -980,7 +981,11 @@ def _calculate_arguments(value: Mapping[str, Any]) -> tuple[str, tuple[str, ...]
     raw_refs = value.get("evidence_refs")
     if not isinstance(expression, str) or not expression.strip() or len(expression) > 512:
         return None
-    refs = _strings(raw_refs, maximum=4, require_nonempty=True)
+    refs = _strings(
+        raw_refs,
+        maximum=CHAT_AGENT_EVIDENCE_REF_LIMIT,
+        require_nonempty=True,
+    )
     return (expression, refs) if refs is not None else None
 
 
@@ -1197,7 +1202,6 @@ def _new_visuals(
 def _validate_submission(
     value: Mapping[str, Any],
     *,
-    context: ChatExecutionContext,
     prompt_by_ref: Mapping[str, PromptEvidence],
     loaded_visual_refs: set[str],
     calculations: Mapping[str, DecimalCalculationFact],
@@ -1206,10 +1210,12 @@ def _validate_submission(
         return None
     outcome = value.get("outcome")
     raw_claims = value.get("claims")
-    unanswered = _normalized_unanswered(value.get("unanswered"), maximum=100)
+    unanswered = _normalized_unanswered(
+        value.get("unanswered"), maximum=CHAT_AGENT_UNANSWERED_LIMIT
+    )
     if outcome not in {"answered", "partial", "refused"} or unanswered is None:
         return None
-    if not isinstance(raw_claims, (list, tuple)) or len(raw_claims) > 100:
+    if not isinstance(raw_claims, (list, tuple)) or len(raw_claims) > CHAT_AGENT_CLAIM_LIMIT:
         return None
     retained: list[AnswerClaim] = []
     retained_refs: list[str] = []
@@ -1240,7 +1246,10 @@ def _validate_submission(
         text = raw.get("text")
         kind = raw.get("kind", "fact")
         evidence_refs = _strings(raw.get("evidence_refs"), maximum=None)
-        calculation_refs = _strings(raw.get("calculation_refs", ()), maximum=4)
+        calculation_refs = _strings(
+            raw.get("calculation_refs", ()),
+            maximum=CHAT_AGENT_EVIDENCE_REF_LIMIT,
+        )
         if not isinstance(text, str) or not text.strip() or len(text) > 4000 or kind != "fact":
             reject("claim_text")
             continue
@@ -1321,7 +1330,6 @@ def _final_state(
     rounds: int,
     retrieval_calls: int,
     calculation_calls: int,
-    visual_state: ChatAnsweringState | None,
     sent_visuals: Sequence[ChatModelVisualContent],
     visual_decisions: Sequence[VisualEvidenceDecision],
     raw_submission: Mapping[str, Any],
@@ -1366,7 +1374,7 @@ def _final_state(
         ),
     )
     trace = ChatAgentTrace(
-        events=events[-32:],
+        events=events[-CHAT_AGENT_TRACE_EVENT_LIMIT:],
         budget=budget,
         model_rounds=rounds,
         retrieval_calls=retrieval_calls,

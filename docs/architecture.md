@@ -277,7 +277,9 @@ budget/trace，`0010` 删除旧 workflow configuration/state 及其中的 Resear
  `invocation_source=legacy_guard`，不算 duration 或计数）；`0017` 为 Graph config/build 增加
  Schema Profile key/digest 并把既有记录准确回填为 Software；`0018` 增加 per-build work lease，
  让同一 Graphiti build 的 Episode 写入在 Worker 之间串行。Graphiti 派生事实不阻塞
-普通索引发布，只有 build ready、覆盖完整且运行时探测通过时才可用于在线检索。
+普通索引发布，只有 build ready、覆盖完整且运行时探测通过时才可用于在线检索。`0019` 为 source
+file content mutation 增加 `pending/completed/failed` 终态、稳定 failure facts 和 reservation
+时间，并由 bounded reconciler 按条目原子收敛；不可恢复的文件清理保留 durable cleanup 记录。
 除此之外不承诺任意历史版本兼容。主要持久事实为：
 
 | 范围 | 主要实体 |
@@ -286,7 +288,7 @@ budget/trace，`0010` 删除旧 workflow configuration/state 及其中的 Resear
 | 索引 | `EmbeddingSpace`、`IndexRevision`、`IndexedDocumentVersion`、`IndexingJob` |
 | 检索数据 | `IndexChunk`、词法派生、资产/关系、可变维度 `VectorRecord`、Graph 配置、Graphiti build 与 Episode→Chunk 映射 |
 | Chat | `ChatSession`、`ChatMessage`、`ChatRun`、`Citation` |
-| 本地协调 | 幂等记录、文件清理记录、必要的索引计划/manifest |
+| 本地协调 | `ContentMutation` 幂等/终态记录、文件清理记录、必要的索引计划/manifest、本地 model-secret 引用 |
 
 数据保护重点是：源文件与数据库事实一致、同一文档只服务 ready 的索引、Chat 终态和引用
 原子提交、失败任务能够在单 Worker 场景下重试。manifest 只验证一次 candidate 构建的完整性；
@@ -556,7 +558,8 @@ Agent progress 是 content-safe、易失且不可重放的快照；断线后读�
 `apps/web-chat` 是本地唯一前端，提供知识库创建/删除、文档批量导入/更新/删除、索引进度、
 chunk 预览/排除、检索 debug，以及知识库/Session 选择、统一 Native Agent 提问、
 终态回答、有界工具轨迹和证据抽屉。管理页复用 Chat 既有视觉 token 与侧栏，不形成第二套 UI。
-它只调用公开 API；诊断功能不等于生产管理控制面。
+它只调用公开 API；诊断功能不等于生产管理控制面。Chat 与管理页的异步读写使用 generation、
+作用域身份和请求序号守卫，旧 KB/session/document 的 success、error、finally 回调不得覆盖当前视图。
 
 ## 12. 安全、失败与恢复边界
 
@@ -567,6 +570,9 @@ chunk 预览/排除、检索 debug，以及知识库/Session 选择、统一 Nat
 - 用户内容、provider body、图片 bytes/Data URL 和 secret 默认不写日志。
 - 数据库事务短小，外部 I/O 在事务外；过期 Worker attempt 不能覆盖新终态。
 - 文件删除和本地数据 reset 属于破坏性操作，必须明确目标并得到用户授权。
+- source-file reservation 在外部文件操作前持久化为 pending；宽限期内等待，完整性/身份不可恢复时
+  进入 failed 并排队 durable cleanup，数据库/未知故障不伪装成业务终态。model-secret orphan
+  reconciliation 先在只读事务取得所有 provider revision 引用，再按宽限期和 root 内 lstat 结果清理。
 - 引用和视觉资产在返回前重新限定 workspace/KB/version，并验证稳定身份。
 - `vision_enabled=false` 时不读取或发送视觉资产；多轮检索不会重置视觉预算，也不会把未发送的
   table/image asset 复制进 citation snapshot。

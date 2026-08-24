@@ -5,7 +5,12 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import secrets
+import stat
+import re
+from datetime import UTC, datetime
 from uuid import UUID, uuid4
+
+from rag_kb.domain import ModelSecretEntry
 
 
 class LocalModelSecretStore:
@@ -53,6 +58,51 @@ class LocalModelSecretStore:
             self._path(reference).unlink()
         except FileNotFoundError:
             pass
+
+    def list_entries(self) -> tuple[ModelSecretEntry, ...]:
+        entries: list[ModelSecretEntry] = []
+        for path in sorted(self._root.iterdir(), key=lambda item: item.name):
+            try:
+                info = path.lstat()
+            except FileNotFoundError:
+                # Reconciliation is tolerant of an entry removed concurrently.
+                continue
+            name = path.name
+            canonical_reference = None
+            try:
+                candidate = str(UUID(name))
+                if candidate == name:
+                    canonical_reference = candidate
+            except ValueError:
+                pass
+            temporary = bool(
+                re.fullmatch(
+                    r"\.([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.[0-9a-f]{16}\.tmp",
+                    name,
+                )
+            )
+            entries.append(
+                ModelSecretEntry(
+                    canonical_reference=canonical_reference,
+                    opaque_name=name,
+                    is_regular_file=stat.S_ISREG(info.st_mode),
+                    modified_at=datetime.fromtimestamp(info.st_mtime, UTC),
+                    is_temporary=temporary,
+                )
+            )
+        return tuple(entries)
+
+    def delete_entry(self, entry: ModelSecretEntry) -> None:
+        name = entry.opaque_name
+        if not name or Path(name).name != name:
+            raise ValueError("invalid model-secret entry name")
+        path = self._root / name
+        if path.parent != self._root:
+            raise ValueError("model-secret entry escaped configured root")
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError("model-secret entry is not a regular file")
+        path.unlink()
 
     def _path(self, reference: str) -> Path:
         try:

@@ -33,6 +33,7 @@ dev = [
   "falkordblite==0.3.0",
   "httpx==0.28.1",
   "openpyxl==3.1.5",
+  "pytest==8.4.1",
   "python-docx==1.2.0",
   "python-pptx==1.0.2",
   "PyYAML==6.0.3",

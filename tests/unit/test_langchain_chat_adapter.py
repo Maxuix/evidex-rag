@@ -64,6 +64,9 @@ def _adapter(model, *, timeout_seconds: float = 1.0):
         timeout_seconds=timeout_seconds,
         max_retries=0,
         max_concurrency=1,
+        max_visual_images=2,
+        max_visual_image_bytes=5_242_880,
+        max_visual_total_bytes=12_582_912,
         chat_model=model,
     )
 

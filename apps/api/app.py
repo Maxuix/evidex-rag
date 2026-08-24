@@ -17,6 +17,7 @@ from apps.api.request_logging import RequestLoggingMiddleware
 from apps.api.routers import BUSINESS_ROUTERS
 from apps.api.security import IdentityOverrideMiddleware
 from rag_kb.observability import configure_logging, get_logger, log_event
+from rag_kb.config import Settings
 
 
 API_PREFIX = "/api/v1"
@@ -26,13 +27,17 @@ LOGGER = get_logger("rag_kb.api.runtime")
 def create_app(
     *,
     dependencies: ApiDependencies | None = None,
+    settings: Settings | None = None,
     routers: Iterable[APIRouter] | None = None,
 ) -> FastAPI:
     """Create an app without opening connections or publishing placeholder routes."""
 
+    if dependencies is not None and settings is not None:
+        raise ValueError("dependencies and settings are mutually exclusive")
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        resolved = dependencies or build_api_dependencies()
+        resolved = dependencies or build_api_dependencies(settings=settings)
         app.state.dependencies = resolved
         try:
             configure_logging(

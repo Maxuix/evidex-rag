@@ -11,6 +11,7 @@ from apps.api.openapi import problem_responses
 from apps.api.security import get_auth_context
 from rag_kb.auth import AuthContext
 from rag_kb.domain import ModelProfileBundle, ModelProviderBundle, ModelSelection
+from rag_kb.services.model_settings import ModelSettingsSnapshot
 from rag_kb.schemas import (
     ChatModelParameters,
     EmbeddingModelParameters,
@@ -63,7 +64,10 @@ async def create_model_provider(
         max_retries=payload.max_retries,
         max_concurrency=payload.max_concurrency,
     )
-    return _provider_response(value)
+    available = await request.app.state.dependencies.model_settings_service.provider_secret_available(
+        context, value
+    )
+    return _provider_response(value, api_key_configured=available)
 
 
 @router.patch(
@@ -91,7 +95,10 @@ async def update_model_provider(
         max_concurrency=payload.max_concurrency,
         enabled=payload.enabled,
     )
-    return _provider_response(value)
+    available = await request.app.state.dependencies.model_settings_service.provider_secret_available(
+        context, value
+    )
+    return _provider_response(value, api_key_configured=available)
 
 
 @router.get(
@@ -132,7 +139,10 @@ async def create_model_profile(
         model=payload.model,
         parameters=payload.parameters.model_dump(mode="json"),
     )
-    return _profile_response(value)
+    available = await request.app.state.dependencies.model_settings_service.profile_secret_available(
+        context, value
+    )
+    return _profile_response(value, provider_secret_available=available)
 
 
 @router.post(
@@ -149,7 +159,10 @@ async def validate_model_profile(
         context,
         profile_id,
     )
-    return _profile_response(value)
+    available = await request.app.state.dependencies.model_settings_service.profile_secret_available(
+        context, value
+    )
+    return _profile_response(value, provider_secret_available=available)
 
 
 @router.patch(
@@ -176,7 +189,10 @@ async def update_model_profile(
         ),
         enabled=payload.enabled,
     )
-    return _profile_response(value)
+    available = await request.app.state.dependencies.model_settings_service.profile_secret_available(
+        context, value
+    )
+    return _profile_response(value, provider_secret_available=available)
 
 
 @router.put(
@@ -206,25 +222,37 @@ async def _snapshot_response(
     request: Request,
     context: AuthContext,
 ) -> ModelSettingsResponse:
-    providers, profiles, selection = (
+    snapshot = (
         await request.app.state.dependencies.model_settings_service.snapshot(context)
     )
-    return _settings_response(providers, profiles, selection)
+    return _settings_response(snapshot)
 
 
-def _settings_response(
-    providers: tuple[ModelProviderBundle, ...],
-    profiles: tuple[ModelProfileBundle, ...],
-    selection: ModelSelection,
-) -> ModelSettingsResponse:
+def _settings_response(snapshot: ModelSettingsSnapshot) -> ModelSettingsResponse:
     return ModelSettingsResponse(
-        providers=tuple(_provider_response(value) for value in providers),
-        profiles=tuple(_profile_response(value) for value in profiles),
-        selection=_selection_response(selection),
+        providers=tuple(
+            _provider_response(
+                value,
+                api_key_configured=snapshot.provider_secret_health[value.current_revision.id],
+            )
+            for value in snapshot.providers
+        ),
+        profiles=tuple(
+            _profile_response(
+                value,
+                provider_secret_available=snapshot.profile_secret_health[value.current_revision.id],
+            )
+            for value in snapshot.profiles
+        ),
+        selection=_selection_response(snapshot.selection),
     )
 
 
-def _provider_response(value: ModelProviderBundle) -> ModelProviderResponse:
+def _provider_response(
+    value: ModelProviderBundle,
+    *,
+    api_key_configured: bool = True,
+) -> ModelProviderResponse:
     provider = value.provider
     revision = value.current_revision
     return ModelProviderResponse(
@@ -238,14 +266,18 @@ def _provider_response(value: ModelProviderBundle) -> ModelProviderResponse:
         max_retries=revision.max_retries,
         max_concurrency=revision.max_concurrency,
         enabled=provider.enabled,
-        api_key_configured=True,
+        api_key_configured=api_key_configured,
         configuration_fingerprint=revision.configuration_fingerprint,
         created_at=provider.created_at,
         updated_at=provider.updated_at,
     )
 
 
-def _profile_response(value: ModelProfileBundle) -> ModelProfileResponse:
+def _profile_response(
+    value: ModelProfileBundle,
+    *,
+    provider_secret_available: bool = True,
+) -> ModelProfileResponse:
     profile = value.profile
     revision = value.current_revision
     parameters = (
@@ -279,6 +311,7 @@ def _profile_response(value: ModelProfileBundle) -> ModelProfileResponse:
         model=revision.model,
         parameters=parameters,
         enabled=profile.enabled,
+        provider_secret_available=provider_secret_available,
         validation_status=revision.validation_status,
         validation_error_code=revision.validation_error_code,
         validated_at=revision.validated_at,

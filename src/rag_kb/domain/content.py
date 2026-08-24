@@ -220,6 +220,8 @@ class ContentMutation:
     request_hash: str
     operation: str
     status: str
+    failure_code: str | None
+    failed_at: datetime | None
     kb_id: UUID | None
     document_id: UUID | None
     document_version_id: UUID | None

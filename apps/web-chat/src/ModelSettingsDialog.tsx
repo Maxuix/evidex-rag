@@ -239,7 +239,10 @@ function ProviderPanel({
             </div>
             <span>{provider.protocol === "openai_compatible" ? "OpenAI 兼容" : "通义多模态"}</span>
             <code title={provider.base_url}>{provider.base_url}</code>
-            <small>密钥已配置 · 修订 {provider.revision}</small>
+            <small>
+              {provider.api_key_configured ? "密钥可用" : "凭据不可用，请重新保存 API Key"}
+              {` · 修订 ${provider.revision}`}
+            </small>
             {catalogs[provider.id] ? <small>已获取 {catalogs[provider.id].length} 个模型</small> : null}
             <div className="settings-card-actions">
               <button type="button" disabled={disabled} onClick={() => onEdit(provider)}>修改</button>
@@ -374,6 +377,9 @@ function ModelPanel({
             ) : profile.validation_error_code ? (
               <small>{validationErrorHint(profile.validation_error_code)}</small>
             ) : null}
+            {!profile.provider_secret_available ? (
+              <small className="settings-error">凭据不可用，请重新保存 API Key。</small>
+            ) : null}
             <small>修订 {profile.revision}{profile.enabled ? "" : " · 已停用"}</small>
             <div className="settings-card-actions">
               <button type="button" disabled={disabled} onClick={() => onEdit(profile)}>修改</button>
@@ -427,7 +433,10 @@ function DefaultModels({ category, settings, disabled, onSave }: {
       ["multimodal_embedding_profile_revision_id", "默认多模态 Embedding", "multimodal_embedding"],
     ] as const;
   const eligible = (kind: ModelKind) => settings.profiles.filter(
-    (profile) => profile.kind === kind && profile.enabled && profile.validation_status === "valid",
+    (profile) => profile.kind === kind
+      && profile.enabled
+      && profile.validation_status === "valid"
+      && profile.provider_secret_available,
   );
   return (
     <div className={`default-models ${category}`}>

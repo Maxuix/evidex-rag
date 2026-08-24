@@ -35,6 +35,12 @@ import {
   sessionGroup,
   sessionTitle,
 } from "./format";
+import { UI_POLICY } from "./uiPolicy";
+import {
+  isChatViewScopeCurrent,
+  isRequestSequenceCurrent,
+  type ChatViewScope,
+} from "./requestScope";
 import {
   readKnowledgeBaseId,
   readSessionId,
@@ -134,7 +140,7 @@ export function App() {
   );
 }
 
-function KnowledgeChat({
+export function KnowledgeChat({
   client,
   retrievalCapabilities,
   retrievalCapabilitiesLoading,
@@ -197,9 +203,16 @@ function KnowledgeChat({
   const [activePage, setActivePage] = useState<"chat" | "knowledge-base">("chat");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const messageGeneration = useRef(0);
+  const chatGeneration = useRef(0);
+  const sessionRequestSequence = useRef(0);
   const graphConfigGeneration = useRef(0);
   const selectedKnowledgeBaseIdRef = useRef(selectedKnowledgeBaseId);
+  const selectedSessionIdRef = useRef(selectedSessionId);
+  const previousChatKnowledgeBaseIdRef = useRef(selectedKnowledgeBaseId);
+  const previousChatSessionIdRef = useRef(selectedSessionId);
+  const skipSessionScopeInvalidationRef = useRef(false);
   selectedKnowledgeBaseIdRef.current = selectedKnowledgeBaseId;
+  selectedSessionIdRef.current = selectedSessionId;
 
   const selectedKnowledgeBase = useMemo(
     () => knowledgeBases.find((item) => item.id === selectedKnowledgeBaseId) ?? null,
@@ -230,6 +243,7 @@ function KnowledgeChat({
     profile.kind === "chat"
     && profile.enabled
     && profile.validation_status === "valid"
+    && profile.provider_secret_available
   )) ?? [];
   const chatModelConfigured = Boolean(
     selectedChatModelRevisionId
@@ -288,10 +302,22 @@ function KnowledgeChat({
     knowledgeBaseId: string,
     cursor?: string,
   ) => {
+    const token: ChatViewScope = {
+      generation: chatGeneration.current,
+      knowledgeBaseId,
+      sessionId: null,
+    };
+    const sequence = ++sessionRequestSequence.current;
+    const isCurrent = () => isChatViewScopeCurrent(token, {
+      generation: chatGeneration.current,
+      knowledgeBaseId: selectedKnowledgeBaseIdRef.current,
+      sessionId: null,
+    }) && isRequestSequenceCurrent(sequence, sessionRequestSequence.current);
     setSessionsLoading(true);
     setSessionsError(null);
     try {
       const page = await client.listChatSessions(knowledgeBaseId, cursor);
+      if (!isCurrent()) return;
       setSessions((current) => cursor
         ? mergeById(current, page.items)
         : page.items);
@@ -304,9 +330,9 @@ function KnowledgeChat({
         setSelectedSessionId(next);
       }
     } catch (error) {
-      setSessionsError(errorMessage(error));
+      if (isCurrent()) setSessionsError(errorMessage(error));
     } finally {
-      setSessionsLoading(false);
+      if (isCurrent()) setSessionsLoading(false);
     }
   }, [client]);
 
@@ -315,21 +341,31 @@ function KnowledgeChat({
     cursor?: string,
   ) => {
     const generation = ++messageGeneration.current;
+    const token: ChatViewScope = {
+      generation: chatGeneration.current,
+      knowledgeBaseId: selectedKnowledgeBaseIdRef.current,
+      sessionId,
+    };
+    const isCurrent = () => isChatViewScopeCurrent(token, {
+      generation: chatGeneration.current,
+      knowledgeBaseId: selectedKnowledgeBaseIdRef.current,
+      sessionId: selectedSessionIdRef.current,
+    }) && isRequestSequenceCurrent(generation, messageGeneration.current);
     setMessagesLoading(true);
     setMessagesError(null);
     try {
       const page = await client.listChatMessages(sessionId, cursor);
-      if (generation !== messageGeneration.current) return;
+      if (!isCurrent()) return;
       setMessages((current) => cursor
         ? mergeMessages(current, page.items)
         : page.items);
       setMessagesCursor(page.next_cursor);
     } catch (error) {
-      if (generation === messageGeneration.current) {
+      if (isCurrent()) {
         setMessagesError(errorMessage(error));
       }
     } finally {
-      if (generation === messageGeneration.current) setMessagesLoading(false);
+      if (isCurrent()) setMessagesLoading(false);
     }
   }, [client]);
 
@@ -424,16 +460,24 @@ function KnowledgeChat({
     ) return;
     const timer = window.setInterval(() => {
       void loadGraphConfig(selectedKnowledgeBaseId, true);
-    }, 2000);
+    }, UI_POLICY.graphPollMs);
     return () => window.clearInterval(timer);
   }, [graphConfig, loadGraphConfig, selectedKnowledgeBaseId]);
 
   useEffect(() => {
+    ++chatGeneration.current;
     storeKnowledgeBaseId(selectedKnowledgeBaseId || null);
+    setSubmitting(false);
+    setPendingRun(null);
+    setSubmissionError(null);
     setRetrievalMode("vector");
     setSessions([]);
+    setSessionsLoading(false);
+    setSessionsError(null);
     setSelectedSessionId(null);
     setMessages([]);
+    setMessagesLoading(false);
+    setMessagesError(null);
     setCurrentRun(null);
     setRunCache({});
     closeEvidence();
@@ -457,6 +501,23 @@ function KnowledgeChat({
   ]);
 
   useEffect(() => {
+    const knowledgeBaseChanged = (
+      previousChatKnowledgeBaseIdRef.current !== selectedKnowledgeBaseId
+    );
+    previousChatKnowledgeBaseIdRef.current = selectedKnowledgeBaseId;
+    if (knowledgeBaseChanged) {
+      skipSessionScopeInvalidationRef.current = true;
+      previousChatSessionIdRef.current = selectedSessionId;
+      return;
+    }
+    if (skipSessionScopeInvalidationRef.current) {
+      skipSessionScopeInvalidationRef.current = false;
+      previousChatSessionIdRef.current = selectedSessionId;
+      return;
+    }
+    if (previousChatSessionIdRef.current === selectedSessionId) return;
+    previousChatSessionIdRef.current = selectedSessionId;
+    ++chatGeneration.current;
     messageGeneration.current += 1;
     setMessages([]);
     setMessagesCursor(null);
@@ -470,6 +531,12 @@ function KnowledgeChat({
 
   useEffect(() => {
     if (!selectedSessionId || currentRun || messagesLoading) return;
+    const generation = chatGeneration.current;
+    const token: ChatViewScope = {
+      generation,
+      knowledgeBaseId: selectedKnowledgeBaseId,
+      sessionId: selectedSessionId,
+    };
     const generating = [...messages].reverse().find(
       (item) => item.role === "assistant"
         && item.assistant_status === "generating"
@@ -478,10 +545,24 @@ function KnowledgeChat({
     if (!generating?.run_id) return;
     void client.getChatRun(generating.run_id)
       .then((run) => {
-        if (run.session_id === selectedSessionId) setCurrentRun(run);
+        if (
+          isChatViewScopeCurrent(token, {
+            generation: chatGeneration.current,
+            knowledgeBaseId: selectedKnowledgeBaseIdRef.current,
+            sessionId: selectedSessionIdRef.current,
+          })
+          && run.session_id === selectedSessionId
+          && run.knowledge_base_id === selectedKnowledgeBaseId
+        ) setCurrentRun(run);
       })
-      .catch((error) => setMessagesError(errorMessage(error)));
-  }, [client, currentRun, messages, messagesLoading, selectedSessionId]);
+      .catch((error) => {
+        if (isChatViewScopeCurrent(token, {
+          generation: chatGeneration.current,
+          knowledgeBaseId: selectedKnowledgeBaseIdRef.current,
+          sessionId: selectedSessionIdRef.current,
+        })) setMessagesError(errorMessage(error));
+      });
+  }, [client, currentRun, messages, messagesLoading, selectedKnowledgeBaseId, selectedSessionId]);
 
   useEffect(() => {
     if (!selectedSessionId || messagesLoading) return;
@@ -491,11 +572,20 @@ function KnowledgeChat({
         : []
     )))];
     if (!missingRunIds.length) return;
+    const token: ChatViewScope = {
+      generation: chatGeneration.current,
+      knowledgeBaseId: selectedKnowledgeBaseId,
+      sessionId: selectedSessionId,
+    };
     let cancelled = false;
     void Promise.allSettled(
       missingRunIds.map((runId) => client.getChatRun(runId)),
     ).then((results) => {
-      if (cancelled) return;
+      if (cancelled || !isChatViewScopeCurrent(token, {
+        generation: chatGeneration.current,
+        knowledgeBaseId: selectedKnowledgeBaseIdRef.current,
+        sessionId: selectedSessionIdRef.current,
+      })) return;
       const loaded: Record<string, ChatRun> = {};
       for (const result of results) {
         if (
@@ -531,10 +621,21 @@ function KnowledgeChat({
       setDeliveryMode("idle");
       return;
     }
+    const token: ChatViewScope = {
+      generation: chatGeneration.current,
+      knowledgeBaseId: currentRun.knowledge_base_id,
+      sessionId: currentRun.session_id,
+    };
+    const isCurrent = () => isChatViewScopeCurrent(token, {
+      generation: chatGeneration.current,
+      knowledgeBaseId: selectedKnowledgeBaseIdRef.current,
+      sessionId: selectedSessionIdRef.current,
+    });
+    if (!isCurrent()) return;
     setRunCache((current) => ({ ...current, [currentRun.run_id]: currentRun }));
     if (isTerminal(currentRun)) {
       setDeliveryMode("idle");
-      if (currentRun.session_id === selectedSessionId) {
+      if (isCurrent() && currentRun.session_id === selectedSessionIdRef.current) {
         void loadMessages(currentRun.session_id);
       }
       return;
@@ -547,13 +648,16 @@ function KnowledgeChat({
       if (cancelled) return;
       try {
         const next = await client.getChatRun(currentRun.run_id);
-        if (cancelled) return;
+        if (cancelled || !isCurrent() || next.knowledge_base_id !== token.knowledgeBaseId || next.session_id !== token.sessionId) return;
         setCurrentRun(next);
         if (!isTerminal(next)) {
-          pollTimer = window.setTimeout(poll, 1200 + Math.random() * 350);
+          pollTimer = window.setTimeout(
+            poll,
+            UI_POLICY.runPollInitialMs + Math.random() * UI_POLICY.runPollJitterMs,
+          );
         }
       } catch {
-        if (!cancelled) pollTimer = window.setTimeout(poll, 2200);
+        if (!cancelled) pollTimer = window.setTimeout(poll, UI_POLICY.runPollRetryMs);
       }
     };
     const beginPolling = () => {
@@ -570,21 +674,25 @@ function KnowledgeChat({
       closeStream = null;
       try {
         const next = await client.getChatRun(statusUrl);
-        if (!cancelled) setCurrentRun(next);
+        if (!cancelled && isCurrent() && next.knowledge_base_id === token.knowledgeBaseId && next.session_id === token.sessionId) setCurrentRun(next);
       } catch {
         beginPolling();
       }
     };
     closeStream = client.subscribeChatRun(currentRun.events_url, {
-      open: () => !cancelled && setDeliveryMode("sse"),
+      open: () => !cancelled && isCurrent() && setDeliveryMode("sse"),
       completed: (event) => void settle(event.status_url),
       failed: (event) => void settle(event.status_url),
-      progress: (event) => setProgress(
-        (current) => applyProgress(current, currentRun.run_id, event),
-      ),
-      progressInvalid: () => setProgress(
-        (current) => disconnectProgress(current, currentRun.run_id),
-      ),
+      progress: (event) => {
+        if (isCurrent()) setProgress(
+          (current) => applyProgress(current, currentRun.run_id, event),
+        );
+      },
+      progressInvalid: () => {
+        if (isCurrent()) setProgress(
+          (current) => disconnectProgress(current, currentRun.run_id),
+        );
+      },
       error: beginPolling,
     });
     return () => {
@@ -602,6 +710,7 @@ function KnowledgeChat({
   }, [draft]);
 
   const chooseKnowledgeBase = (value: string) => {
+    if (submitting || pendingRun) return;
     if (value === selectedKnowledgeBaseId) return;
     if (draft.trim() && value !== selectedKnowledgeBaseId) {
       const discard = window.confirm("切换知识库会清除当前未发送的问题，是否继续？");
@@ -617,6 +726,7 @@ function KnowledgeChat({
   };
 
   const beginNewConversation = () => {
+    if (submitting || pendingRun) return;
     setActivePage("chat");
     setSelectedSessionId(null);
     setMessages([]);
@@ -636,6 +746,7 @@ function KnowledgeChat({
       || !chatModelConfigured
     ) return;
     const question = draft.trim();
+    const submissionKnowledgeBaseId = selectedKnowledgeBase.id;
     setSubmitting(true);
     setSubmissionError(null);
     let sessionId = selectedSessionId;
@@ -645,7 +756,9 @@ function KnowledgeChat({
           selectedKnowledgeBase.id,
           questionTitle(question),
         );
+        if (selectedKnowledgeBaseIdRef.current !== submissionKnowledgeBaseId) return;
         sessionId = created.id;
+        selectedSessionIdRef.current = created.id;
         setSessions((current) => mergeById([created], current));
         setSelectedSessionId(created.id);
         storeSessionId(selectedKnowledgeBase.id, created.id);
@@ -675,13 +788,23 @@ function KnowledgeChat({
       setPendingRun(pending);
       await performRun(pending);
     } catch (error) {
-      setSubmissionError(errorMessage(error));
+      if (selectedKnowledgeBaseIdRef.current === submissionKnowledgeBaseId) {
+        setSubmissionError(errorMessage(error));
+      }
     } finally {
-      setSubmitting(false);
+      if (selectedKnowledgeBaseIdRef.current === submissionKnowledgeBaseId) {
+        setSubmitting(false);
+      }
     }
   };
 
   const performRun = async (pending: PendingRun) => {
+    const submissionKnowledgeBaseId = pending.payload.knowledge_base_id;
+    const submissionSessionId = pending.payload.session_id;
+    const isCurrent = () => (
+      selectedKnowledgeBaseIdRef.current === submissionKnowledgeBaseId
+      && selectedSessionIdRef.current === submissionSessionId
+    );
     setSubmitting(true);
     setSubmissionError(null);
     try {
@@ -689,16 +812,17 @@ function KnowledgeChat({
         pending.payload,
         pending.idempotencyKey,
       );
+      if (!isCurrent()) return;
       setCurrentRun(run);
       setRunCache((current) => ({ ...current, [run.run_id]: run }));
       setDraft("");
       setPendingRun(null);
       await loadMessages(run.session_id);
     } catch (error) {
-      setSubmissionError(errorMessage(error));
+      if (isCurrent()) setSubmissionError(errorMessage(error));
       throw error;
     } finally {
-      setSubmitting(false);
+      if (isCurrent()) setSubmitting(false);
     }
   };
 
@@ -744,6 +868,16 @@ function KnowledgeChat({
     trigger: HTMLButtonElement,
   ) => {
     evidenceTrigger.current = trigger;
+    const token: ChatViewScope = {
+      generation: chatGeneration.current,
+      knowledgeBaseId: selectedKnowledgeBaseId,
+      sessionId: selectedSessionId,
+    };
+    const isCurrent = () => isChatViewScopeCurrent(token, {
+      generation: chatGeneration.current,
+      knowledgeBaseId: selectedKnowledgeBaseIdRef.current,
+      sessionId: selectedSessionIdRef.current,
+    });
     setEvidenceError(null);
     const cached = runCache[runId];
     if (cached) {
@@ -754,15 +888,15 @@ function KnowledgeChat({
     setEvidenceLoading(true);
     try {
       const run = await client.getChatRun(runId);
-      if (run.knowledge_base_id !== selectedKnowledgeBaseId) {
+      if (!isCurrent() || run.knowledge_base_id !== selectedKnowledgeBaseIdRef.current) {
         throw new ApiClientError("来源不属于当前知识库。");
       }
       setRunCache((current) => ({ ...current, [runId]: run }));
       setEvidence({ run, runId, ordinal });
     } catch (error) {
-      setEvidenceError(errorMessage(error));
+      if (isCurrent()) setEvidenceError(errorMessage(error));
     } finally {
-      setEvidenceLoading(false);
+      if (isCurrent()) setEvidenceLoading(false);
     }
   };
 
@@ -839,7 +973,7 @@ function KnowledgeChat({
           <span>知识库</span>
           <select
             value={selectedKnowledgeBaseId}
-            disabled={knowledgeBasesLoading || !knowledgeBases.length}
+            disabled={knowledgeBasesLoading || !knowledgeBases.length || submitting || Boolean(pendingRun)}
             onChange={(event) => chooseKnowledgeBase(event.target.value)}
           >
             {!knowledgeBases.length ? <option value="">暂无知识库</option> : null}
@@ -862,7 +996,7 @@ function KnowledgeChat({
           <button
             className="new-chat-button"
             type="button"
-            disabled={!selectedKnowledgeBase}
+            disabled={!selectedKnowledgeBase || submitting || Boolean(pendingRun)}
             onClick={beginNewConversation}
           >
             <span aria-hidden="true">＋</span>
@@ -879,6 +1013,8 @@ function KnowledgeChat({
               message={sessionsError}
               action="重试"
               onAction={() => selectedKnowledgeBaseId
+                && !submitting
+                && !pendingRun
                 && void loadSessions(selectedKnowledgeBaseId)}
             />
           ) : null}
@@ -897,6 +1033,7 @@ function KnowledgeChat({
                   key={session.id}
                   title={sessionTitle(session)}
                   onClick={() => {
+                    if (submitting || pendingRun) return;
                     setSelectedSessionId(session.id);
                     setMobileSidebarOpen(false);
                   }}
@@ -912,6 +1049,8 @@ function KnowledgeChat({
               className="load-more"
               type="button"
               onClick={() => selectedKnowledgeBaseId
+                && !submitting
+                && !pendingRun
                 && void loadSessions(selectedKnowledgeBaseId, sessionsCursor)}
             >
               加载更早会话

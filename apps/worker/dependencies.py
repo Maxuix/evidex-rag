@@ -38,7 +38,7 @@ from rag_kb.config import (
     load_settings,
     validate_startup_environment,
 )
-from rag_kb.config.settings import provider_retry_budget_seconds
+from rag_kb.config.settings import ChatProviderSettings, provider_retry_budget_seconds
 from rag_kb.db import (
     DatabaseProcess,
     DatabaseResources,
@@ -80,6 +80,7 @@ from rag_kb.services.content import (
     build_content_services,
 )
 from rag_kb.services.files import FileReconciliationService
+from rag_kb.services.secrets import ModelSecretReconciliationService
 from rag_kb.uow import UnitOfWork, UnitOfWorkPurpose, execute_in_transaction
 from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWorkFactory
 
@@ -98,6 +99,7 @@ class WorkerDependencies:
     asset_store: IndexAssetStore
     index_asset_service: IndexAssetService
     reconciliation_service: FileReconciliationService
+    model_secret_reconciliation_service: ModelSecretReconciliationService
     document_parser: DoclingParser
     embedding_provider: EmbeddingModelAdapter
     multimodal_embedding_provider: MultimodalEmbeddingAdapter | None
@@ -141,7 +143,7 @@ class WorkerDependencies:
 def build_worker_dependencies(
     settings: Settings | None = None,
     *,
-    env_file: str | Path | None = ".env",
+    env_file: str | Path | None = ".env.local",
     worker_id: str | None = None,
 ) -> WorkerDependencies:
     """Load configuration explicitly and fail before starting task polling."""
@@ -206,6 +208,9 @@ def build_worker_dependencies(
             temperature=chat_settings.temperature,
             max_tokens=chat_settings.max_tokens,
             thinking_enabled=chat_settings.thinking_enabled,
+            max_visual_images=chat_settings.max_visual_images,
+            max_visual_image_bytes=chat_settings.max_visual_image_bytes,
+            max_visual_total_bytes=chat_settings.max_visual_total_bytes,
         )
         if chat_settings is not None
         else UnconfiguredChatModelAdapter()
@@ -308,10 +313,10 @@ def build_worker_dependencies(
     )
     visual_evidence_preparer = VisualEvidencePreparationStep(
         index_asset_service,
-        max_images=4,
-        max_image_bytes=5_242_880,
-        max_total_bytes=12_582_912,
-        max_pixels=16_000_000,
+        max_images=ChatProviderSettings.max_visual_images,
+        max_image_bytes=ChatProviderSettings.max_visual_image_bytes,
+        max_total_bytes=ChatProviderSettings.max_visual_total_bytes,
+        max_pixels=ChatProviderSettings.max_visual_pixels,
     )
     chat_delivery = resolved_settings.chat_delivery
     chat_preview_sink = (
@@ -374,6 +379,12 @@ def build_worker_dependencies(
         reconciliation_batch_size=poller.reconciliation_batch_size,
         graph_worker=graph_extraction_worker,
     )
+    model_secret_reconciliation = ModelSecretReconciliationService(
+        unit_of_work,
+        model_secret_store,
+        batch_size=resolved_settings.model_secrets.reconciliation_batch_size,
+        orphan_grace_seconds=resolved_settings.model_secrets.orphan_grace_seconds,
+    )
     return WorkerDependencies(
         settings=resolved_settings,
         startup=startup,
@@ -400,6 +411,7 @@ def build_worker_dependencies(
                 resolved_settings.file_store.cleanup_base_delay_seconds
             ),
         ),
+        model_secret_reconciliation_service=model_secret_reconciliation,
         document_parser=document_parser,
         embedding_provider=embedding_provider,
         multimodal_embedding_provider=multimodal_embedding_provider,
@@ -488,6 +500,9 @@ def _chat_model_loader(
             max_tokens=parameters.get("max_output_tokens", 8192),
             reasoning_effort=parameters.get("reasoning_effort", "off"),
             thinking_enabled=parameters.get("reasoning_effort", "off") != "off",
+            max_visual_images=ChatProviderSettings.max_visual_images,
+            max_visual_image_bytes=ChatProviderSettings.max_visual_image_bytes,
+            max_visual_total_bytes=ChatProviderSettings.max_visual_total_bytes,
         )
 
     return load

@@ -176,6 +176,7 @@ class ModelProfileResponse(PublicSchema):
     model: str
     parameters: ModelParameters
     enabled: bool
+    provider_secret_available: bool
     validation_status: ModelValidationStatus
     validation_error_code: str | None
     validated_at: datetime | None

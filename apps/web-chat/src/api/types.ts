@@ -538,6 +538,7 @@ export interface ModelProfile {
   model: string;
   parameters: ChatModelParameters | EmbeddingModelParameters;
   enabled: boolean;
+  provider_secret_available: boolean;
   validation_status: ModelValidationStatus;
   validation_error_code: string | null;
   validated_at: IsoDate | null;

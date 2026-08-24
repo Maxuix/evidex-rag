@@ -316,6 +316,8 @@ class ParserSettings(StrictSettingsModel):
 
 class ModelSecretsSettings(StrictSettingsModel):
     root_path: Path = Path("/var/lib/rag-kb/model-secrets")
+    orphan_grace_seconds: PositiveFloat = 300.0
+    reconciliation_batch_size: PositiveInt = 100
 
     @field_validator("root_path")
     @classmethod

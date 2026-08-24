@@ -31,6 +31,7 @@ import type {
   RerankMode,
   UUID,
 } from "./types";
+import { UI_POLICY } from "../uiPolicy";
 
 const API_PATH = "/api/v1";
 const OOXML = "application/vnd.openxmlformats-officedocument";
@@ -104,7 +105,7 @@ export class ApiClient {
 
   listKnowledgeBases(cursor?: string): Promise<Page<KnowledgeBase>> {
     return this.request(this.withQuery("/knowledge-bases", {
-      limit: "100",
+      limit: String(UI_POLICY.knowledgeBasePageSize),
       sort: "name",
       cursor,
     }));
@@ -142,7 +143,7 @@ export class ApiClient {
 
   listDocuments(kbId: UUID, cursor?: string): Promise<Page<DocumentRecord>> {
     return this.request(this.withQuery(`/knowledge-bases/${kbId}/documents`, {
-      limit: "100",
+      limit: String(UI_POLICY.documentPageSize),
       sort: "-created_at",
       cursor,
     }));
@@ -157,7 +158,7 @@ export class ApiClient {
     cursor?: string,
   ): Promise<DocumentChunkInspection> {
     return this.request(this.withQuery(`/documents/${documentId}/chunks`, {
-      limit: "100",
+      limit: String(UI_POLICY.chunkPageSize),
       cursor,
     }));
   }
@@ -208,7 +209,7 @@ export class ApiClient {
 
   listIndexingJobs(kbId: UUID): Promise<Page<IndexingJob>> {
     return this.request(this.withQuery(`/knowledge-bases/${kbId}/indexing-jobs`, {
-      limit: "100",
+      limit: String(UI_POLICY.indexingJobPageSize),
     }));
   }
 
@@ -360,7 +361,7 @@ export class ApiClient {
   ): Promise<Page<ChatSession>> {
     return this.request(this.withQuery("/chat/sessions", {
       knowledge_base_id: knowledgeBaseId,
-      limit: "50",
+      limit: String(UI_POLICY.chatPageSize),
       sort: "-updated_at",
       cursor,
     }));
@@ -385,7 +386,7 @@ export class ApiClient {
     cursor?: string,
   ): Promise<Page<ChatMessage>> {
     return this.request(this.withQuery(`/chat/sessions/${sessionId}/messages`, {
-      limit: "50",
+      limit: String(UI_POLICY.chatPageSize),
       sort: "created_at",
       cursor,
     }));

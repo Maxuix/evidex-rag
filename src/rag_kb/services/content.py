@@ -567,6 +567,7 @@ class DocumentService:
             prior = await uow.content_mutations.get(scope)
             if prior is not None:
                 _require_same_hash(prior.request_hash, request_hash)
+                _require_replayable_mutation(prior)
                 return await _document_result_from_mutation(uow, prior)
             reserved = await uow.documents.reserve_version(
                 kb_id=kb_id,
@@ -611,6 +612,7 @@ class DocumentService:
                 raise ResourceNotFoundError("document version reservation was not found")
             if mutation.document_id != document_id or mutation.document_version_id is None:
                 raise IdempotencyKeyReusedError("idempotency key targets another document")
+            _require_replayable_mutation(mutation)
             if mutation.status == "completed":
                 return await _document_result_from_mutation(uow, mutation)
             activated = await uow.documents.activate_version(
@@ -678,6 +680,7 @@ class DocumentService:
 
 
 async def _document_result_from_mutation(uow: UnitOfWork, mutation) -> DocumentMutationResult:
+    _require_replayable_mutation(mutation)
     assert mutation.document_id is not None
     document = await uow.documents.get(mutation.document_id)
     if document is None:
@@ -696,6 +699,13 @@ async def _document_result_from_mutation(uow: UnitOfWork, mutation) -> DocumentM
 def _require_same_hash(actual: str, expected: str) -> None:
     if actual != expected:
         raise IdempotencyKeyReusedError("idempotency key was already used with a different request")
+
+
+def _require_replayable_mutation(mutation) -> None:
+    if mutation.status == "failed":
+        raise ResourceStateConflictError(
+            mutation.failure_code or "content mutation reached a terminal failure"
+        )
 
 
 def _require_scope(uow: UnitOfWork, context: AuthContext) -> None:

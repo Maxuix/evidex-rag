@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from rag_kb.auth import AuthContext
-from rag_kb.domain import FileReconciliationResult, IndexCleanupResult
+from rag_kb.domain import (
+    FileReconciliationResult,
+    IndexCleanupResult,
+    ModelSecretReconciliationResult,
+)
 from rag_kb.ports.files import IndexAssetStore
 from rag_kb.services.files import FileReconciliationService
+from rag_kb.services.secrets import ModelSecretReconciliationService
 from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, UnitOfWorkPurpose, execute_in_transaction
 
 
@@ -17,6 +22,9 @@ from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, UnitOfWorkPurpose, execute
 class MaintenanceCleanupResult:
     files: FileReconciliationResult
     index: IndexCleanupResult
+    secrets: ModelSecretReconciliationResult = field(
+        default_factory=ModelSecretReconciliationResult
+    )
 
 
 class MaintenanceCleanupService:
@@ -29,6 +37,7 @@ class MaintenanceCleanupService:
         retired_data_grace_seconds: float,
         task_retention_seconds: float,
         asset_store: IndexAssetStore | None = None,
+        model_secret_reconciliation: ModelSecretReconciliationService | None = None,
     ) -> None:
         self._unit_of_work = unit_of_work
         self._file_reconciliation = file_reconciliation
@@ -36,6 +45,7 @@ class MaintenanceCleanupService:
         self._retired_data_grace = timedelta(seconds=retired_data_grace_seconds)
         self._task_retention = timedelta(seconds=task_retention_seconds)
         self._asset_store = asset_store
+        self._model_secret_reconciliation = model_secret_reconciliation
 
     async def run_once(
         self,
@@ -45,6 +55,11 @@ class MaintenanceCleanupService:
     ) -> MaintenanceCleanupResult:
         observed_at = now or datetime.now(UTC)
         files = await self._file_reconciliation.run_once(context, now=observed_at)
+        secrets = (
+            await self._model_secret_reconciliation.run_once(context, now=observed_at)
+            if self._model_secret_reconciliation is not None
+            else ModelSecretReconciliationResult()
+        )
         data_before = observed_at - self._retired_data_grace
 
         async def list_targets(uow: UnitOfWork):
@@ -116,4 +131,4 @@ class MaintenanceCleanupService:
             clean,
             purpose=UnitOfWorkPurpose.RECONCILIATION,
         )
-        return MaintenanceCleanupResult(files=files, index=index)
+        return MaintenanceCleanupResult(files=files, index=index, secrets=secrets)

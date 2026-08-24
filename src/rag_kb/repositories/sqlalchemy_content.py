@@ -1288,6 +1288,8 @@ class SqlAlchemyContentMutationRepository:
         for name, value in _result_ids(result).items():
             setattr(row, name, value)
         row.status = "completed"
+        row.failure_code = None
+        row.failed_at = None
         row.updated_at = datetime.now(UTC)
         await self._session.flush()
         return _mutation(row)
@@ -1425,6 +1427,7 @@ class SqlAlchemyFileConsistencyRepository:
                 storage_uri=version.storage_uri,
                 checksum_sha256=version.checksum_sha256,
                 size_bytes=version.size_bytes,
+                reserved_at=mutation.created_at,
             )
             for mutation, version in rows
             if mutation.document_id is not None
@@ -1512,6 +1515,86 @@ class SqlAlchemyFileConsistencyRepository:
             )
         )
         return bool(result.rowcount)
+
+    async def fail_pending_file_mutation(
+        self,
+        *,
+        scope: IdempotencyScope,
+        document_version_id: UUID,
+        failure_code: str,
+        failed_at: datetime,
+    ) -> bool:
+        """Atomically make one irrecoverable reservation terminal.
+
+        The mutation row is the serialization point shared with activation.  A
+        concurrent successful activation therefore wins without being replaced
+        by a janitor failure transition.
+        """
+
+        self._ensure_active()
+        mutation = await self._session.scalar(
+            select(ContentMutationRow)
+            .where(
+                ContentMutationRow.workspace_id == self._workspace_id,
+                ContentMutationRow.principal_id == scope.principal_id,
+                ContentMutationRow.client_id == scope.client_id,
+                ContentMutationRow.endpoint == scope.endpoint,
+                ContentMutationRow.idempotency_key == scope.idempotency_key,
+            )
+            .with_for_update()
+        )
+        if (
+            mutation is None
+            or mutation.status != "pending"
+            or mutation.operation != "document.version.reserve"
+            or mutation.document_version_id != document_version_id
+        ):
+            return False
+
+        version = await self._session.scalar(
+            select(DocumentVersionRow)
+            .where(
+                DocumentVersionRow.workspace_id == self._workspace_id,
+                DocumentVersionRow.id == document_version_id,
+            )
+            .with_for_update()
+        )
+        if (
+            version is None
+            or version.source_status is not DocumentSourceStatus.UNAVAILABLE
+        ):
+            return False
+        document = await self._session.scalar(
+            select(DocumentRow)
+            .where(
+                DocumentRow.workspace_id == self._workspace_id,
+                DocumentRow.id == version.document_id,
+            )
+            .with_for_update()
+        )
+        if document is None:
+            return False
+
+        version.source_status = DocumentSourceStatus.DELETED
+        if document.current_version_id is None:
+            document.deleted_at = failed_at
+        document.updated_at = failed_at
+        mutation.status = "failed"
+        mutation.failure_code = failure_code
+        mutation.failed_at = failed_at
+        mutation.updated_at = failed_at
+        await self._session.execute(
+            pg_insert(SourceFileCleanupRow)
+            .values(
+                workspace_id=self._workspace_id,
+                document_version_id=version.id,
+                storage_uri=version.storage_uri,
+                reason="pending_mutation_failed",
+            )
+            .on_conflict_do_nothing(index_elements=["document_version_id"])
+        )
+        await self._session.flush()
+        return True
 
     async def compensate_missing_file(self, document_version_id: UUID) -> bool:
         self._ensure_active()
@@ -1736,6 +1819,8 @@ def _mutation(row: ContentMutationRow) -> ContentMutation:
         request_hash=row.request_hash,
         operation=row.operation,
         status=row.status,
+        failure_code=row.failure_code,
+        failed_at=row.failed_at,
         kb_id=row.kb_id,
         document_id=row.document_id,
         document_version_id=row.document_version_id,

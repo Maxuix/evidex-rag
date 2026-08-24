@@ -43,6 +43,15 @@ class SqlAlchemyModelSettingsRepository:
         self._workspace_id = workspace_id
         self._ensure_active = ensure_active
 
+    async def list_secret_references(self) -> tuple[str, ...]:
+        self._ensure_active()
+        values = await self._session.scalars(
+            select(ModelProviderRevisionRow.secret_reference).where(
+                ModelProviderRevisionRow.workspace_id == self._workspace_id
+            )
+        )
+        return tuple(values)
+
     async def list_providers(self) -> tuple[ModelProviderBundle, ...]:
         self._ensure_active()
         rows = (

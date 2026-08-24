@@ -38,28 +38,37 @@ CHAT_GRAPH_SEARCH_RESULTS = frozenset(
     }
 )
 CHAT_AGENT_INVOCATION_SOURCES = frozenset({"agent", "legacy_guard"})
+CHAT_AGENT_DEFAULT_MODEL_ROUNDS = 8
+CHAT_AGENT_MAX_MODEL_ROUNDS = 12
+CHAT_AGENT_DEFAULT_GRAPH_CALLS = 2
+CHAT_AGENT_MAX_GRAPH_CALLS = 2
+CHAT_AGENT_TRACE_REF_LIMIT = 100
+CHAT_AGENT_TRACE_EVENT_LIMIT = 32
+CHAT_AGENT_CLAIM_LIMIT = 100
+CHAT_AGENT_UNANSWERED_LIMIT = 100
+CHAT_AGENT_EVIDENCE_REF_LIMIT = 4
 # Per-run ceiling matched by ChatAgentBudget.max_graph_calls.
-CHAT_GRAPH_CALL_LIMIT = 2
+CHAT_GRAPH_CALL_LIMIT = CHAT_AGENT_MAX_GRAPH_CALLS
 # Per-call hard ceiling for new source chunks returned by one Graph search.
 CHAT_GRAPH_NEW_CHUNK_LIMIT = 16
 
 
 @dataclass(frozen=True, slots=True)
 class ChatAgentBudget:
-    max_model_rounds: int = 8
-    max_graph_calls: int = 2
+    max_model_rounds: int = CHAT_AGENT_DEFAULT_MODEL_ROUNDS
+    max_graph_calls: int = CHAT_AGENT_DEFAULT_GRAPH_CALLS
 
     def __post_init__(self) -> None:
         if (
             isinstance(self.max_model_rounds, bool)
             or not isinstance(self.max_model_rounds, int)
-            or not 1 <= self.max_model_rounds <= 12
+            or not 1 <= self.max_model_rounds <= CHAT_AGENT_MAX_MODEL_ROUNDS
         ):
             raise ValueError("chat agent budget is invalid")
         if (
             isinstance(self.max_graph_calls, bool)
             or not isinstance(self.max_graph_calls, int)
-            or not 1 <= self.max_graph_calls <= CHAT_GRAPH_CALL_LIMIT
+            or not 1 <= self.max_graph_calls <= CHAT_AGENT_MAX_GRAPH_CALLS
         ):
             raise ValueError("chat agent graph budget is invalid")
 
@@ -108,7 +117,7 @@ class ChatAgentTraceEvent:
             or self.status not in {"ok", "rejected", "salvaged", "refused"}
             or not self.tool_call_id.strip()
             or len(self.tool_call_id) > 128
-            or len(self.refs) > 100
+            or len(self.refs) > CHAT_AGENT_TRACE_REF_LIMIT
             or len(self.refs) != len(set(self.refs))
             or any(not value.strip() or len(value) > 128 for value in self.refs)
             or self.count < 0
@@ -295,7 +304,7 @@ class ChatAgentTrace:
     def __post_init__(self) -> None:
         if (
             self.version != CHAT_AGENT_VERSION
-            or len(self.events) > 32
+            or len(self.events) > CHAT_AGENT_TRACE_EVENT_LIMIT
             or not 0 <= self.model_rounds <= self.budget.max_model_rounds + 1
             or self.retrieval_calls < 0
             or self.calculation_calls < 0

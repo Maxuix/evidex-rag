@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, replace
+from enum import StrEnum
+import logging
 import math
 import re
 from typing import Any, Literal, Protocol
@@ -81,6 +83,19 @@ from rag_kb.retrieval.profile import (
 
 
 LOGGER = get_logger(__name__)
+
+
+class GraphCapabilityStatus(StrEnum):
+    READY = "ready"
+    NOT_READY = "not_ready"
+    UNAVAILABLE = "unavailable"
+
+
+def _is_expected_graph_storage_error(error: Exception) -> bool:
+    return (
+        isinstance(error, (OSError, TimeoutError, ConnectionError))
+        or type(error).__module__.startswith("sqlalchemy.")
+    )
 
 
 class CompositeEvidenceHydrator(Protocol):
@@ -423,12 +438,32 @@ class RetrievalService:
         structured fail-closed statuses of search_graph_relations.
         """
 
+        return (
+            await self.search_graph_relations_capability(
+                context,
+                knowledge_base_id=knowledge_base_id,
+                index_revision_id=index_revision_id,
+            )
+            is GraphCapabilityStatus.READY
+        )
+
+    async def search_graph_relations_capability(
+        self,
+        context: AuthContext,
+        *,
+        knowledge_base_id: UUID,
+        index_revision_id: UUID,
+    ) -> GraphCapabilityStatus:
+        """Return a diagnosable, fail-closed graph capability state."""
+
+        # Authorization errors must never be converted into a capability
+        # downgrade.  Resolve the policy before the infrastructure fallback.
+        metadata_filter = self._access_policy.metadata_filter(context)
+        workspace_id = metadata_filter.workspace_id
+        graph_store = self._graph_store
+        if graph_store is None or self._graphiti_graph is None:
+            return GraphCapabilityStatus.NOT_READY
         try:
-            metadata_filter = self._access_policy.metadata_filter(context)
-            workspace_id = metadata_filter.workspace_id
-            graph_store = self._graph_store
-            if graph_store is None or self._graphiti_graph is None:
-                return False
             config = await graph_store.get_config(workspace_id, knowledge_base_id)
             if (
                 config is None
@@ -437,7 +472,7 @@ class RetrievalService:
                 or config.status.value == "disabled"
                 or config.active_build_id is None
             ):
-                return False
+                return GraphCapabilityStatus.NOT_READY
             build = await graph_store.get_active_graphiti_build(
                 workspace_id, knowledge_base_id
             )
@@ -451,10 +486,27 @@ class RetrievalService:
                 or not _graph_build_profile_matches(build)
                 or build.status.value != "ready"
             ):
-                return False
-            return True
-        except Exception:
-            return False
+                return GraphCapabilityStatus.NOT_READY
+            return GraphCapabilityStatus.READY
+        except Exception as error:
+            if _is_expected_graph_storage_error(error):
+                log_event(
+                    LOGGER,
+                    "graph_capability_unavailable",
+                    level=logging.WARNING,
+                    reason_code="GRAPH_INFRASTRUCTURE_UNAVAILABLE",
+                    knowledge_base_id=knowledge_base_id,
+                    index_revision_id=index_revision_id,
+                )
+            else:
+                log_exception(
+                    LOGGER,
+                    "graph_capability_unavailable",
+                    error,
+                    knowledge_base_id=knowledge_base_id,
+                    index_revision_id=index_revision_id,
+                )
+            return GraphCapabilityStatus.UNAVAILABLE
 
     async def _search_graph_relations(
         self,

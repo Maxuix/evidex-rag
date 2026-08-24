@@ -47,9 +47,9 @@ class LangChainChatModelAdapter:
         max_tokens: int = 2048,
         thinking_enabled: bool = False,
         reasoning_effort: str = "off",
-        max_visual_images: int = 4,
-        max_visual_image_bytes: int = 5 * 1024 * 1024,
-        max_visual_total_bytes: int = 12 * 1024 * 1024,
+        max_visual_images: int,
+        max_visual_image_bytes: int,
+        max_visual_total_bytes: int,
         chat_model: BaseChatModel | None = None,
     ) -> None:
         if not api_key or not model:
