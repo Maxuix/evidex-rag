@@ -80,7 +80,7 @@ MIMO_OUTPUT_USD_PER_MILLION = 0.28
 ANSWER_EXECUTION_LIMIT = 100
 GRAPH_CALL_LIMIT = 2
 CHATRUN_DEADLINE_SECONDS = 420.0
-EXPECTED_KB_NAME = "open-source-rag-v3"
+EXPECTED_KB_NAME = "routing-rag-v3-open-source-semantic-v4-graphiti-v3"
 ROUTE_RECALL_THRESHOLD = 0.80
 ROUTE_PRECISION_THRESHOLD = 0.70
 
@@ -295,7 +295,7 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
             or knowledge_base.active_index_revision_id != identity.index_revision_id
         ):
             raise V4RunnerError("v4_knowledge_base_identity_changed")
-        from rag_kb.adapters.graph_store.pg import PgGraphStore
+        from rag_kb.adapters.graph_store.postgres import PgGraphStore
 
         graph_store = PgGraphStore(dependencies.database.sessions)
         build = await graph_store.get_active_graphiti_build(
@@ -374,6 +374,8 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
                 corpus,
                 labels,
                 runtime_identity,
+                bundle,
+                model_configuration,
             )
         if arguments.phase == "report":
             return _run_report(arguments, corpus, labels)
@@ -479,18 +481,62 @@ async def _run_answers(
     corpus: Mapping[str, Any],
     labels: Mapping[str, str],
     runtime_identity: Mapping[str, Any],
+    bundle: Any,
+    model_configuration: Mapping[str, Any],
 ) -> dict[str, Any]:
-    from tools.run_open_source_rag_v3 import _evaluator_chat_model
+    from tools.run_adaptive_graph_r4 import _evaluator_chat_model
 
     chat_model, _ = await _evaluator_chat_model(
-        dependencies, bundle=None, model_override=None
+        dependencies, bundle=bundle, model_override=None
     )
     observing_model = ForcedGraphSearchChatModelPort(
         chat_model, controller_mode="actual_auto"
     )
+    base_retriever = ChatEvidenceRetriever(dependencies.retrieval_service)
+    import os as _os
+
+    if _os.environ.get("RAG_KB_V4_DEBUG") == "1":
+
+        class _DebugRetriever:
+            """Evaluator-only wrapper printing capability and first-round tools."""
+
+            def __init__(self, delegate: Any) -> None:
+                self._delegate = delegate
+                self._printed = False
+
+            async def retrieve_query(self, context, query, *, top_k_override=None):
+                return await self._delegate.retrieve_query(
+                    context, query, top_k_override=top_k_override
+                )
+
+            async def search_graph_relations(
+                self, context, query, *, excluded_index_chunk_ids
+            ):
+                return await self._delegate.search_graph_relations(
+                    context, query, excluded_index_chunk_ids=excluded_index_chunk_ids
+                )
+
+            async def graph_relations_capable(self, context):
+                capable = await self._delegate.graph_relations_capable(context)
+                if not self._printed:
+                    print(
+                        json.dumps(
+                            {
+                                "event": "v4_debug_capability",
+                                "capability": capable,
+                                "retrieval_snapshot": str(context.retrieval_strategy.get("profile_version")),
+                            },
+                            sort_keys=True,
+                        )
+                    )
+                return capable
+
+        retriever: Any = _DebugRetriever(base_retriever)
+    else:
+        retriever = base_retriever
     agent = NativeToolCallingAgent(
         observing_model,
-        ChatEvidenceRetriever(dependencies.retrieval_service),
+        retriever,
         dependencies.visual_evidence_preparer,
         min_cosine_similarity=dependencies.settings.retrieval.min_cosine_similarity,
         min_rerank_score=dependencies.settings.retrieval.min_rerank_score,
@@ -517,8 +563,14 @@ async def _run_answers(
             for repeat in range(1, arguments.repeat_override + 1):
                 plan.append((case, "auto", repeat))
         plan.append((case, "simple", 1))
+    done_keys = {
+        (str(row.get("case_id")), row.get("lane"), row.get("repeat"))
+        for row in observations
+    }
     for case, lane, repeat in plan:
         case_id = str(case["case_id"])
+        if (case_id, lane, repeat) in done_keys:
+            continue
         if len(observations) >= ANSWER_EXECUTION_LIMIT:
             raise V4RunnerError("v4_answer_execution_budget_exhausted")
         observation = await _observe_case(
@@ -528,6 +580,7 @@ async def _run_answers(
             case=case,
             lane=lane,
             repeat=repeat,
+            model_configuration=model_configuration,
         )
         observations.append(observation)
         total_tokens += observation["usage"]["total_tokens"]
@@ -566,6 +619,7 @@ async def _observe_case(
     case: Mapping[str, Any],
     lane: str,
     repeat: int,
+    model_configuration: Mapping[str, Any],
 ) -> dict[str, Any]:
     started = datetime.now(UTC)
     retrieval_strategy = (
@@ -580,7 +634,7 @@ async def _observe_case(
         kb_id=identity.knowledge_base_id,
         index_revision_id=identity.index_revision_id,
         question=str(case["question"]),
-        model_configuration=dependencies.settings.model.chat_model_configuration(),
+        model_configuration=model_configuration,
         rerank_mode=RerankMode.CLASSIC,
     )
     context = replace(context, retrieval_strategy=retrieval_strategy)
@@ -613,7 +667,16 @@ async def _observe_case(
     chatrun_ms = int((datetime.now(UTC) - started).total_seconds() * 1000)
     if chatrun_ms >= CHATRUN_DEADLINE_SECONDS * 1000:
         raise V4RunnerError("v4_chatrun_deadline_exceeded")
-    usage = trace.as_dict()["usage"]
+    usage = dict(trace.as_dict()["usage"])
+    model_calls = state.answering.model_calls
+    usage.setdefault(
+        "total_tokens",
+        sum(
+            int(call.usage.get("total_tokens", 0) or 0)
+            for call in model_calls
+            if hasattr(call, "usage") and call.usage
+        ),
+    )
     return {
         "case_id": str(case["case_id"]),
         "lane": lane,
