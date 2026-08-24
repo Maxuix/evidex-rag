@@ -292,33 +292,22 @@ budget/trace，`0010` 删除旧 workflow configuration/state 及其中的 Resear
 
 本地 evaluator 不属于个人正式 `rag` 的业务流程。所有测试和 evaluator 入口都由宿主机 checkout 的
 `.venv` 执行，不在应用容器内运行。纯 corpus 校验和 `--dry-run` 不访问数据库、Graph 或 Provider；
-任何会访问 API、数据库、Graph 或 Provider 的模式都必须先加载 owner-only、闭集校验的 `rag-eval`
-runtime，且只能连接其已经运行的 loopback 端口、数据库/Graph、workspace/profile 身份和
-source/model-secret 副本。不存在或伪造 runtime 时，入口在发起外部 I/O 前失败；个人 API、
-`.env.local` 和源码 UUID 不是 evaluator fallback。
+任何会访问 API、数据库、Graph 或 Provider 的模式，都只能连接用户明确提供且已经运行的 Python-side
+test services、可丢弃的 test database，以及通过身份校验的 workspace/profile/source/model-secret
+副本。不存在或伪造 test runtime 时，入口在发起外部 I/O 前失败；个人正式 API、`.env.local`、正式
+`rag` 数据和源码 UUID 都不是 evaluator fallback。已退役的 `rag-eval` manifest/runtime 不属于当前
+测试入口。
 
 测试请求不包含 Docker lifecycle 权限：不得为了测试 build/pull/tag 镜像，也不得 create、recreate、
-restart、stop 或 remove 容器。已经运行的隔离服务只作为宿主机 Python 的外部依赖，测试不能改变其
-生命周期；依赖不存在或版本不兼容时记录未验证并停止，不以构建镜像或刷新容器补齐环境。
+restart、stop 或 remove 容器。已经运行的 Python-side test services 只作为宿主机 Python 的外部依赖，
+测试不能改变其 lifecycle；依赖不存在或版本不兼容时记录未验证并停止，不以构建镜像或刷新容器补齐
+环境。正式 `rag` Compose 环境只供用户的正式/端到端运行，不能由测试请求隐式启动。
 
-`tools/evaluation_runtime.py` 提供 preview/create/inspect/destroy 的有界生命周期；这些是显式 runtime
-运维能力，不是测试准备步骤，也不能由“运行测试/评测”的请求隐式触发。create 只在 primary
-checkout 工作：先证明现有本地 `rag` app/frontend image 对应 revision 与当前 checkout 的相关构建输入
-无差异，再增加 eval-only tag；不一致时失败，不自动 rebuild、pull 或下载。随后从已校验的冻结备份
-恢复 eval-owned PostgreSQL、source、model secrets 和 FalkorDB，并给 container、volume、network
-写入同一个随机 owner label。冻结 database dump 不携带 ACL；migration 后只重放基线迁移已经定义的
-runtime table/default grants 及其表/函数例外，并立即校验表权限。host evaluator 与 Compose 使用各自
-的私有 env，避免 Docker hostname、
-主机路径或个人服务环境串用。Adaptive Graph 身份来自同一备份内已完成且有 checksum 的 R7 工件，
-再逐字段验证其 KB、active index/build、answer/judge profile 与恢复库的当前 serving 关系；不按
-READY 候选数量、名称或时间猜测，也不把 judge profile 替换为当前 answer profile。destroy 另需明确
-确认，且只在 project、owner、已知对象集合和无
-symlink 的私有 runtime 目录全部匹配时删除 `rag-eval` 对象；不执行 prune，不读取、停止或挂载
-`rag` 的业务 volume。真实 lifecycle 演练与 Provider/Judge 调用仍分别受当前授权约束。
-
-eval 的冻结 Graph 备份是 RDB，不含 AOF 目录；`rag-eval` 因此以 `appendonly=no` 启动 FalkorDB，
-避免 Redis 优先加载新建的空 AOF 而跳过 RDB。lifecycle 的 ready 门除容器健康外还要求 FalkorDB
-恢复出非空 keyspace；这只影响短期 eval 副本，不改变正式 `rag` 的 AOF 持久化配置。
+仓库中 `tools/evaluation_runtime.py` 的旧 `rag-eval` Compose preview/create/inspect/destroy 路径、
+对应的历史 provisioner 入口和既有工件仅为兼容/审计保留，不是当前测试环境，也不得作为本计划的执行
+前置。当前修复与评测只从主 checkout 的 `.venv` 运行；需要外部状态时由用户提供已运行的
+Python-side test services。任何正式 `rag` 或历史 evaluator Docker lifecycle 都必须另有明确的
+runtime 请求，不能从“运行测试/评测”推导。
 
 Adaptive Graph 路由评测使用成对的
 `evaluation/routing-rag-v2/` 与 `evaluation/adaptive-graph-route-v2/` 合同；`v1` 仅保留为不可变
@@ -329,7 +318,7 @@ Chunk 代替路径完整度；主 route decision 要求 source-backed 新 Graph 
 另报 attempt rate，不把无证据探测冒充成功或隐藏成本。R4 另在内存中把 Graph 端点/谓词与 relation
 gold 对齐，只把聚合计数和 synthetic relation id 写入安全工件。R7 主报告必须导入同 runtime 身份的 R4 分层工件。R4/R7 的
 外部运行仍是单独授权的评测入口，不属于 API、Worker 或业务 schema 的常规流程；其外部调用与
-本地评测工件保留边界按当前授权执行。若隔离 API/Worker 的 provider 运行环境不可用，R7 answer 可显式使用
+本地评测工件保留边界按当前授权执行。若用户提供的 Python-side API/Worker provider 运行环境不可用，R7 answer 可显式使用
 `--host-worker`：宿主机 `.venv` 以有界方式处理当前 ChatRun 后再轮询 API 终态；该入口不创建或改变
 任何 Docker lifecycle，且不能绕过 R7 的 answer/judge/token budget。
 
@@ -351,13 +340,14 @@ key/digest、extractor 与配置/document-set digest
 仓库环境约束固定，禁止静默替换 Provider 或模型。
 `tools/run_open_source_rag_v3.py` 复用生产 Agent 的一次 actual-auto 执行，同时观察 Simple chunk、真实
 Graph admission 和最终 outcome；Graph candidate 另以同一冻结 query/profile 采集四层 replay。runner
-从 Git canonical checkout 定位并只读加载已绑定且身份匹配的 owner-only `rag-eval`，因此 linked worktree
-不复制 env/runtime 也能执行 host evaluator；这一 opt-in 不放宽 lifecycle 的 primary-checkout 限制。
+从 Git canonical checkout 定位并只读加载已绑定且身份匹配的 owner-only Python-side test runtime，
+因此 linked worktree 不复制 env/runtime 也能执行 host evaluator；这一 opt-in 不创建或改变任何 Docker
+lifecycle。
 `--preflight-only` 只验证既有数据库/Graph 身份，不要求 Provider 流量确认；真实 case 执行仍需显式确认。
 runner 逐 case 写 owner-only、content-safe checkpoint，不保存
 问题、回答、正文、文件名或 Provider payload；它不 provision KB、不管理容器，真实执行仍需显式 Provider
 确认。中断恢复只跳过身份一致的完整 case，避免重复流量。
-`tools/provision_routing_rag_eval.py` 为每个数据集显式冻结 profile identity：MuSiQue 使用
+历史文件名为 `tools/provision_routing_rag_eval.py` 的 provisioner 为每个数据集显式冻结 profile identity：MuSiQue 使用
 `generic_open_domain_v1`，routing-rag open-source v3/v4 使用 `software_knowledge_v1`；旧 v2
 spec 只保留 corpus/test 兼容性并拒绝新的 provision。runtime manifest、Software 新观察、v4 报告和 MuSiQue qualification 都记录
 profile key/digest 与 extractor，preflight 不接受只匹配 KB/index/model 的错误 build；v3/v4 历史
