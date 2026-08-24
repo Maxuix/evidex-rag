@@ -60,10 +60,13 @@
 - 单个 Worker 异步解析文档、切分、生成文本/可选多模态向量并建立索引。
 - 默认精确向量检索；可选 PostgreSQL FTS 混合召回，并支持文本、双空间多模态和显式统一
   图文空间三种索引/检索模式。
-- 可选 Graphiti Graph 检索：由用户选择的 Chat Profile 在空闲 indexing lane 将每个 serving
-  Chunk 串行摄入为一个 Episode，FalkorDB 保存图事实，PostgreSQL 保存不可变 build 代际、
-  active 指针及 Episode→Chunk 映射。新 build staging 时旧 READY build 继续服务；覆盖门与
-  运行时探测通过后才原子切换。当前 `graphiti_v3` 按 Organization、Project、Repository、Service、
+- 可选 Graphiti Graph 检索：由用户选择的 Chat Profile 和内置 Graph Schema Profile 在空闲
+  indexing lane 将每个 serving Chunk 串行摄入为一个 Episode，FalkorDB 保存图事实，PostgreSQL
+  保存不可变 build 代际、active 指针、冻结的 profile key/digest 及 Episode→Chunk 映射。
+  新 build staging 时旧 READY build 继续服务；覆盖门与运行时探测通过后才原子切换。新 build
+  使用 `graphiti_v4`，历史 `graphiti_v3` Software build 只按兼容路径读取。默认的
+  `generic_open_domain_v1` 不传自定义 Graphiti ontology/instructions；`software_knowledge_v1`
+  保留 Organization、Project、Repository、Service、
   License、LicenseExpression 与 AliasSurface 类型化抽取，并保存稳定的有向关系类型。检索先用
   Graphiti node hybrid search 解析题面实体，再以实体 UUID 为中心执行 node-distance、BM25、向量与
   原生 BFS 的组合搜索，最后只形成真实连通、无环的一至三跳路径。每一跳都必须回映射到当前 serving
@@ -265,8 +268,10 @@ budget/trace，`0010` 删除旧 workflow configuration/state 及其中的 Resear
  `graph_relation_assertion`，并把旧 Graph 配置安全降为 disabled；`0015` 删除 native Agent 从未
  写入的 ChatRun `final_llm_context` 列；`0016` 把 ChatRun 的 agent/retrieval/trace snapshot
  确定性升级为 v3 一等 Graph Relations Tool（budget 增加 `max_graph_calls`，trace 增加
- `call_index`、`invocation_source`、`duration_ms` 与各计数/跳数，旧 guard 事件标记
- `invocation_source=legacy_guard`，不算 duration 或计数）。Graphiti 派生事实不阻塞
+`call_index`、`invocation_source`、`duration_ms` 与各计数/跳数，旧 guard 事件标记
+ `invocation_source=legacy_guard`，不算 duration 或计数）；`0017` 为 Graph config/build 增加
+ Schema Profile key/digest 并把既有记录准确回填为 Software；`0018` 增加 per-build work lease，
+ 让同一 Graphiti build 的 Episode 写入在 Worker 之间串行。Graphiti 派生事实不阻塞
 普通索引发布，只有 build ready、覆盖完整且运行时探测通过时才可用于在线检索。
 除此之外不承诺任意历史版本兼容。主要持久事实为：
 
@@ -329,13 +334,14 @@ gold 对齐，只把聚合计数和 synthetic relation id 写入安全工件。R
 任何 Docker lifecycle，且不能绕过 R7 的 answer/judge/token budget。
 
 修复后复测由宿主机 `.venv` 执行评测 runner，连接用户当前明确授权的本地运行时，在其中创建新 KB，
-固定使用 semantic v4 摄取冻结语料，并仅在索引完成、`graphiti_v3` 的 processed/eligible 数一致且
+固定使用 semantic v4 摄取冻结语料，并仅在索引完成、目标 profile/extractor 的 processed/eligible 数一致且
 READY 质量门通过时更新评测 identity。评测入口不创建第二套 Compose project，也不管理镜像或容器
 lifecycle；依赖或 Provider 身份错误时 fail closed。
 
 公开来源 `routing-rag-v3-open-source` 的事实 gold 与运行观察分离。纯离线
 `tools/evaluate_open_source_rag_v3.py` 固定 semantic v4、索引/检索 profile、Simple `top_k` 和 Graph K，
-并要求完整观察绑定明确的 workspace、KB、index、Graph build、model profile 与配置/document-set digest
+并要求完整观察绑定明确的 workspace、KB、index、Graph build、model profile、Software Schema Profile
+key/digest、extractor 与配置/document-set digest
 后才生成独立 locked manifest。v3 route gold 由 Simple 是否完整覆盖任一有效关系路径动态产生；
 `semantic_intent=graph` 只保留为候选设计事实。Graph benefit 必须由 packed 层 source-backed 新关系补齐
 完整路径，四层 path recall、Auto 混淆矩阵、关系抽取和拒答指标分别报告。空观察模板不构成完成评测，
@@ -351,8 +357,11 @@ Graph admission 和最终 outcome；Graph candidate 另以同一冻结 query/pro
 runner 逐 case 写 owner-only、content-safe checkpoint，不保存
 问题、回答、正文、文件名或 Provider payload；它不 provision KB、不管理容器，真实执行仍需显式 Provider
 确认。中断恢复只跳过身份一致的完整 case，避免重复流量。
-`tools/provision_routing_rag_eval.py` 同时保留默认 v2 spec 和显式 v3 open-source spec；两者使用独立 KB
-名称、文档闭集、媒体类型与确认串。v3 spec 支持 Markdown/TXT/CSV，成功后才把 runtime identity 绑定到
+`tools/provision_routing_rag_eval.py` 为每个数据集显式冻结 profile identity：MuSiQue 使用
+`generic_open_domain_v1`，routing-rag open-source v3/v4 使用 `software_knowledge_v1`；旧 v2
+spec 只保留 corpus/test 兼容性并拒绝新的 provision。runtime manifest、Software 新观察、v4 报告和 MuSiQue qualification 都记录
+profile key/digest 与 extractor，preflight 不接受只匹配 KB/index/model 的错误 build；v3/v4 历史
+locked artifacts 不重写。各 spec 使用独立 KB 名称、文档闭集、媒体类型与确认串，成功后才把 runtime identity 绑定到
 该 semantic-v4 index/Graph build。provision 会触发索引与建图 Provider 调用，不能由测试请求或 runner
 隐式执行。显式 `--host-worker` 用于已授权但隔离 Worker 无法访问 Provider 的场景：它先按 API
 checksum/size 闭集把冻结语料字节镜像到 owner-only host eval file store，再用宿主 `.venv` 消费隔离
@@ -580,10 +589,13 @@ plan/manifest/chunk/vector 等非资产
 takeover。新增本地功能若一次失败后重跑即可，默认复用现有 job/run 状态，不新建独立恢复
 子系统。
 
-Graphiti build 继续使用 immutable build 代际作为 retry 事实。外部 Graph 已出现确定性 Episode UUID、
+Graphiti build 继续使用 immutable build 代际作为 retry 事实。每个 build 冻结 Schema Profile key/digest
+和 extractor generation；未知 profile、digest mismatch 或 extractor 不兼容都 fail closed。外部 Graph 已出现确定性 Episode UUID、
 但 PostgreSQL 映射尚未提交时，重试先删除该未提交 Episode，再以同一身份摄入；已提交映射不会重复
 调用 Provider。显式 retry 只有在 revision、serving digest、Chat/Embedding profile、model、dimension
 与 extractor 均未变化时原地恢复；输入变化或 force rebuild 才 supersede 旧 build 并建立新代际。
+同一 build 的 work item 先取得带 token 的 lease，Worker heartbeat 续租，stale lease 才可恢复；不同
+build 仍可并行。
 Episode 写入后、mapping 提交前，Graphiti runtime 在当前 build-scoped Falkor graph 中删除
 `source.uuid = target.uuid` 的非法 `RELATES_TO` 自环；这是对 structured extraction prompt 的持久化边界
 保护，不依赖 Provider 永远服从提示。ready probe 同时要求自环为零、每条边具有关系类型、每个

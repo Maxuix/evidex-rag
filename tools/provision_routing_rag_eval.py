@@ -61,6 +61,7 @@ class ProvisioningSpec:
     schema_profile_key: str
     schema_profile_digest: str
     extractor_version: str
+    retired: bool = False
 
 
 V2_SPEC = ProvisioningSpec(
@@ -73,6 +74,7 @@ V2_SPEC = ProvisioningSpec(
     schema_profile_key=SOFTWARE_GRAPH_SCHEMA_PROFILE_KEY,
     schema_profile_digest=SOFTWARE_GRAPH_SCHEMA_PROFILE_DIGEST,
     extractor_version=GRAPH_EXTRACTOR_VERSION,
+    retired=True,
 )
 V3_SPEC = ProvisioningSpec(
     dataset_id="routing-rag-v3-open-source",
@@ -764,6 +766,8 @@ def provision(
         spec = PROVISIONING_SPECS[dataset_id]
     except KeyError as error:
         raise ProvisioningError("evaluation dataset is unsupported") from error
+    if spec.retired:
+        raise ProvisioningError("evaluation dataset is retired")
     if confirmation != spec.confirmation:
         raise ProvisioningError("evaluation provisioning confirmation is invalid")
     runtime = load_evaluation_runtime(

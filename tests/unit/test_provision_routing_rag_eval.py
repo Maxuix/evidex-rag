@@ -13,6 +13,7 @@ from tools.provision_routing_rag_eval import (
     EXPECTED_DOCUMENT_COUNT,
     MUSIQUE_MINI_SPEC,
     ProvisioningError,
+    V2_SPEC,
     V3_SPEC,
     _bind_runtime,
     _corpus_digest,
@@ -126,6 +127,7 @@ class RoutingRagProvisioningTests(unittest.TestCase):
         self.assertEqual(_corpus_digest(paths), _corpus_digest(paths))
 
     def test_dataset_specs_freeze_their_graph_schema_profiles(self) -> None:
+        self.assertTrue(V2_SPEC.retired)
         self.assertEqual(V3_SPEC.schema_profile_key, "software_knowledge_v1")
         self.assertEqual(
             MUSIQUE_MINI_SPEC.schema_profile_key,
