@@ -25,7 +25,11 @@ from rag_kb.domain import (
 from rag_kb.memory import hydrate_conversation_context
 from rag_kb.repositories.sqlalchemy_chat import SqlAlchemyChatRepository
 from rag_kb.schemas import ChatRunCreate
-from rag_kb.services.chat import ChatService, chat_model_configuration
+from rag_kb.services.chat import (
+    ChatService,
+    _chat_profile_configuration,
+    chat_model_configuration,
+)
 from rag_kb.retrieval.profile import (
     HYBRID_PROFILE_VERSION,
     exact_profile,
@@ -188,6 +192,31 @@ class ChatCreationContractTests(unittest.TestCase):
         self.assertNotIn("api_key", snapshot)
         self.assertNotIn("timeout_seconds", snapshot)
         self.assertNotIn("max_retries", snapshot)
+
+    def test_user_profile_uses_visual_safety_defaults_without_legacy_settings(
+        self,
+    ) -> None:
+        bundle = SimpleNamespace(
+            profile=SimpleNamespace(id=uuid4(), name="Mimo v2.5"),
+            current_revision=SimpleNamespace(
+                id=uuid4(),
+                revision=1,
+                model="mimo-v2.5",
+                configuration={},
+                configuration_fingerprint="sha256:configuration",
+                capability_fingerprint="sha256:capability",
+            ),
+            provider=SimpleNamespace(id=uuid4(), name="OpenCode Go"),
+            provider_revision=SimpleNamespace(id=uuid4()),
+        )
+
+        snapshot = _chat_profile_configuration(bundle, {})
+
+        self.assertEqual(snapshot["max_visual_images"], 2)
+        self.assertEqual(snapshot["max_visual_image_bytes"], 5_242_880)
+        self.assertEqual(snapshot["max_visual_total_bytes"], 12_582_912)
+        self.assertEqual(snapshot["max_visual_pixels"], 16_000_000)
+        self.assertEqual(snapshot["visual_media_profile"], "jpeg_png_webp_v1")
 
 
 class ChatCreationServiceTests(unittest.IsolatedAsyncioTestCase):

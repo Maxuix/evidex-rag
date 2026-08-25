@@ -24,6 +24,13 @@ from rag_kb.domain import (
 from rag_kb.services.visual_admission import VisualEvidenceAdmissionPolicy
 
 
+DEFAULT_CHAT_MAX_VISUAL_IMAGES = 2
+DEFAULT_CHAT_MAX_VISUAL_IMAGE_BYTES = 5 * 1024 * 1024
+DEFAULT_CHAT_MAX_VISUAL_TOTAL_BYTES = 12 * 1024 * 1024
+DEFAULT_CHAT_MAX_VISUAL_PIXELS = 16_000_000
+DEFAULT_CHAT_VISUAL_MEDIA_PROFILE = "jpeg_png_webp_v1"
+
+
 class IndexAssetReader(Protocol):
     async def read(
         self, context: AuthContext, asset_id: UUID
@@ -37,10 +44,10 @@ class VisualEvidencePreparationStep:
         self,
         asset_reader: IndexAssetReader | None,
         *,
-        max_images: int = 2,
-        max_image_bytes: int = 5 * 1024 * 1024,
-        max_total_bytes: int = 12 * 1024 * 1024,
-        max_pixels: int = 16_000_000,
+        max_images: int = DEFAULT_CHAT_MAX_VISUAL_IMAGES,
+        max_image_bytes: int = DEFAULT_CHAT_MAX_VISUAL_IMAGE_BYTES,
+        max_total_bytes: int = DEFAULT_CHAT_MAX_VISUAL_TOTAL_BYTES,
+        max_pixels: int = DEFAULT_CHAT_MAX_VISUAL_PIXELS,
         admission_policy: VisualEvidenceAdmissionPolicy | None = None,
     ) -> None:
         if (

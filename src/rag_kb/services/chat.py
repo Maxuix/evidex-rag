@@ -43,6 +43,13 @@ from rag_kb.memory import (
     serialize_contextualized_query,
     serialize_conversation_context,
 )
+from rag_kb.services.chat_visuals import (
+    DEFAULT_CHAT_MAX_VISUAL_IMAGE_BYTES,
+    DEFAULT_CHAT_MAX_VISUAL_IMAGES,
+    DEFAULT_CHAT_MAX_VISUAL_PIXELS,
+    DEFAULT_CHAT_MAX_VISUAL_TOTAL_BYTES,
+    DEFAULT_CHAT_VISUAL_MEDIA_PROFILE,
+)
 from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, UnitOfWorkPurpose, execute_in_transaction
 
 
@@ -456,11 +463,21 @@ def _chat_profile_configuration(
         "vision_enabled": parameters.get("vision_enabled", False),
         "configuration_fingerprint": revision.configuration_fingerprint,
         "capability_fingerprint": revision.capability_fingerprint,
-        "max_visual_images": safety_defaults["max_visual_images"],
-        "max_visual_image_bytes": safety_defaults["max_visual_image_bytes"],
-        "max_visual_total_bytes": safety_defaults["max_visual_total_bytes"],
-        "max_visual_pixels": safety_defaults["max_visual_pixels"],
-        "visual_media_profile": safety_defaults["visual_media_profile"],
+        "max_visual_images": safety_defaults.get(
+            "max_visual_images", DEFAULT_CHAT_MAX_VISUAL_IMAGES
+        ),
+        "max_visual_image_bytes": safety_defaults.get(
+            "max_visual_image_bytes", DEFAULT_CHAT_MAX_VISUAL_IMAGE_BYTES
+        ),
+        "max_visual_total_bytes": safety_defaults.get(
+            "max_visual_total_bytes", DEFAULT_CHAT_MAX_VISUAL_TOTAL_BYTES
+        ),
+        "max_visual_pixels": safety_defaults.get(
+            "max_visual_pixels", DEFAULT_CHAT_MAX_VISUAL_PIXELS
+        ),
+        "visual_media_profile": safety_defaults.get(
+            "visual_media_profile", DEFAULT_CHAT_VISUAL_MEDIA_PROFILE
+        ),
     }
 
 
