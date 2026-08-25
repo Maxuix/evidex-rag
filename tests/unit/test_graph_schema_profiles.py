@@ -1,16 +1,21 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import json
+from pathlib import Path
 import unittest
 from uuid import UUID
 
 from rag_kb.graph.schema_profiles import (
+    ENTERPRISE_GRAPH_SCHEMA_PROFILE_KEY,
     GENERIC_GRAPH_SCHEMA_PROFILE_KEY,
     GraphSchemaProfileMismatch,
     SOFTWARE_GRAPH_SCHEMA_PROFILE_KEY,
     get_graph_schema_registry,
 )
 from rag_kb.domain import (
+    ENTERPRISE_GRAPH_SCHEMA_PROFILE_DIGEST,
+    GRAPH_EXTRACTOR_VERSION,
     GENERIC_GRAPH_SCHEMA_PROFILE_DIGEST,
     GRAPH_LEGACY_EXTRACTOR_VERSION,
     ResourceStateConflictError,
@@ -32,6 +37,14 @@ class GraphSchemaProfileTests(unittest.TestCase):
             [GENERIC_GRAPH_SCHEMA_PROFILE_KEY],
         )
         self.assertEqual(
+            [profile.key for profile in profiles],
+            [
+                GENERIC_GRAPH_SCHEMA_PROFILE_KEY,
+                ENTERPRISE_GRAPH_SCHEMA_PROFILE_KEY,
+                SOFTWARE_GRAPH_SCHEMA_PROFILE_KEY,
+            ],
+        )
+        self.assertEqual(
             registry.resolve(GENERIC_GRAPH_SCHEMA_PROFILE_KEY).digest,
             GENERIC_GRAPH_SCHEMA_PROFILE_DIGEST,
         )
@@ -40,8 +53,16 @@ class GraphSchemaProfileTests(unittest.TestCase):
             SOFTWARE_GRAPH_SCHEMA_PROFILE_DIGEST,
         )
         self.assertEqual(
+            registry.resolve(ENTERPRISE_GRAPH_SCHEMA_PROFILE_KEY).digest,
+            ENTERPRISE_GRAPH_SCHEMA_PROFILE_DIGEST,
+        )
+        self.assertEqual(
             {profile.key for profile in profiles},
-            {GENERIC_GRAPH_SCHEMA_PROFILE_KEY, SOFTWARE_GRAPH_SCHEMA_PROFILE_KEY},
+            {
+                GENERIC_GRAPH_SCHEMA_PROFILE_KEY,
+                SOFTWARE_GRAPH_SCHEMA_PROFILE_KEY,
+                ENTERPRISE_GRAPH_SCHEMA_PROFILE_KEY,
+            },
         )
 
     def test_digest_is_stable_and_covers_manifest_policy_and_instructions(self) -> None:
@@ -123,6 +144,148 @@ class GraphSchemaProfileTests(unittest.TestCase):
             list,
         )
         self.assertTrue(profile.validation_policy.standalone_alias_orphan_check)
+
+    def test_enterprise_compiles_the_typed_operations_contract(self) -> None:
+        registry = get_graph_schema_registry()
+        definition = registry.resolve(ENTERPRISE_GRAPH_SCHEMA_PROFILE_KEY)
+        profile = registry.compile(
+            ENTERPRISE_GRAPH_SCHEMA_PROFILE_KEY,
+            digest=ENTERPRISE_GRAPH_SCHEMA_PROFILE_DIGEST,
+            extractor_version="graphiti_v4",
+        )
+
+        assert profile.entity_types is not None
+        assert profile.edge_types is not None
+        assert profile.edge_type_map is not None
+        self.assertEqual(
+            set(profile.entity_types),
+            {
+                "Organization",
+                "OrganizationalUnit",
+                "Person",
+                "Role",
+                "Policy",
+                "Process",
+                "BusinessSystem",
+                "Product",
+                "Project",
+                "Document",
+                "Location",
+                "Facility",
+                "BusinessTerm",
+            },
+        )
+        self.assertEqual(
+            set(profile.edge_types),
+            {
+                "PartOf",
+                "MemberOf",
+                "ReportsTo",
+                "HoldsRole",
+                "ServesAs",
+                "Leads",
+                "Owns",
+                "Controls",
+                "Establishes",
+                "Acquires",
+                "InvestsIn",
+                "MergesInto",
+                "ResponsibleFor",
+                "AccountableFor",
+                "ConsultedOn",
+                "InformedAbout",
+                "Approves",
+                "Sponsors",
+                "Appoints",
+                "Operates",
+                "Uses",
+                "Provides",
+                "Develops",
+                "Builds",
+                "SuppliesTo",
+                "ContractsWith",
+                "PartnersWith",
+                "IndependentOf",
+                "DependsOn",
+                "GovernedBy",
+                "AppliesTo",
+                "Documents",
+                "Defines",
+                "Produces",
+                "Consumes",
+                "Supports",
+                "LocatedAt",
+                "DeployedAt",
+                "CertifiedBy",
+                "LicensedBy",
+                "Supersedes",
+                "Delivers",
+            },
+        )
+        self.assertTrue(
+            all(model.__name__.endswith("Entity") for model in profile.entity_types.values())
+        )
+        self.assertEqual(profile.edge_type_map[("Person", "Person")], ["ReportsTo"])
+        self.assertEqual(
+            profile.edge_type_map[("Policy", "Process")],
+            ["AppliesTo"],
+        )
+        self.assertEqual(
+            profile.edge_type_map[("Process", "Policy")],
+            ["GovernedBy"],
+        )
+        self.assertEqual(
+            profile.edge_type_map[("Document", "BusinessTerm")],
+            ["Defines"],
+        )
+        self.assertIn(
+            "Controls",
+            profile.edge_type_map[("Organization", "Organization")],
+        )
+        self.assertIn(
+            "SuppliesTo",
+            profile.edge_type_map[("Organization", "Organization")],
+        )
+        self.assertEqual(
+            profile.edge_type_map[("Facility", "Location")],
+            ["LocatedAt"],
+        )
+        self.assertIn(
+            "effective_period",
+            profile.edge_types["ResponsibleFor"].model_fields,
+        )
+        self.assertEqual(definition.alias_policy, "native_dedupe")
+        self.assertNotIn("AliasSurface", profile.entity_types)
+        self.assertFalse(profile.validation_policy.standalone_alias_orphan_check)
+        self.assertIn(
+            "Membership does not imply reporting",
+            " ".join(profile.extraction_instructions.split()),
+        )
+
+    def test_enterprise_rejects_historical_extractors(self) -> None:
+        with self.assertRaisesRegex(GraphSchemaProfileMismatch, "extractor"):
+            get_graph_schema_registry().compile(
+                ENTERPRISE_GRAPH_SCHEMA_PROFILE_KEY,
+                digest=ENTERPRISE_GRAPH_SCHEMA_PROFILE_DIGEST,
+                extractor_version="graphiti_v3",
+            )
+
+    def test_enterprise_corpus_freezes_the_installed_profile_identity(self) -> None:
+        project_root = Path(__file__).resolve().parents[2]
+        manifest = json.loads(
+            (
+                project_root / "evaluation" / "graph-rag-v1" / "manifest.json"
+            ).read_text(encoding="utf-8")
+        )
+
+        self.assertEqual(
+            manifest["recommended_schema_profile"],
+            {
+                "key": ENTERPRISE_GRAPH_SCHEMA_PROFILE_KEY,
+                "digest": ENTERPRISE_GRAPH_SCHEMA_PROFILE_DIGEST,
+                "extractor_version": GRAPH_EXTRACTOR_VERSION,
+            },
+        )
 
     def test_unknown_and_digest_mismatch_fail_closed(self) -> None:
         registry = get_graph_schema_registry()

@@ -17,6 +17,12 @@ import re
 import shutil
 from typing import Iterable
 
+from rag_kb.domain import (
+    ENTERPRISE_GRAPH_SCHEMA_PROFILE_DIGEST,
+    ENTERPRISE_GRAPH_SCHEMA_PROFILE_KEY,
+    GRAPH_EXTRACTOR_VERSION,
+)
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = ROOT / "evaluation" / "graph-rag-v1"
@@ -771,6 +777,11 @@ def build(output: Path, *, force: bool = False) -> None:
         "dataset_id": "graph-rag-v1",
         "language": "zh-CN",
         "synthetic": True,
+        "recommended_schema_profile": {
+            "key": ENTERPRISE_GRAPH_SCHEMA_PROFILE_KEY,
+            "digest": ENTERPRISE_GRAPH_SCHEMA_PROFILE_DIGEST,
+            "extractor_version": GRAPH_EXTRACTOR_VERSION,
+        },
         "document_count": len(DOCUMENTS),
         "logical_section_count": len(EDGES),
         "entity_count": len(entity_rows),
@@ -838,6 +849,12 @@ def validate(output: Path) -> int:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     if manifest.get("schema") != CORPUS_SCHEMA:
         errors.append("manifest schema mismatch")
+    if manifest.get("recommended_schema_profile") != {
+        "key": ENTERPRISE_GRAPH_SCHEMA_PROFILE_KEY,
+        "digest": ENTERPRISE_GRAPH_SCHEMA_PROFILE_DIGEST,
+        "extractor_version": GRAPH_EXTRACTOR_VERSION,
+    }:
+        errors.append("enterprise schema profile identity mismatch")
     expected_relation_count = len(DOCUMENTS) * TARGET_SECTIONS_PER_DOCUMENT
     if manifest.get("logical_section_count") != expected_relation_count:
         errors.append(f"expected exactly {expected_relation_count} logical sections")

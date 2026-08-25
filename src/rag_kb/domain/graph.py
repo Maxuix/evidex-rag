@@ -20,14 +20,19 @@ GRAPH_SUPPORTED_EXTRACTOR_VERSIONS = frozenset(
 )
 GENERIC_GRAPH_SCHEMA_PROFILE_KEY = "generic_open_domain_v1"
 SOFTWARE_GRAPH_SCHEMA_PROFILE_KEY = "software_knowledge_v1"
-# These literals are the migration/backfill contract.  The registry test keeps
-# them aligned with the canonical manifests without making the domain import
-# the graph package during application bootstrap.
+ENTERPRISE_GRAPH_SCHEMA_PROFILE_KEY = "enterprise_knowledge_v1"
+# These literals are the persistence identity contract.  Generic and Software
+# also appear in migration/backfill history.  Registry tests keep every value
+# aligned with its canonical manifest without making the domain import the
+# graph package during application bootstrap.
 GENERIC_GRAPH_SCHEMA_PROFILE_DIGEST = (
     "3b351f4e2c601226f922d12b60d4c9f98a4770f4ec04e94b08f5a3f0d021eaf0"
 )
 SOFTWARE_GRAPH_SCHEMA_PROFILE_DIGEST = (
     "6cae93809f060d21f0c85ba04cde955abdc5259fd93e1b1757fb7445d51eaf38"
+)
+ENTERPRISE_GRAPH_SCHEMA_PROFILE_DIGEST = (
+    "478c9f04b819a158977a2e90f397960478d77c41a125c8254519491001a6903c"
 )
 GRAPH_RETRIEVAL_PROFILE_VERSION = "graphiti_path_augmented_v3"
 GRAPH_AUGMENTATION_VERSION = "graphiti_path_v3"

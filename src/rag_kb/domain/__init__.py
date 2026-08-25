@@ -271,6 +271,8 @@ from rag_kb.domain.retrieval import (
     evidence_group_identity,
 )
 from rag_kb.domain.graph import (
+    ENTERPRISE_GRAPH_SCHEMA_PROFILE_DIGEST,
+    ENTERPRISE_GRAPH_SCHEMA_PROFILE_KEY,
     GRAPH_AUGMENTATION_VERSION,
     GRAPH_EXTRACTOR_VERSION,
     GRAPH_LEGACY_EXTRACTOR_VERSION,
@@ -480,6 +482,8 @@ __all__ = [
     "RetrievalQueryPlan",
     "RetrievalRequest",
     "RetrievalStrategy",
+    "ENTERPRISE_GRAPH_SCHEMA_PROFILE_DIGEST",
+    "ENTERPRISE_GRAPH_SCHEMA_PROFILE_KEY",
     "GRAPH_AUGMENTATION_VERSION",
     "GRAPH_EXTRACTOR_VERSION",
     "GRAPH_LEGACY_EXTRACTOR_VERSION",

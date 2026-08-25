@@ -203,7 +203,14 @@ progress reporter 的窄 Protocol，具体 `services` 实现由 Worker compositi
 
 Graph schema profiles 是 `graph/` 下的代码所有、不可变 registry；adapter、repository 和
 retrieval 只读取 registry 以解析冻结的 Profile identity 或编译后的 Graphiti 类型，具体依赖边
-由根目录 `architecture.toml` 明确登记。
+由根目录 `architecture.toml` 明确登记。当前内置 Profile 为默认的 `generic_open_domain_v1`、
+兼容历史 Graphiti v3/v4 软件语料的 `software_knowledge_v1`，以及仅允许当前
+`graphiti_v4` 的 `enterprise_knowledge_v1`。Enterprise contract 覆盖组织/组织单元、人员与
+角色、RACI 职责、股权/设立/并购/投资、制度/流程、系统/产品、项目/设施/地点、文档/术语，
+以及合作、合同、供应、研发、认证和许可关系；别名使用 Graphiti native dedupe，不建立独立
+alias node。新增代码内置 Profile 不需要 catalog migration：Profile API 直接列举 registry，
+PostgreSQL 继续只冻结每个 KB 配置和 build 的 key/digest；切换 Profile 必须创建新 build，
+READY 旧 build 在切换完成前继续服务。
 
 ### 5.1 保留的基础边界
 

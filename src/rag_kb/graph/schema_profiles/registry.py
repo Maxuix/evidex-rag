@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field, create_model
 
 GENERIC_GRAPH_SCHEMA_PROFILE_KEY = "generic_open_domain_v1"
 SOFTWARE_GRAPH_SCHEMA_PROFILE_KEY = "software_knowledge_v1"
+ENTERPRISE_GRAPH_SCHEMA_PROFILE_KEY = "enterprise_knowledge_v1"
 _PROFILE_KEY_RE = re.compile(r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$")
 
 
@@ -158,11 +159,21 @@ class GraphSchemaProfile:
                 validation_policy=self.validation_policy,
             )
         entity_types = {
-            entity.name: _compile_model(entity.name, entity.description, entity.attributes)
+            entity.name: _compile_model(
+                entity.name,
+                entity.description,
+                entity.attributes,
+                model_kind="entity",
+            )
             for entity in self.entity_manifest
         }
         edge_types = {
-            edge.name: _compile_model(edge.name, edge.description, edge.attributes)
+            edge.name: _compile_model(
+                edge.name,
+                edge.description,
+                edge.attributes,
+                model_kind="edge",
+            )
             for edge in self.edge_manifest
         }
         edge_type_map = {
@@ -194,7 +205,12 @@ class GraphSchemaRegistry:
         self._compiled_cache: dict[tuple[str, str, str], CompiledGraphSchema] = {}
 
     def list(self) -> tuple[GraphSchemaProfile, ...]:
-        return tuple(self._profiles.values())
+        return tuple(
+            sorted(
+                self._profiles.values(),
+                key=lambda profile: (not profile.is_default, profile.key),
+            )
+        )
 
     def resolve(
         self,
@@ -237,6 +253,8 @@ def _compile_model(
     name: str,
     description: str,
     fields: tuple[GraphSchemaField, ...],
+    *,
+    model_kind: Literal["entity", "edge"],
 ) -> type[BaseModel]:
     model_fields: dict[str, tuple[Any, Any]] = {}
     for field in fields:
@@ -250,7 +268,7 @@ def _compile_model(
                 str | None,
                 Field(default=None, description=field.description),
             )
-    class_name = f"{name}Entity" if name in _ENTITY_NAMES else "TypedRelation"
+    class_name = f"{name}Entity" if model_kind == "entity" else "TypedRelation"
     return create_model(
         class_name,
         __base__=BaseModel,
@@ -278,19 +296,6 @@ _GRAPHITI_BASE_FIELDS = frozenset(
         "episodes",
     }
 )
-_ENTITY_NAMES = frozenset(
-    {
-        "Organization",
-        "Project",
-        "Repository",
-        "Service",
-        "License",
-        "LicenseExpression",
-        "AliasSurface",
-    }
-)
-
-
 def _canonical_manifest(profile: GraphSchemaProfile) -> dict[str, Any]:
     """Normalize every order-bearing manifest component before hashing."""
 
@@ -334,8 +339,8 @@ def _validate_manifest(profile: GraphSchemaProfile) -> None:
         raise GraphSchemaProfileError("graph_schema_profile_duplicate_edge")
     if any(not name.strip() for name in (*entity_names, *edge_names)):
         raise GraphSchemaProfileError("graph_schema_profile_empty_type")
-    for entity in profile.entity_manifest:
-        field_names = [field.name for field in entity.attributes]
+    for schema_type in (*profile.entity_manifest, *profile.edge_manifest):
+        field_names = [field.name for field in schema_type.attributes]
         if len(field_names) != len(set(field_names)):
             raise GraphSchemaProfileError("graph_schema_profile_duplicate_field")
         if _GRAPHITI_BASE_FIELDS.intersection(field_names):
@@ -382,6 +387,52 @@ of how evidence or graph extraction should work. Do not infer missing entities,
 relations, directions, dates, or world knowledge. Every extracted edge must be
 supported by a specific sentence in this episode and must connect two distinct
 participants named or unambiguously referenced in that sentence.
+""".strip()
+
+_ENTERPRISE_EXTRACTION_INSTRUCTIONS = """
+Extract only enterprise facts explicitly stated in the current episode. Use the
+custom entity and edge types whenever they apply, and normalize active or
+passive wording into the semantic direction defined below. Do not infer an
+organization chart, responsibility, approval, process dependency, policy scope,
+or current status from convention or outside knowledge.
+
+Keep named individuals (Person), positions or responsibility hats (Role), and
+teams or departments (OrganizationalUnit) distinct. Keep a recurring workflow
+(Process), business application (BusinessSystem), customer or internal offering
+(Product), normative rule (Policy), time-bounded initiative (Project),
+operational site (Facility),
+geographic place (Location), and concrete non-policy artifact (Document)
+distinct. Organization may represent the enterprise itself or an explicitly
+named external company, authority, fund, university, research institute,
+supplier, or partner. Preserve official names, acronyms, identifiers,
+versions, status words, and effective periods exactly; use native entity
+resolution for explicit aliases instead of creating separate alias entities.
+
+Use these directions consistently: a child PartOf its parent; a Person MemberOf
+an organization or unit and ReportsTo a manager; a Person HoldsRole a role and
+ServesAs that stated position at an organization or unit; an actor Owns, Leads,
+Sponsors, Approves, or has a RACI relation toward the governed object; a parent
+Controls or Establishes an organization; an acquirer Acquires its target; an
+investor InvestsIn its target; a merging source MergesInto its destination; a
+supplier SuppliesTo its recipient; a developer Develops a product or system; a
+builder Builds a project or facility; a governed object GovernedBy a Policy, while a Policy
+AppliesTo its scope; a dependent DependsOn its dependency; a Document Documents
+its subject; a Document or Policy Defines a term; a Process Produces or Consumes
+an artifact or resource; a Project Delivers its outcome; an item LocatedAt a
+place or DeployedAt a project, facility, or location; and a newer item
+Supersedes the older item. PartnersWith and IndependentOf are symmetric facts
+even though one stored direction is retained.
+
+Create ResponsibleFor, AccountableFor, ConsultedOn, and InformedAbout only when
+that exact RACI meaning or an unambiguous equivalent is stated. Membership does
+not imply reporting, ownership does not imply approval, authorship does not
+imply accountability, and a policy mention does not imply that the policy
+applies. Do not turn a minority investment into Controls, a contract into
+PartnersWith, or a supplied item into ownership. Do not turn confidentiality
+labels, access-control notices, headings, filenames, table column labels,
+templates, or authoring instructions into graph facts. Every edge must be
+supported by a specific sentence or table row in this episode and connect two
+distinct, explicitly named or unambiguously referenced participants.
 """.strip()
 
 
@@ -456,6 +507,468 @@ _SOFTWARE_EDGE_MAP = (
     ("Entity", "Entity", tuple(edge.name for edge in _SOFTWARE_EDGES)),
 )
 
+_ENTERPRISE_ENTITIES = (
+    GraphSchemaEntity(
+        "Organization",
+        "The enterprise or a named company, authority, fund, university, "
+        "institute, supplier, or partner.",
+        (
+            _field("organization_kind", "optional_string"),
+            _field("aliases", "string_list"),
+        ),
+    ),
+    GraphSchemaEntity(
+        "OrganizationalUnit",
+        "A department, division, business unit, team, committee, or other organization unit.",
+        (
+            _field("unit_kind", "optional_string"),
+            _field("aliases", "string_list"),
+        ),
+    ),
+    GraphSchemaEntity(
+        "Person",
+        "A specifically named individual, not a job title or generic actor.",
+        (_field("job_title", "optional_string"),),
+    ),
+    GraphSchemaEntity(
+        "Role",
+        "A job title, process role, governance role, or responsibility hat "
+        "independent of a person.",
+        (_field("role_scope", "optional_string"),),
+    ),
+    GraphSchemaEntity(
+        "Policy",
+        "A named policy, standard, rule, control obligation, or governance requirement.",
+        (
+            _field("policy_identifier", "optional_string"),
+            _field("status", "optional_string"),
+        ),
+    ),
+    GraphSchemaEntity(
+        "Process",
+        "A recurring business process, procedure, workflow, or operational activity.",
+        (
+            _field("process_identifier", "optional_string"),
+            _field("aliases", "string_list"),
+        ),
+    ),
+    GraphSchemaEntity(
+        "BusinessSystem",
+        "A named business application, platform, data system, or operational technology system.",
+        (
+            _field("system_identifier", "optional_string"),
+            _field("aliases", "string_list"),
+        ),
+    ),
+    GraphSchemaEntity(
+        "Product",
+        "A named customer-facing or internal product, service offering, or managed capability.",
+        (
+            _field("product_kind", "optional_string"),
+            _field("aliases", "string_list"),
+        ),
+    ),
+    GraphSchemaEntity(
+        "Project",
+        "A time-bounded initiative, program, transformation, or delivery project.",
+        (
+            _field("project_status", "optional_string"),
+            _field("aliases", "string_list"),
+        ),
+    ),
+    GraphSchemaEntity(
+        "Document",
+        "A named non-policy document or business artifact such as a procedure, "
+        "contract, report, or form.",
+        (
+            _field("document_identifier", "optional_string"),
+            _field("document_kind", "optional_string"),
+            _field("version", "optional_string"),
+        ),
+    ),
+    GraphSchemaEntity(
+        "Location",
+        "A named city, region, jurisdiction, address, or other geographic place.",
+        (_field("location_kind", "optional_string"),),
+    ),
+    GraphSchemaEntity(
+        "Facility",
+        "A named office, plant, warehouse, data center, laboratory, park, station, "
+        "or operational site.",
+        (_field("facility_kind", "optional_string"),),
+    ),
+    GraphSchemaEntity(
+        "BusinessTerm",
+        "A defined enterprise term, acronym, classification, or glossary concept.",
+        (_field("abbreviations", "string_list"),),
+    ),
+)
+
+_ENTERPRISE_EDGE_ATTRIBUTES = (
+    _field("qualifier", "optional_string", "An explicitly stated scope or condition."),
+    _field(
+        "effective_period",
+        "optional_string",
+        "The exact stated effective or validity period, without inference.",
+    ),
+)
+
+
+def _enterprise_edge(name: str, description: str) -> GraphSchemaEdge:
+    return GraphSchemaEdge(name, description, _ENTERPRISE_EDGE_ATTRIBUTES)
+
+
+_ENTERPRISE_EDGES = (
+    _enterprise_edge(
+        "PartOf",
+        "The source child is structurally part of the target parent.",
+    ),
+    _enterprise_edge(
+        "MemberOf",
+        "The source person belongs to the target unit or organization.",
+    ),
+    _enterprise_edge(
+        "ReportsTo",
+        "The source person or unit formally reports to the target manager or unit.",
+    ),
+    _enterprise_edge("HoldsRole", "The source person explicitly holds the target role."),
+    _enterprise_edge(
+        "ServesAs",
+        "The source person explicitly serves in the stated position at the "
+        "target organization or unit.",
+    ),
+    _enterprise_edge("Leads", "The source person, role, or unit explicitly leads the target."),
+    _enterprise_edge("Owns", "The source actor has stated business ownership of the target."),
+    _enterprise_edge(
+        "Controls",
+        "The source organization explicitly controls the target organization.",
+    ),
+    _enterprise_edge(
+        "Establishes",
+        "The source actor explicitly establishes the target organization.",
+    ),
+    _enterprise_edge(
+        "Acquires",
+        "The source organization explicitly acquires the target organization.",
+    ),
+    _enterprise_edge(
+        "InvestsIn",
+        "The source investor explicitly invests in the target organization or project.",
+    ),
+    _enterprise_edge(
+        "MergesInto",
+        "The source organization explicitly merges into the target organization.",
+    ),
+    _enterprise_edge(
+        "ResponsibleFor",
+        "The source actor has stated execution responsibility for the target.",
+    ),
+    _enterprise_edge(
+        "AccountableFor",
+        "The source actor has stated ultimate accountability for the target.",
+    ),
+    _enterprise_edge("ConsultedOn", "The source actor is explicitly consulted about the target."),
+    _enterprise_edge(
+        "InformedAbout",
+        "The source actor must explicitly be informed about the target.",
+    ),
+    _enterprise_edge("Approves", "The source actor explicitly approves the target."),
+    _enterprise_edge(
+        "Sponsors",
+        "The source actor explicitly sponsors the target initiative or product.",
+    ),
+    _enterprise_edge(
+        "Appoints",
+        "The source organization or unit explicitly appoints the target person.",
+    ),
+    _enterprise_edge(
+        "Operates",
+        "The source actor explicitly operates the target process, system, "
+        "product, project, or facility.",
+    ),
+    _enterprise_edge("Uses", "The source actor or process explicitly uses the target resource."),
+    _enterprise_edge(
+        "Provides",
+        "The source organization or unit explicitly provides the target system or product.",
+    ),
+    _enterprise_edge(
+        "Develops",
+        "The source actor explicitly develops the target system or product.",
+    ),
+    _enterprise_edge(
+        "Builds",
+        "The source actor explicitly builds or implements the target project or facility.",
+    ),
+    _enterprise_edge(
+        "SuppliesTo",
+        "The source supplier explicitly supplies goods, equipment, data, or "
+        "interfaces to the target.",
+    ),
+    _enterprise_edge(
+        "ContractsWith",
+        "The source party explicitly has the stated contract with the target party or project.",
+    ),
+    _enterprise_edge(
+        "PartnersWith",
+        "The source and target explicitly collaborate, partner, or jointly build something.",
+    ),
+    _enterprise_edge(
+        "IndependentOf",
+        "The source and target are explicitly stated to be independent or unaffiliated.",
+    ),
+    _enterprise_edge(
+        "DependsOn",
+        "The source dependent explicitly depends on the target dependency.",
+    ),
+    _enterprise_edge(
+        "GovernedBy",
+        "The source object or activity is explicitly governed by the target policy.",
+    ),
+    _enterprise_edge("AppliesTo", "The source policy explicitly applies to the target scope."),
+    _enterprise_edge("Documents", "The source document explicitly documents the target subject."),
+    _enterprise_edge(
+        "Defines",
+        "The source document or policy explicitly defines the target term.",
+    ),
+    _enterprise_edge(
+        "Produces",
+        "The source process explicitly produces the target artifact or product.",
+    ),
+    _enterprise_edge(
+        "Consumes",
+        "The source process explicitly consumes the target artifact or system.",
+    ),
+    _enterprise_edge(
+        "Supports",
+        "The source actor, process, system, product, project, or facility "
+        "explicitly supports the target.",
+    ),
+    _enterprise_edge("LocatedAt", "The source entity is explicitly located at the target place."),
+    _enterprise_edge(
+        "DeployedAt",
+        "The source system or product is explicitly deployed at the target "
+        "project, facility, or location.",
+    ),
+    _enterprise_edge(
+        "CertifiedBy",
+        "The source organization, system, or product is explicitly certified "
+        "by the target organization.",
+    ),
+    _enterprise_edge(
+        "LicensedBy",
+        "The source organization, system, or product explicitly receives a "
+        "license from the target organization.",
+    ),
+    _enterprise_edge(
+        "Supersedes",
+        "The source newer item explicitly supersedes the target older item.",
+    ),
+    _enterprise_edge("Delivers", "The source project explicitly delivers the target outcome."),
+)
+
+_ENTERPRISE_RACI_EDGES = (
+    "ResponsibleFor",
+    "AccountableFor",
+    "ConsultedOn",
+    "InformedAbout",
+)
+_ENTERPRISE_STEWARDSHIP_EDGES = (
+    "Owns",
+    *_ENTERPRISE_RACI_EDGES,
+)
+_ENTERPRISE_APPROVAL_EDGES = (
+    *_ENTERPRISE_STEWARDSHIP_EDGES,
+    "Approves",
+)
+
+_ENTERPRISE_EDGE_MAP = (
+    (
+        "Organization",
+        "Organization",
+        (
+            "PartOf",
+            "Controls",
+            "Establishes",
+            "Acquires",
+            "InvestsIn",
+            "MergesInto",
+            "Operates",
+            "SuppliesTo",
+            "ContractsWith",
+            "PartnersWith",
+            "Supports",
+            "CertifiedBy",
+            "LicensedBy",
+            "IndependentOf",
+        ),
+    ),
+    ("Organization", "Person", ("Appoints",)),
+    ("Organization", "Policy", ("GovernedBy",)),
+    (
+        "Organization",
+        "BusinessSystem",
+        ("Owns", "Operates", "Provides", "Develops", "Supports"),
+    ),
+    (
+        "Organization",
+        "Product",
+        ("Owns", "Operates", "Provides", "Develops", "Supports"),
+    ),
+    (
+        "Organization",
+        "Project",
+        (
+            "Owns",
+            "InvestsIn",
+            "Sponsors",
+            "Operates",
+            "Builds",
+            "SuppliesTo",
+            "ContractsWith",
+            "Supports",
+        ),
+    ),
+    (
+        "Organization",
+        "Facility",
+        ("Owns", "Operates", "Builds", "SuppliesTo", "ContractsWith", "Supports"),
+    ),
+    ("Organization", "Document", ("Owns", "Approves")),
+    ("Organization", "Location", ("LocatedAt",)),
+    ("OrganizationalUnit", "Organization", ("PartOf",)),
+    (
+        "OrganizationalUnit",
+        "OrganizationalUnit",
+        ("PartOf", "ReportsTo", "PartnersWith", "Supports"),
+    ),
+    ("OrganizationalUnit", "Person", ("Appoints",)),
+    (
+        "OrganizationalUnit",
+        "Policy",
+        (*_ENTERPRISE_APPROVAL_EDGES, "GovernedBy"),
+    ),
+    (
+        "OrganizationalUnit",
+        "Process",
+        ("Leads", *_ENTERPRISE_APPROVAL_EDGES, "Operates", "Supports"),
+    ),
+    (
+        "OrganizationalUnit",
+        "BusinessSystem",
+        (
+            *_ENTERPRISE_STEWARDSHIP_EDGES,
+            "Operates",
+            "Uses",
+            "Provides",
+            "Develops",
+            "Supports",
+        ),
+    ),
+    (
+        "OrganizationalUnit",
+        "Product",
+        ("Leads", *_ENTERPRISE_STEWARDSHIP_EDGES, "Provides", "Develops", "Supports"),
+    ),
+    (
+        "OrganizationalUnit",
+        "Project",
+        (
+            "Leads",
+            *_ENTERPRISE_APPROVAL_EDGES,
+            "InvestsIn",
+            "Sponsors",
+            "Operates",
+            "Builds",
+            "ContractsWith",
+            "Supports",
+        ),
+    ),
+    ("OrganizationalUnit", "Document", _ENTERPRISE_APPROVAL_EDGES),
+    (
+        "OrganizationalUnit",
+        "Facility",
+        (*_ENTERPRISE_STEWARDSHIP_EDGES, "Operates", "Uses", "Builds", "Supports"),
+    ),
+    ("OrganizationalUnit", "Location", ("LocatedAt",)),
+    ("Person", "Organization", ("MemberOf", "ServesAs")),
+    ("Person", "OrganizationalUnit", ("MemberOf", "ServesAs", "Leads")),
+    ("Person", "Person", ("ReportsTo",)),
+    ("Person", "Role", ("HoldsRole",)),
+    ("Person", "Policy", _ENTERPRISE_APPROVAL_EDGES),
+    ("Person", "Process", ("Leads", *_ENTERPRISE_APPROVAL_EDGES)),
+    ("Person", "BusinessSystem", (*_ENTERPRISE_STEWARDSHIP_EDGES, "Uses")),
+    ("Person", "Product", ("Leads", *_ENTERPRISE_STEWARDSHIP_EDGES)),
+    ("Person", "Project", ("Leads", *_ENTERPRISE_APPROVAL_EDGES, "Sponsors")),
+    ("Person", "Document", _ENTERPRISE_APPROVAL_EDGES),
+    ("Person", "Facility", _ENTERPRISE_STEWARDSHIP_EDGES),
+    ("Person", "Location", ("LocatedAt",)),
+    ("Role", "OrganizationalUnit", ("PartOf", "Leads")),
+    ("Role", "Policy", _ENTERPRISE_APPROVAL_EDGES),
+    ("Role", "Process", ("Leads", *_ENTERPRISE_APPROVAL_EDGES)),
+    ("Role", "BusinessSystem", (*_ENTERPRISE_STEWARDSHIP_EDGES, "Uses")),
+    ("Role", "Product", ("Leads", *_ENTERPRISE_STEWARDSHIP_EDGES)),
+    ("Role", "Project", ("Leads", *_ENTERPRISE_APPROVAL_EDGES, "Sponsors")),
+    ("Role", "Document", _ENTERPRISE_APPROVAL_EDGES),
+    ("Role", "Facility", _ENTERPRISE_STEWARDSHIP_EDGES),
+    ("Policy", "Organization", ("AppliesTo",)),
+    ("Policy", "OrganizationalUnit", ("AppliesTo",)),
+    ("Policy", "Person", ("AppliesTo",)),
+    ("Policy", "Role", ("AppliesTo",)),
+    ("Policy", "Process", ("AppliesTo",)),
+    ("Policy", "BusinessSystem", ("AppliesTo",)),
+    ("Policy", "Product", ("AppliesTo",)),
+    ("Policy", "Project", ("AppliesTo",)),
+    ("Policy", "Location", ("AppliesTo",)),
+    ("Policy", "Facility", ("AppliesTo",)),
+    ("Policy", "BusinessTerm", ("Defines",)),
+    ("Policy", "Policy", ("Supersedes", "DependsOn")),
+    ("Process", "Policy", ("GovernedBy",)),
+    ("Process", "Process", ("DependsOn", "Supersedes", "Supports")),
+    ("Process", "BusinessSystem", ("Uses", "DependsOn")),
+    ("Process", "Product", ("Produces", "Supports")),
+    ("Process", "Document", ("Produces", "Consumes")),
+    ("BusinessSystem", "Policy", ("GovernedBy",)),
+    ("BusinessSystem", "Organization", ("CertifiedBy", "LicensedBy")),
+    ("BusinessSystem", "BusinessSystem", ("DependsOn", "Supersedes")),
+    ("BusinessSystem", "Process", ("Supports",)),
+    ("BusinessSystem", "Product", ("Supports",)),
+    ("BusinessSystem", "Project", ("DeployedAt", "Supports")),
+    ("BusinessSystem", "Facility", ("DeployedAt", "Supports")),
+    ("BusinessSystem", "Location", ("LocatedAt",)),
+    ("Product", "Policy", ("GovernedBy",)),
+    ("Product", "Organization", ("CertifiedBy", "LicensedBy")),
+    ("Product", "BusinessSystem", ("DependsOn",)),
+    ("Product", "Product", ("DependsOn", "Supersedes")),
+    ("Product", "Project", ("DeployedAt", "Supports")),
+    ("Product", "Facility", ("DeployedAt", "Supports")),
+    ("Product", "Location", ("DeployedAt", "LocatedAt")),
+    ("Project", "Policy", ("GovernedBy",)),
+    ("Project", "Process", ("Delivers", "DependsOn")),
+    ("Project", "BusinessSystem", ("Delivers", "DependsOn")),
+    ("Project", "Product", ("Delivers",)),
+    ("Project", "Document", ("Delivers",)),
+    ("Project", "Project", ("PartOf", "DependsOn", "Supersedes", "Supports")),
+    ("Project", "Facility", ("Delivers", "Builds", "Supports")),
+    ("Project", "Location", ("LocatedAt",)),
+    ("Facility", "Policy", ("GovernedBy",)),
+    ("Facility", "BusinessSystem", ("Uses", "DependsOn")),
+    ("Facility", "Facility", ("PartOf", "DependsOn", "Supersedes")),
+    ("Facility", "Location", ("LocatedAt",)),
+    ("Document", "OrganizationalUnit", ("Documents",)),
+    ("Document", "Organization", ("Documents",)),
+    ("Document", "Role", ("Documents",)),
+    ("Document", "Policy", ("Documents",)),
+    ("Document", "Process", ("Documents",)),
+    ("Document", "BusinessSystem", ("Documents",)),
+    ("Document", "Product", ("Documents",)),
+    ("Document", "Project", ("Documents",)),
+    ("Document", "Facility", ("Documents",)),
+    ("Document", "BusinessTerm", ("Defines",)),
+    ("Document", "Document", ("Supersedes", "DependsOn")),
+    ("Location", "Location", ("PartOf",)),
+    ("Entity", "Entity", tuple(edge.name for edge in _ENTERPRISE_EDGES)),
+)
+
 GENERIC_GRAPH_SCHEMA_PROFILE = GraphSchemaProfile(
     key=GENERIC_GRAPH_SCHEMA_PROFILE_KEY,
     display_name="Generic open-domain knowledge",
@@ -484,7 +997,30 @@ SOFTWARE_GRAPH_SCHEMA_PROFILE = GraphSchemaProfile(
     compatible_extractor_versions=("graphiti_v3", "graphiti_v4"),
 )
 
-_REGISTRY = GraphSchemaRegistry((GENERIC_GRAPH_SCHEMA_PROFILE, SOFTWARE_GRAPH_SCHEMA_PROFILE))
+ENTERPRISE_GRAPH_SCHEMA_PROFILE = GraphSchemaProfile(
+    key=ENTERPRISE_GRAPH_SCHEMA_PROFILE_KEY,
+    display_name="Enterprise organization and operations",
+    description=(
+        "Typed organization, people, responsibility, policy, process, system, "
+        "project, product, facility, document, glossary, and location knowledge."
+    ),
+    entity_manifest=_ENTERPRISE_ENTITIES,
+    edge_manifest=_ENTERPRISE_EDGES,
+    edge_type_map_manifest=_ENTERPRISE_EDGE_MAP,
+    extraction_instructions=_ENTERPRISE_EXTRACTION_INSTRUCTIONS,
+    alias_policy="native_dedupe",
+    validation_policy=GraphSchemaValidationPolicy(),
+    is_default=False,
+    compatible_extractor_versions=("graphiti_v4",),
+)
+
+_REGISTRY = GraphSchemaRegistry(
+    (
+        GENERIC_GRAPH_SCHEMA_PROFILE,
+        SOFTWARE_GRAPH_SCHEMA_PROFILE,
+        ENTERPRISE_GRAPH_SCHEMA_PROFILE,
+    )
+)
 
 
 def get_graph_schema_registry() -> GraphSchemaRegistry:
@@ -493,6 +1029,8 @@ def get_graph_schema_registry() -> GraphSchemaRegistry:
 
 __all__ = [
     "CompiledGraphSchema",
+    "ENTERPRISE_GRAPH_SCHEMA_PROFILE",
+    "ENTERPRISE_GRAPH_SCHEMA_PROFILE_KEY",
     "GENERIC_GRAPH_SCHEMA_PROFILE",
     "GENERIC_GRAPH_SCHEMA_PROFILE_KEY",
     "GraphSchemaEdge",
