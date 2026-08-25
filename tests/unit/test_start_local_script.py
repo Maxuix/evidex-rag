@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "start-local.sh"
 COMPOSE = ROOT / "compose.yaml"
 DOCKERFILE = ROOT / "Dockerfile"
+DOCKERIGNORE = ROOT / ".dockerignore"
 
 
 def _seconds(value: str | int) -> int:
@@ -41,10 +42,67 @@ class StartLocalScriptTests(unittest.TestCase):
         )
         self.assertNotIn("pip install --no-cache-dir", dockerfile)
 
+    def test_model_downloads_use_persistent_build_cache(self) -> None:
+        dockerfile = DOCKERFILE.read_text(encoding="utf-8")
+        dockerignore = DOCKERIGNORE.read_text(encoding="utf-8")
+
+        cache_mount = (
+            "--mount=type=cache,id=rag-kb-build-models-v1,"
+            "target=/var/cache/rag-kb-build-models,sharing=locked"
+        )
+        seed_mount = (
+            "--mount=type=bind,from=model-assets,source=/,"
+            "target=/mnt/rag-kb-model-assets,ro"
+        )
+        self.assertEqual(dockerfile.count(cache_mount), 2)
+        self.assertEqual(dockerfile.count(seed_mount), 2)
+        self.assertEqual(
+            dockerfile.count("--cache-path /var/cache/rag-kb-build-models"),
+            2,
+        )
+        self.assertIn(
+            "COPY tools/artifact_download.py /app/tools/artifact_download.py",
+            dockerfile,
+        )
+        self.assertIn("!tools/artifact_download.py", dockerignore.splitlines())
+
+    def test_compose_reuses_verified_assets_from_the_current_image(self) -> None:
+        configuration = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
+        build = configuration["x-app-image"]["build"]
+        dockerfile = DOCKERFILE.read_text(encoding="utf-8")
+
+        self.assertIn("model-assets", build["additional_contexts"])
+        self.assertIn(
+            "RAG_KB_BUILD_MODEL_ASSET_CONTEXT",
+            build["additional_contexts"]["model-assets"],
+        )
+        self.assertIn(
+            "/mnt/rag-kb-model-assets/opt/rag-kb/docling-artifacts",
+            dockerfile,
+        )
+        self.assertIn(
+            "/mnt/rag-kb-model-assets/opt/rag-kb/local-reranker",
+            dockerfile,
+        )
+        self.assertIn(
+            "--artifacts-path "
+            "/mnt/rag-kb-model-assets/opt/rag-kb/docling-artifacts",
+            dockerfile,
+        )
+        self.assertIn(
+            "--artifacts-path "
+            "/mnt/rag-kb-model-assets/opt/rag-kb/local-reranker",
+            dockerfile,
+        )
+
     def test_application_build_uses_single_overridable_china_mirrors(self) -> None:
         configuration = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
         arguments = configuration["x-app-image"]["build"]["args"]
         dockerfile = DOCKERFILE.read_text(encoding="utf-8")
+        frontend_arguments = configuration["x-user-frontend-image"]["build"]["args"]
+        frontend_dockerfile = (ROOT / "apps/web-chat/Dockerfile").read_text(
+            encoding="utf-8"
+        )
 
         self.assertEqual(
             arguments["RAG_KB_BUILD_DEBIAN_MIRROR"],
@@ -60,15 +118,45 @@ class StartLocalScriptTests(unittest.TestCase):
                 "https://pypi.tuna.tsinghua.edu.cn/simple}"
             ),
         )
+        self.assertEqual(
+            arguments["RAG_KB_BUILD_HF_ENDPOINT"],
+            (
+                "${RAG_KB_BUILD_HF_ENDPOINT:-"
+                "https://hf-mirror.com}"
+            ),
+        )
         self.assertIn(
             'PIP_INDEX_URL="${RAG_KB_BUILD_PYPI_INDEX_URL}"',
             dockerfile,
+        )
+        self.assertEqual(
+            dockerfile.count('HF_ENDPOINT="${RAG_KB_BUILD_HF_ENDPOINT}"'),
+            2,
         )
         self.assertIn(
             'grep -F "URIs: http://deb.debian.org/debian-security"',
             dockerfile,
         )
         self.assertNotIn("extra-index-url", dockerfile.lower())
+        self.assertEqual(
+            frontend_arguments["RAG_KB_BUILD_NPM_REGISTRY"],
+            (
+                "${RAG_KB_BUILD_NPM_REGISTRY:-"
+                "https://registry.npmmirror.com}"
+            ),
+        )
+        self.assertIn(
+            '--registry="${RAG_KB_BUILD_NPM_REGISTRY}"',
+            frontend_dockerfile,
+        )
+        self.assertIn("--replace-registry-host=always", frontend_dockerfile)
+        self.assertIn("--fetch-retries=6", frontend_dockerfile)
+        self.assertIn("--fetch-timeout=120000", frontend_dockerfile)
+        self.assertIn(
+            "--mount=type=cache,id=rag-kb-npm-v1,"
+            "target=/root/.npm,sharing=locked",
+            frontend_dockerfile,
+        )
 
     def test_compose_allows_bounded_cold_application_startup(self) -> None:
         configuration = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
@@ -133,6 +221,16 @@ class StartLocalScriptTests(unittest.TestCase):
         self.assertEqual(worker["mem_limit"], "6g")
         self.assertEqual(worker["pids_limit"], 256)
 
+    def test_runtime_image_normalizes_code_read_permissions(self) -> None:
+        dockerfile = DOCKERFILE.read_text(encoding="utf-8")
+
+        self.assertIn("chmod a+r /app/alembic.ini", dockerfile)
+        self.assertIn("chmod -R a+rX /app/apps /app/src", dockerfile)
+        self.assertLess(
+            dockerfile.index("chmod -R a+rX /app/apps /app/src"),
+            dockerfile.index("USER 10001:10001"),
+        )
+
     def test_compose_runs_user_frontend_on_loopback_port(self) -> None:
         configuration = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
 
@@ -150,6 +248,31 @@ class StartLocalScriptTests(unittest.TestCase):
         self.assertNotIn("DIAGNOSTIC_FRONTEND_PORT", origins)
         self.assertIn("http://127.0.0.1:5173", origins)
         self.assertIn("http://localhost:5173", origins)
+
+    def test_frontend_can_use_verified_host_build_without_container_network(
+        self,
+    ) -> None:
+        configuration = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
+        build = configuration["x-user-frontend-image"]["build"]
+        dockerfile = (ROOT / "apps/web-chat/Dockerfile").read_text(
+            encoding="utf-8"
+        )
+        script = SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn("RAG_KB_BUILD_FRONTEND_TARGET", build["target"])
+        self.assertIn("frontend-dist", build["additional_contexts"])
+        self.assertIn(
+            "RAG_KB_BUILD_FRONTEND_DIST_CONTEXT",
+            build["additional_contexts"]["frontend-dist"],
+        )
+        self.assertIn("FROM runtime-base AS prebuilt-runtime", dockerfile)
+        self.assertIn("COPY --from=frontend-dist / /app/dist", dockerfile)
+        self.assertIn('npm --prefix "$frontend_directory" ls --all', script)
+        self.assertIn('npm --prefix "$frontend_directory" run build', script)
+        self.assertIn(
+            "RAG_KB_BUILD_FRONTEND_TARGET=prebuilt-runtime",
+            script,
+        )
 
     def test_compose_uses_one_manifest_and_revision_labels(self) -> None:
         configuration = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
@@ -244,6 +367,9 @@ class StartLocalScriptTests(unittest.TestCase):
             "RAG_KB_LOCAL_COMPOSE_ENV_FILE",
             "RAG_KB_LOCAL_APP_ENV_FILE",
             "RAG_KB_BUILD_REVISION",
+            "RAG_KB_BUILD_MODEL_ASSET_CONTEXT",
+            "RAG_KB_BUILD_FRONTEND_TARGET",
+            "RAG_KB_BUILD_FRONTEND_DIST_CONTEXT",
         ):
             environment.pop(name, None)
         if extra_environment:
@@ -265,10 +391,11 @@ class StartLocalScriptTests(unittest.TestCase):
             calls = log.read_text(encoding="utf-8")
             prefix = f"docker compose --env-file {manifest} --project-name rag"
             self.assertIn(f"project=rag revision=0123456789abcdef {prefix} up -d --wait postgres", calls)
+            self.assertIn("docker image inspect rag-kb-app:local", calls)
             self.assertIn(f"{prefix} exec -T postgres", calls)
             self.assertIn(f"{prefix} build api frontend", calls)
             self.assertIn(f"{prefix} --profile tools run --rm migrate", calls)
-            self.assertNotIn("inspect", calls)
+            self.assertNotIn("docker inspect", calls)
             self.assertNotIn("ps -aq", calls)
             self.assertIn("User Chat: http://127.0.0.1:13000", completed.stdout)
             self.assertIn("API docs: http://127.0.0.1:18000", completed.stdout)

@@ -634,6 +634,13 @@ migrate 或切换个人 stack。`./start-local.sh` 先执行 content-safe doctor
 不从容器提取 credential、也不生成或覆盖配置。通过 preflight 后，starter 才按顺序启动
 PostgreSQL、幂等校准现有 admin/migration/runtime 角色、构建带 Git revision label 的应用镜像、
 准备 source storage、执行 Alembic 并等待 API/Worker/frontend 健康。现有业务卷不会因启动被重置。
+固定 Docling/reranker 资产通过可覆盖的 HTTPS Hugging Face 镜像下载，瞬时网络错误做有界重试并
+复用跨构建 cache；已有本地应用镜像通过只读 build context 引导后续构建。两条路径的最终镜像都
+按固定 revision、文件大小和 SHA-256 manifest fail closed，旧镜像不会绕过当前 verifier。
+前端 `npm ci` 同样使用可覆盖的 HTTPS registry、原生有限 fetch retry/timeout 与独立 BuildKit cache，
+依赖闭集仍由 `package-lock.json` 决定。若宿主已安装的前端依赖通过 `npm ls --all`，starter 可在
+宿主执行 Vite build，并只把生成的 `dist` 作为只读 build context 交给最终 Python frontend 镜像；
+这条路径不安装或更新依赖，Docker `npm ci` 仍是 clean checkout fallback。
 
 旧双-env、worktree override 和迁移备份已经退役；它们不是 runtime input，重新出现时 doctor 只报告
 content-safe stale warning。唯一有效配置是 primary checkout 的 0600 `.env.local`，模型 provider/profile

@@ -19,18 +19,25 @@ x-app-image: &app-image
   build:
     context: .
     dockerfile: Dockerfile
+    additional_contexts:
+      model-assets: ${RAG_KB_BUILD_MODEL_ASSET_CONTEXT:-docker-image://docker.io/library/python:3.12.13-slim-bookworm@sha256:8a7e7cc04fd3e2bd787f7f24e22d5d119aa590d429b50c95dfe12b3abe52f48b}
     args:
       RAG_KB_BUILD_REVISION: ${RAG_KB_BUILD_REVISION:-unknown}
       RAG_KB_BUILD_DEBIAN_MIRROR: ${RAG_KB_BUILD_DEBIAN_MIRROR:-https://mirrors.tuna.tsinghua.edu.cn/debian}
       RAG_KB_BUILD_PYPI_INDEX_URL: ${RAG_KB_BUILD_PYPI_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
+      RAG_KB_BUILD_HF_ENDPOINT: ${RAG_KB_BUILD_HF_ENDPOINT:-https://hf-mirror.com}
 
 x-user-frontend-image: &user-frontend-image
   image: rag-kb-user-frontend:local
   build:
     context: ./apps/web-chat
     dockerfile: Dockerfile
+    target: ${RAG_KB_BUILD_FRONTEND_TARGET:-runtime}
+    additional_contexts:
+      frontend-dist: ${RAG_KB_BUILD_FRONTEND_DIST_CONTEXT:-./apps/web-chat/public}
     args:
       RAG_KB_BUILD_REVISION: ${RAG_KB_BUILD_REVISION:-unknown}
+      RAG_KB_BUILD_NPM_REGISTRY: ${RAG_KB_BUILD_NPM_REGISTRY:-https://registry.npmmirror.com}
 
 x-runtime-service: &runtime-service
   <<: *app-image

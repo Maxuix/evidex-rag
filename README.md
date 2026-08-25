@@ -30,8 +30,19 @@ images, starts the services, and waits for health. Existing volumes are retained
 
 Retired `.env`, per-worktree overrides, and migration backups are not runtime
 inputs. The doctor reports them as stale if they reappear. Local image builds
-still use the configured HTTPS TUNA mirrors while retaining Debian's official
-security repository.
+use the configured HTTPS TUNA and Hugging Face mirror endpoints while retaining
+Debian's official security repository. `RAG_KB_BUILD_DEBIAN_MIRROR`,
+`RAG_KB_BUILD_PYPI_INDEX_URL`, and `RAG_KB_BUILD_HF_ENDPOINT` can override the
+Python/model build-time download endpoints. `RAG_KB_BUILD_NPM_REGISTRY`
+overrides the frontend package mirror. Frozen model revisions, lock files, and
+SHA-256 manifests still determine the accepted dependency/model bytes.
+When a prior local application image exists, its frozen model bundles seed the
+next build through a read-only build context and are verified again; clean
+machines use the network path and populate the persistent BuildKit cache.
+If Docker TLS egress is unavailable but the repository's host frontend
+dependencies pass `npm ls --all`, the starter builds Vite on the host and sends
+only the generated `dist` as a read-only build context. Clean machines retain
+the locked Docker `npm ci` path.
 
 The environment has no model provider fallback. After startup, use the
 bottom-right model settings in Web Chat to add, validate, and select Chat and

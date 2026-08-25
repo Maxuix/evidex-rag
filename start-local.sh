@@ -80,6 +80,33 @@ RAG_KB_BUILD_REVISION=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null) ||
   fail "cannot resolve the build revision"
 export RAG_KB_BUILD_REVISION
 
+if docker image inspect rag-kb-app:local >/dev/null 2>&1; then
+  RAG_KB_BUILD_MODEL_ASSET_CONTEXT=docker-image://rag-kb-app:local
+else
+  RAG_KB_BUILD_MODEL_ASSET_CONTEXT=docker-image://docker.io/library/python:3.12.13-slim-bookworm@sha256:8a7e7cc04fd3e2bd787f7f24e22d5d119aa590d429b50c95dfe12b3abe52f48b
+fi
+export RAG_KB_BUILD_MODEL_ASSET_CONTEXT
+
+frontend_directory="$ROOT/apps/web-chat"
+RAG_KB_BUILD_FRONTEND_TARGET=runtime
+RAG_KB_BUILD_FRONTEND_DIST_CONTEXT="$frontend_directory/public"
+if command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1 &&
+  [ -d "$frontend_directory/node_modules" ] &&
+  npm --prefix "$frontend_directory" ls --all >/dev/null 2>&1; then
+  printf 'Building frontend with the verified host dependency graph...\n'
+  npm --prefix "$frontend_directory" run build ||
+    fail "host frontend build failed"
+  runtime_config="$frontend_directory/dist/runtime-config.json"
+  [ ! -L "$runtime_config" ] ||
+    fail "generated frontend runtime config must not be a symbolic link"
+  rm -f -- "$runtime_config"
+  [ -f "$frontend_directory/dist/index.html" ] ||
+    fail "host frontend build did not produce dist/index.html"
+  RAG_KB_BUILD_FRONTEND_TARGET=prebuilt-runtime
+  RAG_KB_BUILD_FRONTEND_DIST_CONTEXT="$frontend_directory/dist"
+fi
+export RAG_KB_BUILD_FRONTEND_TARGET RAG_KB_BUILD_FRONTEND_DIST_CONTEXT
+
 printf 'Using canonical Compose project rag and owner-only .env.local.\n'
 printf 'Building Git revision %s.\n' "$RAG_KB_BUILD_REVISION"
 run_compose "Starting PostgreSQL..." up -d --wait postgres
