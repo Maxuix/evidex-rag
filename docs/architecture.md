@@ -662,7 +662,9 @@ docker compose --env-file .env.local --project-name rag down
   `127.0.0.1`、使用临时存储的 PostgreSQL 容器，数据库名固定为 `rag_kb_test`，在子进程环境中
   注入上述两个 DSN，执行迁移和测试后通过 owner label 清理容器。它不加入正式 `rag` Compose
   project，也不复用正式 `rag_kb` 数据库。普通 unit/contract 测试不自动触发 Docker 生命周期。
-- 直接运行 integration 测试时，调用方也可以提供已经运行且可丢弃的测试库；skip 不算通过。
+- 直接运行 integration 测试时，调用方也可以提供已经运行且可丢弃的测试库；缺少 DSN 时测试模块
+  必须立即报错并指向上述 runner，不能用 `skip` 静默跳过。runner 发现任何 skipped 测试也返回失败，
+  因此“未执行”不能被记为通过。
 - 改哪个前端就构建哪个前端；不要求无关前端同时构建。
 - 纯文档变更只需检查链接、路径和 Markdown/diff，不运行应用测试。
 - 每个不变量只在最低且最有证明力的层级保留测试：basic 负责导入和依赖边界，unit/contract

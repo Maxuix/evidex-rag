@@ -25,6 +25,7 @@ TEST_DATABASE = "rag_kb_test"
 TEST_PASSWORD = "isolated-test-only"
 CONTAINER_LABEL = "rag-kb.database-test-owner"
 PORT_PATTERN = re.compile(r"^127\.0\.0\.1:(?P<port>[1-9][0-9]*)$")
+SKIPPED_TESTS_PATTERN = re.compile(r"\bskipped=(?P<count>[0-9]+)\b")
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +56,15 @@ def parse_published_port(output: str) -> int:
     if port > 65_535:
         raise RuntimeError("Docker returned an invalid PostgreSQL port")
     return port
+
+
+def database_test_output_contains_skips(output: str) -> bool:
+    """Return whether unittest reported any skipped database tests."""
+
+    return any(
+        int(match.group("count")) > 0
+        for match in SKIPPED_TESTS_PATTERN.finditer(output)
+    )
 
 
 def database_environment(port: int) -> dict[str, str]:
@@ -331,7 +341,19 @@ def run_database_tests(unittest_arguments: list[str]) -> int:
             cwd=PROJECT_ROOT,
             env=environment,
             check=False,
+            capture_output=True,
+            text=True,
         )
+        output = completed.stdout + completed.stderr
+        if output:
+            print(output, end="" if output.endswith("\n") else "\n")
+        if database_test_output_contains_skips(output):
+            print(
+                "Database integration tests must not be skipped; "
+                "the test runner treats skipped tests as a failure.",
+                file=sys.stderr,
+            )
+            return 1
         return completed.returncode
     finally:
         if created:

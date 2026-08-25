@@ -10,6 +10,7 @@ from uuid import UUID, uuid4
 
 import asyncpg
 
+from tests.integration.db import require_database_test_dsns
 from rag_kb.auth import AuthContext, SingleWorkspaceAccessPolicy
 from rag_kb.db import DatabaseProcess, create_database_resources
 from rag_kb.document_processing.profiles import index_profile
@@ -65,10 +66,9 @@ MIGRATION_DSN = os.environ.get("RAG_KB_TEST_MIGRATION_DSN")
 RUNTIME_SQLALCHEMY_DSN = os.environ.get("RAG_KB_TEST_RUNTIME_SQLALCHEMY_DSN")
 WORKSPACE = UUID("01900000-0000-7000-8000-000000000a01")
 
-
-@unittest.skipUnless(
-    MIGRATION_DSN and RUNTIME_SQLALCHEMY_DSN,
-    "database integration DSNs are not configured",
+require_database_test_dsns(
+    "RAG_KB_TEST_MIGRATION_DSN",
+    "RAG_KB_TEST_RUNTIME_SQLALCHEMY_DSN",
 )
 class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:

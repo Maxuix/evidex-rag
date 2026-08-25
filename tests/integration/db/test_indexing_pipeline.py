@@ -20,6 +20,7 @@ from docling.datamodel.base_models import (
 )
 from docling.document_converter import DocumentConverter
 
+from tests.integration.db import require_database_test_dsns
 from rag_kb.adapters.file_store.assets import LocalIndexAssetStore
 from rag_kb.adapters.file_store.local import LocalFileStore
 from rag_kb.auth import AuthContext, SingleWorkspaceAccessPolicy
@@ -71,10 +72,9 @@ MIGRATION_DSN = os.environ.get("RAG_KB_TEST_MIGRATION_DSN")
 RUNTIME_SQLALCHEMY_DSN = os.environ.get("RAG_KB_TEST_RUNTIME_SQLALCHEMY_DSN")
 WORKSPACE = UUID("01900000-0000-7000-8000-000000000401")
 
-
-@unittest.skipUnless(
-    MIGRATION_DSN and RUNTIME_SQLALCHEMY_DSN,
-    "database integration DSNs are not configured",
+require_database_test_dsns(
+    "RAG_KB_TEST_MIGRATION_DSN",
+    "RAG_KB_TEST_RUNTIME_SQLALCHEMY_DSN",
 )
 class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:

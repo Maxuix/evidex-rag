@@ -9,6 +9,7 @@ import asyncpg
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
+from tests.integration.db import require_database_test_dsns
 from rag_kb.db import DatabaseProcess, create_database_resources
 from rag_kb.domain import (
     ModelKind,
@@ -31,10 +32,9 @@ RUNTIME_SQLALCHEMY_DSN = os.environ.get("RAG_KB_TEST_RUNTIME_SQLALCHEMY_DSN")
 WORKSPACE_ONE = UUID("01900000-0000-7000-8000-000000000101")
 WORKSPACE_TWO = UUID("01900000-0000-7000-8000-000000000102")
 
-
-@unittest.skipUnless(
-    MIGRATION_DSN and RUNTIME_SQLALCHEMY_DSN,
-    "database integration DSNs are not configured",
+require_database_test_dsns(
+    "RAG_KB_TEST_MIGRATION_DSN",
+    "RAG_KB_TEST_RUNTIME_SQLALCHEMY_DSN",
 )
 class AsyncDataAccessTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:

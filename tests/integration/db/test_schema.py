@@ -12,6 +12,7 @@ from alembic.operations import Operations
 import asyncpg
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from tests.integration.db import require_database_test_dsns
 from rag_kb.db.readiness import EXPECTED_REVISION, check_database_ready
 
 
@@ -19,10 +20,10 @@ MIGRATION_DSN = os.environ.get("RAG_KB_TEST_MIGRATION_DSN")
 RUNTIME_DSN = os.environ.get("RAG_KB_TEST_RUNTIME_DSN")
 RUNTIME_SQLALCHEMY_DSN = os.environ.get("RAG_KB_TEST_RUNTIME_SQLALCHEMY_DSN")
 
-
-@unittest.skipUnless(
-    MIGRATION_DSN and RUNTIME_DSN and RUNTIME_SQLALCHEMY_DSN,
-    "database integration DSNs are not configured",
+require_database_test_dsns(
+    "RAG_KB_TEST_MIGRATION_DSN",
+    "RAG_KB_TEST_RUNTIME_DSN",
+    "RAG_KB_TEST_RUNTIME_SQLALCHEMY_DSN",
 )
 class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:

@@ -95,11 +95,13 @@ PYTHONPATH=src:. .venv/bin/python tools/run_database_tests.py
 
 The runner never reads `.env.local`, never uses the canonical Compose project
 `rag`, never publishes beyond `127.0.0.1`, and never reuses the formal
-`rag_kb` database. Direct test execution is also supported when the two DSNs
-are supplied by an already-running disposable database. Skipped tests do not
-count as verification. A normal unit/contract test request still does not
-start Docker; the temporary database runner is an explicit database-test
-operation.
+`rag_kb` database. Direct test execution is also supported when the required
+DSNs are supplied by an already-running disposable database. If they are
+missing, database test modules fail immediately with a non-zero error that
+points to this runner; they are never silently skipped. The runner also treats
+any reported skipped database test as a failure. A normal unit/contract test
+request still does not start Docker; the temporary database runner is an
+explicit database-test operation.
 
 ## Host-Python Evaluation
 

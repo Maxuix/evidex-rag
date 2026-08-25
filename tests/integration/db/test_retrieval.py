@@ -9,6 +9,7 @@ from uuid import UUID, uuid4
 import asyncpg
 from sqlalchemy import event
 
+from tests.integration.db import require_database_test_dsns
 from rag_kb.adapters.lexical_store.postgres import PgLexicalStore
 from rag_kb.adapters.vector_store.pgvector import PgVectorStore
 from rag_kb.auth import AuthContext, SingleWorkspaceAccessPolicy
@@ -41,10 +42,9 @@ WORKSPACE = UUID("01900000-0000-7000-8000-000000001001")
 OTHER_WORKSPACE = UUID("01900000-0000-7000-8000-000000001002")
 EXPECTED_FINGERPRINT = "sha256:retrieval-compatible"
 
-
-@unittest.skipUnless(
-    MIGRATION_DSN and RUNTIME_SQLALCHEMY_DSN,
-    "database integration DSNs are not configured",
+require_database_test_dsns(
+    "RAG_KB_TEST_MIGRATION_DSN",
+    "RAG_KB_TEST_RUNTIME_SQLALCHEMY_DSN",
 )
 class ExactRetrievalDatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:

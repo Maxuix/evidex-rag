@@ -8,6 +8,7 @@ from tools.run_database_tests import (
     ContainerIdentity,
     TEST_DATABASE,
     create_container_identity,
+    database_test_output_contains_skips,
     database_environment,
     docker_run_command,
     parse_published_port,
@@ -15,6 +16,13 @@ from tools.run_database_tests import (
 
 
 class DatabaseTestRunnerTests(unittest.TestCase):
+    def test_runner_treats_skipped_tests_as_failure(self) -> None:
+        self.assertTrue(
+            database_test_output_contains_skips("FAILED (skipped=2)")
+        )
+        self.assertFalse(database_test_output_contains_skips("OK"))
+        self.assertFalse(database_test_output_contains_skips("OK (skipped=0)"))
+
     def test_container_identity_is_scoped_and_unique(self) -> None:
         first = create_container_identity(Path("/tmp/example-worktree"))
         second = create_container_identity(Path("/tmp/example-worktree"))

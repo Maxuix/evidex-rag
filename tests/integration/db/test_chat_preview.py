@@ -5,6 +5,7 @@ import os
 import unittest
 from uuid import uuid4
 
+from tests.integration.db import require_database_test_dsns
 from rag_kb.adapters.chat_preview.pg_notify import (
     PgNotifyPreviewBroker,
     PgNotifyPreviewSink,
@@ -19,11 +20,7 @@ from rag_kb.domain import (
 
 RUNTIME_SQLALCHEMY_DSN = os.environ.get("RAG_KB_TEST_RUNTIME_SQLALCHEMY_DSN")
 
-
-@unittest.skipUnless(
-    RUNTIME_SQLALCHEMY_DSN,
-    "database integration DSN is not configured",
-)
+require_database_test_dsns("RAG_KB_TEST_RUNTIME_SQLALCHEMY_DSN")
 class ChatPreviewPostgresTests(unittest.IsolatedAsyncioTestCase):
     async def test_notify_sink_reaches_listener_with_monotonic_events(self) -> None:
         assert RUNTIME_SQLALCHEMY_DSN is not None
