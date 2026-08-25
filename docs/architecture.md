@@ -649,13 +649,20 @@ docker compose --env-file .env.local --project-name rag down
 
 - 所有 Python、后端和 evaluator 测试都从 checkout 使用 `.venv/bin/python` 与 `PYTHONPATH=src:.`
   执行，不进入应用容器；前端只用宿主机 Node/npm 验证。
-- 测试不得 build/pull/tag 镜像，不得 create/recreate/restart/stop/remove 容器，也不得下载镜像依赖。
+- 普通 unit、contract、backend 和 evaluator 测试不得 build/pull/tag 镜像，不得 create/recreate/restart/stop/remove
+  容器，也不得下载镜像依赖；用户明确请求数据库 integration 时，仅允许通过下方的 disposable
+  PostgreSQL runner 创建其自有临时容器。
 - Python 行为变化至少运行 basic suite 和最接近变更的聚焦测试。
 - 数据库迁移、并发或 repository 行为变化才运行相关数据库 integration。
-- 数据库 integration 由宿主机 Python 连接调用方明确提供、已经运行且可丢弃的测试库；只接受
-  `RAG_KB_TEST_MIGRATION_DSN` 与 `RAG_KB_TEST_RUNTIME_SQLALCHEMY_DSN`，不得从 `.env.local` 推断，
-  不得连接或 TRUNCATE 个人数据库。依赖不存在时记录未验证，不自动创建容器；skip 不算通过。
-- `tools/run_database_tests.py` 会管理 Docker 生命周期，因此不属于常规测试流程。
+- 数据库 integration 只允许使用与正式 `rag` 完全隔离、可丢弃的测试库；只接受
+  `RAG_KB_TEST_MIGRATION_DSN` 与 `RAG_KB_TEST_RUNTIME_SQLALCHEMY_DSN`。前者用于 Alembic、
+  migration 和 `TRUNCATE ... CASCADE`，后者必须是 `postgresql+asyncpg://` 的 SQLAlchemy
+  runtime DSN。不得从 `.env.local` 推断，不得连接或清理个人数据库。
+- 用户明确请求数据库 integration 时，`tools/run_database_tests.py` 可以启动一个唯一、只绑定
+  `127.0.0.1`、使用临时存储的 PostgreSQL 容器，数据库名固定为 `rag_kb_test`，在子进程环境中
+  注入上述两个 DSN，执行迁移和测试后通过 owner label 清理容器。它不加入正式 `rag` Compose
+  project，也不复用正式 `rag_kb` 数据库。普通 unit/contract 测试不自动触发 Docker 生命周期。
+- 直接运行 integration 测试时，调用方也可以提供已经运行且可丢弃的测试库；skip 不算通过。
 - 改哪个前端就构建哪个前端；不要求无关前端同时构建。
 - 纯文档变更只需检查链接、路径和 Markdown/diff，不运行应用测试。
 - 每个不变量只在最低且最有证明力的层级保留测试：basic 负责导入和依赖边界，unit/contract

@@ -76,19 +76,30 @@ database integration tests own migration and catalog invariants. Redundant
 source-shape, ORM inventory, retired-setting, and example-file snapshot tests
 are not kept as parallel gates.
 
-Database integration tests also run from the host `.venv`. Before invoking
-them, explicitly provide a disposable, already-running host-access database in
-`RAG_KB_TEST_MIGRATION_DSN` and `RAG_KB_TEST_RUNTIME_SQLALCHEMY_DSN`:
+Database integration tests also run from the host `.venv`. They use two
+different roles against a disposable test database:
+
+- `RAG_KB_TEST_MIGRATION_DSN` is used for Alembic, schema cleanup, and
+  `TRUNCATE ... CASCADE`.
+- `RAG_KB_TEST_RUNTIME_SQLALCHEMY_DSN` is the
+  `postgresql+asyncpg://` DSN used by application integration tests.
+
+When the database integration suite is explicitly requested, the repository
+runner provisions a unique, loopback-only temporary PostgreSQL container with
+the database name `rag_kb_test`, applies migrations, runs the suite with those
+DSNs, and removes the container in a `finally` cleanup:
 
 ```bash
-PYTHONPATH=src:. .venv/bin/python -m unittest discover -s tests/integration/db -v
+PYTHONPATH=src:. .venv/bin/python tools/run_database_tests.py
 ```
 
-Never infer these DSNs from `.env.local` or connect tests to the personal `rag`
-database. If a disposable dependency is not already available, record the
-database integration check as unverified; do not start a container. Skipped
-tests do not count as verification. `tools/run_database_tests.py` is not part
-of the normal test workflow because it manages Docker lifecycle.
+The runner never reads `.env.local`, never uses the canonical Compose project
+`rag`, never publishes beyond `127.0.0.1`, and never reuses the formal
+`rag_kb` database. Direct test execution is also supported when the two DSNs
+are supplied by an already-running disposable database. Skipped tests do not
+count as verification. A normal unit/contract test request still does not
+start Docker; the temporary database runner is an explicit database-test
+operation.
 
 ## Host-Python Evaluation
 

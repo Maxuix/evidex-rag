@@ -12,7 +12,7 @@ from alembic.operations import Operations
 import asyncpg
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from rag_kb.db.readiness import check_database_ready
+from rag_kb.db.readiness import EXPECTED_REVISION, check_database_ready
 
 
 MIGRATION_DSN = os.environ.get("RAG_KB_TEST_MIGRATION_DSN")
@@ -157,7 +157,7 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
                     "UPDATE alembic_version SET version_num = 'runtime-mutation'"
                 )
             revision = await runtime.fetchval("SELECT version_num FROM alembic_version")
-            self.assertEqual(revision, "0018_graphiti_work_lease")
+            self.assertEqual(revision, EXPECTED_REVISION)
         finally:
             await runtime.close()
 
@@ -939,7 +939,7 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
                     await connection.fetchval(
                         "SELECT version_num FROM alembic_version"
                     ),
-                    "0016_first_class_graph_tool",
+                    EXPECTED_REVISION,
                 )
             finally:
                 await connection.close()

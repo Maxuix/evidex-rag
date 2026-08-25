@@ -5,7 +5,7 @@ from __future__ import annotations
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-EXPECTED_REVISION = "0018_graphiti_work_lease"
+EXPECTED_REVISION = "0019_file_mutation_terminal_state"
 
 
 class DatabaseReadinessError(RuntimeError):

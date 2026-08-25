@@ -19,7 +19,9 @@ import uuid
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 POSTGRES_INIT = PROJECT_ROOT / "deploy/postgres/init-runtime.sh"
 POSTGRES_BOOTSTRAP = PROJECT_ROOT / "deploy/postgres/bootstrap-roles.sql"
-TEST_DATABASE = "rag_kb"
+# Keep the database name distinct even though the container itself is already
+# isolated from the canonical Compose project.
+TEST_DATABASE = "rag_kb_test"
 TEST_PASSWORD = "isolated-test-only"
 CONTAINER_LABEL = "rag-kb.database-test-owner"
 PORT_PATTERN = re.compile(r"^127\.0\.0\.1:(?P<port>[1-9][0-9]*)$")

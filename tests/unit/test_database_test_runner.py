@@ -6,6 +6,7 @@ import unittest
 from tools.run_database_tests import (
     CONTAINER_LABEL,
     ContainerIdentity,
+    TEST_DATABASE,
     create_container_identity,
     database_environment,
     docker_run_command,
@@ -39,6 +40,8 @@ class DatabaseTestRunnerTests(unittest.TestCase):
     def test_database_dsns_are_passwordless_and_use_dynamic_port(self) -> None:
         environment = database_environment(49_152)
 
+        self.assertEqual(TEST_DATABASE, "rag_kb_test")
+        self.assertNotEqual(TEST_DATABASE, "rag_kb")
         self.assertEqual(
             set(environment),
             {
@@ -50,7 +53,7 @@ class DatabaseTestRunnerTests(unittest.TestCase):
         )
         self.assertTrue(
             all(
-                "@127.0.0.1:49152/rag_kb" in value
+                "@127.0.0.1:49152/rag_kb_test" in value
                 for value in environment.values()
             )
         )
