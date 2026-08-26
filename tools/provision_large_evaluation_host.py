@@ -44,7 +44,10 @@ from tools.evaluation_runtime import (
 ROOT = Path(__file__).resolve().parents[1]
 CHECKPOINT_SCHEMA = "large_evaluation_provisioning_v1"
 BINDINGS_SCHEMA = "large_evaluation_runtime_bindings_v1"
-MAX_GRAPH_BUILD_RESUMES = 3
+# Schema-echo failures are provider-transient and a resumed immutable build has
+# repeatedly progressed without re-ingestion.  Keep a generous *bounded*
+# control-plane budget so a long frozen corpus does not require manual restarts.
+MAX_GRAPH_BUILD_RESUMES = 20
 
 
 class ProvisioningError(RuntimeError):
