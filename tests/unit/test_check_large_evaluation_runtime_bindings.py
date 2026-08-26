@@ -31,6 +31,8 @@ class LargeEvaluationBindingsTests(unittest.TestCase):
                 "knowledge_base_id": f"kb-{index}",
                 "index_revision_id": f"index-{index}",
                 "graph_build_id": f"build-{index}" if spec.graph_enabled else None,
+                "graph_schema_key": spec.graph_schema_key,
+                "graph_schema_digest": spec.graph_schema_digest,
             }
         return {
             "schema_version": BINDINGS_SCHEMA,

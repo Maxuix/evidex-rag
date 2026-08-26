@@ -122,6 +122,11 @@ def _assert_all_suite_bindings(runtime_root: Path, plan: Mapping[str, Any]) -> N
             raise LargeEvaluationRuntimeError("large_evaluation_bindings_invalid")
         if spec.graph_enabled != isinstance(entry.get("graph_build_id"), str):
             raise LargeEvaluationRuntimeError("large_evaluation_bindings_invalid")
+        if (
+            entry.get("graph_schema_key") != spec.graph_schema_key
+            or entry.get("graph_schema_digest") != spec.graph_schema_digest
+        ):
+            raise LargeEvaluationRuntimeError("large_evaluation_bindings_invalid")
 
 
 async def check(plan_path: Path, runtime_path: Path) -> dict[str, Any]:
