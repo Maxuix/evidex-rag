@@ -414,7 +414,11 @@ def _graph_config(
         return config
     payload: dict[str, object]
     if config.get("status") == "failed":
-        payload = {"enabled": True, "retry": True, "force_rebuild": True}
+        # A failed immutable build may safely resume only its uncommitted
+        # chunk.  Do not rotate the build by default: doing so would throw
+        # away all successfully mapped Graphiti episodes and would defeat the
+        # checkpoint/recovery contract this tool exists to verify.
+        payload = {"enabled": True, "retry": True, "force_rebuild": False}
     else:
         payload = {
             "enabled": True,
