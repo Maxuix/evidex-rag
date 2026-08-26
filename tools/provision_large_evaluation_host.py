@@ -41,6 +41,7 @@ from tools.evaluation_runtime import (
 
 ROOT = Path(__file__).resolve().parents[1]
 CHECKPOINT_SCHEMA = "large_evaluation_provisioning_v1"
+MAX_GRAPH_BUILD_RESUMES = 3
 
 
 class ProvisioningError(RuntimeError):
@@ -447,6 +448,7 @@ def _wait_for_graph(
     )
     started = time.monotonic()
     previous: tuple[object, ...] | None = None
+    resume_count = 0
     url = f"{runtime.api_base_url}/knowledge-bases/{kb_id}/graph-config"
     while True:
         snapshot = (
@@ -469,7 +471,38 @@ def _wait_for_graph(
             print(json.dumps({"event": "graph_progress", "dataset_id": spec.dataset_id, "status": snapshot[0], "processed": snapshot[2]}), flush=True)
             previous = snapshot
         if config.get("status") == "failed":
-            raise ProvisioningError("provisioning_graph_build_failed")
+            # Graphiti only marks the failed chunk after its PostgreSQL episode
+            # mapping has not been committed.  Retrying the unchanged build is
+            # therefore safe and preserves every completed episode.  Bound the
+            # recovery loop so a deterministic provider/schema incompatibility
+            # still fails closed with an inspectable checkpoint.
+            if resume_count >= MAX_GRAPH_BUILD_RESUMES:
+                raise ProvisioningError("provisioning_graph_build_retry_exhausted")
+            resume_count += 1
+            checkpoint["graph_resume_count"] = resume_count
+            _write_checkpoint(
+                checkpoint_path,
+                checkpoint,
+                "graph_build_resumed",
+                resume_count=resume_count,
+            )
+            print(
+                json.dumps(
+                    {
+                        "event": "graph_build_resumed",
+                        "dataset_id": spec.dataset_id,
+                        "resume_count": resume_count,
+                    }
+                ),
+                flush=True,
+            )
+            config = _graph_config(
+                runtime,
+                kb_id=kb_id,
+                spec=spec,
+                chat_profile_revision_id=chat_profile_revision_id,
+            )
+            continue
         valid = (
             config.get("status") == "ready"
             and config.get("schema_profile_key") == spec.graph_schema_key
