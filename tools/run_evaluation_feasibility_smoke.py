@@ -20,11 +20,15 @@ import json
 import os
 from pathlib import Path
 from typing import Any, Mapping
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from apps.worker.dependencies import build_worker_dependencies
 from rag_kb.answering.agent import AGENT_TRACE_ARTIFACT, NativeToolCallingAgent
 from rag_kb.domain import RerankMode
+from rag_kb.domain.chat_pipeline import (
+    ChatModelExecutionError,
+    ChatPipelineExecutionError,
+)
 from rag_kb.retrieval.profile import exact_profile
 from rag_kb.services.chat_execution import ChatEvidenceRetriever
 from tools.evaluation_runtime import (
@@ -60,9 +64,13 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--agent-timeout-seconds",
         type=float,
-        default=20.0,
+        default=60.0,
         help="bounded feasibility timeout; the production ChatRun deadline is unchanged",
     )
+    parser.add_argument("--simple-workspace-id", type=UUID)
+    parser.add_argument("--simple-knowledge-base-id", type=UUID)
+    parser.add_argument("--simple-index-revision-id", type=UUID)
+    parser.add_argument("--simple-chat-profile-revision-id", type=UUID)
     parser.add_argument("--interrupt-after-case", action="store_true")
     parser.add_argument("--confirm")
     return parser
@@ -127,8 +135,56 @@ def _step(state: dict[str, Any], name: str, status: str) -> None:
     )
 
 
+def _safe_failure_summary(error: BaseException) -> dict[str, Any]:
+    """Return stable diagnostics without retaining prompts, evidence, or secrets."""
+
+    result: dict[str, Any] = {"type": type(error).__name__}
+    if isinstance(error, ChatPipelineExecutionError):
+        result.update(
+            {
+                "code": error.code.value,
+                "phase": error.phase.value,
+            }
+        )
+        diagnostic = error.diagnostic
+    elif isinstance(error, ChatModelExecutionError):
+        result["code"] = error.code.value
+        diagnostic = error.diagnostic
+    else:
+        return result
+
+    # These adapter/pipeline fields are fixed operational metadata.  Do not
+    # persist arbitrary diagnostics because they might contain provider text.
+    allowed_diagnostic = {
+        key: diagnostic[key]
+        for key in ("check", "http_status", "retryable")
+        if isinstance(diagnostic.get(key), (str, int, bool))
+    }
+    if allowed_diagnostic:
+        result["diagnostic"] = allowed_diagnostic
+    return result
+
+
+def _simple_identity_override(arguments: argparse.Namespace) -> dict[str, UUID] | None:
+    values = {
+        "workspace_id": arguments.simple_workspace_id,
+        "knowledge_base_id": arguments.simple_knowledge_base_id,
+        "index_revision_id": arguments.simple_index_revision_id,
+        "answer_profile_revision_id": arguments.simple_chat_profile_revision_id,
+    }
+    if all(value is None for value in values.values()):
+        return None
+    if any(value is None for value in values.values()):
+        raise FeasibilitySmokeError("simple_identity_incomplete")
+    return {name: value for name, value in values.items() if value is not None}
+
+
 async def _run(arguments: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     checkpoint = _load_checkpoint(arguments.checkpoint)
+    # A new invocation is an explicit recovery attempt.  Keep its step history
+    # but do not let a previous terminal error describe the new attempt.
+    checkpoint.pop("failure_code", None)
+    checkpoint.pop("last_failure", None)
     _step(checkpoint, "runner_started", "ok")
     _write_atomic(arguments.checkpoint, checkpoint)
     if checkpoint["case_observations"]:
@@ -162,19 +218,33 @@ async def _run(arguments: argparse.Namespace) -> tuple[int, dict[str, Any]]:
 
     dependencies = None
     try:
+        simple_identity = _simple_identity_override(arguments)
         runtime = load_evaluation_runtime(
             arguments.evaluation_runtime,
-            require_adaptive_graph=True,
+            require_adaptive_graph=simple_identity is None,
             allow_canonical_checkout=True,
         )
-        identity = runtime.adaptive_graph
-        if identity is None:
-            raise FeasibilitySmokeError("runtime_identity_missing")
+        if simple_identity is not None:
+            workspace_id = simple_identity["workspace_id"]
+            knowledge_base_id = simple_identity["knowledge_base_id"]
+            index_revision_id = simple_identity["index_revision_id"]
+            answer_profile_revision_id = simple_identity["answer_profile_revision_id"]
+            runtime_mode = "simple_recovery"
+        else:
+            identity = runtime.adaptive_graph
+            if identity is None:
+                raise FeasibilitySmokeError("runtime_identity_missing")
+            workspace_id = identity.workspace_id
+            knowledge_base_id = identity.knowledge_base_id
+            index_revision_id = identity.index_revision_id
+            answer_profile_revision_id = identity.answer_profile_revision_id
+            runtime_mode = "adaptive_graph"
         checkpoint["runtime"] = {
-            "workspace_id": str(identity.workspace_id),
-            "knowledge_base_id": str(identity.knowledge_base_id),
-            "index_revision_id": str(identity.index_revision_id),
-            "chat_model_profile_revision_id": str(identity.answer_profile_revision_id),
+            "mode": runtime_mode,
+            "workspace_id": str(workspace_id),
+            "knowledge_base_id": str(knowledge_base_id),
+            "index_revision_id": str(index_revision_id),
+            "chat_model_profile_revision_id": str(answer_profile_revision_id),
         }
         _step(checkpoint, "runtime_loaded", "ok")
         _write_atomic(arguments.checkpoint, checkpoint)
@@ -189,8 +259,8 @@ async def _run(arguments: argparse.Namespace) -> tuple[int, dict[str, Any]]:
 
         _, bundle, model_configuration = await _load_runtime_facts(
             dependencies,
-            kb_id=identity.knowledge_base_id,
-            model_revision_id=identity.answer_profile_revision_id,
+            kb_id=knowledge_base_id,
+            model_revision_id=answer_profile_revision_id,
         )
         _step(checkpoint, "model_profile_resolved", "ok")
         _write_atomic(arguments.checkpoint, checkpoint)
@@ -264,8 +334,8 @@ async def _run(arguments: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         )
         context = _execution_context(
             settings=dependencies.settings,
-            kb_id=identity.knowledge_base_id,
-            index_revision_id=identity.index_revision_id,
+            kb_id=knowledge_base_id,
+            index_revision_id=index_revision_id,
             question="What information is available in this knowledge base?",
             model_configuration=model_configuration,
             rerank_mode=RerankMode.CLASSIC,
@@ -277,7 +347,13 @@ async def _run(arguments: argparse.Namespace) -> tuple[int, dict[str, Any]]:
             ).as_dict(),
             agent_configuration={
                 "version": "native_tool_calling_agent_v3",
-                "budget": {"max_model_rounds": 3, "max_graph_calls": 1},
+                "budget": {
+                    "max_model_rounds": 3,
+                    # The Agent contract requires a positive graph budget.
+                    # A Simple retrieval snapshot does not expose the Graph
+                    # tool, so this cannot query the empty recovered Graph.
+                    "max_graph_calls": 1,
+                },
             },
         )
         _step(checkpoint, "agent_case", "started")
@@ -322,13 +398,16 @@ async def _run(arguments: argparse.Namespace) -> tuple[int, dict[str, Any]]:
             }
         return await _run(arguments)
     except BaseException as error:
+        failure = _safe_failure_summary(error)
         checkpoint["status"] = "failed"
-        checkpoint["failure_code"] = type(error).__name__
+        checkpoint["failure_code"] = failure["type"]
+        checkpoint["last_failure"] = failure
         _step(checkpoint, "runner", "failed")
         checkpoint_sha256 = _write_atomic(arguments.checkpoint, checkpoint)
         return 2, {
             "status": "failed",
-            "failure_code": type(error).__name__,
+            "failure_code": failure["type"],
+            "error_code": failure.get("code"),
             "checkpoint_sha256": checkpoint_sha256,
         }
     finally:

@@ -23,7 +23,7 @@ from tools.evaluation_runtime import (
     load_evaluation_runtime,
 )
 from tools.prepare_large_evaluation import SCHEMA_VERSION
-from tools.run_adaptive_graph_r4 import _load_runtime_facts
+from tools.run_adaptive_graph_r4 import R4RunnerError, _load_runtime_facts
 
 
 PLAN_SCHEMA = SCHEMA_VERSION
@@ -146,7 +146,7 @@ def main() -> int:
     arguments = _parser().parse_args()
     try:
         result = asyncio.run(check(arguments.plan, arguments.evaluation_runtime))
-    except (EvaluationRuntimeError, LargeEvaluationRuntimeError) as error:
+    except (EvaluationRuntimeError, LargeEvaluationRuntimeError, R4RunnerError) as error:
         result = {"status": "blocked", "failure_code": str(error)}
     except Exception as error:  # Content-safe dependency/readiness failure.
         result = {"status": "blocked", "failure_code": type(error).__name__}

@@ -14,6 +14,7 @@ from tools.check_large_evaluation_runtime import (
     _load_private_plan,
 )
 from tools.prepare_large_evaluation import build_plan
+from tools.run_adaptive_graph_r4 import R4RunnerError
 
 
 class CheckLargeEvaluationRuntimeTests(unittest.TestCase):
@@ -53,6 +54,12 @@ class CheckLargeEvaluationRuntimeTests(unittest.TestCase):
         _assert_resolved_chat_model({"resolved_model": "mimo-v2.5"})
         with self.assertRaisesRegex(LargeEvaluationRuntimeError, "chat_model_mismatch"):
             _assert_resolved_chat_model({"resolved_model": "fallback"})
+
+    def test_r4_identity_error_has_stable_failure_code(self) -> None:
+        self.assertEqual(
+            str(R4RunnerError("r4_knowledge_base_not_found")),
+            "r4_knowledge_base_not_found",
+        )
 
 
 if __name__ == "__main__":
