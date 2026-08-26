@@ -43,6 +43,7 @@ from tools.evaluation_runtime import (
 
 ROOT = Path(__file__).resolve().parents[1]
 CHECKPOINT_SCHEMA = "large_evaluation_provisioning_v1"
+BINDINGS_SCHEMA = "large_evaluation_runtime_bindings_v1"
 MAX_GRAPH_BUILD_RESUMES = 3
 
 
@@ -229,6 +230,52 @@ def _paged_items(api_base_url: str, resource: str) -> tuple[dict[str, Any], ...]
 
 def _checkpoint_path(runtime: EvaluationRuntime, spec: ProvisioningSpec) -> Path:
     return runtime.runtime_root / "large-evaluation-provisioning" / f"{spec.dataset_id}.json"
+
+
+def _bindings_path(runtime: EvaluationRuntime) -> Path:
+    return runtime.runtime_root / "large-evaluation-bindings.json"
+
+
+def _record_suite_binding(
+    runtime: EvaluationRuntime,
+    *,
+    spec: ProvisioningSpec,
+    checkpoint: Mapping[str, Any],
+) -> None:
+    """Atomically record only a durably completed corpus identity."""
+    required = {"knowledge_base_id", "index_revision_id"}
+    if spec.graph_enabled:
+        required.add("graph_build_id")
+    if checkpoint.get("status") != "completed" or not all(
+        isinstance(checkpoint.get(name), str) for name in required
+    ):
+        raise ProvisioningError("provisioning_binding_incomplete")
+    path = _bindings_path(runtime)
+    bindings: dict[str, Any]
+    if path.exists():
+        if not path.is_file() or path.stat().st_mode & 0o077:
+            raise ProvisioningError("provisioning_bindings_permissions_invalid")
+        try:
+            bindings = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as error:
+            raise ProvisioningError("provisioning_bindings_json_invalid") from error
+        if not isinstance(bindings, dict) or bindings.get("schema_version") != BINDINGS_SCHEMA:
+            raise ProvisioningError("provisioning_bindings_schema_invalid")
+    else:
+        bindings = {"schema_version": BINDINGS_SCHEMA, "suites": {}}
+    suites = bindings.get("suites")
+    if not isinstance(suites, dict):
+        raise ProvisioningError("provisioning_bindings_schema_invalid")
+    suites[spec.dataset_id] = {
+        "corpus_sha256": checkpoint["binding"]["corpus_sha256"],
+        "knowledge_base_id": checkpoint["knowledge_base_id"],
+        "index_revision_id": checkpoint["index_revision_id"],
+        "graph_build_id": checkpoint.get("graph_build_id"),
+        "graph_schema_key": spec.graph_schema_key,
+        "graph_schema_digest": spec.graph_schema_digest,
+    }
+    bindings["binding_sha256"] = digest({"suites": suites})
+    write_private_json(path, bindings)
 
 
 def _load_checkpoint(
@@ -609,6 +656,7 @@ def provision(
         corpus_digest=corpus_sha256,
     )
     if checkpoint.get("status") == "completed":
+        _record_suite_binding(runtime, spec=spec, checkpoint=checkpoint)
         return {
             "status": "completed",
             "resumed": True,
@@ -672,6 +720,7 @@ def provision(
         checkpoint["graph_build_id"] = str(graph_build_id)
     checkpoint["status"] = "completed"
     _write_checkpoint(checkpoint_path, checkpoint, "provisioning_completed")
+    _record_suite_binding(runtime, spec=spec, checkpoint=checkpoint)
     return {
         "status": "completed",
         "resumed": False,
