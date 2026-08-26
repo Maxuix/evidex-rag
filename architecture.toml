@@ -12,8 +12,9 @@ scan_roots = ["src", "apps"]
 "rag_kb.domain" = []
 "rag_kb.auth" = []
 "rag_kb.ports" = ["rag_kb.domain"]
-"rag_kb.document_processing" = ["rag_kb.domain"]
-"rag_kb.memory" = ["rag_kb.domain"]
+"rag_kb.document_processing" = ["rag_kb.domain", "rag_kb.tokenizer"]
+"rag_kb.memory" = ["rag_kb.domain", "rag_kb.tokenizer"]
+"rag_kb.tokenizer" = []
 "rag_kb.observability" = []
 "rag_kb.db" = []
 "rag_kb.repositories" = [
@@ -102,6 +103,7 @@ scan_roots = ["src", "apps"]
   "rag_kb.retrieval",
   "rag_kb.schemas",
   "rag_kb.services",
+  "rag_kb.tokenizer",
   "rag_kb.uow",
 ]
 "apps.worker" = [
@@ -120,6 +122,7 @@ scan_roots = ["src", "apps"]
   "rag_kb.retrieval",
   "rag_kb.scheduling",
   "rag_kb.services",
+  "rag_kb.tokenizer",
   "rag_kb.uow",
 ]
 "apps.maintenance" = [

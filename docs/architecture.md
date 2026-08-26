@@ -637,6 +637,12 @@ PostgreSQL、幂等校准现有 admin/migration/runtime 角色、构建带 Git r
 固定 Docling/reranker 资产通过可覆盖的 HTTPS Hugging Face 镜像下载，瞬时网络错误做有界重试并
 复用跨构建 cache；已有本地应用镜像通过只读 build context 引导后续构建。两条路径的最终镜像都
 按固定 revision、文件大小和 SHA-256 manifest fail closed，旧镜像不会绕过当前 verifier。
+`cl100k_base` 也是应用镜像内的 content-addressed 资产：原始
+`src/rag_kb/tokenizer/assets/cl100k_base.tiktoken` 与版本化 manifest 一起随源码进入镜像，固定
+SHA-256 为 `223921b76ee99bde995b7ff738513eef100fb51d18c93597a113bcffe865b2a7`。共享 loader 只读
+这两个包内文件，按 `tiktoken==0.13.0` 的固定 regex、特殊 token 映射和 BPE bytes 构造编码，不调用
+network-aware resolver，也不使用 `TIKTOKEN_CACHE_DIR`。API 与 Worker composition root 在创建数据库
+资源、进入 readiness 前执行 tokenizer preflight；`source-data` volume 不承载 tokenizer 资产或其缓存。
 前端 `npm ci` 同样使用可覆盖的 HTTPS registry、原生有限 fetch retry/timeout 与独立 BuildKit cache，
 依赖闭集仍由 `package-lock.json` 决定。若宿主已安装的前端依赖通过 `npm ls --all`，starter 可在
 宿主执行 Vite build，并只把生成的 `dist` 作为只读 build context 交给最终 Python frontend 镜像；

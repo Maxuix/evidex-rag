@@ -88,6 +88,7 @@ from rag_kb.services.model_settings import (
     ModelProfileValidationError,
     ModelSettingsService,
 )
+from rag_kb.tokenizer import preflight_tokenizer
 from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWorkFactory
 
 
@@ -149,6 +150,7 @@ def build_api_dependencies(
 ) -> ApiDependencies:
     """Load configuration explicitly and fail before constructing an API app."""
 
+    preflight_tokenizer()
     resolved_settings = settings or load_settings(env_file=env_file)
     startup = validate_startup_environment(resolved_settings)
     database_settings = resolved_settings.database

@@ -257,6 +257,8 @@ class EvaluationRuntimeTests(unittest.TestCase):
         self.assertEqual(host_values["RAG_KB__IDENTITY__WORKSPACE_ID"], _IDENTITY["workspace_id"])
         self.assertEqual(host_values["RAG_KB__IDENTITY__PRINCIPAL_ID"], f"eval-{_OWNER}")
         self.assertNotIn("RAG_KB__MODEL_PROVIDER__API_KEY", host_values)
+        self.assertNotIn("TIKTOKEN_CACHE_DIR", host_values)
+        self.assertNotIn(b"TIKTOKEN_CACHE_DIR", host_rendered)
         self.assertNotIn(b"personal-", host_rendered)
         self.assertEqual(host_values["RAG_KB__RETRIEVAL__MAX_CANDIDATE_COUNT"], "80")
         self.assertIn("127.0.0.1:25432", host_values["RAG_KB__DATABASE__RUNTIME_DSN"])

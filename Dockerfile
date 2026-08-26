@@ -102,6 +102,7 @@ COPY apps /app/apps
 COPY src /app/src
 RUN chmod a+r /app/alembic.ini \
     && chmod -R a+rX /app/apps /app/src
+RUN python -c "from rag_kb.tokenizer import preflight_tokenizer; preflight_tokenizer()"
 
 USER 10001:10001
 

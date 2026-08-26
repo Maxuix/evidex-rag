@@ -3,7 +3,6 @@ x-runtime-environment: &runtime-environment
   RAG_KB__DATABASE__MIGRATION_DSN: postgresql+asyncpg://rag_kb_migration:not-available@migration-disabled.invalid/rag_kb
   RAG_KB__SECURITY__ALLOWED_CORS_ORIGINS: '["http://127.0.0.1:${RAG_KB_FRONTEND_PORT:-3000}","http://localhost:${RAG_KB_FRONTEND_PORT:-3000}","http://127.0.0.1:5173","http://localhost:5173"]'
   RAG_KB__OBSERVABILITY__LOG_DIRECTORY: /var/log/rag-kb
-  TIKTOKEN_CACHE_DIR: /var/lib/rag-kb/sources/.tiktoken-cache
   GRAPHITI_TELEMETRY_ENABLED: "false"
   RAG_KB__GRAPHITI__HOST: falkordb
   RAG_KB__GRAPHITI__PORT: "6379"
@@ -104,7 +103,7 @@ services:
     command:
       - /bin/sh
       - -c
-      - install -d -o 10001 -g 10001 /var/lib/rag-kb/sources/staging /var/lib/rag-kb/sources/final /var/lib/rag-kb/sources/asset-staging /var/lib/rag-kb/sources/assets /var/lib/rag-kb/sources/parser-temp /var/lib/rag-kb/sources/.tiktoken-cache /var/lib/rag-kb/sources/.worker-runtime /var/lib/rag-kb/model-cache/huggingface && install -d -m 0700 -o 10001 -g 10001 /var/lib/rag-kb/model-secrets /var/log/rag-kb
+      - install -d -o 10001 -g 10001 /var/lib/rag-kb/sources/staging /var/lib/rag-kb/sources/final /var/lib/rag-kb/sources/asset-staging /var/lib/rag-kb/sources/assets /var/lib/rag-kb/sources/parser-temp /var/lib/rag-kb/sources/.worker-runtime /var/lib/rag-kb/model-cache/huggingface && install -d -m 0700 -o 10001 -g 10001 /var/lib/rag-kb/model-secrets /var/log/rag-kb
     depends_on: {}
     volumes:
       - source-data:/var/lib/rag-kb/sources

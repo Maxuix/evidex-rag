@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "encoding": "cl100k_base",
+  "source_url": "https://openaipublic.blob.core.windows.net/encodings/cl100k_base.tiktoken",
+  "tiktoken_version": "0.13.0",
+  "filename": "cl100k_base.tiktoken",
+  "byte_size": 1681126,
+  "sha256": "223921b76ee99bde995b7ff738513eef100fb51d18c93597a113bcffe865b2a7"
+}

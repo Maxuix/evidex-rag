@@ -14,6 +14,10 @@ from rag_kb.domain.memory import (
     ConversationContextSnapshot,
     ConversationTurn,
 )
+from rag_kb.tokenizer import (
+    CL100K_BASE_ENCODING_NAME,
+    get_cl100k_base_encoding,
+)
 
 
 class ConversationContextSelector:
@@ -24,13 +28,17 @@ class ConversationContextSelector:
         *,
         max_turns: int = 6,
         token_budget: int = 4000,
-        tokenizer: str = "cl100k_base",
+        tokenizer: str = CL100K_BASE_ENCODING_NAME,
     ) -> None:
-        if max_turns != 6 or token_budget != 4000 or tokenizer != "cl100k_base":
+        if (
+            max_turns != 6
+            or token_budget != 4000
+            or tokenizer != CL100K_BASE_ENCODING_NAME
+        ):
             raise ValueError("unsupported Session context policy")
         self._max_turns = max_turns
         self._token_budget = token_budget
-        self._encoding = tiktoken.get_encoding(tokenizer)
+        self._encoding = get_cl100k_base_encoding()
 
     def select(
         self, newest_first: tuple[ConversationTurn, ...]
@@ -60,11 +68,15 @@ def select_conversation_context(
     *,
     max_turns: int = 6,
     token_budget: int = 4000,
-    tokenizer: str = "cl100k_base",
+    tokenizer: str = CL100K_BASE_ENCODING_NAME,
 ) -> ConversationContextSnapshot:
-    if max_turns != 6 or token_budget != 4000 or tokenizer != "cl100k_base":
+    if (
+        max_turns != 6
+        or token_budget != 4000
+        or tokenizer != CL100K_BASE_ENCODING_NAME
+    ):
         raise ValueError("unsupported Session context policy")
-    encoding = tiktoken.get_encoding(tokenizer)
+    encoding = get_cl100k_base_encoding()
     return _select_with_encoding(
         newest_first,
         max_turns=max_turns,
@@ -143,7 +155,7 @@ def hydrate_conversation_context(value: object) -> ConversationContextSnapshot:
         truncated=value["truncated"],
         content_hash=value["content_hash"],
     )
-    encoding = tiktoken.get_encoding("cl100k_base")
+    encoding = get_cl100k_base_encoding()
     actual_tokens = sum(
         len(encoding.encode(_canonical_json(_turn_payload(turn))))
         for turn in snapshot.turns

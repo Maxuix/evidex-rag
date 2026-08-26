@@ -66,6 +66,23 @@ class StartLocalScriptTests(unittest.TestCase):
         )
         self.assertIn("!tools/artifact_download.py", dockerignore.splitlines())
 
+    def test_tokenizer_asset_is_in_source_image_and_has_a_build_gate(self) -> None:
+        dockerfile = DOCKERFILE.read_text(encoding="utf-8")
+        compose = COMPOSE.read_text(encoding="utf-8")
+
+        self.assertIn("COPY src /app/src", dockerfile)
+        self.assertIn(
+            "from rag_kb.tokenizer import preflight_tokenizer; preflight_tokenizer()",
+            dockerfile,
+        )
+        self.assertLess(
+            dockerfile.index("preflight_tokenizer()"),
+            dockerfile.index("USER 10001:10001"),
+        )
+        self.assertNotIn("TIKTOKEN_CACHE_DIR", dockerfile)
+        self.assertNotIn("TIKTOKEN_CACHE_DIR", compose)
+        self.assertNotIn(".tiktoken-cache", compose)
+
     def test_compose_reuses_verified_assets_from_the_current_image(self) -> None:
         configuration = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
         build = configuration["x-app-image"]["build"]

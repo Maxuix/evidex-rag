@@ -13,13 +13,18 @@ from rag_kb.domain import (
     ParserProfile,
     ParsingPreset,
 )
+from rag_kb.tokenizer import (
+    CL100K_BASE_ENCODING_NAME,
+    CL100K_BASE_TOKENIZER_VERSION,
+    TOKENIZER_LIBRARY,
+)
 
 
 #: The one tokenizer every executable chunking profile is frozen to.
 CHUNK_TOKENIZER = {
-    "tokenizer": "cl100k_base",
-    "tokenizer_library": "tiktoken",
-    "tokenizer_version": "0.13.0",
+    "tokenizer": CL100K_BASE_ENCODING_NAME,
+    "tokenizer_library": TOKENIZER_LIBRARY,
+    "tokenizer_version": CL100K_BASE_TOKENIZER_VERSION,
 }
 
 _DOCLING_PARSER_BASE_V1 = {

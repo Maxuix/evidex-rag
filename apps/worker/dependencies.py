@@ -81,6 +81,7 @@ from rag_kb.services.content import (
 )
 from rag_kb.services.files import FileReconciliationService
 from rag_kb.services.secrets import ModelSecretReconciliationService
+from rag_kb.tokenizer import preflight_tokenizer
 from rag_kb.uow import UnitOfWork, UnitOfWorkPurpose, execute_in_transaction
 from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWorkFactory
 
@@ -148,6 +149,7 @@ def build_worker_dependencies(
 ) -> WorkerDependencies:
     """Load configuration explicitly and fail before starting task polling."""
 
+    preflight_tokenizer()
     resolved_settings = settings or load_settings(env_file=env_file)
     startup = validate_startup_environment(resolved_settings)
     database_settings = resolved_settings.database

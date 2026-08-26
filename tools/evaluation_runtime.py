@@ -487,7 +487,6 @@ def _evaluation_env(
                 "RAG_KB__GRAPHITI__HOST": "127.0.0.1",
                 "RAG_KB__GRAPHITI__PORT": str(EVALUATION_PORTS["falkordb"]),
                 "RAG_KB__OBSERVABILITY__LOG_DIRECTORY": str(DEFAULT_RUNTIME_ROOT / "logs"),
-                "TIKTOKEN_CACHE_DIR": str(source_root / ".tiktoken-cache"),
             }
         )
     if workspace_id is not None:

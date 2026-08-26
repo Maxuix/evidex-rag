@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
-from functools import lru_cache
-
 import tiktoken
 
 from rag_kb.document_processing.profiles import CHUNK_TOKENIZER
+from rag_kb.tokenizer import (
+    CL100K_BASE_ENCODING_NAME,
+    get_cl100k_base_encoding,
+)
 
 
-@lru_cache(maxsize=None)
 def _encoding(name: str) -> tiktoken.Encoding:
-    return tiktoken.get_encoding(name)
+    if name != CL100K_BASE_ENCODING_NAME:
+        raise ValueError("unsupported chunking tokenizer")
+    return get_cl100k_base_encoding()
 
 
 def count_chunk_tokens(text: str) -> int:
