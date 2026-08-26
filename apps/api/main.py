@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+from pathlib import Path
 
 import uvicorn
 
@@ -30,10 +31,22 @@ def main() -> int:
         action="store_true",
         help="listen on the container interface; Compose must publish loopback-only",
     )
+    parser.add_argument(
+        "--env-file",
+        type=Path,
+        help=(
+            "load settings from this explicit environment file; useful for an "
+            "isolated host runtime"
+        ),
+    )
     arguments = parser.parse_args()
     configure_logging(level="INFO", process="api")
     try:
-        settings = load_settings()
+        settings = (
+            load_settings(env_file=arguments.env_file)
+            if arguments.env_file is not None
+            else load_settings()
+        )
         configure_logging(
             level=settings.observability.log_level,
             process="api",

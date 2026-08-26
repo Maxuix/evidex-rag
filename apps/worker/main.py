@@ -12,7 +12,7 @@ import signal
 import stat
 from typing import Any
 
-from rag_kb.config import load_settings
+from rag_kb.config import Settings, load_settings
 from rag_kb.observability import (
     bind_log_context,
     configure_logging,
@@ -38,8 +38,16 @@ class WorkerBackgroundTaskError(RuntimeError):
     """A supervised Worker background task stopped before process shutdown."""
 
 
-async def check_runtime() -> None:
-    settings = load_settings()
+def _load_runtime_settings(env_file: Path | None) -> Settings:
+    """Preserve the normal default while allowing an isolated env file."""
+
+    if env_file is None:
+        return load_settings()
+    return load_settings(env_file=env_file)
+
+
+async def check_runtime(*, env_file: Path | None = None) -> None:
+    settings = _load_runtime_settings(env_file)
     configure_logging(
         level=settings.observability.log_level,
         process="worker-check",
@@ -61,8 +69,8 @@ async def check_runtime() -> None:
         await dependencies.close()
 
 
-async def serve() -> None:
-    settings = load_settings()
+async def serve(*, env_file: Path | None = None) -> None:
+    settings = _load_runtime_settings(env_file)
     configure_logging(
         level=settings.observability.log_level,
         process="worker",
@@ -344,13 +352,25 @@ def main() -> int:
             "validate Worker heartbeat, storage, database, and migration"
         ),
     )
+    parser.add_argument(
+        "--env-file",
+        type=Path,
+        help=(
+            "load settings from this explicit environment file; useful for an "
+            "isolated host runtime"
+        ),
+    )
     arguments = parser.parse_args()
     configure_logging(
         level="INFO",
         process="worker-check" if arguments.check else "worker",
     )
     try:
-        asyncio.run(check_runtime() if arguments.check else serve())
+        asyncio.run(
+            check_runtime(env_file=arguments.env_file)
+            if arguments.check
+            else serve(env_file=arguments.env_file)
+        )
     except Exception as error:
         log_exception(
             LOGGER,
