@@ -31,8 +31,8 @@ class RoutingEvaluationCorpusTests(unittest.TestCase):
 
         manifest = load_manifest()
         self.assertEqual(manifest["dataset_id"], "routing-rag-v2")
-        self.assertEqual(manifest["case_count"], 39)
-        self.assertEqual(manifest["empirical_need"]["case_count"], 22)
+        self.assertEqual(manifest["case_count"], 43)
+        self.assertEqual(manifest["empirical_need"]["case_count"], 26)
         self.assertIn("routing-rag-v2", manifest["case_file"])
 
     def test_v2_graph_locators_follow_relation_source_documents(self) -> None:
@@ -78,10 +78,10 @@ class RoutingEvaluationCorpusTests(unittest.TestCase):
                 case["answer_gold_source_locators"] + case["path_context_locators"]
             )
         ]
-        self.assertEqual(len(locators), 40)
+        self.assertEqual(len(locators), 52)
         self.assertEqual(
             len({str(locator["relation_id"]) for locator in locators}),
-            35,
+            42,
         )
         for locator in locators:
             relation_id = str(locator["relation_id"])

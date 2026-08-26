@@ -1298,7 +1298,7 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
         for case in load_cases(Path(manifest["case_file"]))
         if case.get("expected_route", {}).get("route") == "graph"
     )
-    if len(cases) != 20:
+    if len(cases) != 24:
         raise R4RunnerError("r4_graph_case_count_changed")
     graph_gold_root = (
         Path(str(manifest["case_file"])).parent / "gold" / "graph-rag-v1"

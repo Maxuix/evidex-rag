@@ -437,7 +437,7 @@ CASES = (
         seed_entity_id="xinglan_factory_alias", path=("R006", "R011"),
         path_entities=("xinglan_factory_alias", "chenyue_precision", "han_qiming"),
         answer_relation_ids=("R011",), query_only_terms=("星澜工厂",), answer_only_terms=("韩启明",),
-        answer_document_id="doc03", current_graph_support="1_2_hop",
+        answer_document_id="doc03", current_graph_support="1_3_hop",
         notes="起点使用别名，答案段只出现桥接企业和负责人。",
     ),
     _case(
@@ -446,7 +446,7 @@ CASES = (
         seed_entity_id="xuan_yu_array", path=("R021", "R036"),
         path_entities=("xuan_yu_array", "xinglan_manufacturing", "yuchuan_city"),
         answer_relation_ids=("R036",), query_only_terms=("玄羽阵列",), answer_only_terms=("榆川市",),
-        answer_document_id="doc08", current_graph_support="1_2_hop",
+        answer_document_id="doc08", current_graph_support="1_3_hop",
     ),
     _case(
         "graph-003", "graph_only_hard",
@@ -454,7 +454,7 @@ CASES = (
         seed_entity_id="yunxiu_digital", path=("R033", "R034"),
         path_entities=("yunxiu_digital", "beicen_lab", "jialan_city"),
         answer_relation_ids=("R034",), query_only_terms=("云岫数字科技有限公司",), answer_only_terms=("嘉澜市",),
-        answer_document_id="doc08", current_graph_support="1_2_hop",
+        answer_document_id="doc08", current_graph_support="1_3_hop",
     ),
     _case(
         "alias-001", "alias_resolution",
@@ -462,7 +462,7 @@ CASES = (
         seed_entity_id="chenyue_old", path=("R016", "R011"),
         path_entities=("chenyue_old", "chenyue_precision", "han_qiming"),
         answer_relation_ids=("R011",), query_only_terms=("辰岳实业（旧称）",), answer_only_terms=("韩启明",),
-        answer_document_id="doc03", current_graph_support="1_2_hop",
+        answer_document_id="doc03", current_graph_support="1_3_hop",
         notes="别名与规范名分处历史沿革和任职文档。",
     ),
     _case(
@@ -471,7 +471,7 @@ CASES = (
         seed_entity_id="xing_gui_controller", path=("R022", "R014"),
         path_entities=("xing_gui_controller", "chenghai_energy", "zhou_jibai"),
         answer_relation_ids=("R014",), query_only_terms=("星轨控制器",), answer_only_terms=("周既白",),
-        answer_document_id="doc03", current_graph_support="1_2_hop",
+        answer_document_id="doc03", current_graph_support="1_3_hop",
     ),
     _case(
         "graph-005", "graph_only_hard",
@@ -479,7 +479,7 @@ CASES = (
         seed_entity_id="yuanxi_supply", path=("R041", "R038"),
         path_entities=("yuanxi_supply", "haidung_park", "jialan_city"),
         answer_relation_ids=("R038",), query_only_terms=("远汐供应链有限公司",), answer_only_terms=("嘉澜市",),
-        answer_document_id="doc08", current_graph_support="1_2_hop",
+        answer_document_id="doc08", current_graph_support="1_3_hop",
     ),
     _case(
         "alias-002", "alias_resolution",
@@ -487,7 +487,7 @@ CASES = (
         seed_entity_id="yunxiu_alias", path=("R047", "R013"),
         path_entities=("yunxiu_alias", "yunxiu_digital", "liang_qinghe"),
         answer_relation_ids=("R013",), query_only_terms=("云岫数科",), answer_only_terms=("梁青禾",),
-        answer_document_id="doc03", current_graph_support="1_2_hop",
+        answer_document_id="doc03", current_graph_support="1_3_hop",
     ),
     _case(
         "alias-003", "alias_resolution",
@@ -495,7 +495,7 @@ CASES = (
         seed_entity_id="xinglan_factory_alias", path=("R048", "R026"),
         path_entities=("xinglan_factory_alias", "xinglan_manufacturing", "ju_chuan_robot"),
         answer_relation_ids=("R026",), query_only_terms=("星澜工厂",), answer_only_terms=("炬川机器人有限公司",),
-        answer_document_id="doc06", current_graph_support="1_2_hop",
+        answer_document_id="doc06", current_graph_support="1_3_hop",
     ),
     _case(
         "graph-006", "graph_only_hard",
@@ -503,7 +503,7 @@ CASES = (
         seed_entity_id="wutong_chiplet", path=("R025", "R043"),
         path_entities=("wutong_chiplet", "wutong_chip", "xinglan_manufacturing"),
         answer_relation_ids=("R043",), query_only_terms=("WTC-7",), answer_only_terms=("星澜智造有限公司",),
-        answer_document_id="doc09", current_graph_support="1_2_hop",
+        answer_document_id="doc09", current_graph_support="1_3_hop",
         notes="答案段只写芯片公司，不重复问题中的产品代号。",
     ),
     _case(
@@ -512,7 +512,7 @@ CASES = (
         seed_entity_id="ju_chuan_robot", path=("R027", "R008"),
         path_entities=("ju_chuan_robot", "qingyu_storage", "chenghai_energy"),
         answer_relation_ids=("R008",), query_only_terms=("炬川机器人",), answer_only_terms=("澄海能源设备有限公司",),
-        answer_document_id="doc02", current_graph_support="1_2_hop",
+        answer_document_id="doc02", current_graph_support="1_3_hop",
     ),
     _case(
         "graph-008", "graph_only_hard",
@@ -520,7 +520,7 @@ CASES = (
         seed_entity_id="wu_lan_platform", path=("R023", "R007"),
         path_entities=("wu_lan_platform", "yunxiu_digital", "lanqiao_data"),
         answer_relation_ids=("R007",), query_only_terms=("雾岚平台",), answer_only_terms=("岚桥数据服务有限公司",),
-        answer_document_id="doc02", current_graph_support="1_2_hop",
+        answer_document_id="doc02", current_graph_support="1_3_hop",
     ),
     _case(
         "graph-009", "graph_only_hard",
@@ -528,41 +528,41 @@ CASES = (
         seed_entity_id="chaoxi_coldchain", path=("R009", "R041"),
         path_entities=("chaoxi_coldchain", "yuanxi_supply", "haidung_park"),
         answer_relation_ids=("R041",), query_only_terms=("潮汐冷链",), answer_only_terms=("海东零碳园区",),
-        answer_document_id="doc09", current_graph_support="1_2_hop",
+        answer_document_id="doc09", current_graph_support="1_3_hop",
     ),
     _case(
-        "stretch-001", "stretch_3hop",
+        "graph-3hop-001", "graph_3hop",
         "霁岳集团投资体系中的实验室叫什么？", "北岑实验室",
         seed_entity_id="jiyue_group_alias", path=("R046", "R003", "R033"),
         path_entities=("jiyue_group_alias", "jiyue_holdings", "yunxiu_digital", "beicen_lab"),
         answer_relation_ids=("R033",), query_only_terms=("霁岳集团",), answer_only_terms=("北岑实验室",),
-        answer_document_id="doc07", current_graph_support="future_3_hop",
-        notes="用于验证当前 1–2 hop 限制之外的未来扩展。",
+        answer_document_id="doc07", current_graph_support="1_3_hop",
+        notes="用于验收当前 3-hop Graph 路径能力。",
     ),
     _case(
-        "stretch-002", "stretch_3hop",
+        "graph-3hop-002", "graph_3hop",
         "星澜工厂沿并购链最终关联到哪家芯片企业？", "梧桐芯片有限公司",
         seed_entity_id="xinglan_factory_alias", path=("R006", "R017", "R010"),
         path_entities=("xinglan_factory_alias", "chenyue_precision", "beichen_precision", "wutong_chip"),
         answer_relation_ids=("R010",), query_only_terms=("星澜工厂",), answer_only_terms=("梧桐芯片有限公司",),
-        answer_document_id="doc04", current_graph_support="future_3_hop",
+        answer_document_id="doc04", current_graph_support="1_3_hop",
     ),
     _case(
-        "stretch-003", "stretch_3hop",
+        "graph-3hop-003", "graph_3hop",
         "北辰精工（前称）获得许可的研究机构是哪一家？", "南栖研究院",
         seed_entity_id="beichen_legacy", path=("R050", "R010", "R031"),
         path_entities=("beichen_legacy", "beichen_precision", "wutong_chip", "nanqi_research"),
         answer_relation_ids=("R031",), query_only_terms=("北辰精工（前称）",), answer_only_terms=("南栖研究院",),
-        answer_document_id="doc07", current_graph_support="future_3_hop",
+        answer_document_id="doc07", current_graph_support="1_3_hop",
     ),
     _case(
-        "stretch-004", "stretch_3hop",
+        "graph-3hop-004", "graph_3hop",
         "炬川机器人合作的储能企业，其控股方签约了哪家数据服务商？", "岚桥数据服务有限公司",
         seed_entity_id="ju_chuan_robot", path=("R027", "R008", "R028"),
         path_entities=("ju_chuan_robot", "qingyu_storage", "chenghai_energy", "lanqiao_data"),
         answer_relation_ids=("R028",), query_only_terms=("炬川机器人",), answer_only_terms=("岚桥数据服务有限公司",),
-        answer_document_id="doc07", current_graph_support="future_3_hop",
-        notes="这是 3 条边的压力样例，当前服务应标记为不支持而非静默截断。",
+        answer_document_id="doc07", current_graph_support="1_3_hop",
+        notes="这是 3 条边的压力样例，服务必须提供完整路径而非静默截断。",
     ),
     _case(
         "graph-010", "graph_only_hard",
@@ -570,7 +570,7 @@ CASES = (
         seed_entity_id="hezhou_innovation", path=("R059", "R061"),
         path_entities=("hezhou_innovation", "xunhai_logistics", "xunhai_hub"),
         answer_relation_ids=("R061",), query_only_terms=("合舟创新有限公司",), answer_only_terms=("巡海冷链枢纽",),
-        answer_document_id="doc13", current_graph_support="1_2_hop",
+        answer_document_id="doc13", current_graph_support="1_3_hop",
         notes="新增文档组的跨项目桥接样例，答案文档不出现合舟主体。",
     ),
     _case(
@@ -579,7 +579,7 @@ CASES = (
         seed_entity_id="muyu_capital", path=("R054", "R056"),
         path_entities=("muyu_capital", "hezhou_innovation", "luming_project"),
         answer_relation_ids=("R056",), query_only_terms=("木语资本",), answer_only_terms=("鹿鸣工业互联网园",),
-        answer_document_id="doc12", current_graph_support="1_2_hop",
+        answer_document_id="doc12", current_graph_support="1_3_hop",
     ),
     _case(
         "graph-012", "graph_only_hard",
@@ -587,7 +587,7 @@ CASES = (
         seed_entity_id="yuhe_platform", path=("R068", "R057"),
         path_entities=("yuhe_platform", "luming_project", "rongcheng_city"),
         answer_relation_ids=("R057",), query_only_terms=("玉衡工业平台",), answer_only_terms=("容城市",),
-        answer_document_id="doc12", current_graph_support="1_2_hop",
+        answer_document_id="doc12", current_graph_support="1_3_hop",
     ),
     _case(
         "alias-004", "alias_resolution",
@@ -595,7 +595,7 @@ CASES = (
         seed_entity_id="hezhou_old", path=("R066", "R052"),
         path_entities=("hezhou_old", "hezhou_innovation", "gu_nanqiao"),
         answer_relation_ids=("R052",), query_only_terms=("合舟智造（旧称）",), answer_only_terms=("顾南乔",),
-        answer_document_id="doc11", current_graph_support="1_2_hop",
+        answer_document_id="doc11", current_graph_support="1_3_hop",
         notes="新增历史名称与董事会文档之间的别名消歧样例。",
     ),
     _case(
@@ -604,7 +604,7 @@ CASES = (
         seed_entity_id="xunhai_logistics", path=("R061", "R062"),
         path_entities=("xunhai_logistics", "xunhai_hub", "rongcheng_city"),
         answer_relation_ids=("R062",), query_only_terms=("巡海物流",), answer_only_terms=("容城市",),
-        answer_document_id="doc14", current_graph_support="1_2_hop",
+        answer_document_id="doc14", current_graph_support="1_3_hop",
     ),
     _case(
         "graph-014", "graph_only_hard",
@@ -612,7 +612,7 @@ CASES = (
         seed_entity_id="baizhi_fund", path=("R055", "R056"),
         path_entities=("baizhi_fund", "hezhou_innovation", "luming_project"),
         answer_relation_ids=("R056",), query_only_terms=("百栀产业基金",), answer_only_terms=("鹿鸣工业互联网园",),
-        answer_document_id="doc12", current_graph_support="1_2_hop",
+        answer_document_id="doc12", current_graph_support="1_3_hop",
     ),
     _case(
         "alias-005", "alias_resolution",
@@ -620,7 +620,7 @@ CASES = (
         seed_entity_id="hezhou_old", path=("R066", "R067"),
         path_entities=("hezhou_old", "hezhou_innovation", "yuhe_platform"),
         answer_relation_ids=("R067",), query_only_terms=("合舟智造（旧称）",), answer_only_terms=("玉衡工业平台",),
-        answer_document_id="doc11", current_graph_support="1_2_hop",
+        answer_document_id="doc11", current_graph_support="1_3_hop",
     ),
     _case(
         "graph-015", "graph_only_hard",
@@ -628,7 +628,7 @@ CASES = (
         seed_entity_id="suyin_cell", path=("R069", "R064"),
         path_entities=("suyin_cell", "suyin_energy", "qingyu_storage"),
         answer_relation_ids=("R064",), query_only_terms=("素隐电芯",), answer_only_terms=("青屿储能有限公司",),
-        answer_document_id="doc13", current_graph_support="1_2_hop",
+        answer_document_id="doc13", current_graph_support="1_3_hop",
     ),
     _case(
         "negative-001", "negative_control",
@@ -789,8 +789,8 @@ def build(output: Path, *, force: bool = False) -> None:
         "case_count": len(CASES),
         "noise_document_count": 2,
         "noise_relation_count": 10,
-        "supported_case_count": sum(case["current_graph_support"] == "1_2_hop" for case in CASES),
-        "stretch_case_count": sum(case["current_graph_support"] == "future_3_hop" for case in CASES),
+        "supported_case_count": sum(case["current_graph_support"] == "1_3_hop" for case in CASES),
+        "stretch_case_count": 0,
         "negative_control_count": sum(case["category"] == "negative_control" for case in CASES),
         "documents": document_rows,
         "properties": {
@@ -803,7 +803,7 @@ def build(output: Path, *, force: bool = False) -> None:
             "near_name_distractors": True,
         },
         "current_graph_contract": {
-            "expected_online_max_hops": 2,
+            "expected_online_max_hops": 3,
             "graph_path_kind": "GRAPH_PATH",
             "answer_evidence_source": "raw_chunk",
         },
@@ -951,13 +951,13 @@ def validate(output: Path) -> int:
         for error in errors:
             print(f"- {error}")
         return 1
-    supported = sum(case["current_graph_support"] == "1_2_hop" for case in case_rows)
-    stretch = sum(case["current_graph_support"] == "future_3_hop" for case in case_rows)
+    supported = sum(case["current_graph_support"] == "1_3_hop" for case in case_rows)
+    stretch = sum(case["category"] == "graph_3hop" for case in case_rows)
     negatives = sum(case["category"] == "negative_control" for case in case_rows)
     print(
         f"validated graph-rag-v1: {len(DOCUMENTS)} docs, "
         f"{len(DOCUMENTS) * TARGET_SECTIONS_PER_DOCUMENT} logical sections, "
-        f"{len(case_rows)} cases ({supported} current 1-2 hop, {stretch} stretch, {negatives} controls)"
+        f"{len(case_rows)} cases ({supported} current 1-3 hop, {stretch} 3-hop, {negatives} controls)"
     )
     return 0
 

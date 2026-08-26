@@ -353,7 +353,7 @@ def _graph_cases(
 ) -> list[dict[str, object]]:
     cases: list[dict[str, object]] = []
     for source in graph_corpus.CASES:
-        if source["current_graph_support"] != "1_2_hop":
+        if source["current_graph_support"] != "1_3_hop":
             continue
         answer_document_id = str(source["answer_document_id"])
         answer_relation_ids = tuple(str(item) for item in source["answer_relation_ids"])

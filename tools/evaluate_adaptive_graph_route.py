@@ -398,7 +398,7 @@ def validate_case_contract(cases: Sequence[Mapping[str, Any]]) -> None:
             gold_path = source.get("gold_path")
             if (
                 not isinstance(gold_path, (list, tuple))
-                or not 1 <= len(gold_path) <= 2
+                or not 1 <= len(gold_path) <= 3
                 or any(not isinstance(item, str) or not item for item in gold_path)
                 or len(set(gold_path)) != len(gold_path)
             ):
