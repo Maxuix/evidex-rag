@@ -62,3 +62,13 @@ class LargeEvaluationHostProvisioningTests(unittest.TestCase):
         )
         self.assertIsNone(module.SPECS["public"].graph_schema_key)
 
+    def test_dataset_run_lock_rejects_a_second_provisioner(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            runtime_path = Path(directory) / "runtime.json"
+            with module._dataset_run_lock(runtime_path, "graph-rag-v1"):
+                with self.assertRaisesRegex(
+                    module.ProvisioningError,
+                    "provisioning_dataset_already_running",
+                ):
+                    with module._dataset_run_lock(runtime_path, "graph-rag-v1"):
+                        pass

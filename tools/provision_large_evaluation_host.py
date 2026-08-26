@@ -12,12 +12,14 @@ from __future__ import annotations
 
 import argparse
 import base64
+from contextlib import contextmanager
 from dataclasses import dataclass
+import fcntl
 import hashlib
 import json
 from pathlib import Path
 import time
-from typing import Any, Mapping
+from typing import Any, Iterator, Mapping
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -46,6 +48,27 @@ MAX_GRAPH_BUILD_RESUMES = 3
 
 class ProvisioningError(RuntimeError):
     """A stable, content-safe failure while provisioning frozen evaluation data."""
+
+
+@contextmanager
+def _dataset_run_lock(runtime_path: Path, dataset_id: str) -> Iterator[None]:
+    """Prevent concurrent provisioners from racing one persisted checkpoint."""
+    lock_path = (
+        runtime_path.parent
+        / "large-evaluation-provisioning"
+        / f"{dataset_id}.lock"
+    )
+    lock_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with lock_path.open("a+", encoding="utf-8") as handle:
+        lock_path.chmod(0o600)
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise ProvisioningError("provisioning_dataset_already_running") from error
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 @dataclass(frozen=True, slots=True)
@@ -664,14 +687,18 @@ def provision(
 def main() -> int:
     arguments = _parser().parse_args()
     try:
-        result = provision(
-            dataset=arguments.dataset,
-            confirmation=arguments.confirm,
-            timeout_seconds=arguments.timeout_seconds,
-            runtime_path=arguments.evaluation_runtime,
-            chat_profile_revision_id=arguments.chat_profile_revision_id,
-            judge_profile_revision_id=arguments.judge_profile_revision_id,
-        )
+        with _dataset_run_lock(
+            arguments.evaluation_runtime.resolve(),
+            SPECS[arguments.dataset].dataset_id,
+        ):
+            result = provision(
+                dataset=arguments.dataset,
+                confirmation=arguments.confirm,
+                timeout_seconds=arguments.timeout_seconds,
+                runtime_path=arguments.evaluation_runtime,
+                chat_profile_revision_id=arguments.chat_profile_revision_id,
+                judge_profile_revision_id=arguments.judge_profile_revision_id,
+            )
     except (EvaluationRuntimeError, ProvisioningError, OSError, ValueError) as error:
         print(json.dumps({"status": "blocked", "failure_code": str(error)}, sort_keys=True))
         return 2
