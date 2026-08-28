@@ -13,7 +13,7 @@ from rag_kb.domain import (
     AnswerOutcome,
     ValidatedAnswer,
 )
-from tools.run_large_evaluation import _score_public
+from tools.run_large_evaluation import _public_report, _score_public
 
 
 def _answering(*, outcome: str, conflict: bool) -> SimpleNamespace:
@@ -105,6 +105,30 @@ class PublicScorerConflictTests(unittest.TestCase):
             _answering(outcome="refused", conflict=False),
         )
         self.assertFalse(refused["policy_correct"])
+
+
+class PublicReportFalsePremiseSplitTests(unittest.TestCase):
+    def test_false_premise_action_reports_a_separate_behavior_split(self) -> None:
+        records = [
+            {"expected_action": "decline_or_correct_false_premise", "actual_outcome": "refused", "policy_correct": True},
+            {"expected_action": "decline_or_correct_false_premise", "actual_outcome": "clarify", "policy_correct": False},
+            {"expected_action": "decline_or_correct_false_premise", "actual_outcome": "partial", "policy_correct": False},
+            {"expected_action": "decline_or_correct_false_premise", "actual_outcome": "answered", "policy_correct": False},
+            {"expected_action": "refuse_insufficient_evidence", "actual_outcome": "clarify", "policy_correct": False},
+        ]
+        report = _public_report(records)
+        entry = report["by_expected_action"]["decline_or_correct_false_premise"]
+        self.assertEqual(
+            entry["false_premise_behavior"],
+            {"refused": 1, "clarified": 1, "answered_anyway": 2},
+        )
+        # The verdict semantics are unchanged: only `refused` is policy-correct.
+        self.assertEqual(entry["policy_correct"]["numerator"], 1)
+        self.assertEqual(entry["policy_correct"]["denominator"], 4)
+        self.assertNotIn(
+            "false_premise_behavior",
+            report["by_expected_action"]["refuse_insufficient_evidence"],
+        )
 
 
 if __name__ == "__main__":

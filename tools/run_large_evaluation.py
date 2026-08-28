@@ -1134,7 +1134,7 @@ def _public_report(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         subset = [record for record in records if record.get("expected_action") == action]
         outcomes = Counter(str(record.get("actual_outcome")) for record in subset)
         available = [record for record in subset if record.get("lexical_answer_match_available")]
-        by_action[action] = {
+        entry = {
             "case_count": len(subset),
             "outcomes": dict(sorted(outcomes.items())),
             "policy_correct": _rate(sum(bool(record.get("policy_correct")) for record in subset), len(subset)),
@@ -1142,6 +1142,22 @@ def _public_report(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             "lexical_match_denominator_available": len(available),
             "forbidden_claim_hits": sum(bool(record.get("forbidden_claim_hit")) for record in subset),
         }
+        # Refusal-family scoring still counts only `refused` as correct; the
+        # false-premise split is tracked separately so a clarify shift stays
+        # visible without changing the verdict semantics.
+        if action == "decline_or_correct_false_premise":
+            entry["false_premise_behavior"] = {
+                "refused": int(outcomes.get("refused", 0)),
+                "clarified": int(outcomes.get("clarify", 0)),
+                "answered_anyway": int(
+                    sum(
+                        count
+                        for outcome, count in outcomes.items()
+                        if outcome not in {"refused", "clarify"}
+                    )
+                ),
+            }
+        by_action[action] = entry
     by_stratum: dict[str, dict[str, Any]] = {}
     for stratum in sorted({str(record.get("stratum")) for record in records}):
         subset = [record for record in records if record.get("stratum") == stratum]
