@@ -13,6 +13,7 @@ from tools.evaluation_campaign_state import (
     completed_case_ids,
     load_or_create,
     phase_progress,
+    schedule_case_retry,
 )
 
 
@@ -48,6 +49,36 @@ class EvaluationCampaignStateTests(unittest.TestCase):
             load_or_create(checkpoint, {"corpora": ["v1"]})
             with self.assertRaisesRegex(CampaignStateError, "binding_mismatch"):
                 load_or_create(checkpoint, {"corpora": ["v2"]})
+
+    def test_retry_wait_is_durable_and_preserves_attempt_count(self) -> None:
+        with TemporaryDirectory() as temporary:
+            checkpoint = Path(temporary) / "campaign.json"
+            state = load_or_create(checkpoint, {"corpora": ["v1"]})
+            self.assertTrue(
+                begin_case(checkpoint, state, phase="answer", case_id="case-1")
+            )
+            schedule_case_retry(
+                checkpoint,
+                state,
+                phase="answer",
+                case_id="case-1",
+                failure={"type": "ProviderError", "code": "provider_unavailable"},
+                next_retry_at="2026-08-27T12:00:00+00:00",
+            )
+
+            resumed = load_or_create(checkpoint, {"corpora": ["v1"]})
+            record = resumed["phases"]["answer"]["case-1"]
+            self.assertEqual(record["status"], "retry_wait")
+            self.assertEqual(record["attempt_count"], 1)
+            self.assertEqual(record["retry_count"], 1)
+            self.assertTrue(
+                begin_case(
+                    checkpoint, resumed, phase="answer", case_id="case-1"
+                )
+            )
+            record = resumed["phases"]["answer"]["case-1"]
+            self.assertEqual(record["attempt_count"], 2)
+            self.assertEqual(record["retry_count"], 1)
 
 
 if __name__ == "__main__":

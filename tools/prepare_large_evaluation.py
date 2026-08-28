@@ -59,14 +59,14 @@ def _manifest_identity(path: Path) -> dict[str, str]:
     return {"dataset_id": dataset_id, "manifest_sha256": _file_digest(path)}
 
 
-def build_plan() -> dict[str, Any]:
+def build_plan(*, routing_root: Path = ROUTING_ROOT) -> dict[str, Any]:
     """Return an offline-validated campaign plan for the three target gaps."""
 
     public_result = public.validate(PUBLIC_ROOT)
-    routing_result = routing.validate(ROUTING_ROOT)
+    routing_result = routing.validate(routing_root)
     enterprise_result = enterprise.validate(ENTERPRISE_ROOT)
     public_cases = _rows(PUBLIC_ROOT / "cases.jsonl")
-    routing_cases = _rows(ROUTING_ROOT / "cases.jsonl")
+    routing_cases = _rows(routing_root / "cases.jsonl")
     graph_contract = json.loads(GRAPH_RAG_MANIFEST.read_text(encoding="utf-8"))
     if graph_contract.get("current_graph_contract", {}).get("expected_online_max_hops") != 3:
         raise LargeEvaluationPreparationError("graph_contract_not_three_hop")
@@ -77,14 +77,20 @@ def build_plan() -> dict[str, Any]:
     action_counts = Counter(str(case.get("expected_action")) for case in public_cases)
     route_counts = Counter(str(case.get("route_label")) for case in routing_cases)
     graph_candidate_count = route_counts["graph_needed_candidate"]
-    qualification = json.loads((ROUTING_ROOT / "manifest.json").read_text(encoding="utf-8")).get(
-        "qualification", {}
+    routing_manifest = json.loads(
+        (routing_root / "manifest.json").read_text(encoding="utf-8")
     )
+    qualification = routing_manifest.get("qualification", {})
     qualification_minimum = qualification.get("minimum_qualified_graph_needed_count")
     if not isinstance(qualification_minimum, int) or qualification_minimum < 30:
         raise LargeEvaluationPreparationError("routing_qualification_denominator_invalid")
     if graph_candidate_count < qualification_minimum:
         raise LargeEvaluationPreparationError("routing_candidate_pool_too_small")
+    candidate_hops = Counter(
+        str(case.get("hop_count"))
+        for case in routing_cases
+        if case.get("route_label") == "graph_needed_candidate"
+    )
 
     routing_simple_observations = len(routing_cases)
     routing_auto_minimum = qualification_minimum * 3
@@ -112,7 +118,7 @@ def build_plan() -> dict[str, Any]:
     binding = {
         "corpora": [
             _manifest_identity(PUBLIC_ROOT / "manifest.json"),
-            _manifest_identity(ROUTING_ROOT / "manifest.json"),
+            _manifest_identity(routing_root / "manifest.json"),
             _manifest_identity(ENTERPRISE_ROOT / "manifest.json"),
             _manifest_identity(GRAPH_RAG_MANIFEST),
         ],
@@ -146,8 +152,9 @@ def build_plan() -> dict[str, Any]:
                 "request_clarification": action_counts["request_clarification"],
             },
             "routing": {
+                "dataset_id": routing_manifest.get("dataset_id"),
                 "candidate_count": graph_candidate_count,
-                "candidate_hops": {"2": 24, "3": 16, "4": 8},
+                "candidate_hops": dict(sorted(candidate_hops.items())),
                 "simple_control_count": route_counts["simple_only"],
                 "negative_or_refusal_count": route_counts["negative_or_refusal"],
                 "minimum_qualified_graph_needed_count": qualification_minimum,
@@ -266,13 +273,19 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         help="optional owner-only plan path, normally under .runtime/evaluations/",
     )
+    parser.add_argument(
+        "--routing-root",
+        type=Path,
+        default=ROUTING_ROOT,
+        help="routing corpus root; defaults to the frozen expanded v1 corpus",
+    )
     return parser
 
 
 def main() -> int:
     arguments = _parser().parse_args()
     try:
-        plan = build_plan()
+        plan = build_plan(routing_root=arguments.routing_root)
     except (enterprise.CorpusError, public.CorpusError, routing.CorpusError, LargeEvaluationPreparationError) as error:
         print(json.dumps({"status": "blocked", "failure_code": type(error).__name__}, sort_keys=True))
         return 2

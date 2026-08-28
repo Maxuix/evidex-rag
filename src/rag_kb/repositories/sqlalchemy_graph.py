@@ -39,6 +39,7 @@ from rag_kb.domain import (
     GRAPH_WORK_LEASE_SECONDS,
     GraphConfigSnapshot,
     GraphConfigStatus,
+    GraphChunkSource,
     GraphitiBuildSnapshot,
     GraphitiBuildStatus,
     GraphWorkItem,
@@ -845,6 +846,49 @@ class SqlAlchemyGraphRepository:
             if mapped is None:
                 return _chunk_source(config, chunk, target, document_version, document)
         return None
+
+    async def missing_graph_chunks(
+        self,
+        config: GraphConfigSnapshot,
+        *,
+        limit: int,
+    ) -> tuple[GraphChunkSource, ...]:
+        """Return a bounded batch of unmapped chunks for the owned build lease."""
+
+        self._ensure_active()
+        if limit <= 0:
+            raise ValueError("Graph chunk batch limit must be positive")
+        mapped_chunk_ids = set(
+            (
+                await self._session.scalars(
+                    select(GraphitiEpisodeChunkRow.index_chunk_id).where(
+                        GraphitiEpisodeChunkRow.workspace_id == self._workspace_id,
+                        GraphitiEpisodeChunkRow.kb_id == config.knowledge_base_id,
+                        GraphitiEpisodeChunkRow.build_id == config.build_id,
+                    )
+                )
+            ).all()
+        )
+        rows = (
+            await self._session.execute(
+                _eligible_chunk_statement(
+                    self._workspace_id, config.knowledge_base_id
+                ).order_by(
+                    IndexChunkRow.indexed_document_version_id,
+                    IndexChunkRow.ordinal,
+                    IndexChunkRow.id,
+                )
+            )
+        ).all()
+        chunks: list[GraphChunkSource] = []
+        for row in rows:
+            chunk, target, document_version, document, _kb = row
+            if chunk.id in mapped_chunk_ids:
+                continue
+            chunks.append(_chunk_source(config, chunk, target, document_version, document))
+            if len(chunks) >= limit:
+                break
+        return tuple(chunks)
 
     async def _ensure_graphiti_build(
         self, row: KnowledgeBaseGraphConfigRow

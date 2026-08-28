@@ -1896,6 +1896,12 @@ function completedAnswerSummary(
   metrics: AnswerProcessMetrics,
 ): { title: string; description: string } {
   const outcome = run.agent.trace?.outcome ?? (run.answer ? "answered" : "refused");
+  if (outcome === "clarify") {
+    return {
+      title: "系统需要先和你确认问题的具体指向",
+      description: "问题存在歧义，系统没有猜测你的意图，请根据追问补充说明。",
+    };
+  }
   if (outcome === "refused") {
     return {
       title: "这次回答没有找到足够可靠的支持材料",
@@ -1964,14 +1970,18 @@ function completedAnswerSteps(
     : "本次没有调用知识库检索，也不会虚构检索阶段或候选数量。";
   const verificationDescription = outcome === "refused"
     ? "没有足够可靠的来源支持结论，因此没有生成推测性回答。"
-    : metrics.citationCount > 0
-      ? `最终回答实际采用 ${metrics.citationCount} 条来源；未采用的候选内容不会显示为引用。`
-      : "回答没有附带来源；界面不会把候选内容误标为最终引用。";
+    : outcome === "clarify"
+      ? "问题指向存在歧义，系统没有基于猜测生成回答。"
+      : metrics.citationCount > 0
+        ? `最终回答实际采用 ${metrics.citationCount} 条来源；未采用的候选内容不会显示为引用。`
+        : "回答没有附带来源；界面不会把候选内容误标为最终引用。";
   const resultDescription = outcome === "refused"
     ? "本次以说明资料不足结束，没有输出无依据的结论。"
-    : outcome === "partial"
-      ? `已生成部分回答，并附上实际采用的 ${metrics.citationCount} 条来源。`
-      : `回答已生成，并附上实际采用的 ${metrics.citationCount} 条来源。`;
+    : outcome === "clarify"
+      ? "本次以追问结束，请补充说明后系统会继续回答。"
+      : outcome === "partial"
+        ? `已生成部分回答，并附上实际采用的 ${metrics.citationCount} 条来源。`
+        : `回答已生成，并附上实际采用的 ${metrics.citationCount} 条来源。`;
   return [
     {
       key: "understand",
@@ -2001,7 +2011,9 @@ function completedAnswerSteps(
       description: resultDescription,
       meta: outcome === "refused"
         ? "完成 · 未生成推测性结论"
-        : `完成 · 最终引用 ${metrics.citationCount} 条`,
+        : outcome === "clarify"
+          ? "完成 · 等待你的补充说明"
+          : `完成 · 最终引用 ${metrics.citationCount} 条`,
     },
   ];
 }

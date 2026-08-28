@@ -1324,6 +1324,96 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
             ("The cause of the change is not supported.",),
         )
 
+    async def test_clarify_submission_completes_with_questions_and_no_citations(self) -> None:
+        context = _context()
+        model = _Model(
+            ChatToolCall(
+                "submit-1",
+                "submit_answer",
+                {
+                    "outcome": "clarify",
+                    "claims": [],
+                    "unanswered": ["Which project do you mean: Apollo or Borealis?"],
+                },
+            ),
+        )
+
+        state = await _agent(model, _Retriever(_pack(context))).run(context)
+
+        self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.CLARIFY)
+        self.assertEqual(state.answering.rendered.citations, ())
+        self.assertEqual(
+            state.answering.rendered.content,
+            "Before I can answer, I need to clarify: "
+            "Which project do you mean: Apollo or Borealis?",
+        )
+        self.assertIsNone(state.answering.rendered.control_reason)
+        trace = state.artifacts[AGENT_TRACE_ARTIFACT]
+        self.assertEqual(trace.outcome, "clarify")
+        submit_events = [event for event in trace.events if event.tool == "submit_answer"]
+        self.assertEqual([event.status for event in submit_events], ["ok"])
+        self.assertEqual(len(model.requests), 1)
+
+    async def test_clarify_with_claims_is_rejected_then_valid_clarify_completes(self) -> None:
+        context = _context()
+        model = _Model(
+            ChatToolCall(
+                "submit-1",
+                "submit_answer",
+                {
+                    "outcome": "clarify",
+                    "claims": [
+                        {
+                            "text": "Revenue was 10 in 2025.",
+                            "kind": "fact",
+                            "evidence_refs": ["ev_1"],
+                        }
+                    ],
+                    "unanswered": ["Which project do you mean?"],
+                },
+            ),
+            ChatToolCall(
+                "submit-2",
+                "submit_answer",
+                {
+                    "outcome": "clarify",
+                    "claims": [],
+                    "unanswered": ["Which project do you mean?"],
+                },
+            ),
+        )
+
+        state = await _agent(model, _Retriever(_pack(context))).run(context)
+
+        self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.CLARIFY)
+        trace = state.artifacts[AGENT_TRACE_ARTIFACT]
+        submit_events = [event for event in trace.events if event.tool == "submit_answer"]
+        self.assertEqual([event.status for event in submit_events], ["rejected", "ok"])
+
+    async def test_clarify_is_not_dragged_into_the_open_world_review(self) -> None:
+        context = replace(_context(), query="这是否是同一个项目？")
+        model = _Model(
+            ChatToolCall(
+                "submit-1",
+                "submit_answer",
+                {
+                    "outcome": "clarify",
+                    "claims": [],
+                    "unanswered": ["你说的“它”指的是哪个项目？"],
+                },
+            ),
+        )
+
+        state = await _agent(model, _Retriever(_pack(context))).run(context)
+
+        self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.CLARIFY)
+        self.assertEqual(
+            state.answering.rendered.content,
+            "在回答之前，我需要先和你确认：你说的“它”指的是哪个项目？",
+        )
+        self.assertEqual(len(model.requests), 1)
+
+
     async def test_submit_normalizes_optional_fact_fields_and_unanswered(self) -> None:
         context = _context()
         model = _Model(

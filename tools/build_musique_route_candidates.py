@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+from dataclasses import dataclass
 import hashlib
 import json
 from pathlib import Path
@@ -28,6 +29,52 @@ DISTRACTORS_PER_PARENT = 8
 GRAPH_HOP_QUOTAS = {2: 24, 3: 16, 4: 8}
 NEGATIVE_HOP_QUOTAS = {2: 6, 3: 4, 4: 2}
 SIMPLE_CONTROL_COUNT = 16
+
+
+@dataclass(frozen=True, slots=True)
+class BuildConfig:
+    """Deterministic selection and packaging parameters for one corpus profile."""
+
+    dataset_id: str
+    output: Path
+    title: str
+    graph_hop_quotas: dict[int, int]
+    negative_hop_quotas: dict[int, int]
+    simple_control_count: int
+    distractors_per_parent: int
+    max_support_paragraph_chars: int | None = None
+
+
+DEFAULT_CONFIG = BuildConfig(
+    dataset_id=DATASET_ID,
+    output=DEFAULT_OUTPUT,
+    title="MuSiQue expanded Graph-route candidates v1",
+    graph_hop_quotas=GRAPH_HOP_QUOTAS,
+    negative_hop_quotas=NEGATIVE_HOP_QUOTAS,
+    simple_control_count=SIMPLE_CONTROL_COUNT,
+    distractors_per_parent=DISTRACTORS_PER_PARENT,
+)
+
+# The original expanded corpus remains the default and is byte-for-byte
+# untouched.  This independent profile deliberately stays within the online
+# Graph hop limit and widens the dynamic qualification candidate pool.  The
+# source paragraphs are unchanged; only deterministic selection/packaging
+# parameters differ.
+SHORT_SUPPORT_VARIANT_CONFIG = BuildConfig(
+    dataset_id="routing-rag-musique-short-support-v2",
+    output=ROOT / "evaluation/routing-rag-musique-short-support-v2",
+    title="MuSiQue short-support Graph-route candidates v2",
+    graph_hop_quotas={2: 160, 3: 80},
+    negative_hop_quotas={2: 20, 3: 10},
+    simple_control_count=16,
+    distractors_per_parent=4,
+    max_support_paragraph_chars=800,
+)
+
+BUILD_PROFILES = {
+    "expanded-v1": DEFAULT_CONFIG,
+    "short-support-v2": SHORT_SUPPORT_VARIANT_CONFIG,
+}
 
 
 class CorpusError(RuntimeError):
@@ -144,16 +191,61 @@ def _validate_upstream_row(row: Mapping[str, Any], *, answerable: bool) -> None:
         raise CorpusError(f"negative row is fully supported: {row['id']}")
 
 
-def _selected_rows(rows: Sequence[Mapping[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def _support_paragraphs(
+    row: Mapping[str, Any],
+) -> tuple[Mapping[str, Any], ...]:
+    paragraphs = {
+        paragraph["idx"]: paragraph
+        for paragraph in row.get("paragraphs", ())
+        if isinstance(paragraph, Mapping) and isinstance(paragraph.get("idx"), int)
+    }
+    result: list[Mapping[str, Any]] = []
+    for step in row.get("question_decomposition", ()):
+        if not isinstance(step, Mapping):
+            return ()
+        support_idx = step.get("paragraph_support_idx")
+        if support_idx is None:
+            continue
+        paragraph = paragraphs.get(support_idx)
+        if paragraph is None:
+            return ()
+        result.append(paragraph)
+    return tuple(result)
+
+
+def _eligible_for_profile(
+    row: Mapping[str, Any], *, answerable: bool, config: BuildConfig
+) -> bool:
+    if row.get("answerable") is not answerable:
+        return False
+    decomposition = row.get("question_decomposition")
+    if not isinstance(decomposition, list):
+        return False
+    supports = _support_paragraphs(row)
+    if answerable and len(supports) != len(decomposition):
+        return False
+    if len({paragraph.get("idx") for paragraph in supports}) != len(supports):
+        return False
+    max_chars = config.max_support_paragraph_chars
+    return max_chars is None or all(
+        isinstance(paragraph.get("paragraph_text"), str)
+        and len(paragraph["paragraph_text"]) <= max_chars
+        for paragraph in supports
+    )
+
+
+def _selected_rows(
+    rows: Sequence[Mapping[str, Any]], *, config: BuildConfig
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     graph: list[dict[str, Any]] = []
     negative: list[dict[str, Any]] = []
-    for hops, count in GRAPH_HOP_QUOTAS.items():
+    for hops, count in config.graph_hop_quotas.items():
         graph.extend(
             _stable_select(
                 [
                     row
                     for row in rows
-                    if row.get("answerable") is True
+                    if _eligible_for_profile(row, answerable=True, config=config)
                     and isinstance(row.get("question_decomposition"), list)
                     and len(row["question_decomposition"]) == hops
                 ],
@@ -161,13 +253,13 @@ def _selected_rows(rows: Sequence[Mapping[str, Any]]) -> tuple[list[dict[str, An
             )
         )
     graph_ids = {str(row["id"]) for row in graph}
-    for hops, count in NEGATIVE_HOP_QUOTAS.items():
+    for hops, count in config.negative_hop_quotas.items():
         negative.extend(
             _stable_select(
                 [
                     row
                     for row in rows
-                    if row.get("answerable") is False
+                    if _eligible_for_profile(row, answerable=False, config=config)
                     and isinstance(row.get("question_decomposition"), list)
                     and len(row["question_decomposition"]) == hops
                     and str(row.get("id")) not in graph_ids
@@ -186,6 +278,8 @@ def _selected_rows(rows: Sequence[Mapping[str, Any]]) -> tuple[list[dict[str, An
 
 def _document_records(
     rows: Sequence[Mapping[str, Any]],
+    *,
+    distractors_per_parent: int,
 ) -> tuple[dict[str, dict[str, Any]], dict[tuple[str, int], str]]:
     documents: dict[str, dict[str, Any]] = {}
     mapping: dict[tuple[str, int], str] = {}
@@ -199,7 +293,7 @@ def _document_records(
             paragraph["idx"]
             for paragraph in sorted(row["paragraphs"], key=lambda item: item["idx"])
             if paragraph["idx"] not in support_ids
-        ][:DISTRACTORS_PER_PARENT]
+        ][:distractors_per_parent]
         selected = support_ids | set(distractors)
         for paragraph in row["paragraphs"]:
             if paragraph["idx"] not in selected:
@@ -305,10 +399,12 @@ def _negative_case(
 def _simple_cases(
     graph_rows: Sequence[Mapping[str, Any]],
     document_mapping: Mapping[tuple[str, int], str],
+    *,
+    simple_control_count: int,
 ) -> list[dict[str, Any]]:
     cases: list[dict[str, Any]] = []
     for ordinal, row in enumerate(
-        _stable_select(graph_rows, count=SIMPLE_CONTROL_COUNT), start=1
+        _stable_select(graph_rows, count=simple_control_count), start=1
     ):
         first = _decomposition(row, document_mapping)[0]
         if first["support_document_id"] is None or "#" in first["question"]:
@@ -347,8 +443,8 @@ def _write_jsonl(path: Path, rows: Iterable[Mapping[str, Any]]) -> None:
     )
 
 
-def _source_notices() -> str:
-    return """# Source notices
+def _source_notices(config: BuildConfig) -> str:
+    return f"""# Source notices
 
 This candidate corpus is adapted from the MuSiQue-Full validation split by
 Harsh Trivedi, Niranjan Balasubramanian, Tushar Khot, and Ashish Sabharwal.
@@ -361,20 +457,36 @@ license; the full license text is included in `LICENSE-MUSIQUE.txt`.
 - Paper: https://doi.org/10.1162/tacl_a_00475
 
 The local package selects validation examples deterministically by the SHA-256
-ordering of upstream IDs.  It changes packaging only: selected paragraphs are
-stored as Markdown documents and source/document hashes are added.  It does not
-claim authorship of the upstream questions, answers, decompositions, or text.
+ordering of upstream IDs for the `{config.dataset_id}` profile.  It changes
+packaging only: selected paragraphs are stored as Markdown documents and
+source/document hashes are added.  It does not claim authorship of the
+upstream questions, answers, decompositions, or text.
 """
 
 
-def _readme() -> str:
-    return """# MuSiQue expanded Graph-route candidates v1
+def _readme(config: BuildConfig) -> str:
+    graph_counts = "、".join(
+        f"{hops}×{count}" for hops, count in config.graph_hop_quotas.items()
+    )
+    negative_counts = "、".join(
+        f"{hops}×{count}" for hops, count in config.negative_hop_quotas.items()
+    )
+    max_support = (
+        f"每个支持段不超过 {config.max_support_paragraph_chars} 字符"
+        if config.max_support_paragraph_chars is not None
+        else "不施加支持段长度筛选"
+    )
+    return f"""# {config.title}
 
-This is a larger source-backed candidate set for validating Graph auto-routing.
-It has 48 answerable multi-hop candidates (24×2-hop, 16×3-hop, 8×4-hop), 12
-upstream-unanswerable controls, and 16 direct single-hop controls.  Every
+This is an independent, source-backed candidate set for validating Graph
+auto-routing.  It has {sum(config.graph_hop_quotas.values())} answerable
+multi-hop candidates ({graph_counts}-hop), {sum(config.negative_hop_quotas.values())}
+upstream-unanswerable controls ({negative_counts}), and
+{config.simple_control_count} direct single-hop controls.  Every answerable
 candidate has a complete, distinct source-document path; each source parent
-also contributes eight distractors into one shared KB.
+also contributes {config.distractors_per_parent} distractors into one shared KB.
+The profile is deterministic and uses the same MuSiQue-Full validation source;
+{max_support}.
 
 `graph_needed_candidate` is deliberately not a route-recall denominator.  A
 frozen host qualification must mark a case `graph_needed` only if all are true:
@@ -383,7 +495,7 @@ frozen host qualification must mark a case `graph_needed` only if all are true:
 2. Graph K=16 plus the frozen packing budget completes a required path.
 3. Graph provides at least one new serving source chunk beyond Simple evidence.
 
-The 48-candidate pool makes an Auto route-recall estimate meaningful only after
+The candidate pool makes an Auto route-recall estimate meaningful only after
 this dynamic qualification.  If fewer than 30 cases qualify, collect or build
 another corpus variant rather than reporting a route-recall percentage with an
 insufficient denominator.
@@ -402,12 +514,21 @@ PYTHONPATH=src:. .venv/bin/python tools/build_musique_route_candidates.py valida
 """
 
 
-def build(source: Path, license_path: Path, output: Path) -> None:
+def build(
+    source: Path,
+    license_path: Path,
+    output: Path,
+    *,
+    config: BuildConfig = DEFAULT_CONFIG,
+) -> None:
     if output.exists():
         raise CorpusError(f"output already exists: {output}")
     source_rows = _read_source(source)
-    graph_rows, negative_rows = _selected_rows(source_rows)
-    documents, document_mapping = _document_records([*graph_rows, *negative_rows])
+    graph_rows, negative_rows = _selected_rows(source_rows, config=config)
+    documents, document_mapping = _document_records(
+        [*graph_rows, *negative_rows],
+        distractors_per_parent=config.distractors_per_parent,
+    )
     output.mkdir(parents=True)
     directory = output / "documents"
     directory.mkdir()
@@ -437,7 +558,11 @@ def build(source: Path, license_path: Path, output: Path) -> None:
             _negative_case(index, row, document_mapping)
             for index, row in enumerate(sorted(negative_rows, key=lambda item: item["id"]), start=1)
         ],
-        *_simple_cases(graph_rows, document_mapping),
+        *_simple_cases(
+            graph_rows,
+            document_mapping,
+            simple_control_count=config.simple_control_count,
+        ),
     ]
     _write_jsonl(output / "cases.jsonl", cases)
     _write_jsonl(output / "documents.jsonl", document_rows)
@@ -445,11 +570,13 @@ def build(source: Path, license_path: Path, output: Path) -> None:
         _normalize_text(license_path.read_text(encoding="utf-8")) + "\n",
         encoding="utf-8",
     )
-    (output / "README.md").write_text(_readme(), encoding="utf-8")
-    (output / "SOURCE_NOTICES.md").write_text(_source_notices(), encoding="utf-8")
+    (output / "README.md").write_text(_readme(config), encoding="utf-8")
+    (output / "SOURCE_NOTICES.md").write_text(
+        _source_notices(config), encoding="utf-8"
+    )
     manifest = {
         "schema": SCHEMA,
-        "dataset_id": DATASET_ID,
+        "dataset_id": config.dataset_id,
         "language": "en",
         "license": "CC-BY-4.0",
         "source": {
@@ -458,10 +585,11 @@ def build(source: Path, license_path: Path, output: Path) -> None:
             "file": UPSTREAM_FILE,
             "source_sha256": _sha256_path(source),
             "selection": {
-                "graph_hop_quotas": GRAPH_HOP_QUOTAS,
-                "negative_hop_quotas": NEGATIVE_HOP_QUOTAS,
-                "simple_control_count": SIMPLE_CONTROL_COUNT,
-                "distractors_per_parent": DISTRACTORS_PER_PARENT,
+                "graph_hop_quotas": config.graph_hop_quotas,
+                "negative_hop_quotas": config.negative_hop_quotas,
+                "simple_control_count": config.simple_control_count,
+                "distractors_per_parent": config.distractors_per_parent,
+                "max_support_paragraph_chars": config.max_support_paragraph_chars,
             },
         },
         "case_count": len(cases),
@@ -499,8 +627,31 @@ def _jsonl(path: Path) -> list[dict[str, Any]]:
 
 def validate(output: Path) -> dict[str, int]:
     manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
-    if manifest.get("schema") != SCHEMA or manifest.get("dataset_id") != DATASET_ID:
+    if manifest.get("schema") != SCHEMA or not isinstance(
+        manifest.get("dataset_id"), str
+    ):
         raise CorpusError("manifest identity invalid")
+    selection = manifest.get("source", {}).get("selection", {})
+    if (
+        not isinstance(selection, Mapping)
+        or not isinstance(selection.get("graph_hop_quotas"), Mapping)
+        or not isinstance(selection.get("negative_hop_quotas"), Mapping)
+        or not isinstance(selection.get("simple_control_count"), int)
+        or not isinstance(selection.get("distractors_per_parent"), int)
+    ):
+        raise CorpusError("manifest selection invalid")
+    try:
+        graph_quotas = {
+            int(hops): int(count)
+            for hops, count in selection["graph_hop_quotas"].items()
+        }
+        negative_quotas = {
+            int(hops): int(count)
+            for hops, count in selection["negative_hop_quotas"].items()
+        }
+    except (TypeError, ValueError) as error:
+        raise CorpusError("manifest selection invalid") from error
+    simple_control_count = int(selection["simple_control_count"])
     cases = _jsonl(output / "cases.jsonl")
     documents = _jsonl(output / "documents.jsonl")
     if len(cases) != manifest.get("case_count") or len(documents) != manifest.get("document_count"):
@@ -514,9 +665,9 @@ def validate(output: Path) -> dict[str, int]:
             raise CorpusError(f"document artifact invalid: {document.get('document_id')}")
     counts = Counter(case.get("route_label") for case in cases)
     expected_counts = {
-        "graph_needed_candidate": sum(GRAPH_HOP_QUOTAS.values()),
-        "negative_or_refusal": sum(NEGATIVE_HOP_QUOTAS.values()),
-        "simple_only": SIMPLE_CONTROL_COUNT,
+        "graph_needed_candidate": sum(graph_quotas.values()),
+        "negative_or_refusal": sum(negative_quotas.values()),
+        "simple_only": simple_control_count,
     }
     if dict(counts) != expected_counts:
         raise CorpusError(f"route-label counts invalid: {dict(counts)}")
@@ -525,7 +676,7 @@ def validate(output: Path) -> dict[str, int]:
         for case in cases
         if case.get("route_label") == "graph_needed_candidate"
     )
-    if dict(graph_hops) != GRAPH_HOP_QUOTAS:
+    if dict(graph_hops) != graph_quotas:
         raise CorpusError(f"graph candidate hop counts invalid: {dict(graph_hops)}")
     case_ids: set[str] = set()
     for case in cases:
@@ -565,6 +716,12 @@ def _parser() -> argparse.ArgumentParser:
     build_parser.add_argument("--source", type=Path, required=True)
     build_parser.add_argument("--license", type=Path, required=True)
     build_parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    build_parser.add_argument(
+        "--profile",
+        choices=tuple(BUILD_PROFILES),
+        default="expanded-v1",
+        help="deterministic selection profile; the default preserves the frozen v1 corpus",
+    )
     validate_parser = commands.add_parser("validate")
     validate_parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     return parser
@@ -573,8 +730,12 @@ def _parser() -> argparse.ArgumentParser:
 def main() -> int:
     arguments = _parser().parse_args()
     if arguments.command == "build":
-        build(arguments.source, arguments.license, arguments.output)
-        print(f"built {arguments.output}")
+        config = BUILD_PROFILES[arguments.profile]
+        output = arguments.output
+        if arguments.output == DEFAULT_OUTPUT and config.output != DEFAULT_OUTPUT:
+            output = config.output
+        build(arguments.source, arguments.license, output, config=config)
+        print(f"built {output}")
     else:
         print(json.dumps(validate(arguments.output), sort_keys=True))
     return 0

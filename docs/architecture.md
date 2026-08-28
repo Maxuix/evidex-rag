@@ -309,19 +309,17 @@ file content mutation 增加 `pending/completed/failed` 终态、稳定 failure 
 任何会访问 API、数据库、Graph 或 Provider 的模式，都只能连接用户明确提供且已经运行的 Python-side
 test services、可丢弃的 test database，以及通过身份校验的 workspace/profile/source/model-secret
 副本。不存在或伪造 test runtime 时，入口在发起外部 I/O 前失败；个人正式 API、`.env.local`、正式
-`rag` 数据和源码 UUID 都不是 evaluator fallback。已退役的 `rag-eval` manifest/runtime 不属于当前
-测试入口。
+`rag` 数据和源码 UUID 都不是 evaluator fallback。
 
 测试请求不包含 Docker lifecycle 权限：不得为了测试 build/pull/tag 镜像，也不得 create、recreate、
 restart、stop 或 remove 容器。已经运行的 Python-side test services 只作为宿主机 Python 的外部依赖，
 测试不能改变其 lifecycle；依赖不存在或版本不兼容时记录未验证并停止，不以构建镜像或刷新容器补齐
 环境。正式 `rag` Compose 环境只供用户的正式/端到端运行，不能由测试请求隐式启动。
 
-仓库中 `tools/evaluation_runtime.py` 的旧 `rag-eval` Compose preview/create/inspect/destroy 路径、
-对应的历史 provisioner 入口和既有工件仅为兼容/审计保留，不是当前测试环境，也不得作为本计划的执行
-前置。当前修复与评测只从主 checkout 的 `.venv` 运行；需要外部状态时由用户提供已运行的
-Python-side test services。任何正式 `rag` 或历史 evaluator Docker lifecycle 都必须另有明确的
-runtime 请求，不能从“运行测试/评测”推导。
+`tools/evaluation_runtime.py` 只验证 owner-only host-Python runtime，不提供环境创建、销毁或 Docker
+lifecycle。当前修复与评测只从主 checkout 的 `.venv` 运行；需要外部状态时由用户提供已运行的
+Python-side test services。任何正式 `rag` Docker lifecycle 都必须另有明确的 runtime 请求，不能从
+“运行测试/评测”推导。
 
 Adaptive Graph 路由评测使用成对的
 `evaluation/routing-rag-v2/` 与 `evaluation/adaptive-graph-route-v2/` 合同；`v1` 仅保留为不可变
@@ -361,16 +359,15 @@ lifecycle。
 runner 逐 case 写 owner-only、content-safe checkpoint，不保存
 问题、回答、正文、文件名或 Provider payload；它不 provision KB、不管理容器，真实执行仍需显式 Provider
 确认。中断恢复只跳过身份一致的完整 case，避免重复流量。
-历史文件名为 `tools/provision_routing_rag_eval.py` 的 provisioner 为每个数据集显式冻结 profile identity：MuSiQue 使用
-`generic_open_domain_v1`，routing-rag open-source v3/v4 使用 `software_knowledge_v1`；旧 v2
-spec 只保留 corpus/test 兼容性并拒绝新的 provision。runtime manifest、Software 新观察、v4 报告和 MuSiQue qualification 都记录
-profile key/digest 与 extractor，preflight 不接受只匹配 KB/index/model 的错误 build；v3/v4 历史
-locked artifacts 不重写。各 spec 使用独立 KB 名称、文档闭集、媒体类型与确认串，成功后才把 runtime identity 绑定到
-该 semantic-v4 index/Graph build。provision 会触发索引与建图 Provider 调用，不能由测试请求或 runner
-隐式执行。显式 `--host-worker` 用于已授权但隔离 Worker 无法访问 Provider 的场景：它先按 API
-checksum/size 闭集把冻结语料字节镜像到 owner-only host eval file store，再用宿主 `.venv` 消费隔离
-indexing/Graph lane；failed retry 有界且不 force rebuild。Graph retry 改变 build identity、冻结输入不匹配或
-仍失败时停止，不能借 host worker 绕过 runtime 版本或 identity 门。
+runtime manifest、Software 新观察、v4 报告和 MuSiQue qualification 都记录 profile key/digest 与
+extractor，preflight 不接受只匹配 KB/index/model 的错误 build；v3/v4 历史 locked artifacts 不重写。
+显式 `--host-worker` 用于已授权但 host-side Worker 无法访问 Provider 的场景；它从宿主 `.venv`
+执行，不创建或改变 Docker lifecycle。Graph retry 改变 build identity、冻结输入不匹配或仍失败时停止，
+不能借 host worker 绕过 runtime 版本或 identity 门。
+
+大型评测的长任务由用户级 macOS `launchd` 持有，不由 Codex 前台终端持有。`tools/install_large_evaluation_launchd.py` 为隔离 host runtime 安装 PostgreSQL、FalkorDB、API、Worker 与 supervisor Agent；五个 plist 都以 owner-only 文件保存，`RunAtLoad=false`，只有绑定 config、容错策略与评测实现 digest 的私有 `.evaluation-enabled` `PathState` 标记存在时才持续运行。supervisor 以 `indexing → graph → gate → provider smoke → quality evaluation → report` 的单向状态机运行；每个阶段有独立的 owner-only 原子 checkpoint、退出 sidecar、结构化日志、PID 和 `flock` 锁。checkpoint 同时绑定冻结语料 digest、文档数量、runtime build、plan/provider contract、model profile revision、provider smoke artifact、容错策略和评测实现。阶段只有在退出码为 0 且数量、失败数、身份/hash 校验通过后才完成，最终 transition audit 要求每个已完成阶段之后确有下一阶段的 `stage_started` 证据；受控失败、身份变化或重试耗尽保持 fail closed，不能跳过 gate 或伪造完成。
+
+OpenCode Go 的 transport/timeout/provider-unavailable 由 provider SDK 的单调用预算和 campaign 的持久化有界退避共同处理；provider smoke 与 quality runner 在同一 provider/case checkpoint 上每 30 秒写 content-safe heartbeat，成功 observation 原子落盘后不重复调用。Graph 只恢复同一 immutable build，累计恢复次数跨进程保留，只在 processed chunk 前进后重置连续失败退避。长阶段若 checkpoint 与日志均超过阶段 stall budget 没有活动，supervisor 最多从原 checkpoint 重启三次，之后仍以失败停止。supervisor 或 support service 崩溃时 marker 仍存在，launchd 自动重启；macOS 注销/关机的 `SIGTERM` 写 `stage_interrupted` 并保留 marker，下一次登录自动续跑，显式 `SIGUSR1` 才进入 operator `paused`。`tools/control_large_evaluation.py --pause` 先写 paused checkpoint、终止受管进程组，再移除 marker、卸载隔离 runtime 并验证端口关闭；`--resume` 只恢复当前 paused stage，`--retry-failed` 只恢复当前 failed stage。受控失败和完成都会移除 marker、卸载支持服务并检查 loopback 端口。最终 publisher 校验 artifact digest 后原子发布 JSON/Markdown，并生成 owner-only `analysis-bundle.tar.gz` 与逐文件 SHA-256 manifest，供后续 Agent 离线分析；整个流程不启动、停止或访问正式 `rag` Compose project。
 
 `text/plain` 是公开上传合同的一部分，不经过 Docling 不支持的 TXT converter，而是以严格 UTF-8 直接构造
 受同一 item/character 预算约束的 `DoclingDocument`。Markdown/CSV/Office simple pipeline 不消费 PDF

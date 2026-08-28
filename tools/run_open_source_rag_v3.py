@@ -2,7 +2,7 @@
 """Run the bounded host observation pass for routing-rag-v3.
 
 The runner never provisions a knowledge base or manages Docker.  It only uses
-an already-bound, owner-only rag-eval runtime.  Execution performs real Simple,
+an already-bound, owner-only host test runtime. Execution performs real Simple,
 Graph, Auto, and answer calls, so it requires an explicit Provider confirmation.
 Its checkpoint is content-safe: no question, answer, filename, chunk body,
 provider payload, exception message, or secret is persisted.

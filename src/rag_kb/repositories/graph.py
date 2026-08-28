@@ -7,6 +7,7 @@ from typing import Protocol, runtime_checkable
 from uuid import UUID
 
 from rag_kb.domain import (
+    GraphChunkSource,
     GraphConfigSnapshot,
     GraphitiBuildSnapshot,
     GraphWorkItem,
@@ -82,6 +83,13 @@ class GraphRepository(Protocol):
         episode_uuid: str,
         lease_token: UUID | None = None,
     ) -> bool: ...
+
+    async def missing_graph_chunks(
+        self,
+        config: GraphConfigSnapshot,
+        *,
+        limit: int,
+    ) -> tuple[GraphChunkSource, ...]: ...
 
     async def first_graphiti_episode_uuid(
         self, kb_id: UUID, *, build_id: UUID

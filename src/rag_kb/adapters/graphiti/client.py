@@ -72,6 +72,35 @@ class GraphitiSchemaEchoError(RuntimeError):
     """Provider returned JSON schema instead of the required Graphiti fields."""
 
 
+_TRANSIENT_PROVIDER_ERROR_NAMES = frozenset(
+    {
+        "APIConnectionError",
+        "APITimeoutError",
+        "ConnectError",
+        "ConnectTimeout",
+        "EndOfStream",
+        "PoolTimeout",
+        "ReadError",
+        "ReadTimeout",
+        "RemoteProtocolError",
+        "TimeoutException",
+        "WriteError",
+        "WriteTimeout",
+    }
+)
+
+
+def _is_transient_provider_error(error: BaseException) -> bool:
+    current: BaseException | None = error
+    observed: set[int] = set()
+    while current is not None and id(current) not in observed:
+        observed.add(id(current))
+        if type(current).__name__ in _TRANSIENT_PROVIDER_ERROR_NAMES:
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 def required_model_field_names(response_model: Any) -> tuple[str, ...]:
     fields = getattr(response_model, "model_fields", None)
     if not isinstance(fields, dict):
@@ -293,6 +322,7 @@ class GraphitiModelCredentials:
     embedding_model: str
     embedding_timeout_seconds: float
     embedding_batch_size: int
+    max_concurrency: int
 
 
 class GraphitiRuntime:
@@ -450,6 +480,91 @@ class GraphitiRuntime:
         if compiled.validation_policy.reject_entity_self_loops:
             await self._remove_self_loop_edges(driver, build)
         return str(result.episode.uuid)
+
+    async def add_episodes_bulk(
+        self,
+        build: GraphitiBuildSnapshot,
+        chunks: tuple[GraphChunkSource, ...],
+    ) -> tuple[str, ...]:
+        """Add a bounded batch while retaining the immutable build contract.
+
+        The database work lease remains per build, so callers can safely use
+        this only while they own that lease.  Graphiti's bulk path performs
+        bounded concurrent provider calls internally and returns the same
+        deterministic episode identities used by ``add_episode``.
+        """
+
+        if not chunks:
+            return ()
+        compiled = self._compiled_schema(build)
+        graphiti, driver = await self._client(build)
+        modules = _graphiti_modules()
+        from graphiti_core.utils.bulk_utils import RawEpisode
+
+        episodes: list[Any] = []
+        raw_episodes: list[RawEpisode] = []
+        for chunk in chunks:
+            reference_time = chunk.reference_time or datetime.now(UTC)
+            episode_uuid = graphiti_episode_uuid(build, chunk)
+            try:
+                await modules.EpisodicNode.get_by_uuid(driver, episode_uuid)
+            except modules.NodeNotFoundError:
+                pass
+            else:
+                # Preserve the single-episode recovery contract: an external
+                # write without its relational mapping is replayed cleanly.
+                await graphiti.remove_episode(episode_uuid)
+            episode = modules.EpisodicNode(
+                uuid=episode_uuid,
+                name=f"chunk-{chunk.index_chunk_id}",
+                group_id=build.group_id,
+                labels=[],
+                source=modules.EpisodeType.text,
+                source_description=f"chunk {chunk.index_chunk_id}",
+                content=chunk.content,
+                created_at=datetime.now(UTC),
+                valid_at=reference_time,
+            )
+            await episode.save(driver)
+            episodes.append(episode)
+            raw_episodes.append(
+                RawEpisode(
+                    name=episode.name,
+                    uuid=episode_uuid,
+                    content=chunk.content,
+                    source_description=episode.source_description,
+                    source=modules.EpisodeType.text,
+                    reference_time=reference_time,
+                )
+            )
+        try:
+            result = await graphiti.add_episode_bulk(
+                raw_episodes,
+                group_id=build.group_id,
+                entity_types=compiled.entity_types,
+                edge_types=compiled.edge_types,
+                edge_type_map=compiled.edge_type_map,
+                custom_extraction_instructions=compiled.extraction_instructions,
+            )
+        except Exception as error:
+            # A transient provider connection failure can abort Graphiti's
+            # whole bulk gather after it has already written some episode
+            # nodes.  Replay the bounded batch through the existing
+            # deterministic single-episode recovery path so one dropped
+            # connection does not burn the build's retry budget.  Structural
+            # extraction failures still fail closed and preserve their
+            # original error type.
+            if not _is_transient_provider_error(error):
+                raise
+            return tuple(
+                [await self.add_episode(build, chunk) for chunk in chunks]
+            )
+        result_episodes = tuple(getattr(result, "episodes", ()))
+        if len(result_episodes) != len(chunks):
+            raise RuntimeError("Graphiti bulk episode count mismatch")
+        if compiled.validation_policy.reject_entity_self_loops:
+            await self._remove_self_loop_edges(driver, build)
+        return tuple(str(episode.uuid) for episode in result_episodes)
 
     def _compiled_schema(self, build: GraphitiBuildSnapshot) -> CompiledGraphSchema:
         """Resolve the exact build identity before touching Graphiti."""
@@ -823,6 +938,11 @@ class GraphitiRuntime:
                 embedder=embedder,
                 cross_encoder=modules.NeverRerank(),
                 store_raw_episode_content=True,
+                # Honor the immutable provider concurrency contract.  The
+                # Graphiti default is 20, which can exceed a provider's
+                # configured connection budget and cause repeated stream
+                # resets under OpenCode Go.
+                max_coroutines=values.max_concurrency,
             )
             cached = (graphiti, driver)
             self._clients[build.group_id] = cached

@@ -22,7 +22,11 @@ from tools.evaluation_runtime import (
     canonical_evaluation_runtime_manifest,
     load_evaluation_runtime,
 )
-from tools.provision_large_evaluation_host import BINDINGS_SCHEMA, SPECS
+from tools.provision_large_evaluation_host import (
+    BINDINGS_SCHEMA,
+    DATASET_SPECS,
+    SPECS,
+)
 from tools.prepare_large_evaluation import SCHEMA_VERSION
 from tools.run_adaptive_graph_r4 import R4RunnerError, _load_runtime_facts
 
@@ -42,6 +46,11 @@ def _parser() -> argparse.ArgumentParser:
         "--evaluation-runtime",
         type=Path,
         default=canonical_evaluation_runtime_manifest(),
+    )
+    parser.add_argument(
+        "--bindings-path",
+        type=Path,
+        help="optional owner-only suite bindings file under the evaluation runtime",
     )
     return parser
 
@@ -92,8 +101,17 @@ def _assert_resolved_chat_model(configuration: object) -> None:
         raise LargeEvaluationRuntimeError("large_evaluation_chat_model_mismatch")
 
 
-def _assert_all_suite_bindings(runtime_root: Path, plan: Mapping[str, Any]) -> None:
-    path = runtime_root / "large-evaluation-bindings.json"
+def _assert_all_suite_bindings(
+    runtime_root: Path,
+    plan: Mapping[str, Any],
+    bindings_path: Path | None = None,
+) -> None:
+    path = bindings_path or (runtime_root / "large-evaluation-bindings.json")
+    if not path.is_absolute():
+        path = runtime_root / path
+    path = path.absolute()
+    if path.parent != runtime_root.absolute():
+        raise LargeEvaluationRuntimeError("large_evaluation_bindings_path_invalid")
     if not path.is_file() or path.stat().st_mode & 0o077:
         raise LargeEvaluationRuntimeError("large_evaluation_bindings_unavailable")
     try:
@@ -101,20 +119,37 @@ def _assert_all_suite_bindings(runtime_root: Path, plan: Mapping[str, Any]) -> N
     except json.JSONDecodeError as error:
         raise LargeEvaluationRuntimeError("large_evaluation_bindings_invalid") from error
     suites = value.get("suites") if isinstance(value, dict) else None
-    expected = {spec.dataset_id for spec in SPECS.values()}
+    planned = {
+        item.get("dataset_id")
+        for item in plan["plan_binding"].get("corpora", [])
+        if isinstance(item, Mapping)
+    }
+    standard = {spec.dataset_id for spec in SPECS.values()}
+    route_dataset_id = (
+        plan.get("coverage", {}).get("routing", {}).get("dataset_id")
+        or SPECS["routing"].dataset_id
+    )
+    expected = (standard - {SPECS["routing"].dataset_id}) | {
+        route_dataset_id
+    }
     if (
         not isinstance(value, dict)
         or value.get("schema_version") != BINDINGS_SCHEMA
         or not isinstance(suites, dict)
-        or set(suites) != expected
+        or not isinstance(route_dataset_id, str)
+        or route_dataset_id
+        not in {spec.dataset_id for spec in DATASET_SPECS.values()}
+        or planned != expected
+        or not expected <= set(suites)
         or value.get("binding_sha256") != digest({"suites": suites})
     ):
         raise LargeEvaluationRuntimeError("large_evaluation_bindings_invalid")
-    planned = {item.get("dataset_id") for item in plan["plan_binding"]["corpora"]}
-    if planned != expected:
-        raise LargeEvaluationRuntimeError("large_evaluation_plan_suite_set_invalid")
-    for spec in SPECS.values():
-        entry = suites[spec.dataset_id]
+    specs_by_dataset = {spec.dataset_id: spec for spec in DATASET_SPECS.values()}
+    for dataset_id in expected:
+        spec = specs_by_dataset.get(dataset_id)
+        if spec is None:
+            raise LargeEvaluationRuntimeError("large_evaluation_plan_suite_set_invalid")
+        entry = suites[dataset_id]
         if not isinstance(entry, dict) or not all(
             isinstance(entry.get(field), str)
             for field in ("corpus_sha256", "knowledge_base_id", "index_revision_id")
@@ -129,7 +164,11 @@ def _assert_all_suite_bindings(runtime_root: Path, plan: Mapping[str, Any]) -> N
             raise LargeEvaluationRuntimeError("large_evaluation_bindings_invalid")
 
 
-async def check(plan_path: Path, runtime_path: Path) -> dict[str, Any]:
+async def check(
+    plan_path: Path,
+    runtime_path: Path,
+    bindings_path: Path | None = None,
+) -> dict[str, Any]:
     """Read the plan and supplied host dependencies without mutating either."""
 
     plan = _load_private_plan(plan_path)
@@ -138,7 +177,7 @@ async def check(plan_path: Path, runtime_path: Path) -> dict[str, Any]:
         require_adaptive_graph=True,
         allow_canonical_checkout=True,
     )
-    _assert_all_suite_bindings(runtime.runtime_root, plan)
+    _assert_all_suite_bindings(runtime.runtime_root, plan, bindings_path)
     identity = runtime.adaptive_graph
     if identity is None:
         raise LargeEvaluationRuntimeError("large_evaluation_runtime_identity_missing")
@@ -184,7 +223,9 @@ async def check(plan_path: Path, runtime_path: Path) -> dict[str, Any]:
 def main() -> int:
     arguments = _parser().parse_args()
     try:
-        result = asyncio.run(check(arguments.plan, arguments.evaluation_runtime))
+        result = asyncio.run(
+            check(arguments.plan, arguments.evaluation_runtime, arguments.bindings_path)
+        )
     except (EvaluationRuntimeError, LargeEvaluationRuntimeError, R4RunnerError) as error:
         result = {"status": "blocked", "failure_code": str(error)}
     except Exception as error:  # Content-safe dependency/readiness failure.

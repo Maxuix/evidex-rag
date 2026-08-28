@@ -7,6 +7,8 @@ from pathlib import Path
 from rag_kb.domain import ChatModelExecutionError, ErrorCode
 from rag_kb.services.model_settings import ModelProfileValidationError
 from tools.run_evaluation_provider_smoke import (
+    ProviderSmokeError,
+    _bind_checkpoint,
     _load_checkpoint,
     _safe_failure_summary,
 )
@@ -18,6 +20,22 @@ class EvaluationProviderSmokeTests(unittest.TestCase):
             checkpoint = _load_checkpoint(Path(directory) / "checkpoint.json")
         self.assertEqual(checkpoint["status"], "started")
         self.assertEqual(checkpoint["providers"], {})
+        self.assertEqual(checkpoint["attempts"], {})
+
+    def test_checkpoint_binding_cannot_change_after_it_is_written(self) -> None:
+        checkpoint = {
+            "schema_version": "evaluation_provider_smoke_v1",
+            "status": "started",
+            "providers": {},
+            "attempts": {},
+            "steps": [],
+        }
+        _bind_checkpoint(checkpoint, {"runtime_build_revision": "a"})
+
+        with self.assertRaisesRegex(
+            ProviderSmokeError, "provider_smoke_checkpoint_binding_changed"
+        ):
+            _bind_checkpoint(checkpoint, {"runtime_build_revision": "b"})
 
     def test_chat_failure_summary_excludes_unknown_diagnostics(self) -> None:
         self.assertEqual(
@@ -46,8 +64,6 @@ class EvaluationProviderSmokeTests(unittest.TestCase):
         )
 
     def test_smoke_failure_summary_retains_stable_code(self) -> None:
-        from tools.run_evaluation_provider_smoke import ProviderSmokeError
-
         self.assertEqual(
             _safe_failure_summary(ProviderSmokeError("chat_no_tool_call")),
             {"type": "ProviderSmokeError", "code": "chat_no_tool_call"},

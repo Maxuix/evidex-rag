@@ -33,6 +33,16 @@ from rag_kb.domain import (
 from rag_kb.services.model_settings import ModelProfileValidationError
 from rag_kb.uow import TransactionMode, UnitOfWorkPurpose, execute_in_transaction
 from tools.evaluation_campaign_state import write_private_json
+from tools.evaluation_campaign_state import digest
+from tools.evaluation_resilience import (
+    HEARTBEAT_INTERVAL_SECONDS,
+    PROVIDER_CASE_RETRY_POLICY,
+    RESILIENCE_POLICY,
+    RESILIENCE_POLICY_SHA256,
+    is_retryable_provider_failure,
+    seconds_until,
+    timestamp_after,
+)
 from tools.evaluation_runtime import (
     EvaluationRuntimeError,
     canonical_evaluation_runtime_manifest,
@@ -82,6 +92,7 @@ def _load_checkpoint(path: Path) -> dict[str, Any]:
             "schema_version": SCHEMA,
             "status": "started",
             "providers": {},
+            "attempts": {},
             "steps": [],
         }
     if not path.is_file() or path.stat().st_mode & 0o077:
@@ -94,10 +105,45 @@ def _load_checkpoint(path: Path) -> dict[str, Any]:
         not isinstance(value, dict)
         or value.get("schema_version") != SCHEMA
         or not isinstance(value.get("providers"), dict)
+        or not isinstance(value.get("attempts", {}), dict)
         or not isinstance(value.get("steps"), list)
     ):
         raise ProviderSmokeError("provider_smoke_checkpoint_schema_invalid")
     return value
+
+
+def _expected_binding(arguments: argparse.Namespace, runtime) -> dict[str, Any]:
+    return {
+        "runtime_build_revision": runtime.build_revision,
+        "chat_profile_revision_id": str(arguments.chat_profile_revision_id),
+        "text_embedding_profile_revision_id": str(
+            arguments.text_embedding_profile_revision_id
+        ),
+        "multimodal_embedding_profile_revision_id": str(
+            arguments.multimodal_embedding_profile_revision_id
+        ),
+        "models": dict(EXPECTED_MODELS),
+        "resilience_policy_sha256": RESILIENCE_POLICY_SHA256,
+    }
+
+
+def _bind_checkpoint(
+    checkpoint: dict[str, Any], binding: dict[str, Any]
+) -> None:
+    existing = checkpoint.get("binding")
+    if existing is not None and (
+        existing != binding or checkpoint.get("binding_sha256") != digest(binding)
+    ):
+        raise ProviderSmokeError("provider_smoke_checkpoint_binding_changed")
+    if existing is None and checkpoint.get("providers"):
+        raise ProviderSmokeError("provider_smoke_checkpoint_binding_missing")
+    existing_policy = checkpoint.get("resilience_policy")
+    if existing_policy is not None and existing_policy != RESILIENCE_POLICY:
+        raise ProviderSmokeError("provider_smoke_resilience_policy_changed")
+    checkpoint["binding"] = binding
+    checkpoint["binding_sha256"] = digest(binding)
+    checkpoint["resilience_policy"] = RESILIENCE_POLICY
+    checkpoint.setdefault("attempts", {})
 
 
 def _step(checkpoint: dict[str, Any], name: str, status: str) -> None:
@@ -227,17 +273,61 @@ async def _probe_profile(
     return observation
 
 
+async def _checkpointed_probe(
+    arguments: argparse.Namespace,
+    checkpoint: dict[str, Any],
+    *,
+    provider: str,
+    operation,
+) -> dict[str, Any]:
+    task = asyncio.create_task(operation())
+    try:
+        while True:
+            done, _pending = await asyncio.wait(
+                {task}, timeout=HEARTBEAT_INTERVAL_SECONDS
+            )
+            if done:
+                return await task
+            attempt = checkpoint["attempts"][provider]
+            attempt["heartbeat_at"] = datetime.now(UTC).isoformat()
+            checkpoint["heartbeat_at"] = attempt["heartbeat_at"]
+            write_private_json(arguments.checkpoint, checkpoint)
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+
+async def _wait_for_retry(
+    arguments: argparse.Namespace,
+    checkpoint: dict[str, Any],
+    *,
+    provider: str,
+) -> None:
+    while True:
+        attempt = checkpoint["attempts"][provider]
+        remaining = seconds_until(attempt.get("next_retry_at"))
+        if remaining <= 0:
+            return
+        await asyncio.sleep(min(HEARTBEAT_INTERVAL_SECONDS, remaining))
+        now = datetime.now(UTC).isoformat()
+        attempt["heartbeat_at"] = now
+        checkpoint["heartbeat_at"] = now
+        write_private_json(arguments.checkpoint, checkpoint)
+
+
 async def _run(arguments: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     checkpoint = _load_checkpoint(arguments.checkpoint)
-    if checkpoint.get("status") == "completed":
-        return 0, {"status": "completed", "resumed": True}
-    checkpoint.pop("failure_code", None)
-    checkpoint.pop("last_failure", None)
     runtime = load_evaluation_runtime(
         arguments.evaluation_runtime,
         require_adaptive_graph=False,
         allow_canonical_checkout=True,
     )
+    _bind_checkpoint(checkpoint, _expected_binding(arguments, runtime))
+    if checkpoint.get("status") == "completed":
+        return 0, {"status": "completed", "resumed": True}
+    checkpoint.pop("failure_code", None)
+    checkpoint.pop("last_failure", None)
     dependencies = None
     try:
         checkpoint["status"] = "running"
@@ -273,14 +363,79 @@ async def _run(arguments: argparse.Namespace) -> tuple[int, dict[str, Any]]:
                 == "completed"
             ):
                 continue
-            _step(checkpoint, provider, "started")
-            write_private_json(arguments.checkpoint, checkpoint)
-            observation = await _probe_profile(
-                dependencies,
-                provider=provider,
-                revision_id=revision_id,
-                kind=kind,
+            attempt = checkpoint["attempts"].setdefault(
+                provider,
+                {"status": "pending", "attempt_count": 0},
             )
+            if attempt.get("status") == "retry_wait":
+                await _wait_for_retry(arguments, checkpoint, provider=provider)
+            while True:
+                attempt_count = int(attempt.get("attempt_count", 0)) + 1
+                attempt.update(
+                    {
+                        "status": "running",
+                        "attempt_count": attempt_count,
+                        "started_at": datetime.now(UTC).isoformat(),
+                    }
+                )
+                attempt.pop("next_retry_at", None)
+                _step(checkpoint, provider, "started")
+                checkpoint["status"] = "running"
+                write_private_json(arguments.checkpoint, checkpoint)
+                try:
+                    observation = await _checkpointed_probe(
+                        arguments,
+                        checkpoint,
+                        provider=provider,
+                        operation=lambda: _probe_profile(
+                            dependencies,
+                            provider=provider,
+                            revision_id=revision_id,
+                            kind=kind,
+                        ),
+                    )
+                except Exception as error:
+                    if (
+                        not is_retryable_provider_failure(error)
+                        or attempt_count >= PROVIDER_CASE_RETRY_POLICY.max_attempts
+                    ):
+                        raise
+                    failure = _safe_failure_summary(error)
+                    delay = PROVIDER_CASE_RETRY_POLICY.delay_after(attempt_count)
+                    next_retry_at = timestamp_after(delay)
+                    attempt.update(
+                        {
+                            "status": "retry_wait",
+                            "last_failure": failure,
+                            "last_retry_at": datetime.now(UTC).isoformat(),
+                            "next_retry_at": next_retry_at,
+                        }
+                    )
+                    checkpoint["status"] = "retry_wait"
+                    _step(checkpoint, provider, "retry_wait")
+                    write_private_json(arguments.checkpoint, checkpoint)
+                    print(
+                        json.dumps(
+                            {
+                                "event": "provider_smoke_retry_scheduled",
+                                "provider": provider,
+                                "attempt": attempt_count,
+                                "failure_code": failure.get("code"),
+                                "retry_delay_seconds": delay,
+                                "next_retry_at": next_retry_at,
+                            },
+                            sort_keys=True,
+                        ),
+                        flush=True,
+                    )
+                    await _wait_for_retry(
+                        arguments, checkpoint, provider=provider
+                    )
+                    continue
+                break
+            attempt["status"] = "completed"
+            attempt["completed_at"] = datetime.now(UTC).isoformat()
+            attempt.pop("next_retry_at", None)
             checkpoint["providers"][provider] = {
                 "status": "completed",
                 **observation,

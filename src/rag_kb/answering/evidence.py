@@ -62,6 +62,19 @@ def render_validated_answer(
             control_reason=answer.control_reason or AnswerControlReason.INSUFFICIENT_EVIDENCE,
         )
 
+    if answer.outcome is AnswerOutcome.CLARIFY:
+        questions = tuple(value.rstrip() for value in answer.missing_aspects)
+        content = (
+            "在回答之前，我需要先和你确认：" + "；".join(questions)
+            if _contains_cjk(current_query)
+            else "Before I can answer, I need to clarify: " + "; ".join(questions)
+        )
+        return RenderedAnswer(
+            outcome=answer.outcome,
+            content=content,
+            citations=(),
+        )
+
     lookup = {item.citation_id: item for item in evidence.items}
     ordinals: dict[str, int] = {}
     citations: list[RenderedCitation] = []

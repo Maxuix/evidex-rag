@@ -27,6 +27,12 @@ class GraphitiGraph(Protocol):
         self, build: GraphitiBuildSnapshot, chunk: GraphChunkSource
     ) -> str: ...
 
+    async def add_episodes_bulk(
+        self,
+        build: GraphitiBuildSnapshot,
+        chunks: tuple[GraphChunkSource, ...],
+    ) -> tuple[str, ...]: ...
+
     async def search(
         self, build: GraphitiBuildSnapshot, query: GraphitiSearchQuery
     ) -> tuple[GraphitiEdgeResult, ...]: ...

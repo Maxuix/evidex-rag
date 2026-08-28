@@ -182,7 +182,7 @@ class ChatAgentTraceResponse(PublicSchema):
     events: tuple[ChatAgentTraceEventResponse, ...]
     budget: ChatAgentBudgetResponse
     usage: dict[str, Annotated[int, Field(ge=0)]]
-    outcome: Literal["answered", "partial", "refused"]
+    outcome: Literal["answered", "partial", "refused", "clarify"]
 
 
 class ChatAgentResponse(PublicSchema):

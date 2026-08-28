@@ -35,6 +35,11 @@ from rag_kb.uow import (
 
 LOGGER = get_logger(__name__)
 
+# Graphiti's bulk extractor performs bounded concurrent model calls internally.
+# Keep the outer batch small enough for the build lease while reducing the
+# per-chunk transaction and provider setup overhead.
+GRAPH_EPISODE_BATCH_SIZE = 8
+
 
 @dataclass(frozen=True, slots=True)
 class GraphConfigView:
@@ -235,20 +240,57 @@ class GraphExtractionWorker:
             if work.kind is GraphWorkKind.CHUNK:
                 chunk = work.chunk
                 assert chunk is not None
-                episode_uuid = await self._graphiti_graph.add_episode(build, chunk)
-                saved = await execute_in_transaction(
+                bulk_adder = getattr(self._graphiti_graph, "add_episodes_bulk", None)
+                if callable(bulk_adder):
+                    async def load_batch(uow: UnitOfWork):
+                        loader = getattr(uow.graph, "missing_graph_chunks", None)
+                        if callable(loader):
+                            batch = tuple(
+                                await loader(
+                                    work.config,
+                                    limit=GRAPH_EPISODE_BATCH_SIZE,
+                                )
+                            )
+                            if batch:
+                                return batch
+                        return (chunk,)
+
+                    chunks = await execute_in_transaction(
+                        self._unit_of_work,
+                        load_batch,
+                        purpose=UnitOfWorkPurpose.REQUEST,
+                    )
+                    episode_uuids = tuple(await bulk_adder(build, chunks))
+                else:
+                    chunks = (chunk,)
+                    episode_uuids = (
+                        await self._graphiti_graph.add_episode(build, chunk),
+                    )
+                if len(episode_uuids) != len(chunks):
+                    raise RuntimeError("Graphiti episode batch count mismatch")
+
+                async def persist_batch(uow: UnitOfWork) -> int:
+                    saved_count = 0
+                    for batch_chunk, episode_uuid in zip(
+                        chunks, episode_uuids, strict=True
+                    ):
+                        if await uow.graph.save_graphiti_episode(
+                            kb_id=work.config.knowledge_base_id,
+                            build_id=build.build_id,
+                            index_chunk_id=batch_chunk.index_chunk_id,
+                            content_hash=batch_chunk.content_hash,
+                            episode_uuid=episode_uuid,
+                            **_lease_kwargs(work),
+                        ):
+                            saved_count += 1
+                    return saved_count
+
+                saved_count = await execute_in_transaction(
                     self._unit_of_work,
-                    lambda uow: uow.graph.save_graphiti_episode(
-                        kb_id=work.config.knowledge_base_id,
-                        build_id=build.build_id,
-                        index_chunk_id=chunk.index_chunk_id,
-                        content_hash=chunk.content_hash,
-                        episode_uuid=episode_uuid,
-                        **_lease_kwargs(work),
-                    ),
+                    persist_batch,
                     purpose=UnitOfWorkPurpose.INDEXING,
                 )
-                if not saved:
+                if saved_count != len(chunks):
                     log_event(
                         LOGGER,
                         "graphiti_episode_write",
@@ -256,6 +298,8 @@ class GraphExtractionWorker:
                         knowledge_base_id=work.config.knowledge_base_id,
                         operation="chunk",
                         outcome="skipped",
+                        batch_count=len(chunks),
+                        saved_count=saved_count,
                     )
                     return
                 log_event(
@@ -265,6 +309,7 @@ class GraphExtractionWorker:
                     knowledge_base_id=work.config.knowledge_base_id,
                     operation="chunk",
                     outcome="ok",
+                    batch_count=len(chunks),
                 )
                 return
 

@@ -21,6 +21,7 @@ import argparse
 from contextlib import contextmanager
 from datetime import UTC, datetime
 import fcntl
+import gzip
 import hashlib
 import json
 import os
@@ -30,12 +31,20 @@ import socket
 import stat
 import subprocess
 import sys
+import tarfile
 import time
 from typing import Any, Callable, Iterator, Mapping, Sequence
 from urllib.error import URLError
 from urllib.request import urlopen
 
 from tools.evaluation_campaign_state import canonical_bytes, digest, write_private_json
+from tools.evaluation_resilience import (
+    HEARTBEAT_INTERVAL_SECONDS,
+    LONG_STAGE_STALL_TIMEOUT_SECONDS,
+    MAX_STALL_RESTARTS,
+    RESILIENCE_POLICY_SHA256,
+    SHORT_STAGE_STALL_TIMEOUT_SECONDS,
+)
 from tools.evaluation_runtime import (
     EvaluationRuntimeError,
     load_evaluation_runtime,
@@ -79,7 +88,28 @@ CHILD_START_GRACE_SECONDS = 2.0
 CHILD_PAUSE_TIMEOUT_SECONDS = 30.0
 API_READY_PATH = "/health/ready"
 RUNTIME_READY_TIMEOUT_SECONDS = 900.0
+RUNTIME_SETTLE_TIMEOUT_SECONDS = 60.0
+RUN_MARKER_NAME = ".evaluation-enabled"
+SUPPORT_LABELS = (
+    "com.rag.large-evaluation.worker",
+    "com.rag.large-evaluation.api",
+    "com.rag.large-evaluation.falkordb",
+    "com.rag.large-evaluation.postgres",
+)
 DEFAULT_CONFIG = ROOT / ".runtime/evaluations/large-evaluation-route-variant-v1/supervisor-config.json"
+AUTOMATION_IMPLEMENTATION_FILES = (
+    "tools/evaluation_campaign_state.py",
+    "tools/evaluation_resilience.py",
+    "tools/run_supervised_command.py",
+    "tools/provision_large_evaluation_host.py",
+    "tools/check_large_evaluation_runtime.py",
+    "tools/run_evaluation_provider_smoke.py",
+    "tools/run_large_evaluation.py",
+    "tools/finalize_large_evaluation_report.py",
+    "tools/supervise_large_evaluation.py",
+    "tools/install_large_evaluation_launchd.py",
+    "tools/control_large_evaluation.py",
+)
 
 
 class SupervisorError(RuntimeError):
@@ -98,8 +128,31 @@ class SupervisorPaused(SupervisorError):
     """The operator requested a durable pause at the current stage."""
 
 
+class SupervisorShutdown(SupervisorError):
+    """The host is shutting down; keep the campaign armed for next login."""
+
+
 def _timestamp() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _automation_implementation_sha256(
+    binding: Mapping[str, Any] | None = None,
+) -> str:
+    repo_root = (
+        Path(str(binding["repo_root"])).resolve()
+        if binding is not None and isinstance(binding.get("repo_root"), str)
+        else ROOT.resolve()
+    )
+    values: dict[str, str] = {}
+    for relative in AUTOMATION_IMPLEMENTATION_FILES:
+        path = repo_root / relative
+        try:
+            payload = path.read_bytes()
+        except OSError as error:
+            raise SupervisorError("supervisor_implementation_file_missing") from error
+        values[relative] = hashlib.sha256(payload).hexdigest()
+    return digest(values)
 
 
 def _private_regular_file(path: Path, *, code: str) -> Path:
@@ -270,6 +323,8 @@ def _new_state(config_sha256: str) -> dict[str, Any]:
     return {
         "schema_version": STATE_SCHEMA,
         "config_sha256": config_sha256,
+        "resilience_policy_sha256": RESILIENCE_POLICY_SHA256,
+        "implementation_sha256": _automation_implementation_sha256(),
         "status": "running",
         "current_stage": STAGES[0],
         "created_at": now,
@@ -303,6 +358,54 @@ def _validate_state(state: dict[str, Any], config_sha256: str) -> None:
     for stage in STAGES:
         if stages[stage].get("config_sha256") != config_sha256:
             raise SupervisorError("supervisor_state_stage_config_changed")
+    _validate_stage_order(state)
+
+
+def _validate_stage_order(state: Mapping[str, Any]) -> None:
+    """Reject skipped gates and inconsistent terminal state."""
+
+    stages = state["stages"]
+    statuses = [stages[stage].get("status") for stage in STAGES]
+    allowed = {"pending", "running", "paused", "failed", "completed"}
+    if any(status not in allowed for status in statuses):
+        raise SupervisorError("supervisor_state_stage_status_invalid")
+    incomplete_seen = False
+    for status in statuses:
+        if status != "completed":
+            incomplete_seen = True
+        elif incomplete_seen:
+            raise SupervisorError("supervisor_state_stage_order_invalid")
+    active = [
+        stage
+        for stage, status in zip(STAGES, statuses, strict=True)
+        if status in {"running", "paused", "failed"}
+    ]
+    if len(active) > 1:
+        raise SupervisorError("supervisor_state_multiple_active_stages")
+    current = state.get("current_stage")
+    if current not in STAGES:
+        raise SupervisorError("supervisor_state_current_stage_invalid")
+    state_status = state.get("status")
+    if state_status in {"paused", "failed"}:
+        if active != [current] or stages[current].get("status") != state_status:
+            raise SupervisorError("supervisor_state_terminal_stage_invalid")
+    elif state_status == "completed":
+        if any(status != "completed" for status in statuses):
+            raise SupervisorError("supervisor_state_completion_invalid")
+    elif state_status == "running":
+        if active and active != [current]:
+            raise SupervisorError("supervisor_state_active_stage_invalid")
+        current_index = STAGES.index(current)
+        if any(
+            stages[stage].get("status") != "completed"
+            for stage in STAGES[:current_index]
+        ):
+            raise SupervisorError("supervisor_state_previous_stage_incomplete")
+        if any(
+            stages[stage].get("status") != "pending"
+            for stage in STAGES[current_index + 1 :]
+        ):
+            raise SupervisorError("supervisor_state_following_stage_not_pending")
 
 
 def _load_or_create_state(path: Path, config_sha256: str) -> dict[str, Any]:
@@ -738,9 +841,24 @@ def _validate_smoke(binding: Mapping[str, Any]) -> dict[str, Any]:
     checkpoint = _load_json(_config_path(binding, "provider_smoke_checkpoint"), code="provider_smoke_checkpoint")
     providers = checkpoint.get("providers")
     steps = checkpoint.get("steps")
+    smoke_binding = checkpoint.get("binding")
+    expected_smoke_binding = {
+        "runtime_build_revision": binding["runtime_build_revision"],
+        "chat_profile_revision_id": binding["chat_profile_revision_id"],
+        "text_embedding_profile_revision_id": binding[
+            "text_embedding_profile_revision_id"
+        ],
+        "multimodal_embedding_profile_revision_id": binding[
+            "multimodal_embedding_profile_revision_id"
+        ],
+        "models": dict(EXPECTED_MODELS),
+        "resilience_policy_sha256": RESILIENCE_POLICY_SHA256,
+    }
     if (
         checkpoint.get("schema_version") != PROVIDER_SMOKE_SCHEMA
         or checkpoint.get("status") != "completed"
+        or smoke_binding != expected_smoke_binding
+        or checkpoint.get("binding_sha256") != digest(expected_smoke_binding)
         or not isinstance(providers, dict)
         or set(providers) != set(EXPECTED_MODELS)
         or not isinstance(steps, list)
@@ -762,6 +880,11 @@ def _validate_smoke(binding: Mapping[str, Any]) -> dict[str, Any]:
         "provider_count": len(providers),
         "models": {name: providers[name]["model"] for name in sorted(providers)},
         "completed_providers": sorted(providers),
+        "binding_sha256": checkpoint["binding_sha256"],
+        "attempt_count": {
+            name: int(checkpoint.get("attempts", {}).get(name, {}).get("attempt_count", 0))
+            for name in sorted(providers)
+        },
     }
 
 
@@ -784,8 +907,40 @@ def _phase_progress(campaign: Mapping[str, Any]) -> dict[str, dict[str, int]]:
 
 def _validate_quality(binding: Mapping[str, Any]) -> dict[str, Any]:
     campaign = _load_json(_config_path(binding, "campaign_checkpoint"), code="campaign_checkpoint")
-    if campaign.get("status") != "completed":
+    campaign_binding = campaign.get("binding")
+    smoke_path = _private_regular_file(
+        _config_path(binding, "provider_smoke_checkpoint"),
+        code="provider_smoke_checkpoint",
+    )
+    if (
+        campaign.get("status") != "completed"
+        or not isinstance(campaign_binding, dict)
+        or campaign.get("binding_sha256") != digest(campaign_binding)
+        or campaign_binding.get("plan_binding_sha256")
+        != binding["plan_binding_sha256"]
+        or campaign_binding.get("runtime_build_revision")
+        != binding["runtime_build_revision"]
+        or campaign_binding.get("provider_smoke_sha256")
+        != hashlib.sha256(smoke_path.read_bytes()).hexdigest()
+        or campaign_binding.get("resilience_policy_sha256")
+        != RESILIENCE_POLICY_SHA256
+    ):
         raise ControlledStageFailure("supervisor_quality_campaign_not_completed")
+    progress = _phase_progress(campaign)
+    summaries = campaign.get("phase_summaries")
+    if (
+        not progress
+        or not isinstance(summaries, dict)
+        or set(summaries) != set(progress)
+        or any(
+            not isinstance(summaries.get(phase), dict)
+            or summaries[phase].get("status") != "completed"
+            or summaries[phase].get("planned") != values["completed"]
+            or values["started_or_completed"] != values["completed"]
+            for phase, values in progress.items()
+        )
+    ):
+        raise ControlledStageFailure("supervisor_quality_phase_counts_invalid")
     report = _load_json(_config_path(binding, "quality_report"), code="quality_report")
     if report.get("schema_version") != REPORT_SCHEMA or report.get("status") != "completed":
         raise ControlledStageFailure("supervisor_quality_report_invalid")
@@ -798,8 +953,9 @@ def _validate_quality(binding: Mapping[str, Any]) -> dict[str, Any]:
         raise ControlledStageFailure("supervisor_quality_markdown_permissions_failed") from error
     return {
         "campaign_binding_sha256": campaign.get("binding_sha256"),
-        "phase_progress": _phase_progress(campaign),
+        "phase_progress": progress,
         "report_artifact_sha256": report.get("artifact_sha256"),
+        "case_retry_count": report.get("resilience", {}).get("case_retry_count"),
     }
 
 
@@ -819,11 +975,199 @@ def _validate_report(binding: Mapping[str, Any]) -> dict[str, Any]:
     markdown = _private_regular_file(_config_path(binding, "markdown_report"), code="markdown_report")
     if not markdown.read_bytes().strip():
         raise ControlledStageFailure("supervisor_markdown_report_empty")
+    supervisor_state = _load_json(
+        _config_path(binding, "supervisor_state"), code="supervisor_state"
+    )
+    transition_audit = _validate_transition_evidence(supervisor_state)
+    bundle = _write_analysis_bundle(binding)
     return {
         "artifact_sha256": report.get("artifact_sha256"),
         "locked_report_sha256": publish.get("locked_report_sha256"),
         "markdown_report_sha256": publish.get("markdown_report_sha256"),
+        "analysis_bundle_path": bundle["path"],
+        "analysis_bundle_sha256": bundle["sha256"],
+        "analysis_archive_path": bundle["archive_path"],
+        "analysis_archive_sha256": bundle["archive_sha256"],
+        "transition_audit": transition_audit,
     }
+
+
+def _validate_transition_evidence(state: Mapping[str, Any]) -> dict[str, Any]:
+    events = state.get("events")
+    stages = state.get("stages")
+    if not isinstance(events, list) or not isinstance(stages, Mapping):
+        raise ControlledStageFailure("supervisor_transition_evidence_invalid")
+    started_indexes: dict[str, list[int]] = {stage: [] for stage in STAGES}
+    completed_indexes: dict[str, list[int]] = {stage: [] for stage in STAGES}
+    for index, event in enumerate(events):
+        if not isinstance(event, Mapping):
+            continue
+        stage = event.get("stage")
+        if stage not in STAGES:
+            continue
+        if event.get("event") == "stage_started":
+            started_indexes[str(stage)].append(index)
+        elif event.get("event") == "stage_completed":
+            completed_indexes[str(stage)].append(index)
+    for index, stage in enumerate(STAGES):
+        record = stages.get(stage)
+        if not isinstance(record, Mapping) or not started_indexes[stage]:
+            raise ControlledStageFailure("supervisor_stage_start_evidence_missing")
+        if stage == STAGES[-1]:
+            # Report validation runs immediately before the supervisor writes
+            # report=completed, so its durable start is the required evidence.
+            continue
+        if record.get("status") != "completed" or not completed_indexes[stage]:
+            raise ControlledStageFailure(
+                "supervisor_stage_completion_evidence_missing"
+            )
+        completion_index = completed_indexes[stage][-1]
+        next_stage = STAGES[index + 1]
+        if not any(value > completion_index for value in started_indexes[next_stage]):
+            raise ControlledStageFailure("supervisor_next_stage_start_missing")
+    return {
+        "status": "ok",
+        "stage_started_count": {
+            stage: len(started_indexes[stage]) for stage in STAGES
+        },
+        "completed_transition_count": len(STAGES) - 1,
+    }
+
+
+def _write_analysis_bundle(binding: Mapping[str, Any]) -> dict[str, str]:
+    """Publish one content-safe manifest for later Agent-side analysis."""
+
+    artifact_paths = [
+        _config_path(binding, "locked_report"),
+        _config_path(binding, "markdown_report"),
+        _config_path(binding, "quality_report"),
+        _config_path(binding, "quality_markdown"),
+        _config_path(binding, "campaign_checkpoint"),
+        _config_path(binding, "provider_smoke_checkpoint"),
+        _config_path(binding, "report_checkpoint"),
+        _config_path(binding, "supervisor_state"),
+        _provision_checkpoint_path(binding),
+    ]
+    artifact_paths.extend(
+        sorted(_config_path(binding, "stage_root").glob("*.json"))
+    )
+    artifact_paths.extend(
+        sorted(_config_path(binding, "stage_log_root").glob("*.log"))
+    )
+    control_checkpoint = _config_path(binding, "campaign_root") / "control-checkpoint.json"
+    if control_checkpoint.is_file():
+        artifact_paths.append(control_checkpoint)
+    artifacts: list[dict[str, Any]] = []
+    private_paths: list[Path] = []
+    for path in sorted(set(artifact_paths)):
+        private = _private_regular_file(path, code="analysis_bundle_artifact")
+        try:
+            relative = private.relative_to(ROOT.resolve())
+        except ValueError as error:
+            raise ControlledStageFailure(
+                "analysis_bundle_artifact_outside_repo"
+            ) from error
+        payload = private.read_bytes()
+        private_paths.append(private)
+        artifacts.append(
+            {
+                "path": str(private),
+                "archive_path": str(Path("large-evaluation") / relative),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+                "bytes": len(payload),
+            }
+        )
+    bundle_path = _config_path(binding, "campaign_root") / "analysis-bundle.json"
+    payload = {
+        "schema_version": "large_evaluation_analysis_bundle_v1",
+        "status": "completed",
+        "created_at": _timestamp(),
+        "config_sha256": digest(dict(binding)),
+        "provider_contract": {
+            "provider": "OpenCode Go",
+            "chat_model": "mimo-v2.5",
+            "text_embedding_model": "qwen3.7-text-embedding",
+            "multimodal_embedding_model": "tongyi-embedding-vision-flash-2026-03-06",
+        },
+        "artifacts": artifacts,
+    }
+    bundle_sha256 = write_private_json(bundle_path, payload)
+    archive_path = _config_path(binding, "campaign_root") / "analysis-bundle.tar.gz"
+    archive_sha256 = _write_analysis_archive(
+        archive_path,
+        (*private_paths, bundle_path),
+    )
+    return {
+        "path": str(bundle_path),
+        "sha256": bundle_sha256,
+        "archive_path": str(archive_path),
+        "archive_sha256": archive_sha256,
+    }
+
+
+def _write_analysis_archive(
+    destination: Path,
+    paths: Sequence[Path],
+) -> str:
+    destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    destination.parent.chmod(0o700)
+    temporary = destination.with_name(f".{destination.name}.{os.getpid()}.tmp")
+    descriptor = os.open(
+        temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600
+    )
+
+    def normalize(info: tarfile.TarInfo) -> tarfile.TarInfo:
+        info.uid = 0
+        info.gid = 0
+        info.uname = ""
+        info.gname = ""
+        info.mode = 0o600
+        info.mtime = 0
+        return info
+
+    try:
+        with os.fdopen(descriptor, "wb") as raw:
+            with gzip.GzipFile(
+                filename="", mode="wb", fileobj=raw, mtime=0
+            ) as compressed:
+                with tarfile.open(
+                    fileobj=compressed, mode="w", format=tarfile.PAX_FORMAT
+                ) as archive:
+                    for path in sorted(set(paths)):
+                        private = _private_regular_file(
+                            path, code="analysis_archive_artifact"
+                        )
+                        try:
+                            relative = private.relative_to(ROOT.resolve())
+                        except ValueError as error:
+                            raise ControlledStageFailure(
+                                "analysis_archive_artifact_outside_repo"
+                            ) from error
+                        archive.add(
+                            private,
+                            arcname=str(Path("large-evaluation") / relative),
+                            recursive=False,
+                            filter=normalize,
+                        )
+            raw.flush()
+            os.fsync(raw.fileno())
+        os.replace(temporary, destination)
+        destination.chmod(0o600)
+    except BaseException:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+    return hashlib.sha256(destination.read_bytes()).hexdigest()
+
+
+def _provision_checkpoint_path(binding: Mapping[str, Any]) -> Path:
+    return (
+        _config_path(binding, "runtime_root")
+        / "large-evaluation-provisioning"
+        / f"{DATASET_ID}.json"
+    )
 
 
 def _validator_for_stage(binding: Mapping[str, Any], stage: str) -> Callable[[Path | None], dict[str, Any]]:
@@ -1023,6 +1367,54 @@ def _pause_pending_stage(
     _emit("stage_paused", stage=stage, reason=reason)
 
 
+def _interrupt_stage_for_shutdown(
+    binding: Mapping[str, Any],
+    state_path: Path,
+    state: dict[str, Any],
+    stage: str,
+    *,
+    exit_value: Mapping[str, Any] | None = None,
+) -> None:
+    record = state["stages"][stage]
+    for key in (
+        "child_pid",
+        "exit_file",
+        "log_path",
+        "command_sha256",
+        "command_wrapper_sha256",
+        "child_completed_at",
+        "exit_code",
+        "heartbeat_at",
+        "child_alive",
+        "log_bytes",
+        "stalled_seconds",
+    ):
+        record.pop(key, None)
+    now = _timestamp()
+    record["status"] = "pending"
+    record["interrupted_at"] = now
+    record["interruption_reason"] = "host_shutdown"
+    if exit_value is not None:
+        record["interrupted_exit_code"] = exit_value.get("exit_code")
+    state["status"] = "running"
+    state["current_stage"] = stage
+    _persist_stage(
+        binding,
+        state_path,
+        state,
+        stage,
+        event="stage_interrupted",
+        event_fields={
+            "stage": stage,
+            "reason": "host_shutdown",
+            "child_exit_code": exit_value.get("exit_code")
+            if exit_value
+            else None,
+        },
+    )
+    _emit("stage_interrupted", stage=stage, reason="host_shutdown")
+
+
 def _start_child(
     binding: Mapping[str, Any],
     state_path: Path,
@@ -1071,6 +1463,8 @@ def _start_child(
             "log_path": str(log_path),
             "command_sha256": _command_digest(command),
             "command_wrapper_sha256": _command_digest(wrapper),
+            "resilience_policy_sha256": RESILIENCE_POLICY_SHA256,
+            "implementation_sha256": _automation_implementation_sha256(binding),
             "observed": {},
         }
     )
@@ -1136,6 +1530,21 @@ def _refresh_observation(
                     for name, value in providers.items()
                     if isinstance(value, dict) and value.get("status") == "completed"
                 ),
+                "attempts": {
+                    name: {
+                        key: attempt.get(key)
+                        for key in (
+                            "status",
+                            "attempt_count",
+                            "next_retry_at",
+                            "heartbeat_at",
+                        )
+                        if attempt.get(key) is not None
+                    }
+                    for name, attempt in checkpoint.get("attempts", {}).items()
+                    if isinstance(name, str) and isinstance(attempt, dict)
+                },
+                "heartbeat_at": checkpoint.get("heartbeat_at"),
             }
     elif stage == "quality_evaluation":
         try:
@@ -1145,11 +1554,55 @@ def _refresh_observation(
         observed = {
             "status": checkpoint.get("status"),
             "phase_progress": _phase_progress(checkpoint),
+            "active_phase": checkpoint.get("active_phase"),
+            "active_case": checkpoint.get("active_case"),
+            "heartbeat_at": checkpoint.get("runner_heartbeat_at"),
         }
     if observed is None or observed == previous:
         return False
     record["observed"] = observed
     return True
+
+
+def _progress_signature(stage: str, observed: object) -> object:
+    if not isinstance(observed, Mapping):
+        return observed
+    if stage == "provider_smoke":
+        attempts = observed.get("attempts")
+        return {
+            "status": observed.get("status"),
+            "completed_providers": observed.get("completed_providers"),
+            "attempts": {
+                name: {
+                    key: value.get(key)
+                    for key in ("status", "attempt_count", "next_retry_at")
+                }
+                for name, value in attempts.items()
+                if isinstance(name, str) and isinstance(value, Mapping)
+            }
+            if isinstance(attempts, Mapping)
+            else {},
+        }
+    if stage == "quality_evaluation":
+        active = observed.get("active_case")
+        return {
+            "status": observed.get("status"),
+            "phase_progress": observed.get("phase_progress"),
+            "active_phase": observed.get("active_phase"),
+            "active_case": {
+                key: active.get(key)
+                for key in ("phase", "case_id", "attempt_count")
+            }
+            if isinstance(active, Mapping)
+            else None,
+        }
+    return dict(observed)
+
+
+def _stage_stall_timeout(stage: str) -> float:
+    if stage in {"gate", "report"}:
+        return SHORT_STAGE_STALL_TIMEOUT_SECONDS
+    return LONG_STAGE_STALL_TIMEOUT_SECONDS
 
 
 def _wait_for_stage(
@@ -1178,6 +1631,10 @@ def _wait_for_stage(
         _emit("stage_exit_recovered", stage=stage, exit_code=exit_record["exit_code"])
 
     last_persisted = record.get("observed")
+    last_progress_signature = _progress_signature(stage, last_persisted)
+    last_heartbeat = time.monotonic()
+    last_activity = time.monotonic()
+    last_log_size = int(record.get("log_bytes", 0))
     while True:
         if _refresh_observation(binding, stage, record):
             if record.get("observed") != last_persisted:
@@ -1191,6 +1648,33 @@ def _wait_for_stage(
                 )
                 last_persisted = record.get("observed")
                 _emit("stage_progress", stage=stage, observed=record["observed"])
+                signature = _progress_signature(stage, last_persisted)
+                if signature != last_progress_signature:
+                    last_progress_signature = signature
+                    last_activity = time.monotonic()
+        if time.monotonic() - last_heartbeat >= HEARTBEAT_INTERVAL_SECONDS:
+            record["heartbeat_at"] = _timestamp()
+            record["child_alive"] = _child_is_supervised(record.get("child_pid"))
+            log_value = record.get("log_path")
+            if isinstance(log_value, str):
+                try:
+                    record["log_bytes"] = Path(log_value).stat().st_size
+                except OSError:
+                    pass
+            current_log_size = int(record.get("log_bytes", 0))
+            if current_log_size != last_log_size:
+                last_log_size = current_log_size
+                last_activity = time.monotonic()
+            record["stalled_seconds"] = int(time.monotonic() - last_activity)
+            _persist_stage(binding, state_path, state, stage)
+            _emit(
+                "stage_heartbeat",
+                stage=stage,
+                child_alive=record["child_alive"],
+                log_bytes=record.get("log_bytes"),
+                stalled_seconds=record["stalled_seconds"],
+            )
+            last_heartbeat = time.monotonic()
         exit_record = _read_exit(exit_path)
         if exit_record is not None:
             break
@@ -1204,6 +1688,50 @@ def _wait_for_stage(
                 exit_value=exit_record,
             )
             raise SupervisorPaused("supervisor_paused")
+        if _shutdown_requested:
+            exit_record = _stop_child_for_pause(record)
+            _interrupt_stage_for_shutdown(
+                binding,
+                state_path,
+                state,
+                stage,
+                exit_value=exit_record,
+            )
+            raise SupervisorShutdown("supervisor_host_shutdown")
+        if time.monotonic() - last_activity >= _stage_stall_timeout(stage):
+            restart_count = int(record.get("stall_restart_count", 0))
+            _stop_child_for_pause(record)
+            if restart_count >= MAX_STALL_RESTARTS:
+                raise ControlledStageFailure(
+                    f"supervisor_{stage}_stall_restart_exhausted"
+                )
+            record["stall_restart_count"] = restart_count + 1
+            _persist_stage(
+                binding,
+                state_path,
+                state,
+                stage,
+                event="stage_stall_restart",
+                event_fields={
+                    "stage": stage,
+                    "stall_restart_count": record["stall_restart_count"],
+                },
+            )
+            _emit(
+                "stage_stall_restart",
+                stage=stage,
+                stall_restart_count=record["stall_restart_count"],
+            )
+            _start_child(binding, state_path, state, stage, command)
+            record = state["stages"][stage]
+            exit_path = Path(str(record["exit_file"]))
+            exit_record = None
+            last_persisted = record.get("observed")
+            last_progress_signature = _progress_signature(stage, last_persisted)
+            last_heartbeat = time.monotonic()
+            last_activity = time.monotonic()
+            last_log_size = 0
+            continue
         time.sleep(POLL_SECONDS)
 
     exit_code = int(exit_record["exit_code"])
@@ -1330,6 +1858,8 @@ def _resume_failed_stage(
     record["resume_count"] = int(record.get("resume_count", 0)) + 1
     state["status"] = "running"
     state["current_stage"] = stage
+    state["resilience_policy_sha256"] = RESILIENCE_POLICY_SHA256
+    state["implementation_sha256"] = _automation_implementation_sha256(binding)
     state.pop("last_failure", None)
     _persist_stage(
         binding,
@@ -1371,6 +1901,14 @@ def _clear_stage_execution_fields(record: dict[str, Any]) -> None:
         "paused_child_pid",
         "paused_exit_file",
         "paused_exit_code",
+        "heartbeat_at",
+        "child_alive",
+        "log_bytes",
+        "stalled_seconds",
+        "stall_restart_count",
+        "interrupted_at",
+        "interruption_reason",
+        "interrupted_exit_code",
     ):
         record.pop(key, None)
 
@@ -1412,6 +1950,8 @@ def _resume_paused_stage(
     record["resume_count"] = resume_count
     state["status"] = "running"
     state["current_stage"] = stage
+    state["resilience_policy_sha256"] = RESILIENCE_POLICY_SHA256
+    state["implementation_sha256"] = _automation_implementation_sha256(binding)
     state.pop("pause_reason", None)
     state.pop("paused_at", None)
     _persist_stage(
@@ -1446,6 +1986,8 @@ def _wait_for_runtime_ready(binding: Mapping[str, Any]) -> None:
     while time.monotonic() < deadline:
         if _pause_requested:
             raise SupervisorPaused("supervisor_paused")
+        if _shutdown_requested:
+            raise SupervisorShutdown("supervisor_host_shutdown")
         try:
             with urlopen(health_url, timeout=2.0) as response:
                 if 200 <= int(response.status) < 300:
@@ -1457,12 +1999,144 @@ def _wait_for_runtime_ready(binding: Mapping[str, Any]) -> None:
     raise ControlledStageFailure("supervisor_runtime_not_ready")
 
 
+def _run_marker_path(binding: Mapping[str, Any]) -> Path:
+    return _config_path(binding, "campaign_root") / RUN_MARKER_NAME
+
+
+def _validate_run_marker(
+    binding: Mapping[str, Any], config_sha256: str
+) -> None:
+    marker = _load_json(_run_marker_path(binding), code="evaluation_run_marker")
+    if (
+        marker.get("schema_version") != "large_evaluation_run_marker_v1"
+        or marker.get("status") != "enabled"
+        or marker.get("config_sha256") != config_sha256
+        or marker.get("resilience_policy_sha256") != RESILIENCE_POLICY_SHA256
+        or marker.get("implementation_sha256")
+        != _automation_implementation_sha256(binding)
+    ):
+        raise ControlledStageFailure("supervisor_run_marker_invalid")
+
+
+def _validate_automation_binding(
+    binding: Mapping[str, Any], state: Mapping[str, Any]
+) -> None:
+    if (
+        state.get("resilience_policy_sha256") != RESILIENCE_POLICY_SHA256
+        or state.get("implementation_sha256")
+        != _automation_implementation_sha256(binding)
+    ):
+        raise ControlledStageFailure("supervisor_automation_binding_invalid")
+
+
+def _runtime_ports_stopped(binding: Mapping[str, Any]) -> bool:
+    runtime = load_evaluation_runtime(
+        _config_path(binding, "runtime_manifest"),
+        require_adaptive_graph=False,
+        allow_canonical_checkout=True,
+    )
+    ports = [
+        int(port)
+        for name, port in runtime.ports.items()
+        if name in {"postgres", "falkordb", "api"}
+    ]
+    deadline = time.monotonic() + RUNTIME_SETTLE_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        listening = False
+        for port in ports:
+            with socket.socket() as probe:
+                probe.settimeout(0.2)
+                try:
+                    probe.connect(("127.0.0.1", port))
+                except OSError:
+                    continue
+                listening = True
+                break
+        if not listening:
+            return True
+        time.sleep(0.25)
+    return False
+
+
+def _settle_isolated_runtime(
+    binding: Mapping[str, Any],
+    state_path: Path,
+    state: dict[str, Any],
+    *,
+    reason: str,
+) -> None:
+    """Stop supporting LaunchAgents after a terminal evaluation state."""
+
+    marker = _run_marker_path(binding)
+    marker_removed = True
+    try:
+        marker.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        marker_removed = False
+    failures: list[str] = []
+    domain = f"gui/{os.getuid()}"
+    for label in SUPPORT_LABELS:
+        target = f"{domain}/{label}"
+        loaded = subprocess.run(
+            ["launchctl", "print", target],
+            check=False,
+            capture_output=True,
+            text=True,
+        ).returncode == 0
+        if not loaded:
+            continue
+        result = subprocess.run(
+            ["launchctl", "bootout", target],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            failures.append(label)
+    ports_stopped = _runtime_ports_stopped(binding)
+    status = (
+        "completed"
+        if marker_removed and not failures and ports_stopped
+        else "failed"
+    )
+    state["runtime_settlement"] = {
+        "status": status,
+        "reason": reason,
+        "marker_removed": marker_removed,
+        "ports_stopped": ports_stopped,
+        "failed_agent_count": len(failures),
+        "at": _timestamp(),
+    }
+    _persist(
+        state_path,
+        state,
+        event=(
+            "runtime_settlement_completed"
+            if status == "completed"
+            else "runtime_settlement_failed"
+        ),
+        event_fields={"reason": reason, "ports_stopped": ports_stopped},
+    )
+    _emit(
+        "runtime_settlement",
+        status=status,
+        reason=reason,
+        ports_stopped=ports_stopped,
+        failed_agent_count=len(failures),
+    )
+
+
 def _run_state_machine(binding: Mapping[str, Any], config_sha256: str) -> int:
     _validate_static_config(binding)
     state_path = _config_path(binding, "supervisor_state")
     state = _load_or_create_state(state_path, config_sha256)
     _validate_stage_checkpoints(binding, state)
     if state.get("status") == "completed":
+        _settle_isolated_runtime(
+            binding, state_path, state, reason="evaluation_completed"
+        )
         _emit("supervisor_already_completed")
         return 0
     if state.get("status") == "paused":
@@ -1472,7 +2146,20 @@ def _run_state_machine(binding: Mapping[str, Any], config_sha256: str) -> int:
         )
         return 0
     if state.get("status") == "failed":
+        _settle_isolated_runtime(
+            binding, state_path, state, reason="evaluation_failed"
+        )
         _emit("supervisor_stopped_after_failure", stage=state.get("current_stage"))
+        return 0
+    try:
+        _validate_automation_binding(binding, state)
+        _validate_run_marker(binding, config_sha256)
+    except SupervisorError as error:
+        stage = str(state.get("current_stage"))
+        _mark_failed(binding, state_path, state, stage, error)
+        _settle_isolated_runtime(
+            binding, state_path, state, reason="run_marker_invalid"
+        )
         return 0
     runtime_ready = False
     for index, stage in enumerate(STAGES):
@@ -1491,9 +2178,20 @@ def _run_state_machine(binding: Mapping[str, Any], config_sha256: str) -> int:
                 _wait_for_runtime_ready(binding)
             except ControlledStageFailure as error:
                 _mark_failed(binding, state_path, state, stage, error)
+                _settle_isolated_runtime(
+                    binding, state_path, state, reason="runtime_readiness_failed"
+                )
                 return 0
             except SupervisorPaused:
                 _pause_pending_stage(binding, state_path, state, stage)
+                return 0
+            except SupervisorShutdown:
+                _persist(
+                    state_path,
+                    state,
+                    event="supervisor_shutdown",
+                    event_fields={"stage": stage, "reason": "host_shutdown"},
+                )
                 return 0
             runtime_ready = True
         if record.get("status") == "pending":
@@ -1511,8 +2209,13 @@ def _run_state_machine(binding: Mapping[str, Any], config_sha256: str) -> int:
             _wait_for_stage(binding, state_path, state, stage)
         except ControlledStageFailure as error:
             _mark_failed(binding, state_path, state, stage, error)
+            _settle_isolated_runtime(
+                binding, state_path, state, reason=f"stage_failed:{stage}"
+            )
             return 0
         except SupervisorPaused:
+            return 0
+        except SupervisorShutdown:
             return 0
         except SupervisorError:
             raise
@@ -1530,6 +2233,9 @@ def _run_state_machine(binding: Mapping[str, Any], config_sha256: str) -> int:
     state["current_stage"] = "report"
     state["completed_at"] = _timestamp()
     _persist(state_path, state, event="supervisor_completed")
+    _settle_isolated_runtime(
+        binding, state_path, state, reason="evaluation_completed"
+    )
     _emit("supervisor_completed")
     return 0
 
@@ -1539,6 +2245,27 @@ def _status(arguments: argparse.Namespace) -> int:
     state_path = _config_path(binding, "supervisor_state")
     state = _load_or_create_state(state_path, config_sha256)
     _validate_stage_checkpoints(binding, state)
+    runtime = load_evaluation_runtime(
+        _config_path(binding, "runtime_manifest"),
+        require_adaptive_graph=False,
+        allow_canonical_checkout=True,
+    )
+    ports: dict[str, bool] = {}
+    for name, port in runtime.ports.items():
+        if name not in {"postgres", "falkordb", "api"}:
+            continue
+        with socket.socket() as probe:
+            probe.settimeout(0.2)
+            try:
+                probe.connect(("127.0.0.1", int(port)))
+            except OSError:
+                ports[name] = False
+            else:
+                ports[name] = True
+    current_record = state["stages"].get(state.get("current_stage"), {})
+    bundle_path = _config_path(binding, "campaign_root") / "analysis-bundle.json"
+    archive_path = _config_path(binding, "campaign_root") / "analysis-bundle.tar.gz"
+    current_implementation_sha256 = _automation_implementation_sha256(binding)
     summary = {
         "schema_version": state["schema_version"],
         "status": state["status"],
@@ -1557,25 +2284,65 @@ def _status(arguments: argparse.Namespace) -> int:
                     "failed_at",
                     "failure_code",
                     "observed",
+                    "heartbeat_at",
+                    "child_alive",
+                    "log_bytes",
                 )
                 if (record := state["stages"][stage]).get(key) is not None
             }
             for stage in STAGES
         },
         "last_failure": state.get("last_failure"),
+        "runtime": {
+            "run_marker_present": _run_marker_path(binding).exists(),
+            "ports_listening": ports,
+            "settlement": state.get("runtime_settlement"),
+        },
+        "supervision": {
+            "supervisor_pid_present": _config_path(
+                binding, "supervisor_pid"
+            ).exists(),
+            "current_child_alive": _child_is_supervised(
+                current_record.get("child_pid")
+            )
+            if isinstance(current_record, Mapping)
+            else False,
+            "checkpoint_integrity": "ok",
+            "automation_binding": {
+                "resilience_policy_sha256": state.get(
+                    "resilience_policy_sha256"
+                ),
+                "current_resilience_policy_sha256": RESILIENCE_POLICY_SHA256,
+                "implementation_sha256": state.get("implementation_sha256"),
+                "current_implementation_sha256": current_implementation_sha256,
+                "matches_current": (
+                    state.get("resilience_policy_sha256")
+                    == RESILIENCE_POLICY_SHA256
+                    and state.get("implementation_sha256")
+                    == current_implementation_sha256
+                ),
+            },
+        },
+        "analysis_bundle": {
+            "manifest": str(bundle_path) if bundle_path.is_file() else None,
+            "archive": str(archive_path) if archive_path.is_file() else None,
+        },
     }
     print(json.dumps(summary, ensure_ascii=False, sort_keys=True, indent=2))
     return 0
 
 
-_stop_requested = False
 _pause_requested = False
+_shutdown_requested = False
 
 
 def _handle_signal(signum: int, _frame: Any) -> None:
-    global _pause_requested, _stop_requested
+    global _pause_requested, _shutdown_requested
+    if signum == signal.SIGTERM:
+        _shutdown_requested = True
+        _emit("supervisor_shutdown_requested", signal=signum)
+        return
     _pause_requested = True
-    _stop_requested = True
     _emit("supervisor_pause_requested", signal=signum)
 
 
@@ -1632,6 +2399,9 @@ def main() -> int:
         return 0
     except SupervisorPaused as error:
         _emit("supervisor_paused", reason=error.code)
+        return 0
+    except SupervisorShutdown as error:
+        _emit("supervisor_shutdown", reason=error.code)
         return 0
     except SupervisorError as error:
         _emit("supervisor_blocked", failure_code=error.code)

@@ -913,9 +913,7 @@ def _write_readme(output: Path) -> None:
 
             观察模板本身不是已完成基线，也不能作为质量结果。填充它需要外部 Provider 或隔离数据库/Graph 时，必须先满足仓库的 host-only 和授权边界；依赖缺失时保持未验证，不能用 Docker 补环境。
 
-            `tools/run_open_source_rag_v3.py` 是对应的 host observation runner。它只读取已经绑定到 v3 KB/index/Graph build 的 owner-only `rag-eval` runtime，不创建 KB、不管理容器；逐 case 原子保存 content-safe checkpoint，完成后直接生成 immutable locked manifest。真实执行会调用 Provider，必须显式传入 `--confirm RUN_ROUTING_RAG_V3_EXTERNAL_CALLS`；`--dry-run` 仍保持纯离线。
-
-            已运行且身份匹配的 `rag-eval` 可通过现有 provisioner 的 v3 冻结 spec 建立并绑定 KB：`--dataset routing-rag-v3-open-source --confirm PROVISION_ROUTING_RAG_V3_OPEN_SOURCE`。该入口会产生索引与 Graph Provider 流量，不属于测试准备步骤；没有单独授权时不得执行。
+            `tools/run_open_source_rag_v3.py` 是对应的 host observation runner。它只读取已经绑定到 KB/index/Graph build 的 owner-only host runtime，不创建 KB、不管理容器；逐 case 原子保存 content-safe checkpoint，完成后直接生成 immutable locked manifest。真实执行会调用 Provider，必须显式传入 `--confirm RUN_ROUTING_RAG_V3_EXTERNAL_CALLS`；`--dry-run` 仍保持纯离线。
             """
         ),
         encoding="utf-8",

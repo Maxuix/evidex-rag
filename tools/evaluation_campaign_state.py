@@ -138,16 +138,73 @@ def begin_case(
                 "at": _timestamp(),
             }
         )
+    elif record is not None and record.get("status") == "retry_wait":
+        state["events"].append(
+            {
+                "event": "case_retry_started",
+                "phase": phase,
+                "case_id": case_id,
+                "at": _timestamp(),
+            }
+        )
+    retained = {
+        key: record[key]
+        for key in ("retry_count", "last_failure", "last_retry_at")
+        if record is not None and key in record
+    }
     phase_cases[case_id] = {
         "status": "started",
         "attempt_count": attempts + 1,
         "started_at": _timestamp(),
+        **retained,
     }
     state["events"].append(
         {"event": "case_started", "phase": phase, "case_id": case_id, "at": _timestamp()}
     )
     write_private_json(path, state)
     return True
+
+
+def schedule_case_retry(
+    path: Path,
+    state: dict[str, Any],
+    *,
+    phase: str,
+    case_id: str,
+    failure: Mapping[str, Any],
+    next_retry_at: str,
+) -> None:
+    """Persist a bounded retry without marking the case complete."""
+
+    phase_cases = state.get("phases", {}).get(phase)
+    if not isinstance(phase_cases, dict) or not isinstance(
+        phase_cases.get(case_id), dict
+    ):
+        raise CampaignStateError("campaign_case_not_started")
+    record = phase_cases[case_id]
+    if record.get("status") != "started":
+        raise CampaignStateError("campaign_case_not_running")
+    try:
+        json.dumps(failure, ensure_ascii=False, sort_keys=True)
+    except (TypeError, ValueError) as error:
+        raise CampaignStateError("campaign_failure_not_json") from error
+    now = _timestamp()
+    record["status"] = "retry_wait"
+    record["retry_count"] = int(record.get("retry_count", 0)) + 1
+    record["last_failure"] = dict(failure)
+    record["last_retry_at"] = now
+    record["next_retry_at"] = next_retry_at
+    record["heartbeat_at"] = now
+    state["events"].append(
+        {
+            "event": "case_retry_scheduled",
+            "phase": phase,
+            "case_id": case_id,
+            "retry_count": record["retry_count"],
+            "at": now,
+        }
+    )
+    write_private_json(path, state)
 
 
 def complete_case(
@@ -173,6 +230,8 @@ def complete_case(
     record["status"] = "completed"
     record["completed_at"] = _timestamp()
     record["observation"] = dict(observation)
+    record.pop("next_retry_at", None)
+    record.pop("heartbeat_at", None)
     state["events"].append(
         {"event": "case_completed", "phase": phase, "case_id": case_id, "at": _timestamp()}
     )

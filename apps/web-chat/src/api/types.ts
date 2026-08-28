@@ -409,7 +409,7 @@ export interface ChatAgent {
     events: ChatAgentTraceEvent[];
     budget: ChatAgent["budget"];
     usage: Record<string, number>;
-    outcome: "answered" | "partial" | "refused";
+    outcome: "answered" | "partial" | "refused" | "clarify";
   } | null;
 }
 

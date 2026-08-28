@@ -39,7 +39,10 @@ from tools.supervise_large_evaluation import (
     CONFIG_SCHEMA,
     DEFAULT_CONFIG,
     DATASET,
+    RUN_MARKER_NAME,
+    _automation_implementation_sha256,
 )
+from tools.evaluation_resilience import RESILIENCE_POLICY_SHA256
 
 
 LABEL_PREFIX = "com.rag.large-evaluation"
@@ -173,7 +176,7 @@ def _plist(
         "Label": label,
         "ProgramArguments": list(program_arguments),
         "WorkingDirectory": str(working_directory),
-        "RunAtLoad": True,
+        "RunAtLoad": False,
         "KeepAlive": keep_alive,
         "ThrottleInterval": 10,
         "ProcessType": "Background",
@@ -299,6 +302,9 @@ def _build_plists(
         # consumed by these processes are absolute, so use a neutral cwd.
         "working_directory": Path("/private/tmp"),
     }
+    run_marker = Path(binding["campaign_root"]) / RUN_MARKER_NAME
+    dependency_keep_alive = {"PathState": {str(run_marker): True}}
+    supervisor_keep_alive = {"PathState": {str(run_marker): True}}
     return {
         "postgres": _plist(
             label=LABELS["postgres"],
@@ -321,7 +327,7 @@ def _build_plists(
             working_directory=Path("/private/tmp"),
             stdout_path=log_root / "launchd-postgres.log",
             stderr_path=log_root / "launchd-postgres.err.log",
-            keep_alive=True,
+            keep_alive=dependency_keep_alive,
             environment=postgres_env,
         ),
         "falkordb": _plist(
@@ -342,7 +348,7 @@ def _build_plists(
             working_directory=falkordb_workdir,
             stdout_path=log_root / "launchd-falkordb.log",
             stderr_path=log_root / "launchd-falkordb.err.log",
-            keep_alive=True,
+            keep_alive=dependency_keep_alive,
         ),
         "api": _plist(
             label=LABELS["api"],
@@ -354,7 +360,7 @@ def _build_plists(
                 str(runtime_env),
             ],
             **common,
-            keep_alive=True,
+            keep_alive=dependency_keep_alive,
             stdout_path=log_root / "launchd-api.log",
             stderr_path=log_root / "launchd-api.err.log",
             environment=python_env,
@@ -369,7 +375,7 @@ def _build_plists(
                 str(runtime_env),
             ],
             **common,
-            keep_alive=True,
+            keep_alive=dependency_keep_alive,
             stdout_path=log_root / "launchd-worker.log",
             stderr_path=log_root / "launchd-worker.err.log",
             environment=python_env,
@@ -383,7 +389,7 @@ def _build_plists(
                 str(config_path.resolve()),
             ],
             **common,
-            keep_alive={"SuccessfulExit": False},
+            keep_alive=supervisor_keep_alive,
             stdout_path=log_root / "launchd-supervisor.log",
             stderr_path=log_root / "launchd-supervisor.err.log",
             environment=python_env,
@@ -552,7 +558,28 @@ def install(arguments: argparse.Namespace) -> dict[str, Any]:
             time.sleep(1.0)
         else:
             raise LaunchdInstallError("launchd_runtime_ports_not_released")
-    _bootstrap(paths)
+    run_marker = Path(config["binding"]["campaign_root"]) / RUN_MARKER_NAME
+    write_private_json(
+        run_marker,
+        {
+            "schema_version": "large_evaluation_run_marker_v1",
+            "status": "enabled",
+            "config_sha256": config_sha256,
+            "resilience_policy_sha256": RESILIENCE_POLICY_SHA256,
+            "implementation_sha256": _automation_implementation_sha256(
+                config["binding"]
+            ),
+            "created_at": datetime.now(UTC).isoformat(),
+        },
+    )
+    try:
+        _bootstrap(paths)
+    except BaseException:
+        try:
+            run_marker.unlink()
+        except FileNotFoundError:
+            pass
+        raise
     return {
         "status": "installed",
         "config_sha256": config_sha256,
@@ -575,6 +602,11 @@ def _port_in_use(port: int) -> bool:
 
 
 def uninstall() -> dict[str, Any]:
+    marker = SUPERVISOR_ROOT / RUN_MARKER_NAME
+    try:
+        marker.unlink()
+    except FileNotFoundError:
+        pass
     for label in LABELS.values():
         _bootout(label)
     user_root = Path.home() / "Library/LaunchAgents"
@@ -592,6 +624,7 @@ def uninstall() -> dict[str, Any]:
 def status() -> dict[str, Any]:
     return {
         "status": "status",
+        "run_marker_present": (SUPERVISOR_ROOT / RUN_MARKER_NAME).exists(),
         "agents": {
             name: {"label": label, "loaded": _loaded(label)}
             for name, label in LABELS.items()

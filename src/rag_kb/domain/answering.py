@@ -18,6 +18,7 @@ class AnswerOutcome(StrEnum):
     ANSWERED = "answered"
     PARTIAL = "partial"
     REFUSED = "refused"
+    CLARIFY = "clarify"
 
 
 class AnswerDraftSource(StrEnum):
@@ -214,6 +215,9 @@ class ValidatedAnswer:
         elif self.outcome is AnswerOutcome.PARTIAL:
             if not self.claims or not self.missing_aspects:
                 raise ValueError("partial results require claims and gaps")
+        elif self.outcome is AnswerOutcome.CLARIFY:
+            if self.claims or not self.missing_aspects:
+                raise ValueError("clarify results require questions and no claims")
         elif self.claims or self.missing_aspects:
             raise ValueError("non-substantive results cannot contain answer content")
         if self.source is AnswerDraftSource.DETERMINISTIC:
@@ -284,7 +288,7 @@ class RenderedAnswer:
             raise ValueError("rendered citations must be contiguous")
         if len({item.citation_id for item in self.citations}) != len(self.citations):
             raise ValueError("rendered citations must be unique")
-        if self.outcome is AnswerOutcome.REFUSED and self.citations:
+        if self.outcome in {AnswerOutcome.REFUSED, AnswerOutcome.CLARIFY} and self.citations:
             raise ValueError("non-substantive results cannot contain citations")
         if self.outcome is not AnswerOutcome.REFUSED and self.control_reason is not None:
             raise ValueError("only refusals can carry a control reason")

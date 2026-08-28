@@ -349,7 +349,8 @@
             "enum": [
               "answered",
               "partial",
-              "refused"
+              "refused",
+              "clarify"
             ],
             "title": "Outcome",
             "type": "string"

@@ -594,7 +594,7 @@ class NativeToolCallingAgent:
                     )
                     continue
                 if (
-                    validated.outcome is not AnswerOutcome.REFUSED
+                    validated.outcome in {AnswerOutcome.ANSWERED, AnswerOutcome.PARTIAL}
                     and not open_world_review_used
                     and _requires_open_world_support_review(context.query)
                 ):
@@ -670,7 +670,7 @@ class NativeToolCallingAgent:
             rejected_claim_count = result.rejected_claim_count
             rejection_reasons = result.rejection_reasons
         forced_guard_incomplete = (
-            validated.outcome is not AnswerOutcome.REFUSED
+            validated.outcome in {AnswerOutcome.ANSWERED, AnswerOutcome.PARTIAL}
             and _requires_open_world_support_review(context.query)
             and not open_world_review_used
         )
@@ -812,6 +812,11 @@ def _initial_messages(
             "never emit multiple or parallel tool calls. Use calculate for arithmetic. "
             "Finish only with submit_answer. You may submit an answered, partial, or refused "
             "result as soon as further tool use would not improve it. "
+            "Submit outcome 'clarify' only when the question is genuinely ambiguous "
+            "(an unclear reference, a same-named entity, or a missing qualifier) and "
+            "conversation history cannot resolve it; put the clarification questions "
+            "in 'unanswered' and leave claims empty. Whenever the ambiguity can be "
+            "resolved from history or evidence, answer directly instead. "
             f"The tool loop has at most {budget.max_model_rounds} model rounds; this is a "
             "technical loop guard, not a search or evidence budget."
             + adaptive_instruction,
@@ -901,11 +906,14 @@ def _tools(
     )
     submit = ChatToolDefinition(
         "submit_answer",
-        "Submit claim-level evidence and the unanswered parts.",
+        "Submit claim-level evidence and the unanswered parts. Use outcome "
+        "'clarify' only when the question is genuinely ambiguous and the "
+        "conversation cannot resolve it; then claims must be empty and "
+        "'unanswered' carries the clarification questions to ask the user.",
         {
             "type": "object",
             "properties": {
-                "outcome": {"type": "string", "enum": ["answered", "partial", "refused"]},
+                "outcome": {"type": "string", "enum": ["answered", "partial", "refused", "clarify"]},
                 "claims": {
                     "type": "array",
                     "items": {
@@ -1213,10 +1221,23 @@ def _validate_submission(
     unanswered = _normalized_unanswered(
         value.get("unanswered"), maximum=CHAT_AGENT_UNANSWERED_LIMIT
     )
-    if outcome not in {"answered", "partial", "refused"} or unanswered is None:
+    if outcome not in {"answered", "partial", "refused", "clarify"} or unanswered is None:
         return None
     if not isinstance(raw_claims, (list, tuple)) or len(raw_claims) > CHAT_AGENT_CLAIM_LIMIT:
         return None
+    if outcome == "clarify":
+        if raw_claims or not unanswered:
+            return None
+        return _SubmissionValidation(
+            validated=ValidatedAnswer(
+                outcome=AnswerOutcome.CLARIFY,
+                claims=(),
+                missing_aspects=unanswered,
+                source=AnswerDraftSource.PROVIDER,
+            ),
+            retained_refs=(),
+            salvaged=False,
+        )
     retained: list[AnswerClaim] = []
     retained_refs: list[str] = []
     rejected = 0

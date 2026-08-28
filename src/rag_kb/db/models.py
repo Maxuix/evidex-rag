@@ -1660,7 +1660,7 @@ class ChatRun(Base):
             "ARRAY['max_model_rounds', 'max_graph_calls']::text[]) = '{}'::jsonb "
             "AND agent_trace->'budget' = agent_configuration->'budget' "
             "AND jsonb_typeof(agent_trace->'usage') = 'object' "
-            "AND agent_trace->>'outcome' IN ('answered', 'partial', 'refused') "
+            "AND agent_trace->>'outcome' IN ('answered', 'partial', 'refused', 'clarify') "
             "AND pg_column_size(agent_trace) <= 65536) IS TRUE)",
             name=conv("ck_chat_run_agent_trace_v3"),
         ),

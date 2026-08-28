@@ -283,6 +283,10 @@ def build_graphiti_runtime(
             embedding_model=embedding.current_revision.model,
             embedding_timeout_seconds=embedding.provider_revision.timeout_seconds,
             embedding_batch_size=int(embedding_parameters.get("max_batch_size", 16)),
+            max_concurrency=min(
+                chat.provider_revision.max_concurrency,
+                embedding.provider_revision.max_concurrency,
+            ),
         )
 
     return GraphitiRuntime(

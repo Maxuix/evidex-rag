@@ -309,7 +309,7 @@ class ChatAgentTrace:
             or self.retrieval_calls < 0
             or self.calculation_calls < 0
             or self.evidence_ref_count < 0
-            or self.outcome not in {"answered", "partial", "refused"}
+            or self.outcome not in {"answered", "partial", "refused", "clarify"}
         ):
             raise ValueError("chat agent trace is invalid")
 

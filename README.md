@@ -131,8 +131,8 @@ All evaluator commands, including real runs, execute in the host `.venv`. A
 mode that accesses an API, database, Graph, or Provider may connect only to
 user-provided, already-running, disposable host-side test dependencies with a
 matching identity. If those dependencies are absent or incompatible, the run
-stops as unverified. The retired `rag-eval` runtime and any second Compose
-project are not test prerequisites and must not be created for evaluation.
+stops as unverified. A second Compose project is not a test prerequisite and
+must not be created for evaluation.
 
 Real model acceptance remains separately authorized and must use the repository
 Provider/model requirements. Docker lifecycle belongs to the formal `rag`
