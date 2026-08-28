@@ -22,6 +22,9 @@ from rag_kb.answering.evidence import (
 )
 from rag_kb.domain import (
     AnswerClaim,
+    AnswerConflict,
+    AnswerConflictAdjudication,
+    AnswerConflictType,
     AnswerControlReason,
     AnswerDraftCandidate,
     AnswerDraftSource,
@@ -817,6 +820,13 @@ def _initial_messages(
             "conversation history cannot resolve it; put the clarification questions "
             "in 'unanswered' and leave claims empty. Whenever the ambiguity can be "
             "resolved from history or evidence, answer directly instead. "
+            "When retrieved evidence gives mutually incompatible statements on the "
+            "same subject, you must submit a kind=\"conflict\" claim. Label each side "
+            "with supporting_refs and conflicting_refs, set type to temporal, version, "
+            "opinion, misinformation, or unknown, and set adjudication. If the "
+            "conflict is resolvable (for example a newer version supersedes an older "
+            "value), the claim text must say which side is currently reliable and why. "
+            "Do not silently merge a conflict into a one-sided fact claim. "
             f"The tool loop has at most {budget.max_model_rounds} model rounds; this is a "
             "technical loop guard, not a search or evidence budget."
             + adaptive_instruction,
@@ -909,7 +919,14 @@ def _tools(
         "Submit claim-level evidence and the unanswered parts. Use outcome "
         "'clarify' only when the question is genuinely ambiguous and the "
         "conversation cannot resolve it; then claims must be empty and "
-        "'unanswered' carries the clarification questions to ask the user.",
+        "'unanswered' carries the clarification questions to ask the user. "
+        "When issued evidence conflicts on the same subject, submit a "
+        "kind='conflict' claim with a conflict object: supporting_refs and "
+        "conflicting_refs (issued EvidenceRefs, non-empty and disjoint), "
+        "type (temporal, version, opinion, misinformation, or unknown), and "
+        "adjudication (resolvable or unresolvable). If resolvable, the claim "
+        "text must say which side is currently reliable and why. Do not fold "
+        "a conflict into a fact claim.",
         {
             "type": "object",
             "properties": {
@@ -920,9 +937,41 @@ def _tools(
                         "type": "object",
                         "properties": {
                             "text": {"type": "string", "minLength": 1, "maxLength": 4000},
-                            "kind": {"type": "string", "enum": ["fact"]},
+                            "kind": {"type": "string", "enum": ["fact", "conflict"]},
                             "evidence_refs": {"type": "array", "items": {"type": "string"}},
                             "calculation_refs": {"type": "array", "items": {"type": "string"}},
+                            "conflict": {
+                                "type": "object",
+                                "properties": {
+                                    "supporting_refs": {
+                                        "type": "array",
+                                        "items": {"type": "string"},
+                                        "minItems": 1,
+                                    },
+                                    "conflicting_refs": {
+                                        "type": "array",
+                                        "items": {"type": "string"},
+                                        "minItems": 1,
+                                    },
+                                    "type": {
+                                        "type": "string",
+                                        "enum": [item.value for item in AnswerConflictType],
+                                    },
+                                    "adjudication": {
+                                        "type": "string",
+                                        "enum": [
+                                            item.value for item in AnswerConflictAdjudication
+                                        ],
+                                    },
+                                },
+                                "required": [
+                                    "supporting_refs",
+                                    "conflicting_refs",
+                                    "type",
+                                    "adjudication",
+                                ],
+                                "additionalProperties": False,
+                            },
                         },
                         "required": ["text", "evidence_refs"],
                         "additionalProperties": False,
@@ -1207,6 +1256,57 @@ def _new_visuals(
     return tuple(selected), tuple(dict.fromkeys(selected_refs))
 
 
+_CONFLICT_PAYLOAD_FIELDS = frozenset(
+    {"supporting_refs", "conflicting_refs", "type", "adjudication"}
+)
+
+
+def _validated_conflict(
+    value: object,
+    *,
+    prompt_by_ref: Mapping[str, PromptEvidence],
+) -> tuple[AnswerConflict | None, tuple[str, ...], str]:
+    if not isinstance(value, Mapping) or set(value) != _CONFLICT_PAYLOAD_FIELDS:
+        return None, (), "conflict_shape"
+    conflict_type = value.get("type")
+    adjudication = value.get("adjudication")
+    if (
+        not isinstance(conflict_type, str)
+        or not isinstance(adjudication, str)
+        or conflict_type not in {item.value for item in AnswerConflictType}
+        or adjudication not in {item.value for item in AnswerConflictAdjudication}
+    ):
+        return None, (), "conflict_shape"
+    supporting_refs = _strings(
+        value.get("supporting_refs"), maximum=None, require_nonempty=True
+    )
+    conflicting_refs = _strings(
+        value.get("conflicting_refs"), maximum=None, require_nonempty=True
+    )
+    if (
+        supporting_refs is None
+        or conflicting_refs is None
+        or any(ref not in prompt_by_ref for ref in supporting_refs)
+        or any(ref not in prompt_by_ref for ref in conflicting_refs)
+    ):
+        return None, (), "conflict_ref"
+    supporting_ids = tuple(prompt_by_ref[ref].citation_id for ref in supporting_refs)
+    conflicting_ids = tuple(prompt_by_ref[ref].citation_id for ref in conflicting_refs)
+    if set(supporting_ids) & set(conflicting_ids):
+        return None, (), "conflict_ref"
+    try:
+        conflict = AnswerConflict(
+            supporting_citation_ids=supporting_ids,
+            conflicting_citation_ids=conflicting_ids,
+            conflict_type=AnswerConflictType(conflict_type),
+            adjudication=AnswerConflictAdjudication(adjudication),
+        )
+    except ValueError:
+        return None, (), "conflict_shape"
+    refs = tuple(dict.fromkeys((*supporting_refs, *conflicting_refs)))
+    return conflict, refs, ""
+
+
 def _validate_submission(
     value: Mapping[str, Any],
     *,
@@ -1256,6 +1356,7 @@ def _validate_submission(
             "kind",
             "evidence_refs",
             "calculation_refs",
+            "conflict",
         }
         if (
             not isinstance(raw, Mapping)
@@ -1271,9 +1372,31 @@ def _validate_submission(
             raw.get("calculation_refs", ()),
             maximum=CHAT_AGENT_EVIDENCE_REF_LIMIT,
         )
-        if not isinstance(text, str) or not text.strip() or len(text) > 4000 or kind != "fact":
+        if (
+            not isinstance(text, str)
+            or not text.strip()
+            or len(text) > 4000
+            or kind not in {"fact", "conflict"}
+        ):
             reject("claim_text")
             continue
+        has_conflict_field = "conflict" in raw
+        if kind == "fact" and has_conflict_field:
+            reject("conflict_shape")
+            continue
+        if kind == "conflict" and not has_conflict_field:
+            reject("conflict_shape")
+            continue
+        parsed_conflict: AnswerConflict | None = None
+        conflict_refs: tuple[str, ...] = ()
+        if kind == "conflict":
+            parsed_conflict, conflict_refs, conflict_reason = _validated_conflict(
+                raw.get("conflict"),
+                prompt_by_ref=prompt_by_ref,
+            )
+            if parsed_conflict is None:
+                reject(conflict_reason)
+                continue
         if evidence_refs is None or any(ref not in prompt_by_ref for ref in evidence_refs):
             reject("evidence_ref")
             continue
@@ -1283,6 +1406,7 @@ def _validate_submission(
         expanded = list(evidence_refs)
         for ref in calculation_refs:
             expanded.extend(calculations[ref].source_evidence_keys)
+        expanded.extend(conflict_refs)
         expanded = list(dict.fromkeys(expanded))
         if not expanded or any(ref not in prompt_by_ref for ref in expanded):
             reject("evidence_ref")
@@ -1292,7 +1416,13 @@ def _validate_submission(
             continue
         citation_ids = tuple(prompt_by_ref[ref].citation_id for ref in expanded)
         try:
-            retained.append(AnswerClaim(text=text.strip(), citation_ids=citation_ids))
+            retained.append(
+                AnswerClaim(
+                    text=text.strip(),
+                    citation_ids=citation_ids,
+                    conflict=parsed_conflict,
+                )
+            )
         except ValueError:
             reject("claim_text")
             continue

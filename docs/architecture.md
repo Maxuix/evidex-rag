@@ -3,7 +3,7 @@
 | 字段 | 内容 |
 | --- | --- |
 | 文档状态 | 全项目唯一当前架构文档（描述事实，不是目标蓝图） |
-| 最后核对 | 2026-08-19 |
+| 最后核对 | 2026-08-28 |
 | 核对基线 | `73b0302`、当前代码、配置、Alembic 迁移、Compose 与公开路由 |
 | 适用对象 | 个人维护者、CODE AGENTS |
 | 部署边界 | 单机、单用户、本地使用；不是共享或生产服务 |
@@ -520,6 +520,10 @@ ChatRun 内部 trace 保存 claim salvage 的 rejected count、内部 reason 与
 - `submit_answer` 必须通过严格参数和逐 claim 校验；非法 claim 被局部删除，仍有合法 claim 时
   降级为 `partial`，零合法 claim 才确定性拒答。
 - 事实 claim 只能引用本次已授权 Evidence；实际未加载的图片不能产生视觉引用。
+- 同一主题上互不兼容的证据必须用 claim 上的可选 `conflict` 结构披露（supporting/
+  conflicting citation、type、adjudication）。这不是新的 outcome，也不持久化；渲染仍把
+  claim 文本与扁平 `[n]` 引用交给前端，历史回放与公共 API 不变。非法 conflict claim 按
+  现有 salvage 丢弃：仍有合法 claim 时降为 `partial`，否则拒答。
 - Graph 关系检索水合后的 text/table Chunk 同时保留 `graph_path` provenance 与对应的
   `text`/`table_text` 表示；路径 provenance 不是视觉形态，只有缺少可引用文本表示的纯视觉
   Evidence 才必须先实际加载资产。

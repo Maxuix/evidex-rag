@@ -666,6 +666,30 @@ def _contains_marker(content: str, markers: Sequence[str]) -> bool:
     )
 
 
+def _complete_conflict_structure(conflict: Any) -> bool:
+    if conflict is None:
+        return False
+    supporting = tuple(getattr(conflict, "supporting_citation_ids", ()) or ())
+    conflicting = tuple(getattr(conflict, "conflicting_citation_ids", ()) or ())
+    conflict_type = getattr(conflict, "conflict_type", None)
+    adjudication = getattr(conflict, "adjudication", None)
+    if not supporting or not conflicting:
+        return False
+    if set(supporting) & set(conflicting):
+        return False
+    if conflict_type in {None, ""} or adjudication in {None, ""}:
+        return False
+    return True
+
+
+def _has_complete_conflict_claim(answering: Any) -> bool:
+    validated = getattr(answering, "validated", None)
+    claims = getattr(validated, "claims", ()) or ()
+    return any(
+        _complete_conflict_structure(getattr(claim, "conflict", None)) for claim in claims
+    )
+
+
 def _forbidden_hit(content: str, claims: object) -> bool:
     if not isinstance(claims, (list, tuple)):
         return False
@@ -686,8 +710,12 @@ def _score_public(case: Mapping[str, Any]) -> Callable[[str, Any, Any], Mapping[
                 content, ("?", "which one", "which actor", "referring", "specify", "clarify")
             )
         elif action == "surface_evidence_conflict":
-            policy_correct = actual in answer_like and _contains_marker(
-                content, ("conflict", "contradict", "outdated", "different", "disagree", "sources")
+            policy_correct = actual in answer_like and _has_complete_conflict_claim(
+                answering
+            )
+        elif action == "answer_without_false_conflict":
+            policy_correct = actual in answer_like and not _has_complete_conflict_claim(
+                answering
             )
         else:
             policy_correct = actual in answer_like

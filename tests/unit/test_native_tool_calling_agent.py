@@ -16,6 +16,8 @@ from rag_kb.answering.agent import (
     _tools,
 )
 from rag_kb.domain import (
+    AnswerConflictAdjudication,
+    AnswerConflictType,
     AnswerOutcome,
     CHAT_GRAPH_SEARCH_REASONS,
     ChatAgentBudget,
@@ -420,6 +422,32 @@ def _same_unit_table_visual_pack(
 
 
 class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
+    def test_system_prompt_requires_structured_conflict_claims(self) -> None:
+        prompt = _initial_messages(_context(), ChatAgentBudget())[0].content
+        self.assertIn('kind="conflict"', prompt)
+        self.assertIn("supporting_refs", prompt)
+        self.assertIn("Do not silently merge a conflict into a one-sided fact claim", prompt)
+
+    def test_submit_answer_schema_accepts_conflict_claims(self) -> None:
+        submit = next(tool for tool in _tools() if tool.name == "submit_answer")
+        claim = submit.input_schema["properties"]["claims"]["items"]
+        self.assertEqual(claim["properties"]["kind"]["enum"], ("fact", "conflict"))
+        conflict = claim["properties"]["conflict"]
+        self.assertEqual(
+            set(conflict["required"]),
+            {"supporting_refs", "conflicting_refs", "type", "adjudication"},
+        )
+        self.assertFalse(conflict["additionalProperties"])
+        self.assertEqual(
+            conflict["properties"]["type"]["enum"],
+            tuple(item.value for item in AnswerConflictType),
+        )
+        self.assertEqual(
+            conflict["properties"]["adjudication"]["enum"],
+            tuple(item.value for item in AnswerConflictAdjudication),
+        )
+        self.assertIn("kind='conflict'", submit.description)
+
     def test_adaptive_prompt_describes_first_class_graph_without_commands(self) -> None:
         prompt = _initial_messages(
             _adaptive_context(),
@@ -1137,6 +1165,226 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
             ("Some requested parts remain unanswered",),
         )
         self.assertEqual(state.artifacts[AGENT_TRACE_ARTIFACT].events[-1].status, "salvaged")
+
+    async def test_valid_conflict_claim_is_retained_with_structure(self) -> None:
+        context = _context()
+        model = _Model(
+            ChatToolCall("search-1", "search_knowledge_base", {"queries": ["revenue"]}),
+            ChatToolCall(
+                "submit-1",
+                "submit_answer",
+                {
+                    "outcome": "answered",
+                    "claims": [
+                        {
+                            "text": (
+                                "A later report says revenue was 12; an older memo "
+                                "says 10. The later version is reliable."
+                            ),
+                            "kind": "conflict",
+                            "evidence_refs": ["ev_1"],
+                            "calculation_refs": [],
+                            "conflict": {
+                                "supporting_refs": ["ev_1"],
+                                "conflicting_refs": ["ev_2"],
+                                "type": "version",
+                                "adjudication": "resolvable",
+                            },
+                        }
+                    ],
+                    "unanswered": [],
+                },
+            ),
+        )
+
+        state = await _agent(model, _Retriever(_pack(context, count=2))).run(context)
+
+        claim = state.answering.validated.claims[0]
+        self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.ANSWERED)
+        self.assertEqual(claim.citation_ids, ("cite_1", "cite_2"))
+        self.assertIsNotNone(claim.conflict)
+        self.assertEqual(claim.conflict.supporting_citation_ids, ("cite_1",))
+        self.assertEqual(claim.conflict.conflicting_citation_ids, ("cite_2",))
+        self.assertEqual(claim.conflict.conflict_type, AnswerConflictType.VERSION)
+        self.assertEqual(
+            claim.conflict.adjudication, AnswerConflictAdjudication.RESOLVABLE
+        )
+        self.assertIn("[1]", state.answering.rendered.content)
+        self.assertIn("[2]", state.answering.rendered.content)
+
+    async def test_conflict_claim_rejects_empty_intersecting_and_unissued_refs(self) -> None:
+        cases = (
+            (
+                "empty",
+                {
+                    "supporting_refs": [],
+                    "conflicting_refs": ["ev_2"],
+                    "type": "version",
+                    "adjudication": "unresolvable",
+                },
+                "conflict_ref",
+            ),
+            (
+                "intersecting",
+                {
+                    "supporting_refs": ["ev_1"],
+                    "conflicting_refs": ["ev_1"],
+                    "type": "opinion",
+                    "adjudication": "unresolvable",
+                },
+                "conflict_ref",
+            ),
+            (
+                "unissued",
+                {
+                    "supporting_refs": ["ev_1"],
+                    "conflicting_refs": ["ev_other_run"],
+                    "type": "temporal",
+                    "adjudication": "resolvable",
+                },
+                "conflict_ref",
+            ),
+        )
+        for name, conflict, reason in cases:
+            with self.subTest(name=name):
+                context = _context()
+                model = _Model(
+                    ChatToolCall(
+                        "search-1", "search_knowledge_base", {"queries": ["revenue"]}
+                    ),
+                    ChatToolCall(
+                        "submit-1",
+                        "submit_answer",
+                        {
+                            "outcome": "answered",
+                            "claims": [
+                                {
+                                    "text": "Sources disagree on revenue.",
+                                    "kind": "conflict",
+                                    "evidence_refs": ["ev_1"],
+                                    "calculation_refs": [],
+                                    "conflict": conflict,
+                                }
+                            ],
+                            "unanswered": [],
+                        },
+                    ),
+                )
+
+                state = await _agent(
+                    model, _Retriever(_pack(context, count=2))
+                ).run(context)
+
+                self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.REFUSED)
+                event = state.artifacts[AGENT_TRACE_ARTIFACT].events[-1]
+                self.assertEqual(event.status, "salvaged")
+                self.assertEqual(event.rejection_reasons, (reason,))
+                self.assertEqual(len(model.requests), 2)
+
+    async def test_fact_claim_cannot_carry_a_conflict_object(self) -> None:
+        context = _context()
+        model = _Model(
+            ChatToolCall("search-1", "search_knowledge_base", {"queries": ["revenue"]}),
+            ChatToolCall(
+                "submit-1",
+                "submit_answer",
+                {
+                    "outcome": "answered",
+                    "claims": [
+                        {
+                            "text": "Revenue was 10.",
+                            "kind": "fact",
+                            "evidence_refs": ["ev_1"],
+                            "calculation_refs": [],
+                            "conflict": {
+                                "supporting_refs": ["ev_1"],
+                                "conflicting_refs": ["ev_2"],
+                                "type": "version",
+                                "adjudication": "resolvable",
+                            },
+                        }
+                    ],
+                    "unanswered": [],
+                },
+            ),
+        )
+
+        state = await _agent(model, _Retriever(_pack(context, count=2))).run(context)
+
+        event = state.artifacts[AGENT_TRACE_ARTIFACT].events[-1]
+        self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.REFUSED)
+        self.assertEqual(event.rejection_reasons, ("conflict_shape",))
+
+    async def test_conflict_kind_without_conflict_object_is_rejected(self) -> None:
+        context = _context()
+        model = _Model(
+            ChatToolCall("search-1", "search_knowledge_base", {"queries": ["revenue"]}),
+            ChatToolCall(
+                "submit-1",
+                "submit_answer",
+                {
+                    "outcome": "answered",
+                    "claims": [
+                        {
+                            "text": "Sources disagree on revenue.",
+                            "kind": "conflict",
+                            "evidence_refs": ["ev_1", "ev_2"],
+                            "calculation_refs": [],
+                        }
+                    ],
+                    "unanswered": [],
+                },
+            ),
+        )
+
+        state = await _agent(model, _Retriever(_pack(context, count=2))).run(context)
+
+        event = state.artifacts[AGENT_TRACE_ARTIFACT].events[-1]
+        self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.REFUSED)
+        self.assertEqual(event.rejection_reasons, ("conflict_shape",))
+
+    async def test_invalid_conflict_claim_is_salvaged_when_a_fact_claim_remains(self) -> None:
+        context = _context()
+        model = _Model(
+            ChatToolCall("search-1", "search_knowledge_base", {"queries": ["revenue"]}),
+            ChatToolCall(
+                "submit-1",
+                "submit_answer",
+                {
+                    "outcome": "answered",
+                    "claims": [
+                        {
+                            "text": "Revenue was 10.",
+                            "kind": "fact",
+                            "evidence_refs": ["ev_1"],
+                            "calculation_refs": [],
+                        },
+                        {
+                            "text": "Sources disagree.",
+                            "kind": "conflict",
+                            "evidence_refs": ["ev_1"],
+                            "calculation_refs": [],
+                            "conflict": {
+                                "supporting_refs": ["ev_1"],
+                                "conflicting_refs": ["ev_1"],
+                                "type": "opinion",
+                                "adjudication": "unresolvable",
+                            },
+                        },
+                    ],
+                    "unanswered": [],
+                },
+            ),
+        )
+
+        state = await _agent(model, _Retriever(_pack(context, count=2))).run(context)
+
+        event = state.artifacts[AGENT_TRACE_ARTIFACT].events[-1]
+        self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.PARTIAL)
+        self.assertEqual(len(state.answering.validated.claims), 1)
+        self.assertIsNone(state.answering.validated.claims[0].conflict)
+        self.assertEqual(event.status, "salvaged")
+        self.assertEqual(event.rejection_reasons, ("conflict_ref",))
 
     async def test_yes_no_relation_submission_gets_open_world_support_review(self) -> None:
         context = replace(
