@@ -287,6 +287,9 @@ budget/trace，`0010` 删除旧 workflow configuration/state 及其中的 Resear
 普通索引发布，只有 build ready、覆盖完整且运行时探测通过时才可用于在线检索。`0019` 为 source
 file content mutation 增加 `pending/completed/failed` 终态、稳定 failure facts 和 reservation
 时间，并由 bounded reconciler 按条目原子收敛；不可恢复的文件清理保留 durable cleanup 记录。
+`0021` 允许 Agent trace 记录 `clarify` outcome；`0022` 把 ChatRun agent budget 从两键
+（模型轮次/Graph 调用）扩展为六键累计资源预算（新增 token 总量、证据条数、检索调用数与软
+截止预留），既有行原地补齐默认值。
 除此之外不承诺任意历史版本兼容。主要持久事实为：
 
 | 范围 | 主要实体 |
@@ -460,12 +463,16 @@ Chunk；达到 soft 12 后下一条完整路径加入后不超过 hard 16 则整
 Graph 的 route result 只允许 `admitted`、`no_evidence`、`not_ready`、`timeout`、
 `unavailable`、`rejected` 等安全码，公开 trace 保留 `tool=search_graph_relations` 与
 `graph_relations` lane，edge fact 永不进入 Agent tool result。Graph 单次内层 90 秒 timeout 与该
-结果码可区分外层 ChatRun 取消。若紧急 forced finalizer 已没有模型轮次完成 open-world 精确命题
-复核，非拒答提交会 fail closed 为拒答，不绕过该 guard。
+结果码可区分外层 ChatRun 取消。
 manual Graph 的 hybrid 候选查询宽度按 `min(40, max(12, top_k * 2))` 计算；packing 按 path-whole
 规则优先保留完整图路径，再用未重复的 hybrid Evidence 回填到 `top_k`。
-Agent 只保留最多 8 个普通模型轮次的有限循环护栏，不限制 Query、计算或 EvidenceRef 的累计数，
-也不比较或拒绝重复 Query。
+Agent 保留最多 8 个普通模型轮次的有限循环护栏，并另有累计资源预算：冻结 budget 记录
+`max_total_tokens`（默认 150k）、`max_evidence_items`（默认 64）、`max_retrieval_calls`
+（默认 16）与 `soft_deadline_reserve_seconds`（默认 60s）。每轮按 response usage 累计
+token；任一预算耗尽或剩余时间低于软截止预留时进入 wrap-up 收尾模式，只留 `submit_answer`
+工具并提示直接提交；证据池达到条数上限后停止追加并在 tool 结果中标注截断。预算只限制
+探索行为，不阻止提交与校验着陆通道；收尾后仍不提交则走既有 forced finalize。Agent
+不比较或拒绝重复 Query。
 题面中的文件名不触发分类、硬 document scope 或全文预读，因此同一知识库中被引用的其他文档
 仍可被检索。每个结果获得运行内稳定 EvidenceRef；首次命中向模型发送索引保存的完整 chunk，
 之后同一 EvidenceRef 只返回已发送标记，不截断、摘要
@@ -478,8 +485,9 @@ Agent 只保留最多 8 个普通模型轮次的有限循环护栏，不限制 Q
 ## 10. Chat 与回答
 
 API 创建 ChatRun 时在短事务内冻结知识库/revision、检索 preset 的 version/strategy/`top_k`/
-`rerank_mode`（auto 另含 router/augmentation 与 Graph Tool 参数）、原生 Agent 模型循环轮次上限
-与 Graph 调用上限、回答策略、不可变模型修订和最近已完成 Session turns，然后
+`rerank_mode`（auto 另含 router/augmentation 与 Graph Tool 参数）、原生 Agent 六键预算
+（模型轮次、Graph 调用、token 总量、证据条数、检索调用数与软截止预留）、回答策略、
+不可变模型修订和最近已完成 Session turns，然后
 返回 `202`；模型调用由 Worker 执行。公开请求没有 workflow 模式。
 
 回答策略中的 `answer_style` 与 `insufficiency_policy` 当前会被校验、冻结并通过 API 返回，但原生
@@ -496,7 +504,9 @@ load_context
   -> adaptive mode: Graph visible from the first round, at most twice per run
   -> model calls submit_answer when ready
   -> if the ordinary loop reaches its limit, one extra submit-only call finalizes
+  -> budget exhaustion or soft deadline switches to submit-only wrap-up rounds
   -> claim-level deterministic validation and salvage
+  -> one structured verifier call (premise + per-claim support), programmatically enforced
   -> persist_result
 ```
 
@@ -514,8 +524,11 @@ ChatRun 内部 trace 保存 claim salvage 的 rejected count、内部 reason 与
 回答边界保持：
 
 - 零准入证据时确定性拒答；有证据时模型仍可判断问题无法充分回答。
-- 是/否命题的非拒答提交会经过一次 submit-only 精确命题复核；相似名称、其他主体的正关系、不同
-  counterparty 或检索缺失都不能证明目标命题为否，缺少显式支持或否定时应拒答。
+- 所有非 clarify 的 `answered`/`partial` 提交（含 forced finalize）都经过一次结构化校验轮：
+  独立的 JSON verdict 调用逐 claim 判定支持度并识别题面预设命题；`premise=unsupported`
+  时整体拒答，`unsupported`/`contradicted` 的 claim 被剔除（有剩余降级 `partial`，无剩余拒答），
+  verdict 输出不合规时重试一次、仍不合规则 fail-closed 拒答。校验轮不消耗普通模型轮次，
+  但计入 trace 与 token 累计。
 - 文档、历史与图片都是 prompt 中的不可信数据，不能扩大权限或引用范围。
 - `submit_answer` 必须通过严格参数和逐 claim 校验；非法 claim 被局部删除，仍有合法 claim 时
   降级为 `partial`，零合法 claim 才确定性拒答。

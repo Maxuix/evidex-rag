@@ -33,6 +33,10 @@ from rag_kb.domain import (
     CHAT_GRAPH_SEARCH_REASONS,
     ChatAgentBudget,
     CHAT_AGENT_CLAIM_LIMIT,
+    CHAT_AGENT_DEFAULT_EVIDENCE_ITEMS,
+    CHAT_AGENT_DEFAULT_RETRIEVAL_CALLS,
+    CHAT_AGENT_DEFAULT_SOFT_DEADLINE_RESERVE_SECONDS,
+    CHAT_AGENT_DEFAULT_TOTAL_TOKENS,
     CHAT_AGENT_EVIDENCE_REF_LIMIT,
     CHAT_AGENT_TRACE_EVENT_LIMIT,
     CHAT_AGENT_TRACE_REF_LIMIT,
@@ -79,6 +83,11 @@ _TRACE_REF_LIMIT = CHAT_AGENT_TRACE_REF_LIMIT
 _SIMPLE_QUERY_MAX_COUNT = 3
 _QUERY_MAX_CHARS = 2048
 _SUBMIT_REPAIR_FEEDBACK = '{"status":"retry_submission"}'
+_BUDGET_EXHAUSTED_FEEDBACK = (
+    "The retrieval budget for this run is exhausted. Do not call search "
+    "tools; submit the best possible answer now with the evidence already "
+    "gathered, or refuse when it cannot support an answer."
+)
 _GENERIC_UNANSWERED = "Some requested parts remain unanswered"
 _UNVERIFIABLE_CLAIM_NOTE = (
     "Some claims were removed because the cited evidence did not support them"
@@ -189,7 +198,12 @@ class NativeToolCallingAgent:
             cross_modal_min_cosine_similarity,
         )
 
-    async def run(self, context: ChatExecutionContext) -> ChatPipelineState:
+    async def run(
+        self,
+        context: ChatExecutionContext,
+        *,
+        deadline_seconds: float | None = None,
+    ) -> ChatPipelineState:
         budget = _budget_from_context(context)
         adaptive_graphiti = _adaptive_graphiti_enabled(context)
         graph_ready = (
@@ -220,13 +234,30 @@ class NativeToolCallingAgent:
         strategy = None
         submit_only_repair_used = False
         submit_only_repair_pending = False
+        started_at = time.monotonic()
+        total_tokens = 0
+        wrap_up_notice_sent = False
 
         for round_number in range(1, budget.max_model_rounds + 1):
             repair_round = submit_only_repair_pending
             submit_only_repair_pending = False
+            budget_exhausted = (
+                total_tokens >= budget.max_total_tokens
+                or retrieval_calls >= budget.max_retrieval_calls
+                or (
+                    deadline_seconds is not None
+                    and time.monotonic() - started_at
+                    >= deadline_seconds - budget.soft_deadline_reserve_seconds
+                )
+            )
+            wrap_up_round = budget_exhausted and not repair_round
+            if wrap_up_round and not wrap_up_notice_sent:
+                wrap_up_notice_sent = True
+                messages.append(ChatModelMessage("user", _BUDGET_EXHAUSTED_FEEDBACK))
+            submit_only_round = repair_round or wrap_up_round
             tools = (
                 (_tool_by_name(_tools(adaptive=adaptive_graphiti), "submit_answer"),)
-                if repair_round
+                if submit_only_round
                 else _tools(
                     adaptive=adaptive_graphiti,
                     graph_ready=graph_ready,
@@ -242,9 +273,10 @@ class NativeToolCallingAgent:
             )
             call_record = model_call_record(ChatModelOperation.AGENT_ROUND, response)
             calls.append(call_record)
+            total_tokens += int(response.usage.get("total_tokens", 0) or 0)
 
             if len(response.tool_calls) != 1:
-                if repair_round:
+                if submit_only_round:
                     break
                 events.append(
                     ChatAgentTraceEvent(
@@ -277,7 +309,7 @@ class NativeToolCallingAgent:
                     tool_calls=(call,),
                 )
             )
-            if repair_round and response.tool_calls[0].name != "submit_answer":
+            if submit_only_round and response.tool_calls[0].name != "submit_answer":
                 events.append(_rejected_event(call))
                 break
             if call.name in {"search_knowledge_base", "search_graph_relations"}:
@@ -356,6 +388,7 @@ class NativeToolCallingAgent:
                     packs,
                     eligibility=self._eligibility,
                 )
+                evidence_limit_hit = False
                 for offset in range(max((len(items) for items in query_candidates), default=0)):
                     for items in query_candidates:
                         if offset >= len(items):
@@ -367,6 +400,11 @@ class NativeToolCallingAgent:
                                     if existing.index_chunk_id == item.index_chunk_id:
                                         evidence[index] = replace(item, rank=existing.rank)
                                         break
+                            continue
+                        if len(evidence) >= budget.max_evidence_items:
+                            # The per-run evidence budget is exhausted; further
+                            # hits are dropped before they reach the prompt.
+                            evidence_limit_hit = True
                             continue
                         evidence_ids.add(item.index_chunk_id)
                         evidence.append(item)
@@ -427,6 +465,9 @@ class NativeToolCallingAgent:
                         "graph_relations"
                         if graph_search_result is not None
                         else "ok"
+                    ),
+                    notice=(
+                        "evidence_limit_reached" if evidence_limit_hit else None
                     ),
                     route_result_code=(
                         graph_search_result.route_result_code
@@ -595,7 +636,7 @@ class NativeToolCallingAgent:
                     calculations=calculations,
                 )
                 if result is None:
-                    if repair_round:
+                    if submit_only_round:
                         break
                     events.append(_rejected_event(call))
                     messages.append(
@@ -615,6 +656,7 @@ class NativeToolCallingAgent:
                         rejected_claim_count=result.rejected_claim_count,
                         rejection_reasons=result.rejection_reasons,
                         submit_only_repair=repair_round,
+                        budget_wrap_up=wrap_up_round,
                     )
                 )
                 if (
@@ -719,6 +761,7 @@ class NativeToolCallingAgent:
                 count=len(validated.claims),
                 rejected_claim_count=rejected_claim_count,
                 rejection_reasons=rejection_reasons,
+                budget_wrap_up=wrap_up_notice_sent,
             )
         )
         if validated.outcome in {AnswerOutcome.ANSWERED, AnswerOutcome.PARTIAL}:
@@ -1012,7 +1055,11 @@ def _initial_messages(
             "value), the claim text must say which side is currently reliable and why. "
             "Do not silently merge a conflict into a one-sided fact claim. "
             f"The tool loop has at most {budget.max_model_rounds} model rounds; this is a "
-            "technical loop guard, not a search or evidence budget."
+            "technical loop guard, not a search or evidence budget. Retrieval is bounded per "
+            f"run: at most {budget.max_retrieval_calls} search executions and "
+            f"{budget.max_evidence_items} retained evidence items. Stop searching and submit "
+            "as soon as the gathered evidence can support an answer; when a budget notice "
+            "arrives, submit immediately with the evidence already gathered."
             + adaptive_instruction,
         ),
     ]
@@ -1340,6 +1387,7 @@ def _search_result(
     sent_content_refs: set[str],
     *,
     status: str = "ok",
+    notice: str | None = None,
     route_result_code: str | None = None,
     new_evidence_count: int | None = None,
 ) -> tuple[str, tuple[str, ...]]:
@@ -1389,6 +1437,8 @@ def _search_result(
             )
         result_groups.append({"query": query, "results": items})
     payload: dict[str, Any] = {"status": status, "groups": result_groups}
+    if notice is not None:
+        payload["notice"] = notice
     if route_result_code is not None:
         payload["route_result_code"] = route_result_code
     if new_evidence_count is not None:
@@ -1761,6 +1811,9 @@ def _final_state(
         calculation_calls=calculation_calls,
         evidence_ref_count=len(prompt_by_ref),
         outcome=validated.outcome.value,
+        total_tokens=sum(
+            int(record.usage.get("total_tokens", 0) or 0) for record in calls
+        ),
     )
     return ChatPipelineState(
         context=context,
@@ -1900,7 +1953,17 @@ def _budget_from_context(
             set(value) != {"version", "budget"}
             or value.get("version") != "native_tool_calling_agent_v3"
             or not isinstance(raw, Mapping)
-            or set(raw) != {"max_model_rounds", "max_graph_calls"}
+            or not {"max_model_rounds", "max_graph_calls"}.issubset(raw)
+            or not set(raw).issubset(
+                {
+                    "max_model_rounds",
+                    "max_graph_calls",
+                    "max_total_tokens",
+                    "max_evidence_items",
+                    "max_retrieval_calls",
+                    "soft_deadline_reserve_seconds",
+                }
+            )
             or isinstance(max_model_rounds, bool)
             or not isinstance(max_model_rounds, int)
             or isinstance(max_graph_calls, bool)
@@ -1910,6 +1973,19 @@ def _budget_from_context(
         return ChatAgentBudget(
             max_model_rounds=max_model_rounds,
             max_graph_calls=max_graph_calls,
+            max_total_tokens=raw.get(
+                "max_total_tokens", CHAT_AGENT_DEFAULT_TOTAL_TOKENS
+            ),
+            max_evidence_items=raw.get(
+                "max_evidence_items", CHAT_AGENT_DEFAULT_EVIDENCE_ITEMS
+            ),
+            max_retrieval_calls=raw.get(
+                "max_retrieval_calls", CHAT_AGENT_DEFAULT_RETRIEVAL_CALLS
+            ),
+            soft_deadline_reserve_seconds=raw.get(
+                "soft_deadline_reserve_seconds",
+                CHAT_AGENT_DEFAULT_SOFT_DEADLINE_RESERVE_SECONDS,
+            ),
         )
     except (KeyError, TypeError, ValueError):
         raise ChatPipelineExecutionError(

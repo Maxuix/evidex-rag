@@ -47,6 +47,15 @@ CHAT_AGENT_DEFAULT_MODEL_ROUNDS = 8
 CHAT_AGENT_MAX_MODEL_ROUNDS = 12
 CHAT_AGENT_DEFAULT_GRAPH_CALLS = 2
 CHAT_AGENT_MAX_GRAPH_CALLS = 2
+CHAT_AGENT_DEFAULT_TOTAL_TOKENS = 150_000
+CHAT_AGENT_MIN_TOTAL_TOKENS = 1_000
+CHAT_AGENT_MAX_TOTAL_TOKENS = 10_000_000
+CHAT_AGENT_DEFAULT_EVIDENCE_ITEMS = 64
+CHAT_AGENT_MAX_EVIDENCE_ITEMS = 512
+CHAT_AGENT_DEFAULT_RETRIEVAL_CALLS = 16
+CHAT_AGENT_MAX_RETRIEVAL_CALLS = 64
+CHAT_AGENT_DEFAULT_SOFT_DEADLINE_RESERVE_SECONDS = 60.0
+CHAT_AGENT_MAX_SOFT_DEADLINE_RESERVE_SECONDS = 600.0
 CHAT_AGENT_TRACE_REF_LIMIT = 100
 CHAT_AGENT_TRACE_EVENT_LIMIT = 32
 CHAT_AGENT_CLAIM_LIMIT = 100
@@ -62,6 +71,12 @@ CHAT_GRAPH_NEW_CHUNK_LIMIT = 16
 class ChatAgentBudget:
     max_model_rounds: int = CHAT_AGENT_DEFAULT_MODEL_ROUNDS
     max_graph_calls: int = CHAT_AGENT_DEFAULT_GRAPH_CALLS
+    max_total_tokens: int = CHAT_AGENT_DEFAULT_TOTAL_TOKENS
+    max_evidence_items: int = CHAT_AGENT_DEFAULT_EVIDENCE_ITEMS
+    max_retrieval_calls: int = CHAT_AGENT_DEFAULT_RETRIEVAL_CALLS
+    soft_deadline_reserve_seconds: float = (
+        CHAT_AGENT_DEFAULT_SOFT_DEADLINE_RESERVE_SECONDS
+    )
 
     def __post_init__(self) -> None:
         if (
@@ -76,11 +91,48 @@ class ChatAgentBudget:
             or not 1 <= self.max_graph_calls <= CHAT_AGENT_MAX_GRAPH_CALLS
         ):
             raise ValueError("chat agent graph budget is invalid")
+        if (
+            isinstance(self.max_total_tokens, bool)
+            or not isinstance(self.max_total_tokens, int)
+            or not CHAT_AGENT_MIN_TOTAL_TOKENS
+            <= self.max_total_tokens
+            <= CHAT_AGENT_MAX_TOTAL_TOKENS
+        ):
+            raise ValueError("chat agent token budget is invalid")
+        if (
+            isinstance(self.max_evidence_items, bool)
+            or not isinstance(self.max_evidence_items, int)
+            or not 1 <= self.max_evidence_items <= CHAT_AGENT_MAX_EVIDENCE_ITEMS
+        ):
+            raise ValueError("chat agent evidence budget is invalid")
+        if (
+            isinstance(self.max_retrieval_calls, bool)
+            or not isinstance(self.max_retrieval_calls, int)
+            or not 1 <= self.max_retrieval_calls <= CHAT_AGENT_MAX_RETRIEVAL_CALLS
+        ):
+            raise ValueError("chat agent retrieval budget is invalid")
+        if (
+            isinstance(self.soft_deadline_reserve_seconds, bool)
+            or not isinstance(self.soft_deadline_reserve_seconds, (int, float))
+            or not 0
+            <= self.soft_deadline_reserve_seconds
+            <= CHAT_AGENT_MAX_SOFT_DEADLINE_RESERVE_SECONDS
+        ):
+            raise ValueError("chat agent soft deadline reserve is invalid")
+        object.__setattr__(
+            self,
+            "soft_deadline_reserve_seconds",
+            float(self.soft_deadline_reserve_seconds),
+        )
 
-    def as_dict(self) -> dict[str, int]:
+    def as_dict(self) -> dict[str, int | float]:
         return {
             "max_model_rounds": self.max_model_rounds,
             "max_graph_calls": self.max_graph_calls,
+            "max_total_tokens": self.max_total_tokens,
+            "max_evidence_items": self.max_evidence_items,
+            "max_retrieval_calls": self.max_retrieval_calls,
+            "soft_deadline_reserve_seconds": self.soft_deadline_reserve_seconds,
         }
 
 
@@ -98,6 +150,7 @@ class ChatAgentTraceEvent:
     rejected_claim_count: int = 0
     rejection_reasons: tuple[str, ...] = ()
     submit_only_repair: bool = False
+    budget_wrap_up: bool = False
     call_index: int | None = None
     invocation_source: str | None = None
     duration_ms: int | None = None
@@ -285,12 +338,18 @@ class ChatAgentTraceEvent:
                     "hop3_count": self.hop3_count,
                 }
             )
-        if self.rejected_claim_count or self.rejection_reasons or self.submit_only_repair:
+        if (
+            self.rejected_claim_count
+            or self.rejection_reasons
+            or self.submit_only_repair
+            or self.budget_wrap_up
+        ):
             value.update(
                 {
                     "rejected_claim_count": self.rejected_claim_count,
                     "rejection_reasons": list(self.rejection_reasons),
                     "submit_only_repair": self.submit_only_repair,
+                    "budget_wrap_up": self.budget_wrap_up,
                 }
             )
         return value
@@ -305,6 +364,7 @@ class ChatAgentTrace:
     calculation_calls: int
     evidence_ref_count: int
     outcome: str
+    total_tokens: int = 0
     version: str = CHAT_AGENT_VERSION
 
     def __post_init__(self) -> None:
@@ -315,6 +375,7 @@ class ChatAgentTrace:
             or self.retrieval_calls < 0
             or self.calculation_calls < 0
             or self.evidence_ref_count < 0
+            or self.total_tokens < 0
             or self.outcome not in {"answered", "partial", "refused", "clarify"}
         ):
             raise ValueError("chat agent trace is invalid")
@@ -329,6 +390,7 @@ class ChatAgentTrace:
                 "retrieval_calls": self.retrieval_calls,
                 "calculation_calls": self.calculation_calls,
                 "evidence_refs": self.evidence_ref_count,
+                "total_tokens": self.total_tokens,
             },
             "outcome": self.outcome,
         }

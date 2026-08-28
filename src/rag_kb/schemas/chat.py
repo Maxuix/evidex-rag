@@ -10,8 +10,17 @@ from pydantic import Field, field_validator, model_validator
 from pydantic_core import PydanticCustomError
 
 from rag_kb.domain import (
+    CHAT_AGENT_DEFAULT_EVIDENCE_ITEMS,
+    CHAT_AGENT_DEFAULT_RETRIEVAL_CALLS,
+    CHAT_AGENT_DEFAULT_SOFT_DEADLINE_RESERVE_SECONDS,
+    CHAT_AGENT_DEFAULT_TOTAL_TOKENS,
+    CHAT_AGENT_MAX_EVIDENCE_ITEMS,
     CHAT_AGENT_MAX_GRAPH_CALLS,
     CHAT_AGENT_MAX_MODEL_ROUNDS,
+    CHAT_AGENT_MAX_RETRIEVAL_CALLS,
+    CHAT_AGENT_MAX_SOFT_DEADLINE_RESERVE_SECONDS,
+    CHAT_AGENT_MAX_TOTAL_TOKENS,
+    CHAT_AGENT_MIN_TOTAL_TOKENS,
     AnswerStyle,
     InsufficiencyPolicy,
     RerankMode,
@@ -134,6 +143,20 @@ class ChatRetrievalRequest(PublicSchema):
 class ChatAgentBudgetResponse(PublicSchema):
     max_model_rounds: Annotated[int, Field(ge=1, le=CHAT_AGENT_MAX_MODEL_ROUNDS)]
     max_graph_calls: Annotated[int, Field(ge=1, le=CHAT_AGENT_MAX_GRAPH_CALLS)]
+    max_total_tokens: Annotated[
+        int,
+        Field(ge=CHAT_AGENT_MIN_TOTAL_TOKENS, le=CHAT_AGENT_MAX_TOTAL_TOKENS),
+    ] = CHAT_AGENT_DEFAULT_TOTAL_TOKENS
+    max_evidence_items: Annotated[
+        int, Field(ge=1, le=CHAT_AGENT_MAX_EVIDENCE_ITEMS)
+    ] = CHAT_AGENT_DEFAULT_EVIDENCE_ITEMS
+    max_retrieval_calls: Annotated[
+        int, Field(ge=1, le=CHAT_AGENT_MAX_RETRIEVAL_CALLS)
+    ] = CHAT_AGENT_DEFAULT_RETRIEVAL_CALLS
+    soft_deadline_reserve_seconds: Annotated[
+        float,
+        Field(ge=0, le=CHAT_AGENT_MAX_SOFT_DEADLINE_RESERVE_SECONDS),
+    ] = CHAT_AGENT_DEFAULT_SOFT_DEADLINE_RESERVE_SECONDS
 
 
 class ChatAgentTraceEventResponse(PublicSchema):

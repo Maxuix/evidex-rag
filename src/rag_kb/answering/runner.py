@@ -94,7 +94,10 @@ class NativeAgentRunner:
                     ChatProgressActivity.TOOL_DECISION,
                     completed=(ChatProgressStage.UNDERSTAND_QUERY,),
                 )
-                state = await self._agent.run(context)
+                state = await self._agent.run(
+                    context,
+                    deadline_seconds=self._deadline_seconds,
+                )
                 phase = ChatPipelinePhase.PERSIST_RESULT
                 trace = state.artifacts.get("chat_agent_trace")
                 await reporter.show(

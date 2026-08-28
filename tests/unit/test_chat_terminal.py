@@ -44,9 +44,10 @@ class ChatTerminalServiceTests(unittest.IsolatedAsyncioTestCase):
         observed = datetime(2026, 7, 15, 8, 0, tzinfo=UTC)
         state = _completed_state(observed)
         reporter = _Reporter()
+        agent = _Agent(state)
         runner = NativeAgentRunner(
             _ContextLoader(state.context),
-            _Agent(state),
+            agent,
             _Persister(state),
             deadline_seconds=1,
             progress_reporter_factory=lambda *_: reporter,
@@ -55,6 +56,7 @@ class ChatTerminalServiceTests(unittest.IsolatedAsyncioTestCase):
         result = await runner.execute(ChatExecutionCommand(state.context.lease))
 
         self.assertIs(result, state)
+        self.assertEqual(agent.deadline_seconds, 1)
         completed = reporter.shown[-1][2]
         self.assertEqual(
             completed,
@@ -158,7 +160,7 @@ class ChatTerminalServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             repository.success.agent_trace["budget"],
-            {"max_model_rounds": 1, "max_graph_calls": 2},
+            ChatAgentBudget(max_model_rounds=1, max_graph_calls=2).as_dict(),
         )
         self.assertEqual(
             repository.success.agent_trace["usage"]["evidence_refs"], 105
@@ -396,8 +398,10 @@ class _ContextLoader:
 class _Agent:
     def __init__(self, state) -> None:
         self.state = state
+        self.deadline_seconds = None
 
-    async def run(self, context):
+    async def run(self, context, *, deadline_seconds=None):
+        self.deadline_seconds = deadline_seconds
         return self.state
 
 

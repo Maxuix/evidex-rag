@@ -476,9 +476,13 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("native_tool_calling_agent_v3", columns[0]["column_default"])
         self.assertIn("max_model_rounds", columns[0]["column_default"])
         self.assertIn("max_graph_calls", columns[0]["column_default"])
-        self.assertNotIn("retrieval_calls", columns[0]["column_default"])
-        self.assertNotIn("calculation_calls", columns[0]["column_default"])
-        self.assertNotIn("evidence_refs", columns[0]["column_default"])
+        self.assertIn("max_total_tokens", columns[0]["column_default"])
+        self.assertIn("max_evidence_items", columns[0]["column_default"])
+        self.assertIn("max_retrieval_calls", columns[0]["column_default"])
+        self.assertIn("soft_deadline_reserve_seconds", columns[0]["column_default"])
+        self.assertNotIn("'retrieval_calls'", columns[0]["column_default"])
+        self.assertNotIn("'calculation_calls'", columns[0]["column_default"])
+        self.assertNotIn("'evidence_refs'", columns[0]["column_default"])
         self.assertEqual(len(constraints), 2)
         self.assertEqual(
             [row["conname"] for row in constraints],

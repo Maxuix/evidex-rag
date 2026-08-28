@@ -588,8 +588,14 @@ async def _run_agent(
         rerank_mode=RerankMode.CLASSIC,
     )
     context = replace(context, retrieval_strategy=retrieval_strategy)
+    deadline_seconds = float(
+        dependencies.settings.job_poller.chat_deadline_seconds
+    )
     started = time.monotonic()
-    state = await agent.run(context)
+    state = await asyncio.wait_for(
+        agent.run(context, deadline_seconds=deadline_seconds),
+        timeout=deadline_seconds + 120.0,
+    )
     duration_ms = int((time.monotonic() - started) * 1000)
     trace = state.artifacts.get(AGENT_TRACE_ARTIFACT)
     answering = state.answering
@@ -615,6 +621,9 @@ async def _run_agent(
         ),
         "model_call_usage": usage,
         "total_tokens": usage["total_tokens"],
+        "budget_wrap_up": any(
+            getattr(event, "budget_wrap_up", False) for event in trace.events
+        ),
         "duration_ms": duration_ms,
     }
     observation.update(score(answering.rendered.content, answering.rendered.citations, answering))

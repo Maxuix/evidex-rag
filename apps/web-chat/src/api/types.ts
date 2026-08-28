@@ -403,6 +403,10 @@ export interface ChatAgent {
   budget: {
     max_model_rounds: number;
     max_graph_calls: number;
+    max_total_tokens?: number;
+    max_evidence_items?: number;
+    max_retrieval_calls?: number;
+    soft_deadline_reserve_seconds?: number;
   };
   trace: {
     version: "native_tool_calling_agent_v3";

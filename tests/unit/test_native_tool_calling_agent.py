@@ -49,9 +49,11 @@ class _Model:
         self,
         *calls: ChatToolCall | tuple[ChatToolCall, ...] | None | BaseException,
         verdicts: list[str | BaseException] | None = None,
+        usage: dict[str, int] | None = None,
     ) -> None:
         self.calls = list(calls)
         self.verdicts = list(verdicts or [])
+        self.usage = usage or {"total_tokens": 5}
         self.requests = []
 
     async def complete(self, request):
@@ -80,7 +82,7 @@ class _Model:
                 model="fixed-model",
                 finish_reason="stop",
                 provider_request_id=f"request-{len(self.requests)}",
-                usage={"total_tokens": 5},
+                usage=dict(self.usage),
                 tool_calls=(),
             )
         value = self.calls.pop(0)
@@ -92,7 +94,7 @@ class _Model:
             model="fixed-model",
             finish_reason="tool_calls" if tool_calls else "stop",
             provider_request_id=f"request-{len(self.requests)}",
-            usage={"total_tokens": 5},
+            usage=dict(self.usage),
             tool_calls=tool_calls,
         )
 
@@ -536,7 +538,17 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(_search_arguments({"retrieval_lane": "simple", "queries": ["one"]}))
 
     def test_agent_budget_configures_rounds_and_graph_calls(self) -> None:
-        self.assertEqual(ChatAgentBudget().as_dict(), {"max_model_rounds": 8, "max_graph_calls": 2})
+        self.assertEqual(
+            ChatAgentBudget().as_dict(),
+            {
+                "max_model_rounds": 8,
+                "max_graph_calls": 2,
+                "max_total_tokens": 150000,
+                "max_evidence_items": 64,
+                "max_retrieval_calls": 16,
+                "soft_deadline_reserve_seconds": 60.0,
+            },
+        )
         for kwargs in (
             {"max_model_rounds": True},
             {"max_model_rounds": 1.5},
@@ -544,9 +556,32 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
             {"max_graph_calls": 0},
             {"max_graph_calls": 3},
             {"max_graph_calls": 1.5},
+            {"max_total_tokens": True},
+            {"max_total_tokens": 0},
+            {"max_total_tokens": 10_000_001},
+            {"max_evidence_items": 0},
+            {"max_evidence_items": 513},
+            {"max_retrieval_calls": 0},
+            {"max_retrieval_calls": 65},
+            {"soft_deadline_reserve_seconds": -1.0},
+            {"soft_deadline_reserve_seconds": 601.0},
+            {"soft_deadline_reserve_seconds": True},
         ):
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
                 ChatAgentBudget(**kwargs)
+
+    def test_agent_budget_defaults_fill_legacy_two_key_configuration(self) -> None:
+        context = replace(
+            _context(),
+            agent_configuration={
+                "version": "native_tool_calling_agent_v3",
+                "budget": {"max_model_rounds": 8, "max_graph_calls": 2},
+            },
+        )
+        from rag_kb.answering.agent import _budget_from_context
+
+        budget = _budget_from_context(context)
+        self.assertEqual(budget, ChatAgentBudget())
 
     async def test_agent_configuration_is_strictly_current_v3(self) -> None:
         invalid_configurations = (
@@ -689,7 +724,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(model.requests[2].tool_choice, "none")
         self.assertEqual(
             state.artifacts[AGENT_TRACE_ARTIFACT].budget.as_dict(),
-            {"max_model_rounds": 8, "max_graph_calls": 2},
+            ChatAgentBudget().as_dict(),
         )
 
     async def test_agent_keeps_lexical_rrf_evidence_without_cosine_gate(self) -> None:
@@ -1781,6 +1816,162 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.ANSWERED)
         self.assertEqual(len(state.answering.validated.claims), 1)
+
+    async def test_token_budget_forces_a_submit_only_wrap_up_round(self) -> None:
+        context = replace(
+            _context(),
+            agent_configuration={
+                "version": "native_tool_calling_agent_v3",
+                "budget": ChatAgentBudget(max_total_tokens=1000).as_dict(),
+            },
+        )
+        model = _Model(
+            ChatToolCall("search-1", "search_knowledge_base", {"queries": ["revenue"]}),
+            ChatToolCall("search-2", "search_knowledge_base", {"queries": ["change"]}),
+            ChatToolCall(
+                "submit-1",
+                "submit_answer",
+                {
+                    "outcome": "answered",
+                    "claims": [
+                        {
+                            "text": "Revenue was 10 in 2025.",
+                            "kind": "fact",
+                            "evidence_refs": ["ev_1"],
+                            "calculation_refs": [],
+                        }
+                    ],
+                    "unanswered": [],
+                },
+            ),
+            usage={"total_tokens": 600},
+        )
+
+        state = await _agent(model, _Retriever(_pack(context))).run(context)
+
+        self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.ANSWERED)
+        wrap_up_request = model.requests[2]
+        self.assertEqual(
+            tuple(tool.name for tool in wrap_up_request.tools),
+            ("submit_answer",),
+        )
+        self.assertIn(
+            "retrieval budget",
+            wrap_up_request.messages[-1].content,
+        )
+        submit_events = [
+            event
+            for event in state.artifacts[AGENT_TRACE_ARTIFACT].events
+            if event.tool == "submit_answer"
+        ]
+        self.assertTrue(submit_events[-1].budget_wrap_up)
+        self.assertEqual(
+            state.artifacts[AGENT_TRACE_ARTIFACT].total_tokens,
+            600 * 4,
+        )
+
+    async def test_retrieval_call_budget_forces_immediate_wrap_up(self) -> None:
+        context = replace(
+            _context(),
+            agent_configuration={
+                "version": "native_tool_calling_agent_v3",
+                "budget": ChatAgentBudget(max_retrieval_calls=1).as_dict(),
+            },
+        )
+        model = _Model(
+            ChatToolCall("search-1", "search_knowledge_base", {"queries": ["revenue"]}),
+            ChatToolCall(
+                "submit-1",
+                "submit_answer",
+                {
+                    "outcome": "answered",
+                    "claims": [
+                        {
+                            "text": "Revenue was 10 in 2025.",
+                            "kind": "fact",
+                            "evidence_refs": ["ev_1"],
+                            "calculation_refs": [],
+                        }
+                    ],
+                    "unanswered": [],
+                },
+            ),
+        )
+
+        state = await _agent(model, _Retriever(_pack(context))).run(context)
+
+        self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.ANSWERED)
+        self.assertEqual(
+            tuple(tool.name for tool in model.requests[1].tools),
+            ("submit_answer",),
+        )
+        self.assertEqual(
+            state.artifacts[AGENT_TRACE_ARTIFACT].retrieval_calls,
+            1,
+        )
+
+    async def test_evidence_budget_drops_extra_items_with_a_notice(self) -> None:
+        context = replace(
+            _context(),
+            agent_configuration={
+                "version": "native_tool_calling_agent_v3",
+                "budget": ChatAgentBudget(max_evidence_items=1).as_dict(),
+            },
+        )
+        model = _Model(
+            ChatToolCall("search-1", "search_knowledge_base", {"queries": ["revenue"]}),
+            ChatToolCall(
+                "submit-1",
+                "submit_answer",
+                {
+                    "outcome": "answered",
+                    "claims": [
+                        {
+                            "text": "Revenue was 10 in 2025.",
+                            "kind": "fact",
+                            "evidence_refs": ["ev_1"],
+                            "calculation_refs": [],
+                        }
+                    ],
+                    "unanswered": [],
+                },
+            ),
+        )
+
+        state = await _agent(model, _Retriever(_pack(context, count=3))).run(context)
+
+        self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.ANSWERED)
+        trace = state.artifacts[AGENT_TRACE_ARTIFACT]
+        self.assertEqual(trace.evidence_ref_count, 1)
+        self.assertIn(
+            '"notice":"evidence_limit_reached"',
+            model.requests[1].messages[-1].content,
+        )
+
+    async def test_soft_deadline_wraps_up_before_the_first_round(self) -> None:
+        context = _context()
+        model = _Model(
+            ChatToolCall(
+                "submit-1",
+                "submit_answer",
+                {"outcome": "refused", "claims": [], "unanswered": []},
+            ),
+        )
+
+        state = await _agent(model, _Retriever(_pack(context))).run(
+            context,
+            deadline_seconds=0.0,
+        )
+
+        self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.REFUSED)
+        self.assertEqual(
+            tuple(tool.name for tool in model.requests[0].tools),
+            ("submit_answer",),
+        )
+        self.assertIn(
+            "retrieval budget",
+            model.requests[0].messages[-1].content,
+        )
 
     async def test_active_partial_submission_preserves_unanswered_aspects(self) -> None:
         context = _context()
@@ -2948,7 +3139,13 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_more_than_legacy_evidence_limit_does_not_fail_the_answer(self) -> None:
-        context = _context()
+        context = replace(
+            _context(),
+            agent_configuration={
+                "version": "native_tool_calling_agent_v3",
+                "budget": ChatAgentBudget(max_evidence_items=128).as_dict(),
+            },
+        )
         model = _Model(
             ChatToolCall(
                 "search-1", "search_knowledge_base", {"queries": ["revenue"]}
@@ -2982,7 +3179,13 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(trace.events[0].refs), 100)
 
     async def test_one_claim_can_reference_more_than_one_hundred_evidence_refs(self) -> None:
-        context = _context()
+        context = replace(
+            _context(),
+            agent_configuration={
+                "version": "native_tool_calling_agent_v3",
+                "budget": ChatAgentBudget(max_evidence_items=128).as_dict(),
+            },
+        )
         evidence_refs = [f"ev_{index}" for index in range(1, 106)]
         model = _Model(
             ChatToolCall(

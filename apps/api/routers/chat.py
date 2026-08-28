@@ -483,7 +483,12 @@ def _public_agent_trace(value: dict[str, object] | None) -> dict[str, object] | 
     trace = dict(value)
     events = trace.get("events")
     if isinstance(events, list):
-        internal_keys = {"rejected_claim_count", "rejection_reasons", "submit_only_repair"}
+        internal_keys = {
+            "rejected_claim_count",
+            "rejection_reasons",
+            "submit_only_repair",
+            "budget_wrap_up",
+        }
         public_events: list[object] = []
         for event in events:
             if not isinstance(event, dict):

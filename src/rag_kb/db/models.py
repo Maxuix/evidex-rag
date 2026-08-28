@@ -1704,7 +1704,10 @@ class ChatRun(Base):
             "jsonb_build_object("
             "'version', 'native_tool_calling_agent_v3', "
             "'budget', jsonb_build_object("
-            "'max_model_rounds', 8, 'max_graph_calls', 2))"
+            "'max_model_rounds', 8, 'max_graph_calls', 2, "
+            "'max_total_tokens', 150000, 'max_evidence_items', 64, "
+            "'max_retrieval_calls', 16, "
+            "'soft_deadline_reserve_seconds', 60))"
         ),
     )
     agent_trace: Mapped[dict[str, Any] | None] = mapped_column(JSONB)

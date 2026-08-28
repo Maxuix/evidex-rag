@@ -39,6 +39,13 @@
       "ChatAgentBudgetResponse": {
         "additionalProperties": false,
         "properties": {
+          "max_evidence_items": {
+            "default": 64,
+            "maximum": 512.0,
+            "minimum": 1.0,
+            "title": "Max Evidence Items",
+            "type": "integer"
+          },
           "max_graph_calls": {
             "maximum": 2.0,
             "minimum": 1.0,
@@ -50,6 +57,27 @@
             "minimum": 1.0,
             "title": "Max Model Rounds",
             "type": "integer"
+          },
+          "max_retrieval_calls": {
+            "default": 16,
+            "maximum": 64.0,
+            "minimum": 1.0,
+            "title": "Max Retrieval Calls",
+            "type": "integer"
+          },
+          "max_total_tokens": {
+            "default": 150000,
+            "maximum": 10000000.0,
+            "minimum": 1000.0,
+            "title": "Max Total Tokens",
+            "type": "integer"
+          },
+          "soft_deadline_reserve_seconds": {
+            "default": 60.0,
+            "maximum": 600.0,
+            "minimum": 0.0,
+            "title": "Soft Deadline Reserve Seconds",
+            "type": "number"
           }
         },
         "required": [
