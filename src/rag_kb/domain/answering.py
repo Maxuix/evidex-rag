@@ -46,6 +46,7 @@ class AnswerConflictAdjudication(StrEnum):
 
 class ChatModelOperation(StrEnum):
     AGENT_ROUND = "agent_round"
+    AGENT_VERIFIER = "agent_verifier"
     CONTEXTUALIZE_QUERY = "contextualize_query"
 
 

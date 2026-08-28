@@ -6,7 +6,6 @@ import asyncio
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 import json
-import re
 import time
 from typing import Any, Protocol
 from uuid import UUID
@@ -80,13 +79,35 @@ _TRACE_REF_LIMIT = CHAT_AGENT_TRACE_REF_LIMIT
 _SIMPLE_QUERY_MAX_COUNT = 3
 _QUERY_MAX_CHARS = 2048
 _SUBMIT_REPAIR_FEEDBACK = '{"status":"retry_submission"}'
-_OPEN_WORLD_REVIEW_FEEDBACK = (
-    '{"status":"review_submission","rule":"For a yes/no claim, cited evidence must '
-    "explicitly support or deny the exact proposition about the exact entities. "
-    "Nearby entities, a different positive relation, and retrieval absence never "
-    'prove the proposition false. Refuse when exact support is absent."}'
-)
 _GENERIC_UNANSWERED = "Some requested parts remain unanswered"
+_UNVERIFIABLE_CLAIM_NOTE = (
+    "Some claims were removed because the cited evidence did not support them"
+)
+_VERIFIER_EXCERPT_LIMIT = 1200
+_VERIFIER_MAX_OUTPUT_TOKENS = 1024
+_VERIFIER_MAX_ATTEMPTS = 2
+_VERIFIER_SYSTEM_PROMPT = (
+    "You are the verification stage of a knowledge-base answering pipeline. "
+    "You receive the user query and the answer claims proposed by the "
+    "answering agent, each with the exact evidence excerpts cited for it. "
+    "Judge strictly. First, premise: a query can presuppose a fact (for "
+    "example 'why did X acquire Y' presupposes that X acquired Y, or 'when "
+    "does the approved policy take effect' presupposes the policy was "
+    "approved). Answer 'unsupported' when the query presupposes a fact that "
+    "no cited evidence explicitly confirms, 'none' when the query presupposes "
+    "nothing checkable, otherwise 'supported'. Second, for every claim decide "
+    "whether its cited evidence explicitly supports the claim text as "
+    "written: 'supported', 'unsupported' (the evidence is missing, off-topic, "
+    "or only partially relevant), or 'contradicted' (the evidence states the "
+    "opposite). Similarly named entities, adjacent topics, and absence of "
+    "evidence never count as support. Respond with only a JSON object of the "
+    'form {"premise":"...","claims":[{"index":0,"support":"..."}]} covering '
+    "every claim index exactly once."
+)
+_VERIFIER_RETRY_FEEDBACK = (
+    "Your previous response was not a valid verification verdict. Respond "
+    "with only the required JSON object."
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +118,21 @@ class _SubmissionValidation:
     rejected_claim_count: int = 0
     rejection_reasons: tuple[str, ...] = ()
     repair_eligible: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class _SubmissionVerdict:
+    premise: str
+    claim_support: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _SubmissionVerification:
+    validated: ValidatedAnswer
+    retained_refs: tuple[str, ...]
+    salvaged: bool
+    call_records: tuple[Any, ...]
+    event: ChatAgentTraceEvent
 
 
 class EvidenceRetriever(Protocol):
@@ -184,7 +220,6 @@ class NativeToolCallingAgent:
         strategy = None
         submit_only_repair_used = False
         submit_only_repair_pending = False
-        open_world_review_used = False
 
         for round_number in range(1, budget.max_model_rounds + 1):
             repair_round = submit_only_repair_pending
@@ -596,21 +631,18 @@ class NativeToolCallingAgent:
                         )
                     )
                     continue
-                if (
-                    validated.outcome in {AnswerOutcome.ANSWERED, AnswerOutcome.PARTIAL}
-                    and not open_world_review_used
-                    and _requires_open_world_support_review(context.query)
-                ):
-                    open_world_review_used = True
-                    submit_only_repair_pending = True
-                    messages.append(
-                        ChatModelMessage(
-                            "tool",
-                            _OPEN_WORLD_REVIEW_FEEDBACK,
-                            tool_call_id=call.id,
-                        )
+                if validated.outcome in {AnswerOutcome.ANSWERED, AnswerOutcome.PARTIAL}:
+                    verification = await self._verify_submission(
+                        context,
+                        validated,
+                        prompt_by_ref,
+                        tuple(calls),
                     )
-                    continue
+                    calls.extend(verification.call_records)
+                    events.append(verification.event)
+                    validated = verification.validated
+                    retained_refs = verification.retained_refs
+                    salvaged = salvaged or verification.salvaged
                 return _final_state(
                     context,
                     evidence,
@@ -672,20 +704,6 @@ class NativeToolCallingAgent:
             salvaged = result.salvaged
             rejected_claim_count = result.rejected_claim_count
             rejection_reasons = result.rejection_reasons
-        forced_guard_incomplete = (
-            validated.outcome in {AnswerOutcome.ANSWERED, AnswerOutcome.PARTIAL}
-            and _requires_open_world_support_review(context.query)
-            and not open_world_review_used
-        )
-        if forced_guard_incomplete:
-            # The emergency finalizer has no remaining round in which the
-            # model can review an exact proposition. Fail closed instead of
-            # bypassing the open-world support guard.
-            validated = _refusal_answer()
-            retained_refs = ()
-            salvaged = True
-            rejected_claim_count = 0
-            rejection_reasons = ()
         events.append(
             ChatAgentTraceEvent(
                 tool="submit_answer",
@@ -703,6 +721,18 @@ class NativeToolCallingAgent:
                 rejection_reasons=rejection_reasons,
             )
         )
+        if validated.outcome in {AnswerOutcome.ANSWERED, AnswerOutcome.PARTIAL}:
+            verification = await self._verify_submission(
+                context,
+                validated,
+                prompt_by_ref,
+                tuple(calls),
+            )
+            calls.extend(verification.call_records)
+            events.append(verification.event)
+            validated = verification.validated
+            retained_refs = verification.retained_refs
+            salvaged = salvaged or verification.salvaged
         return _final_state(
             context,
             evidence,
@@ -727,6 +757,10 @@ class NativeToolCallingAgent:
         tools: tuple[ChatToolDefinition, ...],
         tool_choice: ChatToolChoice | str,
         prior_calls: tuple[Any, ...],
+        *,
+        operation: ChatModelOperation = ChatModelOperation.AGENT_ROUND,
+        response_format: Mapping[str, Any] | None = None,
+        max_output_tokens: int | None = None,
     ) -> ChatModelResponse:
         try:
             response = await complete_model(
@@ -736,8 +770,13 @@ class NativeToolCallingAgent:
                     tools=tools,
                     tool_choice=tool_choice,
                     parallel_tool_calls=False,
-                    max_output_tokens=_model_output_limit(context),
+                    max_output_tokens=(
+                        max_output_tokens
+                        if max_output_tokens is not None
+                        else _model_output_limit(context)
+                    ),
                     model_profile_revision_id=_model_revision_id(context),
+                    response_format=response_format,
                 ),
                 phase=ChatPipelinePhase.GENERATE_OR_REFUSE,
             )
@@ -750,9 +789,151 @@ class NativeToolCallingAgent:
                 phase=ChatPipelinePhase.GENERATE_OR_REFUSE,
             )
         except ChatPipelineExecutionError as error:
-            record = model_call_record(ChatModelOperation.AGENT_ROUND, response)
+            record = model_call_record(operation, response)
             raise error.retain_model_calls((*prior_calls, record))
         return response
+
+    async def _verify_submission(
+        self,
+        context: ChatExecutionContext,
+        validated: ValidatedAnswer,
+        prompt_by_ref: Mapping[str, PromptEvidence],
+        prior_calls: tuple[Any, ...],
+    ) -> _SubmissionVerification:
+        """Programmatically enforce premise and per-claim evidence support."""
+
+        prompts_by_citation = {
+            item.citation_id: item for item in prompt_by_ref.values()
+        }
+        payload = {
+            "query": context.query,
+            "claims": [
+                {
+                    "index": index,
+                    "text": claim.text,
+                    "evidence": [
+                        {
+                            "citation_id": citation_id,
+                            "excerpt": prompts_by_citation[citation_id].excerpt[
+                                :_VERIFIER_EXCERPT_LIMIT
+                            ],
+                        }
+                        for citation_id in claim.citation_ids
+                    ],
+                }
+                for index, claim in enumerate(validated.claims)
+            ],
+        }
+        messages = [
+            ChatModelMessage("system", _VERIFIER_SYSTEM_PROMPT),
+            ChatModelMessage(
+                "user",
+                json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+            ),
+        ]
+        records: list[Any] = []
+        verdict: _SubmissionVerdict | None = None
+        for _ in range(_VERIFIER_MAX_ATTEMPTS):
+            response = await self._complete_round(
+                context,
+                messages,
+                (),
+                ChatToolChoice.NONE,
+                (*prior_calls, *records),
+                operation=ChatModelOperation.AGENT_VERIFIER,
+                response_format={"type": "json_object"},
+                max_output_tokens=min(
+                    _model_output_limit(context), _VERIFIER_MAX_OUTPUT_TOKENS
+                ),
+            )
+            records.append(
+                model_call_record(ChatModelOperation.AGENT_VERIFIER, response)
+            )
+            verdict = _submission_verdict(
+                response.content, claim_count=len(validated.claims)
+            )
+            if verdict is not None:
+                break
+            messages.append(ChatModelMessage("assistant", response.content or ""))
+            messages.append(ChatModelMessage("user", _VERIFIER_RETRY_FEEDBACK))
+
+        citation_to_ref = {
+            item.citation_id: ref for ref, item in prompt_by_ref.items()
+        }
+
+        def refs_for(claims: Sequence[AnswerClaim]) -> tuple[str, ...]:
+            return tuple(
+                dict.fromkeys(
+                    citation_to_ref[citation_id]
+                    for claim in claims
+                    for citation_id in claim.citation_ids
+                )
+            )
+
+        if verdict is None or verdict.premise == "unsupported":
+            final = _refusal_answer()
+            retained_refs: tuple[str, ...] = ()
+            dropped = len(validated.claims)
+            reasons = (
+                {"false_premise"}
+                if verdict is not None
+                else {"unverifiable_submission"}
+            )
+        else:
+            dropped_indexes = {
+                index
+                for index, support in enumerate(verdict.claim_support)
+                if support != "supported"
+            }
+            dropped = len(dropped_indexes)
+            if not dropped_indexes:
+                final = validated
+                retained_refs = refs_for(validated.claims)
+                reasons = set()
+            else:
+                kept = tuple(
+                    claim
+                    for index, claim in enumerate(validated.claims)
+                    if index not in dropped_indexes
+                )
+                reasons = {"unsupported_claim"}
+                if not kept:
+                    final = _refusal_answer()
+                    retained_refs = ()
+                else:
+                    final = ValidatedAnswer(
+                        outcome=AnswerOutcome.PARTIAL,
+                        claims=kept,
+                        missing_aspects=tuple(
+                            dict.fromkeys(
+                                (*validated.missing_aspects, _UNVERIFIABLE_CLAIM_NOTE)
+                            )
+                        ),
+                        source=validated.source,
+                    )
+                    retained_refs = refs_for(kept)
+        event = ChatAgentTraceEvent(
+            tool="verifier",
+            status=(
+                "refused"
+                if final.outcome is AnswerOutcome.REFUSED
+                else "salvaged"
+                if dropped
+                else "ok"
+            ),
+            tool_call_id=records[-1].provider_request_id or "verifier",
+            refs=retained_refs[:_TRACE_REF_LIMIT],
+            count=len(final.claims),
+            rejected_claim_count=dropped,
+            rejection_reasons=tuple(sorted(reasons)),
+        )
+        return _SubmissionVerification(
+            validated=final,
+            retained_refs=retained_refs,
+            salvaged=final is not validated,
+            call_records=tuple(records),
+            event=event,
+        )
 
     async def _prepare_visuals(
         self,
@@ -811,7 +992,10 @@ def _initial_messages(
             "does not mention something. For yes/no claims, evidence about a similarly named "
             "entity, a different positive relation, or a different counterparty does not prove "
             "the requested proposition false; require explicit support or denial for the exact "
-            "entities and relation, otherwise refuse. Call exactly one tool per turn; "
+            "entities and relation, otherwise refuse. A question can presuppose a fact that "
+            "never happened (for example asking why or when something occurred); when the "
+            "evidence does not confirm the presupposed fact, refuse instead of answering as "
+            "if it were true. Call exactly one tool per turn; "
             "never emit multiple or parallel tool calls. Use calculate for arithmetic. "
             "Finish only with submit_answer. You may submit an answered, partial, or refused "
             "result as soon as further tool use would not improve it. "
@@ -1307,6 +1491,51 @@ def _validated_conflict(
     return conflict, refs, ""
 
 
+def _submission_verdict(
+    content: str | None,
+    *,
+    claim_count: int,
+) -> _SubmissionVerdict | None:
+    """Parse and strictly validate the verifier's JSON verdict."""
+
+    if not content:
+        return None
+    try:
+        payload = json.loads(content)
+    except ValueError:
+        return None
+    if not isinstance(payload, dict) or set(payload) != {"premise", "claims"}:
+        return None
+    premise = payload["premise"]
+    if premise not in {"supported", "unsupported", "none"}:
+        return None
+    raw_claims = payload["claims"]
+    if not isinstance(raw_claims, list) or len(raw_claims) != claim_count:
+        return None
+    support: list[str | None] = [None] * claim_count
+    for item in raw_claims:
+        if not isinstance(item, dict) or set(item) != {"index", "support"}:
+            return None
+        index = item["index"]
+        value = item["support"]
+        if (
+            isinstance(index, bool)
+            or not isinstance(index, int)
+            or not 0 <= index < claim_count
+            or support[index] is not None
+        ):
+            return None
+        if value not in {"supported", "unsupported", "contradicted"}:
+            return None
+        support[index] = value
+    if any(value is None for value in support):
+        return None
+    return _SubmissionVerdict(
+        premise=premise,
+        claim_support=tuple(value for value in support if value is not None),
+    )
+
+
 def _validate_submission(
     value: Mapping[str, Any],
     *,
@@ -1596,22 +1825,6 @@ def _strings(
     if require_nonempty and not result:
         return None
     return result
-
-
-def _requires_open_world_support_review(query: str) -> bool:
-    """Conservatively identify yes/no propositions needing an entailment review."""
-
-    normalized = query.strip().casefold()
-    if not normalized:
-        return False
-    if any(marker in normalized for marker in ("是否", "能否", "可否", "有没有", "是不是")):
-        return True
-    if re.search(r"[吗么嘛][？?]?$", normalized):
-        return True
-    return re.match(
-        r"^(?:is|are|was|were|do|does|did|has|have|had|can|could|will|would|should)\b",
-        normalized,
-    ) is not None
 
 
 def _normalized_unanswered(
