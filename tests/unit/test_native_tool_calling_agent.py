@@ -2029,6 +2029,148 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
             ("calculate", "submit_answer"),
         )
 
+    async def test_empty_knowledge_base_closes_after_two_no_new_searches(
+        self,
+    ) -> None:
+        context = _context()
+        empty_pack = replace(_pack(context), evidence=())
+        retriever = _Retriever(empty_pack)
+        model = _Model(
+            ChatToolCall("search-1", "search_knowledge_base", {"queries": ["one"]}),
+            ChatToolCall("search-2", "search_knowledge_base", {"queries": ["two"]}),
+            ChatToolCall("search-3", "search_knowledge_base", {"queries": ["three"]}),
+            ChatToolCall(
+                "submit-1",
+                "submit_answer",
+                {"outcome": "refused", "claims": [], "unanswered": []},
+            ),
+        )
+
+        state = await _agent(model, retriever).run(context)
+
+        self.assertEqual(retriever.queries, ["one", "two"])
+        self.assertEqual(
+            state.artifacts[AGENT_TRACE_ARTIFACT].retrieval_calls,
+            2,
+        )
+        self.assertEqual(
+            _tool_payload(model.requests[1], "search-1")[
+                "accepted_new_evidence_count"
+            ],
+            0,
+        )
+        self.assertEqual(
+            _tool_payload(model.requests[2], "search-2")[
+                "accepted_new_evidence_count"
+            ],
+            0,
+        )
+        self.assertEqual(
+            tuple(tool.name for tool in model.requests[2].tools),
+            ("calculate", "submit_answer"),
+        )
+        self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.REFUSED)
+
+    async def test_simple_and_graph_no_new_searches_share_the_stop_streak(
+        self,
+    ) -> None:
+        context = _adaptive_context()
+        simple_pack = _pack(context)
+        duplicate_graph_pack = _graph_pack(
+            context,
+            chunk_id=simple_pack.evidence[0].index_chunk_id,
+        )
+        no_new_graph = GraphSearchResult(
+            "no_evidence",
+            duplicate_graph_pack.evidence,
+            new_index_chunk_ids=(),
+            candidate_count=16,
+            path_count=1,
+            hydrated_chunk_count=1,
+            hop1_count=0,
+            hop2_count=1,
+            hop3_count=0,
+        )
+        retriever = _GraphRetriever(simple_pack, [no_new_graph])
+        model = _Model(
+            ChatToolCall("search-1", "search_knowledge_base", {"queries": ["seed"]}),
+            ChatToolCall(
+                "search-2",
+                "search_knowledge_base",
+                {"queries": ["duplicate"]},
+            ),
+            ChatToolCall(
+                "graph-1",
+                "search_graph_relations",
+                {"query": "same relation", "reason": "direct_relation"},
+            ),
+            ChatToolCall(
+                "search-3",
+                "search_knowledge_base",
+                {"queries": ["must not execute"]},
+            ),
+            ChatToolCall(
+                "submit-1",
+                "submit_answer",
+                {"outcome": "refused", "claims": [], "unanswered": []},
+            ),
+        )
+
+        state = await _agent(model, retriever).run(context)
+
+        self.assertEqual(retriever.queries, ["seed", "duplicate"])
+        self.assertEqual(retriever.graph_queries, ["same relation"])
+        self.assertEqual(
+            state.artifacts[AGENT_TRACE_ARTIFACT].retrieval_calls,
+            3,
+        )
+        self.assertEqual(
+            _tool_payload(model.requests[2], "search-2")[
+                "accepted_new_evidence_count"
+            ],
+            0,
+        )
+        graph_payload = _tool_payload(model.requests[3], "graph-1")
+        self.assertEqual(graph_payload["new_evidence_count"], 0)
+        self.assertEqual(graph_payload["accepted_new_evidence_count"], 0)
+        self.assertEqual(
+            tuple(tool.name for tool in model.requests[3].tools),
+            ("calculate", "submit_answer"),
+        )
+
+    async def test_default_evidence_limit_prevents_another_retriever_call(
+        self,
+    ) -> None:
+        context = _context()
+        retriever = _Retriever(_pack(context, count=65))
+        model = _Model(
+            ChatToolCall("search-1", "search_knowledge_base", {"queries": ["fill"]}),
+            ChatToolCall(
+                "search-2",
+                "search_knowledge_base",
+                {"queries": ["must not execute"]},
+            ),
+            ChatToolCall(
+                "submit-1",
+                "submit_answer",
+                {"outcome": "refused", "claims": [], "unanswered": []},
+            ),
+        )
+
+        state = await _agent(model, retriever).run(context)
+
+        self.assertEqual(retriever.queries, ["fill"])
+        trace = state.artifacts[AGENT_TRACE_ARTIFACT]
+        self.assertEqual(trace.evidence_ref_count, 64)
+        self.assertEqual(trace.retrieval_calls, 1)
+        payload = _tool_payload(model.requests[1], "search-1")
+        self.assertEqual(payload["notice"], "evidence_limit_reached")
+        self.assertEqual(payload["accepted_new_evidence_count"], 64)
+        self.assertEqual(
+            tuple(tool.name for tool in model.requests[1].tools),
+            ("calculate", "submit_answer"),
+        )
+
     async def test_new_evidence_resets_the_no_new_search_streak(self) -> None:
         context = _context()
         first = _pack(context, text="first evidence")
