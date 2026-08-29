@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 import unittest
 
 from tools import build_enterprise_profile_qualification as enterprise
@@ -50,6 +51,31 @@ class CollectedRagEvaluationCorporaTests(unittest.TestCase):
         )
         self.assertEqual(manifest["positive_examples_per_relation"], 3)
         self.assertEqual(manifest["relation_type_count"], 42)
+        entities = [
+            json.loads(line)
+            for line in (enterprise.DEFAULT_OUTPUT / "entities.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+            if line.strip()
+        ]
+        controls = [
+            json.loads(line)
+            for line in (enterprise.DEFAULT_OUTPUT / "negative_controls.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+            if line.strip()
+        ]
+        self.assertEqual(manifest["gold_entity_count"], len(entities))
+        self.assertTrue(all(len(row["aliases"]) == 1 for row in entities))
+        self.assertFalse(any(re.search(r"\d+$", row["name"]) for row in entities))
+        canonical_names = {row["name"] for row in entities}
+        self.assertTrue(
+            all(
+                control[field] in canonical_names
+                for control in controls
+                for field in ("source_entity", "target_entity")
+            )
+        )
 
     def test_enterprise_graph_contract_matches_the_three_hop_domain_limit(self) -> None:
         manifest = json.loads(

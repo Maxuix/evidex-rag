@@ -11,9 +11,14 @@ from rag_kb.domain import (
     AnswerControlReason,
     AnswerDraftSource,
     AnswerOutcome,
+    GraphitiEdgeResult,
     ValidatedAnswer,
 )
-from tools.run_large_evaluation import _public_report, _score_public
+from tools.run_large_evaluation import (
+    _enterprise_extraction_observation,
+    _public_report,
+    _score_public,
+)
 
 
 def _answering(*, outcome: str, conflict: bool) -> SimpleNamespace:
@@ -129,6 +134,108 @@ class PublicReportFalsePremiseSplitTests(unittest.TestCase):
             "false_premise_behavior",
             report["by_expected_action"]["refuse_insufficient_evidence"],
         )
+
+
+class EnterpriseExtractionScorerTests(unittest.TestCase):
+    def test_aliases_resolve_and_duplicates_require_the_same_fact(self) -> None:
+        entities = [
+            {
+                "name": "Amber Atlas Group",
+                "entity_type": "Organization",
+                "aliases": ["Amber Atlas"],
+            },
+            {
+                "name": "Blue Beacon Platform",
+                "entity_type": "BusinessSystem",
+                "aliases": ["Blue Beacon"],
+            },
+        ]
+        relations = [
+            {
+                "relation_id": "edge-1",
+                "source_entity": "Amber Atlas Group",
+                "edge_type": "Provides",
+                "target_entity": "Blue Beacon Platform",
+            }
+        ]
+        edges = [
+            GraphitiEdgeResult(
+                edge_uuid="edge-a",
+                fact="Amber Atlas provides Blue Beacon.",
+                episode_uuids=("episode-1",),
+                rank=1,
+                source_entity_uuid="source-1",
+                source_entity_name="Amber Atlas",
+                target_entity_uuid="target-1",
+                target_entity_name="Blue Beacon",
+                relation_type="Provides",
+            ),
+            GraphitiEdgeResult(
+                edge_uuid="edge-b",
+                fact="Amber Atlas provides Blue Beacon.",
+                episode_uuids=("episode-2",),
+                rank=2,
+                source_entity_uuid="source-1",
+                source_entity_name="Amber Atlas Group",
+                target_entity_uuid="target-1",
+                target_entity_name="Blue Beacon Platform",
+                relation_type="Provides",
+            ),
+            GraphitiEdgeResult(
+                edge_uuid="edge-c",
+                fact="A separate support agreement applies.",
+                episode_uuids=("episode-3",),
+                rank=3,
+                source_entity_uuid="source-1",
+                source_entity_name="Amber Atlas Group",
+                target_entity_uuid="target-1",
+                target_entity_name="Blue Beacon Platform",
+                relation_type="Provides",
+            ),
+        ]
+
+        report = _enterprise_extraction_observation(edges, entities, relations, ())
+
+        self.assertEqual(report["micro_recall"]["value"], 1.0)
+        self.assertEqual(report["endpoint_resolution"]["resolved"]["value"], 1.0)
+        self.assertEqual(report["duplicate_observed_edge_count"], 1)
+        self.assertEqual(report["endpoint_relation_instance_excess_count"], 2)
+        self.assertEqual(
+            report["relation_classification_given_gold_endpoints"]["value"], 1.0
+        )
+
+    def test_asserted_control_edges_are_valid_precision_hits(self) -> None:
+        entities = [
+            {"name": "Amber Atlas Group", "entity_type": "Organization", "aliases": []},
+            {"name": "Blue Beacon Group", "entity_type": "Organization", "aliases": []},
+        ]
+        controls = [
+            {
+                "control_id": "control-1",
+                "source_entity": "Amber Atlas Group",
+                "asserted_edge": "InvestsIn",
+                "target_entity": "Blue Beacon Group",
+                "forbidden_edge": "Controls",
+            }
+        ]
+        edges = [
+            GraphitiEdgeResult(
+                edge_uuid="edge-control",
+                fact="Amber Atlas invested in Blue Beacon.",
+                episode_uuids=("episode-control",),
+                rank=1,
+                source_entity_uuid="source-1",
+                source_entity_name="Amber Atlas Group",
+                target_entity_uuid="target-1",
+                target_entity_name="Blue Beacon Group",
+                relation_type="InvestsIn",
+            )
+        ]
+
+        report = _enterprise_extraction_observation(edges, entities, [], controls)
+
+        self.assertEqual(report["micro_precision"]["value"], 1.0)
+        self.assertEqual(report["forbidden_edge_hit_count"], 0)
 
 
 if __name__ == "__main__":

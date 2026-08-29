@@ -1673,11 +1673,23 @@ def _enterprise_extraction_observation(
     relations: Sequence[Mapping[str, Any]],
     controls: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any]:
-    entity_types = {
-        _norm(row.get("name")): str(row.get("entity_type", "unknown"))
-        for row in entities
-        if row.get("name")
-    }
+    entity_types: dict[str, str] = {}
+    entity_surfaces: dict[str, str] = {}
+    for row in entities:
+        canonical = _norm(row.get("name"))
+        if not canonical:
+            continue
+        entity_types[canonical] = str(row.get("entity_type", "unknown"))
+        aliases = row.get("aliases", ())
+        if not isinstance(aliases, Sequence) or isinstance(aliases, (str, bytes)):
+            aliases = ()
+        for value in (row.get("name"), *aliases):
+            surface = _norm(value)
+            if not surface:
+                continue
+            existing = entity_surfaces.setdefault(surface, canonical)
+            if existing != canonical:
+                raise LargeEvaluationError("enterprise gold entity surface is ambiguous")
     positive: dict[str, tuple[str, str, str]] = {}
     relation_types: dict[str, set[tuple[str, str, str]]] = defaultdict(set)
     for row in relations:
@@ -1690,34 +1702,82 @@ def _enterprise_extraction_observation(
         if relation_id and all(triple):
             positive[relation_id] = triple
             relation_types[str(row.get("edge_type"))].add(triple)
+    asserted_controls = {
+        (
+            _norm(row.get("source_entity")),
+            _norm(row.get("asserted_edge")),
+            _norm(row.get("target_entity")),
+        )
+        for row in controls
+        if row.get("source_entity")
+        and row.get("asserted_edge")
+        and row.get("target_entity")
+    }
     known_types = {_norm(name): name for name in relation_types}
     observed: set[tuple[str, str, str]] = set()
+    observed_endpoint_pairs: set[tuple[str, str]] = set()
+    conditional_relation_observations: set[tuple[str, str, str]] = set()
     endpoint_pairs: Counter[str] = Counter()
     unknown_predicate_count = 0
-    unknown_endpoint_count = 0
+    malformed_edge_count = 0
+    endpoint_count = 0
+    resolved_endpoint_count = 0
+    semantic_edge_signatures: set[tuple[str, str, str, str]] = set()
+    endpoint_relation_signatures: set[tuple[str, str, str]] = set()
+    scorable_edge_count = 0
+    gold_pair_relations: dict[tuple[str, str], set[str]] = defaultdict(set)
+    for source, predicate, target in (*positive.values(), *asserted_controls):
+        gold_pair_relations[(source, target)].add(predicate)
     for edge in edges:
-        source = _norm(getattr(edge, "source_entity_name", ""))
-        target = _norm(getattr(edge, "target_entity_name", ""))
+        raw_source = _norm(getattr(edge, "source_entity_name", ""))
+        raw_target = _norm(getattr(edge, "target_entity_name", ""))
         predicate = _norm(getattr(edge, "relation_type", ""))
         if not predicate:
             fact = _norm(getattr(edge, "fact", ""))
             predicate = next((candidate for candidate in known_types if candidate in fact), "")
-        if not source or not target or not predicate:
-            unknown_endpoint_count += int(not source or not target)
+        if not raw_source or not raw_target or not predicate:
+            malformed_edge_count += 1
             unknown_predicate_count += int(not predicate)
             continue
+        endpoint_count += 2
+        canonical_source = entity_surfaces.get(raw_source)
+        canonical_target = entity_surfaces.get(raw_target)
+        resolved_endpoint_count += int(canonical_source is not None)
+        resolved_endpoint_count += int(canonical_target is not None)
+        source = canonical_source or f"unresolved:{raw_source}"
+        target = canonical_target or f"unresolved:{raw_target}"
         observed.add((source, predicate, target))
-        source_type = entity_types.get(source, "unknown")
-        target_type = entity_types.get(target, "unknown")
+        source_type = entity_types.get(canonical_source or "", "unresolved")
+        target_type = entity_types.get(canonical_target or "", "unresolved")
         endpoint_pairs[f"{source_type}->{target_type}"] += 1
-        unknown_endpoint_count += int(source_type == "unknown" or target_type == "unknown")
+        source_identity = str(getattr(edge, "source_entity_uuid", "") or source)
+        target_identity = str(getattr(edge, "target_entity_uuid", "") or target)
+        endpoint_relation_signatures.add((source_identity, predicate, target_identity))
+        semantic_edge_signatures.add(
+            (
+                source_identity,
+                predicate,
+                target_identity,
+                _norm(getattr(edge, "fact", "")),
+            )
+        )
+        scorable_edge_count += 1
+        if canonical_source is not None and canonical_target is not None:
+            pair = (canonical_source, canonical_target)
+            observed_endpoint_pairs.add(pair)
+            if pair in gold_pair_relations:
+                conditional_relation_observations.add(
+                    (canonical_source, predicate, canonical_target)
+                )
     gold = set(positive.values())
-    true_positive = observed & gold
-    micro_precision_value = len(true_positive) / len(observed) if observed else 0.0
-    micro_recall_value = len(true_positive) / len(gold) if gold else 0.0
+    allowed_gold = gold | asserted_controls
+    precision_hits = observed & allowed_gold
+    recall_hits = observed & gold
+    micro_precision_value = len(precision_hits) / len(observed) if observed else 0.0
+    micro_recall_value = len(recall_hits) / len(gold) if gold else 0.0
     micro = {
-        "precision": _rate(len(true_positive), len(observed)),
-        "recall": _rate(len(true_positive), len(gold)),
+        "precision": _rate(len(precision_hits), len(observed)),
+        "recall": _rate(len(recall_hits), len(gold)),
         "f1": {"numerator": _f1(micro_precision_value, micro_recall_value), "denominator": 1, "value": _f1(micro_precision_value, micro_recall_value)},
     }
     per_type: list[dict[str, Any]] = []
@@ -1728,9 +1788,15 @@ def _enterprise_extraction_observation(
         normalized_type = _norm(edge_type)
         gold_type = relation_types[edge_type]
         observed_type = {triple for triple in observed if triple[1] == normalized_type}
-        hits = observed_type & gold_type
-        precision = len(hits) / len(observed_type) if observed_type else 0.0
-        recall = len(hits) / len(gold_type) if gold_type else 0.0
+        allowed_type = gold_type | {
+            triple for triple in asserted_controls if triple[1] == normalized_type
+        }
+        precision_type_hits = observed_type & allowed_type
+        recall_type_hits = observed_type & gold_type
+        precision = (
+            len(precision_type_hits) / len(observed_type) if observed_type else 0.0
+        )
+        recall = len(recall_type_hits) / len(gold_type) if gold_type else 0.0
         f1 = _f1(precision, recall)
         precision_values.append(precision)
         recall_values.append(recall)
@@ -1740,9 +1806,9 @@ def _enterprise_extraction_observation(
                 "edge_type": edge_type,
                 "gold_support": len(gold_type),
                 "observed_support": len(observed_type),
-                "true_positive_support": len(hits),
-                "precision": {"numerator": len(hits), "denominator": len(observed_type), "value": round(precision, 6) if observed_type else 0.0},
-                "recall": {"numerator": len(hits), "denominator": len(gold_type), "value": round(recall, 6) if gold_type else 0.0},
+                "true_positive_support": len(recall_type_hits),
+                "precision": {"numerator": len(precision_type_hits), "denominator": len(observed_type), "value": round(precision, 6) if observed_type else 0.0},
+                "recall": {"numerator": len(recall_type_hits), "denominator": len(gold_type), "value": round(recall, 6) if gold_type else 0.0},
                 "f1": {"numerator": f1, "denominator": 1, "value": f1},
             }
         )
@@ -1762,12 +1828,15 @@ def _enterprise_extraction_observation(
             }
         )
     expected_pairs = {
-        (entity_types.get(triple[0], "unknown"), entity_types.get(triple[2], "unknown"))
-        for triple in gold
+        (entity_types.get(triple[0], "unresolved"), entity_types.get(triple[2], "unresolved"))
+        for triple in allowed_gold
     }
     unexpected_pairs = Counter()
     for triple in observed:
-        pair = (entity_types.get(triple[0], "unknown"), entity_types.get(triple[2], "unknown"))
+        pair = (
+            entity_types.get(triple[0], "unresolved"),
+            entity_types.get(triple[2], "unresolved"),
+        )
         if pair not in expected_pairs:
             unexpected_pairs[f"{pair[0]}->{pair[1]}"] += 1
     relation_support = [
@@ -1783,13 +1852,27 @@ def _enterprise_extraction_observation(
         "recall": {"numerator": round(statistics.fmean(recall_values), 6) if recall_values else 0.0, "denominator": 1, "value": round(statistics.fmean(recall_values), 6) if recall_values else 0.0},
         "f1": {"numerator": round(statistics.fmean(f1_values), 6) if f1_values else 0.0, "denominator": 1, "value": round(statistics.fmean(f1_values), 6) if f1_values else 0.0},
     }
+    gold_endpoint_pairs = set(gold_pair_relations)
+    resolved_gold_pairs = observed_endpoint_pairs & gold_endpoint_pairs
+    conditional_relation_hits = {
+        triple
+        for triple in conditional_relation_observations
+        if triple[1] in gold_pair_relations[(triple[0], triple[2])]
+    }
+    unresolved_endpoint_count = endpoint_count - resolved_endpoint_count
     return {
         "case_id": "enterprise-extraction-snapshot",
         "status": "completed",
         "gold_relation_count": len(gold),
         "observed_raw_edge_count": len(edges),
         "observed_unique_edge_count": len(observed),
-        "duplicate_observed_edge_count": max(0, len(edges) - len(observed)),
+        "duplicate_observed_edge_count": max(
+            0, scorable_edge_count - len(semantic_edge_signatures)
+        ),
+        "endpoint_relation_instance_excess_count": max(
+            0, scorable_edge_count - len(endpoint_relation_signatures)
+        ),
+        "malformed_edge_count": malformed_edge_count,
         "micro_precision": micro["precision"],
         "micro_recall": micro["recall"],
         "micro_f1": micro["f1"],
@@ -1802,8 +1885,15 @@ def _enterprise_extraction_observation(
         "entity_type_confusion": {
             "endpoint_type_pair_counts": dict(sorted(endpoint_pairs.items())),
             "unexpected_endpoint_type_pair_counts": dict(sorted(unexpected_pairs.items())),
-            "unknown_endpoint_count": unknown_endpoint_count,
+            "unresolved_endpoint_count": unresolved_endpoint_count,
         },
+        "endpoint_resolution": {
+            "resolved": _rate(resolved_endpoint_count, endpoint_count),
+            "gold_pair_recall": _rate(len(resolved_gold_pairs), len(gold_endpoint_pairs)),
+        },
+        "relation_classification_given_gold_endpoints": _rate(
+            len(conditional_relation_hits), len(conditional_relation_observations)
+        ),
         "unknown_predicate_count": unknown_predicate_count,
         "forbidden_edge_hits": forbidden,
         "forbidden_edge_hit_count": sum(item["hit_count"] for item in forbidden),

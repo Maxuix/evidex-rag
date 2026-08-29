@@ -8,6 +8,7 @@ from collections import Counter
 import hashlib
 import json
 from pathlib import Path
+import re
 from typing import Any, Iterable, Mapping
 
 from rag_kb.domain import (
@@ -23,6 +24,33 @@ DEFAULT_OUTPUT = ROOT / "evaluation/enterprise-profile-qualification-v1"
 SCHEMA = "enterprise_profile_qualification_v1"
 DATASET_ID = "enterprise-profile-qualification-v1"
 VARIANTS_PER_EDGE = 3
+
+_NAME_MODIFIERS = (
+    "Amber", "Blue", "Cedar", "Delta", "Elm", "Falcon", "Golden", "Harbor",
+    "Indigo", "Juniper", "Keystone", "Lunar", "Maple", "Nimbus", "Orchid",
+    "Pioneer", "Quartz", "Redwood", "Silver", "Tidal", "Union", "Violet",
+    "Willow", "Zenith",
+)
+_NAME_STEMS = (
+    "Atlas", "Beacon", "Canyon", "Drift", "Evergreen", "Forge", "Grove",
+    "Horizon", "Isle", "Junction", "Kite", "Lantern", "Meadow", "Northstar",
+    "Oasis", "Prairie", "Quarry", "Ridge", "Summit", "Terrace", "Vale",
+    "Watershed", "Yard", "Zephyr",
+)
+_ENTITY_SUFFIXES = {
+    "Organization": "Group",
+    "OrganizationalUnit": "Division",
+    "Role": "Officer",
+    "Policy": "Standard",
+    "Process": "Workflow",
+    "BusinessSystem": "Platform",
+    "Product": "Suite",
+    "Project": "Program",
+    "Document": "Handbook",
+    "Location": "District",
+    "Facility": "Center",
+    "BusinessTerm": "Classification",
+}
 
 WORDS = {
     "PartOf": "is part of",
@@ -89,6 +117,31 @@ class CorpusError(RuntimeError):
     """Raised when this code-owned calibration corpus is invalid."""
 
 
+class _EntityNameAllocator:
+    """Allocate distinct, human-readable entities without numeric suffixes."""
+
+    def __init__(self) -> None:
+        self._index = 0
+
+    def allocate(self, entity_type: str) -> dict[str, Any]:
+        capacity = len(_NAME_MODIFIERS) * len(_NAME_STEMS)
+        if self._index >= capacity:
+            raise CorpusError("enterprise calibration entity-name capacity exhausted")
+        modifier = _NAME_MODIFIERS[self._index // len(_NAME_STEMS)]
+        stem = _NAME_STEMS[self._index % len(_NAME_STEMS)]
+        self._index += 1
+        alias = f"{modifier} {stem}"
+        if entity_type == "Person":
+            canonical = alias
+            alias = f"{modifier[0]}. {stem}"
+        else:
+            suffix = _ENTITY_SUFFIXES.get(entity_type)
+            if suffix is None:
+                raise CorpusError(f"unknown enterprise entity type: {entity_type}")
+            canonical = f"{alias} {suffix}"
+        return {"name": canonical, "entity_type": entity_type, "aliases": [alias]}
+
+
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -125,25 +178,44 @@ def _typed_pairs() -> dict[str, tuple[str, str]]:
     return pairs
 
 
-def _entity_name(entity_type: str, edge: str, variant: int, role: str) -> str:
-    return f"{entity_type} {edge} {role} {variant:02d}"
-
-
 def _relation_text(
-    edge: str, source_type: str, target_type: str, variant: int
-) -> tuple[str, str]:
-    subject = _entity_name(source_type, edge, variant, "source")
-    target = _entity_name(target_type, edge, variant, "target")
+    edge: str,
+    source_type: str,
+    target_type: str,
+    variant: int,
+    allocator: _EntityNameAllocator,
+) -> tuple[dict[str, Any], dict[str, Any], str]:
+    subject = allocator.allocate(source_type)
+    target = allocator.allocate(target_type)
     qualifier = (
         " effective from 2026-01-01 under the recorded operating scope"
         if variant == 3
         else ""
     )
+    subject_surface = str(subject["name"])
+    target_surface = str(target["name"])
+    if variant == 2:
+        subject_surface += f" (also known as {subject['aliases'][0]})"
+        target_surface += f" (also known as {target['aliases'][0]})"
     text = (
-        f"The {source_type} named {subject} explicitly {WORDS[edge]} the "
-        f"{target_type} named {target}{qualifier}."
+        f"The {source_type} named {subject_surface} {WORDS[edge]} the "
+        f"{target_type} named {target_surface}{qualifier}."
     )
     return subject, target, text
+
+
+def _surface_ngrams(value: str) -> set[str]:
+    normalized = " ".join(re.findall(r"[a-z0-9]+", value.casefold()))
+    if len(normalized) < 3:
+        return {normalized} if normalized else set()
+    return {normalized[index : index + 3] for index in range(len(normalized) - 2)}
+
+
+def _surface_similarity(left: str, right: str) -> float:
+    left_grams = _surface_ngrams(left)
+    right_grams = _surface_ngrams(right)
+    union = left_grams | right_grams
+    return len(left_grams & right_grams) / len(union) if union else 0.0
 
 
 def _readme() -> str:
@@ -161,15 +233,18 @@ score may be reported as a substitute for the other.
 
 Only `documents/` is ingested. `relations.jsonl`, `entities.jsonl`,
 `cases.jsonl`, and `negative_controls.jsonl` are evaluator-only gold files.
+Every entity has one explicit alias. Distinct entities are deliberately named
+below Graphiti's fuzzy duplicate threshold, while each alias remains an
+evaluator-declared equivalent surface for the same canonical entity.
 
 ## Required real qualification
 
 Run exactly the configured OpenCode Go `mimo-v2.5` graph extraction over this
 corpus using `enterprise_knowledge_v1`, then compare normalized output edges
 with `relations.jsonl` by `(source entity, edge type, target entity)`. Report
-micro/macro precision, recall, F1, every relation's support, entity-type
-confusion, and every `forbidden_edge` hit.  Do not calculate a relation with
-zero attempted gold examples as 100%.
+micro/macro precision, recall, F1, every relation's support, canonical endpoint
+resolution, conservative fact-level duplicates, and every `forbidden_edge`
+hit. Do not calculate a relation with zero attempted gold examples as 100%.
 
 The 42 direct answer cases test evidence-backed final answering after
 extraction.  Use `../graph-rag-v1/` for 1–3-hop final-answer retrieval, and
@@ -184,8 +259,9 @@ def build(output: Path) -> None:
     output.mkdir(parents=True)
     document_dir = output / "documents"
     document_dir.mkdir()
+    allocator = _EntityNameAllocator()
     relations: list[dict[str, Any]] = []
-    entities: dict[tuple[str, str], dict[str, str]] = {}
+    entities: dict[tuple[str, str], dict[str, Any]] = {}
     cases: list[dict[str, Any]] = []
     for edge_ordinal, edge in enumerate(sorted(pairs), start=1):
         source_type, target_type = pairs[edge]
@@ -194,31 +270,38 @@ def build(output: Path) -> None:
         first_target = ""
         for variant in range(1, VARIANTS_PER_EDGE + 1):
             relation_id = f"edge-{edge_ordinal:02d}-{variant}"
-            subject, target, text = _relation_text(edge, source_type, target_type, variant)
+            subject, target, text = _relation_text(
+                edge, source_type, target_type, variant, allocator
+            )
             filename = f"{relation_id}-{edge.casefold()}.md"
             path = document_dir / filename
             path.write_text(f"# Enterprise record {relation_id}\n\n{text}\n", encoding="utf-8")
             relations.append(
                 {
                     "relation_id": relation_id,
-                    "source_entity": subject,
+                    "source_entity": subject["name"],
                     "source_type": source_type,
                     "edge_type": edge,
-                    "target_entity": target,
+                    "target_entity": target["name"],
                     "target_type": target_type,
                     "document_filename": filename,
                     "explicit_text": text,
                     "artifact_sha256": _sha256(path),
                 }
             )
-            entities[(subject, source_type)] = {"name": subject, "entity_type": source_type}
-            entities[(target, target_type)] = {"name": target, "entity_type": target_type}
+            entities[(str(subject["name"]), source_type)] = subject
+            entities[(str(target["name"]), target_type)] = target
             if variant == 1:
-                first_relation_id, first_subject, first_target = relation_id, subject, target
+                first_relation_id = relation_id
+                first_subject = str(subject["name"])
+                first_target = str(target["name"])
         cases.append(
             {
                 "case_id": f"answer-{edge.casefold()}",
-                "question": f"What does {first_subject} explicitly {WORDS[edge]}?",
+                "question": (
+                    f"Which named target is explicitly linked from {first_subject} "
+                    f"by the {edge} relation?"
+                ),
                 "expected_answer": first_target,
                 "required_relation_ids": [first_relation_id],
                 "required_hops": 1,
@@ -228,18 +311,23 @@ def build(output: Path) -> None:
     controls: list[dict[str, Any]] = []
     for ordinal, (asserted, forbidden) in enumerate(CONTROL_PAIRS, start=1):
         source_type, target_type = pairs[asserted]
-        subject, target, text = _relation_text(asserted, source_type, target_type, 100 + ordinal)
-        text += f" This statement does not establish that {subject} {WORDS[forbidden]} {target}."
+        subject, target, text = _relation_text(
+            asserted, source_type, target_type, 100 + ordinal, allocator
+        )
+        text += (
+            f" This statement does not establish that {subject['name']} "
+            f"{WORDS[forbidden]} {target['name']}."
+        )
         filename = f"control-{ordinal:02d}-{asserted.casefold()}-not-{forbidden.casefold()}.md"
         path = document_dir / filename
         path.write_text(f"# Enterprise boundary control {ordinal}\n\n{text}\n", encoding="utf-8")
         controls.append(
             {
                 "control_id": f"control-{ordinal:02d}",
-                "source_entity": subject,
+                "source_entity": subject["name"],
                 "source_type": source_type,
                 "asserted_edge": asserted,
-                "target_entity": target,
+                "target_entity": target["name"],
                 "target_type": target_type,
                 "forbidden_edge": forbidden,
                 "document_filename": filename,
@@ -247,6 +335,8 @@ def build(output: Path) -> None:
                 "artifact_sha256": _sha256(path),
             }
         )
+        entities[(str(subject["name"]), source_type)] = subject
+        entities[(str(target["name"]), target_type)] = target
     _write_jsonl(output / "relations.jsonl", relations)
     _write_jsonl(output / "entities.jsonl", sorted(entities.values(), key=lambda item: (item["entity_type"], item["name"])))
     _write_jsonl(output / "cases.jsonl", cases)
@@ -266,6 +356,7 @@ def build(output: Path) -> None:
         "positive_relation_count": len(relations),
         "positive_examples_per_relation": VARIANTS_PER_EDGE,
         "negative_control_count": len(controls),
+        "gold_entity_count": len(entities),
         "answer_case_count": len(cases),
         "artifacts": {},
     }
@@ -295,6 +386,7 @@ def validate(output: Path) -> dict[str, int]:
     relations = _rows(output / "relations.jsonl")
     controls = _rows(output / "negative_controls.jsonl")
     cases = _rows(output / "cases.jsonl")
+    entities = _rows(output / "entities.jsonl")
     counts = Counter(row.get("edge_type") for row in relations)
     if set(counts) != set(pairs) or any(count != VARIANTS_PER_EDGE for count in counts.values()):
         raise CorpusError("relation type coverage is incomplete")
@@ -302,6 +394,36 @@ def validate(output: Path) -> dict[str, int]:
         raise CorpusError("positive count is invalid")
     if len(controls) != len(CONTROL_PAIRS):
         raise CorpusError("negative control count is invalid")
+    canonical_names = {str(row.get("name", "")) for row in entities}
+    expected_names = {
+        str(row[field])
+        for row in (*relations, *controls)
+        for field in ("source_entity", "target_entity")
+    }
+    if canonical_names != expected_names or manifest.get("gold_entity_count") != len(entities):
+        raise CorpusError("gold entity coverage is incomplete")
+    surfaces: list[tuple[str, str]] = []
+    for row in entities:
+        name = str(row.get("name", ""))
+        aliases = row.get("aliases")
+        if not name or not isinstance(aliases, list) or len(aliases) != 1:
+            raise CorpusError("gold entity aliases are invalid")
+        if re.search(r"\d+$", name):
+            raise CorpusError("gold entity name uses a numeric discriminator")
+        surfaces.append((name, name))
+        surfaces.append((name, str(aliases[0])))
+    normalized_surfaces: dict[str, str] = {}
+    for canonical, surface in surfaces:
+        normalized = " ".join(re.findall(r"[a-z0-9]+", surface.casefold()))
+        previous = normalized_surfaces.setdefault(normalized, canonical)
+        if previous != canonical:
+            raise CorpusError("gold entity surface is ambiguous")
+    for index, (left_canonical, left_surface) in enumerate(surfaces):
+        for right_canonical, right_surface in surfaces[index + 1 :]:
+            if left_canonical == right_canonical:
+                continue
+            if _surface_similarity(left_surface, right_surface) >= 0.9:
+                raise CorpusError("distinct gold entities exceed fuzzy duplicate threshold")
     for row in relations:
         source_type, target_type = pairs[str(row["edge_type"])]
         if (row.get("source_type"), row.get("target_type")) != (source_type, target_type):
