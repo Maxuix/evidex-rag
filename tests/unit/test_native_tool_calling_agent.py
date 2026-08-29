@@ -1943,14 +1943,194 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.ANSWERED)
         trace = state.artifacts[AGENT_TRACE_ARTIFACT]
         self.assertEqual(trace.evidence_ref_count, 1)
-        self.assertIn(
-            '"notice":"evidence_limit_reached"',
-            model.requests[1].messages[-1].content,
+        search_payload = _tool_payload(model.requests[1], "search-1")
+        self.assertEqual(search_payload["notice"], "evidence_limit_reached")
+        self.assertEqual(search_payload["accepted_new_evidence_count"], 1)
+        self.assertEqual(
+            tuple(tool.name for tool in model.requests[1].tools),
+            ("calculate", "submit_answer"),
         )
 
-    async def test_soft_deadline_wraps_up_before_the_first_round(self) -> None:
+    async def test_multi_query_search_never_exceeds_remaining_retrieval_budget(
+        self,
+    ) -> None:
+        context = replace(
+            _context(),
+            agent_configuration={
+                "version": "native_tool_calling_agent_v3",
+                "budget": ChatAgentBudget(max_retrieval_calls=2).as_dict(),
+            },
+        )
+        retriever = _Retriever(_pack(context))
+        model = _Model(
+            ChatToolCall(
+                "search-1",
+                "search_knowledge_base",
+                {"queries": ["revenue", "margin", "guidance"]},
+            ),
+            ChatToolCall(
+                "submit-1",
+                "submit_answer",
+                {"outcome": "refused", "claims": [], "unanswered": []},
+            ),
+        )
+
+        state = await _agent(model, retriever).run(context)
+
+        self.assertEqual(retriever.queries, ["revenue", "margin"])
+        self.assertEqual(
+            state.artifacts[AGENT_TRACE_ARTIFACT].retrieval_calls,
+            2,
+        )
+        payload = _tool_payload(model.requests[1], "search-1")
+        self.assertEqual(payload["skipped_query_count"], 1)
+        self.assertEqual(payload["accepted_new_evidence_count"], 1)
+        self.assertEqual(
+            tuple(tool.name for tool in model.requests[1].tools),
+            ("submit_answer",),
+        )
+
+    async def test_two_consecutive_no_new_searches_close_retrieval(self) -> None:
+        context = _context()
+        retriever = _Retriever(_pack(context))
+        model = _Model(
+            ChatToolCall("search-1", "search_knowledge_base", {"queries": ["one"]}),
+            ChatToolCall("search-2", "search_knowledge_base", {"queries": ["two"]}),
+            ChatToolCall("search-3", "search_knowledge_base", {"queries": ["three"]}),
+            ChatToolCall("search-4", "search_knowledge_base", {"queries": ["four"]}),
+            ChatToolCall(
+                "submit-1",
+                "submit_answer",
+                {"outcome": "refused", "claims": [], "unanswered": []},
+            ),
+        )
+
+        state = await _agent(model, retriever).run(context)
+
+        self.assertEqual(retriever.queries, ["one", "two", "three"])
+        self.assertEqual(
+            state.artifacts[AGENT_TRACE_ARTIFACT].retrieval_calls,
+            3,
+        )
+        self.assertEqual(
+            _tool_payload(model.requests[2], "search-2")[
+                "accepted_new_evidence_count"
+            ],
+            0,
+        )
+        self.assertEqual(
+            _tool_payload(model.requests[3], "search-3")[
+                "accepted_new_evidence_count"
+            ],
+            0,
+        )
+        self.assertEqual(
+            tuple(tool.name for tool in model.requests[3].tools),
+            ("calculate", "submit_answer"),
+        )
+
+    async def test_new_evidence_resets_the_no_new_search_streak(self) -> None:
+        context = _context()
+        first = _pack(context, text="first evidence")
+        second = _pack(context, text="second evidence")
+        retriever = _QueryRetriever(
+            {
+                "one": first,
+                "duplicate-one": first,
+                "two": second,
+                "duplicate-two-a": second,
+                "duplicate-two-b": second,
+            }
+        )
+        model = _Model(
+            ChatToolCall("search-1", "search_knowledge_base", {"queries": ["one"]}),
+            ChatToolCall(
+                "search-2",
+                "search_knowledge_base",
+                {"queries": ["duplicate-one"]},
+            ),
+            ChatToolCall("search-3", "search_knowledge_base", {"queries": ["two"]}),
+            ChatToolCall(
+                "search-4",
+                "search_knowledge_base",
+                {"queries": ["duplicate-two-a"]},
+            ),
+            ChatToolCall(
+                "search-5",
+                "search_knowledge_base",
+                {"queries": ["duplicate-two-b"]},
+            ),
+            ChatToolCall(
+                "submit-1",
+                "submit_answer",
+                {"outcome": "refused", "claims": [], "unanswered": []},
+            ),
+        )
+
+        state = await _agent(model, retriever).run(context)
+
+        self.assertEqual(len(retriever.queries), 5)
+        self.assertEqual(
+            state.artifacts[AGENT_TRACE_ARTIFACT].retrieval_calls,
+            5,
+        )
+        self.assertEqual(
+            _tool_payload(model.requests[3], "search-3")[
+                "accepted_new_evidence_count"
+            ],
+            1,
+        )
+        self.assertEqual(
+            tuple(tool.name for tool in model.requests[5].tools),
+            ("calculate", "submit_answer"),
+        )
+
+    async def test_search_closed_allows_one_calculation_before_submit(self) -> None:
+        context = _context()
+        retriever = _Retriever(_pack(context))
+        model = _Model(
+            ChatToolCall("search-1", "search_knowledge_base", {"queries": ["one"]}),
+            ChatToolCall("search-2", "search_knowledge_base", {"queries": ["two"]}),
+            ChatToolCall("search-3", "search_knowledge_base", {"queries": ["three"]}),
+            ChatToolCall(
+                "calc-1",
+                "calculate",
+                {"expression": "10-5", "evidence_refs": ["ev_1"]},
+            ),
+            ChatToolCall(
+                "submit-1",
+                "submit_answer",
+                {
+                    "outcome": "answered",
+                    "claims": [
+                        {
+                            "text": "Revenue increased by 5.",
+                            "kind": "fact",
+                            "evidence_refs": [],
+                            "calculation_refs": ["calc_1"],
+                        }
+                    ],
+                    "unanswered": [],
+                },
+            ),
+        )
+
+        state = await _agent(model, retriever).run(context)
+
+        self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.ANSWERED)
+        self.assertEqual(
+            tuple(tool.name for tool in model.requests[3].tools),
+            ("calculate", "submit_answer"),
+        )
+        self.assertEqual(
+            tuple(tool.name for tool in model.requests[4].tools),
+            ("submit_answer",),
+        )
+
+    async def test_agent_deadline_does_not_override_deterministic_budgets(self) -> None:
         context = _context()
         model = _Model(
+            ChatToolCall("search-1", "search_knowledge_base", {"queries": ["revenue"]}),
             ChatToolCall(
                 "submit-1",
                 "submit_answer",
@@ -1966,11 +2146,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.REFUSED)
         self.assertEqual(
             tuple(tool.name for tool in model.requests[0].tools),
-            ("submit_answer",),
-        )
-        self.assertIn(
-            "retrieval budget",
-            model.requests[0].messages[-1].content,
+            ("search_knowledge_base", "calculate", "submit_answer"),
         )
 
     async def test_active_partial_submission_preserves_unanswered_aspects(self) -> None:

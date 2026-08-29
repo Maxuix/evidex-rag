@@ -81,7 +81,7 @@
 - Chat 可选择 Chat-only 的 auto 模式：在冻结 revision 上首轮同时暴露普通 Simple 检索与一等
   `search_graph_relations` Graph Tool，由原生 Agent 自主选择，Simple 不是 Graph 的前置条件。
   Graph Tool 只在存在 active READY build 时可见；每个 ChatRun 最多两次 Graph 调用，Graph 单次
-  90 秒（ChatRun 绝对 deadline 仍为 420 秒形成 `min(90, remaining)`），候选 K 冻结为 16，完整
+  90 秒（ChatRun 绝对 deadline 为 600 秒形成 `min(90, remaining)`），候选 K 冻结为 16，完整
   一至三跳路径按 soft 12 / hard 16 去重 source chunk 原子打包，两次调用累计最多新增 32。
   不存在服务端提交 completeness guard，也不存在累计 token quota 或按 token 截断。Graph Tool
   只返回 source chunk；edge fact 不进入 prompt、Citation 或回答正文；未配置、未就绪、
@@ -468,11 +468,13 @@ manual Graph 的 hybrid 候选查询宽度按 `min(40, max(12, top_k * 2))` 计�
 规则优先保留完整图路径，再用未重复的 hybrid Evidence 回填到 `top_k`。
 Agent 保留最多 8 个普通模型轮次的有限循环护栏，并另有累计资源预算：冻结 budget 记录
 `max_total_tokens`（默认 150k）、`max_evidence_items`（默认 64）、`max_retrieval_calls`
-（默认 16）与 `soft_deadline_reserve_seconds`（默认 60s）。每轮按 response usage 累计
-token；任一预算耗尽或剩余时间低于软截止预留时进入 wrap-up 收尾模式，只留 `submit_answer`
-工具并提示直接提交；证据池达到条数上限后停止追加并在 tool 结果中标注截断。预算只限制
-探索行为，不阻止提交与校验着陆通道；收尾后仍不提交则走既有 forced finalize。Agent
-不比较或拒绝重复 Query。
+（默认 16）与为旧运行快照保留的 `soft_deadline_reserve_seconds`。Agent 不以时间决定控制流，
+该兼容字段不参与收敛；每轮按 response usage 累计 token，token 或检索预算耗尽时进入 wrap-up
+收尾模式，只留 `submit_answer` 工具并提示直接提交。每次检索按准入、chunk 去重与证据上限
+处理后计算实际新增量；连续两次无新增或证据池已满时确定性关闭 Simple/Graph 检索，保留
+至多一次 `calculate` 机会后只允许提交。多 Query 调用只执行剩余检索预算允许的有序前缀，
+不会突破冻结的累计上限。预算只限制探索行为，不阻止提交与校验着陆通道；收尾后仍不提交
+则走既有 forced finalize。Agent 不比较或拒绝重复 Query 本身。
 题面中的文件名不触发分类、硬 document scope 或全文预读，因此同一知识库中被引用的其他文档
 仍可被检索。每个结果获得运行内稳定 EvidenceRef；首次命中向模型发送索引保存的完整 chunk，
 之后同一 EvidenceRef 只返回已发送标记，不截断、摘要
@@ -552,7 +554,7 @@ ChatRun 内部 trace 保存 claim salvage 的 rejected count、内部 reason 与
 Provider 单次调用的 SDK timeout 与有限 retry 由一个逻辑预算统一计算：
 `timeout * (max_retries + 1) + 60 * max_retries + 1` 秒；Adapter 的外层总预算覆盖整个
 semaphore/retry 窗口。Worker 启动时拒绝不大于该预算的 Chat Agent deadline；本地默认 deadline
-为 420 秒，ChatRun 的既有 attempt 上限不因 Agent 而增加。
+为 600 秒，ChatRun 的既有 attempt 上限不因 Agent 而增加。
 Agent progress 是 content-safe、易失且不可重放的快照；断线后读取权威 ChatRun。
 
 这些约束直接保护回答可信度和个人数据，继续保留；模型调用的细粒度 timing、wire 版本和每个

@@ -207,7 +207,7 @@ class JobPollerSettings(StrictSettingsModel):
     max_attempts: PositiveInt = 3
     retry_base_delay_seconds: PositiveFloat = 5.0
     retry_max_delay_seconds: PositiveFloat = 60.0
-    chat_deadline_seconds: PositiveFloat = 420.0
+    chat_deadline_seconds: PositiveFloat = 600.0
     reconciliation_batch_size: PositiveInt = 100
 
     @model_validator(mode="after")

@@ -81,12 +81,18 @@ _PROTOCOL_ERROR = '{"status":"error","code":"invalid_tool_protocol"}'
 _ARGUMENT_ERROR = '{"status":"error","code":"invalid_tool_arguments"}'
 _TRACE_REF_LIMIT = CHAT_AGENT_TRACE_REF_LIMIT
 _SIMPLE_QUERY_MAX_COUNT = 3
+_MAX_CONSECUTIVE_NO_NEW_SEARCHES = 2
 _QUERY_MAX_CHARS = 2048
 _SUBMIT_REPAIR_FEEDBACK = '{"status":"retry_submission"}'
 _BUDGET_EXHAUSTED_FEEDBACK = (
     "The retrieval budget for this run is exhausted. Do not call search "
     "tools; submit the best possible answer now with the evidence already "
     "gathered, or refuse when it cannot support an answer."
+)
+_SEARCH_CLOSED_FEEDBACK = (
+    "Search is closed because the deterministic retrieval limits show that no "
+    "further evidence can be added. Do not call search tools. You may calculate "
+    "once if needed, then submit the best supported answer or refuse."
 )
 _GENERIC_UNANSWERED = "Some requested parts remain unanswered"
 _UNVERIFIABLE_CLAIM_NOTE = (
@@ -204,6 +210,8 @@ class NativeToolCallingAgent:
         *,
         deadline_seconds: float | None = None,
     ) -> ChatPipelineState:
+        # Kept for runner/caller compatibility; the outer runner owns the hard timeout.
+        del deadline_seconds
         budget = _budget_from_context(context)
         adaptive_graphiti = _adaptive_graphiti_enabled(context)
         graph_ready = (
@@ -234,9 +242,12 @@ class NativeToolCallingAgent:
         strategy = None
         submit_only_repair_used = False
         submit_only_repair_pending = False
-        started_at = time.monotonic()
         total_tokens = 0
         wrap_up_notice_sent = False
+        consecutive_no_new_searches = 0
+        search_closed = False
+        search_closed_calculation_used = False
+        search_closed_notice_sent = False
 
         for round_number in range(1, budget.max_model_rounds + 1):
             repair_round = submit_only_repair_pending
@@ -244,26 +255,31 @@ class NativeToolCallingAgent:
             budget_exhausted = (
                 total_tokens >= budget.max_total_tokens
                 or retrieval_calls >= budget.max_retrieval_calls
-                or (
-                    deadline_seconds is not None
-                    and time.monotonic() - started_at
-                    >= deadline_seconds - budget.soft_deadline_reserve_seconds
-                )
             )
             wrap_up_round = budget_exhausted and not repair_round
             if wrap_up_round and not wrap_up_notice_sent:
                 wrap_up_notice_sent = True
                 messages.append(ChatModelMessage("user", _BUDGET_EXHAUSTED_FEEDBACK))
-            submit_only_round = repair_round or wrap_up_round
-            tools = (
-                (_tool_by_name(_tools(adaptive=adaptive_graphiti), "submit_answer"),)
-                if submit_only_round
-                else _tools(
-                    adaptive=adaptive_graphiti,
-                    graph_ready=graph_ready,
-                    graph_calls_remaining=budget.max_graph_calls - graph_call_count,
-                )
+            search_submit_only_round = (
+                search_closed and search_closed_calculation_used
             )
+            submit_only_round = (
+                repair_round or wrap_up_round or search_submit_only_round
+            )
+            available_tools = _tools(
+                adaptive=adaptive_graphiti,
+                graph_ready=graph_ready,
+                graph_calls_remaining=budget.max_graph_calls - graph_call_count,
+            )
+            if submit_only_round:
+                tools = (_tool_by_name(available_tools, "submit_answer"),)
+            elif search_closed:
+                tools = (
+                    _tool_by_name(available_tools, "calculate"),
+                    _tool_by_name(available_tools, "submit_answer"),
+                )
+            else:
+                tools = available_tools
             response = await self._complete_round(
                 context,
                 messages,
@@ -312,10 +328,20 @@ class NativeToolCallingAgent:
             if submit_only_round and response.tool_calls[0].name != "submit_answer":
                 events.append(_rejected_event(call))
                 break
+            if search_closed and call.name in {
+                "search_knowledge_base",
+                "search_graph_relations",
+            }:
+                events.append(_rejected_event(call))
+                messages.append(
+                    ChatModelMessage("tool", _PROTOCOL_ERROR, tool_call_id=call.id)
+                )
+                continue
             if call.name in {"search_knowledge_base", "search_graph_relations"}:
                 graph_search_result = None
                 graph_duration_ms: int | None = None
                 route_reason_code: str | None = None
+                skipped_query_count = 0
                 if call.name == "search_knowledge_base":
                     queries = _search_arguments(call.arguments)
                     lane = "simple"
@@ -325,6 +351,13 @@ class NativeToolCallingAgent:
                             ChatModelMessage("tool", _ARGUMENT_ERROR, tool_call_id=call.id)
                         )
                         continue
+                    remaining_retrieval_calls = (
+                        budget.max_retrieval_calls - retrieval_calls
+                    )
+                    skipped_query_count = max(
+                        0, len(queries) - remaining_retrieval_calls
+                    )
+                    queries = queries[:remaining_retrieval_calls]
                 elif (
                     not adaptive_graphiti
                     or not graph_ready
@@ -388,6 +421,7 @@ class NativeToolCallingAgent:
                     packs,
                     eligibility=self._eligibility,
                 )
+                evidence_count_before = len(evidence_ids)
                 evidence_limit_hit = False
                 for offset in range(max((len(items) for items in query_candidates), default=0)):
                     for items in query_candidates:
@@ -408,6 +442,19 @@ class NativeToolCallingAgent:
                             continue
                         evidence_ids.add(item.index_chunk_id)
                         evidence.append(item)
+                accepted_new_evidence_count = (
+                    len(evidence_ids) - evidence_count_before
+                )
+                if accepted_new_evidence_count > 0:
+                    consecutive_no_new_searches = 0
+                else:
+                    consecutive_no_new_searches += 1
+                if (
+                    len(evidence) >= budget.max_evidence_items
+                    or consecutive_no_new_searches
+                    >= _MAX_CONSECUTIVE_NO_NEW_SEARCHES
+                ):
+                    search_closed = True
                 retrieval_calls += len(queries)
                 cumulative = _pack(context, evidence, strategy)
                 visual_state = await self._prepare_visuals(
@@ -479,6 +526,8 @@ class NativeToolCallingAgent:
                         if graph_search_result is not None
                         else None
                     ),
+                    accepted_new_evidence_count=accepted_new_evidence_count,
+                    skipped_query_count=skipped_query_count,
                 )
                 messages.append(
                     ChatModelMessage("tool", tool_result, tool_call_id=call.id)
@@ -511,6 +560,9 @@ class NativeToolCallingAgent:
                     for visual, _ in new_visuals:
                         sent_visual_asset_ids.add(visual.asset_id)
                         sent_visuals.append(visual)
+                if search_closed and not search_closed_notice_sent:
+                    search_closed_notice_sent = True
+                    messages.append(ChatModelMessage("user", _SEARCH_CLOSED_FEEDBACK))
                 events.append(
                     ChatAgentTraceEvent(
                         tool=call.name,
@@ -583,6 +635,8 @@ class NativeToolCallingAgent:
                 continue
 
             if call.name == "calculate":
+                if search_closed:
+                    search_closed_calculation_used = True
                 parsed = _calculate_arguments(call.arguments)
                 if parsed is None:
                     events.append(_rejected_event(call))
@@ -1390,6 +1444,8 @@ def _search_result(
     notice: str | None = None,
     route_result_code: str | None = None,
     new_evidence_count: int | None = None,
+    accepted_new_evidence_count: int | None = None,
+    skipped_query_count: int = 0,
 ) -> tuple[str, tuple[str, ...]]:
     observed_refs = set(sent_content_refs)
     newly_sent_refs: list[str] = []
@@ -1443,6 +1499,10 @@ def _search_result(
         payload["route_result_code"] = route_result_code
     if new_evidence_count is not None:
         payload["new_evidence_count"] = new_evidence_count
+    if accepted_new_evidence_count is not None:
+        payload["accepted_new_evidence_count"] = accepted_new_evidence_count
+    if skipped_query_count:
+        payload["skipped_query_count"] = skipped_query_count
     return (
         json.dumps(
             payload,
