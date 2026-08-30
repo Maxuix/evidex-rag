@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 import unittest
 
@@ -158,6 +159,53 @@ class SchemaEchoHelperTests(unittest.TestCase):
 
 
 class SchemaEchoRepairTests(unittest.IsolatedAsyncioTestCase):
+    async def test_provider_semaphore_limits_actual_llm_calls(self) -> None:
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        class _BlockingLLM(_FakeLLM):
+            def __init__(self) -> None:
+                super().__init__([])
+                self.active = 0
+                self.max_active = 0
+
+            async def generate_response(
+                self, messages: object, **kwargs: object
+            ) -> object:
+                del messages, kwargs
+                self.active += 1
+                self.max_active = max(self.max_active, self.active)
+                entered.set()
+                try:
+                    await release.wait()
+                    return {"extracted_entities": []}
+                finally:
+                    self.active -= 1
+
+        inner = _BlockingLLM()
+        client = SchemaEchoRepairingLLMClient(
+            inner,
+            provider_semaphore=asyncio.Semaphore(1),
+        )
+        first = asyncio.create_task(
+            client.generate_response(
+                [SimpleNamespace(role="user", content="first")],
+                response_model=_ExtractedEntities,
+            )
+        )
+        second = asyncio.create_task(
+            client.generate_response(
+                [SimpleNamespace(role="user", content="second")],
+                response_model=_ExtractedEntities,
+            )
+        )
+        await entered.wait()
+        await asyncio.sleep(0)
+        self.assertEqual(inner.max_active, 1)
+        release.set()
+        await asyncio.gather(first, second)
+        self.assertEqual(inner.max_active, 1)
+
     async def test_valid_first_response_does_not_repair(self) -> None:
         inner = _FakeLLM([{"extracted_entities": ["A"]}])
         client = SchemaEchoRepairingLLMClient(inner)

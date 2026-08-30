@@ -614,12 +614,17 @@ takeover。新增本地功能若一次失败后重跑即可，默认复用现有
 子系统。
 
 Graphiti build 继续使用 immutable build 代际作为 retry 事实。每个 build 冻结 Schema Profile key/digest
-和 extractor generation；未知 profile、digest mismatch 或 extractor 不兼容都 fail closed。外部 Graph 已出现确定性 Episode UUID、
-但 PostgreSQL 映射尚未提交时，重试先删除该未提交 Episode，再以同一身份摄入；已提交映射不会重复
-调用 Provider。显式 retry 只有在 revision、serving digest、Chat/Embedding profile、model、dimension
+和 extractor generation；未知 profile、digest mismatch 或 extractor 不兼容都 fail closed。Episode 在
+Graphiti 写入和边界清理完成后写一个 Graph 侧完成标记；若进程在 PostgreSQL 映射提交前退出，重试直接
+复用该确定性 Episode UUID 并补交映射，不重复调用 Provider。只有缺少完成标记的未提交 Episode 才先
+删除并以同一身份重新摄入；已提交映射不会重复调用 Provider。显式 retry 只有在 revision、serving digest、Chat/Embedding profile、model、dimension
 与 extractor 均未变化时原地恢复；输入变化或 force rebuild 才 supersede 旧 build 并建立新代际。
 同一 build 的 work item 先取得带 token 的 lease，Worker heartbeat 续租，stale lease 才可恢复；不同
 build 仍可并行。
+Graphiti 的 bulk gather 不作为 Provider 并发边界；本地 LLM/Embedding adapter 在每次实际请求上共享
+build-scoped semaphore。bulk 失败直接结束当前 work，由已有显式 retry 或评测退避恢复，不在仍可能有
+上游请求收尾时立即把整批切换为串行重放。PostgreSQL Episode mapping 批次若有任一项失去 lease 或
+输入资格，整个 mapping 事务回滚。
 Episode 写入后、mapping 提交前，Graphiti runtime 在当前 build-scoped Falkor graph 中删除
 `source.uuid = target.uuid` 的非法 `RELATES_TO` 自环；这是对 structured extraction prompt 的持久化边界
 保护，不依赖 Provider 永远服从提示。ready probe 同时要求自环为零、每条边具有关系类型、每个

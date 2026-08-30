@@ -41,6 +41,10 @@ LOGGER = get_logger(__name__)
 GRAPH_EPISODE_BATCH_SIZE = 8
 
 
+class _GraphEpisodeCheckpointRejected(RuntimeError):
+    """Roll back a relational batch that no longer belongs to this work item."""
+
+
 @dataclass(frozen=True, slots=True)
 class GraphConfigView:
     snapshot: GraphConfigSnapshot
@@ -269,28 +273,28 @@ class GraphExtractionWorker:
                 if len(episode_uuids) != len(chunks):
                     raise RuntimeError("Graphiti episode batch count mismatch")
 
-                async def persist_batch(uow: UnitOfWork) -> int:
-                    saved_count = 0
+                async def persist_batch(uow: UnitOfWork) -> None:
                     for batch_chunk, episode_uuid in zip(
                         chunks, episode_uuids, strict=True
                     ):
-                        if await uow.graph.save_graphiti_episode(
+                        saved = await uow.graph.save_graphiti_episode(
                             kb_id=work.config.knowledge_base_id,
                             build_id=build.build_id,
                             index_chunk_id=batch_chunk.index_chunk_id,
                             content_hash=batch_chunk.content_hash,
                             episode_uuid=episode_uuid,
                             **_lease_kwargs(work),
-                        ):
-                            saved_count += 1
-                    return saved_count
+                        )
+                        if not saved:
+                            raise _GraphEpisodeCheckpointRejected
 
-                saved_count = await execute_in_transaction(
-                    self._unit_of_work,
-                    persist_batch,
-                    purpose=UnitOfWorkPurpose.INDEXING,
-                )
-                if saved_count != len(chunks):
+                try:
+                    await execute_in_transaction(
+                        self._unit_of_work,
+                        persist_batch,
+                        purpose=UnitOfWorkPurpose.INDEXING,
+                    )
+                except _GraphEpisodeCheckpointRejected:
                     log_event(
                         LOGGER,
                         "graphiti_episode_write",
@@ -299,7 +303,7 @@ class GraphExtractionWorker:
                         operation="chunk",
                         outcome="skipped",
                         batch_count=len(chunks),
-                        saved_count=saved_count,
+                        saved_count=0,
                     )
                     return
                 log_event(

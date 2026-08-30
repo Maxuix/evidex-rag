@@ -205,9 +205,14 @@ class GraphitiPathResolutionTests(unittest.IsolatedAsyncioTestCase):
             kwargs["custom_extraction_instructions"],
             GRAPHITI_V3_EXTRACTION_INSTRUCTIONS,
         )
-        cleanup_query = driver.execute_query.await_args.args[0]
+        cleanup_call = next(
+            call
+            for call in driver.execute_query.await_args_list
+            if "DELETE edge" in call.args[0]
+        )
+        cleanup_query = cleanup_call.args[0]
         self.assertIn("DELETE edge", cleanup_query)
-        self.assertEqual(driver.execute_query.await_args.kwargs["routing_"], "w")
+        self.assertEqual(cleanup_call.kwargs["routing_"], "w")
 
     def test_query_grounded_seed_expands_only_through_the_opposite_endpoint(self) -> None:
         seed = _edge(1, "product", "WTC-7", "supplier", "梧桐芯片")

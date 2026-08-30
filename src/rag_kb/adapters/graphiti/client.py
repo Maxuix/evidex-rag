@@ -59,6 +59,7 @@ GRAPHITI_EDGE_TYPES = _SOFTWARE_SCHEMA.edge_types
 GRAPHITI_EDGE_TYPE_MAP = _SOFTWARE_SCHEMA.edge_type_map
 
 _GRAPHITI_ADJACENCY_MULTIPLIER = 8
+_EPISODE_COMPLETION_STATE = "rag-kb-complete-v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,35 +71,6 @@ class _GraphitiEntityResult:
 
 class GraphitiSchemaEchoError(RuntimeError):
     """Provider returned JSON schema instead of the required Graphiti fields."""
-
-
-_TRANSIENT_PROVIDER_ERROR_NAMES = frozenset(
-    {
-        "APIConnectionError",
-        "APITimeoutError",
-        "ConnectError",
-        "ConnectTimeout",
-        "EndOfStream",
-        "PoolTimeout",
-        "ReadError",
-        "ReadTimeout",
-        "RemoteProtocolError",
-        "TimeoutException",
-        "WriteError",
-        "WriteTimeout",
-    }
-)
-
-
-def _is_transient_provider_error(error: BaseException) -> bool:
-    current: BaseException | None = error
-    observed: set[int] = set()
-    while current is not None and id(current) not in observed:
-        observed.add(id(current))
-        if type(current).__name__ in _TRANSIENT_PROVIDER_ERROR_NAMES:
-            return True
-        current = current.__cause__ or current.__context__
-    return False
 
 
 def required_model_field_names(response_model: Any) -> tuple[str, ...]:
@@ -206,11 +178,13 @@ class SchemaEchoRepairingLLMClient:
         inner: Any,
         *,
         max_attempts: int = SCHEMA_ECHO_MAX_ATTEMPTS,
+        provider_semaphore: asyncio.Semaphore | None = None,
     ) -> None:
         if max_attempts < 1:
             raise ValueError("max_attempts must be at least 1")
         self._inner = inner
         self._max_attempts = max_attempts
+        self._provider_semaphore = provider_semaphore
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)
@@ -242,7 +216,9 @@ class SchemaEchoRepairingLLMClient:
             first_kwargs["attribute_extraction"] = True
         for attempt in range(self._max_attempts):
             if attempt == 0:
-                result = await self._inner.generate_response(messages, **first_kwargs)
+                result = await self._call_provider(
+                    lambda: self._inner.generate_response(messages, **first_kwargs)
+                )
             else:
                 raw = getattr(self._inner, "_generate_response", None)
                 if raw is None:
@@ -256,7 +232,9 @@ class SchemaEchoRepairingLLMClient:
                     raw_kwargs["max_tokens"] = max_tokens
                 if model_size is not None:
                     raw_kwargs["model_size"] = model_size
-                result = await raw(repaired, response_model, **raw_kwargs)
+                result = await self._call_provider(
+                    lambda: raw(repaired, response_model, **raw_kwargs)
+                )
             if is_invalid_model_payload(
                 result,
                 response_model,
@@ -273,15 +251,29 @@ class SchemaEchoRepairingLLMClient:
             "graphiti structured output missing required fields"
         )
 
+    async def _call_provider(
+        self,
+        operation: Callable[[], Awaitable[Any]],
+    ) -> Any:
+        if self._provider_semaphore is None:
+            return await operation()
+        async with self._provider_semaphore:
+            return await operation()
+
 
 def as_graphiti_llm_client(
     inner: Any,
     *,
     max_attempts: int = SCHEMA_ECHO_MAX_ATTEMPTS,
+    provider_semaphore: asyncio.Semaphore | None = None,
 ) -> Any:
     """Preserve the inner Graphiti LLMClient type for pydantic isinstance checks."""
 
-    repair = SchemaEchoRepairingLLMClient(inner, max_attempts=max_attempts)
+    repair = SchemaEchoRepairingLLMClient(
+        inner,
+        max_attempts=max_attempts,
+        provider_semaphore=provider_semaphore,
+    )
 
     class _SchemaEchoRepairingLLMClient(type(inner)):
         def __init__(self) -> None:
@@ -428,6 +420,9 @@ class GraphitiRuntime:
         modules = _graphiti_modules()
         reference_time = chunk.reference_time or datetime.now(UTC)
         episode_uuid = graphiti_episode_uuid(build, chunk)
+        completed = await self._completed_episode_uuids(driver, (episode_uuid,))
+        if episode_uuid in completed:
+            return episode_uuid
         try:
             await modules.EpisodicNode.get_by_uuid(driver, episode_uuid)
         except modules.NodeNotFoundError:
@@ -479,7 +474,9 @@ class GraphitiRuntime:
         # implement the driver query surface intentionally skip this I/O.
         if compiled.validation_policy.reject_entity_self_loops:
             await self._remove_self_loop_edges(driver, build)
-        return str(result.episode.uuid)
+        result_uuid = str(result.episode.uuid)
+        await self._mark_episodes_complete(driver, (result_uuid,))
+        return result_uuid
 
     async def add_episodes_bulk(
         self,
@@ -501,11 +498,20 @@ class GraphitiRuntime:
         modules = _graphiti_modules()
         from graphiti_core.utils.bulk_utils import RawEpisode
 
-        episodes: list[Any] = []
+        episode_uuids = tuple(graphiti_episode_uuid(build, chunk) for chunk in chunks)
+        completed = await self._completed_episode_uuids(driver, episode_uuids)
+        pending = tuple(
+            (chunk, episode_uuid)
+            for chunk, episode_uuid in zip(chunks, episode_uuids, strict=True)
+            if episode_uuid not in completed
+        )
+        if not pending:
+            return episode_uuids
+
         raw_episodes: list[RawEpisode] = []
-        for chunk in chunks:
+        pending_uuids: list[str] = []
+        for chunk, episode_uuid in pending:
             reference_time = chunk.reference_time or datetime.now(UTC)
-            episode_uuid = graphiti_episode_uuid(build, chunk)
             try:
                 await modules.EpisodicNode.get_by_uuid(driver, episode_uuid)
             except modules.NodeNotFoundError:
@@ -526,7 +532,7 @@ class GraphitiRuntime:
                 valid_at=reference_time,
             )
             await episode.save(driver)
-            episodes.append(episode)
+            pending_uuids.append(episode_uuid)
             raw_episodes.append(
                 RawEpisode(
                     name=episode.name,
@@ -537,34 +543,69 @@ class GraphitiRuntime:
                     reference_time=reference_time,
                 )
             )
-        try:
-            result = await graphiti.add_episode_bulk(
-                raw_episodes,
-                group_id=build.group_id,
-                entity_types=compiled.entity_types,
-                edge_types=compiled.edge_types,
-                edge_type_map=compiled.edge_type_map,
-                custom_extraction_instructions=compiled.extraction_instructions,
-            )
-        except Exception as error:
-            # A transient provider connection failure can abort Graphiti's
-            # whole bulk gather after it has already written some episode
-            # nodes.  Replay the bounded batch through the existing
-            # deterministic single-episode recovery path so one dropped
-            # connection does not burn the build's retry budget.  Structural
-            # extraction failures still fail closed and preserve their
-            # original error type.
-            if not _is_transient_provider_error(error):
-                raise
-            return tuple(
-                [await self.add_episode(build, chunk) for chunk in chunks]
-            )
+        result = await graphiti.add_episode_bulk(
+            raw_episodes,
+            group_id=build.group_id,
+            entity_types=compiled.entity_types,
+            edge_types=compiled.edge_types,
+            edge_type_map=compiled.edge_type_map,
+            custom_extraction_instructions=compiled.extraction_instructions,
+        )
         result_episodes = tuple(getattr(result, "episodes", ()))
-        if len(result_episodes) != len(chunks):
+        if len(result_episodes) != len(pending):
             raise RuntimeError("Graphiti bulk episode count mismatch")
         if compiled.validation_policy.reject_entity_self_loops:
             await self._remove_self_loop_edges(driver, build)
-        return tuple(str(episode.uuid) for episode in result_episodes)
+        result_uuids = tuple(str(episode.uuid) for episode in result_episodes)
+        if result_uuids != tuple(pending_uuids):
+            raise RuntimeError("Graphiti bulk episode identity mismatch")
+        await self._mark_episodes_complete(driver, result_uuids)
+        return episode_uuids
+
+    @staticmethod
+    async def _completed_episode_uuids(
+        driver: Any,
+        episode_uuids: tuple[str, ...],
+    ) -> frozenset[str]:
+        execute = getattr(driver, "execute_query", None)
+        if not callable(execute) or not episode_uuids:
+            return frozenset()
+        result = await execute(
+            """
+            MATCH (episode:Episodic)
+            WHERE episode.uuid IN $episode_uuids
+              AND episode.rag_kb_ingestion_state = $completion_state
+            RETURN episode.uuid AS uuid
+            """,
+            episode_uuids=list(episode_uuids),
+            completion_state=_EPISODE_COMPLETION_STATE,
+            routing_="r",
+        )
+        records = result[0] if result else []
+        return frozenset(str(record["uuid"]) for record in records)
+
+    @staticmethod
+    async def _mark_episodes_complete(
+        driver: Any,
+        episode_uuids: tuple[str, ...],
+    ) -> None:
+        execute = getattr(driver, "execute_query", None)
+        if not callable(execute) or not episode_uuids:
+            return
+        result = await execute(
+            """
+            MATCH (episode:Episodic)
+            WHERE episode.uuid IN $episode_uuids
+            SET episode.rag_kb_ingestion_state = $completion_state
+            RETURN count(episode) AS count
+            """,
+            episode_uuids=list(episode_uuids),
+            completion_state=_EPISODE_COMPLETION_STATE,
+            routing_="w",
+        )
+        records = result[0] if result else []
+        if records and int(records[0]["count"]) != len(episode_uuids):
+            raise RuntimeError("Graphiti episode completion marker count mismatch")
 
     def _compiled_schema(self, build: GraphitiBuildSnapshot) -> CompiledGraphSchema:
         """Resolve the exact build identity before touching Graphiti."""
@@ -891,6 +932,7 @@ class GraphitiRuntime:
                 return cached
             modules = _graphiti_modules()
             values = await self._credentials(build)
+            provider_semaphore = asyncio.Semaphore(values.max_concurrency)
             llm = as_graphiti_llm_client(
                 modules.OpenAIGenericClient(
                     config=modules.LLMConfig(
@@ -906,7 +948,8 @@ class GraphitiRuntime:
                         timeout=values.chat_timeout_seconds,
                     ),
                     structured_output_mode=values.structured_output_mode,
-                )
+                ),
+                provider_semaphore=provider_semaphore,
             )
             embedder = modules.BoundedEmbedder(
                 modules.OpenAIEmbedder(
@@ -923,6 +966,7 @@ class GraphitiRuntime:
                     ),
                 ),
                 values.embedding_batch_size,
+                provider_semaphore,
             )
             driver = modules.FalkorDriver(
                 host=self._host,
@@ -938,10 +982,9 @@ class GraphitiRuntime:
                 embedder=embedder,
                 cross_encoder=modules.NeverRerank(),
                 store_raw_episode_content=True,
-                # Honor the immutable provider concurrency contract.  The
-                # Graphiti default is 20, which can exceed a provider's
-                # configured connection budget and cause repeated stream
-                # resets under OpenCode Go.
+                # Keep Graphiti's own scheduler aligned with the provider
+                # budget.  The shared request semaphore above remains the
+                # effective boundary for helpers that ignore this setting.
                 max_coroutines=values.max_concurrency,
             )
             cached = (graphiti, driver)
@@ -1368,21 +1411,29 @@ def _graphiti_modules() -> SimpleNamespace:
             raise RuntimeError("Graphiti cross-encoder is disabled for RRF search")
 
     class BoundedEmbedder(EmbedderClient):
-        def __init__(self, inner: EmbedderClient, limit: int) -> None:
+        def __init__(
+            self,
+            inner: EmbedderClient,
+            limit: int,
+            provider_semaphore: asyncio.Semaphore,
+        ) -> None:
             self._inner = inner
             self._limit = min(16, max(1, limit))
+            self._provider_semaphore = provider_semaphore
 
         async def create(self, input_data: Any) -> list[float]:
-            return await self._inner.create(input_data)
+            async with self._provider_semaphore:
+                return await self._inner.create(input_data)
 
         async def create_batch(self, input_data_list: list[str]) -> list[list[float]]:
             vectors: list[list[float]] = []
             for start in range(0, len(input_data_list), self._limit):
-                vectors.extend(
-                    await self._inner.create_batch(
-                        input_data_list[start : start + self._limit]
+                async with self._provider_semaphore:
+                    vectors.extend(
+                        await self._inner.create_batch(
+                            input_data_list[start : start + self._limit]
+                        )
                     )
-                )
             return vectors
 
     _GRAPHITI = SimpleNamespace(

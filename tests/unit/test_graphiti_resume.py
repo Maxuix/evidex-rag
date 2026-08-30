@@ -82,6 +82,60 @@ class GraphitiEpisodeResumeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(graphiti.added[0]["entity_types"], GRAPHITI_ENTITY_TYPES)
         self.assertEqual(driver.episode_ids, {first})
 
+    async def test_bulk_failure_does_not_replay_the_batch_serially(self) -> None:
+        driver = _Driver()
+        graphiti = _BulkGraphiti(driver, error=RuntimeError("provider unavailable"))
+        runtime = GraphitiRuntime(_unused_credentials)
+
+        async def client(_build):
+            return graphiti, driver
+
+        runtime._client = client  # type: ignore[method-assign]
+        modules = SimpleNamespace(
+            EpisodeType=SimpleNamespace(text="text"),
+            EpisodicNode=_Episode,
+            NodeNotFoundError=_NodeNotFoundError,
+            RELEVANT_SCHEMA_LIMIT=10,
+        )
+
+        with patch(
+            "rag_kb.adapters.graphiti.client._graphiti_modules",
+            return_value=modules,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "provider unavailable"):
+                await runtime.add_episodes_bulk(_build(), (_chunk(),))
+
+        self.assertEqual(graphiti.bulk_calls, 1)
+        self.assertEqual(graphiti.added, [])
+
+    async def test_completion_marker_skips_provider_after_relational_gap(self) -> None:
+        driver = _MarkerDriver()
+        graphiti = _BulkGraphiti(driver)
+        runtime = GraphitiRuntime(_unused_credentials)
+
+        async def client(_build):
+            return graphiti, driver
+
+        runtime._client = client  # type: ignore[method-assign]
+        modules = SimpleNamespace(
+            EpisodeType=SimpleNamespace(text="text"),
+            EpisodicNode=_Episode,
+            NodeNotFoundError=_NodeNotFoundError,
+            RELEVANT_SCHEMA_LIMIT=10,
+        )
+
+        with patch(
+            "rag_kb.adapters.graphiti.client._graphiti_modules",
+            return_value=modules,
+        ):
+            first = await runtime.add_episodes_bulk(_build(), (_chunk(),))
+            replay = await runtime.add_episodes_bulk(_build(), (_chunk(),))
+
+        self.assertEqual(first, replay)
+        self.assertEqual(graphiti.bulk_calls, 1)
+        self.assertEqual(graphiti.removed, [])
+        self.assertEqual(driver.completed, set(first))
+
     def test_identity_is_scoped_to_build_chunk_and_content(self) -> None:
         baseline = graphiti_episode_uuid(_build(), _chunk())
 
@@ -111,9 +165,33 @@ class _Driver:
         self.episode_ids: set[str] = set()
 
 
+class _MarkerDriver(_Driver):
+    def __init__(self) -> None:
+        super().__init__()
+        self.completed: set[str] = set()
+
+    async def execute_query(self, query: str, **values):
+        episode_uuids = tuple(values.get("episode_uuids", ()))
+        if "RETURN episode.uuid AS uuid" in query:
+            return (
+                [
+                    {"uuid": episode_uuid}
+                    for episode_uuid in episode_uuids
+                    if episode_uuid in self.completed
+                ],
+                [],
+                [],
+            )
+        if "SET episode.rag_kb_ingestion_state" in query:
+            self.completed.update(episode_uuids)
+            return ([{"count": len(episode_uuids)}], [], [])
+        return ([], [], [])
+
+
 class _Episode:
     def __init__(self, **values) -> None:
-        self.uuid = values["uuid"]
+        for name, value in values.items():
+            setattr(self, name, value)
 
     @classmethod
     async def get_by_uuid(cls, driver: _Driver, episode_uuid: str):
@@ -141,6 +219,21 @@ class _Graphiti:
     async def add_episode(self, **values):
         self.added.append(values)
         return SimpleNamespace(episode=SimpleNamespace(uuid=values["uuid"]))
+
+
+class _BulkGraphiti(_Graphiti):
+    def __init__(self, driver: _Driver, *, error: Exception | None = None) -> None:
+        super().__init__(driver)
+        self.error = error
+        self.bulk_calls = 0
+
+    async def add_episode_bulk(self, episodes, **_values):
+        self.bulk_calls += 1
+        if self.error is not None:
+            raise self.error
+        return SimpleNamespace(
+            episodes=[SimpleNamespace(uuid=episode.uuid) for episode in episodes]
+        )
 
 
 async def _unused_credentials(_build):

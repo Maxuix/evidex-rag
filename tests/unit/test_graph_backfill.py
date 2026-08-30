@@ -29,6 +29,7 @@ KB_ID = UUID("01900000-0000-7000-8000-000000000902")
 BUILD_ID = UUID("01900000-0000-7000-8000-000000000903")
 PROFILE_ID = UUID("01900000-0000-7000-8000-000000000904")
 CHUNK_ID = UUID("01900000-0000-7000-8000-000000000905")
+SECOND_CHUNK_ID = UUID("01900000-0000-7000-8000-00000000090a")
 REVISION_ID = UUID("01900000-0000-7000-8000-000000000906")
 TARGET_ID = UUID("01900000-0000-7000-8000-000000000907")
 DOCUMENT_ID = UUID("01900000-0000-7000-8000-000000000908")
@@ -108,6 +109,23 @@ class GraphitiBuildWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(repository.failed_codes, [])
         self.assertEqual(graphiti.deleted, [])
 
+    async def test_rejected_bulk_mapping_rolls_back_the_whole_batch(self) -> None:
+        repository = _GraphRepository(
+            GraphWorkItem(GraphWorkKind.CHUNK, _config(), _chunk())
+        )
+        repository.batch_chunks = (_chunk(), _chunk(SECOND_CHUNK_ID))
+        repository.mapping_acceptance = [True, False]
+        graphiti = _BulkFakeGraphiti()
+
+        await GraphExtractionWorker(
+            _factory(repository),
+            graphiti,
+        ).process_next_work_item()
+
+        self.assertEqual(graphiti.bulk_added, [(CHUNK_ID, SECOND_CHUNK_ID)])
+        self.assertEqual(repository.mappings, [])
+        self.assertEqual(repository.failed_codes, [])
+
     async def test_failed_probe_preserves_the_build_for_explicit_resume(self) -> None:
         repository = _GraphRepository(GraphWorkItem(GraphWorkKind.FINALIZE, _config()))
         graphiti = _FakeGraphiti(probe_success=False)
@@ -164,6 +182,8 @@ class _GraphRepository:
         self.failed_codes: list[str] = []
         self.first_episode_uuid: str | None = None
         self.accept_mapping = True
+        self.mapping_acceptance: list[bool] | None = None
+        self.batch_chunks: tuple[GraphChunkSource, ...] = ()
         self._retired: list = []
 
     async def next_work_item(self):
@@ -188,10 +208,19 @@ class _GraphRepository:
         episode_uuid,
     ):
         del kb_id, build_id, content_hash
-        if not self.accept_mapping:
+        accepted = (
+            self.mapping_acceptance.pop(0)
+            if self.mapping_acceptance is not None
+            else self.accept_mapping
+        )
+        if not accepted:
             return False
         self.mappings.append((index_chunk_id, episode_uuid))
         return True
+
+    async def missing_graph_chunks(self, config, *, limit):
+        del config
+        return self.batch_chunks[:limit]
 
     async def first_graphiti_episode_uuid(self, kb_id, *, build_id):
         del kb_id, build_id
@@ -244,6 +273,18 @@ class _FakeGraphiti:
         self.deleted.append(build.build_id)
 
 
+class _BulkFakeGraphiti(_FakeGraphiti):
+    def __init__(self) -> None:
+        super().__init__()
+        self.bulk_added: list[tuple[UUID, ...]] = []
+
+    async def add_episodes_bulk(self, build, chunks):
+        del build
+        chunk_ids = tuple(chunk.index_chunk_id for chunk in chunks)
+        self.bulk_added.append(chunk_ids)
+        return tuple(f"episode-{index}" for index, _ in enumerate(chunks, start=1))
+
+
 class _UnitOfWork:
     def __init__(self, repository: _GraphRepository) -> None:
         self.graph = repository
@@ -262,7 +303,12 @@ class _UnitOfWork:
 def _factory(repository: _GraphRepository):
     @asynccontextmanager
     async def context() -> AsyncIterator[_UnitOfWork]:
-        yield _UnitOfWork(repository)
+        mappings_before = list(repository.mappings)
+        try:
+            yield _UnitOfWork(repository)
+        except BaseException:
+            repository.mappings[:] = mappings_before
+            raise
 
     def factory(*, purpose, mode):
         del purpose, mode
@@ -303,12 +349,12 @@ def _build(build_id: UUID = BUILD_ID) -> GraphitiBuildSnapshot:
     )
 
 
-def _chunk() -> GraphChunkSource:
+def _chunk(index_chunk_id: UUID = CHUNK_ID) -> GraphChunkSource:
     return GraphChunkSource(
         workspace_id=WORKSPACE,
         knowledge_base_id=KB_ID,
         build_id=BUILD_ID,
-        index_chunk_id=CHUNK_ID,
+        index_chunk_id=index_chunk_id,
         index_revision_id=REVISION_ID,
         indexed_document_version_id=TARGET_ID,
         document_id=DOCUMENT_ID,
