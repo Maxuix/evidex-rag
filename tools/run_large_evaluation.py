@@ -1672,11 +1672,12 @@ def _enterprise_extraction_observation(
     entities: Sequence[Mapping[str, Any]],
     relations: Sequence[Mapping[str, Any]],
     controls: Sequence[Mapping[str, Any]],
+    identity_controls: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     entity_types: dict[str, str] = {}
     entity_surfaces: dict[str, str] = {}
     for row in entities:
-        canonical = _norm(row.get("name"))
+        canonical = _norm(row.get("entity_id") or row.get("name"))
         if not canonical:
             continue
         entity_types[canonical] = str(row.get("entity_type", "unknown"))
@@ -1690,28 +1691,36 @@ def _enterprise_extraction_observation(
             existing = entity_surfaces.setdefault(surface, canonical)
             if existing != canonical:
                 raise LargeEvaluationError("enterprise gold entity surface is ambiguous")
+
+    def gold_entity(row: Mapping[str, Any], prefix: str) -> str:
+        explicit_id = _norm(row.get(f"{prefix}_entity_id"))
+        if explicit_id:
+            return explicit_id
+        surface = _norm(row.get(f"{prefix}_entity"))
+        return entity_surfaces.get(surface, surface)
+
     positive: dict[str, tuple[str, str, str]] = {}
     relation_types: dict[str, set[tuple[str, str, str]]] = defaultdict(set)
     for row in relations:
         relation_id = str(row.get("relation_id", ""))
         triple = (
-            _norm(row.get("source_entity")),
+            gold_entity(row, "source"),
             _norm(row.get("edge_type")),
-            _norm(row.get("target_entity")),
+            gold_entity(row, "target"),
         )
         if relation_id and all(triple):
             positive[relation_id] = triple
             relation_types[str(row.get("edge_type"))].add(triple)
     asserted_controls = {
         (
-            _norm(row.get("source_entity")),
+            gold_entity(row, "source"),
             _norm(row.get("asserted_edge")),
-            _norm(row.get("target_entity")),
+            gold_entity(row, "target"),
         )
         for row in controls
-        if row.get("source_entity")
+        if (row.get("source_entity_id") or row.get("source_entity"))
         and row.get("asserted_edge")
-        and row.get("target_entity")
+        and (row.get("target_entity_id") or row.get("target_entity"))
     }
     known_types = {_norm(name): name for name in relation_types}
     observed: set[tuple[str, str, str]] = set()
@@ -1724,6 +1733,7 @@ def _enterprise_extraction_observation(
     resolved_endpoint_count = 0
     semantic_edge_signatures: set[tuple[str, str, str, str]] = set()
     endpoint_relation_signatures: set[tuple[str, str, str]] = set()
+    observed_entity_uuids: dict[str, set[str]] = defaultdict(set)
     scorable_edge_count = 0
     gold_pair_relations: dict[tuple[str, str], set[str]] = defaultdict(set)
     for source, predicate, target in (*positive.values(), *asserted_controls):
@@ -1752,6 +1762,10 @@ def _enterprise_extraction_observation(
         endpoint_pairs[f"{source_type}->{target_type}"] += 1
         source_identity = str(getattr(edge, "source_entity_uuid", "") or source)
         target_identity = str(getattr(edge, "target_entity_uuid", "") or target)
+        if canonical_source is not None:
+            observed_entity_uuids[canonical_source].add(source_identity)
+        if canonical_target is not None:
+            observed_entity_uuids[canonical_target].add(target_identity)
         endpoint_relation_signatures.add((source_identity, predicate, target_identity))
         semantic_edge_signatures.add(
             (
@@ -1815,9 +1829,9 @@ def _enterprise_extraction_observation(
     forbidden: list[dict[str, Any]] = []
     for control in controls:
         triple = (
-            _norm(control.get("source_entity")),
+            gold_entity(control, "source"),
             _norm(control.get("forbidden_edge")),
-            _norm(control.get("target_entity")),
+            gold_entity(control, "target"),
         )
         hit_count = int(triple in observed)
         forbidden.append(
@@ -1860,10 +1874,32 @@ def _enterprise_extraction_observation(
         if triple[1] in gold_pair_relations[(triple[0], triple[2])]
     }
     unresolved_endpoint_count = endpoint_count - resolved_endpoint_count
+    fragmentation_by_entity = {
+        entity_id: len(uuids) - 1
+        for entity_id, uuids in sorted(observed_entity_uuids.items())
+        if len(uuids) > 1
+    }
+    identity_control_results: list[dict[str, Any]] = []
+    for control in identity_controls:
+        left = _norm(control.get("left_entity_id"))
+        right = _norm(control.get("right_entity_id"))
+        shared_uuids = observed_entity_uuids.get(left, set()) & observed_entity_uuids.get(
+            right, set()
+        )
+        identity_control_results.append(
+            {
+                "control_id": str(control.get("control_id", "")),
+                "left_entity_id": str(control.get("left_entity_id", "")),
+                "right_entity_id": str(control.get("right_entity_id", "")),
+                "shared_uuid_count": len(shared_uuids),
+                "hit_count": int(bool(shared_uuids)),
+            }
+        )
     return {
         "case_id": "enterprise-extraction-snapshot",
         "status": "completed",
         "gold_relation_count": len(gold),
+        "gold_relation_assertion_count": len(positive),
         "observed_raw_edge_count": len(edges),
         "observed_unique_edge_count": len(observed),
         "duplicate_observed_edge_count": max(
@@ -1894,6 +1930,16 @@ def _enterprise_extraction_observation(
         "relation_classification_given_gold_endpoints": _rate(
             len(conditional_relation_hits), len(conditional_relation_observations)
         ),
+        "entity_identity": {
+            "gold_entity_count": len(entity_types),
+            "observed_canonical_entity_count": len(observed_entity_uuids),
+            "fragmentation_excess_count": sum(fragmentation_by_entity.values()),
+            "fragmentation_by_entity": fragmentation_by_entity,
+            "distinct_entity_controls": identity_control_results,
+            "forbidden_merge_hit_count": sum(
+                item["hit_count"] for item in identity_control_results
+            ),
+        },
         "unknown_predicate_count": unknown_predicate_count,
         "forbidden_edge_hits": forbidden,
         "forbidden_edge_hit_count": sum(item["hit_count"] for item in forbidden),

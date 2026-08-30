@@ -237,6 +237,124 @@ class EnterpriseExtractionScorerTests(unittest.TestCase):
         self.assertEqual(report["micro_precision"]["value"], 1.0)
         self.assertEqual(report["forbidden_edge_hit_count"], 0)
 
+    def test_stable_entity_ids_score_alias_surfaces(self) -> None:
+        entities = [
+            {
+                "entity_id": "org-harbor",
+                "name": "Harbor Systems",
+                "entity_type": "Organization",
+                "aliases": ["Harbor"],
+            },
+            {
+                "entity_id": "system-atlas",
+                "name": "Atlas Platform",
+                "entity_type": "BusinessSystem",
+                "aliases": ["Atlas"],
+            },
+        ]
+        relations = [
+            {
+                "relation_id": "edge-stable-id",
+                "source_entity_id": "org-harbor",
+                "edge_type": "Provides",
+                "target_entity_id": "system-atlas",
+            }
+        ]
+        edges = [
+            GraphitiEdgeResult(
+                edge_uuid="edge-stable-id",
+                fact="Harbor provides Atlas.",
+                episode_uuids=("episode-1",),
+                rank=1,
+                source_entity_uuid="source-1",
+                source_entity_name="Harbor",
+                target_entity_uuid="target-1",
+                target_entity_name="Atlas",
+                relation_type="Provides",
+            )
+        ]
+
+        report = _enterprise_extraction_observation(edges, entities, relations, ())
+
+        self.assertEqual(report["micro_recall"]["value"], 1.0)
+        self.assertEqual(report["gold_relation_assertion_count"], 1)
+        self.assertEqual(report["entity_identity"]["gold_entity_count"], 2)
+
+    def test_identity_metrics_detect_fragmentation_and_forbidden_merges(self) -> None:
+        entities = [
+            {
+                "entity_id": "org-left",
+                "name": "Meridian Systems International",
+                "entity_type": "Organization",
+                "aliases": ["MSI"],
+            },
+            {
+                "entity_id": "org-right",
+                "name": "Meridian System Integration",
+                "entity_type": "Organization",
+                "aliases": ["MII"],
+            },
+            {
+                "entity_id": "system-atlas",
+                "name": "Atlas Platform",
+                "entity_type": "BusinessSystem",
+                "aliases": ["Atlas"],
+            },
+        ]
+        edges = [
+            GraphitiEdgeResult(
+                edge_uuid="edge-left-1",
+                fact="MSI provides Atlas.",
+                episode_uuids=("episode-1",),
+                rank=1,
+                source_entity_uuid="merged-source",
+                source_entity_name="MSI",
+                target_entity_uuid="atlas",
+                target_entity_name="Atlas",
+                relation_type="Provides",
+            ),
+            GraphitiEdgeResult(
+                edge_uuid="edge-left-2",
+                fact="Meridian Systems International supports Atlas.",
+                episode_uuids=("episode-2",),
+                rank=2,
+                source_entity_uuid="split-source",
+                source_entity_name="Meridian Systems International",
+                target_entity_uuid="atlas",
+                target_entity_name="Atlas",
+                relation_type="Supports",
+            ),
+            GraphitiEdgeResult(
+                edge_uuid="edge-right",
+                fact="MII supports Atlas.",
+                episode_uuids=("episode-3",),
+                rank=3,
+                source_entity_uuid="merged-source",
+                source_entity_name="MII",
+                target_entity_uuid="atlas",
+                target_entity_name="Atlas",
+                relation_type="Supports",
+            ),
+        ]
+        identity_controls = [
+            {
+                "control_id": "distinct-meridian-organizations",
+                "left_entity_id": "org-left",
+                "right_entity_id": "org-right",
+            }
+        ]
+
+        report = _enterprise_extraction_observation(
+            edges,
+            entities,
+            (),
+            (),
+            identity_controls,
+        )
+
+        self.assertEqual(report["entity_identity"]["fragmentation_excess_count"], 1)
+        self.assertEqual(report["entity_identity"]["forbidden_merge_hit_count"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

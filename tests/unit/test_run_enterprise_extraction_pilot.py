@@ -34,6 +34,24 @@ class EnterpriseExtractionPilotTests(unittest.TestCase):
                 ):
                     module._spec(arm)
 
+    def test_stress_corpus_produces_a_small_isolated_spec(self) -> None:
+        dataset_key, spec = module._spec("baseline", "stress")
+
+        self.assertEqual(dataset_key, "enterprise_stress_pilot_baseline")
+        self.assertEqual(
+            spec.dataset_id,
+            "enterprise-profile-stress-pilot-baseline-v1",
+        )
+        self.assertEqual(spec.expected_document_count, 12)
+        self.assertEqual(
+            spec.corpus_root,
+            module.STRESS_CORPUS_ROOT / "documents",
+        )
+
+    def test_unknown_corpus_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "enterprise_pilot_corpus_invalid"):
+            module._spec("baseline", "unknown")
+
 
 if __name__ == "__main__":
     unittest.main()

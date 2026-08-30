@@ -6,6 +6,7 @@ import re
 import unittest
 
 from tools import build_enterprise_profile_qualification as enterprise
+from tools import build_enterprise_profile_stress as enterprise_stress
 from tools import build_musique_route_candidates as musique
 from tools import build_public_rag_benchmark_suite as public
 
@@ -75,6 +76,35 @@ class CollectedRagEvaluationCorporaTests(unittest.TestCase):
                 for control in controls
                 for field in ("source_entity", "target_entity")
             )
+        )
+
+    def test_enterprise_profile_stress_corpus_targets_compound_failures(self) -> None:
+        self.assertEqual(
+            enterprise_stress.validate(enterprise_stress.DEFAULT_OUTPUT),
+            {
+                "controls": 6,
+                "documents": 12,
+                "identity_controls": 1,
+                "relation_assertions": 34,
+                "unique_relations": 30,
+            },
+        )
+        manifest = json.loads(
+            (enterprise_stress.DEFAULT_OUTPUT / "manifest.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(
+            manifest["family_counts"],
+            {
+                "cross_episode_identity": 4,
+                "repeated_fact": 4,
+                "semantic_overlap": 4,
+            },
+        )
+        self.assertGreater(
+            manifest["relation_assertion_count"],
+            manifest["unique_gold_relation_count"],
         )
 
     def test_enterprise_graph_contract_matches_the_three_hop_domain_limit(self) -> None:
