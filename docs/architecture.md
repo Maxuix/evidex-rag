@@ -469,12 +469,19 @@ manual Graph 的 hybrid 候选查询宽度按 `min(40, max(12, top_k * 2))` 计�
 Agent 保留最多 8 个普通模型轮次的有限循环护栏，并另有累计资源预算：冻结 budget 记录
 `max_total_tokens`（默认 150k）、`max_evidence_items`（默认 64）、`max_retrieval_calls`
 （默认 16）与为旧运行快照保留的 `soft_deadline_reserve_seconds`。Agent 不以时间决定控制流，
-该兼容字段不参与收敛；每轮按 response usage 累计 token，token 或检索预算耗尽时进入 wrap-up
+该兼容字段不参与收敛，只作为 Trace 的 deadline-pressure 判定阈值；每轮按 response usage
+累计 token，token 或检索预算耗尽时进入 wrap-up
 收尾模式，只留 `submit_answer` 工具并提示直接提交。每次检索按准入、chunk 去重与证据上限
 处理后计算实际新增量；连续两次无新增或证据池已满时确定性关闭 Simple/Graph 检索，保留
 至多一次 `calculate` 机会后只允许提交。多 Query 调用只执行剩余检索预算允许的有序前缀，
 不会突破冻结的累计上限。预算只限制探索行为，不阻止提交与校验着陆通道；收尾后仍不提交
 则走既有 forced finalize。Agent 不比较或拒绝重复 Query 本身。
+历史 `retrieval_calls` 与 `max_retrieval_calls` 实际按 Query 执行数计量并继续保留兼容；Trace
+同时发布语义明确的 `retrieval_queries`、`retrieval_tool_calls`、`simple_tool_calls` 与
+`graph_tool_calls`。成功 Trace 另汇总 prompt/completion/total token、repair rounds、停止原因、
+forced-finalize、连续无新增次数、累计耗时及 deadline pressure。Runner 为每次 attempt 维护纯
+内存 checkpoint；外层 deadline 取消 Agent 时，把已经完成的安全计数、事件与 model calls 写入
+该 attempt 的 timing ledger，不在主循环增加 I/O，也不覆盖后来重试成功的最终 Trace。
 题面中的文件名不触发分类、硬 document scope 或全文预读，因此同一知识库中被引用的其他文档
 仍可被检索。每个结果获得运行内稳定 EvidenceRef；首次命中向模型发送索引保存的完整 chunk，
 之后同一 EvidenceRef 只返回已发送标记，不截断、摘要

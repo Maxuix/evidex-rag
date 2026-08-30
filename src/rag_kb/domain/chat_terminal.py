@@ -74,6 +74,7 @@ class ChatFailureSettlementCommand:
     exhausted: bool
     finished_at: datetime
     next_attempt_at: datetime | None = None
+    agent_trace: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         _require_finish_time(self.lease, self.finished_at)
@@ -88,6 +89,20 @@ class ChatFailureSettlementCommand:
             ):
                 raise ValueError("next attempt time must be timezone-aware and future")
         object.__setattr__(self, "diagnostic", MappingProxyType(dict(self.diagnostic)))
+        if self.agent_trace is not None:
+            if (
+                self.agent_trace.get("version") != "native_tool_calling_agent_v3"
+                or self.agent_trace.get("outcome") is not None
+                or not isinstance(self.agent_trace.get("events"), (list, tuple))
+                or len(self.agent_trace["events"]) > 32
+                or not isinstance(self.agent_trace.get("usage"), Mapping)
+                or not isinstance(self.agent_trace.get("diagnostics"), Mapping)
+                or self.agent_trace["diagnostics"].get("partial") is not True
+            ):
+                raise ValueError("partial terminal agent trace is invalid")
+            object.__setattr__(
+                self, "agent_trace", MappingProxyType(dict(self.agent_trace))
+            )
 
 
 def _require_finish_time(lease: ChatRunLease, finished_at: datetime) -> None:

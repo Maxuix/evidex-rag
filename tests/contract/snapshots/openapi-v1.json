@@ -116,6 +116,87 @@
         "title": "ChatAgentResponse",
         "type": "object"
       },
+      "ChatAgentTraceDiagnosticsResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "consecutive_no_new_evidence": {
+            "minimum": 0.0,
+            "title": "Consecutive No New Evidence",
+            "type": "integer"
+          },
+          "deadline_exceeded": {
+            "title": "Deadline Exceeded",
+            "type": "boolean"
+          },
+          "deadline_ms": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deadline Ms"
+          },
+          "deadline_remaining_ms": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deadline Remaining Ms"
+          },
+          "elapsed_ms": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Elapsed Ms"
+          },
+          "forced_finalize": {
+            "title": "Forced Finalize",
+            "type": "boolean"
+          },
+          "near_deadline": {
+            "title": "Near Deadline",
+            "type": "boolean"
+          },
+          "stop_reason": {
+            "enum": [
+              "submitted",
+              "token_budget",
+              "retrieval_query_budget",
+              "evidence_budget",
+              "no_new_evidence",
+              "model_round_limit",
+              "submit_protocol_invalid",
+              "deadline_exceeded"
+            ],
+            "title": "Stop Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "stop_reason",
+          "forced_finalize",
+          "consecutive_no_new_evidence",
+          "near_deadline",
+          "deadline_exceeded"
+        ],
+        "title": "ChatAgentTraceDiagnosticsResponse",
+        "type": "object"
+      },
       "ChatAgentTraceEventResponse": {
         "additionalProperties": false,
         "properties": {
@@ -366,6 +447,16 @@
         "properties": {
           "budget": {
             "$ref": "#/components/schemas/ChatAgentBudgetResponse"
+          },
+          "diagnostics": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatAgentTraceDiagnosticsResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "events": {
             "items": {

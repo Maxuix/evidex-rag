@@ -43,6 +43,18 @@ CHAT_GRAPH_SEARCH_RESULTS = frozenset(
     }
 )
 CHAT_AGENT_INVOCATION_SOURCES = frozenset({"agent", "legacy_guard"})
+CHAT_AGENT_STOP_REASONS = frozenset(
+    {
+        "submitted",
+        "token_budget",
+        "retrieval_query_budget",
+        "evidence_budget",
+        "no_new_evidence",
+        "model_round_limit",
+        "submit_protocol_invalid",
+        "deadline_exceeded",
+    }
+)
 CHAT_AGENT_DEFAULT_MODEL_ROUNDS = 8
 CHAT_AGENT_MAX_MODEL_ROUNDS = 12
 CHAT_AGENT_DEFAULT_GRAPH_CALLS = 2
@@ -365,6 +377,20 @@ class ChatAgentTrace:
     evidence_ref_count: int
     outcome: str
     total_tokens: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    retrieval_tool_calls: int = 0
+    simple_tool_calls: int = 0
+    graph_tool_calls: int = 0
+    repair_rounds: int = 0
+    consecutive_no_new_evidence: int = 0
+    stop_reason: str = "submitted"
+    forced_finalize: bool = False
+    elapsed_ms: int | None = None
+    deadline_ms: int | None = None
+    deadline_remaining_ms: int | None = None
+    near_deadline: bool = False
+    deadline_exceeded: bool = False
     version: str = CHAT_AGENT_VERSION
 
     def __post_init__(self) -> None:
@@ -376,9 +402,33 @@ class ChatAgentTrace:
             or self.calculation_calls < 0
             or self.evidence_ref_count < 0
             or self.total_tokens < 0
+            or self.prompt_tokens < 0
+            or self.completion_tokens < 0
+            or self.retrieval_tool_calls < 0
+            or self.simple_tool_calls < 0
+            or self.graph_tool_calls < 0
+            or self.retrieval_tool_calls
+            != self.simple_tool_calls + self.graph_tool_calls
+            or self.repair_rounds < 0
+            or self.consecutive_no_new_evidence < 0
+            or self.stop_reason not in CHAT_AGENT_STOP_REASONS
+            or not isinstance(self.forced_finalize, bool)
+            or not isinstance(self.near_deadline, bool)
+            or not isinstance(self.deadline_exceeded, bool)
             or self.outcome not in {"answered", "partial", "refused", "clarify"}
         ):
             raise ValueError("chat agent trace is invalid")
+        for value in (self.elapsed_ms, self.deadline_ms, self.deadline_remaining_ms):
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, int) or value < 0
+            ):
+                raise ValueError("chat agent trace timing is invalid")
+        if self.deadline_ms is None and (
+            self.deadline_remaining_ms is not None
+            or self.near_deadline
+            or self.deadline_exceeded
+        ):
+            raise ValueError("chat agent trace deadline diagnostics are invalid")
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -387,10 +437,28 @@ class ChatAgentTrace:
             "budget": self.budget.as_dict(),
             "usage": {
                 "model_rounds": self.model_rounds,
+                # Kept as a compatibility alias for historical traces and API clients.
                 "retrieval_calls": self.retrieval_calls,
+                "retrieval_queries": self.retrieval_calls,
+                "retrieval_tool_calls": self.retrieval_tool_calls,
+                "simple_tool_calls": self.simple_tool_calls,
+                "graph_tool_calls": self.graph_tool_calls,
                 "calculation_calls": self.calculation_calls,
+                "repair_rounds": self.repair_rounds,
                 "evidence_refs": self.evidence_ref_count,
+                "prompt_tokens": self.prompt_tokens,
+                "completion_tokens": self.completion_tokens,
                 "total_tokens": self.total_tokens,
+            },
+            "diagnostics": {
+                "stop_reason": self.stop_reason,
+                "forced_finalize": self.forced_finalize,
+                "consecutive_no_new_evidence": self.consecutive_no_new_evidence,
+                "elapsed_ms": self.elapsed_ms,
+                "deadline_ms": self.deadline_ms,
+                "deadline_remaining_ms": self.deadline_remaining_ms,
+                "near_deadline": self.near_deadline,
+                "deadline_exceeded": self.deadline_exceeded,
             },
             "outcome": self.outcome,
         }

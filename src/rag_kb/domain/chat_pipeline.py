@@ -261,12 +261,14 @@ class ChatPipelineExecutionError(RuntimeError):
         phase: ChatPipelinePhase,
         diagnostic: Mapping[str, Any] | None = None,
         model_calls: tuple[ChatModelCallRecord, ...] = (),
+        agent_trace: Mapping[str, Any] | None = None,
     ) -> None:
         super().__init__(code.value)
         self.code = code
         self.phase = phase
         self.diagnostic = dict(diagnostic or {})
         self.model_calls = model_calls
+        self.agent_trace = dict(agent_trace) if agent_trace is not None else None
 
     def retain_model_calls(
         self, calls: tuple[ChatModelCallRecord, ...]
@@ -275,6 +277,13 @@ class ChatPipelineExecutionError(RuntimeError):
 
         if len(calls) > len(self.model_calls):
             self.model_calls = calls
+        return self
+
+    def retain_agent_trace(
+        self, trace: Mapping[str, Any]
+    ) -> ChatPipelineExecutionError:
+        if self.agent_trace is None:
+            self.agent_trace = dict(trace)
         return self
 
 

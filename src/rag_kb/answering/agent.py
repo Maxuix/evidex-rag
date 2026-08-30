@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 import json
 import time
 from typing import Any, Protocol
@@ -150,6 +150,91 @@ class _SubmissionVerification:
     event: ChatAgentTraceEvent
 
 
+@dataclass(slots=True)
+class ChatAgentProgress:
+    """In-memory, non-blocking checkpoint for one Agent attempt."""
+
+    started_at: float = field(default_factory=time.monotonic)
+    deadline_seconds: float | None = None
+    budget: ChatAgentBudget | None = None
+    model_calls: list[Any] = field(default_factory=list)
+    events: list[ChatAgentTraceEvent] = field(default_factory=list)
+    model_rounds: int = 0
+    retrieval_queries: int = 0
+    retrieval_tool_calls: int = 0
+    simple_tool_calls: int = 0
+    graph_tool_calls: int = 0
+    calculation_calls: int = 0
+    repair_rounds: int = 0
+    evidence_ref_count: int = 0
+    consecutive_no_new_evidence: int = 0
+
+    def runtime_diagnostics(
+        self,
+        *,
+        stop_reason: str,
+        forced_finalize: bool,
+        deadline_exceeded: bool = False,
+    ) -> dict[str, Any]:
+        elapsed_ms = max(0, round((time.monotonic() - self.started_at) * 1000))
+        deadline_ms = (
+            max(0, round(self.deadline_seconds * 1000))
+            if self.deadline_seconds is not None
+            else None
+        )
+        remaining_ms = (
+            max(0, deadline_ms - elapsed_ms) if deadline_ms is not None else None
+        )
+        reserve_ms = (
+            round(self.budget.soft_deadline_reserve_seconds * 1000)
+            if self.budget is not None
+            else 0
+        )
+        return {
+            "stop_reason": stop_reason,
+            "forced_finalize": forced_finalize,
+            "consecutive_no_new_evidence": self.consecutive_no_new_evidence,
+            "elapsed_ms": elapsed_ms,
+            "deadline_ms": deadline_ms,
+            "deadline_remaining_ms": remaining_ms,
+            "near_deadline": bool(
+                deadline_ms is not None
+                and (deadline_exceeded or remaining_ms <= reserve_ms)
+            ),
+            "deadline_exceeded": deadline_exceeded,
+        }
+
+    def partial_trace(self) -> dict[str, Any]:
+        usage = _trace_usage(
+            tuple(self.model_calls),
+            model_rounds=self.model_rounds,
+            retrieval_queries=self.retrieval_queries,
+            retrieval_tool_calls=self.retrieval_tool_calls,
+            simple_tool_calls=self.simple_tool_calls,
+            graph_tool_calls=self.graph_tool_calls,
+            calculation_calls=self.calculation_calls,
+            repair_rounds=self.repair_rounds,
+            evidence_ref_count=self.evidence_ref_count,
+        )
+        diagnostics = self.runtime_diagnostics(
+            stop_reason="deadline_exceeded",
+            forced_finalize=False,
+            deadline_exceeded=True,
+        )
+        diagnostics["partial"] = True
+        return {
+            "version": "native_tool_calling_agent_v3",
+            "events": [
+                item.as_dict()
+                for item in self.events[-CHAT_AGENT_TRACE_EVENT_LIMIT:]
+            ],
+            "budget": self.budget.as_dict() if self.budget is not None else None,
+            "usage": usage,
+            "diagnostics": diagnostics,
+            "outcome": None,
+        }
+
+
 class EvidenceRetriever(Protocol):
     async def retrieve_query(
         self,
@@ -209,10 +294,11 @@ class NativeToolCallingAgent:
         context: ChatExecutionContext,
         *,
         deadline_seconds: float | None = None,
+        progress: ChatAgentProgress | None = None,
     ) -> ChatPipelineState:
-        # Kept for runner/caller compatibility; the outer runner owns the hard timeout.
-        del deadline_seconds
+        progress = progress or ChatAgentProgress(deadline_seconds=deadline_seconds)
         budget = _budget_from_context(context)
+        progress.budget = budget
         adaptive_graphiti = _adaptive_graphiti_enabled(context)
         graph_ready = (
             await self._retriever.graph_relations_capable(context)
@@ -233,9 +319,11 @@ class NativeToolCallingAgent:
             tuple[object, object], VisualEvidenceDecision
         ] = {}
         calculations: dict[str, DecimalCalculationFact] = {}
-        calls = []
-        events: list[ChatAgentTraceEvent] = []
+        calls = progress.model_calls
+        events = progress.events
         retrieval_calls = 0
+        retrieval_tool_calls = 0
+        simple_tool_calls = 0
         calculation_calls = 0
         graph_call_count = 0
         latest_visual_state: ChatAnsweringState | None = None
@@ -248,13 +336,21 @@ class NativeToolCallingAgent:
         search_closed = False
         search_closed_calculation_used = False
         search_closed_notice_sent = False
+        search_stop_reason: str | None = None
+        forced_stop_reason = "model_round_limit"
 
         for round_number in range(1, budget.max_model_rounds + 1):
             repair_round = submit_only_repair_pending
             submit_only_repair_pending = False
+            budget_stop_reason = (
+                "token_budget"
+                if total_tokens >= budget.max_total_tokens
+                else "retrieval_query_budget"
+                if retrieval_calls >= budget.max_retrieval_calls
+                else None
+            )
             budget_exhausted = (
-                total_tokens >= budget.max_total_tokens
-                or retrieval_calls >= budget.max_retrieval_calls
+                budget_stop_reason is not None
             )
             wrap_up_round = budget_exhausted and not repair_round
             if wrap_up_round and not wrap_up_notice_sent:
@@ -289,10 +385,18 @@ class NativeToolCallingAgent:
             )
             call_record = model_call_record(ChatModelOperation.AGENT_ROUND, response)
             calls.append(call_record)
+            progress.model_rounds = round_number
+            if repair_round:
+                progress.repair_rounds += 1
             total_tokens += int(response.usage.get("total_tokens", 0) or 0)
 
             if len(response.tool_calls) != 1:
                 if submit_only_round:
+                    forced_stop_reason = (
+                        budget_stop_reason
+                        or search_stop_reason
+                        or "submit_protocol_invalid"
+                    )
                     break
                 events.append(
                     ChatAgentTraceEvent(
@@ -327,6 +431,11 @@ class NativeToolCallingAgent:
             )
             if submit_only_round and response.tool_calls[0].name != "submit_answer":
                 events.append(_rejected_event(call))
+                forced_stop_reason = (
+                    budget_stop_reason
+                    or search_stop_reason
+                    or "submit_protocol_invalid"
+                )
                 break
             if search_closed and call.name in {
                 "search_knowledge_base",
@@ -358,6 +467,12 @@ class NativeToolCallingAgent:
                         0, len(queries) - remaining_retrieval_calls
                     )
                     queries = queries[:remaining_retrieval_calls]
+                    retrieval_calls += len(queries)
+                    retrieval_tool_calls += 1
+                    simple_tool_calls += 1
+                    progress.retrieval_queries = retrieval_calls
+                    progress.retrieval_tool_calls = retrieval_tool_calls
+                    progress.simple_tool_calls = simple_tool_calls
                 elif (
                     not adaptive_graphiti
                     or not graph_ready
@@ -382,6 +497,11 @@ class NativeToolCallingAgent:
                     queries = (query,)
                     lane = "graph_relations"
                     graph_call_count += 1
+                    retrieval_calls += 1
+                    retrieval_tool_calls += 1
+                    progress.retrieval_queries = retrieval_calls
+                    progress.retrieval_tool_calls = retrieval_tool_calls
+                    progress.graph_tool_calls = graph_call_count
                     started = time.monotonic()
                     try:
                         graph_search_result = (
@@ -451,11 +571,16 @@ class NativeToolCallingAgent:
                     consecutive_no_new_searches += 1
                 if (
                     len(evidence) >= budget.max_evidence_items
-                    or consecutive_no_new_searches
+                ):
+                    search_closed = True
+                    search_stop_reason = "evidence_budget"
+                elif (
+                    consecutive_no_new_searches
                     >= _MAX_CONSECUTIVE_NO_NEW_SEARCHES
                 ):
                     search_closed = True
-                retrieval_calls += len(queries)
+                    search_stop_reason = "no_new_evidence"
+                progress.consecutive_no_new_evidence = consecutive_no_new_searches
                 cumulative = _pack(context, evidence, strategy)
                 visual_state = await self._prepare_visuals(
                     context,
@@ -477,6 +602,7 @@ class NativeToolCallingAgent:
                     prompt_by_ref,
                     evidence_by_ref,
                 )
+                progress.evidence_ref_count = len(prompt_by_ref)
                 cite_to_ref = {
                     item.citation_id: ref_by_prompt_id[item.index_chunk_id]
                     for item in latest_visual_state.evidence.items
@@ -645,6 +771,7 @@ class NativeToolCallingAgent:
                     )
                     continue
                 calculation_calls += 1
+                progress.calculation_calls = calculation_calls
                 expression, source_refs = parsed
                 try:
                     fact = evaluate_decimal_expression(
@@ -691,6 +818,11 @@ class NativeToolCallingAgent:
                 )
                 if result is None:
                     if submit_only_round:
+                        forced_stop_reason = (
+                            budget_stop_reason
+                            or search_stop_reason
+                            or "submit_protocol_invalid"
+                        )
                         break
                     events.append(_rejected_event(call))
                     messages.append(
@@ -754,6 +886,13 @@ class NativeToolCallingAgent:
                     sent_visuals,
                     tuple(visual_decisions.values()),
                     call.arguments,
+                    progress=progress,
+                    stop_reason=(
+                        budget_stop_reason
+                        or search_stop_reason
+                        or "submitted"
+                    ),
+                    forced_finalize=False,
                 )
 
             events.append(_rejected_event(call))
@@ -773,6 +912,7 @@ class NativeToolCallingAgent:
             tuple(calls),
         )
         calls.append(model_call_record(ChatModelOperation.AGENT_ROUND, forced_response))
+        progress.model_rounds = forced_round
         result = None
         forced_payload: Mapping[str, Any] = {}
         forced_call: ChatToolCall | None = None
@@ -845,6 +985,9 @@ class NativeToolCallingAgent:
             sent_visuals,
             tuple(visual_decisions.values()),
             forced_payload,
+            progress=progress,
+            stop_reason=forced_stop_reason,
+            forced_finalize=True,
         )
 
     async def _complete_round(
@@ -1823,6 +1966,10 @@ def _final_state(
     sent_visuals: Sequence[ChatModelVisualContent],
     visual_decisions: Sequence[VisualEvidenceDecision],
     raw_submission: Mapping[str, Any],
+    *,
+    progress: ChatAgentProgress,
+    stop_reason: str,
+    forced_finalize: bool,
 ) -> ChatPipelineState:
     pack = _pack(context, evidence, strategy)
     envelope = EvidenceEnvelope(
@@ -1863,17 +2010,44 @@ def _final_state(
             else None
         ),
     )
+    usage = _trace_usage(
+        calls,
+        model_rounds=rounds,
+        retrieval_queries=retrieval_calls,
+        retrieval_tool_calls=progress.retrieval_tool_calls,
+        simple_tool_calls=progress.simple_tool_calls,
+        graph_tool_calls=progress.graph_tool_calls,
+        calculation_calls=calculation_calls,
+        repair_rounds=progress.repair_rounds,
+        evidence_ref_count=len(prompt_by_ref),
+    )
+    diagnostics = progress.runtime_diagnostics(
+        stop_reason=stop_reason,
+        forced_finalize=forced_finalize,
+    )
     trace = ChatAgentTrace(
         events=events[-CHAT_AGENT_TRACE_EVENT_LIMIT:],
         budget=budget,
         model_rounds=rounds,
         retrieval_calls=retrieval_calls,
+        retrieval_tool_calls=progress.retrieval_tool_calls,
+        simple_tool_calls=progress.simple_tool_calls,
+        graph_tool_calls=progress.graph_tool_calls,
         calculation_calls=calculation_calls,
+        repair_rounds=progress.repair_rounds,
         evidence_ref_count=len(prompt_by_ref),
+        consecutive_no_new_evidence=progress.consecutive_no_new_evidence,
         outcome=validated.outcome.value,
-        total_tokens=sum(
-            int(record.usage.get("total_tokens", 0) or 0) for record in calls
-        ),
+        prompt_tokens=usage["prompt_tokens"],
+        completion_tokens=usage["completion_tokens"],
+        total_tokens=usage["total_tokens"],
+        stop_reason=stop_reason,
+        forced_finalize=forced_finalize,
+        elapsed_ms=diagnostics["elapsed_ms"],
+        deadline_ms=diagnostics["deadline_ms"],
+        deadline_remaining_ms=diagnostics["deadline_remaining_ms"],
+        near_deadline=diagnostics["near_deadline"],
+        deadline_exceeded=diagnostics["deadline_exceeded"],
     )
     return ChatPipelineState(
         context=context,
@@ -1891,6 +2065,36 @@ def _final_state(
         ),
         artifacts={AGENT_TRACE_ARTIFACT: trace},
     )
+
+
+def _trace_usage(
+    calls: tuple[Any, ...],
+    *,
+    model_rounds: int,
+    retrieval_queries: int,
+    retrieval_tool_calls: int,
+    simple_tool_calls: int,
+    graph_tool_calls: int,
+    calculation_calls: int,
+    repair_rounds: int,
+    evidence_ref_count: int,
+) -> dict[str, int]:
+    totals = {
+        name: sum(int(record.usage.get(name, 0) or 0) for record in calls)
+        for name in ("prompt_tokens", "completion_tokens", "total_tokens")
+    }
+    return {
+        "model_rounds": model_rounds,
+        "retrieval_calls": retrieval_queries,
+        "retrieval_queries": retrieval_queries,
+        "retrieval_tool_calls": retrieval_tool_calls,
+        "simple_tool_calls": simple_tool_calls,
+        "graph_tool_calls": graph_tool_calls,
+        "calculation_calls": calculation_calls,
+        "repair_rounds": repair_rounds,
+        "evidence_refs": evidence_ref_count,
+        **totals,
+    }
 
 
 def _pack(context: ChatExecutionContext, evidence: Sequence[Evidence], strategy: Any) -> EvidencePack:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import unittest
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -31,7 +32,10 @@ from rag_kb.domain import (
     VisualEvidenceDecision,
     VisualEvidenceReason,
 )
-from rag_kb.repositories.sqlalchemy_chat import _serialized_success
+from rag_kb.repositories.sqlalchemy_chat import (
+    _serialized_failure,
+    _serialized_success,
+)
 from rag_kb.answering.runner import NativeAgentRunner
 from rag_kb.services.chat_terminal import (
     ChatFailureSettlementService,
@@ -164,6 +168,49 @@ class ChatTerminalServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             repository.success.agent_trace["usage"]["evidence_refs"], 105
+        )
+        self.assertEqual(
+            repository.success.agent_trace["diagnostics"]["stop_reason"],
+            "submitted",
+        )
+
+    async def test_timeout_retains_nonblocking_agent_checkpoint_per_attempt(self) -> None:
+        observed = datetime(2026, 7, 15, 8, 0, tzinfo=UTC)
+        state = _completed_state(observed)
+        runner = NativeAgentRunner(
+            _ContextLoader(state.context),
+            _BlockingAgent(),
+            _Persister(state),
+            deadline_seconds=0.001,
+            progress_reporter_factory=lambda *_: _Reporter(),
+        )
+
+        with self.assertRaises(ChatPipelineExecutionError) as raised:
+            await runner.execute(ChatExecutionCommand(state.context.lease))
+
+        error = raised.exception
+        self.assertEqual(error.code, ErrorCode.CHAT_PIPELINE_DEADLINE_EXCEEDED)
+        self.assertEqual(error.model_calls, (_call(),))
+        self.assertIsNotNone(error.agent_trace)
+        self.assertTrue(error.agent_trace["diagnostics"]["partial"])
+        self.assertTrue(error.agent_trace["diagnostics"]["deadline_exceeded"])
+
+        repository = _Repository(ChatTerminalWriteStatus.APPLIED)
+        await ChatFailureSettlementService(
+            _Factory(repository),
+            max_attempts=1,
+            base_delay_seconds=1,
+            max_delay_seconds=1,
+            clock=lambda: observed + timedelta(seconds=1),
+        ).settle(state.context.lease, error)
+        self.assertEqual(
+            repository.failure.agent_trace["usage"]["model_rounds"], 1
+        )
+        self.assertEqual(
+            _serialized_failure(repository.failure)["agent_trace"]["diagnostics"][
+                "stop_reason"
+            ],
+            "deadline_exceeded",
         )
 
     async def test_stale_and_database_failures_are_content_safe(self) -> None:
@@ -400,9 +447,18 @@ class _Agent:
         self.state = state
         self.deadline_seconds = None
 
-    async def run(self, context, *, deadline_seconds=None):
+    async def run(self, context, *, deadline_seconds=None, progress=None):
         self.deadline_seconds = deadline_seconds
         return self.state
+
+
+class _BlockingAgent:
+    async def run(self, context, *, deadline_seconds=None, progress=None):
+        del context, deadline_seconds
+        progress.budget = ChatAgentBudget()
+        progress.model_calls.append(_call())
+        progress.model_rounds = 1
+        await asyncio.Event().wait()
 
 
 class _Persister:

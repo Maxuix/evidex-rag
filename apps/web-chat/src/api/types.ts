@@ -413,6 +413,24 @@ export interface ChatAgent {
     events: ChatAgentTraceEvent[];
     budget: ChatAgent["budget"];
     usage: Record<string, number>;
+    diagnostics?: {
+      stop_reason:
+        | "submitted"
+        | "token_budget"
+        | "retrieval_query_budget"
+        | "evidence_budget"
+        | "no_new_evidence"
+        | "model_round_limit"
+        | "submit_protocol_invalid"
+        | "deadline_exceeded";
+      forced_finalize: boolean;
+      consecutive_no_new_evidence: number;
+      elapsed_ms: number | null;
+      deadline_ms: number | null;
+      deadline_remaining_ms: number | null;
+      near_deadline: boolean;
+      deadline_exceeded: boolean;
+    };
     outcome: "answered" | "partial" | "refused" | "clarify";
   } | null;
 }

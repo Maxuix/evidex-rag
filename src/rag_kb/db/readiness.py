@@ -5,7 +5,7 @@ from __future__ import annotations
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-EXPECTED_REVISION = "0022_agent_resource_budget"
+EXPECTED_REVISION = "0023_agent_trace_diagnostics"
 
 
 class DatabaseReadinessError(RuntimeError):

@@ -8,7 +8,7 @@ import logging
 from typing import Protocol
 from uuid import UUID
 
-from rag_kb.answering.agent import NativeToolCallingAgent
+from rag_kb.answering.agent import ChatAgentProgress, NativeToolCallingAgent
 from rag_kb.domain import (
     ChatExecutionCommand,
     ChatExecutionContext,
@@ -69,6 +69,7 @@ class NativeAgentRunner:
 
     async def execute(self, command: ChatExecutionCommand) -> ChatPipelineState:
         state: ChatPipelineState | None = None
+        progress = ChatAgentProgress(deadline_seconds=self._deadline_seconds)
         phase = ChatPipelinePhase.LOAD_CONTEXT
         reporter = self._progress_reporter_factory(
             command.lease.run_id,
@@ -97,6 +98,7 @@ class NativeAgentRunner:
                 state = await self._agent.run(
                     context,
                     deadline_seconds=self._deadline_seconds,
+                    progress=progress,
                 )
                 phase = ChatPipelinePhase.PERSIST_RESULT
                 trace = state.artifacts.get("chat_agent_trace")
@@ -125,6 +127,9 @@ class NativeAgentRunner:
             )
             if state is not None and state.answering is not None:
                 failure.retain_model_calls(state.answering.model_calls)
+            else:
+                failure.retain_model_calls(tuple(progress.model_calls))
+                failure.retain_agent_trace(progress.partial_trace())
             raise failure from error
         except ChatPipelineExecutionError:
             raise

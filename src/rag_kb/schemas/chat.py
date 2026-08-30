@@ -201,11 +201,32 @@ class ChatAgentTraceEventResponse(PublicSchema):
     hop3_count: Annotated[int, Field(ge=0)] | None = None
 
 
+class ChatAgentTraceDiagnosticsResponse(PublicSchema):
+    stop_reason: Literal[
+        "submitted",
+        "token_budget",
+        "retrieval_query_budget",
+        "evidence_budget",
+        "no_new_evidence",
+        "model_round_limit",
+        "submit_protocol_invalid",
+        "deadline_exceeded",
+    ]
+    forced_finalize: bool
+    consecutive_no_new_evidence: Annotated[int, Field(ge=0)]
+    elapsed_ms: Annotated[int, Field(ge=0)] | None = None
+    deadline_ms: Annotated[int, Field(ge=0)] | None = None
+    deadline_remaining_ms: Annotated[int, Field(ge=0)] | None = None
+    near_deadline: bool
+    deadline_exceeded: bool
+
+
 class ChatAgentTraceResponse(PublicSchema):
     version: Literal["native_tool_calling_agent_v3"]
     events: tuple[ChatAgentTraceEventResponse, ...]
     budget: ChatAgentBudgetResponse
     usage: dict[str, Annotated[int, Field(ge=0)]]
+    diagnostics: ChatAgentTraceDiagnosticsResponse | None = None
     outcome: Literal["answered", "partial", "refused", "clarify"]
 
 

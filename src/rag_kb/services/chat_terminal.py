@@ -143,6 +143,7 @@ class ChatFailureSettlementService:
             exhausted=exhausted,
             finished_at=finished_at,
             next_attempt_at=next_attempt_at,
+            agent_trace=error.agent_trace,
         )
 
         async def persist(uow: UnitOfWork) -> ChatTerminalWriteStatus:

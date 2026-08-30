@@ -887,6 +887,9 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(retriever.graph_queries, ["revenue relation", "deeper chain"])
         trace = state.artifacts[AGENT_TRACE_ARTIFACT]
         self.assertEqual(trace.retrieval_calls, 3)
+        self.assertEqual(trace.retrieval_tool_calls, 3)
+        self.assertEqual(trace.simple_tool_calls, 1)
+        self.assertEqual(trace.graph_tool_calls, 2)
         graph_events = [
             event for event in trace.events if event.retrieval_lane == "graph_relations"
         ]
@@ -2585,6 +2588,9 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.ANSWERED)
         self.assertEqual(len(state.answering.rendered.citations), 1)
+        trace = state.artifacts[AGENT_TRACE_ARTIFACT]
+        self.assertTrue(trace.forced_finalize)
+        self.assertEqual(trace.stop_reason, "model_round_limit")
 
     async def test_forced_finalize_still_goes_through_the_verifier(self) -> None:
         context = replace(
@@ -2748,13 +2754,23 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
                 "submit_answer",
                 {"outcome": "refused", "claims": [], "unanswered": []},
             ),
+            usage={"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
         )
 
         state = await _agent(model, retriever).run(context)
 
         self.assertEqual(retriever.queries, ["one", "two", "three"])
         self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.REFUSED)
-        self.assertEqual(state.artifacts[AGENT_TRACE_ARTIFACT].retrieval_calls, 3)
+        trace = state.artifacts[AGENT_TRACE_ARTIFACT]
+        self.assertEqual(trace.retrieval_calls, 3)
+        self.assertEqual(trace.retrieval_tool_calls, 1)
+        self.assertEqual(trace.simple_tool_calls, 1)
+        self.assertEqual(trace.graph_tool_calls, 0)
+        self.assertEqual(trace.prompt_tokens, 6)
+        self.assertEqual(trace.completion_tokens, 4)
+        self.assertEqual(trace.total_tokens, 10)
+        self.assertEqual(trace.stop_reason, "submitted")
+        self.assertFalse(trace.forced_finalize)
 
     async def test_forced_finalize_with_invalid_claims_completes_as_refused(self) -> None:
         context = _context()

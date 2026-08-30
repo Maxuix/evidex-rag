@@ -1075,7 +1075,7 @@ def _serialized_success(command: ChatTerminalSuccessCommand) -> dict[str, Any]:
 
 
 def _serialized_failure(command: ChatFailureSettlementCommand) -> dict[str, Any]:
-    return {
+    value = {
         "result": "requeued" if command.next_attempt_at is not None else "failed",
         "phase": command.phase.value,
         "error_code": command.code.value,
@@ -1083,6 +1083,9 @@ def _serialized_failure(command: ChatFailureSettlementCommand) -> dict[str, Any]
         "exhausted": command.exhausted,
         "diagnostic": dict(command.diagnostic),
     }
+    if command.agent_trace is not None:
+        value["agent_trace"] = dict(command.agent_trace)
+    return value
 
 
 def _stable_attempt_facts(
