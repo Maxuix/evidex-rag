@@ -2,7 +2,6 @@
 
 from rag_kb.domain import ErrorCode
 from rag_kb.schemas.common import (
-    CursorPage,
     CursorPayload,
     FieldViolation,
     PaginationQuery,
@@ -115,7 +114,6 @@ __all__ = [
     "ChatSessionCreate",
     "ChatSessionPage",
     "ChatSessionResponse",
-    "CursorPage",
     "CursorPayload",
     "DocumentDeleteResponse",
     "DocumentChunkAssetResponse",

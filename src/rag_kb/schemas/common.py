@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Generic, Literal, TypeVar
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from rag_kb.domain import ErrorCode
 
 
-ItemT = TypeVar("ItemT")
 SortExpression = Annotated[
     str,
     Field(pattern=r"^-?[a-z][a-z0-9_]*$", min_length=1, max_length=64),
@@ -49,8 +48,3 @@ class CursorPayload(PublicSchema):
     version: Literal[1] = 1
     sort: SortExpression
     values: Annotated[tuple[str, ...], Field(min_length=1, max_length=8)]
-
-
-class CursorPage(PublicSchema, Generic[ItemT]):
-    items: tuple[ItemT, ...]
-    next_cursor: OpaqueCursor | None = None

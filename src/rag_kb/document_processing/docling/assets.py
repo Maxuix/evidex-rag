@@ -18,7 +18,7 @@ from typing import Any
 
 from PIL import Image
 from docling_core.types.doc import DoclingDocument
-from docling_core.types.doc.document import DocItem, PictureItem, TableItem
+from docling_core.types.doc.document import DocItem
 
 from rag_kb.document_processing.docling.provenance import (
     SURFACE_LOGICAL,

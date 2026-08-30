@@ -14,7 +14,6 @@ import os
 from pathlib import Path
 import signal
 import subprocess
-import sys
 from typing import Any
 
 from tools.evaluation_campaign_state import write_private_json

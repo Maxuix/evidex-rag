@@ -25,7 +25,7 @@ import json
 import os
 from pathlib import Path
 from typing import Any, Mapping, Sequence
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 from apps.worker.dependencies import build_worker_dependencies
 from rag_kb.answering.agent import AGENT_TRACE_ARTIFACT, NativeToolCallingAgent

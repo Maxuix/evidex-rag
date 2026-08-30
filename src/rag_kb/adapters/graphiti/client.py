@@ -1076,26 +1076,6 @@ def _query_mentions_entity(normalized_query: str, normalized_name: str) -> bool:
     return normalized_name in normalized_query
 
 
-def _outward_bridge_entity_ids(
-    query: str,
-    edges: tuple[GraphitiEdgeResult, ...],
-    *,
-    seed_entity_uuids: tuple[str, ...] = (),
-) -> tuple[str, ...]:
-    bridge_ids: list[str] = []
-    for edge in edges:
-        entry_uuid, grounded = _entry_endpoint(
-            query,
-            edge,
-            seed_entity_uuids=seed_entity_uuids,
-        )
-        if not grounded or entry_uuid not in edge.endpoint_uuids:
-            continue
-        source_uuid, target_uuid = edge.endpoint_uuids
-        bridge_ids.append(target_uuid if entry_uuid == source_uuid else source_uuid)
-    return tuple(dict.fromkeys(bridge_ids))
-
-
 def _grounded_entity_ids(
     query: str,
     entities: tuple[_GraphitiEntityResult, ...],

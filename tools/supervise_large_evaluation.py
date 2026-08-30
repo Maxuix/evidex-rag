@@ -30,7 +30,6 @@ import signal
 import socket
 import stat
 import subprocess
-import sys
 import tarfile
 import time
 from typing import Any, Callable, Iterator, Mapping, Sequence

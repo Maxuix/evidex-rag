@@ -41,7 +41,6 @@ from tools.evaluate_adaptive_graph_route import (
 from tools.evaluate_agent_complex_qa import (
     _json_request,
     _safe_run_snapshot,
-    _total_tokens,
     _wait_for_terminal,
 )
 from tools.run_adaptive_graph_r4 import _load_runtime_facts

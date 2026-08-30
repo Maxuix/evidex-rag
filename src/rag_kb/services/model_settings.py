@@ -13,8 +13,6 @@ from uuid import UUID
 
 from rag_kb.auth import AccessPolicy, AuthContext
 from rag_kb.domain import (
-    EmbeddingDimensionRequestMode,
-    EmbeddingDimensionSelectionSource,
     EmbeddingInputCapability,
     EmbeddingValidationSnapshot,
     MAX_EMBEDDING_DIMENSION,

@@ -7,10 +7,7 @@ from uuid import UUID
 
 from rag_kb.domain import (
     ModelKind,
-    ModelProfile,
     ModelProfileBundle,
-    ModelProfileRevision,
-    ModelProvider,
     ModelProviderBundle,
     ModelProviderProtocol,
     ModelSelection,

@@ -31,7 +31,6 @@ from rag_kb.domain import (
     SOFTWARE_GRAPH_SCHEMA_PROFILE_DIGEST,
     SOFTWARE_GRAPH_SCHEMA_PROFILE_KEY,
 )
-from rag_kb.retrieval.profile import adaptive_graphiti_profile
 from rag_kb.services.chat_execution import ChatEvidenceRetriever
 from tools.evaluate_adaptive_graph_route import (
     CapturingGraphSearchRetriever,

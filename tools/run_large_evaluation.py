@@ -28,7 +28,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import re
 import statistics
 import time
 from typing import Any
@@ -92,7 +91,6 @@ from tools.run_adaptive_graph_r4 import (
     _load_runtime_facts,
     _serving_chunk_rows,
 )
-from tools.run_adaptive_graph_r4 import _evaluator_chat_model
 from tools.run_evaluation_provider_smoke import SCHEMA as PROVIDER_SMOKE_SCHEMA
 from tools.run_evaluation_provider_smoke import EXPECTED_MODELS
 from tools.run_open_source_rag_v3 import normalize_term

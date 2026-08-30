@@ -42,7 +42,6 @@ from tools.supervise_large_evaluation import (
     _load_config,
     _load_json,
     _load_or_create_state,
-    _resume_paused_stage,
     _validate_stage_checkpoints,
     _validate_static_config,
 )

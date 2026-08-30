@@ -229,15 +229,6 @@ class EmbeddingSpaceRole(StrEnum):
     CROSS_MODAL_RETRIEVAL = "cross_modal_retrieval"
 
 
-class RepresentationKind(StrEnum):
-    TEXT = "text"
-    NATIVE_IMAGE = "native_image"
-    CAPTION_TEXT = "caption_text"
-    OCR_TEXT = "ocr_text"
-    TABLE_TEXT = "table_text"
-    TABLE_IMAGE = "table_image"
-
-
 @dataclass(frozen=True, slots=True)
 class IndexAssetWrite:
     id: UUID

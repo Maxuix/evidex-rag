@@ -13,7 +13,6 @@ from apps.api.idempotency import RequiredIdempotencyKey
 from apps.api.openapi import problem_responses
 from apps.api.pagination import (
     API_CURSOR_MAX_LENGTH,
-    API_PAGINATION_DEFAULT_LIMIT,
     API_PAGINATION_MAX_LIMIT,
     decode_cursor,
     encode_cursor,

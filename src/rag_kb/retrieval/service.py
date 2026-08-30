@@ -8,7 +8,6 @@ from dataclasses import dataclass, replace
 from enum import StrEnum
 import logging
 import math
-import re
 from typing import Any, Literal, Protocol
 from uuid import UUID
 
@@ -53,7 +52,6 @@ from rag_kb.graph.schema_profiles import GraphSchemaProfileError, get_graph_sche
 from rag_kb.document_processing.lexical import (
     LEXICAL_ANALYZER_VERSION,
     LEXICAL_QUERY_VERSION,
-    analyze_query,
 )
 from rag_kb.ports.model_api import (
     EmbeddingModelAdapter,
