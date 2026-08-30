@@ -1181,6 +1181,7 @@ def _routing_report(
     answers: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any]:
     qualified = [record for record in qualification if record.get("qualified_graph_needed")]
+    qualified_case_ids = {str(record.get("case_id")) for record in qualified}
     by_hop: dict[str, dict[str, int]] = defaultdict(lambda: {"candidate_count": 0, "qualified_count": 0})
     for record in qualification:
         key = str(record.get("hop_count"))
@@ -1191,17 +1192,191 @@ def _routing_report(
     auto_attempts = sum(bool(record.get("graph_route_attempted")) for record in auto)
     auto_admitted = sum(bool(record.get("graph_route_admitted")) for record in auto)
     false_attempts = sum(bool(record.get("graph_route_attempted")) for record in simple)
+    # A Graph candidate that fails dynamic qualification is not evidence that Graph is
+    # unnecessary; only an explicitly designed Auto control may be a negative label.
+    auto_negative_controls = [
+        record
+        for record in auto
+        if record.get("expected_graph_route") is False
+        and str(record.get("case_id")) not in qualified_case_ids
+    ]
+    auto_true_attempts = sum(
+        bool(record.get("graph_route_attempted"))
+        for record in auto
+        if str(record.get("case_id")) in qualified_case_ids
+    )
+    auto_false_attempts = sum(
+        bool(record.get("graph_route_attempted")) for record in auto_negative_controls
+    )
+    auto_positive_controls = [
+        record
+        for record in auto
+        if str(record.get("case_id")) in qualified_case_ids
+    ]
+    auto_label_conflicts = [
+        record
+        for record in auto_positive_controls
+        if record.get("expected_graph_route") is False
+    ]
+    auto_unlabeled = [
+        record
+        for record in auto
+        if str(record.get("case_id")) not in qualified_case_ids
+        and record.get("expected_graph_route") is not False
+    ]
+    route_precision_denominator = auto_true_attempts + auto_false_attempts
     case_auto: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
     for record in auto:
         case_auto[str(record.get("case_id"))].append(record)
-    case_any = sum(any(bool(item.get("graph_route_admitted")) for item in values) for values in case_auto.values())
-    true_positives = auto_admitted
-    attempted_total = auto_attempts + false_attempts
+    case_any = sum(
+        any(bool(item.get("graph_route_admitted")) for item in values)
+        for case_id, values in case_auto.items()
+        if case_id in qualified_case_ids
+    )
+    case_any_attempt = sum(
+        any(bool(item.get("graph_route_attempted")) for item in values)
+        for case_id, values in case_auto.items()
+        if case_id in qualified_case_ids
+    )
+    repeat_groups = [
+        values for values in case_auto.values() if len(values) == AUTO_REPEATS
+    ]
+    lexical_repeat_groups = [
+        values
+        for values in repeat_groups
+        if all(bool(item.get("lexical_answer_match_available")) for item in values)
+    ]
+    lexical_all_correct = sum(
+        all(bool(item.get("lexical_answer_match")) for item in values)
+        for values in lexical_repeat_groups
+    )
+    lexical_all_incorrect = sum(
+        not any(bool(item.get("lexical_answer_match")) for item in values)
+        for values in lexical_repeat_groups
+    )
+    simple_by_case = {
+        str(record.get("case_id")): record
+        for record in simple
+        if record.get("case_id") is not None
+    }
+
+    def paired_impact(records: Sequence[Mapping[str, Any]]) -> dict[str, int]:
+        pairs = [
+            (simple_by_case[str(record.get("case_id"))], record)
+            for record in records
+            if str(record.get("case_id")) in simple_by_case
+            and bool(record.get("lexical_answer_match_available"))
+            and bool(
+                simple_by_case[str(record.get("case_id"))].get(
+                    "lexical_answer_match_available"
+                )
+            )
+        ]
+        rescue = sum(
+            not bool(simple_record.get("lexical_answer_match"))
+            and bool(auto_record.get("lexical_answer_match"))
+            for simple_record, auto_record in pairs
+        )
+        harm = sum(
+            bool(simple_record.get("lexical_answer_match"))
+            and not bool(auto_record.get("lexical_answer_match"))
+            for simple_record, auto_record in pairs
+        )
+        both_correct = sum(
+            bool(simple_record.get("lexical_answer_match"))
+            and bool(auto_record.get("lexical_answer_match"))
+            for simple_record, auto_record in pairs
+        )
+        return {
+            "pair_count": len(pairs),
+            "rescue_count": rescue,
+            "harm_count": harm,
+            "both_correct_count": both_correct,
+            "both_incorrect_count": len(pairs) - rescue - harm - both_correct,
+            "net_rescue_count": rescue - harm,
+        }
+
+    def answer_summary(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+        lexical = [
+            record
+            for record in records
+            if bool(record.get("lexical_answer_match_available"))
+        ]
+        tokens = [
+            int(record["total_tokens"])
+            for record in records
+            if isinstance(record.get("total_tokens"), int)
+        ]
+        record_durations = [
+            int(record["duration_ms"])
+            for record in records
+            if isinstance(record.get("duration_ms"), int)
+        ]
+        return {
+            "observation_count": len(records),
+            "outcomes": dict(
+                sorted(
+                    Counter(
+                        str(record.get("actual_outcome")) for record in records
+                    ).items()
+                )
+            ),
+            "policy_correct": _rate(
+                sum(bool(record.get("policy_correct")) for record in records),
+                len(records),
+            ),
+            "lexical_answer_match": _rate(
+                sum(bool(record.get("lexical_answer_match")) for record in lexical),
+                len(lexical),
+            ),
+            "total_tokens": {
+                "p50": _percentile(tokens, 0.50),
+                "p95": _percentile(tokens, 0.95),
+            },
+            "duration_ms": {
+                "p50": _percentile(record_durations, 0.50),
+                "p95": _percentile(record_durations, 0.95),
+            },
+        }
+
+    novel_source = [
+        record
+        for record in qualification
+        if _safe_number(record.get("graph_new_source_chunk_count")) > 0
+    ]
+    novel_distinct_completion = sum(
+        not bool(record.get("simple_complete_path_present"))
+        and bool(record.get("graph_complete_path_present"))
+        for record in novel_source
+    )
+    novel_redundant_completion = sum(
+        bool(record.get("simple_complete_path_present")) for record in novel_source
+    )
+    novel_incomplete = (
+        len(novel_source) - novel_distinct_completion - novel_redundant_completion
+    )
+    packed_counts = [
+        _safe_number(record.get("graph_packed_chunk_count"))
+        for record in qualification
+    ]
     durations = [
         int(record.get("duration_ms", 0))
         for record in answers
         if isinstance(record.get("duration_ms"), int)
     ]
+    if auto_label_conflicts:
+        route_precision_status = "invalid_route_label_conflict"
+    elif not auto_negative_controls:
+        route_precision_status = "not_measured_no_auto_negative_controls"
+    elif not route_precision_denominator:
+        route_precision_status = "not_measured_no_route_attempts"
+    else:
+        route_precision_status = "measured"
+    route_precision = (
+        _rate(auto_true_attempts, route_precision_denominator)
+        if route_precision_status == "measured"
+        else _rate(0, 0)
+    )
     return {
         "qualification": {
             "candidate_count": len(qualification),
@@ -1211,16 +1386,148 @@ def _routing_report(
             "by_hop": dict(sorted(by_hop.items())),
             "simple_complete_path_count": sum(bool(item.get("simple_complete_path_present")) for item in qualification),
             "graph_complete_path_count": sum(bool(item.get("graph_complete_path_present")) for item in qualification),
+            "novel_source_path_outcomes": {
+                "case_count": len(novel_source),
+                "distinct_required_path_completion_count": novel_distinct_completion,
+                "simple_already_complete_count": novel_redundant_completion,
+                "required_path_still_incomplete_count": novel_incomplete,
+            },
+            "bounds": {
+                "candidate_path_limit": ROUTING_EDGE_LIMIT,
+                "candidate_path_limit_hit_count": sum(
+                    _safe_number(item.get("graph_candidate_path_count"))
+                    >= ROUTING_EDGE_LIMIT
+                    for item in qualification
+                ),
+                "source_chunk_target": ROUTING_SOURCE_CHUNK_TARGET,
+                "source_chunk_target_hit_count": sum(
+                    count >= ROUTING_SOURCE_CHUNK_TARGET for count in packed_counts
+                ),
+                "source_chunk_limit": ROUTING_SOURCE_CHUNK_LIMIT,
+                "source_chunk_limit_hit_count": sum(
+                    count >= ROUTING_SOURCE_CHUNK_LIMIT for count in packed_counts
+                ),
+                "maximum_packed_chunk_count": max(packed_counts, default=0),
+            },
         },
         "answers": {
             "simple_observation_count": len(simple),
             "auto_observation_count": len(auto),
+            "auto_graph_call_count": sum(
+                _safe_number(item.get("graph_call_count")) for item in auto
+            ),
             "expected_auto_observation_count": len(qualified) * AUTO_REPEATS,
             "auto_route_attempt_rate": _rate(auto_attempts, len(auto)),
             "auto_route_admission_rate": _rate(auto_admitted, len(auto)),
+            "attempted_run_any_admission_rate": _rate(auto_admitted, auto_attempts),
             "case_level_any_admission_rate": _rate(case_any, len(qualified)),
-            "route_precision": _rate(true_positives, attempted_total),
+            "qualified_case_any_attempt_rate": _rate(
+                case_any_attempt,
+                len(qualified),
+            ),
+            "observation_route_attempt_recall": _rate(
+                auto_true_attempts,
+                len(auto_positive_controls),
+            ),
+            "observation_route_attempt_recall_status": (
+                "measured_against_dynamic_qualification_label"
+                if auto_positive_controls
+                else "not_measured_no_auto_positive_controls"
+            ),
+            "route_precision": route_precision,
+            "route_precision_status": route_precision_status,
+            "route_label_contract": (
+                "positive=dynamic_qualified_graph_needed;"
+                "negative=explicit_expected_graph_route_false"
+            ),
+            "auto_positive_control_observation_count": len(auto_positive_controls),
+            "auto_negative_control_observation_count": len(auto_negative_controls),
+            "auto_unlabeled_observation_count": len(auto_unlabeled),
+            "auto_route_label_conflict_count": len(auto_label_conflicts),
             "simple_false_route_attempt_count": false_attempts,
+            "simple_false_route_attempt_status": (
+                "invariant_violation_simple_lane_graph_attempted"
+                if false_attempts
+                else "structural_control_graph_tool_not_exposed"
+            ),
+            "repeatability": {
+                "case_count": len(case_auto),
+                "complete_repeat_case_count": len(repeat_groups),
+                "expected_repeats_per_case": AUTO_REPEATS,
+                "stable_outcome": _rate(
+                    sum(
+                        len({str(item.get("actual_outcome")) for item in values})
+                        == 1
+                        for values in repeat_groups
+                    ),
+                    len(repeat_groups),
+                ),
+                "stable_route_attempt": _rate(
+                    sum(
+                        len(
+                            {
+                                bool(item.get("graph_route_attempted"))
+                                for item in values
+                            }
+                        )
+                        == 1
+                        for values in repeat_groups
+                    ),
+                    len(repeat_groups),
+                ),
+                "stable_admission": _rate(
+                    sum(
+                        len(
+                            {
+                                bool(item.get("graph_route_admitted"))
+                                for item in values
+                            }
+                        )
+                        == 1
+                        for values in repeat_groups
+                    ),
+                    len(repeat_groups),
+                ),
+                "lexical": {
+                    "case_count": len(lexical_repeat_groups),
+                    "pass_all_repeats_correct": _rate(
+                        lexical_all_correct, len(lexical_repeat_groups)
+                    ),
+                    "all_incorrect": _rate(
+                        lexical_all_incorrect, len(lexical_repeat_groups)
+                    ),
+                    "mixed": _rate(
+                        len(lexical_repeat_groups)
+                        - lexical_all_correct
+                        - lexical_all_incorrect,
+                        len(lexical_repeat_groups),
+                    ),
+                },
+            },
+            "paired_lexical_impact": {
+                "all_auto": paired_impact(auto),
+                "graph_attempted": paired_impact(
+                    [item for item in auto if item.get("graph_route_attempted")]
+                ),
+                "graph_admitted": paired_impact(
+                    [item for item in auto if item.get("graph_route_admitted")]
+                ),
+                "interpretation": "sampled_pair_not_causal_counterfactual",
+            },
+            "auto_only": answer_summary(auto),
+            "auto_by_graph_attempt": {
+                "attempted": answer_summary(
+                    [item for item in auto if item.get("graph_route_attempted")]
+                ),
+                "not_attempted": answer_summary(
+                    [
+                        item
+                        for item in auto
+                        if not item.get("graph_route_attempted")
+                    ]
+                ),
+                "interpretation": "model_self_selected_groups_not_causal",
+            },
             "outcomes": dict(sorted(Counter(str(record.get("actual_outcome")) for record in answers).items())),
             "policy_correct": _rate(sum(bool(record.get("policy_correct")) for record in answers), len(answers)),
             "lexical_answer_match": _rate(
@@ -1336,6 +1643,10 @@ def _human_report(report: Mapping[str, Any]) -> str:
     enterprise = report["quality"]["enterprise"]
     graph = report["quality"]["graph_rag"]
     usage = report["usage"]
+    routing_novelty = routing["qualification"]["novel_source_path_outcomes"]
+    routing_bounds = routing["qualification"]["bounds"]
+    routing_repeatability = routing["answers"]["repeatability"]
+    routing_lexical = routing_repeatability["lexical"]
     lines = [
         "# Large RAG Evaluation v1",
         "",
@@ -1359,6 +1670,8 @@ def _human_report(report: Mapping[str, Any]) -> str:
             "",
             f"公共回答/拒答：{public['case_count']} cases，策略正确率 `{public['policy_correct']['value']}`，禁用声明命中 {public['forbidden_claim_hit_count']} 次。",
             f"MuSiQue 路由：资格候选 {routing['qualification']['candidate_count']}，动态合格 {routing['qualification']['qualified_count']}，Auto 观测 {routing['answers']['auto_observation_count']}，Auto 路由尝试率 `{routing['answers']['auto_route_attempt_rate']['value']}`。",
+            f"Graph 新证据分解：发现新 chunk {routing_novelty['case_count']} 例；补齐 required path {routing_novelty['distinct_required_path_completion_count']} 例，Simple 已完整 {routing_novelty['simple_already_complete_count']} 例，required path 仍不完整 {routing_novelty['required_path_still_incomplete_count']} 例。路径候选上限 {routing_bounds['candidate_path_limit']} 命中 {routing_bounds['candidate_path_limit_hit_count']} 例；source target/hard limit 命中 {routing_bounds['source_chunk_target_hit_count']}/{routing_bounds['source_chunk_limit_hit_count']} 例。",
+            f"Auto 重复性：全部 {routing_repeatability['expected_repeats_per_case']} 次 lexical 正确 {routing_lexical['pass_all_repeats_correct']['numerator']}/{routing_lexical['pass_all_repeats_correct']['denominator']}；outcome 一致率 `{routing_repeatability['stable_outcome']['value']}`，Graph 尝试一致率 `{routing_repeatability['stable_route_attempt']['value']}`。发生 Graph 尝试的运行中至少一次发现新证据的比例 `{routing['answers']['attempted_run_any_admission_rate']['value']}`；route precision 状态 `{routing['answers']['route_precision_status']}`。",
             f"Enterprise 抽取：微平均 F1 `{enterprise['extraction'].get('micro_f1', {}).get('value')}`，宏平均 F1 `{enterprise['extraction'].get('macro_f1', {}).get('value')}`；答案质量通过率 `{enterprise['answering']['quality_pass']['value']}`。",
             f"Graph-RAG：{graph['case_count']} cases，答案质量通过率 `{graph['quality_pass']['value']}`，期望引用命中率 `{graph['expected_citation_hit']['value']}`。",
             "",

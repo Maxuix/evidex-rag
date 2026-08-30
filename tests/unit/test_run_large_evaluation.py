@@ -17,6 +17,7 @@ from rag_kb.domain import (
 from tools.run_large_evaluation import (
     _enterprise_extraction_observation,
     _public_report,
+    _routing_report,
     _score_public,
 )
 
@@ -133,6 +134,224 @@ class PublicReportFalsePremiseSplitTests(unittest.TestCase):
         self.assertNotIn(
             "false_premise_behavior",
             report["by_expected_action"]["refuse_insufficient_evidence"],
+        )
+
+
+class RoutingReportSemanticsTests(unittest.TestCase):
+    def test_separates_novelty_repeatability_and_sampled_answer_impact(self) -> None:
+        qualification = [
+            {
+                "case_id": "graph-1",
+                "hop_count": 2,
+                "qualified_graph_needed": True,
+                "simple_complete_path_present": False,
+                "graph_complete_path_present": True,
+                "graph_new_source_chunk_count": 2,
+                "graph_candidate_path_count": 16,
+                "graph_packed_chunk_count": 4,
+            },
+            {
+                "case_id": "graph-2",
+                "hop_count": 3,
+                "qualified_graph_needed": False,
+                "simple_complete_path_present": True,
+                "graph_complete_path_present": True,
+                "graph_new_source_chunk_count": 1,
+                "graph_candidate_path_count": 16,
+                "graph_packed_chunk_count": 3,
+            },
+            {
+                "case_id": "graph-3",
+                "hop_count": 3,
+                "qualified_graph_needed": False,
+                "simple_complete_path_present": False,
+                "graph_complete_path_present": False,
+                "graph_new_source_chunk_count": 1,
+                "graph_candidate_path_count": 8,
+                "graph_packed_chunk_count": 5,
+            },
+        ]
+        answers = [
+            {
+                "case_id": "graph-1",
+                "lane": "simple",
+                "actual_outcome": "refused",
+                "lexical_answer_match_available": True,
+                "lexical_answer_match": False,
+                "graph_route_attempted": False,
+                "graph_route_admitted": False,
+                "policy_correct": False,
+            },
+            {
+                "case_id": "graph-1",
+                "lane": "auto",
+                "actual_outcome": "answered",
+                "lexical_answer_match_available": True,
+                "lexical_answer_match": True,
+                "graph_route_attempted": True,
+                "graph_route_admitted": True,
+                "graph_call_count": 1,
+                "policy_correct": True,
+            },
+            {
+                "case_id": "graph-1",
+                "lane": "auto",
+                "actual_outcome": "refused",
+                "lexical_answer_match_available": True,
+                "lexical_answer_match": False,
+                "graph_route_attempted": False,
+                "graph_route_admitted": False,
+                "policy_correct": False,
+            },
+            {
+                "case_id": "graph-1",
+                "lane": "auto",
+                "actual_outcome": "answered",
+                "lexical_answer_match_available": True,
+                "lexical_answer_match": True,
+                "graph_route_attempted": True,
+                "graph_route_admitted": False,
+                "graph_call_count": 2,
+                "policy_correct": True,
+            },
+        ]
+
+        report = _routing_report(qualification, answers)
+
+        self.assertEqual(
+            report["qualification"]["novel_source_path_outcomes"],
+            {
+                "case_count": 3,
+                "distinct_required_path_completion_count": 1,
+                "simple_already_complete_count": 1,
+                "required_path_still_incomplete_count": 1,
+            },
+        )
+        self.assertEqual(
+            report["qualification"]["bounds"],
+            {
+                "candidate_path_limit": 16,
+                "candidate_path_limit_hit_count": 2,
+                "source_chunk_target": 12,
+                "source_chunk_target_hit_count": 0,
+                "source_chunk_limit": 16,
+                "source_chunk_limit_hit_count": 0,
+                "maximum_packed_chunk_count": 5,
+            },
+        )
+        answers_report = report["answers"]
+        self.assertEqual(
+            answers_report["attempted_run_any_admission_rate"]["value"], 0.5
+        )
+        self.assertEqual(answers_report["auto_graph_call_count"], 3)
+        self.assertEqual(answers_report["route_precision"]["denominator"], 0)
+        self.assertEqual(
+            answers_report["route_precision_status"],
+            "not_measured_no_auto_negative_controls",
+        )
+        self.assertEqual(answers_report["repeatability"]["stable_outcome"]["value"], 0.0)
+        self.assertEqual(
+            answers_report["repeatability"]["lexical"][
+                "pass_all_repeats_correct"
+            ]["value"],
+            0.0,
+        )
+        self.assertEqual(
+            answers_report["observation_route_attempt_recall"]["value"],
+            0.666667,
+        )
+        self.assertEqual(
+            answers_report["qualified_case_any_attempt_rate"]["value"], 1.0
+        )
+        self.assertEqual(
+            answers_report["auto_by_graph_attempt"]["attempted"][
+                "lexical_answer_match"
+            ]["value"],
+            1.0,
+        )
+        self.assertEqual(
+            answers_report["paired_lexical_impact"]["graph_admitted"],
+            {
+                "pair_count": 1,
+                "rescue_count": 1,
+                "harm_count": 0,
+                "both_correct_count": 0,
+                "both_incorrect_count": 0,
+                "net_rescue_count": 1,
+            },
+        )
+
+    def test_route_precision_requires_auto_negative_controls(self) -> None:
+        qualification = [
+            {"case_id": "positive", "qualified_graph_needed": True},
+            {"case_id": "negative", "qualified_graph_needed": False},
+        ]
+        answers = [
+            {
+                "case_id": "positive",
+                "lane": "auto",
+                "graph_route_attempted": True,
+                "graph_route_admitted": False,
+            },
+            {
+                "case_id": "negative",
+                "lane": "auto",
+                "expected_graph_route": False,
+                "graph_route_attempted": True,
+                "graph_route_admitted": True,
+            },
+        ]
+
+        report = _routing_report(qualification, answers)["answers"]
+
+        self.assertEqual(report["route_precision_status"], "measured")
+        self.assertEqual(report["route_precision"]["value"], 0.5)
+        self.assertEqual(report["auto_negative_control_observation_count"], 1)
+        self.assertEqual(report["case_level_any_admission_rate"]["value"], 0.0)
+
+    def test_route_precision_is_unavailable_when_labeled_controls_never_route(self) -> None:
+        report = _routing_report(
+            [{"case_id": "positive", "qualified_graph_needed": True}],
+            [
+                {
+                    "case_id": "positive",
+                    "lane": "auto",
+                    "graph_route_attempted": False,
+                    "graph_route_admitted": False,
+                },
+                {
+                    "case_id": "negative",
+                    "lane": "auto",
+                    "expected_graph_route": False,
+                    "graph_route_attempted": False,
+                    "graph_route_admitted": False,
+                },
+            ],
+        )["answers"]
+
+        self.assertEqual(report["route_precision"]["value"], None)
+        self.assertEqual(
+            report["route_precision_status"], "not_measured_no_route_attempts"
+        )
+
+    def test_unqualified_graph_candidate_is_not_implicitly_a_negative_control(self) -> None:
+        report = _routing_report(
+            [{"case_id": "miss", "qualified_graph_needed": False}],
+            [
+                {
+                    "case_id": "miss",
+                    "lane": "auto",
+                    "graph_route_attempted": True,
+                    "graph_route_admitted": False,
+                }
+            ],
+        )["answers"]
+
+        self.assertEqual(report["auto_negative_control_observation_count"], 0)
+        self.assertEqual(report["auto_unlabeled_observation_count"], 1)
+        self.assertEqual(
+            report["route_precision_status"],
+            "not_measured_no_auto_negative_controls",
         )
 
 
