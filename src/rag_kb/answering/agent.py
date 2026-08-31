@@ -25,7 +25,6 @@ from rag_kb.domain import (
     AnswerConflictAdjudication,
     AnswerConflictType,
     AnswerControlReason,
-    AnswerDraftCandidate,
     AnswerDraftSource,
     AnswerOutcome,
     CHAT_AGENT_REJECTION_REASONS,
@@ -85,7 +84,6 @@ _TRACE_REF_LIMIT = CHAT_AGENT_TRACE_REF_LIMIT
 _SIMPLE_QUERY_MAX_COUNT = 3
 _MAX_CONSECUTIVE_NO_NEW_SEARCHES = 2
 _QUERY_MAX_CHARS = 2048
-_SUBMIT_REPAIR_FEEDBACK = '{"status":"retry_submission"}'
 _BUDGET_EXHAUSTED_FEEDBACK = (
     "The retrieval budget for this run is exhausted. Do not call search "
     "tools; submit the best possible answer now with the evidence already "
@@ -106,7 +104,6 @@ class _SubmissionValidation:
     salvaged: bool
     rejected_claim_count: int = 0
     rejection_reasons: tuple[str, ...] = ()
-    repair_eligible: bool = False
 
 
 @dataclass(slots=True)
@@ -124,7 +121,6 @@ class ChatAgentProgress:
     simple_tool_calls: int = 0
     graph_tool_calls: int = 0
     calculation_calls: int = 0
-    repair_rounds: int = 0
     evidence_ref_count: int = 0
     consecutive_no_new_evidence: int = 0
 
@@ -163,7 +159,6 @@ class ChatAgentProgress:
             simple_tool_calls=self.simple_tool_calls,
             graph_tool_calls=self.graph_tool_calls,
             calculation_calls=self.calculation_calls,
-            repair_rounds=self.repair_rounds,
             evidence_ref_count=self.evidence_ref_count,
         )
         diagnostics = self.runtime_diagnostics(
@@ -246,8 +241,6 @@ class NativeToolCallingAgent:
         graph_call_count = 0
         latest_visual_state: ChatAnsweringState | None = None
         strategy = None
-        submit_only_repair_used = False
-        submit_only_repair_pending = False
         total_tokens = 0
         wrap_up_notice_sent = False
         consecutive_no_new_searches = 0
@@ -257,9 +250,9 @@ class NativeToolCallingAgent:
         search_stop_reason: str | None = None
         forced_stop_reason = "model_round_limit"
 
-        for round_number in range(1, budget.max_model_rounds + 1):
-            repair_round = submit_only_repair_pending
-            submit_only_repair_pending = False
+        # One reserved submission round after normal exploration; no repair calls.
+        for round_number in range(1, budget.max_model_rounds + 2):
+            forced_finalize = round_number > budget.max_model_rounds
             budget_stop_reason = (
                 "token_budget"
                 if total_tokens >= budget.max_total_tokens
@@ -267,10 +260,7 @@ class NativeToolCallingAgent:
                 if retrieval_calls >= budget.max_retrieval_calls
                 else None
             )
-            budget_exhausted = (
-                budget_stop_reason is not None
-            )
-            wrap_up_round = budget_exhausted and not repair_round
+            wrap_up_round = budget_stop_reason is not None
             if wrap_up_round and not wrap_up_notice_sent:
                 wrap_up_notice_sent = True
                 messages.append(ChatModelMessage("user", _BUDGET_EXHAUSTED_FEEDBACK))
@@ -278,7 +268,7 @@ class NativeToolCallingAgent:
                 search_closed and search_closed_calculation_used
             )
             submit_only_round = (
-                repair_round or wrap_up_round or search_submit_only_round
+                forced_finalize or wrap_up_round or search_submit_only_round
             )
             available_tools = _tools(
                 adaptive=adaptive_graphiti,
@@ -298,14 +288,12 @@ class NativeToolCallingAgent:
                 context,
                 messages,
                 tools,
-                ChatToolChoice.REQUIRED,
+                "submit_answer" if forced_finalize else ChatToolChoice.REQUIRED,
                 tuple(calls),
             )
             call_record = model_call_record(ChatModelOperation.AGENT_ROUND, response)
             calls.append(call_record)
             progress.model_rounds = round_number
-            if repair_round:
-                progress.repair_rounds += 1
             total_tokens += int(response.usage.get("total_tokens", 0) or 0)
 
             if len(response.tool_calls) != 1:
@@ -313,7 +301,7 @@ class NativeToolCallingAgent:
                     forced_stop_reason = (
                         budget_stop_reason
                         or search_stop_reason
-                        or "submit_protocol_invalid"
+                        or ("model_round_limit" if forced_finalize else "submit_protocol_invalid")
                     )
                     break
                 events.append(
@@ -352,7 +340,7 @@ class NativeToolCallingAgent:
                 forced_stop_reason = (
                     budget_stop_reason
                     or search_stop_reason
-                    or "submit_protocol_invalid"
+                    or ("model_round_limit" if forced_finalize else "submit_protocol_invalid")
                 )
                 break
             if search_closed and call.name in {
@@ -735,48 +723,32 @@ class NativeToolCallingAgent:
                     calculations=calculations,
                 )
                 if result is None:
-                    if submit_only_round:
-                        forced_stop_reason = (
-                            budget_stop_reason
-                            or search_stop_reason
-                            or "submit_protocol_invalid"
-                        )
-                        break
                     events.append(_rejected_event(call))
-                    messages.append(
-                        ChatModelMessage("tool", _ARGUMENT_ERROR, tool_call_id=call.id)
+                    forced_stop_reason = (
+                        budget_stop_reason
+                        or search_stop_reason
+                        or ("model_round_limit" if forced_finalize else "submit_protocol_invalid")
                     )
-                    continue
+                    break
                 validated = result.validated
                 retained_refs = result.retained_refs
                 salvaged = result.salvaged
                 events.append(
                     ChatAgentTraceEvent(
                         tool=call.name,
-                        status="salvaged" if salvaged else "ok",
+                        status=(
+                            "salvaged" if salvaged
+                            else "refused" if validated.outcome is AnswerOutcome.REFUSED
+                            else "ok"
+                        ),
                         tool_call_id=call.id,
                         refs=retained_refs[:_TRACE_REF_LIMIT],
                         count=len(validated.claims),
                         rejected_claim_count=result.rejected_claim_count,
                         rejection_reasons=result.rejection_reasons,
-                        submit_only_repair=repair_round,
                         budget_wrap_up=wrap_up_round,
                     )
                 )
-                if (
-                    result.repair_eligible
-                    and not submit_only_repair_used
-                ):
-                    submit_only_repair_used = True
-                    submit_only_repair_pending = True
-                    messages.append(
-                        ChatModelMessage(
-                            "tool",
-                            _SUBMIT_REPAIR_FEEDBACK,
-                            tool_call_id=call.id,
-                        )
-                    )
-                    continue
                 return _final_state(
                     context,
                     evidence,
@@ -791,76 +763,24 @@ class NativeToolCallingAgent:
                     calculation_calls,
                     sent_visuals,
                     tuple(visual_decisions.values()),
-                    call.arguments,
                     progress=progress,
                     stop_reason=(
                         budget_stop_reason
                         or search_stop_reason
-                        or "submitted"
+                        or ("model_round_limit" if forced_finalize else "submitted")
                     ),
-                    forced_finalize=False,
+                    forced_finalize=forced_finalize,
                 )
 
             events.append(_rejected_event(call))
             messages.append(ChatModelMessage("tool", _PROTOCOL_ERROR, tool_call_id=call.id))
 
-        forced_round = budget.max_model_rounds + 1
-        forced_response = await self._complete_round(
-            context,
-            messages,
-            (
-                _tool_by_name(
-                    _tools(adaptive=adaptive_graphiti),
-                    "submit_answer",
-                ),
-            ),
-            "submit_answer",
-            tuple(calls),
-        )
-        calls.append(model_call_record(ChatModelOperation.AGENT_ROUND, forced_response))
-        progress.model_rounds = forced_round
-        result = None
-        forced_payload: Mapping[str, Any] = {}
-        forced_call: ChatToolCall | None = None
-        if (
-            len(forced_response.tool_calls) == 1
-            and forced_response.tool_calls[0].name == "submit_answer"
-        ):
-            forced_call = forced_response.tool_calls[0]
-            forced_payload = forced_call.arguments
-            result = _validate_submission(
-                forced_call.arguments,
-                prompt_by_ref=prompt_by_ref,
-                loaded_visual_refs=loaded_visual_refs,
-                calculations=calculations,
-            )
-        if result is None:
-            validated = _refusal_answer()
-            retained_refs: tuple[str, ...] = ()
-            salvaged = True
-            rejected_claim_count = 0
-            rejection_reasons: tuple[str, ...] = ()
-        else:
-            validated = result.validated
-            retained_refs = result.retained_refs
-            salvaged = result.salvaged
-            rejected_claim_count = result.rejected_claim_count
-            rejection_reasons = result.rejection_reasons
+        # Invalid final output is a safe local refusal, not another model request.
         events.append(
             ChatAgentTraceEvent(
                 tool="submit_answer",
-                status=(
-                    "refused"
-                    if validated.outcome is AnswerOutcome.REFUSED
-                    else "salvaged"
-                    if salvaged
-                    else "ok"
-                ),
-                tool_call_id=(forced_call.id if forced_call is not None else "forced_submit"),
-                refs=retained_refs[:_TRACE_REF_LIMIT],
-                count=len(validated.claims),
-                rejected_claim_count=rejected_claim_count,
-                rejection_reasons=rejection_reasons,
+                status="refused",
+                tool_call_id=f"refused_round_{progress.model_rounds}",
                 budget_wrap_up=wrap_up_notice_sent,
             )
         )
@@ -869,19 +789,18 @@ class NativeToolCallingAgent:
             evidence,
             strategy,
             prompt_by_ref,
-            validated,
+            _refusal_answer(),
             tuple(calls),
             tuple(events),
             budget,
-            forced_round,
+            progress.model_rounds,
             retrieval_calls,
             calculation_calls,
             sent_visuals,
             tuple(visual_decisions.values()),
-            forced_payload,
             progress=progress,
             stop_reason=forced_stop_reason,
-            forced_finalize=True,
+            forced_finalize=forced_finalize,
         )
 
     async def _complete_round(
@@ -1615,13 +1534,6 @@ def _validate_submission(
             salvaged=bool(raw_claims) or outcome != "refused",
             rejected_claim_count=rejected,
             rejection_reasons=tuple(sorted(rejection_reasons)),
-            repair_eligible=(
-                bool(raw_claims)
-                and outcome != "refused"
-                and bool(prompt_by_ref)
-                and rejected == len(raw_claims)
-                and rejection_reasons <= {"evidence_ref", "calculation_ref"}
-            ),
         )
     missing = list(unanswered)
     missing = list(dict.fromkeys(item for item in missing if item.strip()))
@@ -1663,7 +1575,6 @@ def _final_state(
     calculation_calls: int,
     sent_visuals: Sequence[ChatModelVisualContent],
     visual_decisions: Sequence[VisualEvidenceDecision],
-    raw_submission: Mapping[str, Any],
     *,
     progress: ChatAgentProgress,
     stop_reason: str,
@@ -1688,26 +1599,6 @@ def _final_state(
         for item in visual_decisions
         if not item.selected or item.asset_id in retained_asset_ids
     )
-    expected = validated.outcome
-    serialized_submission = (
-        dict(raw_submission)
-        if raw_submission
-        else {"outcome": "refused", "claims": [], "unanswered": []}
-    )
-    draft = AnswerDraftCandidate(
-        raw_json=json.dumps(serialized_submission, default=list, ensure_ascii=False),
-        expected_outcome=expected,
-        source=(
-            AnswerDraftSource.DETERMINISTIC
-            if validated.outcome is AnswerOutcome.REFUSED
-            else AnswerDraftSource.PROVIDER
-        ),
-        control_reason=(
-            AnswerControlReason.INSUFFICIENT_EVIDENCE
-            if validated.outcome is AnswerOutcome.REFUSED
-            else None
-        ),
-    )
     usage = _trace_usage(
         calls,
         model_rounds=rounds,
@@ -1716,7 +1607,6 @@ def _final_state(
         simple_tool_calls=progress.simple_tool_calls,
         graph_tool_calls=progress.graph_tool_calls,
         calculation_calls=calculation_calls,
-        repair_rounds=progress.repair_rounds,
         evidence_ref_count=len(prompt_by_ref),
     )
     diagnostics = progress.runtime_diagnostics(
@@ -1732,7 +1622,6 @@ def _final_state(
         simple_tool_calls=progress.simple_tool_calls,
         graph_tool_calls=progress.graph_tool_calls,
         calculation_calls=calculation_calls,
-        repair_rounds=progress.repair_rounds,
         evidence_ref_count=len(prompt_by_ref),
         consecutive_no_new_evidence=progress.consecutive_no_new_evidence,
         outcome=validated.outcome.value,
@@ -1752,7 +1641,6 @@ def _final_state(
         answering=ChatAnsweringState(
             evidence=envelope,
             usable_citation_ids=cited,
-            draft=draft,
             model_calls=calls,
             visual_content=retained_visuals,
             visual_decisions=final_visual_decisions,
@@ -1773,7 +1661,6 @@ def _trace_usage(
     simple_tool_calls: int,
     graph_tool_calls: int,
     calculation_calls: int,
-    repair_rounds: int,
     evidence_ref_count: int,
 ) -> dict[str, int]:
     totals = {
@@ -1788,7 +1675,6 @@ def _trace_usage(
         "simple_tool_calls": simple_tool_calls,
         "graph_tool_calls": graph_tool_calls,
         "calculation_calls": calculation_calls,
-        "repair_rounds": repair_rounds,
         "evidence_refs": evidence_ref_count,
         **totals,
     }

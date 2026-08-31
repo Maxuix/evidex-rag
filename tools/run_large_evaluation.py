@@ -768,7 +768,7 @@ def _score_enterprise(case: Mapping[str, Any], expected_filename: str) -> Callab
     def score(content: str, citations: Any, answering: Any) -> Mapping[str, Any]:
         matched, available = _lexical_match(content, {"gold_answer": case.get("expected_answer")})
         cited = any(
-            getattr(item, "document_original_filename", None) == expected_filename
+            item.evidence.document_original_filename == expected_filename
             for item in citations
         )
         return {
@@ -792,11 +792,11 @@ def _score_graph(case: Mapping[str, Any], expected_filename: str) -> Callable[[s
             {"gold_answer": case.get("expected_answer"), "gold_answer_aliases": answer_terms},
         )
         citation_hit = any(
-            getattr(item, "document_original_filename", None) == expected_filename
+            item.evidence.document_original_filename == expected_filename
             for item in citations
         )
         citation_query_leak = any(
-            any(_norm(term) in _norm(getattr(item, "quoted_text", "")) for term in query_terms)
+            any(_norm(term) in _norm(item.evidence.excerpt) for term in query_terms)
             for item in citations
         )
         answer_query_leak = any(_norm(term) in _norm(content) for term in query_terms)

@@ -246,23 +246,23 @@ class SqlAlchemyChatRepository:
                     workspace_id=self._workspace_id,
                     assistant_message_id=assistant.id,
                     ordinal=item.ordinal,
-                    index_chunk_id=item.index_chunk_id,
-                    document_id_snapshot=item.document_id,
-                    document_version_id_snapshot=item.document_version_id,
-                    document_display_name_snapshot=item.document_display_name,
+                    index_chunk_id=item.evidence.index_chunk_id,
+                    document_id_snapshot=item.evidence.document_id,
+                    document_version_id_snapshot=item.evidence.document_version_id,
+                    document_display_name_snapshot=item.evidence.document_display_name,
                     document_original_filename_snapshot=(
-                        item.document_original_filename
+                        item.evidence.document_original_filename
                     ),
-                    quoted_text=item.quoted_text,
-                    source_location=dict(item.source_location),
-                    modality=item.modality,
+                    quoted_text=item.evidence.excerpt,
+                    source_location=dict(item.evidence.source_location),
+                    modality=item.evidence.modality,
                     asset_snapshot=(
-                        dict(item.asset_snapshot)
-                        if item.asset_snapshot is not None
+                        dict(item.evidence.asset_snapshot)
+                        if item.evidence.asset_snapshot is not None
                         else None
                     ),
-                    matched_representations=list(item.matched_representations),
-                    score=item.score,
+                    matched_representations=list(item.evidence.matched_representations),
+                    score=item.evidence.score,
                 )
                 for item in command.rendered.citations
             ]
@@ -1017,7 +1017,7 @@ def _serialized_success(command: ChatTerminalSuccessCommand) -> dict[str, Any]:
             if command.rendered.control_reason is not None
             else None
         ),
-        "citation_ids": [item.citation_id for item in command.rendered.citations],
+        "citation_ids": [item.evidence.citation_id for item in command.rendered.citations],
         "retrieval": dict(command.retrieval_diagnostics),
         "visual_evidence": {
             "candidate_count": len(command.visual_decisions),
@@ -1099,19 +1099,19 @@ def _citations_equal(rows, command: ChatTerminalSuccessCommand) -> bool:
     expected = command.rendered.citations
     return len(rows) == len(expected) and all(
         row.ordinal == item.ordinal
-        and row.index_chunk_id == item.index_chunk_id
-        and row.document_id_snapshot == item.document_id
-        and row.document_version_id_snapshot == item.document_version_id
-        and row.document_display_name_snapshot == item.document_display_name
+        and row.index_chunk_id == item.evidence.index_chunk_id
+        and row.document_id_snapshot == item.evidence.document_id
+        and row.document_version_id_snapshot == item.evidence.document_version_id
+        and row.document_display_name_snapshot == item.evidence.document_display_name
         and row.document_original_filename_snapshot
-        == item.document_original_filename
-        and row.quoted_text == item.quoted_text
-        and row.source_location == dict(item.source_location)
-        and row.score == item.score
-        and row.modality == item.modality
+        == item.evidence.document_original_filename
+        and row.quoted_text == item.evidence.excerpt
+        and row.source_location == dict(item.evidence.source_location)
+        and row.score == item.evidence.score
+        and row.modality == item.evidence.modality
         and row.asset_snapshot
-        == (dict(item.asset_snapshot) if item.asset_snapshot is not None else None)
-        and tuple(row.matched_representations) == item.matched_representations
+        == (dict(item.evidence.asset_snapshot) if item.evidence.asset_snapshot is not None else None)
+        and tuple(row.matched_representations) == item.evidence.matched_representations
         for row, item in zip(rows, expected, strict=True)
     )
 

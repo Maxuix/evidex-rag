@@ -9,7 +9,6 @@ from uuid import uuid4
 
 from rag_kb.domain import (
     AnswerControlReason,
-    AnswerDraftCandidate,
     AnswerDraftSource,
     AnswerOutcome,
     ChatAnsweringState,
@@ -401,12 +400,6 @@ def _completed_state(observed: datetime) -> ChatPipelineState:
         index_revision_id=context.index_revision_id,
         items=(),
     )
-    draft = AnswerDraftCandidate(
-        raw_json='{"outcome":"refused","claims":[],"missing_aspects":[]}',
-        expected_outcome=AnswerOutcome.REFUSED,
-        source=AnswerDraftSource.DETERMINISTIC,
-        control_reason=AnswerControlReason.NO_USABLE_EVIDENCE,
-    )
     validated = ValidatedAnswer(
         outcome=AnswerOutcome.REFUSED,
         claims=(),
@@ -417,7 +410,6 @@ def _completed_state(observed: datetime) -> ChatPipelineState:
     answering = ChatAnsweringState(
         evidence=evidence,
         usable_citation_ids=(),
-        draft=draft,
         model_calls=(_call(),),
         validated=validated,
         rendered=RenderedAnswer(

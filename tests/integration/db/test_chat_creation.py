@@ -16,7 +16,6 @@ from rag_kb.db import DatabaseProcess, create_database_resources
 from rag_kb.document_processing.profiles import index_profile
 from rag_kb.domain import (
     AnswerControlReason,
-    AnswerDraftCandidate,
     AnswerDraftSource,
     AnswerOutcome,
     AnswerStyle,
@@ -37,6 +36,7 @@ from rag_kb.domain import (
     IdempotencyKeyReusedError,
     IndexProfileDefinition,
     InsufficiencyPolicy,
+    PromptEvidence,
     RenderedAnswer,
     RenderedCitation,
     ResourceNotFoundError,
@@ -553,27 +553,33 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
             citations=(
                 RenderedCitation(
                     ordinal=0,
-                    citation_id="cite_2",
-                    index_chunk_id=chunk_ids[1],
-                    document_id=document_id,
-                    document_version_id=version_id,
-                    document_display_name="citation source",
-                    document_original_filename="source.txt",
-                    quoted_text="第二段证据",
-                    source_location={"paragraph": 2},
-                    score=0.8,
+                    evidence=PromptEvidence(
+                        rank=2,
+                        citation_id="cite_2",
+                        index_chunk_id=chunk_ids[1],
+                        document_id=document_id,
+                        document_version_id=version_id,
+                        document_display_name="citation source",
+                        document_original_filename="source.txt",
+                        excerpt="第二段证据",
+                        source_location={"paragraph": 2},
+                        score=0.8,
+                    ),
                 ),
                 RenderedCitation(
                     ordinal=1,
-                    citation_id="cite_1",
-                    index_chunk_id=chunk_ids[0],
-                    document_id=document_id,
-                    document_version_id=version_id,
-                    document_display_name="citation source",
-                    document_original_filename="source.txt",
-                    quoted_text="第一段证据",
-                    source_location={"paragraph": 1},
-                    score=0.9,
+                    evidence=PromptEvidence(
+                        rank=1,
+                        citation_id="cite_1",
+                        index_chunk_id=chunk_ids[0],
+                        document_id=document_id,
+                        document_version_id=version_id,
+                        document_display_name="citation source",
+                        document_original_filename="source.txt",
+                        excerpt="第一段证据",
+                        source_location={"paragraph": 1},
+                        score=0.9,
+                    ),
                 ),
             ),
         )
@@ -1036,12 +1042,6 @@ def _refusal_state(context) -> ChatPipelineState:
         index_revision_id=context.index_revision_id,
         items=(),
     )
-    draft = AnswerDraftCandidate(
-        raw_json='{"outcome":"refused","claims":[],"missing_aspects":[]}',
-        expected_outcome=AnswerOutcome.REFUSED,
-        source=AnswerDraftSource.DETERMINISTIC,
-        control_reason=AnswerControlReason.NO_USABLE_EVIDENCE,
-    )
     validated = ValidatedAnswer(
         outcome=AnswerOutcome.REFUSED,
         claims=(),
@@ -1059,7 +1059,6 @@ def _refusal_state(context) -> ChatPipelineState:
         answering=ChatAnsweringState(
             evidence=evidence,
             usable_citation_ids=(),
-            draft=draft,
             model_calls=(_model_call("request-success"),),
             validated=validated,
             rendered=RenderedAnswer(

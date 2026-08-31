@@ -1,4 +1,4 @@
-"""Framework-independent evidence assessment and answer-draft contracts."""
+"""Framework-independent evidence and answer types."""
 
 from __future__ import annotations
 
@@ -170,29 +170,6 @@ class ChatModelVisualContent:
 
 
 @dataclass(frozen=True, slots=True)
-class AnswerDraftCandidate:
-    raw_json: str
-    expected_outcome: AnswerOutcome
-    source: AnswerDraftSource
-    control_reason: AnswerControlReason | None = None
-
-    def __post_init__(self) -> None:
-        if not self.raw_json:
-            raise ValueError("answer draft must not be empty")
-        if self.source is AnswerDraftSource.DETERMINISTIC:
-            if (
-                self.expected_outcome is not AnswerOutcome.REFUSED
-                or self.control_reason is None
-            ):
-                raise ValueError("deterministic drafts must be controlled refusals")
-        elif (
-            self.control_reason is not None
-            or self.expected_outcome is AnswerOutcome.REFUSED
-        ):
-            raise ValueError("provider drafts must be substantive without control reasons")
-
-
-@dataclass(frozen=True, slots=True)
 class AnswerConflict:
     supporting_citation_ids: tuple[str, ...]
     conflicting_citation_ids: tuple[str, ...]
@@ -275,38 +252,10 @@ class ValidatedAnswer:
 
 @dataclass(frozen=True, slots=True)
 class RenderedCitation:
-    ordinal: int
-    citation_id: str
-    index_chunk_id: UUID
-    document_id: UUID
-    document_version_id: UUID
-    document_display_name: str
-    document_original_filename: str
-    quoted_text: str
-    source_location: Mapping[str, Any]
-    score: float | None
-    modality: str = "text"
-    asset_snapshot: Mapping[str, Any] | None = None
-    matched_representations: tuple[str, ...] = ("text",)
+    """Display order over already-admitted evidence; metadata is not copied."""
 
-    def __post_init__(self) -> None:
-        if (
-            self.ordinal < 0
-            or not self.citation_id
-            or not self.quoted_text
-            or not self.document_display_name.strip()
-            or not self.document_original_filename.strip()
-        ):
-            raise ValueError("rendered citation identity is invalid")
-        object.__setattr__(
-            self, "source_location", MappingProxyType(dict(self.source_location))
-        )
-        if self.asset_snapshot is not None:
-            object.__setattr__(
-                self,
-                "asset_snapshot",
-                MappingProxyType(dict(self.asset_snapshot)),
-            )
+    ordinal: int
+    evidence: PromptEvidence
 
 
 @dataclass(frozen=True, slots=True)
@@ -326,7 +275,7 @@ class RenderedAnswer:
             range(len(self.citations))
         ):
             raise ValueError("rendered citations must be contiguous")
-        if len({item.citation_id for item in self.citations}) != len(self.citations):
+        if len({item.evidence.citation_id for item in self.citations}) != len(self.citations):
             raise ValueError("rendered citations must be unique")
         if self.outcome in {AnswerOutcome.REFUSED, AnswerOutcome.CLARIFY} and self.citations:
             raise ValueError("non-substantive results cannot contain citations")
@@ -343,7 +292,6 @@ class RenderedAnswer:
 class ChatAnsweringState:
     evidence: EvidenceEnvelope
     usable_citation_ids: tuple[str, ...]
-    draft: AnswerDraftCandidate | None = None
     model_calls: tuple[ChatModelCallRecord, ...] = ()
     visual_content: tuple[ChatModelVisualContent, ...] = ()
     visual_decisions: tuple[VisualEvidenceDecision, ...] = ()
@@ -381,8 +329,6 @@ class ChatAnsweringState:
             value is None for value in completed
         ):
             raise ValueError("validated answer state must be complete")
-        if self.validated is not None and self.draft is None:
-            raise ValueError("validated answer state requires its original draft")
         if self.rendered is not None and self.validated is not None:
             if self.rendered.outcome is not self.validated.outcome:
                 raise ValueError("validated and rendered outcomes must match")

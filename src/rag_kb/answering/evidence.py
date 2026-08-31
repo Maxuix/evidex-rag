@@ -87,21 +87,7 @@ def render_validated_answer(
                 ordinal = len(citations)
                 ordinals[citation_id] = ordinal
                 citations.append(
-                    RenderedCitation(
-                        ordinal=ordinal,
-                        citation_id=citation_id,
-                        index_chunk_id=item.index_chunk_id,
-                        document_id=item.document_id,
-                        document_version_id=item.document_version_id,
-                        document_display_name=item.document_display_name,
-                        document_original_filename=item.document_original_filename,
-                        quoted_text=item.excerpt,
-                        source_location=item.source_location,
-                        score=item.score,
-                        modality=item.modality,
-                        asset_snapshot=item.asset_snapshot,
-                        matched_representations=item.matched_representations,
-                    )
+                    RenderedCitation(ordinal=ordinal, evidence=item)
                 )
             markers.append(f"[{ordinals[citation_id] + 1}]")
         paragraphs.append(f"{claim.text} {''.join(markers)}")

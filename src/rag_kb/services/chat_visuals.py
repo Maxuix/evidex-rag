@@ -73,7 +73,7 @@ class VisualEvidencePreparationStep:
             context is None
             or pack is None
             or answering is None
-            or answering.draft is not None
+            or answering.validated is not None
             or answering.visual_content
         ):
             raise _context_error("visual_preparation_state")

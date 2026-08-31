@@ -1484,7 +1484,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(event.status, "salvaged")
         self.assertEqual(event.rejection_reasons, ("conflict_ref",))
 
-    async def test_all_invalid_claims_get_one_submit_only_repair_with_usable_pool(self) -> None:
+    async def test_all_invalid_claims_refuse_without_a_repair_call(self) -> None:
         context = _context()
         model = _Model(
             ChatToolCall("search-1", "search_knowledge_base", {"queries": ["revenue"]}),
@@ -1493,30 +1493,10 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
                 "submit_answer",
                 {
                     "outcome": "answered",
-                    "claims": [
-                        {
-                            "text": "Revenue was 10.",
-                            "kind": "fact",
-                            "evidence_refs": ["ev_other_run"],
-                            "calculation_refs": [],
-                        }
-                    ],
-                    "unanswered": [],
-                },
-            ),
-            ChatToolCall(
-                "submit-repair",
-                "submit_answer",
-                {
-                    "outcome": "answered",
-                    "claims": [
-                        {
-                            "text": "Revenue was 10.",
-                            "kind": "fact",
-                            "evidence_refs": ["ev_1"],
-                            "calculation_refs": [],
-                        }
-                    ],
+                    "claims": [{
+                        "text": "Revenue was 10.",
+                        "evidence_refs": ["ev_other_run"],
+                    }],
                     "unanswered": [],
                 },
             ),
@@ -1524,19 +1504,64 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
 
         state = await _agent(model, _Retriever(_pack(context))).run(context)
 
-        self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.ANSWERED)
-        self.assertEqual(len(model.requests), 3)
-        self.assertEqual(
-            tuple(tool.name for tool in model.requests[2].tools),
-            ("submit_answer",),
+        self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.REFUSED)
+        self.assertEqual(state.answering.rendered.citations, ())
+        self.assertEqual(len(model.requests), 2)
+        self.assertEqual(len(state.answering.model_calls), 2)
+        trace = state.artifacts[AGENT_TRACE_ARTIFACT]
+        self.assertEqual(trace.retrieval_calls, 1)
+        self.assertEqual(trace.total_tokens, 10)
+        self.assertEqual(trace.events[-1].rejection_reasons, ("evidence_ref",))
+        self.assertNotIn("repair_rounds", trace.as_dict()["usage"])
+        self.assertNotIn("submit_only_repair", trace.events[-1].as_dict())
+
+    async def test_malformed_submission_refuses_without_a_repair_call(self) -> None:
+        context = _context()
+        model = _Model(
+            ChatToolCall("submit-invalid", "submit_answer", {"outcome": "answered"}),
         )
-        self.assertEqual(
-            state.artifacts[AGENT_TRACE_ARTIFACT].retrieval_calls,
-            1,
-        )
-        self.assertNotIn("ev_other_run", model.requests[2].messages[-1].content)
-        self.assertEqual(len(state.answering.model_calls), 3)
-        self.assertEqual(state.artifacts[AGENT_TRACE_ARTIFACT].total_tokens, 15)
+
+        state = await _agent(model, _Retriever(_pack(context))).run(context)
+
+        self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.REFUSED)
+        self.assertEqual(len(model.requests), 1)
+        trace = state.artifacts[AGENT_TRACE_ARTIFACT]
+        self.assertEqual(trace.stop_reason, "submit_protocol_invalid")
+        self.assertEqual(trace.model_rounds, 1)
+        self.assertFalse(trace.forced_finalize)
+
+    async def test_invalid_budget_wrap_up_never_adds_another_finalize_call(self) -> None:
+        for response in (
+            None,
+            ChatToolCall("search-again", "search_knowledge_base", {"queries": ["more"]}),
+            ChatToolCall("submit-invalid", "submit_answer", {"outcome": "answered"}),
+        ):
+            with self.subTest(response=response):
+                context = replace(
+                    _context(),
+                    agent_configuration={
+                        "version": "native_tool_calling_agent_v3",
+                        "budget": ChatAgentBudget(max_total_tokens=1000).as_dict(),
+                    },
+                )
+                model = _Model(
+                    ChatToolCall("search-1", "search_knowledge_base", {"queries": ["revenue"]}),
+                    response,
+                    usage={"total_tokens": 1000},
+                )
+                retriever = _Retriever(_pack(context))
+
+                state = await _agent(model, retriever).run(context)
+
+                self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.REFUSED)
+                self.assertEqual(len(model.requests), 2)
+                self.assertEqual(retriever.queries, ["revenue"])
+                self.assertEqual([tool.name for tool in model.requests[-1].tools], ["submit_answer"])
+                trace = state.artifacts[AGENT_TRACE_ARTIFACT]
+                self.assertEqual(trace.stop_reason, "token_budget")
+                self.assertEqual(trace.model_rounds, 2)
+                self.assertEqual(trace.total_tokens, 2000)
+                self.assertFalse(trace.forced_finalize)
 
     async def test_token_budget_forces_a_submit_only_wrap_up_round(self) -> None:
         context = replace(
@@ -2074,7 +2099,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([event.status for event in submit_events], ["ok"])
         self.assertEqual(len(model.requests), 1)
 
-    async def test_clarify_with_claims_is_rejected_then_valid_clarify_completes(self) -> None:
+    async def test_clarify_with_claims_refuses_without_a_repair_call(self) -> None:
         context = _context()
         model = _Model(
             ChatToolCall(
@@ -2092,23 +2117,15 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
                     "unanswered": ["Which project do you mean?"],
                 },
             ),
-            ChatToolCall(
-                "submit-2",
-                "submit_answer",
-                {
-                    "outcome": "clarify",
-                    "claims": [],
-                    "unanswered": ["Which project do you mean?"],
-                },
-            ),
         )
 
         state = await _agent(model, _Retriever(_pack(context))).run(context)
 
-        self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.CLARIFY)
+        self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.REFUSED)
         trace = state.artifacts[AGENT_TRACE_ARTIFACT]
         submit_events = [event for event in trace.events if event.tool == "submit_answer"]
-        self.assertEqual([event.status for event in submit_events], ["rejected", "ok"])
+        self.assertEqual([event.status for event in submit_events], ["rejected", "refused"])
+        self.assertEqual(len(model.requests), 1)
 
     async def test_clarify_submission_skips_verification(self) -> None:
         context = replace(_context(), query="这是否是同一个项目？")
@@ -2676,12 +2693,12 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
             any(message.role == "evidence" for message in model.requests[2].messages)
         )
         self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.ANSWERED)
-        self.assertEqual(state.answering.rendered.citations[0].modality, "table")
+        self.assertEqual(state.answering.rendered.citations[0].evidence.modality, "table")
         self.assertEqual(
-            state.answering.rendered.citations[0].matched_representations,
+            state.answering.rendered.citations[0].evidence.matched_representations,
             ("table_text",),
         )
-        self.assertEqual(state.answering.rendered.citations[0].quoted_text, table_text)
+        self.assertEqual(state.answering.rendered.citations[0].evidence.excerpt, table_text)
 
     async def test_same_unit_table_visual_preserves_table_body_and_asset(self) -> None:
         context = _context()
@@ -2763,10 +2780,10 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.ANSWERED)
         self.assertEqual(len(state.answering.rendered.citations), 1)
-        citation = state.answering.rendered.citations[0]
+        citation = state.answering.rendered.citations[0].evidence
         self.assertEqual(citation.citation_id, "cite_1")
         self.assertEqual(citation.modality, "table")
-        self.assertEqual(citation.quoted_text, table_text)
+        self.assertEqual(citation.excerpt, table_text)
         self.assertIsNotNone(citation.asset_snapshot)
         assert citation.asset_snapshot is not None
         self.assertEqual(citation.asset_snapshot["id"], str(asset.id))
@@ -2883,9 +2900,9 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.ANSWERED)
         self.assertEqual(len(state.answering.rendered.citations), 1)
-        citation = state.answering.rendered.citations[0]
+        citation = state.answering.rendered.citations[0].evidence
         self.assertEqual(citation.citation_id, "cite_3")
-        self.assertEqual(citation.quoted_text, table_text)
+        self.assertEqual(citation.excerpt, table_text)
         self.assertIsNotNone(citation.asset_snapshot)
         assert citation.asset_snapshot is not None
         self.assertEqual(citation.asset_snapshot["id"], str(table_asset.id))
@@ -2983,7 +3000,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
         self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.ANSWERED)
-        self.assertEqual(state.answering.rendered.citations[0].modality, "image")
+        self.assertEqual(state.answering.rendered.citations[0].evidence.modality, "image")
         self.assertEqual(len(state.answering.visual_content), 1)
         self.assertEqual(state.answering.visual_content[0].content, image_bytes)
 
@@ -3075,7 +3092,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reader.asset_ids, [])
         self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.ANSWERED)
         self.assertEqual(state.answering.visual_content, ())
-        self.assertIsNone(state.answering.rendered.citations[0].asset_snapshot)
+        self.assertIsNone(state.answering.rendered.citations[0].evidence.asset_snapshot)
 
     async def test_visual_budget_is_shared_across_distinct_searches(self) -> None:
         context = replace(

@@ -138,7 +138,6 @@ class ChatAgentTraceEvent:
     new_evidence_count: int | None = None
     rejected_claim_count: int = 0
     rejection_reasons: tuple[str, ...] = ()
-    submit_only_repair: bool = False
     budget_wrap_up: bool = False
     call_index: int | None = None
     invocation_source: str | None = None
@@ -329,14 +328,12 @@ class ChatAgentTraceEvent:
         if (
             self.rejected_claim_count
             or self.rejection_reasons
-            or self.submit_only_repair
             or self.budget_wrap_up
         ):
             value.update(
                 {
                     "rejected_claim_count": self.rejected_claim_count,
                     "rejection_reasons": list(self.rejection_reasons),
-                    "submit_only_repair": self.submit_only_repair,
                     "budget_wrap_up": self.budget_wrap_up,
                 }
             )
@@ -358,7 +355,6 @@ class ChatAgentTrace:
     retrieval_tool_calls: int = 0
     simple_tool_calls: int = 0
     graph_tool_calls: int = 0
-    repair_rounds: int = 0
     consecutive_no_new_evidence: int = 0
     stop_reason: str = "submitted"
     forced_finalize: bool = False
@@ -384,7 +380,6 @@ class ChatAgentTrace:
             or self.graph_tool_calls < 0
             or self.retrieval_tool_calls
             != self.simple_tool_calls + self.graph_tool_calls
-            or self.repair_rounds < 0
             or self.consecutive_no_new_evidence < 0
             or self.stop_reason not in CHAT_AGENT_STOP_REASONS
             or not isinstance(self.forced_finalize, bool)
@@ -417,7 +412,6 @@ class ChatAgentTrace:
                 "simple_tool_calls": self.simple_tool_calls,
                 "graph_tool_calls": self.graph_tool_calls,
                 "calculation_calls": self.calculation_calls,
-                "repair_rounds": self.repair_rounds,
                 "evidence_refs": self.evidence_ref_count,
                 "prompt_tokens": self.prompt_tokens,
                 "completion_tokens": self.completion_tokens,

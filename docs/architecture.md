@@ -478,11 +478,12 @@ Agent 保留最多 8 个普通模型轮次的有限循环护栏，并另有累�
 收尾模式，只留 `submit_answer` 工具并提示直接提交。每次检索按准入、chunk 去重与证据上限
 处理后计算实际新增量；连续两次无新增或证据池已满时确定性关闭 Simple/Graph 检索，保留
 至多一次 `calculate` 机会后只允许提交。多 Query 调用只执行剩余检索预算允许的有序前缀，
-不会突破冻结的累计上限。预算只限制探索行为，不阻止提交与校验着陆通道；收尾后仍不提交
-则走既有 forced finalize。Agent 不比较或拒绝重复 Query 本身。
+不会突破冻结的累计上限。预算只限制探索行为，仍保留一次提交机会；普通轮次耗尽时另有
+一次 submit-only forced finalize。收尾提交仍非法则直接确定性拒答，不再追加模型调用。
+Agent 不比较或拒绝重复 Query 本身。
 历史 `retrieval_calls` 与 `max_retrieval_calls` 实际按 Query 执行数计量并继续保留兼容；Trace
 同时发布语义明确的 `retrieval_queries`、`retrieval_tool_calls`、`simple_tool_calls` 与
-`graph_tool_calls`。成功 Trace 另汇总 prompt/completion/total token、repair rounds、停止原因、
+`graph_tool_calls`。成功 Trace 另汇总 prompt/completion/total token、停止原因、
 forced-finalize、连续无新增次数、累计耗时、hard deadline 与 deadline remaining。Runner 为每次 attempt 维护纯
 内存 checkpoint；外层 deadline 取消 Agent 时，把已经完成的安全计数、事件与 model calls 写入
 该 attempt 的 timing ledger，不在主循环增加 I/O，也不覆盖后来重试成功的最终 Trace。
@@ -517,7 +518,7 @@ load_context
   -> adaptive mode: Graph visible from the first round, at most twice per run
   -> model calls submit_answer when ready
   -> if the ordinary loop reaches its limit, one extra submit-only call finalizes
-  -> budget exhaustion switches to submit-only wrap-up rounds
+  -> budget exhaustion switches to one submit-only wrap-up round
   -> claim-level deterministic validation and salvage
   -> persist_result
 ```
@@ -526,23 +527,27 @@ ChatRun 是唯一持久执行状态；没有 graph checkpoint、Controller、Ver
 Repair 或逐步骤 ledger。成功终态原子保存有界 Agent Trace。迁移
 `0010_drop_legacy_workflow` 已删除旧 workflow configuration/state 及其中的
 ResearchResult/SearchTrace 诊断；核心 ChatRun、消息、答案、Citation、usage 和 timing 事实保留。
-ChatRun 内部 trace 保存 claim salvage 的 rejected count、内部 reason 与 submit-only repair，供本地
+ChatRun 内部 trace 保存 claim salvage 的 rejected count 与内部 reason，供本地
 诊断使用；公开 API/SSE 会剥离这些内部字段，只保留隐私审查过的工具、lane、安全枚举与计数。
 共享 trace artifact key 属于 domain 契约，不由 `services` 反向导入 Agent 实现。
-`ChatAnsweringState` 只保存真实 Evidence 可用引用、原始 submit、确定性校验结果与渲染结果；
-不再伪造旧 assessment/structure-validation 状态。成功终态 timing 记录实际 outcome、引用、检索、
+`ChatAnsweringState` 只保存真实 Evidence 可用引用、模型调用、视觉附件、确定性校验结果与渲染结果；
+不保存重复的原始 submit 草稿，也不伪造旧 assessment/structure-validation 状态。
+`RenderedCitation` 只保存显示顺序与已准入 `PromptEvidence` 的引用，不再重复复制、校验整套证据元数据。
+原始检索 Evidence 与准入后的 PromptEvidence 仍分开：后者承载模型实际可用的视觉快照。
+数据库与公开 Citation 快照字段不变。成功终态 timing 记录实际 outcome、引用、检索、
 视觉和 query-rewrite 事实，不写空 validation 占位。
 
 回答边界保持：
 
 - 零准入证据时确定性拒答；有证据时模型仍可判断问题无法充分回答。
-- 正常、repair 和 forced-finalize 提交通过确定性校验后直接渲染、持久化，不再追加独立
+- 正常和 forced-finalize 提交通过确定性校验后直接渲染、持久化，不再追加独立
   LLM Verifier 或 JSON verdict 重试。语义支持度及题面预设命题由生成模型结合证据判断，
   不把引用合法性检查等同于事实正确性保证；原有 evidence-only 与错误前提拒答提示保留。
   历史 Trace 中的 `verifier` 事件仍可只读展示，新运行不产生此类事件；历史 token 统计不改写。
 - 文档、历史与图片都是 prompt 中的不可信数据，不能扩大权限或引用范围。
 - `submit_answer` 必须通过严格参数和逐 claim 校验；非法 claim 被局部删除，仍有合法 claim 时
-  降级为 `partial`，零合法 claim 才确定性拒答。
+  降级为 `partial`，零合法 claim 或提交外形非法时确定性拒答，不调用模型修复提交。
+  新 Trace 不再记录 repair 计数；历史 Trace 不改写。
 - 事实 claim 只能引用本次已授权 Evidence；实际未加载的图片不能产生视觉引用。
 - 同一主题上互不兼容的证据必须用 claim 上的可选 `conflict` 结构披露（supporting/
   conflicting citation、type、adjudication）。这不是新的 outcome，也不持久化；渲染仍把
