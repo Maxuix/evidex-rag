@@ -34,7 +34,6 @@ from rag_kb.auth import (
 )
 from rag_kb.document_processing.profiles import DOCLING_TEXT_PARSER_CONFIG
 from rag_kb.domain import (
-    CONTEXTUAL_QUERY_VERSION,
     AdmissionLimits,
     ChatCitation,
     ChatMessage,
@@ -46,7 +45,7 @@ from rag_kb.domain import (
     ChatRun,
     ChatSession,
     ChatSessionBusyError,
-    ContextualizedQuery,
+    ConversationTurn,
     Document,
     DocumentChunk,
     DocumentChunkInspection,
@@ -65,8 +64,6 @@ from rag_kb.domain import (
     KnowledgeBase,
     KnowledgeBaseEmbeddingSummary,
     Page,
-    QueryContextStatus,
-    QueryRewriteSource,
     RerankMode,
     ResourceNotFoundError,
     ResourceStateConflictError,
@@ -78,8 +75,8 @@ from rag_kb.domain import (
 )
 from rag_kb.memory import (
     empty_conversation_context,
-    serialize_contextualized_query,
     serialize_conversation_context,
+    select_conversation_context,
 )
 from rag_kb.services.admission import (
     FileAdmissionService,
@@ -1433,14 +1430,6 @@ class _FakeChatService:
         if values["session_id"] != self.session.id:
             raise ResourceNotFoundError("internal chat session detail")
         snapshot = empty_conversation_context()
-        original = ContextualizedQuery(
-            version=CONTEXTUAL_QUERY_VERSION,
-            status=QueryContextStatus.ORIGINAL,
-            original_query=values["message"],
-            standalone_query=values["message"],
-            context_hash=snapshot.content_hash,
-            rewrite_source=QueryRewriteSource.ORIGINAL,
-        )
         self.run = dataclass_replace(
             self.run,
             effective_policy={},
@@ -1449,7 +1438,7 @@ class _FakeChatService:
                 rerank_mode=RerankMode.NONE,
             ).as_dict(),
             conversation_context=serialize_conversation_context(snapshot),
-            contextualized_query=serialize_contextualized_query(original),
+            contextualized_query=None,
         )
         return self.run
 
@@ -1935,6 +1924,51 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status, 404)
         self.assertNotIn("internal indexing", response.body.decode())
 
+    async def test_query_rewrite_history_is_read_only_and_not_a_current_version_gate(self) -> None:
+        chat = self.dependencies.chat_service
+        historical = {
+            "version": "retired-query-v0",
+            "status": "contextualized",
+            "standalone_query": "A historical standalone question",
+            "rewrite_source": "repair",
+            "context_hash": "retired-hash",
+            "model_calls": [],
+            "extra_retired_field": True,
+        }
+        original = dict(historical)
+        chat.run = dataclass_replace(chat.run, contextualized_query=historical)
+        response = await request(self.app, "GET", f"{API_PREFIX}/chat/runs/{chat.run.id}")
+        self.assertEqual(response.status, 200)
+        displayed = response.json()["query_context"]
+        self.assertEqual(displayed["standalone_query"], historical["standalone_query"])
+        self.assertEqual(displayed["rewrite_source"], "repair")
+        self.assertEqual(displayed["status"], "contextualized")
+        self.assertEqual(chat.run.contextualized_query, original)
+        self.assertNotIn("context_hash", displayed)
+
+        # Even unknown legacy labels are display data, not an enum migration.
+        chat.run = dataclass_replace(chat.run, contextualized_query={
+            "status": "retired-status", "rewrite_source": "retired-source",
+            "standalone_query": ["not a string"],
+        })
+        response = await request(self.app, "GET", f"{API_PREFIX}/chat/runs/{chat.run.id}")
+        self.assertEqual(response.status, 200)
+        self.assertEqual(response.json()["query_context"]["status"], "retired-status")
+        self.assertIsNone(response.json()["query_context"]["standalone_query"])
+
+        snapshot = select_conversation_context((ConversationTurn(
+            uuid4(), "Prior question", uuid4(), "Prior answer",
+        ),))
+        chat.run = dataclass_replace(
+            chat.run, contextualized_query=None,
+            conversation_context=serialize_conversation_context(snapshot),
+        )
+        response = await request(self.app, "GET", f"{API_PREFIX}/chat/runs/{chat.run.id}")
+        self.assertEqual(response.status, 200)
+        self.assertEqual(response.json()["query_context"]["history_turn_count"], 1)
+        self.assertEqual(response.json()["query_context"]["status"], "original")
+        self.assertIsNone(response.json()["query_context"]["rewrite_source"])
+
     async def test_chat_session_run_history_and_status_contracts(self) -> None:
         chat = self.dependencies.chat_service
         session = await request(
@@ -2014,8 +2048,8 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
                 "history_turn_count": 0,
                 "history_token_count": 0,
                 "history_truncated": False,
-                "standalone_query": "查询 RUN-ORD-14",
-                "rewrite_source": "original",
+                "standalone_query": None,
+                "rewrite_source": None,
             },
         )
         self.assertIsNone(body["answer"])

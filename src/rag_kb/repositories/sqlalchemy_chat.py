@@ -29,18 +29,13 @@ from rag_kb.domain import (
     ChatTerminalSuccessCommand,
     ChatTerminalWriteStatus,
     ChatSession,
-    ContextualizedQuery,
     ConversationTurn,
     ErrorCode,
     IdempotencyScope,
     Page,
     ReconciliationResult,
 )
-from rag_kb.memory import (
-    hydrate_contextualized_query,
-    hydrate_conversation_context,
-    serialize_contextualized_query,
-)
+from rag_kb.memory import hydrate_conversation_context
 
 
 class SqlAlchemyChatRepository:
@@ -145,7 +140,7 @@ class SqlAlchemyChatRepository:
                 "claimed_at": claimed_at.isoformat(),
                 "finished_at": observed_at.isoformat(),
                 "duration_ms": _duration_ms(claimed_at, observed_at),
-                "query_rewrite": _query_rewrite_facts(run),
+                **_historical_query_timing(run),
             }
             context_calls = _contextualization_calls(run)
             if context_calls:
@@ -188,7 +183,7 @@ class SqlAlchemyChatRepository:
         )
         terminal_facts = {
             **_serialized_success(command),
-            "query_rewrite": _query_rewrite_facts(run),
+            **_historical_query_timing(run),
         }
         stable_success = {
             **terminal_facts,
@@ -296,7 +291,7 @@ class SqlAlchemyChatRepository:
         )
         facts = {
             **_serialized_failure(command),
-            "query_rewrite": _query_rewrite_facts(run),
+            **_historical_query_timing(run),
         }
         stable_failure = {
             **facts,
@@ -457,11 +452,6 @@ class SqlAlchemyChatRepository:
             conversation_context = hydrate_conversation_context(
                 run.conversation_context
             )
-            contextualized_query = (
-                hydrate_contextualized_query(run.contextualized_query)
-                if run.contextualized_query is not None
-                else None
-            )
         except (TypeError, ValueError):
             return None
         return ChatExecutionContext(
@@ -480,7 +470,6 @@ class SqlAlchemyChatRepository:
             model_configuration=run.model_configuration,
             attempt=run.attempt,
             conversation_context=conversation_context,
-            contextualized_query=contextualized_query,
             agent_configuration=dict(run.agent_configuration),
         )
 
@@ -585,42 +574,6 @@ class SqlAlchemyChatRepository:
             )
             for user_row, assistant_row in rows
         )
-
-    async def save_contextualized_query(
-        self,
-        lease: ChatRunLease,
-        value: ContextualizedQuery,
-    ) -> ContextualizedQuery | None:
-        if lease.workspace_id != self._workspace_id:
-            return None
-        row = await self._session.scalar(
-            select(ChatRunRow)
-            .where(
-                ChatRunRow.workspace_id == self._workspace_id,
-                ChatRunRow.id == lease.run_id,
-                ChatRunRow.status == ChatRunStatus.RUNNING,
-                ChatRunRow.claimed_by == lease.claimed_by,
-                ChatRunRow.attempt == lease.attempt,
-            )
-            .with_for_update()
-        )
-        if row is None:
-            return None
-        try:
-            snapshot = hydrate_conversation_context(row.conversation_context)
-        except (TypeError, ValueError):
-            return None
-        if snapshot.content_hash != value.context_hash:
-            return None
-        if row.contextualized_query is None:
-            row.contextualized_query = serialize_contextualized_query(value)
-            await self._session.flush()
-            return value
-        try:
-            existing = hydrate_contextualized_query(row.contextualized_query)
-        except (TypeError, ValueError):
-            return None
-        return existing
 
     async def list_sessions(
         self,
@@ -765,7 +718,6 @@ class SqlAlchemyChatRepository:
         retrieval_strategy: dict[str, Any],
         model_configuration: dict[str, Any],
         conversation_context: dict[str, Any],
-        contextualized_query: dict[str, Any] | None,
     ) -> ChatRun:
         user_message = ChatMessageRow(
             workspace_id=self._workspace_id,
@@ -795,11 +747,7 @@ class SqlAlchemyChatRepository:
             retrieval_strategy=dict(retrieval_strategy),
             model_configuration=dict(model_configuration),
             conversation_context=dict(conversation_context),
-            contextualized_query=(
-                dict(contextualized_query)
-                if contextualized_query is not None
-                else None
-            ),
+            contextualized_query=None,  # Retired snapshot; keep old rows read-only.
         )
         self._session.add(run)
         await self._session.flush()
@@ -905,12 +853,37 @@ def _serialized_calls(attempt: int, calls) -> dict[str, dict[str, Any]]:
 
 
 def _contextualization_calls(run: ChatRunRow) -> dict[str, dict[str, Any]]:
-    if run.contextualized_query is None:
+    """Read legacy usage without reviving query-version or rewrite-state gates."""
+    value = run.contextualized_query
+    if not isinstance(value, dict):
         return {}
-    value = hydrate_contextualized_query(run.contextualized_query)
-    if value.origin_attempt is None:
+    attempt = value.get("origin_attempt")
+    calls = value.get("model_calls")
+    if type(attempt) is not int or attempt < 1 or not isinstance(calls, list):
         return {}
-    return _serialized_calls(value.origin_attempt, value.model_calls)
+    result = {}
+    for sequence, call in enumerate(calls, start=1):
+        if not isinstance(call, dict) or call.get("operation") != "contextualize_query":
+            continue
+        usage = call.get("usage")
+        if (
+            not isinstance(call.get("model"), str)
+            or not call["model"]
+            or not isinstance(usage, dict)
+            or any(type(count) is not int or count < 0 for count in usage.values())
+            or not all(isinstance(key, str) for key in usage)
+            or not isinstance(call.get("provider_request_id"), (str, type(None)))
+        ):
+            continue
+        result[f"{attempt}:{sequence}:contextualize_query"] = {
+            "attempt": attempt,
+            "sequence": sequence,
+            "operation": "contextualize_query",
+            "model": call["model"],
+            "provider_request_id": call.get("provider_request_id"),
+            "usage": dict(usage),
+        }
+    return result
 
 
 def _combine_calls(
@@ -940,40 +913,24 @@ def _merge_usage(
     return {"calls": existing, "totals": totals}
 
 
-def _query_rewrite_facts(run: ChatRunRow) -> dict[str, Any]:
-    if run.contextualized_query is None:
-        return {
-            "version": None,
-            "status": "pending",
-            "source": None,
-            "first_pass_schema_valid": None,
-            "repair_attempted": False,
-            "fallback_used": False,
-        }
-    try:
-        value = hydrate_contextualized_query(run.contextualized_query)
-    except (TypeError, ValueError):
-        return {
-            "version": "invalid",
-            "status": "invalid",
-            "source": None,
-            "first_pass_schema_valid": None,
-            "repair_attempted": False,
-            "fallback_used": False,
-        }
-    source = value.rewrite_source.value if value.rewrite_source else None
-    repair_attempted = len(value.model_calls) >= 2
+def _historical_query_timing(run: ChatRunRow) -> dict[str, Any]:
+    """Only legacy runs carry rewrite diagnostics; new runs produce none."""
+    value = run.contextualized_query
+    if not isinstance(value, dict):
+        return {}
+    source = value.get("rewrite_source")
+    calls = value.get("model_calls")
     return {
-        "version": value.version,
-        "status": value.status.value,
-        "source": source,
-        "first_pass_schema_valid": (
-            True
-            if source == "model"
-            else (False if source in {"repair", "fallback"} else None)
-        ),
-        "repair_attempted": repair_attempted,
-        "fallback_used": source == "fallback",
+        "query_rewrite": {
+            "version": value.get("version"),
+            "status": value.get("status"),
+            "source": source,
+            "first_pass_schema_valid": (
+                True if source == "model" else False if source in ("repair", "fallback") else None
+            ),
+            "repair_attempted": isinstance(calls, list) and len(calls) >= 2,
+            "fallback_used": source == "fallback",
+        }
     }
 
 

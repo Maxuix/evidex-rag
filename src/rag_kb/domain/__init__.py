@@ -186,14 +186,10 @@ from rag_kb.domain.indexing import (
     normalize_embedding_vector,
 )
 from rag_kb.domain.memory import (
-    CONTEXTUAL_QUERY_VERSION,
     SESSION_CONTEXT_STRATEGY,
     SESSION_CONTEXT_VERSION,
-    ContextualizedQuery,
     ConversationContextSnapshot,
     ConversationTurn,
-    QueryContextStatus,
-    QueryRewriteSource,
     empty_context_snapshot,
 )
 from rag_kb.domain.model_settings import (
@@ -365,12 +361,8 @@ __all__ = [
     "ChatAgentBudget",
     "ChatAgentTrace",
     "ChatAgentTraceEvent",
-    "ContextualizedQuery",
     "ConversationContextSnapshot",
     "ConversationTurn",
-    "QueryContextStatus",
-    "QueryRewriteSource",
-    "CONTEXTUAL_QUERY_VERSION",
     "SESSION_CONTEXT_STRATEGY",
     "SESSION_CONTEXT_VERSION",
     "empty_context_snapshot",

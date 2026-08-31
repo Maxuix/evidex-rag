@@ -221,12 +221,12 @@ class ChatRunRetrievalResponse(PublicSchema):
 
 class ChatRunQueryContextResponse(PublicSchema):
     strategy: Literal["recent_completed_turns_v1"]
-    status: Literal["pending", "original", "contextualized"]
+    status: str  # Historical rewrite metadata is display-only.
     history_turn_count: Annotated[int, Field(ge=0, le=6)]
     history_token_count: Annotated[int, Field(ge=0, le=4000)]
     history_truncated: bool
     standalone_query: str | None
-    rewrite_source: Literal["original", "model", "repair", "fallback"] | None
+    rewrite_source: str | None
 
 
 class ChatRunModelResponse(PublicSchema):

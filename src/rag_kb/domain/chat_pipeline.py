@@ -18,7 +18,6 @@ from rag_kb.domain.answering import (
 from rag_kb.domain.errors import ErrorCode
 from rag_kb.domain.retrieval import EvidencePack
 from rag_kb.domain.memory import (
-    ContextualizedQuery,
     ConversationContextSnapshot,
     empty_context_snapshot,
 )
@@ -109,7 +108,6 @@ class ChatExecutionContext:
     conversation_context: ConversationContextSnapshot = field(
         default_factory=empty_context_snapshot
     )
-    contextualized_query: ContextualizedQuery | None = None
     agent_configuration: Mapping[str, Any] = field(
         default_factory=lambda: {
             "version": "native_tool_calling_agent_v3",
@@ -144,7 +142,6 @@ class ChatPipelineState:
     context: ChatExecutionContext | None = None
     evidence_pack: EvidencePack | None = None
     answering: ChatAnsweringState | None = None
-    query_context: ContextualizedQuery | None = None
     artifacts: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:

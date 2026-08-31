@@ -12,14 +12,10 @@ from rag_kb.domain import (
     ChatRun,
     ChatSession,
     ChatSessionBusyError,
-    ContextualizedQuery,
     ErrorCode,
     ModelKind,
     ModelProfileBundle,
     ModelValidationStatus,
-    QueryContextStatus,
-    QueryRewriteSource,
-    CONTEXTUAL_QUERY_VERSION,
     RetrievalExecutionError,
     IdempotencyKeyReusedError,
     IdempotencyScope,
@@ -37,7 +33,6 @@ from rag_kb.retrieval.profile import (
 )
 from rag_kb.memory import (
     ConversationContextSelector,
-    serialize_contextualized_query,
     serialize_conversation_context,
 )
 from rag_kb.services.chat_visuals import (
@@ -330,14 +325,6 @@ class ChatService:
                 limit=self._context_max_turns + 1,
             )
             conversation_context = self._context_selector.select(recent_turns)
-            original_query = ContextualizedQuery(
-                version=CONTEXTUAL_QUERY_VERSION,
-                status=QueryContextStatus.ORIGINAL,
-                original_query=normalized_message,
-                standalone_query=normalized_message,
-                context_hash=conversation_context.content_hash,
-                rewrite_source=QueryRewriteSource.ORIGINAL,
-            )
             return await uow.chat.create_run(
                 scope=scope,
                 request_hash=request_hash,
@@ -350,7 +337,6 @@ class ChatService:
                 conversation_context=serialize_conversation_context(
                     conversation_context
                 ),
-                contextualized_query=serialize_contextualized_query(original_query),
             )
 
         return await execute_in_transaction(self._unit_of_work, persist)

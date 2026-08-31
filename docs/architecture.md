@@ -510,6 +510,13 @@ API 创建 ChatRun 时在短事务内冻结知识库/revision、检索 preset �
 不迁移、不改写历史值。历史 `answer_policy_defaults`/`effective_answer_policy` 只读返回原始
 JSON，不作为当前执行配置，也不做旧枚举解析。旧客户端提交策略字段会得到通用 422 参数错误。
 
+旧查询改写器不再参与执行：新 ChatRun 的 `contextualized_query` 为 NULL，不再复制原始问题、
+构造改写状态、记录空的改写诊断或向 Worker 传递该快照。当前问题和有界 Session 历史仍照常
+输入原生 Agent。历史改写 JSON 保留，API 只投影已存的展示字段，不要求旧版本、hash、调用
+次数或规范序列化一致；缺少快照时 `query_context.status=original`，改写文本/来源为 null，
+即使存在会话历史也不会再显示待改写。有效的历史模型调用账目保留原 attempt/sequence，
+不因移除改写器丢失或重复累计；无效历史计数不进入新汇总。历史字段不参与当前 prompt。
+
 当前 Chat 执行是普通异步 Tool-Calling loop：
 
 ```text
@@ -569,6 +576,11 @@ ChatRun 内部 trace 保存 claim salvage 的 rejected count 与内部 reason，
 - Agent 自行决定需要检索和引用哪些文档；服务端不从题面文件名生成 required Document 清单，
   也不以文档覆盖率改变回答结果。
 - 最终答案、assistant message、Citation 和 ChatRun 终态在同一所有权边界提交。
+
+答案内容/形状和引用的校验集中在 `submit_answer` 输入边界。内部 `AnswerClaim`、
+`ValidatedAnswer` 不重复验证已经归一化的结果；渲染器负责引用去重、编号和结果展示，
+不再由结果 DTO 重查其编号与 outcome 组合。最终内容非空/大小限制、视觉准入与实际 bytes
+核对、持久化前结果完整性检查仍保留。
 
 Provider 单次调用的 SDK timeout 与有限 retry 由一个逻辑预算统一计算：
 `timeout * (max_retries + 1) + 60 * max_retries + 1` 秒；Adapter 的外层总预算覆盖整个

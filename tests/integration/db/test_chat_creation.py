@@ -141,9 +141,7 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
             first.conversation_context["version"], "session_context_v1"
         )
         self.assertEqual(first.conversation_context["turns"], [])
-        self.assertEqual(
-            first.contextualized_query["status"], "original"
-        )
+        self.assertIsNone(first.contextualized_query)
 
         with self.assertRaises(IdempotencyKeyReusedError):
             await self.chat.create_run(
@@ -307,6 +305,7 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(execution_context.query, "How should RUN-ORD-14 be handled?")
         self.assertEqual(execution_context.index_revision_id, run.index_revision_id)
         self.assertFalse(hasattr(execution_context, "effective_policy"))
+        self.assertFalse(hasattr(execution_context, "contextualized_query"))
         self.assertEqual(
             execution_context.retrieval_strategy["profile_version"],
             run.retrieval_strategy["profile_version"],

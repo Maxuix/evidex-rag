@@ -49,7 +49,6 @@ from rag_kb.schemas import (
     ErrorCode,
 )
 from rag_kb.memory import (
-    hydrate_contextualized_query,
     hydrate_conversation_context,
 )
 
@@ -386,11 +385,6 @@ def _model_response(value: ChatRun) -> dict[str, object]:
 def _query_context_response(value: ChatRun) -> ChatRunQueryContextResponse:
     try:
         snapshot = hydrate_conversation_context(value.conversation_context)
-        artifact = (
-            hydrate_contextualized_query(value.contextualized_query)
-            if value.contextualized_query is not None
-            else None
-        )
     except (TypeError, ValueError) as error:
         raise ApiProblem(
             code=ErrorCode.CHAT_CONTEXT_INVALID,
@@ -398,24 +392,19 @@ def _query_context_response(value: ChatRun) -> ChatRunQueryContextResponse:
             title="Chat context invalid",
             detail="The persisted ChatRun context is invalid.",
         ) from error
+    # Historical metadata is display-only, never reconstructed as execution state.
+    artifact = value.contextualized_query or {}
+    status = artifact.get("status")
+    query = artifact.get("standalone_query")
+    source = artifact.get("rewrite_source")
     return ChatRunQueryContextResponse(
         strategy=snapshot.strategy,
-        status=(
-            artifact.status.value
-            if artifact is not None
-            else ("original" if not snapshot.turns else "pending")
-        ),
+        status=status if isinstance(status, str) else "original",
         history_turn_count=len(snapshot.turns),
         history_token_count=snapshot.token_count,
         history_truncated=snapshot.truncated,
-        standalone_query=(
-            artifact.standalone_query if artifact is not None else None
-        ),
-        rewrite_source=(
-            artifact.rewrite_source.value
-            if artifact is not None and artifact.rewrite_source is not None
-            else None
-        ),
+        standalone_query=query if isinstance(query, str) else None,
+        rewrite_source=source if isinstance(source, str) else None,
     )
 
 

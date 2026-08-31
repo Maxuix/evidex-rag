@@ -1394,16 +1394,7 @@ def _validate_submission(
             reject("visual_ref")
             continue
         citation_ids = tuple(prompt_by_ref[ref].citation_id for ref in expanded)
-        try:
-            retained.append(
-                AnswerClaim(
-                    text=text.strip(),
-                    citation_ids=citation_ids,
-                )
-            )
-        except ValueError:
-            reject("claim_text")
-            continue
+        retained.append(AnswerClaim(text=text.strip(), citation_ids=citation_ids))
         retained_refs.extend(expanded)
 
     if not retained:

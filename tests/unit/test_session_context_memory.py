@@ -5,17 +5,11 @@ import unittest
 from uuid import uuid4
 
 from rag_kb.domain import (
-    CONTEXTUAL_QUERY_VERSION,
-    ContextualizedQuery,
     ConversationTurn,
-    QueryContextStatus,
-    QueryRewriteSource,
 )
 from rag_kb.memory import (
-    hydrate_contextualized_query,
     hydrate_conversation_context,
     select_conversation_context,
-    serialize_contextualized_query,
     serialize_conversation_context,
 )
 
@@ -58,18 +52,6 @@ class ConversationContextTests(unittest.TestCase):
         tampered["turns"][0]["user"]["content"] = "changed"
         with self.assertRaises(ValueError):
             hydrate_conversation_context(tampered)
-
-    def test_legacy_original_query_snapshot_round_trips_without_model(self) -> None:
-        value = ContextualizedQuery(
-            version=CONTEXTUAL_QUERY_VERSION,
-            status=QueryContextStatus.ORIGINAL,
-            original_query="question",
-            standalone_query="question",
-            context_hash="sha256:" + "0" * 64,
-            rewrite_source=QueryRewriteSource.ORIGINAL,
-        )
-        serialized = serialize_contextualized_query(value)
-        self.assertEqual(hydrate_contextualized_query(serialized), value)
 
 
 if __name__ == "__main__":

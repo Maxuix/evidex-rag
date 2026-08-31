@@ -334,13 +334,7 @@ class ChatCreationServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("effective_policy", created)
         snapshot = hydrate_conversation_context(created["conversation_context"])
         self.assertEqual(snapshot.turns, turns)
-        self.assertEqual(created["contextualized_query"]["status"], "original")
-        self.assertEqual(
-            created["contextualized_query"]["standalone_query"], "What about it?"
-        )
-        self.assertEqual(
-            created["contextualized_query"]["context_hash"], snapshot.content_hash
-        )
+        self.assertNotIn("contextualized_query", created)
         self.assertEqual(chat.events[:3], ["idempotency", "lock_session", "busy"])
 
     async def test_busy_session_is_rejected_before_history_or_insert(self) -> None:

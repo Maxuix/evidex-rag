@@ -158,56 +158,21 @@ class ChatModelVisualContent:
 
 @dataclass(frozen=True, slots=True)
 class AnswerClaim:
+    """Internal claim built after submission-boundary validation."""
+
     text: str
     citation_ids: tuple[str, ...]
-
-    def __post_init__(self) -> None:
-        if not self.text.strip() or len(self.text) > 4000:
-            raise ValueError("answer claim text is invalid")
-        if (
-            not self.citation_ids
-            or len(self.citation_ids) != len(set(self.citation_ids))
-            or any(not value.strip() for value in self.citation_ids)
-        ):
-            raise ValueError("answer claim citations are invalid")
 
 
 @dataclass(frozen=True, slots=True)
 class ValidatedAnswer:
+    """Normalized submission result; invariants belong to the submission parser."""
+
     outcome: AnswerOutcome
     claims: tuple[AnswerClaim, ...]
     missing_aspects: tuple[str, ...]
     source: AnswerDraftSource
     control_reason: AnswerControlReason | None = None
-
-    def __post_init__(self) -> None:
-        if len(self.claims) > 100:
-            raise ValueError("validated answer has too many claims")
-        _require_bounded_unique_strings(
-            self.missing_aspects, field="validated missing aspects"
-        )
-        if self.outcome is AnswerOutcome.ANSWERED:
-            if not self.claims or self.missing_aspects:
-                raise ValueError("answered results require claims and no gaps")
-        elif self.outcome is AnswerOutcome.PARTIAL:
-            if not self.claims or not self.missing_aspects:
-                raise ValueError("partial results require claims and gaps")
-        elif self.outcome is AnswerOutcome.CLARIFY:
-            if self.claims or not self.missing_aspects:
-                raise ValueError("clarify results require questions and no claims")
-        elif self.claims or self.missing_aspects:
-            raise ValueError("non-substantive results cannot contain answer content")
-        if self.source is AnswerDraftSource.DETERMINISTIC:
-            if (
-                self.outcome is not AnswerOutcome.REFUSED
-                or self.control_reason is None
-            ):
-                raise ValueError("deterministic validated results must be refusals")
-        elif self.outcome is AnswerOutcome.REFUSED:
-            if self.control_reason is not AnswerControlReason.INSUFFICIENT_EVIDENCE:
-                raise ValueError("provider refusals require a safe control reason")
-        elif self.control_reason is not None:
-            raise ValueError("provider answers cannot have a control reason")
 
 
 @dataclass(frozen=True, slots=True)
@@ -231,21 +196,6 @@ class RenderedAnswer:
             or len(self.content.encode("utf-8")) > 2 * 1024 * 1024
         ):
             raise ValueError("rendered answer content is invalid")
-        if [item.ordinal for item in self.citations] != list(
-            range(len(self.citations))
-        ):
-            raise ValueError("rendered citations must be contiguous")
-        if len({item.evidence.citation_id for item in self.citations}) != len(self.citations):
-            raise ValueError("rendered citations must be unique")
-        if self.outcome in {AnswerOutcome.REFUSED, AnswerOutcome.CLARIFY} and self.citations:
-            raise ValueError("non-substantive results cannot contain citations")
-        if self.outcome is not AnswerOutcome.REFUSED and self.control_reason is not None:
-            raise ValueError("only refusals can carry a control reason")
-        if self.outcome in {
-            AnswerOutcome.ANSWERED,
-            AnswerOutcome.PARTIAL,
-        } and not self.citations:
-            raise ValueError("substantive results require citations")
 
 
 @dataclass(frozen=True, slots=True)
@@ -284,21 +234,6 @@ class ChatAnsweringState:
             for citation_id in visual_citations
         ):
             raise ValueError("visual evidence must be admitted before model input")
-        completed = (self.validated, self.rendered)
-        if any(value is not None for value in completed) and any(
-            value is None for value in completed
-        ):
-            raise ValueError("validated answer state must be complete")
-        if self.rendered is not None and self.validated is not None:
-            if self.rendered.outcome is not self.validated.outcome:
-                raise ValueError("validated and rendered outcomes must match")
-
-
-def _require_bounded_unique_strings(values: tuple[str, ...], *, field: str) -> None:
-    if len(values) > 100 or len(values) != len(set(values)):
-        raise ValueError(f"{field} must be unique and bounded")
-    if any(not value.strip() or len(value) > 1000 for value in values):
-        raise ValueError(f"{field} contain invalid values")
 
 
 def _require_unique_strings(values: tuple[str, ...], *, field: str) -> None:

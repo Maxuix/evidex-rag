@@ -333,7 +333,6 @@ class VisualEvidencePreparationStep:
                 visual_decisions=tuple(decisions),
                 visual_total_bytes=total_bytes,
             ),
-            query_context=state.query_context,
             artifacts=state.artifacts,
         )
 

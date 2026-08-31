@@ -7,7 +7,6 @@ from rag_kb.memory.context import (
     select_conversation_context,
     serialize_conversation_context,
 )
-from rag_kb.memory.query import hydrate_contextualized_query, serialize_contextualized_query
 
 __all__ = [
     "empty_conversation_context",
@@ -15,6 +14,4 @@ __all__ = [
     "hydrate_conversation_context",
     "select_conversation_context",
     "serialize_conversation_context",
-    "hydrate_contextualized_query",
-    "serialize_contextualized_query",
 ]
