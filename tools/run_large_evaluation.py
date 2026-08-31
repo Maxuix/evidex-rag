@@ -47,7 +47,7 @@ from rag_kb.domain import (
 from rag_kb.retrieval.profile import adaptive_graphiti_profile, exact_profile
 from rag_kb.retrieval.service import _pack_graph_search_evidence  # noqa: SLF001
 from rag_kb.services.chat_execution import ChatEvidenceRetriever
-from rag_kb.uow import TransactionMode, UnitOfWorkPurpose, execute_in_transaction
+from rag_kb.uow import TransactionMode, execute_in_transaction
 from tools.check_large_evaluation_runtime import (
     LargeEvaluationRuntimeError,
     _load_private_plan,
@@ -360,7 +360,6 @@ async def _selected_embedding_profiles(dependencies) -> dict[str, str]:
     selection, profiles = await execute_in_transaction(
         dependencies.unit_of_work,
         load,
-        purpose=UnitOfWorkPurpose.READ_SNAPSHOT,
         mode=TransactionMode.REPEATABLE_READ_ONLY,
     )
     expected_kinds = {

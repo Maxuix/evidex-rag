@@ -19,7 +19,7 @@ from rag_kb.domain import (
     GraphWorkItem,
 )
 from rag_kb.observability import get_logger, log_event, log_exception
-from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, UnitOfWorkPurpose, execute_in_transaction
+from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, execute_in_transaction
 
 if TYPE_CHECKING:
     from rag_kb.indexing.pipeline import IndexingPipeline
@@ -118,7 +118,6 @@ class IndexingJobScheduler:
         claimed, retired = await execute_in_transaction(
             self._unit_of_work,
             claim_or_graph,
-            purpose=UnitOfWorkPurpose.CLAIM,
         )
         if retired and self._graph_worker is not None:
             await self._graph_worker.recycle_retired(retired)
@@ -156,7 +155,6 @@ class IndexingJobScheduler:
         return await execute_in_transaction(
             self._unit_of_work,
             reconcile,
-            purpose=UnitOfWorkPurpose.RECONCILIATION,
         )
 
     async def _execute(
@@ -279,7 +277,6 @@ class IndexingJobScheduler:
                         lease,
                         observed_at=self._clock(),
                     ),
-                    purpose=UnitOfWorkPurpose.HEARTBEAT,
                 )
             except Exception as error:
                 log_exception(
@@ -345,7 +342,6 @@ class IndexingJobScheduler:
         changed = await execute_in_transaction(
             self._unit_of_work,
             persist,
-            purpose=UnitOfWorkPurpose.RECONCILIATION,
         )
         if not changed:
             log_event(
@@ -387,7 +383,6 @@ class IndexingJobScheduler:
         await execute_in_transaction(
             self._unit_of_work,
             lambda uow: uow.indexing.release_terminal(lease),
-            purpose=UnitOfWorkPurpose.RECONCILIATION,
         )
 
 

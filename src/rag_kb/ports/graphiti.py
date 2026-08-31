@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import Protocol
 
 from rag_kb.domain import (
     GraphChunkSource,
@@ -13,7 +13,6 @@ from rag_kb.domain import (
 )
 
 
-@runtime_checkable
 class GraphitiGraph(Protocol):
     async def probe(
         self,

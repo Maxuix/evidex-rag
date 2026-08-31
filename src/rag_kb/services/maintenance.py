@@ -15,7 +15,7 @@ from rag_kb.domain import (
 from rag_kb.ports.files import IndexAssetStore
 from rag_kb.services.files import FileReconciliationService
 from rag_kb.services.secrets import ModelSecretReconciliationService
-from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, UnitOfWorkPurpose, execute_in_transaction
+from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, execute_in_transaction
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,7 +73,6 @@ class MaintenanceCleanupService:
         targets = await execute_in_transaction(
             self._unit_of_work,
             list_targets,
-            purpose=UnitOfWorkPurpose.RECONCILIATION,
         )
         approved_target_ids: list[UUID] = []
         for target in targets:
@@ -129,6 +128,5 @@ class MaintenanceCleanupService:
         index = await execute_in_transaction(
             self._unit_of_work,
             clean,
-            purpose=UnitOfWorkPurpose.RECONCILIATION,
         )
         return MaintenanceCleanupResult(files=files, index=index, secrets=secrets)

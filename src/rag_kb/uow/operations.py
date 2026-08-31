@@ -9,7 +9,6 @@ from rag_kb.uow.contracts import (
     TransactionMode,
     UnitOfWork,
     UnitOfWorkFactory,
-    UnitOfWorkPurpose,
 )
 
 
@@ -20,12 +19,11 @@ async def execute_in_transaction(
     factory: UnitOfWorkFactory,
     operation: Callable[[UnitOfWork], Awaitable[ResultT]],
     *,
-    purpose: UnitOfWorkPurpose = UnitOfWorkPurpose.COMMAND,
     mode: TransactionMode = TransactionMode.READ_WRITE,
 ) -> ResultT:
     """Run database-only work, close its session, then return to the caller."""
 
-    async with factory(purpose=purpose, mode=mode) as unit_of_work:
+    async with factory(mode=mode) as unit_of_work:
         result = await operation(unit_of_work)
         await unit_of_work.commit()
     return result

@@ -12,7 +12,7 @@ from rag_kb.domain import (
     SourceFileIntegrityError,
 )
 from rag_kb.ports.files import IndexAssetStore
-from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, UnitOfWorkPurpose, execute_in_transaction
+from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, execute_in_transaction
 
 
 class IndexAssetService:
@@ -33,7 +33,7 @@ class IndexAssetService:
             return await uow.indexing.get_asset(asset_id)
 
         snapshot = await execute_in_transaction(
-            self._unit_of_work, load, purpose=UnitOfWorkPurpose.REQUEST
+            self._unit_of_work, load
         )
         if snapshot is None:
             raise ResourceNotFoundError("index asset was not found")

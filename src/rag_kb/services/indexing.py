@@ -14,7 +14,7 @@ from rag_kb.domain import (
     ResourceNotFoundError,
     canonical_request_hash,
 )
-from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, UnitOfWorkPurpose, execute_in_transaction
+from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, execute_in_transaction
 
 
 RETRY_INDEXING_JOB_ENDPOINT = "POST /api/v1/indexing-jobs/{job_id}/retry"
@@ -46,7 +46,6 @@ class IndexingJobService:
         return await execute_in_transaction(
             self._unit_of_work,
             load,
-            purpose=UnitOfWorkPurpose.REQUEST,
         )
 
     async def list(
@@ -72,7 +71,6 @@ class IndexingJobService:
         return await execute_in_transaction(
             self._unit_of_work,
             load,
-            purpose=UnitOfWorkPurpose.REQUEST,
         )
 
     async def retry(

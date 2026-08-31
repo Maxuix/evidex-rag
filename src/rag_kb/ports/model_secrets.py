@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import Protocol
 
 from rag_kb.domain import ModelSecretEntry
 
 
-@runtime_checkable
 class ModelSecretStore(Protocol):
     def write(self, secret: str) -> str: ...
 

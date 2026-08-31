@@ -539,7 +539,8 @@ class _UnitOfWorkFactory:
     def __init__(self, indexing: _IndexingRepository) -> None:
         self._indexing = indexing
 
-    def __call__(self, *, purpose, mode):
+    def __call__(self, *, mode=None):
+        del mode
         return _UnitOfWork(self._indexing)
 
 

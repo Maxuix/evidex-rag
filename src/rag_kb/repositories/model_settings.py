@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol
 from uuid import UUID
 
 from rag_kb.domain import (
@@ -16,7 +16,6 @@ from rag_kb.domain import (
 )
 
 
-@runtime_checkable
 class ModelSettingsRepository(Protocol):
     async def list_secret_references(self) -> tuple[str, ...]: ...
 

@@ -31,7 +31,6 @@ from rag_kb.ports.model_api import ChatModelAdapter
 from rag_kb.uow import (
     TransactionMode,
     UnitOfWork,
-    UnitOfWorkPurpose,
     execute_in_transaction,
 )
 from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWorkFactory
@@ -153,7 +152,6 @@ async def load_frozen_judge_runtime(
         bundle = await execute_in_transaction(
             unit_of_work,
             resolve,
-            purpose=UnitOfWorkPurpose.REQUEST,
             mode=TransactionMode.REPEATABLE_READ_ONLY,
         )
         if bundle is None:

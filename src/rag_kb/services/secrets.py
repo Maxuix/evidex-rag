@@ -13,7 +13,6 @@ from rag_kb.uow import (
     TransactionMode,
     UnitOfWork,
     UnitOfWorkFactory,
-    UnitOfWorkPurpose,
     execute_in_transaction,
 )
 
@@ -55,7 +54,6 @@ class ModelSecretReconciliationService:
         references = await execute_in_transaction(
             self._unit_of_work,
             load,
-            purpose=UnitOfWorkPurpose.RECONCILIATION,
             mode=TransactionMode.REPEATABLE_READ_ONLY,
         )
         entries = await asyncio.to_thread(self._secret_store.list_entries)

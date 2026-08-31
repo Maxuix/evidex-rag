@@ -49,7 +49,6 @@ from rag_kb.retrieval.service import (
 from rag_kb.services.chat_execution import ChatEvidenceRetriever
 from rag_kb.uow import (
     TransactionMode,
-    UnitOfWorkPurpose,
     execute_in_transaction,
 )
 from tools.evaluate_adaptive_graph_route import (
@@ -421,7 +420,6 @@ async def _load_runtime_facts(dependencies, *, kb_id: UUID, model_revision_id: U
     knowledge_base, bundle = await execute_in_transaction(
         dependencies.unit_of_work,
         load,
-        purpose=UnitOfWorkPurpose.READ_SNAPSHOT,
         mode=TransactionMode.REPEATABLE_READ_ONLY,
     )
     if knowledge_base is None:

@@ -119,8 +119,8 @@ class _UnitOfWorkFactory:
         self._repository = repository
         self.commits = 0
 
-    def __call__(self, *, purpose, mode):
-        del purpose, mode
+    def __call__(self, *, mode=None):
+        del mode
         return _UnitOfWork(self, self._repository)
 
 

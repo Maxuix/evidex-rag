@@ -20,7 +20,6 @@ from rag_kb.domain import (
 from rag_kb.uow import (
     TransactionMode,
     UnitOfWorkConcurrencyError,
-    UnitOfWorkPurpose,
     UnitOfWorkStateError,
     execute_in_transaction,
 )
@@ -59,14 +58,14 @@ class AsyncDataAccessTests(unittest.IsolatedAsyncioTestCase):
         await self.database.close()
 
     async def test_commit_persists_and_finalizes_repository(self) -> None:
-        async with self.factory(purpose=UnitOfWorkPurpose.REQUEST) as unit_of_work:
+        async with self.factory() as unit_of_work:
             created = await unit_of_work.workspaces.add("committed-workspace")
             repository = unit_of_work.workspaces
             await unit_of_work.commit()
             with self.assertRaises(UnitOfWorkStateError):
                 await repository.get()
 
-        async with self.factory(purpose=UnitOfWorkPurpose.REQUEST) as unit_of_work:
+        async with self.factory() as unit_of_work:
             loaded = await unit_of_work.workspaces.get()
             await unit_of_work.rollback()
 
@@ -173,9 +172,7 @@ class AsyncDataAccessTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(snapshot_is_null)
 
     async def test_unit_of_work_cannot_cross_asyncio_task_boundary(self) -> None:
-        async with self.factory(
-            purpose=UnitOfWorkPurpose.HEARTBEAT
-        ) as unit_of_work:
+        async with self.factory() as unit_of_work:
             async def use_from_child_task() -> None:
                 await unit_of_work.workspaces.get()
 
@@ -190,9 +187,7 @@ class AsyncDataAccessTests(unittest.IsolatedAsyncioTestCase):
         )
 
         async def create(factory, name: str) -> Workspace:
-            async with factory(
-                purpose=UnitOfWorkPurpose.COMMAND
-            ) as unit_of_work:
+            async with factory() as unit_of_work:
                 workspace = await unit_of_work.workspaces.add(name)
                 await unit_of_work.commit()
                 return workspace
@@ -260,7 +255,6 @@ class AsyncDataAccessTests(unittest.IsolatedAsyncioTestCase):
         transaction_read_only = None
         with self.assertRaises(DBAPIError):
             async with self.factory(
-                purpose=UnitOfWorkPurpose.READ_SNAPSHOT,
                 mode=TransactionMode.REPEATABLE_READ_ONLY,
             ) as unit_of_work:
                 session = unit_of_work._require_session()

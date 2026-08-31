@@ -179,8 +179,8 @@ def _factory(repository):
     async def context():
         yield _UnitOfWork(repository)
 
-    def factory(*, purpose, mode):
-        del purpose, mode
+    def factory(*, mode=None):
+        del mode
         return context()
 
     return factory

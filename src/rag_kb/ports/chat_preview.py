@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import Protocol
 from uuid import UUID
 
 from rag_kb.domain.chat_preview import (
@@ -11,7 +11,6 @@ from rag_kb.domain.chat_preview import (
 )
 
 
-@runtime_checkable
 class ChatPreviewSink(Protocol):
     @property
     def enabled(self) -> bool: ...
@@ -25,7 +24,6 @@ class ChatPreviewSink(Protocol):
     ) -> None: ...
 
 
-@runtime_checkable
 class ChatPreviewSubscription(Protocol):
     async def next_event(self) -> ChatPreviewEvent: ...
 

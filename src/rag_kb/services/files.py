@@ -29,7 +29,7 @@ from rag_kb.services.content import (
     CREATE_VERSION_ENDPOINT,
     DocumentService,
 )
-from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, UnitOfWorkPurpose, execute_in_transaction
+from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, execute_in_transaction
 
 if TYPE_CHECKING:
     from rag_kb.services.markdown_media import MarkdownMediaNormalizer
@@ -201,7 +201,6 @@ class FileReconciliationService:
         references, pending, cleanup = await execute_in_transaction(
             self._unit_of_work,
             load,
-            purpose=UnitOfWorkPurpose.RECONCILIATION,
         )
 
         activated = 0
@@ -230,7 +229,6 @@ class FileReconciliationService:
             return await execute_in_transaction(
                 self._unit_of_work,
                 fail,
-                purpose=UnitOfWorkPurpose.RECONCILIATION,
             )
 
         for mutation in pending:
@@ -364,7 +362,6 @@ class FileReconciliationService:
             changed = await execute_in_transaction(
                 self._unit_of_work,
                 compensate,
-                purpose=UnitOfWorkPurpose.RECONCILIATION,
             )
             missing_compensated += int(changed)
             if changed:
@@ -412,7 +409,6 @@ class FileReconciliationService:
                 changed = await execute_in_transaction(
                     self._unit_of_work,
                     fail,
-                    purpose=UnitOfWorkPurpose.RECONCILIATION,
                 )
                 cleanup_failed += int(changed)
                 continue
@@ -425,7 +421,6 @@ class FileReconciliationService:
             changed = await execute_in_transaction(
                 self._unit_of_work,
                 complete,
-                purpose=UnitOfWorkPurpose.RECONCILIATION,
             )
             cleanup_completed += int(changed)
 
@@ -483,7 +478,6 @@ class FileReconciliationService:
         await execute_in_transaction(
             self._unit_of_work,
             schedule,
-            purpose=UnitOfWorkPurpose.RECONCILIATION,
         )
 
     def _checked_identity(

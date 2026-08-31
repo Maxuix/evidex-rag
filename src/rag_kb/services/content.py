@@ -31,7 +31,7 @@ from rag_kb.domain import (
     canonical_request_hash,
     validate_p1_answer_policy_defaults,
 )
-from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, UnitOfWorkPurpose, execute_in_transaction
+from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, execute_in_transaction
 
 
 CREATE_KB_ENDPOINT = "POST /api/v1/knowledge-bases"
@@ -332,7 +332,7 @@ class KnowledgeBaseService:
                 raise ResourceNotFoundError("knowledge base was not found")
             return result
 
-        return await execute_in_transaction(self._unit_of_work, load, purpose=UnitOfWorkPurpose.REQUEST)
+        return await execute_in_transaction(self._unit_of_work, load)
 
     async def list(
         self,
@@ -348,7 +348,7 @@ class KnowledgeBaseService:
             _require_scope(uow, context)
             return await uow.knowledge_bases.list(limit=limit, sort=sort, after=after)
 
-        return await execute_in_transaction(self._unit_of_work, load, purpose=UnitOfWorkPurpose.REQUEST)
+        return await execute_in_transaction(self._unit_of_work, load)
 
     async def update(
         self,
@@ -473,7 +473,7 @@ class DocumentService:
                 raise ResourceNotFoundError("document was not found")
             return document
 
-        return await execute_in_transaction(self._unit_of_work, load, purpose=UnitOfWorkPurpose.REQUEST)
+        return await execute_in_transaction(self._unit_of_work, load)
 
     async def get_detail(
         self, context: AuthContext, document_id: UUID
@@ -488,7 +488,7 @@ class DocumentService:
             return detail
 
         return await execute_in_transaction(
-            self._unit_of_work, load, purpose=UnitOfWorkPurpose.REQUEST
+            self._unit_of_work, load
         )
 
     async def inspect_chunks(
@@ -511,7 +511,7 @@ class DocumentService:
             return inspection
 
         return await execute_in_transaction(
-            self._unit_of_work, load, purpose=UnitOfWorkPurpose.READ_SNAPSHOT
+            self._unit_of_work, load
         )
 
     async def list(
@@ -531,7 +531,7 @@ class DocumentService:
                 raise ResourceNotFoundError("knowledge base was not found")
             return await uow.documents.list(kb_id=kb_id, limit=limit, sort=sort, after=after)
 
-        return await execute_in_transaction(self._unit_of_work, load, purpose=UnitOfWorkPurpose.REQUEST)
+        return await execute_in_transaction(self._unit_of_work, load)
 
     async def reserve_version(
         self,

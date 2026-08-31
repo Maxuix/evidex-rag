@@ -29,7 +29,6 @@ from rag_kb.retrieval.profile import (
 from rag_kb.uow import (
     UnitOfWork,
     UnitOfWorkFactory,
-    UnitOfWorkPurpose,
     execute_in_transaction,
 )
 
@@ -51,7 +50,7 @@ class ChatRunCoordinator:
             )
 
         return await execute_in_transaction(
-            self._unit_of_work, persist, purpose=UnitOfWorkPurpose.CLAIM
+            self._unit_of_work, persist
         )
 
     async def heartbeat(
@@ -61,7 +60,7 @@ class ChatRunCoordinator:
             return await uow.chat.heartbeat_run(lease, observed_at=observed_at)
 
         return await execute_in_transaction(
-            self._unit_of_work, persist, purpose=UnitOfWorkPurpose.HEARTBEAT
+            self._unit_of_work, persist
         )
 
     async def reconcile_stale(
@@ -85,7 +84,6 @@ class ChatRunCoordinator:
         return await execute_in_transaction(
             self._unit_of_work,
             persist,
-            purpose=UnitOfWorkPurpose.RECONCILIATION,
         )
 
 
@@ -98,7 +96,7 @@ class ChatExecutionContextLoader:
             return await uow.chat.load_execution_context(command.lease)
 
         context = await execute_in_transaction(
-            self._unit_of_work, load, purpose=UnitOfWorkPurpose.REQUEST
+            self._unit_of_work, load
         )
         if context is None:
             raise ChatPipelineExecutionError(

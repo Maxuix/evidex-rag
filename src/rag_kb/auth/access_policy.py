@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import Protocol
 from uuid import UUID
 
 from rag_kb.auth.context import AuthContext, MetadataFilter
@@ -12,7 +12,6 @@ class AccessDeniedError(RuntimeError):
     """The supplied identity is absent or outside the configured workspace."""
 
 
-@runtime_checkable
 class AccessPolicy(Protocol):
     def metadata_filter(self, context: AuthContext) -> MetadataFilter: ...
 

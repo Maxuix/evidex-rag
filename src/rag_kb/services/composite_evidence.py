@@ -10,7 +10,6 @@ from rag_kb.uow import (
     TransactionMode,
     UnitOfWork,
     UnitOfWorkFactory,
-    UnitOfWorkPurpose,
     execute_in_transaction,
 )
 
@@ -47,6 +46,5 @@ class CompositeEvidenceHydrationService:
         return await execute_in_transaction(
             self._unit_of_work,
             load,
-            purpose=UnitOfWorkPurpose.READ_SNAPSHOT,
             mode=TransactionMode.REPEATABLE_READ_ONLY,
         )

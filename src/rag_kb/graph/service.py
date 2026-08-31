@@ -28,7 +28,6 @@ from rag_kb.graph.schema_profiles import (
 from rag_kb.uow import (
     UnitOfWork,
     UnitOfWorkFactory,
-    UnitOfWorkPurpose,
     execute_in_transaction,
 )
 
@@ -75,7 +74,6 @@ class GraphConfigurationService:
         return await execute_in_transaction(
             self._unit_of_work,
             load,
-            purpose=UnitOfWorkPurpose.REQUEST,
         )
 
     async def get_view(self, context: AuthContext, kb_id: UUID) -> GraphConfigView:
@@ -89,7 +87,6 @@ class GraphConfigurationService:
         return await execute_in_transaction(
             self._unit_of_work,
             load,
-            purpose=UnitOfWorkPurpose.REQUEST,
         )
 
     async def configure(
@@ -188,7 +185,6 @@ class GraphExtractionWorker:
         work, retired = await execute_in_transaction(
             self._unit_of_work,
             claim,
-            purpose=UnitOfWorkPurpose.CLAIM,
         )
         await _recycle_graphiti_graphs(self._graphiti_graph, retired)
         if work is None:
@@ -210,7 +206,6 @@ class GraphExtractionWorker:
                     work.config.knowledge_base_id,
                     build_id=work.config.build_id,
                 ),
-                purpose=UnitOfWorkPurpose.REQUEST,
             )
             if build is None:
                 await self._mark_failed(
@@ -237,7 +232,6 @@ class GraphExtractionWorker:
                         extractor_version=build.extractor_version,
                         **_lease_kwargs(work),
                     ),
-                    purpose=UnitOfWorkPurpose.INDEXING,
                 )
                 return
 
@@ -262,7 +256,6 @@ class GraphExtractionWorker:
                     chunks = await execute_in_transaction(
                         self._unit_of_work,
                         load_batch,
-                        purpose=UnitOfWorkPurpose.REQUEST,
                     )
                     episode_uuids = tuple(await bulk_adder(build, chunks))
                 else:
@@ -292,7 +285,6 @@ class GraphExtractionWorker:
                     await execute_in_transaction(
                         self._unit_of_work,
                         persist_batch,
-                        purpose=UnitOfWorkPurpose.INDEXING,
                     )
                 except _GraphEpisodeCheckpointRejected:
                     log_event(
@@ -323,7 +315,6 @@ class GraphExtractionWorker:
                     work.config.knowledge_base_id,
                     build_id=build.build_id,
                 ),
-                purpose=UnitOfWorkPurpose.REQUEST,
             )
             if build.expected_episode_count and episode_uuid is None:
                 raise RuntimeError("Graphiti ready probe has no episode mapping")
@@ -355,7 +346,6 @@ class GraphExtractionWorker:
             _, retired = await execute_in_transaction(
                 self._unit_of_work,
                 finalize,
-                purpose=UnitOfWorkPurpose.INDEXING,
             )
             await _recycle_graphiti_graphs(self._graphiti_graph, retired)
         except Exception as error:
@@ -390,7 +380,6 @@ class GraphExtractionWorker:
         retired = await execute_in_transaction(
             self._unit_of_work,
             persist,
-            purpose=UnitOfWorkPurpose.INDEXING,
         )
         await _recycle_graphiti_graphs(self._graphiti_graph, retired)
 
@@ -414,7 +403,6 @@ class GraphExtractionWorker:
                         work,
                         observed_at=datetime.now(UTC),
                     ),
-                    purpose=UnitOfWorkPurpose.HEARTBEAT,
                 )
             except Exception as error:
                 log_exception(
@@ -443,7 +431,6 @@ class GraphExtractionWorker:
             await execute_in_transaction(
                 self._unit_of_work,
                 lambda uow: uow.graph.release_graph_work(work),
-                purpose=UnitOfWorkPurpose.RECONCILIATION,
             )
         except Exception as error:
             log_exception(

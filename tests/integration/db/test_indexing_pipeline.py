@@ -65,7 +65,7 @@ from rag_kb.services.content import DocumentService, KnowledgeBaseService
 from rag_kb.services.files import SourceFileService
 from rag_kb.services.indexing import IndexingJobService
 from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWorkFactory
-from rag_kb.uow import UnitOfWorkPurpose, execute_in_transaction
+from rag_kb.uow import execute_in_transaction
 
 
 MIGRATION_DSN = os.environ.get("RAG_KB_TEST_MIGRATION_DSN")
@@ -348,12 +348,10 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
         await execute_in_transaction(
             self.factory,
             lambda uow: uow.indexing.prepare(command),
-            purpose=UnitOfWorkPurpose.INDEXING,
         )
         changed = await execute_in_transaction(
             self.factory,
             lambda uow: uow.indexing.upsert_batch(command, (chunk,), (vector,)),
-            purpose=UnitOfWorkPurpose.INDEXING,
         )
         self.assertTrue(changed)
 
@@ -374,7 +372,6 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 lambda uow: uow.indexing.upsert_batch(
                     command, (chunk,), (conflicting,)
                 ),
-                purpose=UnitOfWorkPurpose.INDEXING,
             )
         self.assertEqual(
             failure.exception.code,
@@ -567,7 +564,6 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
                     wrong_owner,
                     observed_at=observed + timedelta(seconds=1),
                 ),
-                purpose=UnitOfWorkPurpose.HEARTBEAT,
             )
         )
         self.assertTrue(
@@ -577,7 +573,6 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
                     lease,
                     observed_at=observed + timedelta(seconds=1),
                 ),
-                purpose=UnitOfWorkPurpose.HEARTBEAT,
             )
         )
         due = observed + timedelta(seconds=10)
@@ -591,7 +586,6 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
                     error_code=ErrorCode.EMBEDDING_PROVIDER_UNAVAILABLE.value,
                     error_detail={"attempt": 1},
                 ),
-                purpose=UnitOfWorkPurpose.RECONCILIATION,
             )
         )
         self.assertIsNone(await second.claim_once())
@@ -624,7 +618,6 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
         await execute_in_transaction(
             self.factory,
             lambda uow: uow.indexing.prepare(_command(first)),
-            purpose=UnitOfWorkPurpose.INDEXING,
         )
         arrived_during_segment = await self._upload(
             kb.id,
@@ -647,7 +640,6 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
                     "page_to": 40,
                 },
             ),
-            purpose=UnitOfWorkPurpose.INDEXING,
         )
         self.assertTrue(yielded)
 
@@ -665,7 +657,6 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 error_code=ErrorCode.INDEX_PERSISTENCE_FAILED.value,
                 error_detail={"operation": "test_cleanup"},
             ),
-            purpose=UnitOfWorkPurpose.RECONCILIATION,
         )
 
         current[0] += timedelta(seconds=1)
@@ -947,7 +938,6 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 tasks_before=past,
                 limit=10,
             ),
-            purpose=UnitOfWorkPurpose.RECONCILIATION,
         )
         replay = await execute_in_transaction(
             self.factory,
@@ -957,7 +947,6 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 tasks_before=past,
                 limit=10,
             ),
-            purpose=UnitOfWorkPurpose.RECONCILIATION,
         )
         self.assertGreater(cleaned.chunks_deleted, 0)
         self.assertEqual(cleaned.chunks_deleted, cleaned.vectors_deleted)
@@ -986,20 +975,17 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 tasks_before=future,
                 limit=10,
             ),
-            purpose=UnitOfWorkPurpose.RECONCILIATION,
         )
         self.assertEqual(expired.jobs_deleted, 1)
         self.assertIsNone(
             await execute_in_transaction(
                 self.factory,
                 lambda uow: uow.indexing.get_job(first.job_id),
-                purpose=UnitOfWorkPurpose.REQUEST,
             )
         )
         serving = await execute_in_transaction(
             self.factory,
             lambda uow: uow.indexing.get_job(second.job_id),
-            purpose=UnitOfWorkPurpose.REQUEST,
         )
         self.assertIsNotNone(serving)
         self.assertEqual(serving.serving_status, "serving")
@@ -1065,7 +1051,6 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 data_before=future,
                 limit=1,
             ),
-            purpose=UnitOfWorkPurpose.RECONCILIATION,
         )
         self.assertEqual(len(listed), 1)
         self.assertEqual(
@@ -1089,7 +1074,6 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 tasks_before=past,
                 limit=1,
             ),
-            purpose=UnitOfWorkPurpose.RECONCILIATION,
         )
         too_recent = await execute_in_transaction(
             self.factory,
@@ -1099,7 +1083,6 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 tasks_before=past,
                 limit=1,
             ),
-            purpose=UnitOfWorkPurpose.RECONCILIATION,
         )
         self.assertEqual(wrong_workspace.retired_targets_cleaned, 0)
         self.assertEqual(too_recent.retired_targets_cleaned, 0)
@@ -1116,7 +1099,6 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 tasks_before=past,
                 limit=3,
             ),
-            purpose=UnitOfWorkPurpose.RECONCILIATION,
         )
         self.assertEqual(cleaned.retired_targets_cleaned, 1)
         self.assertEqual(cleaned.assets_deleted, 3)

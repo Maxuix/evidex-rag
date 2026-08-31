@@ -37,7 +37,6 @@ from rag_kb.repositories.sqlalchemy import SqlAlchemyWorkspaceRepository
 from rag_kb.uow.contracts import (
     TransactionMode,
     UnitOfWorkConcurrencyError,
-    UnitOfWorkPurpose,
     UnitOfWorkStateError,
 )
 
@@ -58,11 +57,9 @@ class SqlAlchemyUnitOfWork:
         sessions: async_sessionmaker[AsyncSession],
         *,
         workspace_id: UUID,
-        purpose: UnitOfWorkPurpose,
         mode: TransactionMode,
     ) -> None:
         self.workspace_id = workspace_id
-        self.purpose = purpose
         self.mode = mode
         self._sessions = sessions
         self._session: AsyncSession | None = None
@@ -262,12 +259,10 @@ class SqlAlchemyUnitOfWorkFactory:
     def __call__(
         self,
         *,
-        purpose: UnitOfWorkPurpose = UnitOfWorkPurpose.COMMAND,
         mode: TransactionMode = TransactionMode.READ_WRITE,
     ) -> SqlAlchemyUnitOfWork:
         return SqlAlchemyUnitOfWork(
             self._sessions,
             workspace_id=self._workspace_id,
-            purpose=purpose,
             mode=mode,
         )

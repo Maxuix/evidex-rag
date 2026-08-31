@@ -27,7 +27,7 @@ from rag_kb.domain import (
     ResourceStateConflictError,
 )
 from rag_kb.ports.model_secrets import ModelSecretStore
-from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, UnitOfWorkPurpose, execute_in_transaction
+from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, execute_in_transaction
 
 
 ModelProfileValidator = Callable[
@@ -79,7 +79,7 @@ class ModelSettingsService:
             return providers, profiles, selection
 
         providers, profiles, selection = await execute_in_transaction(
-            self._unit_of_work, load, purpose=UnitOfWorkPurpose.REQUEST
+            self._unit_of_work, load
         )
         health: dict[UUID, bool] = {}
         for provider in providers:
@@ -438,7 +438,6 @@ class ModelSettingsService:
         provider = await execute_in_transaction(
             self._unit_of_work,
             load,
-            purpose=UnitOfWorkPurpose.REQUEST,
         )
         try:
             api_key = await asyncio.to_thread(
@@ -472,7 +471,6 @@ class ModelSettingsService:
         bundle = await execute_in_transaction(
             self._unit_of_work,
             load,
-            purpose=UnitOfWorkPurpose.REQUEST,
         )
         snapshot: EmbeddingValidationSnapshot | None = None
         try:

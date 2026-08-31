@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import Protocol
 from uuid import UUID
 
 from rag_kb.domain import (
@@ -20,7 +20,6 @@ from rag_kb.domain import (
 )
 
 
-@runtime_checkable
 class VectorStore(Protocol):
     async def adjacent_chunks(
         self,
@@ -61,7 +60,6 @@ class VectorStore(Protocol):
     ) -> VectorSearchResult | None: ...
 
 
-@runtime_checkable
 class LexicalStore(Protocol):
     async def search(
         self,
@@ -75,7 +73,6 @@ class LexicalStore(Protocol):
     ) -> LexicalSearchResult | None: ...
 
 
-@runtime_checkable
 class GraphStore(Protocol):
     """Fixed-scope graph lookup; callers cannot submit arbitrary SQL or depth."""
 

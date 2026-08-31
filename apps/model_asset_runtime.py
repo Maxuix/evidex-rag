@@ -42,7 +42,6 @@ from rag_kb.services.content import (
 from rag_kb.uow import (
     UnitOfWork,
     UnitOfWorkFactory,
-    UnitOfWorkPurpose,
     execute_in_transaction,
 )
 
@@ -240,7 +239,6 @@ def build_graphiti_runtime(
         chat, embedding = await execute_in_transaction(
             unit_of_work,
             resolve,
-            purpose=UnitOfWorkPurpose.REQUEST,
         )
         if (
             chat is None
@@ -328,5 +326,4 @@ async def _embedding_bundle(
     return await execute_in_transaction(
         unit_of_work,
         resolve,
-        purpose=UnitOfWorkPurpose.REQUEST,
     )

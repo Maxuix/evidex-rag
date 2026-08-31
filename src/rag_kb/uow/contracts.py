@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 from types import TracebackType
-from typing import Protocol, runtime_checkable
+from typing import Protocol
 from uuid import UUID
 
 from rag_kb.repositories import (
@@ -20,16 +20,6 @@ from rag_kb.repositories import (
 )
 
 
-class UnitOfWorkPurpose(StrEnum):
-    REQUEST = "request"
-    COMMAND = "command"
-    CLAIM = "claim"
-    HEARTBEAT = "heartbeat"
-    RECONCILIATION = "reconciliation"
-    READ_SNAPSHOT = "read_snapshot"
-    INDEXING = "indexing"
-
-
 class TransactionMode(StrEnum):
     READ_WRITE = "read_write"
     REPEATABLE_READ_ONLY = "repeatable_read_only"
@@ -43,9 +33,7 @@ class UnitOfWorkConcurrencyError(UnitOfWorkStateError):
     """A child or concurrent task attempted to share the Unit of Work."""
 
 
-@runtime_checkable
 class UnitOfWork(Protocol):
-    purpose: UnitOfWorkPurpose
     mode: TransactionMode
     workspace_id: UUID
 
@@ -94,6 +82,5 @@ class UnitOfWorkFactory(Protocol):
     def __call__(
         self,
         *,
-        purpose: UnitOfWorkPurpose = UnitOfWorkPurpose.COMMAND,
         mode: TransactionMode = TransactionMode.READ_WRITE,
     ) -> UnitOfWork: ...

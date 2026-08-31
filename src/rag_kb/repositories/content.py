@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol
 from uuid import UUID
 
 from rag_kb.domain import (
@@ -24,7 +24,6 @@ from rag_kb.domain import (
 )
 
 
-@runtime_checkable
 class KnowledgeBaseRepository(Protocol):
     async def create(
         self,
@@ -61,7 +60,6 @@ class KnowledgeBaseRepository(Protocol):
     async def soft_delete(self, kb_id: UUID) -> KnowledgeBase | None: ...
 
 
-@runtime_checkable
 class DocumentRepository(Protocol):
     async def get(self, document_id: UUID) -> Document | None: ...
 
@@ -107,7 +105,6 @@ class DocumentRepository(Protocol):
     ) -> datetime | None: ...
 
 
-@runtime_checkable
 class ContentMutationRepository(Protocol):
     async def lock(self, scope: IdempotencyScope) -> None: ...
 
@@ -143,7 +140,6 @@ class ContentMutationRepository(Protocol):
     ) -> ContentMutation: ...
 
 
-@runtime_checkable
 class FileConsistencyRepository(Protocol):
     async def delete_expired_cleanup_records(
         self, *, before: datetime, limit: int

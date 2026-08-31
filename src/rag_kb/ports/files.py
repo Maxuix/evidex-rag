@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import BinaryIO, Protocol, runtime_checkable
+from typing import BinaryIO, Protocol
 from uuid import UUID
 
 from rag_kb.domain import (
@@ -15,7 +15,6 @@ from rag_kb.domain import (
 )
 
 
-@runtime_checkable
 class SourceFileStore(Protocol):
     async def stage(
         self,
@@ -55,7 +54,6 @@ class SourceFileStore(Protocol):
     def parse_uri(self, storage_uri: str) -> SourceFileIdentity: ...
 
 
-@runtime_checkable
 class IndexAssetStore(Protocol):
     async def put(
         self,

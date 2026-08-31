@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import Protocol
 
 from rag_kb.domain import (
     ChatModelRequest,
@@ -16,12 +16,10 @@ from rag_kb.domain import (
 )
 
 
-@runtime_checkable
 class ChatModelAdapter(Protocol):
     async def complete(self, request: ChatModelRequest) -> ChatModelResponse: ...
 
 
-@runtime_checkable
 class EmbeddingModelAdapter(Protocol):
     @property
     def embedding_space(self) -> EmbeddingSpaceDefinition: ...
@@ -34,7 +32,6 @@ class EmbeddingModelAdapter(Protocol):
     async def embed_query(self, text: str) -> tuple[float, ...]: ...
 
 
-@runtime_checkable
 class MultimodalEmbeddingAdapter(EmbeddingModelAdapter, Protocol):
     @property
     def embedding_space(self) -> EmbeddingSpaceDefinition: ...
@@ -52,7 +49,6 @@ class RerankerAdapterError(RuntimeError):
     """Content-safe local reranker adapter failure."""
 
 
-@runtime_checkable
 class TextRerankerAdapter(Protocol):
     @property
     def profile(self) -> RerankMode: ...

@@ -24,7 +24,7 @@ from rag_kb.domain import (
     RetrievalStrategy,
 )
 from rag_kb.retrieval.service import _pack_graph_search_evidence  # noqa: SLF001
-from rag_kb.uow import UnitOfWorkPurpose, execute_in_transaction
+from rag_kb.uow import execute_in_transaction
 from tools.evaluation_runtime import DEFAULT_RUNTIME_MANIFEST, load_evaluation_runtime
 from tools.run_adaptive_graph_r4 import _serving_chunk_rows
 
@@ -133,7 +133,6 @@ async def _run(arguments: argparse.Namespace) -> dict[str, Any]:
         knowledge_base = await execute_in_transaction(
             dependencies.unit_of_work,
             load_knowledge_base,
-            purpose=UnitOfWorkPurpose.REQUEST,
         )
         if (
             knowledge_base is None

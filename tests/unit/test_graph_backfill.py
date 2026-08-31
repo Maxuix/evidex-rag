@@ -310,8 +310,8 @@ def _factory(repository: _GraphRepository):
             repository.mappings[:] = mappings_before
             raise
 
-    def factory(*, purpose, mode):
-        del purpose, mode
+    def factory(*, mode=None):
+        del mode
         return context()
 
     return factory

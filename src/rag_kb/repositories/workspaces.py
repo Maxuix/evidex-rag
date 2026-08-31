@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import Protocol
 from rag_kb.domain import Workspace
 
 
-@runtime_checkable
 class WorkspaceRepository(Protocol):
     """Asynchronous persistence contract exposed to application services."""
 

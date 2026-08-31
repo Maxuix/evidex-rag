@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol
 
 from rag_kb.domain import ParserProfile, ParserProgress, ParserSource
 
@@ -36,7 +36,6 @@ class DocumentParseContinuation:
 ParserProgressHandler = Callable[[ParserProgress], Awaitable[None]]
 
 
-@runtime_checkable
 class DocumentParser(Protocol):
     async def parse(
         self,

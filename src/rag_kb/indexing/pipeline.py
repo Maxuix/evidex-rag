@@ -93,7 +93,7 @@ from rag_kb.ports.parsing import (
     DocumentParseResult,
     DocumentParser,
 )
-from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, UnitOfWorkPurpose, execute_in_transaction
+from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, execute_in_transaction
 
 
 ResultT = TypeVar("ResultT")
@@ -375,7 +375,6 @@ class IndexingPipeline:
         return await execute_in_transaction(
             self._unit_of_work,
             operation,
-            purpose=UnitOfWorkPurpose.INDEXING,
         )
 
     async def _read_source(self, target: IndexingTarget) -> bytes:

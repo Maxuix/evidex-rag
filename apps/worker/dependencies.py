@@ -82,7 +82,7 @@ from rag_kb.services.content import (
 from rag_kb.services.files import FileReconciliationService
 from rag_kb.services.secrets import ModelSecretReconciliationService
 from rag_kb.tokenizer import preflight_tokenizer
-from rag_kb.uow import UnitOfWork, UnitOfWorkPurpose, execute_in_transaction
+from rag_kb.uow import UnitOfWork, execute_in_transaction
 from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWorkFactory
 
 
@@ -468,7 +468,6 @@ def _chat_model_loader(
         bundle = await execute_in_transaction(
             unit_of_work,
             resolve,
-            purpose=UnitOfWorkPurpose.REQUEST,
         )
         if chat_deadline_seconds <= provider_retry_budget_seconds(
             bundle.provider_revision.timeout_seconds,

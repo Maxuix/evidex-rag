@@ -361,8 +361,8 @@ class _Factory:
         self.graph_repository = graph_repository
         self.active = False
 
-    def __call__(self, *, purpose, mode):
-        del purpose, mode
+    def __call__(self, *, mode=None):
+        del mode
         return _UnitOfWork(self)
 
 

@@ -10,7 +10,7 @@ from rag_kb.domain import (
     PromotionResult,
     PromotionReason,
 )
-from rag_kb.uow import UnitOfWorkFactory, UnitOfWorkPurpose, execute_in_transaction
+from rag_kb.uow import UnitOfWorkFactory, execute_in_transaction
 
 
 class CandidatePromotionService:
@@ -36,7 +36,6 @@ class CandidatePromotionService:
         result = await execute_in_transaction(
             self._unit_of_work,
             persist,
-            purpose=UnitOfWorkPurpose.INDEXING,
         )
         if result is None:
             raise IndexingExecutionError(

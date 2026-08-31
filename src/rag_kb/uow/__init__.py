@@ -5,7 +5,6 @@ from rag_kb.uow.contracts import (
     UnitOfWork,
     UnitOfWorkConcurrencyError,
     UnitOfWorkFactory,
-    UnitOfWorkPurpose,
     UnitOfWorkStateError,
 )
 from rag_kb.uow.operations import execute_in_transaction
@@ -15,7 +14,6 @@ __all__ = [
     "UnitOfWork",
     "UnitOfWorkConcurrencyError",
     "UnitOfWorkFactory",
-    "UnitOfWorkPurpose",
     "UnitOfWorkStateError",
     "execute_in_transaction",
 ]

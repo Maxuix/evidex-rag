@@ -50,7 +50,7 @@ from rag_kb.services.chat_visuals import (
     DEFAULT_CHAT_MAX_VISUAL_TOTAL_BYTES,
     DEFAULT_CHAT_VISUAL_MEDIA_PROFILE,
 )
-from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, UnitOfWorkPurpose, execute_in_transaction
+from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, execute_in_transaction
 
 
 CREATE_CHAT_RUN_ENDPOINT = "POST /api/v1/chat/runs"
@@ -144,7 +144,7 @@ class ChatService:
             )
 
         return await execute_in_transaction(
-            self._unit_of_work, load, purpose=UnitOfWorkPurpose.REQUEST
+            self._unit_of_work, load
         )
 
     async def list_messages(
@@ -172,7 +172,7 @@ class ChatService:
             return result
 
         return await execute_in_transaction(
-            self._unit_of_work, load, purpose=UnitOfWorkPurpose.REQUEST
+            self._unit_of_work, load
         )
 
     async def get_run(self, context: AuthContext, run_id: UUID) -> ChatRun:
@@ -190,7 +190,7 @@ class ChatService:
             return result
 
         return await execute_in_transaction(
-            self._unit_of_work, load, purpose=UnitOfWorkPurpose.REQUEST
+            self._unit_of_work, load
         )
 
     async def create_run(

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol
 from uuid import UUID
 
 from rag_kb.domain import (
@@ -23,7 +23,6 @@ from rag_kb.domain import (
 )
 
 
-@runtime_checkable
 class ChatRepository(Protocol):
     async def reconcile_stale_runs(
         self,

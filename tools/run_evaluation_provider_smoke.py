@@ -31,7 +31,7 @@ from rag_kb.domain import (
     ModelValidationStatus,
 )
 from rag_kb.services.model_settings import ModelProfileValidationError
-from rag_kb.uow import TransactionMode, UnitOfWorkPurpose, execute_in_transaction
+from rag_kb.uow import TransactionMode, execute_in_transaction
 from tools.evaluation_campaign_state import write_private_json
 from tools.evaluation_campaign_state import digest
 from tools.evaluation_resilience import (
@@ -180,7 +180,6 @@ async def _profile_bundle(dependencies, *, revision_id: UUID, kind: ModelKind):
     bundle = await execute_in_transaction(
         dependencies.unit_of_work,
         load,
-        purpose=UnitOfWorkPurpose.READ_SNAPSHOT,
         mode=TransactionMode.REPEATABLE_READ_ONLY,
     )
     if (
