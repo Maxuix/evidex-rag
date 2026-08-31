@@ -42,8 +42,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # The former exact-shape checks cannot be restored without rejecting valid
-    # current rows, and rewriting those rows is intentionally out of scope.
-    # Keep the data-preserving current schema/default when Alembic moves its
-    # version marker back.
-    return None
+    raise RuntimeError(
+        "Migration 0024_remove_agent_deadline_reserve does not support "
+        "downgrade; restore a matching backup if an older schema is required."
+    )
