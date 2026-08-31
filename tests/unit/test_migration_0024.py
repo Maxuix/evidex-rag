@@ -33,7 +33,13 @@ class RemoveAgentDeadlineReserveMigrationTests(unittest.TestCase):
 
     def test_offline_alembic_downgrade_fails_without_version_sql(self) -> None:
         output = io.StringIO()
-        config = Config(str(Path(__file__).resolve().parents[2] / "alembic.ini"))
+        # Exercise the real migration environment without fileConfig disabling
+        # application loggers in the shared test process.
+        config = Config()
+        config.set_main_option(
+            "script_location",
+            str(Path(__file__).resolve().parents[2] / "src/rag_kb/db/migrations"),
+        )
 
         with (
             patch.dict(

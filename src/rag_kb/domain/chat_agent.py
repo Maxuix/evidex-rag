@@ -26,9 +26,6 @@ CHAT_AGENT_REJECTION_REASONS = frozenset(
         "visual_ref",
         "conflict_shape",
         "conflict_ref",
-        "false_premise",
-        "unsupported_claim",
-        "unverifiable_submission",
     }
 )
 CHAT_GRAPH_SEARCH_RESULTS = frozenset(
@@ -162,7 +159,6 @@ class ChatAgentTraceEvent:
                 "search_graph_relations",
                 "calculate",
                 "submit_answer",
-                "verifier",
                 "protocol",
             }
             or self.status not in {"ok", "rejected", "salvaged", "refused"}

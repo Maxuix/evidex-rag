@@ -159,7 +159,7 @@ class ChatAgentTraceEventResponse(PublicSchema):
         "search_graph_relations",
         "calculate",
         "submit_answer",
-        "verifier",
+        "verifier",  # Historical traces only; current runs have no verifier.
         "protocol",
     ]
     status: Literal["ok", "rejected", "salvaged", "refused"]

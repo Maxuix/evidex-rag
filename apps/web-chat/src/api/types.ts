@@ -343,6 +343,7 @@ export interface GraphSchemaProfile {
 }
 
 export interface ChatAgentTraceEvent {
+  // "verifier" is retained only for displaying historical runs.
   tool: "search_knowledge_base" | "search_graph_relations" | "calculate" | "submit_answer" | "verifier" | "protocol";
   status: "ok" | "rejected" | "salvaged" | "refused";
   tool_call_id: string;

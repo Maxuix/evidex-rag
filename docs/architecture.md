@@ -519,7 +519,6 @@ load_context
   -> if the ordinary loop reaches its limit, one extra submit-only call finalizes
   -> budget exhaustion switches to submit-only wrap-up rounds
   -> claim-level deterministic validation and salvage
-  -> one structured verifier call (premise + per-claim support), programmatically enforced
   -> persist_result
 ```
 
@@ -537,11 +536,10 @@ ChatRun 内部 trace 保存 claim salvage 的 rejected count、内部 reason 与
 回答边界保持：
 
 - 零准入证据时确定性拒答；有证据时模型仍可判断问题无法充分回答。
-- 所有非 clarify 的 `answered`/`partial` 提交（含 forced finalize）都经过一次结构化校验轮：
-  独立的 JSON verdict 调用逐 claim 判定支持度并识别题面预设命题；`premise=unsupported`
-  时整体拒答，`unsupported`/`contradicted` 的 claim 被剔除（有剩余降级 `partial`，无剩余拒答），
-  verdict 输出不合规时重试一次、仍不合规则 fail-closed 拒答。校验轮不消耗普通模型轮次，
-  但计入 trace 与 token 累计。
+- 正常、repair 和 forced-finalize 提交通过确定性校验后直接渲染、持久化，不再追加独立
+  LLM Verifier 或 JSON verdict 重试。语义支持度及题面预设命题由生成模型结合证据判断，
+  不把引用合法性检查等同于事实正确性保证；原有 evidence-only 与错误前提拒答提示保留。
+  历史 Trace 中的 `verifier` 事件仍可只读展示，新运行不产生此类事件；历史 token 统计不改写。
 - 文档、历史与图片都是 prompt 中的不可信数据，不能扩大权限或引用范围。
 - `submit_answer` 必须通过严格参数和逐 claim 校验；非法 claim 被局部删除，仍有合法 claim 时
   降级为 `partial`，零合法 claim 才确定性拒答。

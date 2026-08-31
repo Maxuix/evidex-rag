@@ -914,7 +914,7 @@ class CommonContractTests(unittest.TestCase):
             supported_upload_media_types,
         )
 
-    def test_historical_agent_snapshots_ignore_retired_deadline_fields(self) -> None:
+    def test_historical_agent_snapshots_remain_readable(self) -> None:
         session = _chat_session_value()
         run = dataclass_replace(
             _chat_run_value(session),
@@ -931,7 +931,15 @@ class CommonContractTests(unittest.TestCase):
             },
             agent_trace={
                 "version": "native_tool_calling_agent_v3",
-                "events": [],
+                "events": [{
+                    "tool": "verifier",
+                    "status": "refused",
+                    "tool_call_id": "historical-verifier",
+                    "refs": [],
+                    "count": 0,
+                    "rejected_claim_count": 1,
+                    "rejection_reasons": ["false_premise"],
+                }],
                 "budget": {
                     "max_model_rounds": 8,
                     "max_graph_calls": 2,
@@ -962,6 +970,12 @@ class CommonContractTests(unittest.TestCase):
             "soft_deadline_reserve_seconds", body["trace"]["budget"]
         )
         self.assertNotIn("near_deadline", body["trace"]["diagnostics"])
+        self.assertEqual(body["trace"]["events"][0]["tool"], "verifier")
+        self.assertEqual(body["trace"]["events"][0]["status"], "refused")
+        self.assertNotIn("rejection_reasons", body["trace"]["events"][0])
+        self.assertEqual(
+            run.agent_trace["events"][0]["rejection_reasons"], ["false_premise"]
+        )
 
 
 class RetrievalApiContractTests(unittest.IsolatedAsyncioTestCase):

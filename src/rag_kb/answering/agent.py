@@ -59,7 +59,6 @@ from rag_kb.domain import (
     EvidenceEnvelope,
     EvidencePack,
     ErrorCode,
-    GraphSearchResult,
     PromptEvidence,
     RetrievalStrategy,
     ValidatedAnswer,
@@ -98,34 +97,6 @@ _SEARCH_CLOSED_FEEDBACK = (
     "once if needed, then submit the best supported answer or refuse."
 )
 _GENERIC_UNANSWERED = "Some requested parts remain unanswered"
-_UNVERIFIABLE_CLAIM_NOTE = (
-    "Some claims were removed because the cited evidence did not support them"
-)
-_VERIFIER_EXCERPT_LIMIT = 1200
-_VERIFIER_MAX_OUTPUT_TOKENS = 1024
-_VERIFIER_MAX_ATTEMPTS = 2
-_VERIFIER_SYSTEM_PROMPT = (
-    "You are the verification stage of a knowledge-base answering pipeline. "
-    "You receive the user query and the answer claims proposed by the "
-    "answering agent, each with the exact evidence excerpts cited for it. "
-    "Judge strictly. First, premise: a query can presuppose a fact (for "
-    "example 'why did X acquire Y' presupposes that X acquired Y, or 'when "
-    "does the approved policy take effect' presupposes the policy was "
-    "approved). Answer 'unsupported' when the query presupposes a fact that "
-    "no cited evidence explicitly confirms, 'none' when the query presupposes "
-    "nothing checkable, otherwise 'supported'. Second, for every claim decide "
-    "whether its cited evidence explicitly supports the claim text as "
-    "written: 'supported', 'unsupported' (the evidence is missing, off-topic, "
-    "or only partially relevant), or 'contradicted' (the evidence states the "
-    "opposite). Similarly named entities, adjacent topics, and absence of "
-    "evidence never count as support. Respond with only a JSON object of the "
-    'form {"premise":"...","claims":[{"index":0,"support":"..."}]} covering '
-    "every claim index exactly once."
-)
-_VERIFIER_RETRY_FEEDBACK = (
-    "Your previous response was not a valid verification verdict. Respond "
-    "with only the required JSON object."
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,21 +107,6 @@ class _SubmissionValidation:
     rejected_claim_count: int = 0
     rejection_reasons: tuple[str, ...] = ()
     repair_eligible: bool = False
-
-
-@dataclass(frozen=True, slots=True)
-class _SubmissionVerdict:
-    premise: str
-    claim_support: tuple[str, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class _SubmissionVerification:
-    validated: ValidatedAnswer
-    retained_refs: tuple[str, ...]
-    salvaged: bool
-    call_records: tuple[Any, ...]
-    event: ChatAgentTraceEvent
 
 
 @dataclass(slots=True)
@@ -821,18 +777,6 @@ class NativeToolCallingAgent:
                         )
                     )
                     continue
-                if validated.outcome in {AnswerOutcome.ANSWERED, AnswerOutcome.PARTIAL}:
-                    verification = await self._verify_submission(
-                        context,
-                        validated,
-                        prompt_by_ref,
-                        tuple(calls),
-                    )
-                    calls.extend(verification.call_records)
-                    events.append(verification.event)
-                    validated = verification.validated
-                    retained_refs = verification.retained_refs
-                    salvaged = salvaged or verification.salvaged
                 return _final_state(
                     context,
                     evidence,
@@ -920,18 +864,6 @@ class NativeToolCallingAgent:
                 budget_wrap_up=wrap_up_notice_sent,
             )
         )
-        if validated.outcome in {AnswerOutcome.ANSWERED, AnswerOutcome.PARTIAL}:
-            verification = await self._verify_submission(
-                context,
-                validated,
-                prompt_by_ref,
-                tuple(calls),
-            )
-            calls.extend(verification.call_records)
-            events.append(verification.event)
-            validated = verification.validated
-            retained_refs = verification.retained_refs
-            salvaged = salvaged or verification.salvaged
         return _final_state(
             context,
             evidence,
@@ -959,10 +891,6 @@ class NativeToolCallingAgent:
         tools: tuple[ChatToolDefinition, ...],
         tool_choice: ChatToolChoice | str,
         prior_calls: tuple[Any, ...],
-        *,
-        operation: ChatModelOperation = ChatModelOperation.AGENT_ROUND,
-        response_format: Mapping[str, Any] | None = None,
-        max_output_tokens: int | None = None,
     ) -> ChatModelResponse:
         try:
             response = await complete_model(
@@ -972,13 +900,8 @@ class NativeToolCallingAgent:
                     tools=tools,
                     tool_choice=tool_choice,
                     parallel_tool_calls=False,
-                    max_output_tokens=(
-                        max_output_tokens
-                        if max_output_tokens is not None
-                        else _model_output_limit(context)
-                    ),
+                    max_output_tokens=_model_output_limit(context),
                     model_profile_revision_id=_model_revision_id(context),
-                    response_format=response_format,
                 ),
                 phase=ChatPipelinePhase.GENERATE_OR_REFUSE,
             )
@@ -991,151 +914,9 @@ class NativeToolCallingAgent:
                 phase=ChatPipelinePhase.GENERATE_OR_REFUSE,
             )
         except ChatPipelineExecutionError as error:
-            record = model_call_record(operation, response)
+            record = model_call_record(ChatModelOperation.AGENT_ROUND, response)
             raise error.retain_model_calls((*prior_calls, record))
         return response
-
-    async def _verify_submission(
-        self,
-        context: ChatExecutionContext,
-        validated: ValidatedAnswer,
-        prompt_by_ref: Mapping[str, PromptEvidence],
-        prior_calls: tuple[Any, ...],
-    ) -> _SubmissionVerification:
-        """Programmatically enforce premise and per-claim evidence support."""
-
-        prompts_by_citation = {
-            item.citation_id: item for item in prompt_by_ref.values()
-        }
-        payload = {
-            "query": context.query,
-            "claims": [
-                {
-                    "index": index,
-                    "text": claim.text,
-                    "evidence": [
-                        {
-                            "citation_id": citation_id,
-                            "excerpt": prompts_by_citation[citation_id].excerpt[
-                                :_VERIFIER_EXCERPT_LIMIT
-                            ],
-                        }
-                        for citation_id in claim.citation_ids
-                    ],
-                }
-                for index, claim in enumerate(validated.claims)
-            ],
-        }
-        messages = [
-            ChatModelMessage("system", _VERIFIER_SYSTEM_PROMPT),
-            ChatModelMessage(
-                "user",
-                json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
-            ),
-        ]
-        records: list[Any] = []
-        verdict: _SubmissionVerdict | None = None
-        for _ in range(_VERIFIER_MAX_ATTEMPTS):
-            response = await self._complete_round(
-                context,
-                messages,
-                (),
-                ChatToolChoice.NONE,
-                (*prior_calls, *records),
-                operation=ChatModelOperation.AGENT_VERIFIER,
-                response_format={"type": "json_object"},
-                max_output_tokens=min(
-                    _model_output_limit(context), _VERIFIER_MAX_OUTPUT_TOKENS
-                ),
-            )
-            records.append(
-                model_call_record(ChatModelOperation.AGENT_VERIFIER, response)
-            )
-            verdict = _submission_verdict(
-                response.content, claim_count=len(validated.claims)
-            )
-            if verdict is not None:
-                break
-            messages.append(ChatModelMessage("assistant", response.content or ""))
-            messages.append(ChatModelMessage("user", _VERIFIER_RETRY_FEEDBACK))
-
-        citation_to_ref = {
-            item.citation_id: ref for ref, item in prompt_by_ref.items()
-        }
-
-        def refs_for(claims: Sequence[AnswerClaim]) -> tuple[str, ...]:
-            return tuple(
-                dict.fromkeys(
-                    citation_to_ref[citation_id]
-                    for claim in claims
-                    for citation_id in claim.citation_ids
-                )
-            )
-
-        if verdict is None or verdict.premise == "unsupported":
-            final = _refusal_answer()
-            retained_refs: tuple[str, ...] = ()
-            dropped = len(validated.claims)
-            reasons = (
-                {"false_premise"}
-                if verdict is not None
-                else {"unverifiable_submission"}
-            )
-        else:
-            dropped_indexes = {
-                index
-                for index, support in enumerate(verdict.claim_support)
-                if support != "supported"
-            }
-            dropped = len(dropped_indexes)
-            if not dropped_indexes:
-                final = validated
-                retained_refs = refs_for(validated.claims)
-                reasons = set()
-            else:
-                kept = tuple(
-                    claim
-                    for index, claim in enumerate(validated.claims)
-                    if index not in dropped_indexes
-                )
-                reasons = {"unsupported_claim"}
-                if not kept:
-                    final = _refusal_answer()
-                    retained_refs = ()
-                else:
-                    final = ValidatedAnswer(
-                        outcome=AnswerOutcome.PARTIAL,
-                        claims=kept,
-                        missing_aspects=tuple(
-                            dict.fromkeys(
-                                (*validated.missing_aspects, _UNVERIFIABLE_CLAIM_NOTE)
-                            )
-                        ),
-                        source=validated.source,
-                    )
-                    retained_refs = refs_for(kept)
-        event = ChatAgentTraceEvent(
-            tool="verifier",
-            status=(
-                "refused"
-                if final.outcome is AnswerOutcome.REFUSED
-                else "salvaged"
-                if dropped
-                else "ok"
-            ),
-            tool_call_id=records[-1].provider_request_id or "verifier",
-            refs=retained_refs[:_TRACE_REF_LIMIT],
-            count=len(final.claims),
-            rejected_claim_count=dropped,
-            rejection_reasons=tuple(sorted(reasons)),
-        )
-        return _SubmissionVerification(
-            validated=final,
-            retained_refs=retained_refs,
-            salvaged=final is not validated,
-            call_records=tuple(records),
-            event=event,
-        )
 
     async def _prepare_visuals(
         self,
@@ -1704,51 +1485,6 @@ def _validated_conflict(
         return None, (), "conflict_shape"
     refs = tuple(dict.fromkeys((*supporting_refs, *conflicting_refs)))
     return conflict, refs, ""
-
-
-def _submission_verdict(
-    content: str | None,
-    *,
-    claim_count: int,
-) -> _SubmissionVerdict | None:
-    """Parse and strictly validate the verifier's JSON verdict."""
-
-    if not content:
-        return None
-    try:
-        payload = json.loads(content)
-    except ValueError:
-        return None
-    if not isinstance(payload, dict) or set(payload) != {"premise", "claims"}:
-        return None
-    premise = payload["premise"]
-    if premise not in {"supported", "unsupported", "none"}:
-        return None
-    raw_claims = payload["claims"]
-    if not isinstance(raw_claims, list) or len(raw_claims) != claim_count:
-        return None
-    support: list[str | None] = [None] * claim_count
-    for item in raw_claims:
-        if not isinstance(item, dict) or set(item) != {"index", "support"}:
-            return None
-        index = item["index"]
-        value = item["support"]
-        if (
-            isinstance(index, bool)
-            or not isinstance(index, int)
-            or not 0 <= index < claim_count
-            or support[index] is not None
-        ):
-            return None
-        if value not in {"supported", "unsupported", "contradicted"}:
-            return None
-        support[index] = value
-    if any(value is None for value in support):
-        return None
-    return _SubmissionVerdict(
-        premise=premise,
-        claim_support=tuple(value for value in support if value is not None),
-    )
 
 
 def _validate_submission(
