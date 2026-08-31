@@ -672,27 +672,13 @@ def _contains_marker(content: str, markers: Sequence[str]) -> bool:
     )
 
 
-def _complete_conflict_structure(conflict: Any) -> bool:
-    if conflict is None:
-        return False
-    supporting = tuple(getattr(conflict, "supporting_citation_ids", ()) or ())
-    conflicting = tuple(getattr(conflict, "conflicting_citation_ids", ()) or ())
-    conflict_type = getattr(conflict, "conflict_type", None)
-    adjudication = getattr(conflict, "adjudication", None)
-    if not supporting or not conflicting:
-        return False
-    if set(supporting) & set(conflicting):
-        return False
-    if conflict_type in {None, ""} or adjudication in {None, ""}:
-        return False
-    return True
-
-
-def _has_complete_conflict_claim(answering: Any) -> bool:
-    validated = getattr(answering, "validated", None)
-    claims = getattr(validated, "claims", ()) or ()
-    return any(
-        _complete_conflict_structure(getattr(claim, "conflict", None)) for claim in claims
+def _cited_document_count(citations: Any) -> int:
+    return len(
+        {
+            item.evidence.document_id
+            for item in citations
+            if getattr(item, "evidence", None) is not None
+        }
     )
 
 
@@ -709,6 +695,9 @@ def _score_public(case: Mapping[str, Any]) -> Callable[[str, Any, Any], Mapping[
     def score(content: str, citations: Any, answering: Any) -> Mapping[str, Any]:
         actual = answering.validated.outcome.value
         answer_like = {"answered", "partial"}
+        matched, available = _lexical_match(content, case)
+        lexical_ok = matched if available else True
+        cited_document_count = _cited_document_count(citations)
         if action in {"refuse_insufficient_evidence", "refuse_closed_world_absent", "decline_or_correct_false_premise"}:
             policy_correct = actual == "refused"
         elif action == "request_clarification":
@@ -716,25 +705,23 @@ def _score_public(case: Mapping[str, Any]) -> Callable[[str, Any, Any], Mapping[
                 content, ("?", "which one", "which actor", "referring", "specify", "clarify")
             )
         elif action == "surface_evidence_conflict":
-            policy_correct = actual in answer_like and _has_complete_conflict_claim(
-                answering
+            policy_correct = (
+                actual in answer_like
+                and lexical_ok
+                and cited_document_count >= 2
             )
         elif action == "answer_without_false_conflict":
-            policy_correct = actual in answer_like and not _has_complete_conflict_claim(
-                answering
-            )
+            policy_correct = actual in answer_like and lexical_ok
         else:
             policy_correct = actual in answer_like
-        matched, available = _lexical_match(content, case)
         return {
             "expected_action": action,
             "stratum": str(case.get("stratum", "unknown")),
             "policy_correct": bool(policy_correct),
             "lexical_answer_match": bool(matched),
             "lexical_answer_match_available": bool(available),
-            "conflict_marker_present": _contains_marker(
-                content, ("conflict", "contradict", "outdated", "different", "disagree")
-            ),
+            "cited_document_count": cited_document_count,
+            "multi_document_evidence": cited_document_count >= 2,
             "clarification_marker_present": _contains_marker(
                 content, ("?", "clarify", "specify", "referring")
             ),

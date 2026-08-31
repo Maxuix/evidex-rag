@@ -549,10 +549,11 @@ ChatRun 内部 trace 保存 claim salvage 的 rejected count 与内部 reason，
   降级为 `partial`，零合法 claim 或提交外形非法时确定性拒答，不调用模型修复提交。
   新 Trace 不再记录 repair 计数；历史 Trace 不改写。
 - 事实 claim 只能引用本次已授权 Evidence；实际未加载的图片不能产生视觉引用。
-- 同一主题上互不兼容的证据必须用 claim 上的可选 `conflict` 结构披露（supporting/
-  conflicting citation、type、adjudication）。这不是新的 outcome，也不持久化；渲染仍把
-  claim 文本与扁平 `[n]` 引用交给前端，历史回放与公共 API 不变。非法 conflict claim 按
-  现有 salvage 丢弃：仍有合法 claim 时降为 `partial`，否则拒答。
+- 同一主题上互不兼容的证据直接写成普通 claim 文本，并在 `evidence_refs` 中引用冲突双方；
+  没有 `kind/conflict/type/adjudication` 分支、冲突领域对象或额外持久化字段。
+- 公开冲突评测不再把模型自报的结构标签当作正确性证明。`surface_evidence_conflict` 要求
+  回答命中 gold 文本且至少引用两个不同文档，并单独报告多文档覆盖；该确定性指标不声称
+  已完成语义级冲突判定。`answer_without_false_conflict` 按普通回答和 gold 命中评分。
 - Graph 关系检索水合后的 text/table Chunk 同时保留 `graph_path` provenance 与对应的
   `text`/`table_text` 表示；路径 provenance 不是视觉形态，只有缺少可引用文本表示的纯视觉
   Evidence 才必须先实际加载资产。

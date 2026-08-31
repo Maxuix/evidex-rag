@@ -31,19 +31,6 @@ class AnswerControlReason(StrEnum):
     NO_USABLE_EVIDENCE = "no_usable_evidence"
 
 
-class AnswerConflictType(StrEnum):
-    TEMPORAL = "temporal"
-    VERSION = "version"
-    OPINION = "opinion"
-    MISINFORMATION = "misinformation"
-    UNKNOWN = "unknown"
-
-
-class AnswerConflictAdjudication(StrEnum):
-    RESOLVABLE = "resolvable"
-    UNRESOLVABLE = "unresolvable"
-
-
 class ChatModelOperation(StrEnum):
     AGENT_ROUND = "agent_round"
     CONTEXTUALIZE_QUERY = "contextualize_query"
@@ -170,30 +157,9 @@ class ChatModelVisualContent:
 
 
 @dataclass(frozen=True, slots=True)
-class AnswerConflict:
-    supporting_citation_ids: tuple[str, ...]
-    conflicting_citation_ids: tuple[str, ...]
-    conflict_type: AnswerConflictType
-    adjudication: AnswerConflictAdjudication
-
-    def __post_init__(self) -> None:
-        _require_unique_strings(
-            self.supporting_citation_ids, field="answer conflict supporting citations"
-        )
-        _require_unique_strings(
-            self.conflicting_citation_ids, field="answer conflict conflicting citations"
-        )
-        if not self.supporting_citation_ids or not self.conflicting_citation_ids:
-            raise ValueError("answer conflict sides must be non-empty")
-        if set(self.supporting_citation_ids) & set(self.conflicting_citation_ids):
-            raise ValueError("answer conflict sides must be disjoint")
-
-
-@dataclass(frozen=True, slots=True)
 class AnswerClaim:
     text: str
     citation_ids: tuple[str, ...]
-    conflict: AnswerConflict | None = None
 
     def __post_init__(self) -> None:
         if not self.text.strip() or len(self.text) > 4000:
@@ -204,12 +170,6 @@ class AnswerClaim:
             or any(not value.strip() for value in self.citation_ids)
         ):
             raise ValueError("answer claim citations are invalid")
-        if self.conflict is not None:
-            conflict_ids = set(self.conflict.supporting_citation_ids) | set(
-                self.conflict.conflicting_citation_ids
-            )
-            if not conflict_ids.issubset(self.citation_ids):
-                raise ValueError("answer conflict citations must belong to the claim")
 
 
 @dataclass(frozen=True, slots=True)

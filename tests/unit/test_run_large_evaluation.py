@@ -2,12 +2,10 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 import unittest
+from uuid import uuid4
 
 from rag_kb.domain import (
     AnswerClaim,
-    AnswerConflict,
-    AnswerConflictAdjudication,
-    AnswerConflictType,
     AnswerControlReason,
     AnswerDraftSource,
     AnswerOutcome,
@@ -22,25 +20,11 @@ from tools.run_large_evaluation import (
 )
 
 
-def _answering(*, outcome: str, conflict: bool) -> SimpleNamespace:
+def _answering(*, outcome: str) -> SimpleNamespace:
     claims: tuple[AnswerClaim, ...] = ()
     missing: tuple[str, ...] = ()
     if outcome in {"answered", "partial"}:
-        if conflict:
-            claims = (
-                AnswerClaim(
-                    text="A later version reports 12; an older memo reports 10.",
-                    citation_ids=("cite_1", "cite_2"),
-                    conflict=AnswerConflict(
-                        supporting_citation_ids=("cite_1",),
-                        conflicting_citation_ids=("cite_2",),
-                        conflict_type=AnswerConflictType.VERSION,
-                        adjudication=AnswerConflictAdjudication.RESOLVABLE,
-                    ),
-                ),
-            )
-        else:
-            claims = (AnswerClaim(text="Revenue was 10.", citation_ids=("cite_1",)),)
+        claims = (AnswerClaim(text="Revenue was 10.", citation_ids=("cite_1",)),)
         if outcome == "partial":
             missing = ("cause",)
     validated = ValidatedAnswer(
@@ -56,59 +40,71 @@ def _answering(*, outcome: str, conflict: bool) -> SimpleNamespace:
 
 
 class PublicScorerConflictTests(unittest.TestCase):
-    def test_surface_evidence_conflict_requires_a_complete_conflict_claim(self) -> None:
+    @staticmethod
+    def _citation(document_id) -> SimpleNamespace:
+        return SimpleNamespace(evidence=SimpleNamespace(document_id=document_id))
+
+    def test_surface_evidence_conflict_requires_gold_and_two_documents(self) -> None:
         score = _score_public(
             {
                 "expected_action": "surface_evidence_conflict",
                 "stratum": "conflicting_info",
+                "gold_answer": "12 and 10",
             }
         )
-        keyword_only = score(
-            "The sources conflict and disagree on the amount.",
+        no_evidence = score(
+            "The sources conflict: one says 12 and one says 10.",
             (),
-            _answering(outcome="answered", conflict=False),
+            _answering(outcome="answered"),
         )
-        self.assertFalse(keyword_only["policy_correct"])
-        self.assertTrue(keyword_only["conflict_marker_present"])
+        self.assertFalse(no_evidence["policy_correct"])
+        self.assertFalse(no_evidence["multi_document_evidence"])
 
-        structured = score(
-            "The sources conflict and disagree on the amount.",
-            (),
-            _answering(outcome="answered", conflict=True),
+        first, second = uuid4(), uuid4()
+        covered = score(
+            "The sources report 12 and 10.",
+            (self._citation(first), self._citation(second)),
+            _answering(outcome="answered"),
         )
-        self.assertTrue(structured["policy_correct"])
-        self.assertTrue(structured["conflict_marker_present"])
+        self.assertTrue(covered["policy_correct"])
+        self.assertEqual(covered["cited_document_count"], 2)
+
+        duplicated = score(
+            "The sources report 12 and 10.",
+            (self._citation(first), self._citation(first)),
+            _answering(outcome="answered"),
+        )
+        self.assertFalse(duplicated["policy_correct"])
 
         refused = score(
-            "The sources conflict.",
+            "The sources report 12 and 10.",
             (),
-            _answering(outcome="refused", conflict=False),
+            _answering(outcome="refused"),
         )
         self.assertFalse(refused["policy_correct"])
 
-    def test_answer_without_false_conflict_rejects_conflict_claims(self) -> None:
+    def test_answer_without_false_conflict_uses_answer_correctness_not_a_label(self) -> None:
         score = _score_public(
-            {"expected_action": "answer_without_false_conflict"}
+            {"expected_action": "answer_without_false_conflict", "gold_answer": "Revenue was 10"}
         )
         clean = score(
             "Revenue was 10.",
             (),
-            _answering(outcome="answered", conflict=False),
+            _answering(outcome="answered"),
         )
         self.assertTrue(clean["policy_correct"])
-        self.assertFalse(clean["conflict_marker_present"])
 
-        false_conflict = score(
-            "Revenue was 10.",
+        wrong = score(
+            "Revenue was 12.",
             (),
-            _answering(outcome="answered", conflict=True),
+            _answering(outcome="answered"),
         )
-        self.assertFalse(false_conflict["policy_correct"])
+        self.assertFalse(wrong["policy_correct"])
 
         refused = score(
             "Revenue was 10.",
             (),
-            _answering(outcome="refused", conflict=False),
+            _answering(outcome="refused"),
         )
         self.assertFalse(refused["policy_correct"])
 

@@ -24,8 +24,6 @@ CHAT_AGENT_REJECTION_REASONS = frozenset(
         "evidence_ref",
         "calculation_ref",
         "visual_ref",
-        "conflict_shape",
-        "conflict_ref",
     }
 )
 CHAT_GRAPH_SEARCH_RESULTS = frozenset(

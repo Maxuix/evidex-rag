@@ -16,8 +16,6 @@ from rag_kb.answering.agent import (
     _tools,
 )
 from rag_kb.domain import (
-    AnswerConflictAdjudication,
-    AnswerConflictType,
     AnswerOutcome,
     CHAT_GRAPH_SEARCH_REASONS,
     ChatAgentBudget,
@@ -426,31 +424,22 @@ def _same_unit_table_visual_pack(
 
 
 class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
-    def test_system_prompt_requires_structured_conflict_claims(self) -> None:
+    def test_system_prompt_requests_plain_claim_conflict_disclosure(self) -> None:
         prompt = _initial_messages(_context(), ChatAgentBudget())[0].content
-        self.assertIn('kind="conflict"', prompt)
-        self.assertIn("supporting_refs", prompt)
-        self.assertIn("Do not silently merge a conflict into a one-sided fact claim", prompt)
+        self.assertIn("explain the disagreement in ordinary claim text", prompt)
+        self.assertIn("cite the evidence for every side", prompt)
+        self.assertNotIn('kind="conflict"', prompt)
 
-    def test_submit_answer_schema_accepts_conflict_claims(self) -> None:
+    def test_submit_answer_schema_has_one_plain_claim_shape(self) -> None:
         submit = next(tool for tool in _tools() if tool.name == "submit_answer")
         claim = submit.input_schema["properties"]["claims"]["items"]
-        self.assertEqual(claim["properties"]["kind"]["enum"], ("fact", "conflict"))
-        conflict = claim["properties"]["conflict"]
         self.assertEqual(
-            set(conflict["required"]),
-            {"supporting_refs", "conflicting_refs", "type", "adjudication"},
+            set(claim["properties"]),
+            {"text", "evidence_refs", "calculation_refs"},
         )
-        self.assertFalse(conflict["additionalProperties"])
-        self.assertEqual(
-            conflict["properties"]["type"]["enum"],
-            tuple(item.value for item in AnswerConflictType),
-        )
-        self.assertEqual(
-            conflict["properties"]["adjudication"]["enum"],
-            tuple(item.value for item in AnswerConflictAdjudication),
-        )
-        self.assertIn("kind='conflict'", submit.description)
+        self.assertEqual(set(claim["required"]), {"text", "evidence_refs"})
+        self.assertFalse(claim["additionalProperties"])
+        self.assertIn("include every side in evidence_refs", submit.description)
 
     def test_adaptive_prompt_describes_first_class_graph_without_commands(self) -> None:
         prompt = _initial_messages(
@@ -672,7 +661,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
                     "claims": [
                         {
                             "text": "Revenue was 10 in 2025.",
-                            "kind": "fact",
+
                             "evidence_refs": ["ev_1"],
                             "calculation_refs": [],
                         }
@@ -773,7 +762,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
                     "claims": [
                         {
                             "text": "Revenue was 10 in 2025.",
-                            "kind": "fact",
+
                             "evidence_refs": ["ev_1"],
                             "calculation_refs": [],
                         }
@@ -811,7 +800,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
                     "claims": [
                         {
                             "text": "The relation is supported by Graph.",
-                            "kind": "fact",
+
                             "evidence_refs": ["ev_1"],
                             "calculation_refs": [],
                         }
@@ -890,7 +879,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
                     "claims": [
                         {
                             "text": "The chain is complete.",
-                            "kind": "fact",
+
                             "evidence_refs": ["ev_1", "ev_2", "ev_3"],
                             "calculation_refs": [],
                         }
@@ -1029,7 +1018,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
                     "claims": [
                         {
                             "text": "The Simple source appears sufficient.",
-                            "kind": "fact",
+
                             "evidence_refs": ["ev_1"],
                             "calculation_refs": [],
                         }
@@ -1092,7 +1081,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
                     "claims": [
                         {
                             "text": "The direct relation is supported.",
-                            "kind": "fact",
+
                             "evidence_refs": ["ev_1"],
                             "calculation_refs": [],
                         }
@@ -1186,7 +1175,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
                     "claims": [
                         {
                             "text": "The relation is supported by both paths.",
-                            "kind": "fact",
+
                             "evidence_refs": ["ev_1", "ev_2"],
                             "calculation_refs": [],
                         }
@@ -1234,8 +1223,8 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
                 {
                     "outcome": "answered",
                     "claims": [
-                        {"text": "Revenue was 10.", "kind": "fact", "evidence_refs": ["ev_1"], "calculation_refs": []},
-                        {"text": "Unsupported.", "kind": "fact", "evidence_refs": ["ev_other_run"], "calculation_refs": []},
+                        {"text": "Revenue was 10.", "evidence_refs": ["ev_1"], "calculation_refs": []},
+                        {"text": "Unsupported.", "evidence_refs": ["ev_other_run"], "calculation_refs": []},
                     ],
                     "unanswered": [],
                 },
@@ -1259,7 +1248,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         ]
         self.assertEqual(submit_events[-1].status, "salvaged")
 
-    async def test_valid_conflict_claim_is_retained_with_structure(self) -> None:
+    async def test_conflicting_evidence_uses_plain_claim_and_all_refs(self) -> None:
         context = _context()
         model = _Model(
             ChatToolCall("search-1", "search_knowledge_base", {"queries": ["revenue"]}),
@@ -1272,17 +1261,9 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
                         {
                             "text": (
                                 "A later report says revenue was 12; an older memo "
-                                "says 10. The later version is reliable."
+                                "says 10. The later version is current."
                             ),
-                            "kind": "conflict",
-                            "evidence_refs": ["ev_1"],
-                            "calculation_refs": [],
-                            "conflict": {
-                                "supporting_refs": ["ev_1"],
-                                "conflicting_refs": ["ev_2"],
-                                "type": "version",
-                                "adjudication": "resolvable",
-                            },
+                            "evidence_refs": ["ev_1", "ev_2"],
                         }
                     ],
                     "unanswered": [],
@@ -1295,120 +1276,10 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         claim = state.answering.validated.claims[0]
         self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.ANSWERED)
         self.assertEqual(claim.citation_ids, ("cite_1", "cite_2"))
-        self.assertIsNotNone(claim.conflict)
-        self.assertEqual(claim.conflict.supporting_citation_ids, ("cite_1",))
-        self.assertEqual(claim.conflict.conflicting_citation_ids, ("cite_2",))
-        self.assertEqual(claim.conflict.conflict_type, AnswerConflictType.VERSION)
-        self.assertEqual(
-            claim.conflict.adjudication, AnswerConflictAdjudication.RESOLVABLE
-        )
         self.assertIn("[1]", state.answering.rendered.content)
         self.assertIn("[2]", state.answering.rendered.content)
 
-    async def test_conflict_claim_rejects_empty_intersecting_and_unissued_refs(self) -> None:
-        cases = (
-            (
-                "empty",
-                {
-                    "supporting_refs": [],
-                    "conflicting_refs": ["ev_2"],
-                    "type": "version",
-                    "adjudication": "unresolvable",
-                },
-                "conflict_ref",
-            ),
-            (
-                "intersecting",
-                {
-                    "supporting_refs": ["ev_1"],
-                    "conflicting_refs": ["ev_1"],
-                    "type": "opinion",
-                    "adjudication": "unresolvable",
-                },
-                "conflict_ref",
-            ),
-            (
-                "unissued",
-                {
-                    "supporting_refs": ["ev_1"],
-                    "conflicting_refs": ["ev_other_run"],
-                    "type": "temporal",
-                    "adjudication": "resolvable",
-                },
-                "conflict_ref",
-            ),
-        )
-        for name, conflict, reason in cases:
-            with self.subTest(name=name):
-                context = _context()
-                model = _Model(
-                    ChatToolCall(
-                        "search-1", "search_knowledge_base", {"queries": ["revenue"]}
-                    ),
-                    ChatToolCall(
-                        "submit-1",
-                        "submit_answer",
-                        {
-                            "outcome": "answered",
-                            "claims": [
-                                {
-                                    "text": "Sources disagree on revenue.",
-                                    "kind": "conflict",
-                                    "evidence_refs": ["ev_1"],
-                                    "calculation_refs": [],
-                                    "conflict": conflict,
-                                }
-                            ],
-                            "unanswered": [],
-                        },
-                    ),
-                )
-
-                state = await _agent(
-                    model, _Retriever(_pack(context, count=2))
-                ).run(context)
-
-                self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.REFUSED)
-                event = state.artifacts[AGENT_TRACE_ARTIFACT].events[-1]
-                self.assertEqual(event.status, "salvaged")
-                self.assertEqual(event.rejection_reasons, (reason,))
-                self.assertEqual(len(model.requests), 2)
-
-    async def test_fact_claim_cannot_carry_a_conflict_object(self) -> None:
-        context = _context()
-        model = _Model(
-            ChatToolCall("search-1", "search_knowledge_base", {"queries": ["revenue"]}),
-            ChatToolCall(
-                "submit-1",
-                "submit_answer",
-                {
-                    "outcome": "answered",
-                    "claims": [
-                        {
-                            "text": "Revenue was 10.",
-                            "kind": "fact",
-                            "evidence_refs": ["ev_1"],
-                            "calculation_refs": [],
-                            "conflict": {
-                                "supporting_refs": ["ev_1"],
-                                "conflicting_refs": ["ev_2"],
-                                "type": "version",
-                                "adjudication": "resolvable",
-                            },
-                        }
-                    ],
-                    "unanswered": [],
-                },
-            ),
-        )
-
-        state = await _agent(model, _Retriever(_pack(context, count=2))).run(context)
-
-        event = state.artifacts[AGENT_TRACE_ARTIFACT].events[-1]
-        self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.REFUSED)
-        self.assertEqual(event.rejection_reasons, ("conflict_shape",))
-
-    async def test_conflict_kind_without_conflict_object_is_rejected(self) -> None:
+    async def test_retired_conflict_fields_are_rejected_as_claim_shape(self) -> None:
         context = _context()
         model = _Model(
             ChatToolCall("search-1", "search_knowledge_base", {"queries": ["revenue"]}),
@@ -1422,7 +1293,12 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
                             "text": "Sources disagree on revenue.",
                             "kind": "conflict",
                             "evidence_refs": ["ev_1", "ev_2"],
-                            "calculation_refs": [],
+                            "conflict": {
+                                "supporting_refs": ["ev_1"],
+                                "conflicting_refs": ["ev_2"],
+                                "type": "version",
+                                "adjudication": "resolvable",
+                            },
                         }
                     ],
                     "unanswered": [],
@@ -1432,57 +1308,12 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
 
         state = await _agent(model, _Retriever(_pack(context, count=2))).run(context)
 
-        event = state.artifacts[AGENT_TRACE_ARTIFACT].events[-1]
         self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.REFUSED)
-        self.assertEqual(event.rejection_reasons, ("conflict_shape",))
-
-    async def test_invalid_conflict_claim_is_salvaged_when_a_fact_claim_remains(self) -> None:
-        context = _context()
-        model = _Model(
-            ChatToolCall("search-1", "search_knowledge_base", {"queries": ["revenue"]}),
-            ChatToolCall(
-                "submit-1",
-                "submit_answer",
-                {
-                    "outcome": "answered",
-                    "claims": [
-                        {
-                            "text": "Revenue was 10.",
-                            "kind": "fact",
-                            "evidence_refs": ["ev_1"],
-                            "calculation_refs": [],
-                        },
-                        {
-                            "text": "Sources disagree.",
-                            "kind": "conflict",
-                            "evidence_refs": ["ev_1"],
-                            "calculation_refs": [],
-                            "conflict": {
-                                "supporting_refs": ["ev_1"],
-                                "conflicting_refs": ["ev_1"],
-                                "type": "opinion",
-                                "adjudication": "unresolvable",
-                            },
-                        },
-                    ],
-                    "unanswered": [],
-                },
-            ),
-        )
-
-        state = await _agent(model, _Retriever(_pack(context, count=2))).run(context)
-
-        submit_events = [
-            event
-            for event in state.artifacts[AGENT_TRACE_ARTIFACT].events
-            if event.tool == "submit_answer"
-        ]
-        event = submit_events[-1]
-        self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.PARTIAL)
-        self.assertEqual(len(state.answering.validated.claims), 1)
-        self.assertIsNone(state.answering.validated.claims[0].conflict)
+        event = state.artifacts[AGENT_TRACE_ARTIFACT].events[-1]
         self.assertEqual(event.status, "salvaged")
-        self.assertEqual(event.rejection_reasons, ("conflict_ref",))
+        self.assertEqual(event.rejection_reasons, ("claim_shape",))
+        self.assertEqual(len(model.requests), 2)
+
 
     async def test_all_invalid_claims_refuse_without_a_repair_call(self) -> None:
         context = _context()
@@ -1582,7 +1413,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
                     "claims": [
                         {
                             "text": "Revenue was 10 in 2025.",
-                            "kind": "fact",
+
                             "evidence_refs": ["ev_1"],
                             "calculation_refs": [],
                         }
@@ -1634,7 +1465,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
                     "claims": [
                         {
                             "text": "Revenue was 10 in 2025.",
-                            "kind": "fact",
+
                             "evidence_refs": ["ev_1"],
                             "calculation_refs": [],
                         }
@@ -1674,7 +1505,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
                     "claims": [
                         {
                             "text": "Revenue was 10 in 2025.",
-                            "kind": "fact",
+
                             "evidence_refs": ["ev_1"],
                             "calculation_refs": [],
                         }
@@ -1993,7 +1824,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
                     "claims": [
                         {
                             "text": "Revenue increased by 5.",
-                            "kind": "fact",
+
                             "evidence_refs": [],
                             "calculation_refs": ["calc_1"],
                         }
@@ -2051,7 +1882,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
                     "claims": [
                         {
                             "text": "Revenue was 10 in 2025.",
-                            "kind": "fact",
+
                             "evidence_refs": ["ev_1"],
                             "calculation_refs": [],
                         }
@@ -2110,7 +1941,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
                     "claims": [
                         {
                             "text": "Revenue was 10 in 2025.",
-                            "kind": "fact",
+
                             "evidence_refs": ["ev_1"],
                         }
                     ],
@@ -2194,7 +2025,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
                 {
                     "outcome": "answered",
                     "claims": [
-                        {"text": "Revenue increased by 5.", "kind": "fact", "evidence_refs": [], "calculation_refs": ["calc_1"]}
+                        {"text": "Revenue increased by 5.", "evidence_refs": [], "calculation_refs": ["calc_1"]}
                     ],
                     "unanswered": [],
                 },
@@ -2229,7 +2060,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
                     "claims": [
                         {
                             "text": "The repeated calculation produced 5.",
-                            "kind": "fact",
+
                             "evidence_refs": [],
                             "calculation_refs": ["calc_5"],
                         }
@@ -2309,7 +2140,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
                     "claims": [
                         {
                             "text": "Revenue was 10 in 2025.",
-                            "kind": "fact",
+
                             "evidence_refs": ["ev_1"],
                             "calculation_refs": [],
                         }
@@ -2352,7 +2183,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
                     "claims": [
                         {
                             "text": "Revenue was 10 in 2025.",
-                            "kind": "fact",
+
                             "evidence_refs": ["ev_1"],
                             "calculation_refs": [],
                         }
@@ -2480,7 +2311,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
                     "claims": [
                         {
                             "text": "Unsupported.",
-                            "kind": "fact",
+
                             "evidence_refs": ["ev_other_run"],
                             "calculation_refs": [],
                         }
@@ -2652,7 +2483,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
                     "claims": [
                         {
                             "text": "Gross margin was 50 in 2025.",
-                            "kind": "fact",
+
                             "evidence_refs": ["ev_1"],
                             "calculation_refs": [],
                         }
@@ -2730,7 +2561,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
                     "claims": [
                         {
                             "text": "Revenue was 10 in 2025.",
-                            "kind": "fact",
+
                             "evidence_refs": ["ev_1"],
                             "calculation_refs": [],
                         }
@@ -2863,7 +2694,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
                     "claims": [
                         {
                             "text": "Revenue was 10 in 2025.",
-                            "kind": "fact",
+
                             "evidence_refs": ["ev_3"],
                             "calculation_refs": [],
                         }
@@ -2948,7 +2779,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
                     "claims": [
                         {
                             "text": "The chart supports the answer.",
-                            "kind": "fact",
+
                             "evidence_refs": ["ev_1"],
                             "calculation_refs": [],
                         }
@@ -3021,7 +2852,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
                     "claims": [
                         {
                             "text": "The chart supports the answer.",
-                            "kind": "fact",
+
                             "evidence_refs": ["ev_1"],
                             "calculation_refs": [],
                         }
@@ -3073,7 +2904,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
                     "claims": [
                         {
                             "text": "Revenue reached 10.",
-                            "kind": "fact",
+
                             "evidence_refs": ["ev_1"],
                             "calculation_refs": [],
                         }
@@ -3129,7 +2960,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
                     "claims": [
                         {
                             "text": "The first chart supports the answer.",
-                            "kind": "fact",
+
                             "evidence_refs": ["ev_1"],
                             "calculation_refs": [],
                         }
@@ -3177,7 +3008,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
                     "claims": [
                         {
                             "text": "The final item is supported.",
-                            "kind": "fact",
+
                             "evidence_refs": ["ev_105"],
                             "calculation_refs": [],
                         }
@@ -3218,7 +3049,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
                     "claims": [
                         {
                             "text": "All retrieved items support the combined claim.",
-                            "kind": "fact",
+
                             "evidence_refs": evidence_refs,
                             "calculation_refs": [],
                         }

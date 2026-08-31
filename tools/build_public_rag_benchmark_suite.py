@@ -565,8 +565,9 @@ keeps evaluator-only `cases.jsonl` and `documents.jsonl` out of ingestion.
   and an unqualified answer are both wrong.
 - `decline_or_correct_false_premise`: an open-world premise should not be
   invented or accepted without support.
-- `surface_evidence_conflict`: contradictions must be disclosed rather than
-  silently resolved into an unsupported claim.
+- `surface_evidence_conflict`: answers must cover the gold answer and cite at
+  least two distinct evidence documents; this deterministic proxy does not
+  claim to judge semantic conflict disclosure.
 - `refuse_closed_world_absent`: no supporting enterprise document exists in the
   frozen corpus.
 

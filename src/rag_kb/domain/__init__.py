@@ -2,9 +2,6 @@
 
 from rag_kb.domain.answering import (
     AnswerClaim,
-    AnswerConflict,
-    AnswerConflictAdjudication,
-    AnswerConflictType,
     AnswerControlReason,
     AnswerDraftSource,
     AnswerOutcome,
@@ -318,9 +315,6 @@ __all__ = [
     "AdjacentChunkQuery",
     "AdjacentChunkResult",
     "AnswerClaim",
-    "AnswerConflict",
-    "AnswerConflictAdjudication",
-    "AnswerConflictType",
     "AnswerControlReason",
     "AnswerDraftSource",
     "AnswerOutcome",
