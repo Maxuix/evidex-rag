@@ -125,8 +125,6 @@ function managementProps(client: ApiClient, knowledgeBases: KnowledgeBase[], sel
     knowledgeBases,
     selectedKnowledgeBaseId: selected,
     modelSettings: null,
-    hybridEnabled: false,
-    graphCapabilityEnabled: false,
     graphConfig: null,
     graphSchemaProfiles: [],
     graphSchemaProfilesError: null,
@@ -189,10 +187,6 @@ describe("component request scopes", () => {
         items: [kbA, kbB],
         next_cursor: null,
       }),
-      getRetrievalCapabilities: vi.fn().mockResolvedValue({
-        default_mode: "vector",
-        modes: [],
-      }),
       getGraphConfig: vi.fn().mockResolvedValue(null),
       getGraphSchemaProfiles: vi.fn().mockResolvedValue([]),
       listChatSessions: vi.fn((id: string) => id === kbA.id
@@ -203,12 +197,7 @@ describe("component request scopes", () => {
     } as unknown as ApiClient;
 
     render(
-      <KnowledgeChat
-        client={client}
-        retrievalCapabilities={{ default_mode: "vector", modes: [] }}
-        retrievalCapabilitiesLoading={false}
-        retrievalCapabilitiesError={null}
-      />,
+      <KnowledgeChat client={client} />,
     );
     await waitFor(() => expect(screen.getByRole("combobox", { name: "知识库" })).toBeTruthy());
     const selector = screen.getByRole("combobox", { name: "知识库" });

@@ -47,7 +47,9 @@ def _context() -> ChatExecutionContext:
         client_id="client",
         query="What is frozen?",
         effective_policy={"grounding_policy": "evidence_only"},
-        retrieval_strategy=exact_profile(top_k=3, rerank=False).as_dict(),
+        retrieval_strategy=exact_profile(
+            top_k=3, rerank_mode=RerankMode.NONE
+        ).as_dict(),
         model_configuration={"requested_model": "fixed"},
         attempt=1,
     )

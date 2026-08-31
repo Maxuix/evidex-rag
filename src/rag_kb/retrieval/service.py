@@ -8,7 +8,7 @@ from dataclasses import dataclass, replace
 from enum import StrEnum
 import logging
 import math
-from typing import Any, Literal, Protocol
+from typing import Any, Protocol
 from uuid import UUID
 
 from rag_kb.auth import AccessPolicy, AuthContext
@@ -106,31 +106,6 @@ class CompositeEvidenceHydrator(Protocol):
         chunk_ids: tuple[UUID, ...],
         asset_ids: tuple[UUID, ...],
     ) -> tuple[IndexChunkAssetRelationSnapshot, ...]: ...
-
-
-RetrievalMode = Literal["vector", "hybrid", "graph"]
-RetrievalCapabilityStrategy = Literal["exact_vector", "hybrid"]
-RetrievalCapabilityProfile = Literal[
-    "exact_vector_v2", "hybrid_fts_rrf_v2", "graphiti_path_augmented_v3"
-]
-
-
-@dataclass(frozen=True, slots=True)
-class RetrievalCapability:
-    """A process-wide request-mode capability, independent of KB readiness."""
-
-    mode: RetrievalMode
-    strategy: RetrievalCapabilityStrategy
-    profile_version: RetrievalCapabilityProfile
-    enabled: bool
-
-
-@dataclass(frozen=True, slots=True)
-class RetrievalCapabilitiesSnapshot:
-    """Stable capability snapshot exposed by the retrieval composition root."""
-
-    default_mode: Literal["vector"]
-    modes: tuple[RetrievalCapability, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -276,39 +251,6 @@ class RetrievalService:
         """
 
         return self._hybrid_enabled and self._lexical_store is not None
-
-    def capabilities_snapshot(self) -> RetrievalCapabilitiesSnapshot:
-        """Return the deterministic process-wide request capability snapshot."""
-
-        return RetrievalCapabilitiesSnapshot(
-            default_mode="vector",
-            modes=(
-                RetrievalCapability(
-                    mode="vector",
-                    strategy="exact_vector",
-                    profile_version="exact_vector_v2",
-                    enabled=True,
-                ),
-                RetrievalCapability(
-                    mode="hybrid",
-                    strategy="hybrid",
-                    profile_version="hybrid_fts_rrf_v2",
-                    enabled=self.hybrid_request_enabled(),
-                ),
-                *(
-                    (
-                        RetrievalCapability(
-                            mode="graph",
-                            strategy="hybrid",
-                            profile_version="graphiti_path_augmented_v3",
-                            enabled=True,
-                        ),
-                    )
-                    if self._graph_store is not None and self._graphiti_graph is not None
-                    else ()
-                ),
-            ),
-        )
 
     def execution_profile(
         self,

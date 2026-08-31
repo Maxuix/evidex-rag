@@ -7,13 +7,6 @@ from rag_kb.schemas.chat import ChatRunRetrievalResponse
 from rag_kb.retrieval.profile import (
     GRAPH_RETRIEVAL_PROFILE_VERSION,
     HYBRID_PROFILE_VERSION,
-    LEGACY_ADAPTIVE_GRAPHITI_PROFILE_VERSION,
-    LEGACY_ADAPTIVE_GRAPHITI_ROUTER_VERSION,
-    LEGACY_EXACT_PROFILE_VERSION,
-    LEGACY_GRAPH_AUGMENTATION_VERSION,
-    LEGACY_GRAPH_PROFILE_VERSION,
-    LEGACY_GRAPHITI_AUGMENTATION_VERSION,
-    LEGACY_GRAPHITI_PROFILE_VERSION,
     GraphRetrievalProfile,
     adaptive_graphiti_profile,
     exact_profile,
@@ -47,19 +40,16 @@ class RetrievalExecutionProfileTests(unittest.TestCase):
             {"profile_version", "strategy", "top_k", "rerank_mode"},
         )
 
-    def test_legacy_v1_boolean_snapshot_remains_readable(self) -> None:
-        strategy, top_k, rerank_mode = parse_retrieval_snapshot(
-            {
-                "profile_version": LEGACY_EXACT_PROFILE_VERSION,
-                "strategy": "exact_vector",
-                "top_k": 7,
-                "rerank": False,
-            }
-        )
-
-        self.assertEqual(strategy.value, "exact_vector")
-        self.assertEqual(top_k, 7)
-        self.assertIs(rerank_mode, RerankMode.NONE)
+    def test_legacy_v1_boolean_snapshot_is_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            parse_retrieval_snapshot(
+                {
+                    "profile_version": "exact_vector_v1",
+                    "strategy": "exact_vector",
+                    "top_k": 7,
+                    "rerank": False,
+                }
+            )
 
     def test_unknown_or_incomplete_hybrid_snapshot_fails_closed(self) -> None:
         baseline = exact_profile().as_dict()
@@ -101,36 +91,31 @@ class RetrievalExecutionProfileTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse_chat_retrieval_snapshot({**snapshot, "rerank_mode": "none"})
 
-    def test_legacy_graph_snapshot_remains_readable_for_display(self) -> None:
-        strategy, top_k, rerank_mode, execution_type = parse_chat_retrieval_snapshot(
-            {
-                "profile_version": LEGACY_GRAPH_PROFILE_VERSION,
-                "strategy": "hybrid",
-                "top_k": 8,
-                "rerank_mode": "classic",
-                "augmentation": LEGACY_GRAPH_AUGMENTATION_VERSION,
-            }
-        )
-
-        self.assertIs(strategy, RetrievalStrategy.HYBRID)
-        self.assertEqual(top_k, 8)
-        self.assertIs(rerank_mode, RerankMode.CLASSIC)
-        self.assertEqual(execution_type, "manual_graph")
-        response = ChatRunRetrievalResponse(
-            profile_version=LEGACY_GRAPH_PROFILE_VERSION,
-            strategy=strategy.value,
-            top_k=top_k,
-            rerank_mode=rerank_mode,
-        )
-        self.assertEqual(response.profile_version, LEGACY_GRAPH_PROFILE_VERSION)
+    def test_legacy_graph_snapshot_cannot_be_executed(self) -> None:
+        snapshot = {
+            "profile_version": "graph_augmented_v1",
+            "strategy": "hybrid",
+            "top_k": 8,
+            "rerank_mode": "classic",
+            "augmentation": "entity_graph_v1",
+        }
+        with self.assertRaises(ValueError):
+            parse_chat_retrieval_snapshot(snapshot)
         with self.assertRaises(ValueError):
             GraphRetrievalProfile(
-                profile_version=LEGACY_GRAPH_PROFILE_VERSION,
+                profile_version="graph_augmented_v1",
                 strategy=RetrievalStrategy.HYBRID,
                 top_k=8,
                 rerank_mode=RerankMode.CLASSIC,
-                augmentation=LEGACY_GRAPH_AUGMENTATION_VERSION,
+                augmentation="entity_graph_v1",
             )
+        response = ChatRunRetrievalResponse(
+            profile_version=snapshot["profile_version"],
+            strategy=snapshot["strategy"],
+            top_k=snapshot["top_k"],
+            rerank_mode=snapshot["rerank_mode"],
+        )
+        self.assertEqual(response.profile_version, "graph_augmented_v1")
 
     def test_adaptive_graphiti_snapshot_is_independent_and_strict(self) -> None:
         snapshot = adaptive_graphiti_profile(top_k=8).as_dict()
@@ -143,12 +128,12 @@ class RetrievalExecutionProfileTests(unittest.TestCase):
         self.assertEqual((top_k, rerank_mode), (8, RerankMode.NONE))
         self.assertEqual(execution_type, "adaptive_graphiti")
         response = ChatRunRetrievalResponse(
-            profile_version="adaptive_graphiti_v2",
+            profile_version=snapshot["profile_version"],
             strategy=strategy.value,
             top_k=top_k,
             rerank_mode=rerank_mode,
         )
-        self.assertEqual(response.profile_version, "adaptive_graphiti_v2")
+        self.assertEqual(response.profile_version, snapshot["profile_version"])
         for malformed in (
             {**snapshot, "router": "future_router"},
             {**snapshot, "augmentation": "entity_graph_v1"},
@@ -157,47 +142,30 @@ class RetrievalExecutionProfileTests(unittest.TestCase):
         ):
             with self.subTest(malformed=malformed), self.assertRaises(ValueError):
                 parse_chat_retrieval_snapshot(malformed)
-        with self.assertRaisesRegex(ValueError, "cannot be executed"):
+        with self.assertRaises(ValueError):
             parse_chat_retrieval_snapshot(
                 {**snapshot, "profile_version": "adaptive_graphiti_v1"}
             )
 
-    def test_previous_graphiti_profiles_are_display_only(self) -> None:
-        manual = {
-            "profile_version": LEGACY_GRAPHITI_PROFILE_VERSION,
-            "strategy": "hybrid",
-            "top_k": 8,
-            "rerank_mode": "classic",
-            "augmentation": LEGACY_GRAPHITI_AUGMENTATION_VERSION,
-        }
-        adaptive = {
-            "profile_version": LEGACY_ADAPTIVE_GRAPHITI_PROFILE_VERSION,
-            "strategy": "exact_vector",
-            "top_k": 8,
-            "rerank_mode": "none",
-            "router": LEGACY_ADAPTIVE_GRAPHITI_ROUTER_VERSION,
-            "augmentation": LEGACY_GRAPHITI_AUGMENTATION_VERSION,
-        }
-
-        for snapshot, expected_type in (
-            (manual, "manual_graph"),
-            (adaptive, "adaptive_graphiti"),
-        ):
+    def test_previous_graphiti_profiles_cannot_be_executed(self) -> None:
+        snapshots = (
+            {
+                "profile_version": "graphiti_edge_augmented_v1",
+                "strategy": "hybrid",
+                "top_k": 8,
+                "rerank_mode": "classic",
+                "augmentation": "graphiti_edge_v1",
+            },
+            {
+                "profile_version": "adaptive_graphiti_v1",
+                "strategy": "exact_vector",
+                "top_k": 8,
+                "rerank_mode": "none",
+                "router": "native_agent_evidence_aware_v1",
+                "augmentation": "graphiti_edge_v1",
+            },
+        )
+        for snapshot in snapshots:
             with self.subTest(snapshot=snapshot):
-                with self.assertRaisesRegex(ValueError, "cannot be executed"):
+                with self.assertRaises(ValueError):
                     parse_chat_retrieval_snapshot(snapshot)
-                parsed = parse_chat_retrieval_snapshot(
-                    snapshot,
-                    allow_legacy_display=True,
-                )
-                self.assertEqual(parsed[3], expected_type)
-                response = ChatRunRetrievalResponse(
-                    profile_version=snapshot["profile_version"],
-                    strategy=parsed[0].value,
-                    top_k=parsed[1],
-                    rerank_mode=parsed[2].value,
-                )
-                self.assertEqual(
-                    response.profile_version,
-                    snapshot["profile_version"],
-                )

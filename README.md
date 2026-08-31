@@ -147,7 +147,6 @@ part of code validation and must not be inferred from a request to test:
 ```bash
 docker compose --env-file .env.local --project-name rag ps
 docker compose --env-file .env.local --project-name rag logs --no-color api worker
-PYTHONPATH=src:. .venv/bin/python tools/collect_diagnostics.py
 PYTHONPATH=src:. .venv/bin/python tools/smoke_local.py
 docker compose --env-file .env.local --project-name rag down
 PYTHONPATH=src:. .venv/bin/python tools/reset_local.py \

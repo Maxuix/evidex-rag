@@ -574,10 +574,9 @@ Agent progress 是 content-safe、易失且不可重放的快照；断线后读�
 - knowledge bases、documents、document-version creation、chunk inspection/exclusion 和 indexing jobs；
 - model settings snapshot、provider/profile mutation、provider model catalog、validation 和
   workspace model selection；
-- retrieval capabilities/query、Graph 配置 `GET/PUT /knowledge-bases/{kb_id}/graph-config` 和授权
+- retrieval query、Graph 配置 `GET/PUT /knowledge-bases/{kb_id}/graph-config` 和授权
   `GET /index-assets/{asset_id}/content`；Graph 查询仍是明确的外层 `graph` 模式，路径仍只返回
-  当前 serving 的原始 Chunk Evidence；Chat creation 另支持不出现在 retrieval capability
-  列表中的 Chat-only `auto` 模式；
+  当前 serving 的原始 Chunk Evidence；Chat creation 另支持 Chat-only `auto` 模式；
 - chat sessions、messages、runs 和 events；SSE 进度事件为 `agent.progress`。
 
 上传、状态、分页、幂等和错误的精确契约以 OpenAPI、schema 和路由测试为准。未实现能力不
@@ -685,12 +684,11 @@ content-safe stale warning。唯一有效配置是 primary checkout 的 0600 `.e
 PYTHONPATH=src:. .venv/bin/python tools/local_runtime.py doctor
 docker compose --env-file .env.local --project-name rag ps
 docker compose --env-file .env.local --project-name rag logs --no-color api worker
-PYTHONPATH=src:. .venv/bin/python tools/collect_diagnostics.py
 PYTHONPATH=src:. .venv/bin/python tools/smoke_local.py
 docker compose --env-file .env.local --project-name rag down
 ```
 
-以上 Compose/start/diagnostics 命令属于个人 runtime 运维，不属于测试流程，不能从“测试”请求中推导。
+以上 Compose/start 命令属于个人 runtime 运维，不属于测试流程，不能从“测试”请求中推导。
 
 测试使用 `unittest`，现有目录包括 `tests/basic`、`tests/unit`、`tests/contract` 和
 `tests/integration`。验证按风险选择：

@@ -270,19 +270,7 @@ class ChatRunErrorResponse(PublicSchema):
 
 
 class ChatRunRetrievalResponse(PublicSchema):
-    profile_version: Literal[
-        "exact_vector_v1",
-        "hybrid_fts_rrf_v1",
-        "exact_vector_v2",
-        "hybrid_fts_rrf_v2",
-        "graph_augmented_v1",
-        "graphiti_edge_augmented_v1",
-        "graphiti_path_augmented_v2",
-        "graphiti_path_augmented_v3",
-        "adaptive_graphiti_v1",
-        "adaptive_graphiti_v2",
-        "adaptive_graphiti_v3",
-    ]
+    profile_version: Annotated[str, Field(min_length=1, max_length=64)]
     strategy: Literal["exact_vector", "hybrid"]
     top_k: Annotated[int, Field(ge=1, le=100)]
     rerank_mode: RerankMode

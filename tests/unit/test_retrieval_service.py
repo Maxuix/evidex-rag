@@ -179,21 +179,12 @@ class RelationHydrationRepositoryQueryTests(unittest.IsolatedAsyncioTestCase):
 
 
 class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
-    def test_capability_snapshot_is_pure_and_deterministic(self) -> None:
+    def test_hybrid_request_enabled_requires_store_and_flag(self) -> None:
         service = RetrievalService(
             SingleWorkspaceAccessPolicy(WORKSPACE),
             _Provider(),
             _Store(VectorSearchResult(REVISION_ID)),
             hybrid_enabled=True,
-        )
-        snapshot = service.capabilities_snapshot()
-        self.assertEqual(snapshot.default_mode, "vector")
-        self.assertEqual(
-            [(item.mode, item.strategy, item.profile_version, item.enabled) for item in snapshot.modes],
-            [
-                ("vector", "exact_vector", "exact_vector_v2", True),
-                ("hybrid", "hybrid", "hybrid_fts_rrf_v2", False),
-            ],
         )
         self.assertFalse(service.hybrid_request_enabled())
 
@@ -213,7 +204,6 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
             hybrid_enabled=True,
         )
         self.assertTrue(enabled.hybrid_request_enabled())
-        self.assertTrue(enabled.capabilities_snapshot().modes[1].enabled)
 
     def test_reranker_fuses_query_terms_and_removes_duplicate_chunks(self) -> None:
         generic = replace(

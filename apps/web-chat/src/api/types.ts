@@ -295,33 +295,10 @@ export interface ChatRunError {
 }
 
 export interface ChatRunRetrieval {
-  profile_version:
-    | "exact_vector_v1"
-    | "hybrid_fts_rrf_v1"
-    | "exact_vector_v2"
-    | "hybrid_fts_rrf_v2"
-    | "graph_augmented_v1"
-    | "graphiti_edge_augmented_v1"
-    | "graphiti_path_augmented_v2"
-    | "graphiti_path_augmented_v3"
-    | "adaptive_graphiti_v1"
-    | "adaptive_graphiti_v2"
-    | "adaptive_graphiti_v3";
+  profile_version: string;
   strategy: "exact_vector" | "hybrid";
   top_k: number;
   rerank_mode: RerankMode;
-}
-
-export interface RetrievalCapability {
-  mode: "vector" | "hybrid" | "graph";
-  strategy: "exact_vector" | "hybrid";
-  profile_version: "exact_vector_v2" | "hybrid_fts_rrf_v2" | "graphiti_path_augmented_v3";
-  enabled: boolean;
-}
-
-export interface RetrievalCapabilities {
-  default_mode: "vector";
-  modes: RetrievalCapability[];
 }
 
 export interface GraphConfig {

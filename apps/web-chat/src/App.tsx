@@ -21,7 +21,6 @@ import type {
   KnowledgeBase,
   ModelSettings,
   RerankMode,
-  RetrievalCapabilities,
 } from "./api/types";
 import {
   AnswerText,
@@ -82,35 +81,12 @@ interface ComposerMenuOption<T extends string> {
 export function App() {
   const [client, setClient] = useState<ApiClient | null>(null);
   const [startupError, setStartupError] = useState<string | null>(null);
-  const [retrievalCapabilities, setRetrievalCapabilities] =
-    useState<RetrievalCapabilities | null>(null);
-  const [retrievalCapabilitiesLoading, setRetrievalCapabilitiesLoading] =
-    useState(false);
-  const [retrievalCapabilitiesError, setRetrievalCapabilitiesError] =
-    useState<unknown | null>(null);
 
   useEffect(() => {
     void loadRuntimeConfig()
       .then((config) => setClient(new ApiClient(config)))
       .catch((error) => setStartupError(errorMessage(error)));
   }, []);
-
-  useEffect(() => {
-    if (!client) return;
-    let cancelled = false;
-    setRetrievalCapabilitiesLoading(true);
-    setRetrievalCapabilitiesError(null);
-    void client.getRetrievalCapabilities().then((value) => {
-      if (!cancelled) setRetrievalCapabilities(value);
-    }).catch((error) => {
-      if (!cancelled) setRetrievalCapabilitiesError(error);
-    }).finally(() => {
-      if (!cancelled) setRetrievalCapabilitiesLoading(false);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [client]);
 
   if (startupError) {
     return (
@@ -131,25 +107,14 @@ export function App() {
     );
   }
   return (
-    <KnowledgeChat
-      client={client}
-      retrievalCapabilities={retrievalCapabilities}
-      retrievalCapabilitiesLoading={retrievalCapabilitiesLoading}
-      retrievalCapabilitiesError={retrievalCapabilitiesError}
-    />
+    <KnowledgeChat client={client} />
   );
 }
 
 export function KnowledgeChat({
   client,
-  retrievalCapabilities,
-  retrievalCapabilitiesLoading,
-  retrievalCapabilitiesError,
 }: {
   client: ApiClient;
-  retrievalCapabilities: RetrievalCapabilities | null;
-  retrievalCapabilitiesLoading: boolean;
-  retrievalCapabilitiesError: unknown | null;
 }) {
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
   const [knowledgeBaseCursor, setKnowledgeBaseCursor] = useState<string | null>(null);
@@ -227,14 +192,9 @@ export function KnowledgeChat({
     && currentRun.session_id === selectedSessionId
     && !isTerminal(currentRun),
   ) || messages.some((item) => item.assistant_status === "generating");
-  const hybridEnabled = retrievalCapabilities?.modes.some(
-    (item) => item.mode === "hybrid" && item.enabled,
-  ) ?? false;
-  const graphCapabilityEnabled = retrievalCapabilities?.modes.some(
-    (item) => item.mode === "graph" && item.enabled,
-  ) ?? false;
-  const graphReady = graphCapabilityEnabled
-    && Boolean(graphConfig?.enabled && graphConfig.status === "ready");
+  const graphReady = Boolean(
+    graphConfig?.enabled && graphConfig.status === "ready",
+  );
   const graphTopK = Math.min(
     20,
     Math.max(4, selectedKnowledgeBase?.retrieval_defaults.top_k ?? 4),
@@ -487,9 +447,8 @@ export function KnowledgeChat({
   }, [loadSessions, selectedKnowledgeBaseId]);
 
   useEffect(() => {
-    if (!hybridEnabled && retrievalMode === "hybrid") setRetrievalMode("vector");
     if (!graphReady && retrievalMode === "graph") setRetrievalMode("vector");
-  }, [graphReady, hybridEnabled, retrievalMode]);
+  }, [graphReady, retrievalMode]);
 
   useEffect(() => {
     if (selectedKnowledgeBase) {
@@ -827,7 +786,6 @@ export function KnowledgeChat({
   };
 
   const changeRetrievalMode = (next: "vector" | "hybrid" | "graph" | "auto") => {
-    if (next === "hybrid" && !hybridEnabled) return;
     if (next === "graph" && !graphReady) return;
     if (pendingRun) {
       setPendingRun(null);
@@ -1074,8 +1032,6 @@ export function KnowledgeChat({
           knowledgeBases={knowledgeBases}
           selectedKnowledgeBaseId={selectedKnowledgeBaseId}
           modelSettings={modelSettings}
-          hybridEnabled={hybridEnabled}
-          graphCapabilityEnabled={graphCapabilityEnabled}
           graphConfig={graphConfig}
           graphSchemaProfiles={graphSchemaProfiles}
           graphSchemaProfilesError={graphSchemaProfilesError}
@@ -1271,14 +1227,7 @@ export function KnowledgeChat({
                     {
                       value: "hybrid",
                       label: "混合检索",
-                      description: hybridEnabled
-                        ? "结合关键词与语义，可能更慢。"
-                        : retrievalCapabilitiesLoading
-                          ? "能力状态加载中。"
-                          : retrievalCapabilitiesError || !retrievalCapabilities
-                            ? "能力状态不可用。"
-                            : "当前服务未启用混合检索。",
-                      disabled: !hybridEnabled,
+                      description: "结合关键词与语义，可能更慢。",
                     },
                     {
                       value: "auto",
@@ -1300,9 +1249,7 @@ export function KnowledgeChat({
                               ? "图谱正在构建完成前不可用。"
                               : graphConfig?.status === "failed"
                                 ? "图谱构建失败，请先修复或重试。"
-                                : !graphCapabilityEnabled
-                                  ? "当前服务未启用 Graphiti。"
-                                  : "当前知识库尚未启用或完成图谱构建。",
+                                : "当前知识库尚未启用或完成图谱构建。",
                       disabled: !graphReady,
                     },
                   ]}
@@ -1825,11 +1772,9 @@ function answerProcessMetrics(run: ChatRun): AnswerProcessMetrics {
     (event) => event.tool === "search_graph_relations",
   ) ?? [];
   const lastGraphEvent = graphEvents[graphEvents.length - 1];
-  const adaptiveProfile = [
-    "adaptive_graphiti_v1",
-    "adaptive_graphiti_v2",
-    "adaptive_graphiti_v3",
-  ].includes(run.retrieval.profile_version);
+  const adaptiveProfile = run.retrieval.profile_version.startsWith(
+    "adaptive_graphiti",
+  );
   const graphRelationsStatus = adaptiveProfile
     ? graphRelationsStatusLabel(
       lastGraphEvent?.route_result_code,

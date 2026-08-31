@@ -1,4 +1,4 @@
-"""Authorized retrieval capability and debug transport."""
+"""Authorized retrieval debug transport."""
 
 from __future__ import annotations
 
@@ -13,38 +13,11 @@ from rag_kb.domain import GraphRetrievalRequest
 from rag_kb.retrieval import RetrievalRequest
 from rag_kb.schemas import (
     EvidencePackResponse,
-    RetrievalCapabilitiesResponse,
-    RetrievalCapabilityResponse,
     RetrievalQueryRequest,
 )
 
 
 router = APIRouter(prefix="/retrieval", tags=["retrieval"])
-
-
-@router.get(
-    "/capabilities",
-    response_model=RetrievalCapabilitiesResponse,
-    responses=problem_responses(403, 500),
-)
-async def retrieval_capabilities(
-    request: Request,
-    context: Annotated[AuthContext, Depends(get_auth_context)],
-) -> RetrievalCapabilitiesResponse:
-    del context
-    snapshot = request.app.state.dependencies.retrieval_service.capabilities_snapshot()
-    return RetrievalCapabilitiesResponse(
-        default_mode=snapshot.default_mode,
-        modes=tuple(
-            RetrievalCapabilityResponse(
-                mode=capability.mode,
-                strategy=capability.strategy,
-                profile_version=capability.profile_version,
-                enabled=capability.enabled,
-            )
-            for capability in snapshot.modes
-        ),
-    )
 
 
 @router.post(

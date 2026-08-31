@@ -69,6 +69,7 @@ from rag_kb.domain import (
     Page,
     QueryContextStatus,
     QueryRewriteSource,
+    RerankMode,
     ResourceNotFoundError,
     ResourceStateConflictError,
     RetrievalDebug,
@@ -238,31 +239,6 @@ class StubRetrievalService:
     def __init__(self) -> None:
         self.requests = []
         self.failure: RetrievalExecutionError | None = None
-
-    def capabilities_snapshot(self):
-        return SimpleNamespace(
-            default_mode="vector",
-            modes=(
-                SimpleNamespace(
-                    mode="vector",
-                    strategy="exact_vector",
-                    profile_version="exact_vector_v2",
-                    enabled=True,
-                ),
-                SimpleNamespace(
-                    mode="hybrid",
-                    strategy="hybrid",
-                    profile_version="hybrid_fts_rrf_v2",
-                    enabled=False,
-                ),
-                SimpleNamespace(
-                    mode="graph",
-                    strategy="hybrid",
-                    profile_version="graphiti_path_augmented_v3",
-                    enabled=True,
-                ),
-            ),
-        )
 
     async def retrieve(self, context, retrieval_request):
         self.requests.append((context, retrieval_request))
@@ -906,7 +882,6 @@ class CommonContractTests(unittest.TestCase):
                 "/api/v1/indexing-jobs/{job_id}/retry",
                 "/api/v1/index-assets/{asset_id}/content",
                 "/api/v1/retrieval/query",
-                "/api/v1/retrieval/capabilities",
                 "/api/v1/chat/sessions",
                 "/api/v1/chat/sessions/{session_id}/messages",
                 "/api/v1/chat/runs",
@@ -1003,41 +978,6 @@ class RetrievalApiContractTests(unittest.IsolatedAsyncioTestCase):
         _, retrieval_request = self.service.requests[0]
         self.assertEqual(retrieval_request.query, "查询 ABC-42")
         self.assertEqual(retrieval_request.top_k, 5)
-
-    async def test_capabilities_are_strict_process_snapshot_without_uow(self) -> None:
-        response = await request(
-            self.app,
-            "GET",
-            f"{API_PREFIX}/retrieval/capabilities",
-        )
-        self.assertEqual(response.status, 200)
-        self.assertEqual(
-            response.json(),
-            {
-                "default_mode": "vector",
-                "modes": [
-                    {
-                        "mode": "vector",
-                        "strategy": "exact_vector",
-                        "profile_version": "exact_vector_v2",
-                        "enabled": True,
-                    },
-                    {
-                        "mode": "hybrid",
-                        "strategy": "hybrid",
-                        "profile_version": "hybrid_fts_rrf_v2",
-                        "enabled": False,
-                    },
-                    {
-                        "mode": "graph",
-                        "strategy": "hybrid",
-                        "profile_version": "graphiti_path_augmented_v3",
-                        "enabled": True,
-                    },
-                ],
-            },
-        )
-        self.assertEqual(self.service.requests, [])
 
     async def test_graph_retrieval_routes_outer_mode_and_requires_reranking(self) -> None:
         response = await request(
@@ -1488,7 +1428,7 @@ class _FakeChatService:
             effective_policy=policy,
             retrieval_strategy=exact_profile(
                 top_k=values["top_k"],
-                rerank=False,
+                rerank_mode=RerankMode.NONE,
             ).as_dict(),
             conversation_context=serialize_conversation_context(snapshot),
             contextualized_query=serialize_contextualized_query(original),
@@ -2521,7 +2461,9 @@ def _chat_run_value(session: ChatSession) -> ChatRun:
             "answer_task": "answer",
             "policy_version": "p1",
         },
-        retrieval_strategy=exact_profile(top_k=10, rerank=False).as_dict(),
+        retrieval_strategy=exact_profile(
+            top_k=10, rerank_mode=RerankMode.NONE
+        ).as_dict(),
         model_configuration={"configuration_fingerprint": "sha256:safe"},
         assistant_status="generating",
         assistant_content="",

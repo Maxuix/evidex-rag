@@ -61,20 +61,6 @@ class RetrievalQueryRequest(RetrievalPublicSchema):
         return normalized
 
 
-class RetrievalCapabilityResponse(RetrievalPublicSchema):
-    mode: Literal["vector", "hybrid", "graph"]
-    strategy: Literal["exact_vector", "hybrid"]
-    profile_version: Literal[
-        "exact_vector_v2", "hybrid_fts_rrf_v2", "graphiti_path_augmented_v3"
-    ]
-    enabled: bool
-
-
-class RetrievalCapabilitiesResponse(RetrievalPublicSchema):
-    default_mode: Literal["vector"]
-    modes: tuple[RetrievalCapabilityResponse, ...]
-
-
 class RetrievalQueryPlanResponse(RetrievalPublicSchema):
     workspace_id: UUID
     knowledge_base_id: UUID

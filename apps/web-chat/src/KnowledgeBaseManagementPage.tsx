@@ -75,8 +75,6 @@ export function KnowledgeBaseManagementPage({
   knowledgeBases,
   selectedKnowledgeBaseId,
   modelSettings,
-  hybridEnabled,
-  graphCapabilityEnabled,
   graphConfig,
   graphSchemaProfiles,
   graphSchemaProfilesError,
@@ -93,8 +91,6 @@ export function KnowledgeBaseManagementPage({
   knowledgeBases: KnowledgeBase[];
   selectedKnowledgeBaseId: string;
   modelSettings: ModelSettings | null;
-  hybridEnabled: boolean;
-  graphCapabilityEnabled: boolean;
   graphConfig: GraphConfig | null;
   graphSchemaProfiles: GraphSchemaProfile[];
   graphSchemaProfilesError: string | null;
@@ -498,7 +494,6 @@ export function KnowledgeBaseManagementPage({
               <GraphSettingsPanel
                 knowledgeBase={knowledgeBase}
                 modelSettings={modelSettings}
-                capabilityEnabled={graphCapabilityEnabled}
                 config={graphConfig}
                 schemaProfiles={graphSchemaProfiles}
                 schemaProfilesError={graphSchemaProfilesError}
@@ -629,7 +624,6 @@ export function KnowledgeBaseManagementPage({
               <RetrievalDebugger
                 client={client}
                 knowledgeBase={knowledgeBase}
-                hybridEnabled={hybridEnabled}
               />
             </>
           ) : (
@@ -664,7 +658,6 @@ type GraphAction = "configure" | "retry" | "force-rebuild" | "disable" | "refres
 function GraphSettingsPanel({
   knowledgeBase,
   modelSettings,
-  capabilityEnabled,
   config,
   schemaProfiles,
   schemaProfilesError,
@@ -676,7 +669,6 @@ function GraphSettingsPanel({
 }: {
   knowledgeBase: KnowledgeBase;
   modelSettings: ModelSettings | null;
-  capabilityEnabled: boolean;
   config: GraphConfig | null;
   schemaProfiles: GraphSchemaProfile[];
   schemaProfilesError: string | null;
@@ -803,12 +795,6 @@ function GraphSettingsPanel({
         </span>
       </div>
 
-      {!capabilityEnabled ? (
-        <div className="graph-runtime-note">
-          当前运行环境未开放 Graph 检索；可以查看已有状态，但不能开始新的构建。
-        </div>
-      ) : null}
-
       {loading && !currentConfig ? (
         <div className="graph-loading" aria-live="polite">正在读取 Graph 配置…</div>
       ) : null}
@@ -824,7 +810,7 @@ function GraphSettingsPanel({
               label={currentConfig.enabled ? "Graph 抽取模型" : "选择 Graph 抽取模型"}
               value={profileRevisionId}
               profiles={chatProfiles}
-              disabled={!capabilityEnabled || controlsBusy}
+              disabled={controlsBusy}
               onChange={setProfileRevisionId}
             />
             {currentConfig.enabled ? (
@@ -851,7 +837,7 @@ function GraphSettingsPanel({
               知识图谱类型
               <select
                 value={schemaProfileKey}
-                disabled={!capabilityEnabled || controlsBusy || !schemaProfiles.length}
+                disabled={controlsBusy || !schemaProfiles.length}
                 onChange={(event) => setSchemaProfileKey(event.target.value)}
                 aria-describedby="graph-schema-profile-help"
               >
@@ -932,7 +918,7 @@ function GraphSettingsPanel({
               <button
                 className="primary-button"
                 type="button"
-                disabled={!capabilityEnabled || !profileRevisionId || controlsBusy}
+                disabled={!profileRevisionId || controlsBusy}
                 onClick={() => void runAction("configure")}
               >
                 {busyAction === "configure" ? "正在启用…" : "启用并开始构建"}
@@ -943,7 +929,7 @@ function GraphSettingsPanel({
                   <button
                     className="primary-button"
                     type="button"
-                    disabled={!capabilityEnabled || controlsBusy}
+                    disabled={controlsBusy}
                     onClick={() => void runAction("configure")}
                   >
                     {busyAction === "configure" ? "正在应用…" : "应用配置并重新构建"}
@@ -953,7 +939,7 @@ function GraphSettingsPanel({
                   <button
                     className="primary-button"
                     type="button"
-                    disabled={!capabilityEnabled || controlsBusy}
+                    disabled={controlsBusy}
                     onClick={() => void runAction("force-rebuild")}
                   >
                     {busyAction === "force-rebuild" ? "正在代际重建…" : "重建为当前 Graph 代际"}
@@ -963,7 +949,7 @@ function GraphSettingsPanel({
                   <button
                     className="primary-button"
                     type="button"
-                    disabled={!capabilityEnabled || controlsBusy}
+                    disabled={controlsBusy}
                     onClick={() => void runAction("retry")}
                   >
                     {busyAction === "retry" ? "正在重试…" : "重试构建"}
@@ -974,7 +960,7 @@ function GraphSettingsPanel({
                     className="quiet-button"
                     type="button"
                     title="生成新的 Graph 构建并重新抽取所有可处理 chunks"
-                    disabled={!capabilityEnabled || controlsBusy}
+                    disabled={controlsBusy}
                     onClick={() => void runAction("force-rebuild")}
                   >
                     {busyAction === "force-rebuild" ? "正在重建…" : "强制重建"}
@@ -1459,11 +1445,9 @@ function ChunkPreview({
 function RetrievalDebugger({
   client,
   knowledgeBase,
-  hybridEnabled,
 }: {
   client: ApiClient;
   knowledgeBase: KnowledgeBase;
-  hybridEnabled: boolean;
 }) {
   const scopeGeneration = useRef(0);
   const [query, setQuery] = useState("");
@@ -1558,7 +1542,7 @@ function RetrievalDebugger({
               }
             }}>
               <option value="exact_vector">精确向量</option>
-              <option value="hybrid" disabled={!hybridEnabled}>混合检索{hybridEnabled ? "" : "（未启用）"}</option>
+              <option value="hybrid">混合检索</option>
             </select>
           </label>
           <label>

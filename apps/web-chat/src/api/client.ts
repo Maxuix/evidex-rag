@@ -4,7 +4,6 @@ import type {
   ChatProgressSnapshot,
   ChatRun,
   ChatRunCreate,
-  RetrievalCapabilities,
   ChatSession,
   ChatTerminalEvent,
   ChunkingPreset,
@@ -239,10 +238,6 @@ export class ApiClient {
         include_debug: true,
       }),
     });
-  }
-
-  getRetrievalCapabilities(): Promise<RetrievalCapabilities> {
-    return this.request("/retrieval/capabilities");
   }
 
   getGraphConfig(knowledgeBaseId: UUID): Promise<GraphConfig> {
