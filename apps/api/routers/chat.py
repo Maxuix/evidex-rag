@@ -46,7 +46,6 @@ from rag_kb.schemas import (
     ChatSessionPage,
     ChatSessionResponse,
     CursorPayload,
-    EffectiveAnswerPolicyResponse,
     ErrorCode,
 )
 from rag_kb.memory import (
@@ -150,8 +149,6 @@ async def create_chat_run(
         session_id=payload.session_id,
         kb_id=payload.knowledge_base_id,
         message=payload.message,
-        answer_style=payload.answer_policy.answer_style,
-        insufficiency_policy=payload.answer_policy.insufficiency_policy,
         retrieval_mode=payload.retrieval.mode,
         top_k=payload.retrieval.top_k,
         rerank_mode=payload.retrieval.rerank_mode,
@@ -281,7 +278,7 @@ async def stream_chat_run_events(
                     message_id=value.assistant_message_id,
                     answer=value.assistant_content,
                     citations=_citation_responses(value),
-                    effective_answer_policy=_policy_response(value),
+                    effective_answer_policy=dict(value.effective_policy),
                     status_url=_status_url(value.id),
                 ),
             )
@@ -292,7 +289,7 @@ async def stream_chat_run_events(
                     run_id=value.id,
                     status=value.status,
                     error=_terminal_error(value),
-                    effective_answer_policy=_policy_response(value),
+                    effective_answer_policy=dict(value.effective_policy),
                     status_url=_status_url(value.id),
                 ),
             )
@@ -334,7 +331,7 @@ def _run_response(value: ChatRun) -> ChatRunResponse:
         citations=_citation_responses(value),
         status_url=_status_url(value.id),
         events_url=f"{_status_url(value.id)}/events",
-        effective_answer_policy=_policy_response(value),
+        effective_answer_policy=dict(value.effective_policy),
         agent=_agent_response(value),
         retrieval=_retrieval_response(value),
         model=_model_response(value),
@@ -444,10 +441,6 @@ def _citation_responses(value: ChatRun) -> tuple[ChatCitationResponse, ...]:
         )
         for item in value.citations
     )
-
-
-def _policy_response(value: ChatRun) -> EffectiveAnswerPolicyResponse:
-    return EffectiveAnswerPolicyResponse.model_validate(value.effective_policy)
 
 
 def _agent_response(value: ChatRun) -> ChatAgentResponse:

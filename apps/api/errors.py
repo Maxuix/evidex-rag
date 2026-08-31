@@ -12,7 +12,6 @@ from starlette.exceptions import HTTPException
 
 from rag_kb.auth import AccessDeniedError
 from rag_kb.domain import (
-    AnswerPolicyNotSupportedError,
     ChatSessionBusyError,
     DuplicateDocumentError,
     FileAdmissionError,
@@ -74,10 +73,6 @@ def install_problem_handlers(app: FastAPI) -> None:
     app.add_exception_handler(FileAdmissionError, _file_admission_handler)  # type: ignore[arg-type]
     app.add_exception_handler(RetrievalExecutionError, _retrieval_execution_handler)  # type: ignore[arg-type]
     app.add_exception_handler(
-        AnswerPolicyNotSupportedError,
-        _answer_policy_not_supported_handler,  # type: ignore[arg-type]
-    )
-    app.add_exception_handler(
         ChatSessionBusyError,
         _chat_session_busy_handler,  # type: ignore[arg-type]
     )
@@ -94,20 +89,6 @@ async def _chat_session_busy_handler(
         title="Chat session busy",
         detail="This chat session already has a queued or running ChatRun.",
         retryable=True,
-    )
-
-
-async def _answer_policy_not_supported_handler(
-    request: Request, error: AnswerPolicyNotSupportedError
-) -> JSONResponse:
-    del error
-    return problem_response(
-        request,
-        code=ErrorCode.ANSWER_POLICY_NOT_SUPPORTED,
-        status=422,
-        title="Answer policy not supported",
-        detail="The requested answer policy is not supported.",
-        retryable=False,
     )
 
 
@@ -386,21 +367,13 @@ async def _request_validation_handler(
         )
         for item in error.errors()
     )
-    unsupported_answer_policy = any(
-        violation.error_type == "answer_policy_not_supported"
-        for violation in violations
-    )
     invalid_idempotency_key = any(
         len(violation.location) >= 2
         and violation.location[0] == "header"
         and str(violation.location[1]).lower() == "idempotency-key"
         for violation in violations
     )
-    if unsupported_answer_policy:
-        code = ErrorCode.ANSWER_POLICY_NOT_SUPPORTED
-        title = "Answer policy not supported"
-        detail = "The requested answer policy is not supported."
-    elif invalid_idempotency_key:
+    if invalid_idempotency_key:
         code = ErrorCode.INVALID_IDEMPOTENCY_KEY
         title = "Invalid Idempotency-Key"
         detail = "Idempotency-Key must be a valid UUID."

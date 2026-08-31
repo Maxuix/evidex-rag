@@ -28,7 +28,6 @@ from rag_kb.db import DatabaseProcess, create_database_resources
 from rag_kb.document_processing.profiles import index_profile
 from rag_kb.document_processing.tokenization import count_chunk_tokens
 from rag_kb.domain import (
-    AnswerStyle,
     ChatPipelineExecutionError,
     ChatPipelinePhase,
     ChunkingPreset,
@@ -41,7 +40,6 @@ from rag_kb.domain import (
     IndexingCommand,
     IndexingExecutionError,
     IndexingPhase,
-    InsufficiencyPolicy,
     ParserExecutionError,
     PromotionCommand,
     PromotionReason,
@@ -785,8 +783,6 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
             session_id=session.id,
             kb_id=kb.id,
             message="start while indexing is busy",
-            answer_style=AnswerStyle.CONCISE,
-            insufficiency_policy=InsufficiencyPolicy.REFUSE,
             retrieval_mode="vector",
             top_k=5,
         )

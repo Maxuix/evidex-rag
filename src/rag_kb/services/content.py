@@ -10,7 +10,6 @@ from uuid import UUID
 from rag_kb.auth import AuthContext, SingleWorkspaceAccessPolicy
 from rag_kb.document_processing.profiles import index_profile, profile_for_preset
 from rag_kb.domain import (
-    AnswerPolicyDefaults,
     ChunkingPreset,
     Document,
     DocumentChunkInspection,
@@ -29,7 +28,6 @@ from rag_kb.domain import (
     ResourceNotFoundError,
     ResourceStateConflictError,
     canonical_request_hash,
-    validate_p1_answer_policy_defaults,
 )
 from rag_kb.uow import execute_in_transaction
 
@@ -212,15 +210,9 @@ class KnowledgeBaseService:
         parsing_preset: ParsingPreset | str = ParsingPreset.TEXT_LOCAL_V1,
         chunking_preset: ChunkingPreset | str = ChunkingPreset.STRUCTURAL_BALANCED_V2,
         retrieval_defaults: dict[str, Any],
-        answer_policy_defaults: dict[str, Any] | None = None,
         embedding_selection: dict[str, Any] | None = None,
     ) -> KnowledgeBase:
         self._authorize(context)
-        resolved_answer_defaults = (
-            AnswerPolicyDefaults().as_dict()
-            if answer_policy_defaults is None
-            else validate_p1_answer_policy_defaults(answer_policy_defaults).as_dict()
-        )
         resolved_preset = ChunkingPreset(chunking_preset)
         resolved_parsing = ParsingPreset(parsing_preset)
         resolved_profile = profile_for_preset(resolved_preset, resolved_parsing)
@@ -236,7 +228,6 @@ class KnowledgeBaseService:
                 "parsing": {"preset": resolved_parsing.value},
                 "chunking": {"preset": resolved_preset.value},
                 "retrieval_defaults": retrieval_defaults,
-                "answer_policy_defaults": resolved_answer_defaults,
                 "embedding": (
                     embedding_selection
                     if embedding_selection is not None
@@ -309,7 +300,6 @@ class KnowledgeBaseService:
             created = await uow.knowledge_bases.create(
                 name=name,
                 retrieval_defaults=retrieval_defaults,
-                answer_policy_defaults=resolved_answer_defaults,
                 embedding_space=embedding_space,
                 cross_modal_embedding_space=cross_modal_embedding_space,
                 index_profile=resolved_profile,
@@ -361,13 +351,8 @@ class KnowledgeBaseService:
         *,
         name: str | None,
         retrieval_defaults: dict[str, Any] | None,
-        answer_policy_defaults: dict[str, Any] | None = None,
     ) -> KnowledgeBase:
         self._authorize(context)
-        if answer_policy_defaults is not None:
-            answer_policy_defaults = validate_p1_answer_policy_defaults(
-                answer_policy_defaults
-            ).as_dict()
         scope = IdempotencyScope(
             context.principal_id,
             context.client_id,
@@ -379,7 +364,6 @@ class KnowledgeBaseService:
                 "kb_id": str(kb_id),
                 "name": name,
                 "retrieval_defaults": retrieval_defaults,
-                "answer_policy_defaults": answer_policy_defaults,
             }
         )
 
@@ -398,7 +382,6 @@ class KnowledgeBaseService:
                 kb_id,
                 name=name,
                 retrieval_defaults=retrieval_defaults,
-                answer_policy_defaults=answer_policy_defaults,
             )
             if updated is None:
                 raise ResourceNotFoundError("knowledge base was not found")

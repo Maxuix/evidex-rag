@@ -7,7 +7,6 @@ from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from pydantic import Field, field_validator, model_validator
-from pydantic_core import PydanticCustomError
 
 from rag_kb.domain import (
     CHAT_AGENT_DEFAULT_EVIDENCE_ITEMS,
@@ -19,8 +18,6 @@ from rag_kb.domain import (
     CHAT_AGENT_MAX_RETRIEVAL_CALLS,
     CHAT_AGENT_MAX_TOTAL_TOKENS,
     CHAT_AGENT_MIN_TOTAL_TOKENS,
-    AnswerStyle,
-    InsufficiencyPolicy,
     RerankMode,
 )
 from rag_kb.schemas.common import OpaqueCursor, PublicSchema
@@ -77,42 +74,6 @@ class ChatMessageResponse(PublicSchema):
 class ChatMessagePage(PublicSchema):
     items: tuple[ChatMessageResponse, ...]
     next_cursor: OpaqueCursor | None = None
-
-
-class AnswerPolicyOverrides(PublicSchema):
-    answer_style: AnswerStyle | None = None
-    insufficiency_policy: InsufficiencyPolicy | None = None
-
-    @model_validator(mode="before")
-    @classmethod
-    def reject_non_override_dimensions(cls, value: Any) -> Any:
-        if isinstance(value, dict):
-            unsupported = set(value) - {"answer_style", "insufficiency_policy"}
-            if unsupported:
-                raise PydanticCustomError(
-                    "answer_policy_not_supported",
-                    "answer policy contains unsupported dimensions",
-                )
-        return value
-
-    @field_validator("answer_style", mode="before")
-    @classmethod
-    def validate_answer_style(cls, value: Any) -> Any:
-        if value is None or value in {item.value for item in AnswerStyle}:
-            return value
-        raise PydanticCustomError(
-            "answer_policy_not_supported", "answer style is not supported"
-        )
-
-    @field_validator("insufficiency_policy", mode="before")
-    @classmethod
-    def validate_insufficiency_policy(cls, value: Any) -> Any:
-        if value is None or value in {item.value for item in InsufficiencyPolicy}:
-            return value
-        raise PydanticCustomError(
-            "answer_policy_not_supported",
-            "insufficiency policy is not supported",
-        )
 
 
 class ChatRetrievalRequest(PublicSchema):
@@ -233,7 +194,6 @@ class ChatRunCreate(PublicSchema):
     session_id: UUID
     knowledge_base_id: UUID
     message: Annotated[str, Field(min_length=1, max_length=32768)]
-    answer_policy: AnswerPolicyOverrides = AnswerPolicyOverrides()
     retrieval: ChatRetrievalRequest = ChatRetrievalRequest()
     model_profile_revision_id: UUID | None = None
 
@@ -244,16 +204,6 @@ class ChatRunCreate(PublicSchema):
         if not normalized:
             raise ValueError("message must contain non-whitespace characters")
         return normalized
-
-
-class EffectiveAnswerPolicyResponse(PublicSchema):
-    grounding_policy: Literal["evidence_only"]
-    answer_style: AnswerStyle
-    insufficiency_policy: InsufficiencyPolicy
-    citation_required: Literal[True]
-    citation_granularity: Literal["claim_level"]
-    answer_task: Literal["answer"]
-    policy_version: Literal["p1"]
 
 
 class ChatRunErrorResponse(PublicSchema):
@@ -333,7 +283,7 @@ class ChatRunResponse(PublicSchema):
     citations: tuple[ChatCitationResponse, ...]
     status_url: str
     events_url: str
-    effective_answer_policy: EffectiveAnswerPolicyResponse
+    effective_answer_policy: dict[str, Any]
     agent: ChatAgentResponse
     retrieval: ChatRunRetrievalResponse
     model: ChatRunModelResponse
@@ -352,7 +302,7 @@ class ChatAnswerCompletedEvent(PublicSchema):
     message_id: UUID
     answer: str
     citations: tuple[ChatCitationResponse, ...]
-    effective_answer_policy: EffectiveAnswerPolicyResponse
+    effective_answer_policy: dict[str, Any]
     status_url: str
 
 
@@ -360,7 +310,7 @@ class ChatRunFailedEvent(PublicSchema):
     run_id: UUID
     status: Literal["failed", "cancelled"]
     error: ChatRunErrorResponse
-    effective_answer_policy: EffectiveAnswerPolicyResponse
+    effective_answer_policy: dict[str, Any]
     status_url: str
 
 

@@ -26,7 +26,6 @@ from rag_kb.schemas import (
     KnowledgeBaseCreate,
     KnowledgeBaseDeleteResponse,
     KnowledgeBaseChunkingResponse,
-    KnowledgeBaseAnswerPolicyDefaults,
     KnowledgeBasePage,
     KnowledgeBaseParsingResponse,
     KnowledgeBaseResponse,
@@ -58,7 +57,6 @@ async def create_knowledge_base(
         parsing_preset=payload.parsing.preset,
         chunking_preset=payload.chunking.preset,
         retrieval_defaults=payload.retrieval_defaults.model_dump(mode="json"),
-        answer_policy_defaults=payload.answer_policy_defaults.model_dump(mode="json"),
         embedding_selection=(
             payload.embedding.model_dump(mode="json")
             if payload.embedding is not None
@@ -127,11 +125,6 @@ async def update_knowledge_base(
         retrieval_defaults=(
             payload.retrieval_defaults.model_dump(mode="json")
             if payload.retrieval_defaults is not None
-            else None
-        ),
-        answer_policy_defaults=(
-            payload.answer_policy_defaults.model_dump(mode="json")
-            if payload.answer_policy_defaults is not None
             else None
         ),
     )
@@ -230,9 +223,7 @@ def _response(value: KnowledgeBase) -> KnowledgeBaseResponse:
             public_descriptor(value.chunking_config)
         ),
         retrieval_defaults=RetrievalDefaults.model_validate(value.retrieval_defaults),
-        answer_policy_defaults=KnowledgeBaseAnswerPolicyDefaults.model_validate(
-            value.answer_policy_defaults
-        ),
+        answer_policy_defaults=dict(value.answer_policy_defaults),
         provisioned_at=value.provisioned_at,
         created_at=value.created_at,
         updated_at=value.updated_at,

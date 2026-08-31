@@ -78,7 +78,6 @@ class SqlAlchemyKnowledgeBaseRepository:
         *,
         name: str,
         retrieval_defaults: dict[str, Any],
-        answer_policy_defaults: dict[str, Any],
         embedding_space: EmbeddingSpaceDefinition,
         cross_modal_embedding_space: EmbeddingSpaceDefinition | None,
         index_profile: IndexProfileDefinition,
@@ -117,7 +116,7 @@ class SqlAlchemyKnowledgeBaseRepository:
             workspace_id=self._workspace_id,
             name=name,
             retrieval_defaults=dict(retrieval_defaults),
-            answer_policy_defaults=dict(answer_policy_defaults),
+            answer_policy_defaults={},  # Retired column; historical values remain readable.
         )
         self._session.add(kb)
         await self._session.flush()
@@ -302,7 +301,6 @@ class SqlAlchemyKnowledgeBaseRepository:
         *,
         name: str | None,
         retrieval_defaults: dict[str, Any] | None,
-        answer_policy_defaults: dict[str, Any] | None,
     ) -> KnowledgeBase | None:
         kb = await self._session.scalar(
             select(KnowledgeBaseRow).where(
@@ -327,8 +325,6 @@ class SqlAlchemyKnowledgeBaseRepository:
             kb.name = name
         if retrieval_defaults is not None:
             kb.retrieval_defaults = dict(retrieval_defaults)
-        if answer_policy_defaults is not None:
-            kb.answer_policy_defaults = dict(answer_policy_defaults)
         kb.updated_at = datetime.now(UTC)
         await self._session.flush()
         assert kb.active_index_revision_id is not None

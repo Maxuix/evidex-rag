@@ -452,10 +452,6 @@ class ContentLifecycleTests(unittest.IsolatedAsyncioTestCase):
             created[0].id,
             name="delta",
             retrieval_defaults={"strategy": "exact_vector", "top_k": 7},
-            answer_policy_defaults={
-                "answer_style": "summary",
-                "insufficiency_policy": "partial_answer",
-            },
         )
         replay = await self.knowledge_bases.update(
             self.context,
@@ -463,17 +459,10 @@ class ContentLifecycleTests(unittest.IsolatedAsyncioTestCase):
             created[0].id,
             name="delta",
             retrieval_defaults={"strategy": "exact_vector", "top_k": 7},
-            answer_policy_defaults={
-                "answer_style": "summary",
-                "insufficiency_policy": "partial_answer",
-            },
         )
         self.assertEqual(replay.id, updated.id)
         self.assertEqual(replay.retrieval_defaults["top_k"], 7)
-        self.assertEqual(replay.answer_policy_defaults["answer_style"], "summary")
-        self.assertEqual(
-            replay.answer_policy_defaults["insufficiency_policy"], "partial_answer"
-        )
+        self.assertEqual(replay.answer_policy_defaults, {})
 
         first = await self.knowledge_bases.list(
             self.context, limit=2, sort="name", after=None

@@ -615,7 +615,6 @@ def _execution_context(
         principal_id=settings.identity.principal_id,
         client_id=settings.identity.client_id,
         query=question,
-        effective_policy={"insufficiency_policy": "partial_answer"},
         retrieval_strategy=adaptive_graphiti_profile(
             top_k=10,
             rerank_mode=rerank_mode,

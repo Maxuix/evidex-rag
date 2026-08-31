@@ -696,7 +696,6 @@ def _score_public(case: Mapping[str, Any]) -> Callable[[str, Any, Any], Mapping[
         actual = answering.validated.outcome.value
         answer_like = {"answered", "partial"}
         matched, available = _lexical_match(content, case)
-        lexical_ok = matched if available else True
         cited_document_count = _cited_document_count(citations)
         if action in {"refuse_insufficient_evidence", "refuse_closed_world_absent", "decline_or_correct_false_premise"}:
             policy_correct = actual == "refused"
@@ -707,17 +706,22 @@ def _score_public(case: Mapping[str, Any]) -> Callable[[str, Any, Any], Mapping[
         elif action == "surface_evidence_conflict":
             policy_correct = (
                 actual in answer_like
-                and lexical_ok
+                and matched
                 and cited_document_count >= 2
             )
         elif action == "answer_without_false_conflict":
-            policy_correct = actual in answer_like and lexical_ok
+            policy_correct = actual in answer_like and matched
         else:
             policy_correct = actual in answer_like
+        if action in {"surface_evidence_conflict", "answer_without_false_conflict"} and not available:
+            policy_correct = None
         return {
             "expected_action": action,
             "stratum": str(case.get("stratum", "unknown")),
-            "policy_correct": bool(policy_correct),
+            "policy_correct": policy_correct,
+            "policy_evaluation_status": (
+                "not_evaluated_missing_gold" if policy_correct is None else "evaluated"
+            ),
             "lexical_answer_match": bool(matched),
             "lexical_answer_match_available": bool(available),
             "cited_document_count": cited_document_count,
@@ -1112,6 +1116,14 @@ def _state_observations(state: Mapping[str, Any], phase: str) -> list[dict[str, 
     ]
 
 
+def _public_policy_summary(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    evaluated = [record["policy_correct"] for record in records if isinstance(record.get("policy_correct"), bool)]
+    return {
+        "policy_correct": _rate(sum(evaluated), len(evaluated)),
+        "policy_not_evaluated_count": len(records) - len(evaluated),
+    }
+
+
 def _public_report(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     by_action: dict[str, dict[str, Any]] = {}
     for action in sorted({str(record.get("expected_action")) for record in records}):
@@ -1121,7 +1133,7 @@ def _public_report(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         entry = {
             "case_count": len(subset),
             "outcomes": dict(sorted(outcomes.items())),
-            "policy_correct": _rate(sum(bool(record.get("policy_correct")) for record in subset), len(subset)),
+            **_public_policy_summary(subset),
             "lexical_answer_match": _rate(sum(bool(record.get("lexical_answer_match")) for record in available), len(available)),
             "lexical_match_denominator_available": len(available),
             "forbidden_claim_hits": sum(bool(record.get("forbidden_claim_hit")) for record in subset),
@@ -1147,13 +1159,13 @@ def _public_report(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         subset = [record for record in records if record.get("stratum") == stratum]
         by_stratum[stratum] = {
             "case_count": len(subset),
-            "policy_correct": _rate(sum(bool(record.get("policy_correct")) for record in subset), len(subset)),
+            **_public_policy_summary(subset),
             "outcomes": dict(sorted(Counter(str(record.get("actual_outcome")) for record in subset).items())),
         }
     return {
         "case_count": len(records),
         "outcomes": dict(sorted(Counter(str(record.get("actual_outcome")) for record in records).items())),
-        "policy_correct": _rate(sum(bool(record.get("policy_correct")) for record in records), len(records)),
+        **_public_policy_summary(records),
         "forbidden_claim_hit_count": sum(bool(record.get("forbidden_claim_hit")) for record in records),
         "by_expected_action": by_action,
         "by_stratum": by_stratum,
@@ -1652,7 +1664,7 @@ def _human_report(report: Mapping[str, Any]) -> str:
             "",
             "## 质量结果",
             "",
-            f"公共回答/拒答：{public['case_count']} cases，策略正确率 `{public['policy_correct']['value']}`，禁用声明命中 {public['forbidden_claim_hit_count']} 次。",
+            f"公共回答/拒答：{public['case_count']} cases，策略正确率 `{public['policy_correct']['value']}`（已评估 {public['policy_correct']['denominator']}，未评估 {public['policy_not_evaluated_count']}），禁用声明命中 {public['forbidden_claim_hit_count']} 次。",
             f"MuSiQue 路由：资格候选 {routing['qualification']['candidate_count']}，动态合格 {routing['qualification']['qualified_count']}，Auto 观测 {routing['answers']['auto_observation_count']}，Auto 路由尝试率 `{routing['answers']['auto_route_attempt_rate']['value']}`。",
             f"Graph 新证据分解：发现新 chunk {routing_novelty['case_count']} 例；补齐 required path {routing_novelty['distinct_required_path_completion_count']} 例，Simple 已完整 {routing_novelty['simple_already_complete_count']} 例，required path 仍不完整 {routing_novelty['required_path_still_incomplete_count']} 例。路径候选上限 {routing_bounds['candidate_path_limit']} 命中 {routing_bounds['candidate_path_limit_hit_count']} 例；source target/hard limit 命中 {routing_bounds['source_chunk_target_hit_count']}/{routing_bounds['source_chunk_limit_hit_count']} 例。",
             f"Auto 重复性：全部 {routing_repeatability['expected_repeats_per_case']} 次 lexical 正确 {routing_lexical['pass_all_repeats_correct']['numerator']}/{routing_lexical['pass_all_repeats_correct']['denominator']}；outcome 一致率 `{routing_repeatability['stable_outcome']['value']}`，Graph 尝试一致率 `{routing_repeatability['stable_route_attempt']['value']}`。发生 Graph 尝试的运行中至少一次发现新证据的比例 `{routing['answers']['attempted_run_any_admission_rate']['value']}`；route precision 状态 `{routing['answers']['route_precision_status']}`。",

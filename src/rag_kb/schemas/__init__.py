@@ -9,7 +9,6 @@ from rag_kb.schemas.common import (
 )
 from rag_kb.schemas.chat import (
     ChatAgentResponse,
-    AnswerPolicyOverrides,
     ChatAnswerCompletedEvent,
     ChatAgentProgressEvent,
     ChatCitationAssetResponse,
@@ -25,7 +24,6 @@ from rag_kb.schemas.chat import (
     ChatSessionCreate,
     ChatSessionPage,
     ChatSessionResponse,
-    EffectiveAnswerPolicyResponse,
 )
 from rag_kb.schemas.documents import (
     DocumentChunkAssetResponse,
@@ -53,7 +51,6 @@ from rag_kb.schemas.indexing import (
     IndexingProgressResponse,
 )
 from rag_kb.schemas.knowledge_bases import (
-    KnowledgeBaseAnswerPolicyDefaults,
     KnowledgeBaseCreate,
     KnowledgeBaseDeleteResponse,
     KnowledgeBaseEmbeddingResponse,
@@ -95,7 +92,6 @@ from rag_kb.schemas.retrieval import (
 )
 
 __all__ = [
-    "AnswerPolicyOverrides",
     "ChatAgentResponse",
     "ChatAnswerCompletedEvent",
     "ChatAgentProgressEvent",
@@ -133,7 +129,6 @@ __all__ = [
     "IndexingJobResponse",
     "IndexingProgressResponse",
     "ErrorCode",
-    "EffectiveAnswerPolicyResponse",
     "EmbeddingValidationResponse",
     "FieldViolation",
     "KnowledgeBaseCreate",
@@ -143,7 +138,6 @@ __all__ = [
     "KnowledgeBaseChunkingResponse",
     "KnowledgeBaseParsing",
     "KnowledgeBaseParsingResponse",
-    "KnowledgeBaseAnswerPolicyDefaults",
     "KnowledgeBasePage",
     "KnowledgeBaseResponse",
     "KnowledgeBaseUpdate",

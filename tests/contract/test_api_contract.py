@@ -36,7 +36,6 @@ from rag_kb.document_processing.profiles import DOCLING_TEXT_PARSER_CONFIG
 from rag_kb.domain import (
     CONTEXTUAL_QUERY_VERSION,
     AdmissionLimits,
-    AnswerStyle,
     ChatCitation,
     ChatMessage,
     ChatProgressActivity,
@@ -62,7 +61,6 @@ from rag_kb.domain import (
     GraphRetrievalRequest,
     IdempotencyKeyReusedError,
     IdempotencyScope,
-    InsufficiencyPolicy,
     IndexingJobSnapshot,
     KnowledgeBase,
     KnowledgeBaseEmbeddingSummary,
@@ -1153,7 +1151,6 @@ class _FakeKnowledgeBaseService:
         parsing_preset,
         chunking_preset,
         retrieval_defaults,
-        answer_policy_defaults,
         embedding_selection=None,
     ):
         del context, key, embedding_selection
@@ -1169,7 +1166,7 @@ class _FakeKnowledgeBaseService:
                 chunking_preset, parsing_preset
             ).chunking_config,
             retrieval_defaults=retrieval_defaults,
-            answer_policy_defaults=answer_policy_defaults,
+            answer_policy_defaults={},
         )
         return self.value
 
@@ -1191,7 +1188,6 @@ class _FakeKnowledgeBaseService:
         *,
         name,
         retrieval_defaults,
-        answer_policy_defaults,
     ):
         del context
         if key == UUID("00000000-0000-0000-0000-000000000099"):
@@ -1202,9 +1198,6 @@ class _FakeKnowledgeBaseService:
             self.value,
             name=name or self.value.name,
             retrieval_defaults=retrieval_defaults or self.value.retrieval_defaults,
-            answer_policy_defaults=(
-                answer_policy_defaults or self.value.answer_policy_defaults
-            ),
         )
         return self.value
 
@@ -1439,20 +1432,6 @@ class _FakeChatService:
             raise ChatSessionBusyError("internal active run detail")
         if values["session_id"] != self.session.id:
             raise ResourceNotFoundError("internal chat session detail")
-        policy = {
-            "grounding_policy": "evidence_only",
-            "answer_style": (
-                values["answer_style"] or AnswerStyle.CONCISE
-            ).value,
-            "insufficiency_policy": (
-                values["insufficiency_policy"]
-                or InsufficiencyPolicy.PARTIAL_ANSWER
-            ).value,
-            "citation_required": True,
-            "citation_granularity": "claim_level",
-            "answer_task": "answer",
-            "policy_version": "p1",
-        }
         snapshot = empty_conversation_context()
         original = ContextualizedQuery(
             version=CONTEXTUAL_QUERY_VERSION,
@@ -1464,7 +1443,7 @@ class _FakeChatService:
         )
         self.run = dataclass_replace(
             self.run,
-            effective_policy=policy,
+            effective_policy={},
             retrieval_strategy=exact_profile(
                 top_k=values["top_k"],
                 rerank_mode=RerankMode.NONE,
@@ -1543,11 +1522,7 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
             },
         )
         self.assertEqual(
-            created.json()["answer_policy_defaults"],
-            {
-                "answer_style": "concise",
-                "insufficiency_policy": "partial_answer",
-            },
+            created.json()["answer_policy_defaults"], {},
         )
 
         updated = await request(
@@ -1562,11 +1537,8 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
                 }
             },
         )
-        self.assertEqual(updated.status, 200)
-        self.assertEqual(
-            updated.json()["answer_policy_defaults"],
-            {"answer_style": "summary", "insufficiency_policy": "partial_answer"},
-        )
+        self.assertEqual(updated.status, 422)
+        self.assertEqual(updated.json()["code"], "REQUEST_VALIDATION_FAILED")
 
         semantic = await request(
             self.app,
@@ -2050,18 +2022,7 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             body["events_url"], f"{body['status_url']}/events"
         )
-        self.assertEqual(
-            body["effective_answer_policy"],
-            {
-                "grounding_policy": "evidence_only",
-                "answer_style": "summary",
-                "insufficiency_policy": "partial_answer",
-                "citation_required": True,
-                "citation_granularity": "claim_level",
-                "answer_task": "answer",
-                "policy_version": "p1",
-            },
-        )
+        self.assertEqual(body["effective_answer_policy"], {})
         self.assertEqual(chat.create_run_calls[-1]["key"], key)
         self.assertEqual(chat.create_run_calls[-1]["message"], "查询 RUN-ORD-14")
 
@@ -2089,7 +2050,43 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(listed.json()["items"][0]["id"], str(chat.session.id))
         self.assertEqual(filtered.json()["items"][0]["id"], str(chat.session.id))
 
-    async def test_chat_rejects_policy_weakening_and_redacts_conflicts(self) -> None:
+    async def test_retired_policy_is_read_only_history_not_current_configuration(self) -> None:
+        created = await request(
+            self.app, "POST", f"{API_PREFIX}/knowledge-bases",
+            headers={"idempotency-key": str(uuid4())}, json_body={"name": "Current"},
+        )
+        self.assertEqual(created.status, 201)
+        historical = {"answer_style": "summary", "insufficiency_policy": "refuse", "policy_version": "old"}
+        kb_service = self.dependencies.knowledge_base_service
+        kb_service.value = dataclass_replace(kb_service.value, answer_policy_defaults=dict(historical))
+        chat = self.dependencies.chat_service
+        chat.run = dataclass_replace(chat.run, effective_policy=dict(historical))
+        kb_response = await request(self.app, "GET", f"{API_PREFIX}/knowledge-bases/{kb_service.value.id}")
+        run_response = await request(self.app, "GET", f"{API_PREFIX}/chat/runs/{chat.run.id}")
+        self.assertEqual(kb_response.status, 200)
+        self.assertEqual(run_response.status, 200)
+        self.assertEqual(kb_response.json()["answer_policy_defaults"], historical)
+        self.assertEqual(run_response.json()["effective_answer_policy"], historical)
+        renamed = await request(
+            self.app, "PATCH", f"{API_PREFIX}/knowledge-bases/{kb_service.value.id}",
+            headers={"idempotency-key": str(uuid4())}, json_body={"name": "Renamed"},
+        )
+        self.assertEqual(renamed.status, 200)
+        self.assertEqual(renamed.json()["answer_policy_defaults"], historical)
+        rejected = await request(
+            self.app, "POST", f"{API_PREFIX}/knowledge-bases",
+            headers={"idempotency-key": str(uuid4())},
+            json_body={"name": "New", "answer_policy_defaults": historical},
+        )
+        self.assertEqual(rejected.status, 422)
+        self.assertEqual(rejected.json()["code"], "REQUEST_VALIDATION_FAILED")
+        self.assertEqual(chat.run.effective_policy, historical)
+        schema = self.app.openapi()["components"]["schemas"]
+        self.assertNotIn("answer_policy", schema["ChatRunCreate"]["properties"])
+        self.assertNotIn("answer_policy_defaults", schema["KnowledgeBaseCreate"]["properties"])
+        self.assertNotIn("answer_policy_defaults", schema["KnowledgeBaseUpdate"]["properties"])
+
+    async def test_chat_rejects_retired_policy_and_redacts_conflicts(self) -> None:
         chat = self.dependencies.chat_service
         unsupported_policies = (
             {
@@ -2117,7 +2114,7 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
                 )
                 self.assertEqual(forbidden.status, 422)
                 self.assertEqual(
-                    forbidden.json()["code"], "ANSWER_POLICY_NOT_SUPPORTED"
+                    forbidden.json()["code"], "REQUEST_VALIDATION_FAILED"
                 )
                 self.assertNotIn("client-version", forbidden.body.decode())
         self.assertEqual(chat.create_run_calls, [])
@@ -2551,10 +2548,6 @@ def _chat_run_request(session_id: UUID) -> dict[str, object]:
         "session_id": str(session_id),
         "knowledge_base_id": str(_knowledge_base_value().id),
         "message": "  查询 RUN-ORD-14  ",
-        "answer_policy": {
-            "answer_style": "summary",
-            "insufficiency_policy": "partial_answer",
-        },
         "retrieval": {"mode": "vector", "top_k": 8},
     }
 

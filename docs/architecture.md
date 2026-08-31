@@ -500,13 +500,15 @@ forced-finalize、连续无新增次数、累计耗时、hard deadline 与 deadl
 
 API 创建 ChatRun 时在短事务内冻结知识库/revision、检索 preset 的 version/strategy/`top_k`/
 `rerank_mode`（auto 另含 router/augmentation 与 Graph Tool 参数）、原生 Agent 五键预算
-（模型轮次、Graph 调用、token 总量、证据条数与检索调用数）、回答策略、
+（模型轮次、Graph 调用、token 总量、证据条数与检索调用数）、
 不可变模型修订和最近已完成 Session turns，然后
 返回 `202`；模型调用由 Worker 执行。公开请求没有 workflow 模式。
 
-回答策略中的 `answer_style` 与 `insufficiency_policy` 当前会被校验、冻结并通过 API 返回，但原生
-Agent 尚未读取它们来改变 prompt、工具循环或确定性渲染；当前实际运行行为是单一的 evidence-only
-逐 claim salvage/拒答路径，不能把这两个持久字段描述成已生效的 Agent 分支。
+回答行为是单一的 evidence-only 逐 claim salvage/拒答路径。无效的 `answer_style`、
+`insufficiency_policy` 及单值策略标签已从创建/更新请求、服务层和 Worker context 移除；
+不再提供默认值解析、覆盖优先级或组合校验。新 KB/ChatRun 在保留的策略 JSON 列写入空对象，
+不迁移、不改写历史值。历史 `answer_policy_defaults`/`effective_answer_policy` 只读返回原始
+JSON，不作为当前执行配置，也不做旧枚举解析。旧客户端提交策略字段会得到通用 422 参数错误。
 
 当前 Chat 执行是普通异步 Tool-Calling loop：
 
@@ -554,6 +556,8 @@ ChatRun 内部 trace 保存 claim salvage 的 rejected count 与内部 reason，
 - 公开冲突评测不再把模型自报的结构标签当作正确性证明。`surface_evidence_conflict` 要求
   回答命中 gold 文本且至少引用两个不同文档，并单独报告多文档覆盖；该确定性指标不声称
   已完成语义级冲突判定。`answer_without_false_conflict` 按普通回答和 gold 命中评分。
+  两类用例缺少可用 gold 时标记为未评估（`policy_correct=null`），从总计、动作和题型的
+  正确率分母中排除并单列计数；历史观测不重算、不改写。
 - Graph 关系检索水合后的 text/table Chunk 同时保留 `graph_path` provenance 与对应的
   `text`/`table_text` 表示；路径 provenance 不是视觉形态，只有缺少可引用文本表示的纯视觉
   Evidence 才必须先实际加载资产。

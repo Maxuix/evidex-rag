@@ -46,10 +46,7 @@ export interface KnowledgeBase {
     top_k: number;
     rerank_mode: RerankMode;
   };
-  answer_policy_defaults: {
-    answer_style: "concise" | "summary";
-    insufficiency_policy: "refuse" | "partial_answer";
-  };
+  answer_policy_defaults: Record<string, unknown>; // Historical, read-only.
   provisioned_at: IsoDate;
   created_at: IsoDate;
   updated_at: IsoDate;
@@ -422,10 +419,7 @@ export interface ChatRun {
   citations: ChatCitation[];
   status_url: string;
   events_url: string;
-  effective_answer_policy: {
-    answer_style: "concise" | "summary";
-    insufficiency_policy: "refuse" | "partial_answer";
-  };
+  effective_answer_policy: Record<string, unknown>; // Historical, read-only.
   agent: ChatAgent;
   retrieval: ChatRunRetrieval;
   model: {
@@ -450,10 +444,6 @@ export interface ChatRunCreate {
   session_id: UUID;
   knowledge_base_id: UUID;
   message: string;
-  answer_policy: {
-    answer_style: "concise" | "summary";
-    insufficiency_policy: "refuse" | "partial_answer";
-  };
   retrieval: {
     mode: "vector" | "hybrid" | "graph" | "auto";
     top_k: number;

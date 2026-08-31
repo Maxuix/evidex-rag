@@ -3,15 +3,13 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated, Literal, Self, Union
+from typing import Annotated, Any, Literal, Self, Union
 from uuid import UUID
 
 from pydantic import Field, field_validator, model_validator
 
 from rag_kb.domain import (
-    AnswerStyle,
     ChunkingPreset,
-    InsufficiencyPolicy,
     ParsingPreset,
     RerankMode,
 )
@@ -34,11 +32,6 @@ class RetrievalDefaults(PublicSchema):
         ):
             raise ValueError("local reranking supports top_k up to 20")
         return self
-
-
-class KnowledgeBaseAnswerPolicyDefaults(PublicSchema):
-    answer_style: AnswerStyle = AnswerStyle.CONCISE
-    insufficiency_policy: InsufficiencyPolicy = InsufficiencyPolicy.PARTIAL_ANSWER
 
 
 class KnowledgeBaseChunking(PublicSchema):
@@ -113,9 +106,6 @@ class KnowledgeBaseCreate(PublicSchema):
     parsing: KnowledgeBaseParsing = KnowledgeBaseParsing()
     chunking: KnowledgeBaseChunking = KnowledgeBaseChunking()
     retrieval_defaults: RetrievalDefaults = RetrievalDefaults()
-    answer_policy_defaults: KnowledgeBaseAnswerPolicyDefaults = (
-        KnowledgeBaseAnswerPolicyDefaults()
-    )
     embedding: KnowledgeBaseEmbeddingSelection | None = None
 
     @model_validator(mode="after")
@@ -141,7 +131,6 @@ class KnowledgeBaseCreate(PublicSchema):
 class KnowledgeBaseUpdate(PublicSchema):
     name: KnowledgeBaseName | None = None
     retrieval_defaults: RetrievalDefaults | None = None
-    answer_policy_defaults: KnowledgeBaseAnswerPolicyDefaults | None = None
 
     @field_validator("name")
     @classmethod
@@ -155,11 +144,7 @@ class KnowledgeBaseUpdate(PublicSchema):
 
     @model_validator(mode="after")
     def require_change(self) -> Self:
-        if (
-            self.name is None
-            and self.retrieval_defaults is None
-            and self.answer_policy_defaults is None
-        ):
+        if self.name is None and self.retrieval_defaults is None:
             raise ValueError("at least one knowledge-base field must be supplied")
         return self
 
@@ -174,9 +159,7 @@ class KnowledgeBaseResponse(PublicSchema):
     parsing: KnowledgeBaseParsingResponse
     chunking: KnowledgeBaseChunkingResponse
     retrieval_defaults: RetrievalDefaults
-    answer_policy_defaults: KnowledgeBaseAnswerPolicyDefaults = (
-        KnowledgeBaseAnswerPolicyDefaults()
-    )
+    answer_policy_defaults: dict[str, Any]
     provisioned_at: datetime
     created_at: datetime
     updated_at: datetime

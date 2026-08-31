@@ -728,12 +728,6 @@ export function KnowledgeChat({
           session_id: sessionId,
           knowledge_base_id: selectedKnowledgeBase.id,
           message: question,
-          answer_policy: {
-            answer_style: selectedKnowledgeBase.answer_policy_defaults.answer_style,
-            insufficiency_policy: (
-              selectedKnowledgeBase.answer_policy_defaults.insufficiency_policy
-            ),
-          },
           retrieval: {
             mode: retrievalMode,
             top_k: retrievalMode === "graph"

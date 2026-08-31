@@ -18,7 +18,6 @@ from rag_kb.domain import (
     AnswerControlReason,
     AnswerDraftSource,
     AnswerOutcome,
-    AnswerStyle,
     ChatAnsweringState,
     ChatExecutionCommand,
     ChatModelCallRecord,
@@ -35,7 +34,6 @@ from rag_kb.domain import (
     EvidencePack,
     IdempotencyKeyReusedError,
     IndexProfileDefinition,
-    InsufficiencyPolicy,
     PromptEvidence,
     RenderedAnswer,
     RenderedCitation,
@@ -134,8 +132,8 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 },
             },
         )
-        self.assertEqual(first.effective_policy["grounding_policy"], "evidence_only")
-        self.assertEqual(first.effective_policy["answer_style"], "summary")
+        self.assertEqual(first.effective_policy, {})
+        self.assertEqual(first.requested_policy, {})
         self.assertEqual(first.index_revision_id, kb.active_index_revision_id)
         self.assertNotIn("api_key", first.model_configuration)
         self.assertNotIn("base_url", first.model_configuration)
@@ -154,8 +152,6 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 session_id=session.id,
                 kb_id=kb.id,
                 message="different question",
-                answer_style=AnswerStyle.SUMMARY,
-                insufficiency_policy=InsufficiencyPolicy.PARTIAL_ANSWER,
                 retrieval_mode="vector",
                 top_k=8,
             )
@@ -237,8 +233,6 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 session_id=session.id,
                 kb_id=other_kb.id,
                 message="wrong knowledge base",
-                answer_style=None,
-                insufficiency_policy=None,
                 retrieval_mode="vector",
                 top_k=10,
             )
@@ -255,99 +249,34 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 after=None,
             )
 
-    async def test_kb_defaults_request_precedence_and_frozen_replay(self) -> None:
-        kb = await self.knowledge_bases.create(
-            self.context,
-            uuid4(),
-            name="policy-defaults",
-            retrieval_defaults={"strategy": "exact_vector", "top_k": 10},
-            answer_policy_defaults={
-                "answer_style": "summary",
-                "insufficiency_policy": "partial_answer",
-            },
+    async def test_retired_policy_snapshots_are_read_only_and_do_not_affect_new_runs(self) -> None:
+        kb = await self._create_kb("policy-history")
+        self.assertEqual(kb.answer_policy_defaults, {})
+        session = await self.chat.create_session(self.context, kb_id=kb.id, title=None)
+        run = await self._create_run(session.id, kb.id, uuid4())
+        historical = {"answer_style": "summary", "insufficiency_policy": "refuse"}
+        connection = await asyncpg.connect(MIGRATION_DSN)
+        try:
+            await connection.execute(
+                "UPDATE knowledge_base SET answer_policy_defaults=$1::jsonb WHERE id=$2",
+                json.dumps(historical), kb.id,
+            )
+            await connection.execute(
+                "UPDATE chat_run SET effective_policy=$1::jsonb WHERE id=$2",
+                json.dumps(historical), run.id,
+            )
+        finally:
+            await connection.close()
+        stored = await self.chat.get_run(self.context, run.id)
+        self.assertEqual(stored.effective_policy, historical)
+        updated = await self.knowledge_bases.update(
+            self.context, uuid4(), kb.id, name="renamed-policy-history", retrieval_defaults=None,
         )
-        session = await self.chat.create_session(
-            self.context, kb_id=kb.id, title="Policy precedence"
-        )
-        key = uuid4()
-        from_defaults = await self.chat.create_run(
-            self.context,
-            key,
-            session_id=session.id,
-            kb_id=kb.id,
-            message="Use knowledge-base policy defaults",
-            answer_style=None,
-            insufficiency_policy=None,
-            retrieval_mode="vector",
-            top_k=10,
-        )
-        self.assertEqual(from_defaults.effective_policy["answer_style"], "summary")
-        self.assertEqual(
-            from_defaults.effective_policy["insufficiency_policy"],
-            "partial_answer",
-        )
-
-        await self.knowledge_bases.update(
-            self.context,
-            uuid4(),
-            kb.id,
-            name=None,
-            retrieval_defaults=None,
-            answer_policy_defaults={
-                "answer_style": "concise",
-                "insufficiency_policy": "refuse",
-            },
-        )
-        replay, concurrent_replay = await asyncio.gather(
-            self.chat.create_run(
-                self.context,
-                key,
-                session_id=session.id,
-                kb_id=kb.id,
-                message="Use knowledge-base policy defaults",
-                answer_style=None,
-                insufficiency_policy=None,
-                retrieval_mode="vector",
-                top_k=10,
-            ),
-            self.chat.create_run(
-                self.context,
-                key,
-                session_id=session.id,
-                kb_id=kb.id,
-                message="Use knowledge-base policy defaults",
-                answer_style=None,
-                insufficiency_policy=None,
-                retrieval_mode="vector",
-                top_k=10,
-            ),
-        )
-        self.assertEqual(replay.id, from_defaults.id)
-        self.assertEqual(concurrent_replay.id, from_defaults.id)
-        self.assertEqual(replay.effective_policy, from_defaults.effective_policy)
-
-        override_session = await self.chat.create_session(
-            self.context, kb_id=kb.id, title="Policy request override"
-        )
-        request_override = await self.chat.create_run(
-            self.context,
-            uuid4(),
-            session_id=override_session.id,
-            kb_id=kb.id,
-            message="Override only the answer style",
-            answer_style=AnswerStyle.SUMMARY,
-            insufficiency_policy=None,
-            retrieval_mode="vector",
-            top_k=10,
-        )
-        self.assertEqual(request_override.effective_policy["answer_style"], "summary")
-        self.assertEqual(
-            request_override.effective_policy["insufficiency_policy"], "refuse"
-        )
-        self.assertEqual(
-            request_override.effective_policy["grounding_policy"], "evidence_only"
-        )
-        self.assertTrue(request_override.effective_policy["citation_required"])
+        self.assertEqual(updated.answer_policy_defaults, historical)
+        another = await self.chat.create_session(self.context, kb_id=kb.id, title=None)
+        current = await self._create_run(another.id, kb.id, uuid4())
+        self.assertEqual(current.requested_policy, {})
+        self.assertEqual(current.effective_policy, {})
 
     async def test_competing_claims_and_lease_cas_load_one_frozen_context(self) -> None:
         kb = await self._create_kb("claimable")
@@ -377,7 +306,7 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(execution_context.query, "How should RUN-ORD-14 be handled?")
         self.assertEqual(execution_context.index_revision_id, run.index_revision_id)
-        self.assertEqual(execution_context.effective_policy, run.effective_policy)
+        self.assertFalse(hasattr(execution_context, "effective_policy"))
         self.assertEqual(
             execution_context.retrieval_strategy["profile_version"],
             run.retrieval_strategy["profile_version"],
@@ -903,8 +832,6 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
             session_id=session_id,
             kb_id=kb_id,
             message="How should RUN-ORD-14 be handled?",
-            answer_style=AnswerStyle.SUMMARY,
-            insufficiency_policy=InsufficiencyPolicy.PARTIAL_ANSWER,
             retrieval_mode="vector",
             top_k=8,
         )

@@ -390,7 +390,6 @@ def _completed_state(observed: datetime) -> ChatPipelineState:
         principal_id="principal",
         client_id="client",
         query="question",
-        effective_policy={},
         retrieval_strategy={},
         model_configuration={},
         attempt=lease.attempt,

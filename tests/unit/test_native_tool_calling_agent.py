@@ -187,7 +187,6 @@ def _context() -> ChatExecutionContext:
         principal_id="principal",
         client_id="client",
         query="What was the revenue and change?",
-        effective_policy={"insufficiency_policy": "partial_answer"},
         retrieval_strategy=retrieval,
         model_configuration={"resolved_model": "fixed-model", "max_tokens": 2048},
         attempt=1,

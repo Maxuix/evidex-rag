@@ -8,7 +8,6 @@ from uuid import UUID
 
 from rag_kb.auth import AuthContext, SingleWorkspaceAccessPolicy
 from rag_kb.domain import (
-    AnswerStyle,
     ChatMessage,
     ChatRun,
     ChatSession,
@@ -24,14 +23,12 @@ from rag_kb.domain import (
     RetrievalExecutionError,
     IdempotencyKeyReusedError,
     IdempotencyScope,
-    InsufficiencyPolicy,
     Page,
     ResourceNotFoundError,
     ResourceStateConflictError,
     RerankMode,
     RetrievalStrategy,
     canonical_request_hash,
-    resolve_p1_policy,
 )
 from rag_kb.retrieval.profile import (
     RetrievalExecutionProfile,
@@ -204,8 +201,6 @@ class ChatService:
         session_id: UUID,
         kb_id: UUID,
         message: str,
-        answer_style: AnswerStyle | None,
-        insufficiency_policy: InsufficiencyPolicy | None,
         retrieval_mode: str,
         top_k: int,
         rerank_mode: RerankMode | None = None,
@@ -261,11 +256,6 @@ class ChatService:
             CREATE_CHAT_RUN_ENDPOINT,
             idempotency_key,
         )
-        requested_policy: dict[str, str] = {}
-        if answer_style is not None:
-            requested_policy["answer_style"] = answer_style.value
-        if insufficiency_policy is not None:
-            requested_policy["insufficiency_policy"] = insufficiency_policy.value
         requested_retrieval = {
             "mode": retrieval_mode,
             "top_k": top_k,
@@ -292,7 +282,6 @@ class ChatService:
                 "session_id": str(session_id),
                 "knowledge_base_id": str(kb_id),
                 "message": normalized_message,
-                "answer_policy": requested_policy,
                 "retrieval": requested_retrieval,
                 "model_profile_revision_id": (
                     str(model_profile_revision_id)
@@ -333,10 +322,6 @@ class ChatService:
                 uow,
                 model_profile_revision_id,
             )
-            effective_policy = resolve_p1_policy(
-                requested_policy=requested_policy,
-                knowledge_base_defaults=knowledge_base.answer_policy_defaults,
-            ).as_dict()
             retrieval_strategy_snapshot = dict(retrieval_strategy)
             recent_turns = await uow.chat.list_completed_turns(
                 session_id=session_id,
@@ -360,8 +345,6 @@ class ChatService:
                 session_id=session_id,
                 index_revision_id=knowledge_base.active_index_revision_id,
                 message=normalized_message,
-                requested_policy=requested_policy,
-                effective_policy=effective_policy,
                 retrieval_strategy=retrieval_strategy_snapshot,
                 model_configuration=model_configuration,
                 conversation_context=serialize_conversation_context(

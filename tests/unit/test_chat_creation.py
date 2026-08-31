@@ -10,17 +10,13 @@ from sqlalchemy.dialects import postgresql
 
 from rag_kb.auth import AuthContext, SingleWorkspaceAccessPolicy
 from rag_kb.domain import (
-    AnswerPolicyNotSupportedError,
-    AnswerStyle,
     ChatSessionBusyError,
     ConversationTurn,
     ErrorCode,
-    InsufficiencyPolicy,
     Page,
     RerankMode,
     RetrievalStrategy,
     RetrievalExecutionError,
-    resolve_p1_policy,
 )
 from rag_kb.memory import hydrate_conversation_context
 from rag_kb.repositories.sqlalchemy_chat import SqlAlchemyChatRepository
@@ -37,126 +33,18 @@ from rag_kb.retrieval.profile import (
 
 
 class ChatCreationContractTests(unittest.TestCase):
-    def test_safe_defaults_and_all_four_override_pairs_are_complete(self) -> None:
-        default = resolve_p1_policy(requested_policy={}).as_dict()
-        self.assertEqual(default["answer_style"], "concise")
-        self.assertEqual(default["insufficiency_policy"], "partial_answer")
-        self.assertEqual(default["grounding_policy"], "evidence_only")
-        self.assertTrue(default["citation_required"])
-        self.assertEqual(default["citation_granularity"], "claim_level")
-        self.assertEqual(default["answer_task"], "answer")
-
-        pairs = {
-            (
-                resolve_p1_policy(
-                    requested_policy={
-                        "answer_style": style,
-                        "insufficiency_policy": insufficiency,
-                    },
-                    knowledge_base_defaults={
-                        "answer_style": "concise",
-                        "insufficiency_policy": "partial_answer",
-                    },
-                ).answer_style,
-                resolve_p1_policy(
-                    requested_policy={
-                        "answer_style": style,
-                        "insufficiency_policy": insufficiency,
-                    },
-                    knowledge_base_defaults={
-                        "answer_style": "concise",
-                        "insufficiency_policy": "partial_answer",
-                    },
-                ).insufficiency_policy,
-            )
-            for style in AnswerStyle
-            for insufficiency in InsufficiencyPolicy
+    def test_request_normalizes_content_and_rejects_retired_policy(self) -> None:
+        payload = {
+            "session_id": str(uuid4()),
+            "knowledge_base_id": str(uuid4()),
+            "message": "  查询 RUN-ORD-14  ",
         }
-        self.assertEqual(len(pairs), 4)
-
-    def test_request_overrides_kb_defaults_while_server_constraints_remain_fixed(self) -> None:
-        resolved = resolve_p1_policy(
-            requested_policy={"answer_style": "concise"},
-            knowledge_base_defaults={
-                "answer_style": "summary",
-                "insufficiency_policy": "partial_answer",
-            },
-        )
-        self.assertIs(resolved.answer_style, AnswerStyle.CONCISE)
-        self.assertIs(
-            resolved.insufficiency_policy, InsufficiencyPolicy.PARTIAL_ANSWER
-        )
-        self.assertEqual(resolved.grounding_policy, "evidence_only")
-        self.assertTrue(resolved.citation_required)
-        self.assertEqual(resolved.citation_granularity, "claim_level")
-        self.assertEqual(resolved.answer_task, "answer")
-        self.assertEqual(resolved.policy_version, "p1")
-
-    def test_resolver_rejects_unknown_dimensions_and_invalid_defaults(self) -> None:
-        cases = (
-            (
-                {"grounding_policy": "model_knowledge_allowed"},
-                {"answer_style": "concise", "insufficiency_policy": "refuse"},
-            ),
-            ({}, {"answer_style": "detailed", "insufficiency_policy": "refuse"}),
-            ({}, {}),
-        )
-        for requested, defaults in cases:
-            with self.subTest(requested=requested, defaults=defaults), self.assertRaises(
-                AnswerPolicyNotSupportedError
-            ):
-                resolve_p1_policy(
-                    requested_policy=requested,
-                    knowledge_base_defaults=defaults,
-                )
-
-    def test_public_request_normalizes_content_and_rejects_policy_weakening(self) -> None:
-        request = ChatRunCreate.model_validate(
-            {
-                "session_id": "01900000-0000-7000-8000-000000000101",
-                "knowledge_base_id": "01900000-0000-7000-8000-000000000102",
-                "message": "  查询 RUN-ORD-14  ",
-                "answer_policy": {
-                    "answer_style": "summary",
-                    "insufficiency_policy": "partial_answer",
-                },
-                "retrieval": {"mode": "vector", "top_k": 8},
-            }
-        )
-        self.assertEqual(request.message, "查询 RUN-ORD-14")
-        self.assertIs(request.answer_policy.answer_style, AnswerStyle.SUMMARY)
-        with self.assertRaises(ValidationError):
-            ChatRunCreate.model_validate(
-                {
-                    "session_id": "01900000-0000-7000-8000-000000000101",
-                    "knowledge_base_id": "01900000-0000-7000-8000-000000000102",
-                    "message": "question",
-                    "workflow": {"mode": "agent"},
-                }
-            )
-
-        for field_name in (
-            "grounding_policy",
-            "citation_required",
-            "citation_granularity",
-            "answer_task",
-            "policy_version",
-        ):
-            with self.subTest(field_name=field_name), self.assertRaises(
-                ValidationError
-            ) as captured:
-                ChatRunCreate.model_validate(
-                    {
-                        "session_id": "01900000-0000-7000-8000-000000000101",
-                        "knowledge_base_id": "01900000-0000-7000-8000-000000000102",
-                        "message": "question",
-                        "answer_policy": {field_name: "client-controlled"},
-                    }
-                )
-            self.assertEqual(
-                captured.exception.errors()[0]["type"],
-                "answer_policy_not_supported",
-            )
+        self.assertEqual(ChatRunCreate.model_validate(payload).message, "查询 RUN-ORD-14")
+        self.assertNotIn("answer_policy", ChatRunCreate.model_json_schema()["properties"])
+        for old in ({}, {"answer_style": "summary"}, {"insufficiency_policy": "refuse"}):
+            with self.subTest(old=old), self.assertRaises(ValidationError) as captured:
+                ChatRunCreate.model_validate({**payload, "answer_policy": old})
+            self.assertEqual(captured.exception.errors()[0]["type"], "extra_forbidden")
 
     def test_model_snapshot_excludes_url_key_and_runtime_controls(self) -> None:
         settings = SimpleNamespace(
@@ -236,8 +124,6 @@ class ChatCreationServiceTests(unittest.IsolatedAsyncioTestCase):
             session_id=uuid4(),
             kb_id=kb_id,
             message="query",
-            answer_style=None,
-            insufficiency_policy=None,
             retrieval_mode="vector",
             top_k=5,
             rerank_mode=RerankMode.LOCAL_MINILM_V1,
@@ -265,8 +151,6 @@ class ChatCreationServiceTests(unittest.IsolatedAsyncioTestCase):
                 session_id=uuid4(),
                 kb_id=kb_id,
                 message="query",
-                answer_style=None,
-                insufficiency_policy=None,
                 retrieval_mode="hybrid",
                 top_k=5,
             )
@@ -308,8 +192,6 @@ class ChatCreationServiceTests(unittest.IsolatedAsyncioTestCase):
             session_id=uuid4(),
             kb_id=kb_id,
             message="查询 ABC-42",
-            answer_style=None,
-            insufficiency_policy=None,
             retrieval_mode="hybrid",
             top_k=4,
             rerank_mode=RerankMode.CLASSIC,
@@ -346,8 +228,6 @@ class ChatCreationServiceTests(unittest.IsolatedAsyncioTestCase):
             session_id=uuid4(),
             kb_id=kb_id,
             message="Atlas Labs",
-            answer_style=None,
-            insufficiency_policy=None,
             retrieval_mode="graph",
             top_k=4,
             rerank_mode=RerankMode.CLASSIC,
@@ -381,8 +261,6 @@ class ChatCreationServiceTests(unittest.IsolatedAsyncioTestCase):
             session_id=uuid4(),
             kb_id=kb_id,
             message="Atlas Labs",
-            answer_style=None,
-            insufficiency_policy=None,
             retrieval_mode="auto",
             top_k=8,
             rerank_mode=RerankMode.LOCAL_MINILM_V1,
@@ -448,12 +326,12 @@ class ChatCreationServiceTests(unittest.IsolatedAsyncioTestCase):
             session_id=session_id,
             kb_id=kb_id,
             message="What about it?",
-            answer_style=None,
-            insufficiency_policy=None,
             retrieval_mode="vector",
             top_k=3,
         )
 
+        self.assertNotIn("requested_policy", created)
+        self.assertNotIn("effective_policy", created)
         snapshot = hydrate_conversation_context(created["conversation_context"])
         self.assertEqual(snapshot.turns, turns)
         self.assertEqual(created["contextualized_query"]["status"], "original")
@@ -483,8 +361,6 @@ class ChatCreationServiceTests(unittest.IsolatedAsyncioTestCase):
                 session_id=uuid4(),
                 kb_id=kb_id,
                 message="question",
-                answer_style=None,
-                insufficiency_policy=None,
                 retrieval_mode="vector",
                 top_k=3,
             )
@@ -577,10 +453,7 @@ class _KnowledgeBases:
             return None
         return SimpleNamespace(
             active_index_revision_id=uuid4(),
-            answer_policy_defaults={
-                "answer_style": "concise",
-                "insufficiency_policy": "refuse",
-            },
+            answer_policy_defaults={"answer_style": "retired-value", "policy_version": "unknown"},
         )
 
 

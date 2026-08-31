@@ -108,6 +108,42 @@ class PublicScorerConflictTests(unittest.TestCase):
         )
         self.assertFalse(refused["policy_correct"])
 
+    def test_missing_or_unusable_gold_is_not_evaluated_even_with_two_documents(self) -> None:
+        citations = (self._citation(uuid4()), self._citation(uuid4()))
+        for action in ("surface_evidence_conflict", "answer_without_false_conflict"):
+            for gold in (None, "", " ", "10"):
+                with self.subTest(action=action, gold=gold):
+                    result = _score_public({"expected_action": action, "gold_answer": gold})(
+                        "Sources report different amounts.", citations, _answering(outcome="answered")
+                    )
+                    self.assertIsNone(result["policy_correct"])
+                    self.assertEqual(result["policy_evaluation_status"], "not_evaluated_missing_gold")
+                    self.assertTrue(result["multi_document_evidence"])
+        # An available alias still enables scoring, even without a primary gold.
+        result = _score_public({
+            "expected_action": "surface_evidence_conflict",
+            "gold_answer_aliases": ["Revenue was 10"],
+        })("Revenue was 10.", citations, _answering(outcome="answered"))
+        self.assertTrue(result["policy_correct"])
+        self.assertEqual(result["policy_evaluation_status"], "evaluated")
+
+    def test_unassessed_cases_are_excluded_from_all_public_score_denominators(self) -> None:
+        base = {"expected_action": "surface_evidence_conflict", "stratum": "conflict"}
+        records = [{**base, "policy_correct": value} for value in (True, False, None)]
+        report = _public_report(records)
+        for entry in (
+            report,
+            report["by_expected_action"]["surface_evidence_conflict"],
+            report["by_stratum"]["conflict"],
+        ):
+            self.assertEqual(entry["case_count"], 3)
+            self.assertEqual(entry["policy_correct"], {"numerator": 1, "denominator": 2, "value": 0.5})
+            self.assertEqual(entry["policy_not_evaluated_count"], 1)
+        unavailable = _public_report([{**base, "policy_correct": None}])
+        self.assertEqual(unavailable["policy_correct"]["denominator"], 0)
+        self.assertIsNone(unavailable["policy_correct"]["value"])
+
+
 
 class PublicReportFalsePremiseSplitTests(unittest.TestCase):
     def test_false_premise_action_reports_a_separate_behavior_split(self) -> None:

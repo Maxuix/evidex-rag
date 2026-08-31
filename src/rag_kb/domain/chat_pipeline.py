@@ -103,7 +103,6 @@ class ChatExecutionContext:
     principal_id: str
     client_id: str
     query: str
-    effective_policy: Mapping[str, Any]
     retrieval_strategy: Mapping[str, Any]
     model_configuration: Mapping[str, Any]
     attempt: int
@@ -129,9 +128,6 @@ class ChatExecutionContext:
             or self.lease.attempt != self.attempt
         ):
             raise ValueError("execution context must preserve its claimed lease")
-        object.__setattr__(
-            self, "effective_policy", _frozen_mapping(self.effective_policy)
-        )
         object.__setattr__(
             self, "retrieval_strategy", _frozen_mapping(self.retrieval_strategy)
         )
