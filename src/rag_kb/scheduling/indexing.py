@@ -19,11 +19,12 @@ from rag_kb.domain import (
     GraphWorkItem,
 )
 from rag_kb.observability import get_logger, log_event, log_exception
-from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, execute_in_transaction
+from rag_kb.uow import execute_in_transaction
 
 if TYPE_CHECKING:
     from rag_kb.indexing.pipeline import IndexingPipeline
     from rag_kb.graph.service import GraphExtractionWorker
+    from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWork, SqlAlchemyUnitOfWorkFactory
 
 
 Clock = Callable[[], datetime]
@@ -57,7 +58,7 @@ class RetryPolicy:
 class IndexingJobScheduler:
     def __init__(
         self,
-        unit_of_work: UnitOfWorkFactory,
+        unit_of_work: SqlAlchemyUnitOfWorkFactory,
         pipeline: IndexingPipeline,
         *,
         worker_id: str,
@@ -100,7 +101,7 @@ class IndexingJobScheduler:
     async def claim_once(self) -> IndexingLease | GraphWorkItem | None:
         observed_at = self._clock()
 
-        async def claim_or_graph(uow: UnitOfWork):
+        async def claim_or_graph(uow: SqlAlchemyUnitOfWork):
             lease = await uow.indexing.claim(
                 worker_id=self._worker_id,
                 observed_at=observed_at,
@@ -129,7 +130,7 @@ class IndexingJobScheduler:
             self._retry.retry_at(attempt, observed_at)
             for attempt in range(1, self._retry.max_attempts + 1)
         )
-        async def reconcile(uow: UnitOfWork) -> ReconciliationResult:
+        async def reconcile(uow: SqlAlchemyUnitOfWork) -> ReconciliationResult:
             result = await uow.indexing.reconcile_stale(
                 stale_before=observed_at
                 - timedelta(seconds=self._stale_after_seconds),
@@ -321,7 +322,7 @@ class IndexingJobScheduler:
         safe_detail = _safe_detail(detail, attempt=lease.attempt)
         will_retry = retryable and lease.attempt < self._retry.max_attempts
 
-        async def persist(uow: UnitOfWork) -> bool:
+        async def persist(uow: SqlAlchemyUnitOfWork) -> bool:
             if will_retry:
                 return await uow.indexing.reschedule(
                     lease,

@@ -42,10 +42,12 @@ scan_roots = ["src", "apps"]
   "rag_kb.uow",
 ]
 "rag_kb.scheduling" = [
+  "rag_kb.answering",
   "rag_kb.domain",
   "rag_kb.graph",
   "rag_kb.indexing",
   "rag_kb.observability",
+  "rag_kb.services",
   "rag_kb.uow",
 ]
 "rag_kb.retrieval" = [
@@ -55,6 +57,7 @@ scan_roots = ["src", "apps"]
   "rag_kb.graph",
   "rag_kb.observability",
   "rag_kb.ports",
+  "rag_kb.services",
 ]
 "rag_kb.graph" = [
   "rag_kb.auth",
@@ -69,6 +72,7 @@ scan_roots = ["src", "apps"]
   "rag_kb.observability",
   "rag_kb.ports",
   "rag_kb.retrieval",
+  "rag_kb.services",
 ]
 "rag_kb.services" = [
   "rag_kb.auth",

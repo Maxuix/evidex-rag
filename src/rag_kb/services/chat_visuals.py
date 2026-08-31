@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import Protocol
-from uuid import UUID
+from typing import TYPE_CHECKING
 
 from rag_kb.auth import AuthContext
 from rag_kb.domain import (
@@ -16,12 +15,14 @@ from rag_kb.domain import (
     ErrorCode,
     EvidenceEnvelope,
     FileStoreError,
-    IndexAssetContent,
     PromptEvidence,
     ResourceNotFoundError,
     VisualEvidenceReason,
 )
 from rag_kb.services.visual_admission import VisualEvidenceAdmissionPolicy
+
+if TYPE_CHECKING:
+    from rag_kb.services.assets import IndexAssetService
 
 
 DEFAULT_CHAT_MAX_VISUAL_IMAGES = 2
@@ -31,18 +32,12 @@ DEFAULT_CHAT_MAX_VISUAL_PIXELS = 16_000_000
 DEFAULT_CHAT_VISUAL_MEDIA_PROFILE = "jpeg_png_webp_v1"
 
 
-class IndexAssetReader(Protocol):
-    async def read(
-        self, context: AuthContext, asset_id: UUID
-    ) -> IndexAssetContent: ...
-
-
 class VisualEvidencePreparationStep:
     """Attach only admitted and integrity-checked images to model requests."""
 
     def __init__(
         self,
-        asset_reader: IndexAssetReader | None,
+        asset_reader: IndexAssetService | None,
         *,
         max_images: int = DEFAULT_CHAT_MAX_VISUAL_IMAGES,
         max_image_bytes: int = DEFAULT_CHAT_MAX_VISUAL_IMAGE_BYTES,

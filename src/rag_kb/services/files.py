@@ -29,10 +29,11 @@ from rag_kb.services.content import (
     CREATE_VERSION_ENDPOINT,
     DocumentService,
 )
-from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, execute_in_transaction
+from rag_kb.uow import execute_in_transaction
 
 if TYPE_CHECKING:
     from rag_kb.services.markdown_media import MarkdownMediaNormalizer
+    from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWork, SqlAlchemyUnitOfWorkFactory
 
 
 LOGGER = logging.getLogger("rag_kb.files.reconciliation")
@@ -159,7 +160,7 @@ class FileReconciliationService:
 
     def __init__(
         self,
-        unit_of_work: UnitOfWorkFactory,
+        unit_of_work: SqlAlchemyUnitOfWorkFactory,
         documents: DocumentService,
         file_store: SourceFileStore,
         *,
@@ -184,7 +185,7 @@ class FileReconciliationService:
     ) -> FileReconciliationResult:
         observed_at = now or datetime.now(UTC)
 
-        async def load(uow: UnitOfWork):
+        async def load(uow: SqlAlchemyUnitOfWork):
             if uow.workspace_id != context.workspace_id:
                 raise RuntimeError("reconciliation workspace does not match identity")
             return (
@@ -218,7 +219,7 @@ class FileReconciliationService:
             mutation: PendingFileMutation,
             failure_code: str,
         ) -> bool:
-            async def fail(uow: UnitOfWork) -> bool:
+            async def fail(uow: SqlAlchemyUnitOfWork) -> bool:
                 return await uow.file_consistency.fail_pending_file_mutation(
                     scope=mutation.scope,
                     document_version_id=mutation.document_version_id,
@@ -354,7 +355,7 @@ class FileReconciliationService:
             if not needs_compensation:
                 continue
 
-            async def compensate(uow: UnitOfWork) -> bool:
+            async def compensate(uow: SqlAlchemyUnitOfWork) -> bool:
                 return await uow.file_consistency.compensate_missing_file(
                     reference.document_version_id
                 )
@@ -397,7 +398,7 @@ class FileReconciliationService:
                     else "FILE_DELETE_FAILED"
                 )
 
-                async def fail(uow: UnitOfWork) -> bool:
+                async def fail(uow: SqlAlchemyUnitOfWork) -> bool:
                     return await uow.file_consistency.fail_cleanup(
                         task.id,
                         expected_attempt_count=task.attempt_count,
@@ -413,7 +414,7 @@ class FileReconciliationService:
                 cleanup_failed += int(changed)
                 continue
 
-            async def complete(uow: UnitOfWork) -> bool:
+            async def complete(uow: SqlAlchemyUnitOfWork) -> bool:
                 return await uow.file_consistency.complete_cleanup(
                     task.id, now=observed_at
                 )
@@ -468,7 +469,7 @@ class FileReconciliationService:
         storage_uri: str,
         reason: str,
     ) -> None:
-        async def schedule(uow: UnitOfWork) -> None:
+        async def schedule(uow: SqlAlchemyUnitOfWork) -> None:
             await uow.file_consistency.schedule_cleanup(
                 document_version_id=document_version_id,
                 storage_uri=storage_uri,

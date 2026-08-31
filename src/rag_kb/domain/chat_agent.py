@@ -66,8 +66,6 @@ CHAT_AGENT_DEFAULT_EVIDENCE_ITEMS = 64
 CHAT_AGENT_MAX_EVIDENCE_ITEMS = 512
 CHAT_AGENT_DEFAULT_RETRIEVAL_CALLS = 16
 CHAT_AGENT_MAX_RETRIEVAL_CALLS = 64
-CHAT_AGENT_DEFAULT_SOFT_DEADLINE_RESERVE_SECONDS = 60.0
-CHAT_AGENT_MAX_SOFT_DEADLINE_RESERVE_SECONDS = 600.0
 CHAT_AGENT_TRACE_REF_LIMIT = 100
 CHAT_AGENT_TRACE_EVENT_LIMIT = 32
 CHAT_AGENT_CLAIM_LIMIT = 100
@@ -86,9 +84,6 @@ class ChatAgentBudget:
     max_total_tokens: int = CHAT_AGENT_DEFAULT_TOTAL_TOKENS
     max_evidence_items: int = CHAT_AGENT_DEFAULT_EVIDENCE_ITEMS
     max_retrieval_calls: int = CHAT_AGENT_DEFAULT_RETRIEVAL_CALLS
-    soft_deadline_reserve_seconds: float = (
-        CHAT_AGENT_DEFAULT_SOFT_DEADLINE_RESERVE_SECONDS
-    )
 
     def __post_init__(self) -> None:
         if (
@@ -123,20 +118,6 @@ class ChatAgentBudget:
             or not 1 <= self.max_retrieval_calls <= CHAT_AGENT_MAX_RETRIEVAL_CALLS
         ):
             raise ValueError("chat agent retrieval budget is invalid")
-        if (
-            isinstance(self.soft_deadline_reserve_seconds, bool)
-            or not isinstance(self.soft_deadline_reserve_seconds, (int, float))
-            or not 0
-            <= self.soft_deadline_reserve_seconds
-            <= CHAT_AGENT_MAX_SOFT_DEADLINE_RESERVE_SECONDS
-        ):
-            raise ValueError("chat agent soft deadline reserve is invalid")
-        object.__setattr__(
-            self,
-            "soft_deadline_reserve_seconds",
-            float(self.soft_deadline_reserve_seconds),
-        )
-
     def as_dict(self) -> dict[str, int | float]:
         return {
             "max_model_rounds": self.max_model_rounds,
@@ -144,7 +125,6 @@ class ChatAgentBudget:
             "max_total_tokens": self.max_total_tokens,
             "max_evidence_items": self.max_evidence_items,
             "max_retrieval_calls": self.max_retrieval_calls,
-            "soft_deadline_reserve_seconds": self.soft_deadline_reserve_seconds,
         }
 
 
@@ -389,7 +369,6 @@ class ChatAgentTrace:
     elapsed_ms: int | None = None
     deadline_ms: int | None = None
     deadline_remaining_ms: int | None = None
-    near_deadline: bool = False
     deadline_exceeded: bool = False
     version: str = CHAT_AGENT_VERSION
 
@@ -413,7 +392,6 @@ class ChatAgentTrace:
             or self.consecutive_no_new_evidence < 0
             or self.stop_reason not in CHAT_AGENT_STOP_REASONS
             or not isinstance(self.forced_finalize, bool)
-            or not isinstance(self.near_deadline, bool)
             or not isinstance(self.deadline_exceeded, bool)
             or self.outcome not in {"answered", "partial", "refused", "clarify"}
         ):
@@ -425,7 +403,6 @@ class ChatAgentTrace:
                 raise ValueError("chat agent trace timing is invalid")
         if self.deadline_ms is None and (
             self.deadline_remaining_ms is not None
-            or self.near_deadline
             or self.deadline_exceeded
         ):
             raise ValueError("chat agent trace deadline diagnostics are invalid")
@@ -457,7 +434,6 @@ class ChatAgentTrace:
                 "elapsed_ms": self.elapsed_ms,
                 "deadline_ms": self.deadline_ms,
                 "deadline_remaining_ms": self.deadline_remaining_ms,
-                "near_deadline": self.near_deadline,
                 "deadline_exceeded": self.deadline_exceeded,
             },
             "outcome": self.outcome,

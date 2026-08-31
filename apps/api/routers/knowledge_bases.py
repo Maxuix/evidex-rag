@@ -10,7 +10,6 @@ from fastapi import APIRouter, Depends, Query, Request, status
 
 from apps.api.errors import ApiProblem
 from apps.api.idempotency import RequiredIdempotencyKey
-from apps.api.openapi import problem_responses
 from apps.api.pagination import (
     API_CURSOR_MAX_LENGTH,
     API_PAGINATION_DEFAULT_LIMIT,
@@ -45,7 +44,6 @@ KnowledgeBaseSort = Literal["created_at", "-created_at", "name", "-name"]
     "/knowledge-bases",
     response_model=KnowledgeBaseResponse,
     status_code=status.HTTP_201_CREATED,
-    responses=problem_responses(409, 422),
 )
 async def create_knowledge_base(
     request: Request,
@@ -73,7 +71,6 @@ async def create_knowledge_base(
 @router.get(
     "/knowledge-bases",
     response_model=KnowledgeBasePage,
-    responses=problem_responses(400, 422),
 )
 async def list_knowledge_bases(
     request: Request,
@@ -100,7 +97,6 @@ async def list_knowledge_bases(
 @router.get(
     "/knowledge-bases/{kb_id}",
     response_model=KnowledgeBaseResponse,
-    responses=problem_responses(404, 422),
 )
 async def get_knowledge_base(
     request: Request,
@@ -115,7 +111,6 @@ async def get_knowledge_base(
 @router.patch(
     "/knowledge-bases/{kb_id}",
     response_model=KnowledgeBaseResponse,
-    responses=problem_responses(404, 409, 422),
 )
 async def update_knowledge_base(
     request: Request,
@@ -146,7 +141,6 @@ async def update_knowledge_base(
 @router.delete(
     "/knowledge-bases/{kb_id}",
     response_model=KnowledgeBaseDeleteResponse,
-    responses=problem_responses(404, 409, 422),
 )
 async def delete_knowledge_base(
     request: Request,

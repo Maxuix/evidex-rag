@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from rag_kb.auth import AuthContext
@@ -26,23 +27,22 @@ from rag_kb.retrieval.profile import (
     parse_adaptive_graphiti_snapshot,
     parse_chat_retrieval_snapshot,
 )
-from rag_kb.uow import (
-    UnitOfWork,
-    UnitOfWorkFactory,
-    execute_in_transaction,
-)
+from rag_kb.uow import execute_in_transaction
+
+if TYPE_CHECKING:
+    from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWork, SqlAlchemyUnitOfWorkFactory
 
 
 class ChatRunCoordinator:
     """Keep claim and lease-CAS operations inside short database transactions."""
 
-    def __init__(self, unit_of_work: UnitOfWorkFactory) -> None:
+    def __init__(self, unit_of_work: SqlAlchemyUnitOfWorkFactory) -> None:
         self._unit_of_work = unit_of_work
 
     async def claim(
         self, *, worker_id: str, observed_at: datetime, max_attempts: int
     ) -> ChatRunLease | None:
-        async def persist(uow: UnitOfWork) -> ChatRunLease | None:
+        async def persist(uow: SqlAlchemyUnitOfWork) -> ChatRunLease | None:
             return await uow.chat.claim_run(
                 worker_id=worker_id,
                 observed_at=observed_at,
@@ -56,7 +56,7 @@ class ChatRunCoordinator:
     async def heartbeat(
         self, lease: ChatRunLease, *, observed_at: datetime
     ) -> bool:
-        async def persist(uow: UnitOfWork) -> bool:
+        async def persist(uow: SqlAlchemyUnitOfWork) -> bool:
             return await uow.chat.heartbeat_run(lease, observed_at=observed_at)
 
         return await execute_in_transaction(
@@ -72,7 +72,7 @@ class ChatRunCoordinator:
         retry_at_by_attempt: tuple[datetime, ...],
         limit: int,
     ) -> ReconciliationResult:
-        async def persist(uow: UnitOfWork) -> ReconciliationResult:
+        async def persist(uow: SqlAlchemyUnitOfWork) -> ReconciliationResult:
             return await uow.chat.reconcile_stale_runs(
                 stale_before=stale_before,
                 observed_at=observed_at,
@@ -88,11 +88,11 @@ class ChatRunCoordinator:
 
 
 class ChatExecutionContextLoader:
-    def __init__(self, unit_of_work: UnitOfWorkFactory) -> None:
+    def __init__(self, unit_of_work: SqlAlchemyUnitOfWorkFactory) -> None:
         self._unit_of_work = unit_of_work
 
     async def load(self, command: ChatExecutionCommand) -> ChatExecutionContext:
-        async def load(uow: UnitOfWork) -> ChatExecutionContext | None:
+        async def load(uow: SqlAlchemyUnitOfWork) -> ChatExecutionContext | None:
             return await uow.chat.load_execution_context(command.lease)
 
         context = await execute_in_transaction(

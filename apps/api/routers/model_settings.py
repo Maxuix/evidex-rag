@@ -7,7 +7,6 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request, status
 
-from apps.api.openapi import problem_responses
 from apps.api.security import get_auth_context
 from rag_kb.auth import AuthContext
 from rag_kb.domain import ModelProfileBundle, ModelProviderBundle, ModelSelection
@@ -34,7 +33,6 @@ router = APIRouter(tags=["model-settings"])
 @router.get(
     "/model-settings",
     response_model=ModelSettingsResponse,
-    responses=problem_responses(422),
 )
 async def get_model_settings(
     request: Request,
@@ -47,7 +45,6 @@ async def get_model_settings(
     "/model-providers",
     response_model=ModelProviderResponse,
     status_code=status.HTTP_201_CREATED,
-    responses=problem_responses(409, 422),
 )
 async def create_model_provider(
     request: Request,
@@ -73,7 +70,6 @@ async def create_model_provider(
 @router.patch(
     "/model-providers/{provider_id}",
     response_model=ModelProviderResponse,
-    responses=problem_responses(404, 409, 422),
 )
 async def update_model_provider(
     request: Request,
@@ -104,7 +100,6 @@ async def update_model_provider(
 @router.get(
     "/model-providers/{provider_id}/models",
     response_model=ModelCatalogResponse,
-    responses=problem_responses(404, 409, 422),
 )
 async def list_provider_models(
     request: Request,
@@ -124,7 +119,6 @@ async def list_provider_models(
     "/model-profiles",
     response_model=ModelProfileResponse,
     status_code=status.HTTP_201_CREATED,
-    responses=problem_responses(404, 409, 422),
 )
 async def create_model_profile(
     request: Request,
@@ -148,7 +142,6 @@ async def create_model_profile(
 @router.post(
     "/model-profiles/{profile_id}/validate",
     response_model=ModelProfileResponse,
-    responses=problem_responses(404, 409, 422),
 )
 async def validate_model_profile(
     request: Request,
@@ -168,7 +161,6 @@ async def validate_model_profile(
 @router.patch(
     "/model-profiles/{profile_id}",
     response_model=ModelProfileResponse,
-    responses=problem_responses(404, 409, 422),
 )
 async def update_model_profile(
     request: Request,
@@ -198,7 +190,6 @@ async def update_model_profile(
 @router.put(
     "/model-selection",
     response_model=ModelSelectionResponse,
-    responses=problem_responses(404, 409, 422),
 )
 async def update_model_selection(
     request: Request,

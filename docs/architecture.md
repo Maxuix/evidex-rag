@@ -3,8 +3,8 @@
 | 字段 | 内容 |
 | --- | --- |
 | 文档状态 | 全项目唯一当前架构文档（描述事实，不是目标蓝图） |
-| 最后核对 | 2026-08-28 |
-| 核对基线 | `73b0302`、当前代码、配置、Alembic 迁移、Compose 与公开路由 |
+| 最后核对 | 2026-08-31 |
+| 核对基线 | 当前 `main`、实际代码、配置、Alembic 迁移、Compose 与公开路由 |
 | 适用对象 | 个人维护者、CODE AGENTS |
 | 部署边界 | 单机、单用户、本地使用；不是共享或生产服务 |
 | 设计优先级 | 功能可用与个人可维护性优先于平台化、通用化和生产完备性 |
@@ -111,7 +111,7 @@
 | 范围 | 当前选择 |
 | --- | --- |
 | 后端 | Python 3.12、FastAPI、Pydantic、异步 SQLAlchemy、asyncpg、Alembic |
-| 数据库 | PostgreSQL 18 + pgvector；当前 migration head 为 `0016_first_class_graph_relations_tool` |
+| 数据库 | PostgreSQL 18 + pgvector；当前 migration head 为 `0024_remove_agent_deadline_reserve` |
 | 文档解析 | 原生 Docling；当前 PDF profile 在 Worker 管理的可终止子进程内按确定性页段解析 |
 | Chat 执行 | 普通异步原生 Tool-Calling loop；无 Agent 框架或图运行时 |
 | 模型接入 | OpenAI-compatible Chat/文本 Embedding；Tongyi 多模态 Embedding；固定离线 MiniLM reranker；已验证 Embedding 维度 64..4096 |
@@ -164,7 +164,9 @@ Storage Init ─────> prepare source/asset/model-cache/model-secret/log 
 - PostgreSQL 是业务和任务状态的权威来源；本地卷保存源文件与派生资产。
 - SSE 只交付完整但易失的安全 Agent 进度快照和已提交终态，不是持久事件系统；
   Web Chat 断线后不推测当前节点，完成后从持久 Agent Trace/result 重建摘要。
-- 一个 Unit of Work 对应一个短数据库事务；外部模型和文件 I/O 不占用事务。
+- 每次数据库操作使用独立的 SQLAlchemy `AsyncSession` 和一个显式短事务；成功显式 commit，
+  失败或退出 rollback 并 close，且关闭 autobegin，避免边界外意外开启新事务。外部模型和文件
+  I/O 不占用事务。
 - 后续功能优先复用 API → PostgreSQL → 单 Worker 路径，只有确认无法满足需求时才增加组件。
 
 ## 5. 当前代码组织与轻量化边界
@@ -197,9 +199,9 @@ src/rag_kb/
 
 根目录 `architecture.toml` 描述当前 Python 顶层 import 方向。它用于防止环依赖和基础设施
 反向渗透，不要求为每个新概念建立新目录或新层；basic suite 会实际解析该文件并逐个核对本地
-import edge。`answering` 只依赖 context loader、retriever、visual preparer、result persister 与
-progress reporter 的窄 Protocol，具体 `services` 实现由 Worker composition root 注入，因此
-`answering` 与 `services` 不形成 runtime import 环。
+import edge。`answering`、`retrieval` 与 `scheduling` 直接依赖各自的具体应用服务类型；这些
+依赖只在类型检查分支出现，runtime 仍由 Worker composition root 装配。外部模型、存储、解析器
+和 Graphiti 边界继续集中在 `ports/`。
 
 Graph schema profiles 是 `graph/` 下的代码所有、不可变 registry；adapter、repository 和
 retrieval 只读取 registry 以解析冻结的 Profile identity 或编译后的 Graphiti 类型，具体依赖边
@@ -289,7 +291,10 @@ file content mutation 增加 `pending/completed/failed` 终态、稳定 failure 
 时间，并由 bounded reconciler 按条目原子收敛；不可恢复的文件清理保留 durable cleanup 记录。
 `0021` 允许 Agent trace 记录 `clarify` outcome；`0022` 把 ChatRun agent budget 从两键
 （模型轮次/Graph 调用）扩展为六键累计资源预算（新增 token 总量、证据条数、检索调用数与软
-截止预留），既有行原地补齐默认值。
+截止预留），既有行原地补齐默认值；`0023` 增加公开 trace diagnostics；`0024` 移除
+`agent_configuration`/`agent_trace` 对旧截止预留字段和完整 JSON key 集合的 CHECK 约束，并将
+新默认值收敛为五个当前预算字段。既有 ChatRun 不回填、不删除；读取路径会忽略历史快照中残留
+的旧字段。
 除此之外不承诺任意历史版本兼容。主要持久事实为：
 
 | 范围 | 主要实体 |
@@ -468,8 +473,7 @@ manual Graph 的 hybrid 候选查询宽度按 `min(40, max(12, top_k * 2))` 计�
 规则优先保留完整图路径，再用未重复的 hybrid Evidence 回填到 `top_k`。
 Agent 保留最多 8 个普通模型轮次的有限循环护栏，并另有累计资源预算：冻结 budget 记录
 `max_total_tokens`（默认 150k）、`max_evidence_items`（默认 64）、`max_retrieval_calls`
-（默认 16）与为旧运行快照保留的 `soft_deadline_reserve_seconds`。Agent 不以时间决定控制流，
-该兼容字段不参与收敛，只作为 Trace 的 deadline-pressure 判定阈值；每轮按 response usage
+（默认 16）。Agent 不以时间决定控制流；每轮按 response usage
 累计 token，token 或检索预算耗尽时进入 wrap-up
 收尾模式，只留 `submit_answer` 工具并提示直接提交。每次检索按准入、chunk 去重与证据上限
 处理后计算实际新增量；连续两次无新增或证据池已满时确定性关闭 Simple/Graph 检索，保留
@@ -479,7 +483,7 @@ Agent 保留最多 8 个普通模型轮次的有限循环护栏，并另有累�
 历史 `retrieval_calls` 与 `max_retrieval_calls` 实际按 Query 执行数计量并继续保留兼容；Trace
 同时发布语义明确的 `retrieval_queries`、`retrieval_tool_calls`、`simple_tool_calls` 与
 `graph_tool_calls`。成功 Trace 另汇总 prompt/completion/total token、repair rounds、停止原因、
-forced-finalize、连续无新增次数、累计耗时及 deadline pressure。Runner 为每次 attempt 维护纯
+forced-finalize、连续无新增次数、累计耗时、hard deadline 与 deadline remaining。Runner 为每次 attempt 维护纯
 内存 checkpoint；外层 deadline 取消 Agent 时，把已经完成的安全计数、事件与 model calls 写入
 该 attempt 的 timing ledger，不在主循环增加 I/O，也不覆盖后来重试成功的最终 Trace。
 题面中的文件名不触发分类、硬 document scope 或全文预读，因此同一知识库中被引用的其他文档
@@ -494,8 +498,8 @@ forced-finalize、连续无新增次数、累计耗时及 deadline pressure。Ru
 ## 10. Chat 与回答
 
 API 创建 ChatRun 时在短事务内冻结知识库/revision、检索 preset 的 version/strategy/`top_k`/
-`rerank_mode`（auto 另含 router/augmentation 与 Graph Tool 参数）、原生 Agent 六键预算
-（模型轮次、Graph 调用、token 总量、证据条数、检索调用数与软截止预留）、回答策略、
+`rerank_mode`（auto 另含 router/augmentation 与 Graph Tool 参数）、原生 Agent 五键预算
+（模型轮次、Graph 调用、token 总量、证据条数与检索调用数）、回答策略、
 不可变模型修订和最近已完成 Session turns，然后
 返回 `202`；模型调用由 Worker 执行。公开请求没有 workflow 模式。
 
@@ -513,7 +517,7 @@ load_context
   -> adaptive mode: Graph visible from the first round, at most twice per run
   -> model calls submit_answer when ready
   -> if the ordinary loop reaches its limit, one extra submit-only call finalizes
-  -> budget exhaustion or soft deadline switches to submit-only wrap-up rounds
+  -> budget exhaustion switches to submit-only wrap-up rounds
   -> claim-level deterministic validation and salvage
   -> one structured verifier call (premise + per-claim support), programmatically enforced
   -> persist_result

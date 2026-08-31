@@ -1,0 +1,73 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import { ApiClient, ApiClientError } from "./client";
+
+const client = new ApiClient({ api_base_url: "http://localhost/api/v1" });
+
+function response(status: number, body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/problem+json" },
+  });
+}
+
+async function rejected(operation: () => Promise<unknown>): Promise<ApiClientError> {
+  try {
+    await operation();
+  } catch (error) {
+    expect(error).toBeInstanceOf(ApiClientError);
+    return error as ApiClientError;
+  }
+  throw new Error("expected the API operation to fail");
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe("API error behavior", () => {
+  it("keeps the chat-busy code, retryability, and trace id while showing the user message", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response(409, {
+      code: "CHAT_SESSION_BUSY",
+      detail: "internal busy detail",
+      retryable: true,
+      trace_id: "trace-busy",
+    })));
+
+    const error = await rejected(() => client.createChatSession("kb-a", "新会话"));
+
+    expect(error.message).toBe("这个会话仍在生成回答，请稍候。");
+    expect(error.code).toBe("CHAT_SESSION_BUSY");
+    expect(error.retryable).toBe(true);
+    expect(error.traceId).toBe("trace-busy");
+  });
+
+  it("retains field violations from validation problems for form handling", async () => {
+    const fieldErrors = [{
+      location: ["body", "name"],
+      message: "Field required",
+      error_type: "missing",
+    }];
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response(422, {
+      code: "REQUEST_VALIDATION_FAILED",
+      errors: fieldErrors,
+    })));
+
+    const error = await rejected(() => client.createChatSession("kb-a", ""));
+
+    expect(error.message).toBe("Field required");
+    expect(error.code).toBe("REQUEST_VALIDATION_FAILED");
+    expect(error.fieldErrors).toEqual(fieldErrors);
+    expect(error.retryable).toBe(false);
+  });
+
+  it("marks transport failures as retryable with a safe local message", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("network detail")));
+
+    const error = await rejected(() => client.listKnowledgeBases());
+
+    expect(error.message).toBe("无法完成 API 请求，请检查本地服务状态或跨域配置。");
+    expect(error.retryable).toBe(true);
+    expect(error.code).toBeNull();
+  });
+});

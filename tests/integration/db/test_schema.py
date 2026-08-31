@@ -411,6 +411,62 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
         finally:
             migration.op = previous_op
 
+    @staticmethod
+    def _invoke_migration_operation(
+        sync_connection, migration, operation: str
+    ) -> None:
+        previous_op = migration.op
+        migration.op = Operations(MigrationContext.configure(sync_connection))
+        try:
+            getattr(migration, operation)()
+        finally:
+            migration.op = previous_op
+
+    async def _prepare_historical_v3_schema(self, engine, migration) -> None:
+        """Materialize the pre-0022 v3 boundary for historical migration tests."""
+
+        async with engine.begin() as migration_connection:
+            await migration_connection.run_sync(
+                lambda sync_connection: self._prepare_historical_v3_schema_sync(
+                    sync_connection, migration
+                )
+            )
+
+    @classmethod
+    def _prepare_historical_v3_schema_sync(
+        cls, sync_connection, migration
+    ) -> None:
+        # 0024 intentionally removes these checks from the current head. The
+        # old 0016 round-trip tests need the historical v3 boundary restored
+        # temporarily so they can exercise that migration in isolation.
+        sync_connection.exec_driver_sql(
+            "ALTER TABLE chat_run DROP CONSTRAINT IF EXISTS "
+            "ck_chat_run_agent_trace_v3"
+        )
+        sync_connection.exec_driver_sql(
+            "ALTER TABLE chat_run DROP CONSTRAINT IF EXISTS "
+            "ck_chat_run_agent_configuration_v3"
+        )
+        cls._invoke_migration_operation(
+            sync_connection, migration, "_create_v3_constraints"
+        )
+
+    async def _restore_current_agent_schema(self, engine) -> None:
+        """Return a historical migration test database to the 0024 head."""
+
+        for module_name in (
+            "rag_kb.db.migrations.versions.0022_agent_resource_budget",
+            "rag_kb.db.migrations.versions.0023_agent_trace_diagnostics",
+            "rag_kb.db.migrations.versions.0024_remove_agent_deadline_reserve",
+        ):
+            migration = importlib.import_module(module_name)
+            async with engine.begin() as migration_connection:
+                await migration_connection.run_sync(
+                    lambda sync_connection: self._invoke_migration(
+                        sync_connection, migration, "upgrade"
+                    )
+                )
+
     async def test_legacy_chat_workflow_columns_are_removed(self) -> None:
         connection = await asyncpg.connect(MIGRATION_DSN)
         try:
@@ -442,7 +498,7 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(columns, [])
         self.assertEqual(constraints, [])
 
-    async def test_native_agent_columns_use_only_the_first_class_graph_v3(self) -> None:
+    async def test_native_agent_columns_use_current_budget_shape(self) -> None:
         connection = await asyncpg.connect(MIGRATION_DSN)
         try:
             columns = await connection.fetch(
@@ -479,25 +535,178 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("max_total_tokens", columns[0]["column_default"])
         self.assertIn("max_evidence_items", columns[0]["column_default"])
         self.assertIn("max_retrieval_calls", columns[0]["column_default"])
-        self.assertIn("soft_deadline_reserve_seconds", columns[0]["column_default"])
+        self.assertNotIn("soft_deadline_reserve_seconds", columns[0]["column_default"])
         self.assertNotIn("'retrieval_calls'", columns[0]["column_default"])
         self.assertNotIn("'calculation_calls'", columns[0]["column_default"])
         self.assertNotIn("'evidence_refs'", columns[0]["column_default"])
-        self.assertEqual(len(constraints), 2)
-        self.assertEqual(
-            [row["conname"] for row in constraints],
-            [
-                "ck_chat_run_agent_configuration_v3",
-                "ck_chat_run_agent_trace_v3",
-            ],
+        self.assertEqual(constraints, [])
+
+    async def test_deadline_reserve_migration_preserves_historical_chat_runs(
+        self,
+    ) -> None:
+        """0024 drops enforcement without rewriting historical JSON snapshots."""
+
+        assert MIGRATION_DSN is not None
+        first_class_migration = importlib.import_module(
+            "rag_kb.db.migrations.versions.0016_first_class_graph_tool"
         )
-        self.assertTrue(all("pg_column_size" in row["definition"] for row in constraints))
+        budget_migration = importlib.import_module(
+            "rag_kb.db.migrations.versions.0022_agent_resource_budget"
+        )
+        diagnostics_migration = importlib.import_module(
+            "rag_kb.db.migrations.versions.0023_agent_trace_diagnostics"
+        )
+        deadline_migration = importlib.import_module(
+            "rag_kb.db.migrations.versions.0024_remove_agent_deadline_reserve"
+        )
+        engine = create_async_engine(
+            MIGRATION_DSN.replace("postgresql://", "postgresql+asyncpg://", 1)
+        )
+        connection = None
+        current_head_restored = False
+        historical_configuration = {
+            "version": "native_tool_calling_agent_v3",
+            "budget": {
+                "max_model_rounds": 8,
+                "max_graph_calls": 2,
+                "max_total_tokens": 150000,
+                "max_evidence_items": 64,
+                "max_retrieval_calls": 16,
+                "soft_deadline_reserve_seconds": 60,
+            },
+        }
+        historical_trace = {
+            "version": "native_tool_calling_agent_v3",
+            "events": [],
+            "budget": historical_configuration["budget"],
+            "usage": {"model_rounds": 0},
+            "diagnostics": {
+                "stop_reason": "submitted",
+                "forced_finalize": False,
+                "consecutive_no_new_evidence": 0,
+                "elapsed_ms": 1,
+                "deadline_ms": 600000,
+                "deadline_remaining_ms": 599999,
+                "near_deadline": True,
+                "deadline_exceeded": False,
+            },
+            "outcome": "refused",
+        }
+        try:
+            await self._prepare_historical_v3_schema(
+                engine, first_class_migration
+            )
+            for migration in (budget_migration, diagnostics_migration):
+                async with engine.begin() as migration_connection:
+                    await migration_connection.run_sync(
+                        lambda sync_connection, migration=migration: self._invoke_migration(
+                            sync_connection, migration, "upgrade"
+                        )
+                    )
+
+            connection = await asyncpg.connect(MIGRATION_DSN)
+            workspace_id, embedding_space_id, kb_id = await self.create_foundation(
+                connection, suffix="deadline-reserve-preservation"
+            )
+            revision_id = await self.create_revision(
+                connection,
+                workspace_id,
+                embedding_space_id,
+                kb_id,
+            )
+            session_id = await connection.fetchval(
+                """
+                INSERT INTO chat_session (
+                    workspace_id, kb_id, principal_id, title
+                ) VALUES ($1, $2, 'historical-principal', 'historical-session')
+                RETURNING id
+                """,
+                workspace_id,
+                kb_id,
+            )
+            user_message_id = await connection.fetchval(
+                """
+                INSERT INTO chat_message (
+                    workspace_id, session_id, role, content
+                ) VALUES ($1, $2, 'user', 'historical question')
+                RETURNING id
+                """,
+                workspace_id,
+                session_id,
+            )
+            run_id = await connection.fetchval(
+                """
+                INSERT INTO chat_run (
+                    workspace_id, kb_id, session_id, user_message_id,
+                    index_revision_id, status, principal_id, client_id,
+                    endpoint, idempotency_key, request_hash, requested_policy,
+                    effective_policy, retrieval_strategy, model_configuration,
+                    agent_configuration, agent_trace, conversation_context,
+                    usage, timing, attempt, completed_at
+                ) VALUES (
+                    $1, $2, $3, $4, $5, 'completed',
+                    'historical-principal', 'schema-client',
+                    'POST /api/v1/chat/runs', $6, $7,
+                    '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb,
+                    $8::jsonb, $9::jsonb, '{}'::jsonb,
+                    '{}'::jsonb, '{}'::jsonb, 1, now()
+                )
+                RETURNING id
+                """,
+                workspace_id,
+                kb_id,
+                session_id,
+                user_message_id,
+                revision_id,
+                uuid4(),
+                "sha256:" + "d" * 64,
+                json.dumps(historical_configuration),
+                json.dumps(historical_trace),
+            )
+            await connection.close()
+            connection = None
+
+            async with engine.begin() as migration_connection:
+                await migration_connection.run_sync(
+                    lambda sync_connection: self._invoke_migration(
+                        sync_connection, deadline_migration, "upgrade"
+                    )
+                )
+            current_head_restored = True
+
+            connection = await asyncpg.connect(MIGRATION_DSN)
+            row = await connection.fetchrow(
+                """
+                SELECT agent_configuration, agent_trace
+                  FROM chat_run
+                 WHERE id = $1
+                """,
+                run_id,
+            )
+            self.assertEqual(
+                json.loads(row["agent_configuration"]), historical_configuration
+            )
+            self.assertEqual(json.loads(row["agent_trace"]), historical_trace)
+        finally:
+            if connection is not None:
+                await connection.close()
+            if not current_head_restored:
+                try:
+                    async with engine.begin() as migration_connection:
+                        await migration_connection.run_sync(
+                            lambda sync_connection: self._invoke_migration(
+                                sync_connection, deadline_migration, "upgrade"
+                            )
+                        )
+                except Exception:
+                    pass
+            await engine.dispose()
 
     async def test_native_agent_round_limit_migration_preserves_trace_facts(
         self,
     ) -> None:
         assert MIGRATION_DSN is not None
-        connection = await asyncpg.connect(MIGRATION_DSN)
+        connection: asyncpg.Connection | None = None
         original_events = [
             {
                 "tool": "search_knowledge_base",
@@ -526,6 +735,7 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
         async def create_run(
             *, suffix: str, max_model_rounds: int, trace: dict | None
         ) -> UUID:
+            assert connection is not None
             session_id = await connection.fetchval(
                 """
                 INSERT INTO chat_session (
@@ -593,7 +803,10 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
         )
         prep_downgraded = False
         try:
-            # The head schema is v3; start this round trip from v2 rows.
+            await self._prepare_historical_v3_schema(
+                engine, first_class_migration
+            )
+            # Start this historical round trip from v2 rows.
             async with engine.begin() as migration_connection:
                 await migration_connection.run_sync(
                     lambda sync_connection: self._invoke_migration(
@@ -815,6 +1028,7 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
                             "upgrade",
                         )
                     )
+            await self._restore_current_agent_schema(engine)
             await engine.dispose()
 
 
@@ -831,7 +1045,10 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
         )
         prep_downgraded = False
         try:
-            # The head schema is v3; v2 fixtures require the v2 schema first.
+            await self._prepare_historical_v3_schema(
+                engine, first_class_migration
+            )
+            # v2 fixtures require the v2 schema first.
             async with engine.begin() as migration_connection:
                 await migration_connection.run_sync(
                     lambda sync_connection: self._invoke_migration(
@@ -958,6 +1175,7 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
                             "upgrade",
                         )
                     )
+            await self._restore_current_agent_schema(engine)
             await engine.dispose()
 
     async def test_first_class_graph_relations_migration_round_trip(
@@ -1099,9 +1317,12 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
                     json.dumps(trace) if trace is not None else None,
                 )
 
-            # Head is v3; fixture rows must target the v2 schema.
+            # Fixture rows must target the v2 schema.
             engine = create_async_engine(
                 MIGRATION_DSN.replace("postgresql://", "postgresql+asyncpg://", 1)
+            )
+            await self._prepare_historical_v3_schema(
+                engine, first_class_migration
             )
             prep_downgraded = False
             try:
@@ -1440,6 +1661,7 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
                                 "upgrade",
                             )
                         )
+                await self._restore_current_agent_schema(engine)
                 await engine.dispose()
         finally:
             try:
@@ -1459,6 +1681,9 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
         )
         prep_downgraded = False
         try:
+            await self._prepare_historical_v3_schema(
+                engine, first_class_migration
+            )
             async with engine.begin() as migration_connection:
                 await migration_connection.run_sync(
                     lambda sync_connection: self._invoke_migration(
@@ -1643,6 +1868,7 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
                             "upgrade",
                         )
                     )
+            await self._restore_current_agent_schema(engine)
             await engine.dispose()
 
     async def test_same_kb_selector_and_deferred_active_rule(self) -> None:

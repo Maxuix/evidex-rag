@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from rag_kb.domain import (
     ChatFailureSettlementCommand,
@@ -17,7 +17,10 @@ from rag_kb.domain import (
     CHAT_AGENT_TRACE_ARTIFACT,
     ErrorCode,
 )
-from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, execute_in_transaction
+from rag_kb.uow import execute_in_transaction
+
+if TYPE_CHECKING:
+    from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWork, SqlAlchemyUnitOfWorkFactory
 
 
 class ChatResultPersistenceStep:
@@ -25,7 +28,7 @@ class ChatResultPersistenceStep:
 
     def __init__(
         self,
-        unit_of_work: UnitOfWorkFactory,
+        unit_of_work: SqlAlchemyUnitOfWorkFactory,
         *,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
@@ -60,7 +63,7 @@ class ChatResultPersistenceStep:
             agent_trace=_agent_trace(state),
         )
 
-        async def persist(uow: UnitOfWork) -> ChatTerminalWriteStatus:
+        async def persist(uow: SqlAlchemyUnitOfWork) -> ChatTerminalWriteStatus:
             return await uow.chat.complete_owned_run(command)
 
         try:
@@ -103,7 +106,7 @@ class ChatFailureSettlementService:
 
     def __init__(
         self,
-        unit_of_work: UnitOfWorkFactory,
+        unit_of_work: SqlAlchemyUnitOfWorkFactory,
         *,
         max_attempts: int,
         base_delay_seconds: float,
@@ -146,7 +149,7 @@ class ChatFailureSettlementService:
             agent_trace=error.agent_trace,
         )
 
-        async def persist(uow: UnitOfWork) -> ChatTerminalWriteStatus:
+        async def persist(uow: SqlAlchemyUnitOfWork) -> ChatTerminalWriteStatus:
             return await uow.chat.settle_owned_failure(command)
 
         return await execute_in_transaction(self._unit_of_work, persist)

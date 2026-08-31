@@ -2,20 +2,24 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from rag_kb.auth import AuthContext
 from rag_kb.domain import IndexChunkAssetRelationSnapshot
 from rag_kb.uow import (
     TransactionMode,
-    UnitOfWork,
-    UnitOfWorkFactory,
     execute_in_transaction,
 )
 
+if TYPE_CHECKING:
+    from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWork, SqlAlchemyUnitOfWorkFactory
+
 
 class CompositeEvidenceHydrationService:
-    def __init__(self, unit_of_work: UnitOfWorkFactory, *, limit: int = 500) -> None:
+    def __init__(
+        self, unit_of_work: SqlAlchemyUnitOfWorkFactory, *, limit: int = 500
+    ) -> None:
         if not 1 <= limit <= 2_000:
             raise ValueError("relation hydration limit must be between 1 and 2000")
         self._unit_of_work = unit_of_work
@@ -31,7 +35,7 @@ class CompositeEvidenceHydrationService:
         asset_ids: tuple[UUID, ...],
     ) -> tuple[IndexChunkAssetRelationSnapshot, ...]:
         async def load(
-            unit_of_work: UnitOfWork,
+            unit_of_work: SqlAlchemyUnitOfWork,
         ) -> tuple[IndexChunkAssetRelationSnapshot, ...]:
             if unit_of_work.workspace_id != context.workspace_id:
                 raise RuntimeError("unit of work workspace scope mismatch")

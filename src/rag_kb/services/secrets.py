@@ -5,16 +5,18 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime, timedelta
 import logging
+from typing import TYPE_CHECKING
 
 from rag_kb.auth import AuthContext
 from rag_kb.domain import ModelSecretReconciliationResult
 from rag_kb.ports.model_secrets import ModelSecretStore
 from rag_kb.uow import (
     TransactionMode,
-    UnitOfWork,
-    UnitOfWorkFactory,
     execute_in_transaction,
 )
+
+if TYPE_CHECKING:
+    from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWork, SqlAlchemyUnitOfWorkFactory
 
 
 LOGGER = logging.getLogger("rag_kb.model_secrets.reconciliation")
@@ -23,7 +25,7 @@ LOGGER = logging.getLogger("rag_kb.model_secrets.reconciliation")
 class ModelSecretReconciliationService:
     def __init__(
         self,
-        unit_of_work: UnitOfWorkFactory,
+        unit_of_work: SqlAlchemyUnitOfWorkFactory,
         secret_store: ModelSecretStore,
         *,
         batch_size: int,
@@ -44,7 +46,7 @@ class ModelSecretReconciliationService:
     ) -> ModelSecretReconciliationResult:
         observed_at = now or datetime.now(UTC)
 
-        async def load(uow: UnitOfWork) -> tuple[str, ...]:
+        async def load(uow: SqlAlchemyUnitOfWork) -> tuple[str, ...]:
             if uow.workspace_id != context.workspace_id:
                 raise RuntimeError("secret reconciliation workspace does not match identity")
             return await uow.model_settings.list_secret_references()

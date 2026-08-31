@@ -12,7 +12,6 @@ from apps.api.dependencies import ApiDependencies, build_api_dependencies
 from apps.api.errors import install_problem_handlers
 from apps.api.health import install_health_routes
 from apps.api.middleware import TraceIdMiddleware
-from apps.api.openapi import install_openapi_contract
 from apps.api.request_logging import RequestLoggingMiddleware
 from apps.api.routers import BUSINESS_ROUTERS
 from apps.api.security import IdentityOverrideMiddleware
@@ -74,7 +73,6 @@ def create_app(
     install_health_routes(app)
     for router in BUSINESS_ROUTERS if routers is None else routers:
         app.include_router(router, prefix=API_PREFIX)
-    install_openapi_contract(app)
     return app
 
 

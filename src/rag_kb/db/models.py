@@ -1622,85 +1622,6 @@ class ChatRun(Base):
             name="fk_chat_run_same_workspace_session",
         ),
         CheckConstraint("attempt >= 0", name="chat_run_attempt_nonnegative"),
-        CheckConstraint(
-            "(jsonb_typeof(agent_configuration) = 'object' "
-            "AND (agent_configuration - ARRAY['version', 'budget']::text[]) = '{}'::jsonb "
-            "AND agent_configuration->>'version' = 'native_tool_calling_agent_v3' "
-            "AND jsonb_typeof(agent_configuration->'budget') = 'object' "
-            "AND (agent_configuration->'budget') ? 'max_model_rounds' "
-            "AND (agent_configuration->'budget') ? 'max_graph_calls' "
-            "AND (agent_configuration->'budget') ? 'max_total_tokens' "
-            "AND (agent_configuration->'budget') ? 'max_evidence_items' "
-            "AND (agent_configuration->'budget') ? 'max_retrieval_calls' "
-            "AND (agent_configuration->'budget') ? 'soft_deadline_reserve_seconds' "
-            "AND ((agent_configuration->'budget') - "
-            "ARRAY['max_model_rounds', 'max_graph_calls', 'max_total_tokens', "
-            "'max_evidence_items', 'max_retrieval_calls', "
-            "'soft_deadline_reserve_seconds']::text[]) = '{}'::jsonb "
-            "AND CASE WHEN "
-            "jsonb_typeof(agent_configuration->'budget'->'max_model_rounds') "
-            "= 'number' AND (agent_configuration->'budget'->>'max_model_rounds') "
-            "~ '^(0|[1-9][0-9]*)$' THEN "
-            "(agent_configuration->'budget'->>'max_model_rounds')::integer "
-            "BETWEEN 1 AND 12 ELSE FALSE END "
-            "AND CASE WHEN "
-            "jsonb_typeof(agent_configuration->'budget'->'max_graph_calls') "
-            "= 'number' AND (agent_configuration->'budget'->>'max_graph_calls') "
-            "~ '^(0|[1-9][0-9]*)$' THEN "
-            "(agent_configuration->'budget'->>'max_graph_calls')::integer "
-            "BETWEEN 1 AND 2 ELSE FALSE END "
-            "AND CASE WHEN "
-            "jsonb_typeof(agent_configuration->'budget'->'max_total_tokens') "
-            "= 'number' AND (agent_configuration->'budget'->>'max_total_tokens') "
-            "~ '^(0|[1-9][0-9]*)$' THEN "
-            "(agent_configuration->'budget'->>'max_total_tokens')::integer "
-            "BETWEEN 1000 AND 10000000 ELSE FALSE END "
-            "AND CASE WHEN "
-            "jsonb_typeof(agent_configuration->'budget'->'max_evidence_items') "
-            "= 'number' AND (agent_configuration->'budget'->>'max_evidence_items') "
-            "~ '^(0|[1-9][0-9]*)$' THEN "
-            "(agent_configuration->'budget'->>'max_evidence_items')::integer "
-            "BETWEEN 1 AND 512 ELSE FALSE END "
-            "AND CASE WHEN "
-            "jsonb_typeof(agent_configuration->'budget'->'max_retrieval_calls') "
-            "= 'number' AND (agent_configuration->'budget'->>'max_retrieval_calls') "
-            "~ '^(0|[1-9][0-9]*)$' THEN "
-            "(agent_configuration->'budget'->>'max_retrieval_calls')::integer "
-            "BETWEEN 1 AND 64 ELSE FALSE END "
-            "AND CASE WHEN "
-            "jsonb_typeof(agent_configuration->'budget'->'soft_deadline_reserve_seconds') "
-            "= 'number' THEN "
-            "(agent_configuration->'budget'->>'soft_deadline_reserve_seconds')::float "
-            "BETWEEN 0 AND 600 ELSE FALSE END "
-            "AND pg_column_size(agent_configuration) <= 4096) IS TRUE",
-            name=conv("ck_chat_run_agent_configuration_v3"),
-        ),
-        CheckConstraint(
-            "agent_trace IS NULL OR ((jsonb_typeof(agent_trace) = 'object' "
-            "AND (agent_trace - ARRAY['version', 'events', 'budget', 'usage', "
-            "'diagnostics', 'outcome']::text[]) = '{}'::jsonb "
-            "AND agent_trace->>'version' = 'native_tool_calling_agent_v3' "
-            "AND jsonb_typeof(agent_trace->'events') = 'array' "
-            "AND jsonb_array_length(agent_trace->'events') <= 32 "
-            "AND jsonb_typeof(agent_trace->'budget') = 'object' "
-            "AND (agent_trace->'budget') ? 'max_model_rounds' "
-            "AND (agent_trace->'budget') ? 'max_graph_calls' "
-            "AND (agent_trace->'budget') ? 'max_total_tokens' "
-            "AND (agent_trace->'budget') ? 'max_evidence_items' "
-            "AND (agent_trace->'budget') ? 'max_retrieval_calls' "
-            "AND (agent_trace->'budget') ? 'soft_deadline_reserve_seconds' "
-            "AND ((agent_trace->'budget') - "
-            "ARRAY['max_model_rounds', 'max_graph_calls', 'max_total_tokens', "
-            "'max_evidence_items', 'max_retrieval_calls', "
-            "'soft_deadline_reserve_seconds']::text[]) = '{}'::jsonb "
-            "AND agent_trace->'budget' = agent_configuration->'budget' "
-            "AND jsonb_typeof(agent_trace->'usage') = 'object' "
-            "AND (NOT agent_trace ? 'diagnostics' OR "
-            "jsonb_typeof(agent_trace->'diagnostics') = 'object') "
-            "AND agent_trace->>'outcome' IN ('answered', 'partial', 'refused', 'clarify') "
-            "AND pg_column_size(agent_trace) <= 65536) IS TRUE)",
-            name=conv("ck_chat_run_agent_trace_v3"),
-        ),
         Index("ix_chat_run_claim", "status", "next_attempt_at", "created_at"),
         Index(
             "uq_chat_run_session_nonterminal",
@@ -1743,8 +1664,7 @@ class ChatRun(Base):
             "'budget', jsonb_build_object("
             "'max_model_rounds', 8, 'max_graph_calls', 2, "
             "'max_total_tokens', 150000, 'max_evidence_items', 64, "
-            "'max_retrieval_calls', 16, "
-            "'soft_deadline_reserve_seconds', 60))"
+            "'max_retrieval_calls', 16))"
         ),
     )
     agent_trace: Mapped[dict[str, Any] | None] = mapped_column(JSONB)

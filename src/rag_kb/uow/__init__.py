@@ -1,19 +1,9 @@
-"""Asynchronous PostgreSQL Unit of Work boundary."""
+"""Asynchronous PostgreSQL transaction boundary."""
 
-from rag_kb.uow.contracts import (
-    TransactionMode,
-    UnitOfWork,
-    UnitOfWorkConcurrencyError,
-    UnitOfWorkFactory,
-    UnitOfWorkStateError,
-)
+from rag_kb.uow.mode import TransactionMode
 from rag_kb.uow.operations import execute_in_transaction
 
 __all__ = [
     "TransactionMode",
-    "UnitOfWork",
-    "UnitOfWorkConcurrencyError",
-    "UnitOfWorkFactory",
-    "UnitOfWorkStateError",
     "execute_in_transaction",
 ]

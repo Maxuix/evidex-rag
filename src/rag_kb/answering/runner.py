@@ -5,13 +5,12 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 import logging
-from typing import Protocol
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from rag_kb.answering.agent import ChatAgentProgress, NativeToolCallingAgent
 from rag_kb.domain import (
     ChatExecutionCommand,
-    ChatExecutionContext,
     ChatProgressActivity,
     ChatProgressFacts,
     ChatProgressStage,
@@ -23,36 +22,27 @@ from rag_kb.domain import (
 from rag_kb.ports.chat_preview import ChatPreviewSink
 from rag_kb.observability import get_logger, log_exception
 
+if TYPE_CHECKING:
+    from rag_kb.services.chat_execution import ChatExecutionContextLoader
+    from rag_kb.services.chat_progress import ChatProgressReporter
+    from rag_kb.services.chat_terminal import ChatResultPersistenceStep
+
 
 LOGGER = get_logger("rag_kb.answering.runner")
 
 
-class ExecutionContextLoader(Protocol):
-    async def load(self, command: ChatExecutionCommand) -> ChatExecutionContext: ...
-
-
-class PipelineStep(Protocol):
-    async def run(self, state: ChatPipelineState) -> ChatPipelineState: ...
-
-
-class ProgressReporter(Protocol):
-    async def show(self, stage, activity, *, facts=None, completed=()) -> None: ...
-
-    async def finish(self, activity) -> None: ...
-
-
 ProgressReporterFactory = Callable[
     [UUID, int, ChatPreviewSink | None],
-    ProgressReporter,
+    "ChatProgressReporter",
 ]
 
 
 class NativeAgentRunner:
     def __init__(
         self,
-        context_loader: ExecutionContextLoader,
+        context_loader: ChatExecutionContextLoader,
         agent: NativeToolCallingAgent,
-        result_persister: PipelineStep,
+        result_persister: ChatResultPersistenceStep,
         *,
         deadline_seconds: float,
         progress_sink: ChatPreviewSink | None = None,

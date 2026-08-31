@@ -39,11 +39,8 @@ from rag_kb.services.content import (
     embedding_space_definition,
     unconfigured_embedding_space_definition,
 )
-from rag_kb.uow import (
-    UnitOfWork,
-    UnitOfWorkFactory,
-    execute_in_transaction,
-)
+from rag_kb.uow import execute_in_transaction
+from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWork, SqlAlchemyUnitOfWorkFactory
 
 
 EmbeddingModelLoader = Callable[
@@ -149,7 +146,7 @@ def build_legacy_embedding_adapters(
 
 
 def build_dynamic_embedding_loaders(
-    unit_of_work: UnitOfWorkFactory,
+    unit_of_work: SqlAlchemyUnitOfWorkFactory,
     secret_store: ModelSecretStore,
 ) -> DynamicEmbeddingLoaders:
     """Build revision-bound adapter loaders with one cache per model kind."""
@@ -222,12 +219,12 @@ def build_dynamic_embedding_loaders(
 
 
 def build_graphiti_runtime(
-    unit_of_work: UnitOfWorkFactory,
+    unit_of_work: SqlAlchemyUnitOfWorkFactory,
     secret_store: ModelSecretStore,
     settings: Settings,
 ) -> GraphitiRuntime:
     async def credentials(build: GraphitiBuildSnapshot) -> GraphitiModelCredentials:
-        async def resolve(uow: UnitOfWork):
+        async def resolve(uow: SqlAlchemyUnitOfWork):
             chat = await uow.model_settings.get_profile_revision(
                 build.chat_profile_revision_id
             )
@@ -302,13 +299,13 @@ def _revision_id(space: EmbeddingSpaceDefinition) -> UUID:
 
 
 async def _embedding_bundle(
-    unit_of_work: UnitOfWorkFactory,
+    unit_of_work: SqlAlchemyUnitOfWorkFactory,
     space: EmbeddingSpaceDefinition,
     kind: ModelKind,
 ):
     revision_id = _revision_id(space)
 
-    async def resolve(uow: UnitOfWork):
+    async def resolve(uow: SqlAlchemyUnitOfWork):
         bundle = await uow.model_settings.get_profile_revision(revision_id)
         if (
             bundle is None

@@ -3,23 +3,27 @@
 from __future__ import annotations
 
 import hashlib
+from typing import TYPE_CHECKING
 from uuid import UUID
 
-from rag_kb.auth import AccessPolicy, AuthContext
+from rag_kb.auth import AuthContext, SingleWorkspaceAccessPolicy
 from rag_kb.domain import (
     IndexAssetContent,
     ResourceNotFoundError,
     SourceFileIntegrityError,
 )
 from rag_kb.ports.files import IndexAssetStore
-from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, execute_in_transaction
+from rag_kb.uow import execute_in_transaction
+
+if TYPE_CHECKING:
+    from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWork, SqlAlchemyUnitOfWorkFactory
 
 
 class IndexAssetService:
     def __init__(
         self,
-        unit_of_work: UnitOfWorkFactory,
-        access_policy: AccessPolicy,
+        unit_of_work: SqlAlchemyUnitOfWorkFactory,
+        access_policy: SingleWorkspaceAccessPolicy,
         asset_store: IndexAssetStore,
     ) -> None:
         self._unit_of_work = unit_of_work
@@ -29,7 +33,7 @@ class IndexAssetService:
     async def read(self, context: AuthContext, asset_id: UUID) -> IndexAssetContent:
         metadata = self._access_policy.metadata_filter(context)
 
-        async def load(uow: UnitOfWork):
+        async def load(uow: SqlAlchemyUnitOfWork):
             return await uow.indexing.get_asset(asset_id)
 
         snapshot = await execute_in_transaction(

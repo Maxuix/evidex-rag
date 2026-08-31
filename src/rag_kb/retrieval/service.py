@@ -8,10 +8,10 @@ from dataclasses import dataclass, replace
 from enum import StrEnum
 import logging
 import math
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
-from rag_kb.auth import AccessPolicy, AuthContext
+from rag_kb.auth import AuthContext, SingleWorkspaceAccessPolicy
 from rag_kb.domain import (
     AdjacentChunkAnchor,
     AdjacentChunkQuery,
@@ -79,6 +79,9 @@ from rag_kb.retrieval.profile import (
     RetrievalExecutionProfile,
 )
 
+if TYPE_CHECKING:
+    from rag_kb.services.composite_evidence import CompositeEvidenceHydrationService
+
 
 LOGGER = get_logger(__name__)
 
@@ -94,18 +97,6 @@ def _is_expected_graph_storage_error(error: Exception) -> bool:
         isinstance(error, (OSError, TimeoutError, ConnectionError))
         or type(error).__module__.startswith("sqlalchemy.")
     )
-
-
-class CompositeEvidenceHydrator(Protocol):
-    async def hydrate(
-        self,
-        context: AuthContext,
-        *,
-        kb_id: UUID,
-        index_revision_id: UUID,
-        chunk_ids: tuple[UUID, ...],
-        asset_ids: tuple[UUID, ...],
-    ) -> tuple[IndexChunkAssetRelationSnapshot, ...]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,7 +117,7 @@ class RetrievalService:
 
     def __init__(
         self,
-        access_policy: AccessPolicy,
+        access_policy: SingleWorkspaceAccessPolicy,
         embedding_provider: EmbeddingModelAdapter,
         vector_store: VectorStore,
         *,
@@ -149,7 +140,7 @@ class RetrievalService:
         dense_weight_micros: int = 1_000_000,
         lexical_weight_micros: int = 1_000_000,
         min_rerank_score: float = 0.45,
-        relation_hydrator: CompositeEvidenceHydrator | None = None,
+        relation_hydrator: CompositeEvidenceHydrationService | None = None,
         deadline_seconds: float = 240.0,
         embedding_model_resolver: (
             Callable[[EmbeddingSpaceDefinition], Awaitable[EmbeddingModelAdapter]]

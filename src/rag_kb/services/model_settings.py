@@ -8,10 +8,10 @@ import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
-from rag_kb.auth import AccessPolicy, AuthContext
+from rag_kb.auth import AuthContext, SingleWorkspaceAccessPolicy
 from rag_kb.domain import (
     EmbeddingInputCapability,
     EmbeddingValidationSnapshot,
@@ -27,7 +27,10 @@ from rag_kb.domain import (
     ResourceStateConflictError,
 )
 from rag_kb.ports.model_secrets import ModelSecretStore
-from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, execute_in_transaction
+from rag_kb.uow import execute_in_transaction
+
+if TYPE_CHECKING:
+    from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWork, SqlAlchemyUnitOfWorkFactory
 
 
 ModelProfileValidator = Callable[
@@ -53,8 +56,8 @@ class ModelSettingsSnapshot:
 class ModelSettingsService:
     def __init__(
         self,
-        unit_of_work: UnitOfWorkFactory,
-        access_policy: AccessPolicy,
+        unit_of_work: SqlAlchemyUnitOfWorkFactory,
+        access_policy: SingleWorkspaceAccessPolicy,
         secret_store: ModelSecretStore,
         *,
         profile_validator: ModelProfileValidator | None = None,
@@ -71,7 +74,7 @@ class ModelSettingsService:
     ) -> ModelSettingsSnapshot:
         self._authorize(context)
 
-        async def load(uow: UnitOfWork):
+        async def load(uow: SqlAlchemyUnitOfWork):
             _require_scope(uow, context)
             providers = await uow.model_settings.list_providers()
             profiles = await uow.model_settings.list_profiles()
@@ -149,7 +152,7 @@ class ModelSettingsService:
             max_concurrency=max_concurrency,
         )
 
-        async def persist(uow: UnitOfWork) -> ModelProviderBundle:
+        async def persist(uow: SqlAlchemyUnitOfWork) -> ModelProviderBundle:
             _require_scope(uow, context)
             return await uow.model_settings.create_provider(
                 name=name,
@@ -189,7 +192,7 @@ class ModelSettingsService:
             else None
         )
 
-        async def persist(uow: UnitOfWork) -> ModelProviderBundle:
+        async def persist(uow: SqlAlchemyUnitOfWork) -> ModelProviderBundle:
             _require_scope(uow, context)
             current = await uow.model_settings.get_provider(provider_id)
             if current is None:
@@ -262,7 +265,7 @@ class ModelSettingsService:
         configuration = dict(parameters)
         _require_parameters(kind, configuration)
 
-        async def persist(uow: UnitOfWork) -> ModelProfileBundle:
+        async def persist(uow: SqlAlchemyUnitOfWork) -> ModelProfileBundle:
             _require_scope(uow, context)
             provider = await uow.model_settings.get_provider(provider_id)
             if provider is None:
@@ -305,7 +308,7 @@ class ModelSettingsService:
     ) -> ModelProfileBundle:
         self._authorize(context)
 
-        async def persist(uow: UnitOfWork) -> ModelProfileBundle:
+        async def persist(uow: SqlAlchemyUnitOfWork) -> ModelProfileBundle:
             _require_scope(uow, context)
             current = await uow.model_settings.get_profile(profile_id)
             if current is None:
@@ -374,7 +377,7 @@ class ModelSettingsService:
     ) -> ModelSelection:
         self._authorize(context)
 
-        async def persist(uow: UnitOfWork) -> ModelSelection:
+        async def persist(uow: SqlAlchemyUnitOfWork) -> ModelSelection:
             _require_scope(uow, context)
             for revision_id, kind in (
                 (chat_profile_revision_id, ModelKind.CHAT),
@@ -419,7 +422,7 @@ class ModelSettingsService:
         if self._provider_catalog is None:
             raise ResourceStateConflictError("provider model discovery is unavailable")
 
-        async def load(uow: UnitOfWork) -> ModelProviderBundle:
+        async def load(uow: SqlAlchemyUnitOfWork) -> ModelProviderBundle:
             _require_scope(uow, context)
             provider = await uow.model_settings.get_provider(provider_id)
             if provider is None:
@@ -459,7 +462,7 @@ class ModelSettingsService:
         if self._profile_validator is None:
             raise ResourceStateConflictError("model validation is unavailable")
 
-        async def load(uow: UnitOfWork) -> ModelProfileBundle:
+        async def load(uow: SqlAlchemyUnitOfWork) -> ModelProfileBundle:
             _require_scope(uow, context)
             bundle = await uow.model_settings.get_profile(profile_id)
             if bundle is None:
@@ -524,7 +527,7 @@ class ModelSettingsService:
                         "model validation facts changed; create a new revision"
                     )
 
-        async def persist(uow: UnitOfWork) -> ModelProfileBundle:
+        async def persist(uow: SqlAlchemyUnitOfWork) -> ModelProfileBundle:
             _require_scope(uow, context)
             updated = await uow.model_settings.set_validation(
                 bundle.current_revision.id,
@@ -698,6 +701,6 @@ def _require_parameters(kind: ModelKind, parameters: dict[str, Any]) -> None:
         )
 
 
-def _require_scope(uow: UnitOfWork, context: AuthContext) -> None:
+def _require_scope(uow: SqlAlchemyUnitOfWork, context: AuthContext) -> None:
     if uow.workspace_id != context.workspace_id:
         raise RuntimeError("Unit of Work workspace does not match AuthContext")

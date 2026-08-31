@@ -12,7 +12,6 @@ from fastapi import APIRouter, Depends, Header, Query, Request
 
 from apps.api.errors import ApiProblem
 from apps.api.idempotency import RequiredIdempotencyKey
-from apps.api.openapi import problem_responses
 from apps.api.pagination import (
     API_CURSOR_MAX_LENGTH,
     API_PAGINATION_DEFAULT_LIMIT,
@@ -72,7 +71,6 @@ _BINARY_BODY = {
     "/knowledge-bases/{kb_id}/documents",
     response_model=DocumentUploadResponse,
     status_code=202,
-    responses=problem_responses(404, 409, 413, 415, 422),
     openapi_extra=_BINARY_BODY,
 )
 async def upload_document(
@@ -105,7 +103,6 @@ async def upload_document(
     "/documents/{document_id}/versions",
     response_model=DocumentUploadResponse,
     status_code=202,
-    responses=problem_responses(404, 409, 413, 415, 422),
     openapi_extra=_BINARY_BODY,
 )
 async def upload_document_version(
@@ -140,7 +137,6 @@ async def upload_document_version(
 @router.get(
     "/knowledge-bases/{kb_id}/documents",
     response_model=DocumentPage,
-    responses=problem_responses(400, 404, 422),
 )
 async def list_documents(
     request: Request,
@@ -168,7 +164,6 @@ async def list_documents(
 @router.get(
     "/documents/{document_id}/chunks",
     response_model=DocumentChunkInspectionResponse,
-    responses=problem_responses(404, 409, 422),
 )
 async def inspect_document_chunks(
     request: Request,
@@ -201,7 +196,6 @@ async def inspect_document_chunks(
 @router.delete(
     "/documents/{document_id}/chunks/{chunk_id}",
     response_model=DocumentChunkDeleteResponse,
-    responses=problem_responses(404, 409, 422),
 )
 async def delete_document_chunk(
     request: Request,
@@ -224,7 +218,6 @@ async def delete_document_chunk(
 @router.get(
     "/documents/{document_id}",
     response_model=DocumentDetailResponse,
-    responses=problem_responses(404, 422),
 )
 async def get_document(
     request: Request,
@@ -265,7 +258,6 @@ async def get_document(
 @router.delete(
     "/documents/{document_id}",
     response_model=DocumentDeleteResponse,
-    responses=problem_responses(404, 409, 422),
 )
 async def delete_document(
     request: Request,

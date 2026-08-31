@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 import hashlib
 from uuid import UUID, uuid4
@@ -58,15 +57,12 @@ class SqlAlchemyGraphRepository:
         self,
         session: AsyncSession,
         workspace_id: UUID,
-        ensure_active: Callable[[], None],
     ) -> None:
         self._session = session
         self._workspace_id = workspace_id
-        self._ensure_active = ensure_active
         self._retired_builds: list[GraphitiBuildSnapshot] = []
 
     async def get_config(self, kb_id: UUID) -> GraphConfigSnapshot | None:
-        self._ensure_active()
         row = await self._session.scalar(
             select(KnowledgeBaseGraphConfigRow).where(
                 KnowledgeBaseGraphConfigRow.workspace_id == self._workspace_id,
@@ -78,7 +74,6 @@ class SqlAlchemyGraphRepository:
         return await self._snapshot(row)
 
     async def ensure_config(self, kb_id: UUID) -> GraphConfigSnapshot:
-        self._ensure_active()
         kb = await self._session.scalar(
             select(KnowledgeBaseRow).where(
                 KnowledgeBaseRow.workspace_id == self._workspace_id,
@@ -120,7 +115,6 @@ class SqlAlchemyGraphRepository:
         schema_profile_key: str | None = None,
         force_rebuild: bool = False,
     ) -> GraphConfigSnapshot:
-        self._ensure_active()
         if extractor_version != GRAPH_EXTRACTOR_VERSION:
             raise ValueError("only the Graphiti extractor is supported")
         row = await self._locked_config(kb_id)
@@ -194,7 +188,6 @@ class SqlAlchemyGraphRepository:
         extractor_version: str,
         force_rebuild: bool = False,
     ) -> GraphConfigSnapshot:
-        self._ensure_active()
         row = await self._locked_config(kb_id)
         if row is None or row.status == GraphConfigStatus.DISABLED.value:
             raise ResourceStateConflictError("Graph is not enabled for this knowledge base")
@@ -268,7 +261,6 @@ class SqlAlchemyGraphRepository:
         return await self._snapshot(row)
 
     async def invalidate_for_serving_change(self, kb_id: UUID) -> bool:
-        self._ensure_active()
         row = await self._locked_config(kb_id)
         if row is None or row.status == GraphConfigStatus.DISABLED.value:
             return False
@@ -290,7 +282,6 @@ class SqlAlchemyGraphRepository:
         return True
 
     async def invalidate_for_indexed_target(self, target_id: UUID) -> bool:
-        self._ensure_active()
         kb_id = await self._session.scalar(
             select(IndexedDocumentVersionRow.kb_id).where(
                 IndexedDocumentVersionRow.workspace_id == self._workspace_id,
@@ -307,7 +298,6 @@ class SqlAlchemyGraphRepository:
         worker_id: str = "unknown",
         observed_at: datetime | None = None,
     ) -> GraphWorkItem | None:
-        self._ensure_active()
         if not worker_id:
             raise ValueError("Graph work lease owner is required")
         observed_at = observed_at or datetime.now(UTC)
@@ -410,7 +400,6 @@ class SqlAlchemyGraphRepository:
         *,
         observed_at: datetime,
     ) -> bool:
-        self._ensure_active()
         if work.lease_token is None or work.lease_owner is None:
             return False
         result = await self._session.execute(
@@ -430,7 +419,6 @@ class SqlAlchemyGraphRepository:
         return result.rowcount > 0
 
     async def release_graph_work(self, work: GraphWorkItem) -> bool:
-        self._ensure_active()
         if work.lease_token is None:
             return True
         result = await self._session.execute(
@@ -444,7 +432,6 @@ class SqlAlchemyGraphRepository:
         observed_at: datetime,
         limit: int,
     ) -> int:
-        self._ensure_active()
         if limit <= 0:
             raise ValueError("Graph work lease reconciliation limit is invalid")
         rows = (
@@ -469,7 +456,6 @@ class SqlAlchemyGraphRepository:
         extractor_version: str,
         lease_token: UUID | None = None,
     ) -> bool:
-        self._ensure_active()
         if lease_token is not None and not await self._owns_graph_work_lease(
             build_id, lease_token, GraphWorkKind.PREFLIGHT
         ):
@@ -494,7 +480,6 @@ class SqlAlchemyGraphRepository:
     async def get_graphiti_build(
         self, kb_id: UUID, *, build_id: UUID
     ) -> GraphitiBuildSnapshot | None:
-        self._ensure_active()
         row = await self._session.scalar(
             select(GraphitiGraphBuildRow).where(
                 GraphitiGraphBuildRow.workspace_id == self._workspace_id,
@@ -514,7 +499,6 @@ class SqlAlchemyGraphRepository:
         episode_uuid: str,
         lease_token: UUID | None = None,
     ) -> bool:
-        self._ensure_active()
         if lease_token is not None and not await self._owns_graph_work_lease(
             build_id, lease_token, GraphWorkKind.CHUNK
         ):
@@ -577,7 +561,6 @@ class SqlAlchemyGraphRepository:
         build_id: UUID,
         lease_token: UUID | None = None,
     ) -> GraphConfigSnapshot | None:
-        self._ensure_active()
         if lease_token is not None and not await self._owns_graph_work_lease(
             build_id, lease_token, GraphWorkKind.FINALIZE
         ):
@@ -649,7 +632,6 @@ class SqlAlchemyGraphRepository:
     async def first_graphiti_episode_uuid(
         self, kb_id: UUID, *, build_id: UUID
     ) -> str | None:
-        self._ensure_active()
         return await self._session.scalar(
             select(GraphitiEpisodeChunkRow.episode_uuid)
             .where(
@@ -669,7 +651,6 @@ class SqlAlchemyGraphRepository:
         error_code: str,
         lease_token: UUID | None = None,
     ) -> bool:
-        self._ensure_active()
         if lease_token is not None:
             if not await self._owns_graph_work_lease(build_id, lease_token, None):
                 return False
@@ -855,7 +836,6 @@ class SqlAlchemyGraphRepository:
     ) -> tuple[GraphChunkSource, ...]:
         """Return a bounded batch of unmapped chunks for the owned build lease."""
 
-        self._ensure_active()
         if limit <= 0:
             raise ValueError("Graph chunk batch limit must be positive")
         mapped_chunk_ids = set(

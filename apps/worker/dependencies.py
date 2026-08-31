@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import os
 from pathlib import Path
 import socket
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from apps.model_asset_runtime import (
@@ -61,7 +62,7 @@ from rag_kb.ports.model_api import (
     MultimodalEmbeddingAdapter,
 )
 from rag_kb.retrieval.service import RetrievalService
-from rag_kb.scheduling.chat import ChatRunner, ChatRunScheduler
+from rag_kb.scheduling.chat import ChatRunScheduler
 from rag_kb.scheduling.indexing import IndexingJobScheduler, RetryPolicy
 from rag_kb.services.assets import IndexAssetService
 from rag_kb.services.chat_execution import (
@@ -82,8 +83,11 @@ from rag_kb.services.content import (
 from rag_kb.services.files import FileReconciliationService
 from rag_kb.services.secrets import ModelSecretReconciliationService
 from rag_kb.tokenizer import preflight_tokenizer
-from rag_kb.uow import UnitOfWork, execute_in_transaction
+from rag_kb.uow import execute_in_transaction
 from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWorkFactory
+
+if TYPE_CHECKING:
+    from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWork
 
 
 @dataclass(frozen=True)
@@ -111,7 +115,7 @@ class WorkerDependencies:
     visual_evidence_preparer: VisualEvidencePreparationStep
     result_persister: ChatResultPersistenceStep
     failure_settler: ChatFailureSettlementService
-    chat_runner: ChatRunner
+    chat_runner: NativeAgentRunner
     chat_scheduler: ChatRunScheduler
     indexing_pipeline: IndexingPipeline
     indexing_scheduler: IndexingJobScheduler
@@ -445,7 +449,7 @@ def _chat_model_loader(
     chat_deadline_seconds: float,
 ):
     async def load(revision_id):
-        async def resolve(uow: UnitOfWork):
+        async def resolve(uow: SqlAlchemyUnitOfWork):
             bundle = await uow.model_settings.get_profile_revision(revision_id)
             if bundle is None:
                 raise ChatModelExecutionError(

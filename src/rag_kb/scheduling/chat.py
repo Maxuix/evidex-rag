@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 import logging
-from typing import Any, Protocol
+from typing import TYPE_CHECKING
 
 from rag_kb.domain import (
     ChatExecutionCommand,
@@ -19,27 +19,14 @@ from rag_kb.domain import (
 from rag_kb.observability import get_logger, log_event, log_exception
 from rag_kb.scheduling.indexing import RetryPolicy
 
+if TYPE_CHECKING:
+    from rag_kb.answering.runner import NativeAgentRunner
+    from rag_kb.services.chat_execution import ChatRunCoordinator
+    from rag_kb.services.chat_terminal import ChatFailureSettlementService
+
 
 Clock = Callable[[], datetime]
 LOGGER = get_logger("rag_kb.scheduling.chat")
-
-
-class ChatCoordinator(Protocol):
-    async def claim(self, **values: Any) -> ChatRunLease | None: ...
-
-    async def heartbeat(self, lease: ChatRunLease, **values: Any) -> bool: ...
-
-    async def reconcile_stale(self, **values: Any) -> ReconciliationResult: ...
-
-
-class FailureSettler(Protocol):
-    async def settle(
-        self, lease: ChatRunLease, error: ChatPipelineExecutionError
-    ) -> Any: ...
-
-
-class ChatRunner(Protocol):
-    async def execute(self, command: ChatExecutionCommand) -> Any: ...
 
 
 class ChatRunScheduler:
@@ -47,9 +34,9 @@ class ChatRunScheduler:
 
     def __init__(
         self,
-        coordinator: ChatCoordinator,
-        runner: ChatRunner,
-        failure_settler: FailureSettler,
+        coordinator: ChatRunCoordinator,
+        runner: NativeAgentRunner,
+        failure_settler: ChatFailureSettlementService,
         *,
         worker_id: str,
         heartbeat_interval_seconds: float,

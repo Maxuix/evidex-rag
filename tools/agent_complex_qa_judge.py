@@ -28,12 +28,11 @@ from rag_kb.domain import (
     ModelValidationStatus,
 )
 from rag_kb.ports.model_api import ChatModelAdapter
-from rag_kb.uow import (
-    TransactionMode,
-    UnitOfWork,
-    execute_in_transaction,
+from rag_kb.uow import TransactionMode, execute_in_transaction
+from rag_kb.uow.sqlalchemy import (
+    SqlAlchemyUnitOfWork,
+    SqlAlchemyUnitOfWorkFactory,
 )
-from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWorkFactory
 
 
 JUDGE_SCHEMA_VERSION = "native_agent_complex_qa_llm_judge_v2"
@@ -145,7 +144,7 @@ async def load_frozen_judge_runtime(
         settings.identity.workspace_id,
     )
 
-    async def resolve(uow: UnitOfWork):
+    async def resolve(uow: SqlAlchemyUnitOfWork):
         return await uow.model_settings.get_profile_revision(profile_revision_id)
 
     try:

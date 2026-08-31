@@ -6,7 +6,6 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request
 
-from apps.api.openapi import problem_responses
 from apps.api.security import get_auth_context
 from rag_kb.auth import AuthContext
 from rag_kb.domain import GraphRetrievalRequest
@@ -23,7 +22,6 @@ router = APIRouter(prefix="/retrieval", tags=["retrieval"])
 @router.post(
     "/query",
     response_model=EvidencePackResponse,
-    responses=problem_responses(404, 409, 422, 500, 502, 503),
 )
 async def query_retrieval(
     request: Request,

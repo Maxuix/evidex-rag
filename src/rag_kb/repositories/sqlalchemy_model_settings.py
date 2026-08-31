@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
@@ -37,14 +36,11 @@ class SqlAlchemyModelSettingsRepository:
         self,
         session: AsyncSession,
         workspace_id: UUID,
-        ensure_active: Callable[[], None],
     ) -> None:
         self._session = session
         self._workspace_id = workspace_id
-        self._ensure_active = ensure_active
 
     async def list_secret_references(self) -> tuple[str, ...]:
-        self._ensure_active()
         values = await self._session.scalars(
             select(ModelProviderRevisionRow.secret_reference).where(
                 ModelProviderRevisionRow.workspace_id == self._workspace_id
@@ -53,7 +49,6 @@ class SqlAlchemyModelSettingsRepository:
         return tuple(values)
 
     async def list_providers(self) -> tuple[ModelProviderBundle, ...]:
-        self._ensure_active()
         rows = (
             await self._session.scalars(
                 select(ModelProviderRow)
@@ -64,7 +59,6 @@ class SqlAlchemyModelSettingsRepository:
         return tuple([await self._provider_bundle(row) for row in rows])
 
     async def get_provider(self, provider_id: UUID) -> ModelProviderBundle | None:
-        self._ensure_active()
         row = await self._session.scalar(
             select(ModelProviderRow).where(
                 ModelProviderRow.workspace_id == self._workspace_id,
@@ -85,7 +79,6 @@ class SqlAlchemyModelSettingsRepository:
         max_concurrency: int,
         configuration_fingerprint: str,
     ) -> ModelProviderBundle:
-        self._ensure_active()
         row = ModelProviderRow(
             workspace_id=self._workspace_id,
             name=name,
@@ -123,7 +116,6 @@ class SqlAlchemyModelSettingsRepository:
         max_concurrency: int | None,
         configuration_fingerprint: str | None,
     ) -> ModelProviderBundle | None:
-        self._ensure_active()
         row = await self._session.scalar(
             select(ModelProviderRow)
             .where(
@@ -187,7 +179,6 @@ class SqlAlchemyModelSettingsRepository:
         return _provider_bundle(row, current)
 
     async def list_profiles(self) -> tuple[ModelProfileBundle, ...]:
-        self._ensure_active()
         rows = (
             await self._session.scalars(
                 select(ModelProfileRow)
@@ -198,7 +189,6 @@ class SqlAlchemyModelSettingsRepository:
         return tuple([await self._profile_bundle(row) for row in rows])
 
     async def get_profile(self, profile_id: UUID) -> ModelProfileBundle | None:
-        self._ensure_active()
         row = await self._session.scalar(
             select(ModelProfileRow).where(
                 ModelProfileRow.workspace_id == self._workspace_id,
@@ -210,7 +200,6 @@ class SqlAlchemyModelSettingsRepository:
     async def get_profile_revision(
         self, revision_id: UUID
     ) -> ModelProfileBundle | None:
-        self._ensure_active()
         revision = await self._session.scalar(
             select(ModelProfileRevisionRow).where(
                 ModelProfileRevisionRow.workspace_id == self._workspace_id,
@@ -241,7 +230,6 @@ class SqlAlchemyModelSettingsRepository:
         compatibility_fingerprint: str | None,
         validation_status: ModelValidationStatus,
     ) -> ModelProfileBundle:
-        self._ensure_active()
         row = ModelProfileRow(
             workspace_id=self._workspace_id,
             provider_id=provider.provider.id,
@@ -284,7 +272,6 @@ class SqlAlchemyModelSettingsRepository:
         compatibility_fingerprint: str | None,
         validation_status: ModelValidationStatus | None,
     ) -> ModelProfileBundle | None:
-        self._ensure_active()
         row = await self._session.scalar(
             select(ModelProfileRow)
             .where(
@@ -358,7 +345,6 @@ class SqlAlchemyModelSettingsRepository:
         capability_fingerprint: str | None,
         compatibility_fingerprint: str | None,
     ) -> ModelProfileBundle | None:
-        self._ensure_active()
         revision = await self._session.scalar(
             select(ModelProfileRevisionRow)
             .where(
@@ -389,7 +375,6 @@ class SqlAlchemyModelSettingsRepository:
         return await self._profile_bundle(profile, revision=revision)
 
     async def get_selection(self) -> ModelSelection:
-        self._ensure_active()
         row = await self._session.get(ModelSelectionRow, self._workspace_id)
         if row is None:
             return ModelSelection(
@@ -408,7 +393,6 @@ class SqlAlchemyModelSettingsRepository:
         text_embedding_profile_revision_id: UUID | None,
         multimodal_embedding_profile_revision_id: UUID | None,
     ) -> ModelSelection:
-        self._ensure_active()
         row = await self._session.scalar(
             select(ModelSelectionRow)
             .where(ModelSelectionRow.workspace_id == self._workspace_id)

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 from uuid import UUID
@@ -49,16 +48,13 @@ class SqlAlchemyChatRepository:
         self,
         session: AsyncSession,
         workspace_id: UUID,
-        ensure_active: Callable[[], None],
     ) -> None:
         self._session = session
         self._workspace_id = workspace_id
-        self._ensure_active = ensure_active
 
     async def claim_run(
         self, *, worker_id: str, observed_at: datetime, max_attempts: int
     ) -> ChatRunLease | None:
-        self._ensure_active()
         if not worker_id.strip() or max_attempts < 1:
             raise ValueError("worker_id and max_attempts must be valid")
         row = await self._session.scalar(
@@ -101,7 +97,6 @@ class SqlAlchemyChatRepository:
         retry_at_by_attempt: tuple[datetime, ...],
         limit: int,
     ) -> ReconciliationResult:
-        self._ensure_active()
         if max_attempts < 1 or limit < 1:
             raise ValueError("reconciliation limits must be positive")
         if len(retry_at_by_attempt) < max_attempts:
@@ -183,7 +178,6 @@ class SqlAlchemyChatRepository:
     async def complete_owned_run(
         self, command: ChatTerminalSuccessCommand
     ) -> ChatTerminalWriteStatus:
-        self._ensure_active()
         locked = await self._lock_terminal_rows(command.lease)
         if locked is None:
             return ChatTerminalWriteStatus.STALE
@@ -292,7 +286,6 @@ class SqlAlchemyChatRepository:
     async def settle_owned_failure(
         self, command: ChatFailureSettlementCommand
     ) -> ChatTerminalWriteStatus:
-        self._ensure_active()
         locked = await self._lock_terminal_rows(command.lease)
         if locked is None:
             return ChatTerminalWriteStatus.STALE
@@ -417,7 +410,6 @@ class SqlAlchemyChatRepository:
     async def heartbeat_run(
         self, lease: ChatRunLease, *, observed_at: datetime
     ) -> bool:
-        self._ensure_active()
         if lease.workspace_id != self._workspace_id:
             return False
         result = await self._session.execute(
@@ -436,7 +428,6 @@ class SqlAlchemyChatRepository:
     async def load_execution_context(
         self, lease: ChatRunLease
     ) -> ChatExecutionContext | None:
-        self._ensure_active()
         if lease.workspace_id != self._workspace_id:
             return None
         user = aliased(ChatMessageRow)
@@ -497,7 +488,6 @@ class SqlAlchemyChatRepository:
     async def create_session(
         self, *, kb_id: UUID, principal_id: str, title: str | None
     ) -> ChatSession:
-        self._ensure_active()
         row = ChatSessionRow(
             workspace_id=self._workspace_id,
             kb_id=kb_id,
@@ -511,7 +501,6 @@ class SqlAlchemyChatRepository:
     async def get_session(
         self, session_id: UUID, *, principal_id: str
     ) -> ChatSession | None:
-        self._ensure_active()
         row = await self._session.scalar(
             select(ChatSessionRow).where(
                 ChatSessionRow.workspace_id == self._workspace_id,
@@ -524,7 +513,6 @@ class SqlAlchemyChatRepository:
     async def lock_session(
         self, session_id: UUID, *, principal_id: str
     ) -> ChatSession | None:
-        self._ensure_active()
         row = await self._session.scalar(
             select(ChatSessionRow)
             .where(
@@ -537,7 +525,6 @@ class SqlAlchemyChatRepository:
         return _session(row) if row is not None else None
 
     async def has_nonterminal_run(self, session_id: UUID) -> bool:
-        self._ensure_active()
         return bool(
             await self._session.scalar(
                 select(ChatRunRow.id)
@@ -560,7 +547,6 @@ class SqlAlchemyChatRepository:
         kb_id: UUID,
         limit: int,
     ) -> tuple[ConversationTurn, ...]:
-        self._ensure_active()
         if limit < 1:
             raise ValueError("completed turn limit must be positive")
         user = aliased(ChatMessageRow)
@@ -606,7 +592,6 @@ class SqlAlchemyChatRepository:
         lease: ChatRunLease,
         value: ContextualizedQuery,
     ) -> ContextualizedQuery | None:
-        self._ensure_active()
         if lease.workspace_id != self._workspace_id:
             return None
         row = await self._session.scalar(
@@ -647,7 +632,6 @@ class SqlAlchemyChatRepository:
         after: tuple[str, ...] | None,
         kb_id: UUID | None = None,
     ) -> Page[ChatSession]:
-        self._ensure_active()
         descending = sort.startswith("-")
         field = sort.removeprefix("-")
         column = {
@@ -690,7 +674,6 @@ class SqlAlchemyChatRepository:
         sort: str,
         after: tuple[str, ...] | None,
     ) -> Page[ChatMessage] | None:
-        self._ensure_active()
         authorized_session = await self._session.scalar(
             select(ChatSessionRow.id).where(
                 ChatSessionRow.workspace_id == self._workspace_id,
@@ -734,7 +717,6 @@ class SqlAlchemyChatRepository:
         return Page(items=items, next_values=next_values)
 
     async def lock_idempotency(self, scope: IdempotencyScope) -> None:
-        self._ensure_active()
         await self._session.execute(
             text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
             {
@@ -746,7 +728,6 @@ class SqlAlchemyChatRepository:
         )
 
     async def get_run_by_scope(self, scope: IdempotencyScope) -> ChatRun | None:
-        self._ensure_active()
         statement = _run_statement().where(
             ChatRunRow.workspace_id == self._workspace_id,
             ChatRunRow.principal_id == scope.principal_id,
@@ -762,7 +743,6 @@ class SqlAlchemyChatRepository:
     async def get_run(
         self, run_id: UUID, *, principal_id: str, client_id: str
     ) -> ChatRun | None:
-        self._ensure_active()
         statement = _run_statement().where(
             ChatRunRow.workspace_id == self._workspace_id,
             ChatRunRow.id == run_id,
@@ -790,7 +770,6 @@ class SqlAlchemyChatRepository:
         conversation_context: dict[str, Any],
         contextualized_query: dict[str, Any] | None,
     ) -> ChatRun:
-        self._ensure_active()
         user_message = ChatMessageRow(
             workspace_id=self._workspace_id,
             session_id=session_id,

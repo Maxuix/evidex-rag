@@ -12,13 +12,11 @@ from pydantic_core import PydanticCustomError
 from rag_kb.domain import (
     CHAT_AGENT_DEFAULT_EVIDENCE_ITEMS,
     CHAT_AGENT_DEFAULT_RETRIEVAL_CALLS,
-    CHAT_AGENT_DEFAULT_SOFT_DEADLINE_RESERVE_SECONDS,
     CHAT_AGENT_DEFAULT_TOTAL_TOKENS,
     CHAT_AGENT_MAX_EVIDENCE_ITEMS,
     CHAT_AGENT_MAX_GRAPH_CALLS,
     CHAT_AGENT_MAX_MODEL_ROUNDS,
     CHAT_AGENT_MAX_RETRIEVAL_CALLS,
-    CHAT_AGENT_MAX_SOFT_DEADLINE_RESERVE_SECONDS,
     CHAT_AGENT_MAX_TOTAL_TOKENS,
     CHAT_AGENT_MIN_TOTAL_TOKENS,
     AnswerStyle,
@@ -153,10 +151,6 @@ class ChatAgentBudgetResponse(PublicSchema):
     max_retrieval_calls: Annotated[
         int, Field(ge=1, le=CHAT_AGENT_MAX_RETRIEVAL_CALLS)
     ] = CHAT_AGENT_DEFAULT_RETRIEVAL_CALLS
-    soft_deadline_reserve_seconds: Annotated[
-        float,
-        Field(ge=0, le=CHAT_AGENT_MAX_SOFT_DEADLINE_RESERVE_SECONDS),
-    ] = CHAT_AGENT_DEFAULT_SOFT_DEADLINE_RESERVE_SECONDS
 
 
 class ChatAgentTraceEventResponse(PublicSchema):
@@ -217,7 +211,6 @@ class ChatAgentTraceDiagnosticsResponse(PublicSchema):
     elapsed_ms: Annotated[int, Field(ge=0)] | None = None
     deadline_ms: Annotated[int, Field(ge=0)] | None = None
     deadline_remaining_ms: Annotated[int, Field(ge=0)] | None = None
-    near_deadline: bool
     deadline_exceeded: bool
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from rag_kb.auth import AuthContext
@@ -15,7 +16,10 @@ from rag_kb.domain import (
 from rag_kb.ports.files import IndexAssetStore
 from rag_kb.services.files import FileReconciliationService
 from rag_kb.services.secrets import ModelSecretReconciliationService
-from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, execute_in_transaction
+from rag_kb.uow import execute_in_transaction
+
+if TYPE_CHECKING:
+    from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWork, SqlAlchemyUnitOfWorkFactory
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,7 +34,7 @@ class MaintenanceCleanupResult:
 class MaintenanceCleanupService:
     def __init__(
         self,
-        unit_of_work: UnitOfWorkFactory,
+        unit_of_work: SqlAlchemyUnitOfWorkFactory,
         file_reconciliation: FileReconciliationService,
         *,
         batch_size: int,
@@ -62,7 +66,7 @@ class MaintenanceCleanupService:
         )
         data_before = observed_at - self._retired_data_grace
 
-        async def list_targets(uow: UnitOfWork):
+        async def list_targets(uow: SqlAlchemyUnitOfWork):
             if uow.workspace_id != context.workspace_id:
                 raise RuntimeError("maintenance workspace does not match identity")
             return await uow.indexing.list_retired_target_assets(
@@ -100,7 +104,7 @@ class MaintenanceCleanupService:
             if all_deleted:
                 approved_target_ids.append(target.indexed_document_version_id)
 
-        async def clean(uow: UnitOfWork) -> IndexCleanupResult:
+        async def clean(uow: SqlAlchemyUnitOfWork) -> IndexCleanupResult:
             if uow.workspace_id != context.workspace_id:
                 raise RuntimeError("maintenance workspace does not match identity")
             index = await uow.indexing.cleanup_retired(

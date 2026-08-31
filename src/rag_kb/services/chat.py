@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
-from rag_kb.auth import AccessPolicy, AuthContext
+from rag_kb.auth import AuthContext, SingleWorkspaceAccessPolicy
 from rag_kb.domain import (
     AnswerStyle,
     ChatMessage,
@@ -50,7 +50,10 @@ from rag_kb.services.chat_visuals import (
     DEFAULT_CHAT_MAX_VISUAL_TOTAL_BYTES,
     DEFAULT_CHAT_VISUAL_MEDIA_PROFILE,
 )
-from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, execute_in_transaction
+from rag_kb.uow import execute_in_transaction
+
+if TYPE_CHECKING:
+    from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWork, SqlAlchemyUnitOfWorkFactory
 
 
 CREATE_CHAT_RUN_ENDPOINT = "POST /api/v1/chat/runs"
@@ -61,8 +64,8 @@ class ChatService:
 
     def __init__(
         self,
-        unit_of_work: UnitOfWorkFactory,
-        access_policy: AccessPolicy,
+        unit_of_work: SqlAlchemyUnitOfWorkFactory,
+        access_policy: SingleWorkspaceAccessPolicy,
         *,
         model_configuration: dict[str, Any],
         default_rerank: bool = False,
@@ -108,7 +111,7 @@ class ChatService:
     ) -> ChatSession:
         self._authorize(context)
 
-        async def persist(uow: UnitOfWork) -> ChatSession:
+        async def persist(uow: SqlAlchemyUnitOfWork) -> ChatSession:
             _require_scope(uow, context)
             if await uow.knowledge_bases.get(kb_id) is None:
                 raise ResourceNotFoundError("knowledge base was not found")
@@ -131,7 +134,7 @@ class ChatService:
     ) -> Page[ChatSession]:
         self._authorize(context)
 
-        async def load(uow: UnitOfWork) -> Page[ChatSession]:
+        async def load(uow: SqlAlchemyUnitOfWork) -> Page[ChatSession]:
             _require_scope(uow, context)
             if kb_id is not None and await uow.knowledge_bases.get(kb_id) is None:
                 raise ResourceNotFoundError("knowledge base was not found")
@@ -158,7 +161,7 @@ class ChatService:
     ) -> Page[ChatMessage]:
         self._authorize(context)
 
-        async def load(uow: UnitOfWork) -> Page[ChatMessage]:
+        async def load(uow: SqlAlchemyUnitOfWork) -> Page[ChatMessage]:
             _require_scope(uow, context)
             result = await uow.chat.list_messages(
                 session_id=session_id,
@@ -178,7 +181,7 @@ class ChatService:
     async def get_run(self, context: AuthContext, run_id: UUID) -> ChatRun:
         self._authorize(context)
 
-        async def load(uow: UnitOfWork) -> ChatRun:
+        async def load(uow: SqlAlchemyUnitOfWork) -> ChatRun:
             _require_scope(uow, context)
             result = await uow.chat.get_run(
                 run_id,
@@ -299,7 +302,7 @@ class ChatService:
             }
         )
 
-        async def persist(uow: UnitOfWork) -> ChatRun:
+        async def persist(uow: SqlAlchemyUnitOfWork) -> ChatRun:
             _require_scope(uow, context)
             await uow.chat.lock_idempotency(scope)
             prior = await uow.chat.get_run_by_scope(scope)
@@ -371,7 +374,7 @@ class ChatService:
 
     async def _resolve_model_configuration(
         self,
-        uow: UnitOfWork,
+        uow: SqlAlchemyUnitOfWork,
         requested_revision_id: UUID | None,
     ) -> dict[str, Any]:
         revision_id = requested_revision_id
@@ -481,6 +484,6 @@ def _chat_profile_configuration(
     }
 
 
-def _require_scope(uow: UnitOfWork, context: AuthContext) -> None:
+def _require_scope(uow: SqlAlchemyUnitOfWork, context: AuthContext) -> None:
     if uow.workspace_id != context.workspace_id:
         raise RuntimeError("Unit of Work workspace does not match AuthContext")

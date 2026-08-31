@@ -7,7 +7,7 @@ from uuid import UUID
 
 import asyncpg
 from sqlalchemy import text
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import DBAPIError, InvalidRequestError
 
 from tests.integration.db import require_database_test_dsns
 from rag_kb.db import DatabaseProcess, create_database_resources
@@ -19,8 +19,6 @@ from rag_kb.domain import (
 )
 from rag_kb.uow import (
     TransactionMode,
-    UnitOfWorkConcurrencyError,
-    UnitOfWorkStateError,
     execute_in_transaction,
 )
 from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWorkFactory
@@ -57,13 +55,12 @@ class AsyncDataAccessTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self) -> None:
         await self.database.close()
 
-    async def test_commit_persists_and_finalizes_repository(self) -> None:
+    async def test_commit_persists_without_implicit_followup_transaction(self) -> None:
         async with self.factory() as unit_of_work:
             created = await unit_of_work.workspaces.add("committed-workspace")
-            repository = unit_of_work.workspaces
             await unit_of_work.commit()
-            with self.assertRaises(UnitOfWorkStateError):
-                await repository.get()
+            with self.assertRaises(InvalidRequestError):
+                await unit_of_work.workspaces.get()
 
         async with self.factory() as unit_of_work:
             loaded = await unit_of_work.workspaces.get()
@@ -171,15 +168,6 @@ class AsyncDataAccessTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(updated.current_revision.validation_snapshot)
         self.assertTrue(snapshot_is_null)
 
-    async def test_unit_of_work_cannot_cross_asyncio_task_boundary(self) -> None:
-        async with self.factory() as unit_of_work:
-            async def use_from_child_task() -> None:
-                await unit_of_work.workspaces.get()
-
-            with self.assertRaises(UnitOfWorkConcurrencyError):
-                await asyncio.create_task(use_from_child_task())
-            await unit_of_work.rollback()
-
     async def test_each_concurrent_command_gets_an_independent_session(self) -> None:
         second_factory = SqlAlchemyUnitOfWorkFactory(
             self.database.sessions,
@@ -257,7 +245,8 @@ class AsyncDataAccessTests(unittest.IsolatedAsyncioTestCase):
             async with self.factory(
                 mode=TransactionMode.REPEATABLE_READ_ONLY,
             ) as unit_of_work:
-                session = unit_of_work._require_session()
+                session = unit_of_work._session
+                assert session is not None
                 isolation_level = await session.scalar(
                     text("SHOW transaction_isolation")
                 )

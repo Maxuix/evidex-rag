@@ -27,7 +27,6 @@ from rag_kb.domain import (
     SourceFileMissingError,
 )
 from rag_kb.document_processing.markdown_bundle import MARKDOWN_BUNDLE_MEDIA_TYPE
-from rag_kb.ports.files import IndexAssetStore, SourceFileStore
 from rag_kb.ports.markdown_media import FetchedImage
 from rag_kb.services.files import SourceFileService
 from rag_kb.services.markdown_media import MarkdownMediaNormalizer
@@ -49,7 +48,6 @@ class LocalFileStoreTests(unittest.TestCase):
         self.staging.mkdir()
         self.final.mkdir()
         self.store = LocalFileStore(self.staging, self.final)
-        self.assertIsInstance(self.store, SourceFileStore)
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -119,7 +117,6 @@ class LocalIndexAssetStoreTests(unittest.TestCase):
                 staging.mkdir()
                 final.mkdir()
                 store = LocalIndexAssetStore(staging, final)
-                self.assertIsInstance(store, IndexAssetStore)
                 discarded_target = UUID(
                     "01900000-0000-7000-8000-000000000041"
                 )

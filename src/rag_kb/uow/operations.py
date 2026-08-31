@@ -3,21 +3,20 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from typing import TypeVar
+from typing import TYPE_CHECKING, TypeVar
 
-from rag_kb.uow.contracts import (
-    TransactionMode,
-    UnitOfWork,
-    UnitOfWorkFactory,
-)
+from rag_kb.uow.mode import TransactionMode
+
+if TYPE_CHECKING:
+    from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWork, SqlAlchemyUnitOfWorkFactory
 
 
 ResultT = TypeVar("ResultT")
 
 
 async def execute_in_transaction(
-    factory: UnitOfWorkFactory,
-    operation: Callable[[UnitOfWork], Awaitable[ResultT]],
+    factory: SqlAlchemyUnitOfWorkFactory,
+    operation: Callable[[SqlAlchemyUnitOfWork], Awaitable[ResultT]],
     *,
     mode: TransactionMode = TransactionMode.READ_WRITE,
 ) -> ResultT:

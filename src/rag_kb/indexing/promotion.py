@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from rag_kb.domain import (
     ErrorCode,
     IndexingExecutionError,
@@ -10,13 +12,16 @@ from rag_kb.domain import (
     PromotionResult,
     PromotionReason,
 )
-from rag_kb.uow import UnitOfWorkFactory, execute_in_transaction
+from rag_kb.uow import execute_in_transaction
+
+if TYPE_CHECKING:
+    from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWorkFactory
 
 
 class CandidatePromotionService:
     """Promote a completed target without coupling promotion to index building."""
 
-    def __init__(self, unit_of_work: UnitOfWorkFactory) -> None:
+    def __init__(self, unit_of_work: SqlAlchemyUnitOfWorkFactory) -> None:
         self._unit_of_work = unit_of_work
 
     async def promote(self, command: PromotionCommand) -> PromotionResult:

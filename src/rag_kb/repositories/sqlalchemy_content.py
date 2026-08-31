@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
@@ -70,11 +69,9 @@ class SqlAlchemyKnowledgeBaseRepository:
         self,
         session: AsyncSession,
         workspace_id: UUID,
-        ensure_active: Callable[[], None],
     ) -> None:
         self._session = session
         self._workspace_id = workspace_id
-        self._ensure_active = ensure_active
 
     async def create(
         self,
@@ -86,7 +83,6 @@ class SqlAlchemyKnowledgeBaseRepository:
         cross_modal_embedding_space: EmbeddingSpaceDefinition | None,
         index_profile: IndexProfileDefinition,
     ) -> KnowledgeBase:
-        self._ensure_active()
         await self._session.execute(
             text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
             {"key": f"content-foundation:{self._workspace_id}"},
@@ -223,7 +219,6 @@ class SqlAlchemyKnowledgeBaseRepository:
     async def get(
         self, kb_id: UUID, *, include_deleted: bool = False
     ) -> KnowledgeBase | None:
-        self._ensure_active()
         filters = [
             KnowledgeBaseRow.workspace_id == self._workspace_id,
             KnowledgeBaseRow.id == kb_id,
@@ -257,7 +252,6 @@ class SqlAlchemyKnowledgeBaseRepository:
         sort: str,
         after: tuple[str, ...] | None,
     ) -> Page[KnowledgeBase]:
-        self._ensure_active()
         descending = sort.startswith("-")
         field = sort.removeprefix("-")
         column = {
@@ -310,7 +304,6 @@ class SqlAlchemyKnowledgeBaseRepository:
         retrieval_defaults: dict[str, Any] | None,
         answer_policy_defaults: dict[str, Any] | None,
     ) -> KnowledgeBase | None:
-        self._ensure_active()
         kb = await self._session.scalar(
             select(KnowledgeBaseRow).where(
                 KnowledgeBaseRow.workspace_id == self._workspace_id,
@@ -361,7 +354,6 @@ class SqlAlchemyKnowledgeBaseRepository:
         )
 
     async def soft_delete(self, kb_id: UUID) -> KnowledgeBase | None:
-        self._ensure_active()
         kb = await self._session.scalar(
             select(KnowledgeBaseRow).where(
                 KnowledgeBaseRow.workspace_id == self._workspace_id,
@@ -539,13 +531,11 @@ class SqlAlchemyKnowledgeBaseRepository:
 
 
 class SqlAlchemyDocumentRepository:
-    def __init__(self, session: AsyncSession, workspace_id: UUID, ensure_active: Callable[[], None]) -> None:
+    def __init__(self, session: AsyncSession, workspace_id: UUID) -> None:
         self._session = session
         self._workspace_id = workspace_id
-        self._ensure_active = ensure_active
 
     async def get(self, document_id: UUID) -> Document | None:
-        self._ensure_active()
         row = (
             await self._session.execute(
                 select(DocumentRow, DocumentVersionRow)
@@ -565,7 +555,6 @@ class SqlAlchemyDocumentRepository:
         return _document(row[0], row[1]) if row is not None else None
 
     async def get_detail(self, document_id: UUID) -> DocumentDetail | None:
-        self._ensure_active()
         row = (
             await self._session.execute(
                 select(
@@ -639,7 +628,6 @@ class SqlAlchemyDocumentRepository:
         limit: int,
         after: tuple[str, ...] | None,
     ) -> DocumentChunkInspection | None:
-        self._ensure_active()
         row = (
             await self._session.execute(
                 select(DocumentRow, DocumentVersionRow, IndexedDocumentVersionRow)
@@ -820,7 +808,6 @@ class SqlAlchemyDocumentRepository:
         sort: str,
         after: tuple[str, ...] | None,
     ) -> Page[Document]:
-        self._ensure_active()
         kb_exists = await self._session.scalar(
             select(KnowledgeBaseRow.id).where(
                 KnowledgeBaseRow.workspace_id == self._workspace_id,
@@ -860,7 +847,6 @@ class SqlAlchemyDocumentRepository:
         display_name: str,
         source: DocumentSource,
     ) -> DocumentMutationResult:
-        self._ensure_active()
         await self._session.execute(
             text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
             {
@@ -963,7 +949,6 @@ class SqlAlchemyDocumentRepository:
         document_id: UUID,
         document_version_id: UUID,
     ) -> DocumentMutationResult:
-        self._ensure_active()
         document = await self._session.scalar(
             select(DocumentRow).where(
                 DocumentRow.workspace_id == self._workspace_id,
@@ -1048,7 +1033,6 @@ class SqlAlchemyDocumentRepository:
         )
 
     async def soft_delete(self, document_id: UUID) -> DocumentMutationResult | None:
-        self._ensure_active()
         document = await self._session.scalar(
             select(DocumentRow)
             .join(KnowledgeBaseRow, KnowledgeBaseRow.id == DocumentRow.kb_id)
@@ -1143,7 +1127,6 @@ class SqlAlchemyDocumentRepository:
     async def exclude_chunk(
         self, *, document_id: UUID, chunk_id: UUID
     ) -> datetime | None:
-        self._ensure_active()
         document = await self._session.scalar(
             select(DocumentRow)
             .join(KnowledgeBaseRow, KnowledgeBaseRow.id == DocumentRow.kb_id)
@@ -1218,13 +1201,11 @@ class SqlAlchemyDocumentRepository:
 
 
 class SqlAlchemyContentMutationRepository:
-    def __init__(self, session: AsyncSession, workspace_id: UUID, ensure_active: Callable[[], None]) -> None:
+    def __init__(self, session: AsyncSession, workspace_id: UUID) -> None:
         self._session = session
         self._workspace_id = workspace_id
-        self._ensure_active = ensure_active
 
     async def lock(self, scope: IdempotencyScope) -> None:
-        self._ensure_active()
         key = f"{scope.principal_id}\x1f{scope.client_id}\x1f{scope.endpoint}\x1f{scope.idempotency_key}"
         await self._session.execute(
             text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
@@ -1232,7 +1213,6 @@ class SqlAlchemyContentMutationRepository:
         )
 
     async def get(self, scope: IdempotencyScope) -> ContentMutation | None:
-        self._ensure_active()
         row = await self._session.scalar(
             select(ContentMutationRow).where(
                 ContentMutationRow.workspace_id == self._workspace_id,
@@ -1253,7 +1233,6 @@ class SqlAlchemyContentMutationRepository:
         status: str,
         result: DocumentMutationResult | KnowledgeBase,
     ) -> ContentMutation:
-        self._ensure_active()
         values = _result_ids(result)
         row = ContentMutationRow(
             workspace_id=self._workspace_id,
@@ -1273,7 +1252,6 @@ class SqlAlchemyContentMutationRepository:
     async def complete(
         self, scope: IdempotencyScope, result: DocumentMutationResult
     ) -> ContentMutation:
-        self._ensure_active()
         row = await self._session.scalar(
             select(ContentMutationRow).where(
                 ContentMutationRow.workspace_id == self._workspace_id,
@@ -1306,7 +1284,6 @@ class SqlAlchemyContentMutationRepository:
         index_revision_id: UUID,
         job_id: UUID,
     ) -> ContentMutation:
-        self._ensure_active()
         row = ContentMutationRow(
             workspace_id=self._workspace_id,
             principal_id=scope.principal_id,
@@ -1334,11 +1311,9 @@ class SqlAlchemyFileConsistencyRepository:
         self,
         session: AsyncSession,
         workspace_id: UUID,
-        ensure_active: Callable[[], None],
     ) -> None:
         self._session = session
         self._workspace_id = workspace_id
-        self._ensure_active = ensure_active
 
     async def delete_expired_cleanup_records(
         self,
@@ -1346,7 +1321,6 @@ class SqlAlchemyFileConsistencyRepository:
         before: datetime,
         limit: int,
     ) -> int:
-        self._ensure_active()
         ids = tuple(
             (
                 await self._session.execute(
@@ -1373,7 +1347,6 @@ class SqlAlchemyFileConsistencyRepository:
         return int(result.rowcount or 0)
 
     async def list_references(self) -> tuple[SourceFileReference, ...]:
-        self._ensure_active()
         rows = (
             await self._session.execute(
                 select(DocumentVersionRow).where(
@@ -1396,7 +1369,6 @@ class SqlAlchemyFileConsistencyRepository:
     async def list_pending_mutations(
         self, *, limit: int
     ) -> tuple[PendingFileMutation, ...]:
-        self._ensure_active()
         rows = (
             await self._session.execute(
                 select(ContentMutationRow, DocumentVersionRow)
@@ -1436,7 +1408,6 @@ class SqlAlchemyFileConsistencyRepository:
     async def list_due_cleanup(
         self, *, now: datetime, limit: int
     ) -> tuple[SourceFileCleanup, ...]:
-        self._ensure_active()
         rows = (
             await self._session.execute(
                 select(SourceFileCleanupRow)
@@ -1458,7 +1429,6 @@ class SqlAlchemyFileConsistencyRepository:
         storage_uri: str,
         reason: str,
     ) -> None:
-        self._ensure_active()
         await self._session.execute(
             pg_insert(SourceFileCleanupRow)
             .values(
@@ -1471,7 +1441,6 @@ class SqlAlchemyFileConsistencyRepository:
         )
 
     async def complete_cleanup(self, cleanup_id: UUID, *, now: datetime) -> bool:
-        self._ensure_active()
         result = await self._session.execute(
             update(SourceFileCleanupRow)
             .where(
@@ -1497,7 +1466,6 @@ class SqlAlchemyFileConsistencyRepository:
         next_attempt_at: datetime,
         terminal: bool,
     ) -> bool:
-        self._ensure_active()
         result = await self._session.execute(
             update(SourceFileCleanupRow)
             .where(
@@ -1531,7 +1499,6 @@ class SqlAlchemyFileConsistencyRepository:
         by a janitor failure transition.
         """
 
-        self._ensure_active()
         mutation = await self._session.scalar(
             select(ContentMutationRow)
             .where(
@@ -1597,7 +1564,6 @@ class SqlAlchemyFileConsistencyRepository:
         return True
 
     async def compensate_missing_file(self, document_version_id: UUID) -> bool:
-        self._ensure_active()
         version = await self._session.scalar(
             select(DocumentVersionRow)
             .where(

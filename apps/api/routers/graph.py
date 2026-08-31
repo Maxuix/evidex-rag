@@ -7,7 +7,6 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request
 
-from apps.api.openapi import problem_responses
 from apps.api.security import get_auth_context
 from rag_kb.auth import AuthContext
 from rag_kb.domain import GRAPH_EXTRACTOR_VERSION
@@ -27,7 +26,6 @@ profile_router = APIRouter(prefix="/graph-schema-profiles", tags=["graph"])
 @profile_router.get(
     "",
     response_model=list[GraphSchemaProfileResponse],
-    responses=problem_responses(403),
 )
 async def list_graph_schema_profiles(
     context: Annotated[AuthContext, Depends(get_auth_context)],
@@ -47,7 +45,6 @@ async def list_graph_schema_profiles(
 @router.get(
     "/{kb_id}/graph-config",
     response_model=GraphConfigResponse,
-    responses=problem_responses(404, 422),
 )
 async def get_graph_config(
     request: Request,
@@ -63,7 +60,6 @@ async def get_graph_config(
 @router.put(
     "/{kb_id}/graph-config",
     response_model=GraphConfigResponse,
-    responses=problem_responses(404, 409, 422),
 )
 async def update_graph_config(
     request: Request,

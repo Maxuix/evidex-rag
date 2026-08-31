@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
-from rag_kb.auth import AccessPolicy, AuthContext
+from rag_kb.auth import AuthContext, SingleWorkspaceAccessPolicy
 from rag_kb.document_processing.profiles import index_profile, profile_for_preset
 from rag_kb.domain import (
     AnswerPolicyDefaults,
@@ -31,7 +31,10 @@ from rag_kb.domain import (
     canonical_request_hash,
     validate_p1_answer_policy_defaults,
 )
-from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, execute_in_transaction
+from rag_kb.uow import execute_in_transaction
+
+if TYPE_CHECKING:
+    from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWork, SqlAlchemyUnitOfWorkFactory
 
 
 CREATE_KB_ENDPOINT = "POST /api/v1/knowledge-bases"
@@ -49,8 +52,8 @@ class ContentServices:
 
 
 def build_content_services(
-    unit_of_work: UnitOfWorkFactory,
-    access_policy: AccessPolicy,
+    unit_of_work: SqlAlchemyUnitOfWorkFactory,
+    access_policy: SingleWorkspaceAccessPolicy,
     embedding: Any,
     multimodal_embedding: Any | None = None,
 ) -> ContentServices:
@@ -119,7 +122,7 @@ def unconfigured_embedding_space_definition() -> EmbeddingSpaceDefinition:
 
 
 async def _selected_embedding_space(
-    uow: UnitOfWork,
+    uow: SqlAlchemyUnitOfWork,
     kind: ModelKind,
     fallback: EmbeddingSpaceDefinition | None,
     revision_id: UUID | None = None,
@@ -185,8 +188,8 @@ async def _selected_embedding_space(
 class KnowledgeBaseService:
     def __init__(
         self,
-        unit_of_work: UnitOfWorkFactory,
-        access_policy: AccessPolicy,
+        unit_of_work: SqlAlchemyUnitOfWorkFactory,
+        access_policy: SingleWorkspaceAccessPolicy,
         *,
         embedding_space: EmbeddingSpaceDefinition | None,
         cross_modal_embedding_space: EmbeddingSpaceDefinition | None = None,
@@ -241,7 +244,7 @@ class KnowledgeBaseService:
                 ),
             }
         )
-        async def persist(uow: UnitOfWork) -> KnowledgeBase:
+        async def persist(uow: SqlAlchemyUnitOfWork) -> KnowledgeBase:
             _require_scope(uow, context)
             await uow.content_mutations.lock(scope)
             prior = await uow.content_mutations.get(scope)
@@ -325,7 +328,7 @@ class KnowledgeBaseService:
     async def get(self, context: AuthContext, kb_id: UUID) -> KnowledgeBase:
         self._authorize(context)
 
-        async def load(uow: UnitOfWork) -> KnowledgeBase:
+        async def load(uow: SqlAlchemyUnitOfWork) -> KnowledgeBase:
             _require_scope(uow, context)
             result = await uow.knowledge_bases.get(kb_id)
             if result is None:
@@ -344,7 +347,7 @@ class KnowledgeBaseService:
     ) -> Page[KnowledgeBase]:
         self._authorize(context)
 
-        async def load(uow: UnitOfWork) -> Page[KnowledgeBase]:
+        async def load(uow: SqlAlchemyUnitOfWork) -> Page[KnowledgeBase]:
             _require_scope(uow, context)
             return await uow.knowledge_bases.list(limit=limit, sort=sort, after=after)
 
@@ -380,7 +383,7 @@ class KnowledgeBaseService:
             }
         )
 
-        async def persist(uow: UnitOfWork) -> KnowledgeBase:
+        async def persist(uow: SqlAlchemyUnitOfWork) -> KnowledgeBase:
             _require_scope(uow, context)
             await uow.content_mutations.lock(scope)
             prior = await uow.content_mutations.get(scope)
@@ -425,7 +428,7 @@ class KnowledgeBaseService:
         )
         request_hash = canonical_request_hash({"kb_id": str(kb_id)})
 
-        async def persist(uow: UnitOfWork) -> KnowledgeBase:
+        async def persist(uow: SqlAlchemyUnitOfWork) -> KnowledgeBase:
             _require_scope(uow, context)
             await uow.content_mutations.lock(scope)
             prior = await uow.content_mutations.get(scope)
@@ -459,14 +462,18 @@ class KnowledgeBaseService:
 class DocumentService:
     """Relational lifecycle; file orchestration is intentionally a later layer."""
 
-    def __init__(self, unit_of_work: UnitOfWorkFactory, access_policy: AccessPolicy) -> None:
+    def __init__(
+        self,
+        unit_of_work: SqlAlchemyUnitOfWorkFactory,
+        access_policy: SingleWorkspaceAccessPolicy,
+    ) -> None:
         self._unit_of_work = unit_of_work
         self._access_policy = access_policy
 
     async def get(self, context: AuthContext, document_id: UUID) -> Document:
         self._authorize(context)
 
-        async def load(uow: UnitOfWork) -> Document:
+        async def load(uow: SqlAlchemyUnitOfWork) -> Document:
             _require_scope(uow, context)
             document = await uow.documents.get(document_id)
             if document is None:
@@ -480,7 +487,7 @@ class DocumentService:
     ) -> DocumentDetail:
         self._authorize(context)
 
-        async def load(uow: UnitOfWork) -> DocumentDetail:
+        async def load(uow: SqlAlchemyUnitOfWork) -> DocumentDetail:
             _require_scope(uow, context)
             detail = await uow.documents.get_detail(document_id)
             if detail is None:
@@ -501,7 +508,7 @@ class DocumentService:
     ) -> DocumentChunkInspection:
         self._authorize(context)
 
-        async def load(uow: UnitOfWork) -> DocumentChunkInspection:
+        async def load(uow: SqlAlchemyUnitOfWork) -> DocumentChunkInspection:
             _require_scope(uow, context)
             inspection = await uow.documents.inspect_chunks(
                 document_id, limit=limit, after=after
@@ -525,7 +532,7 @@ class DocumentService:
     ) -> Page[Document]:
         self._authorize(context)
 
-        async def load(uow: UnitOfWork) -> Page[Document]:
+        async def load(uow: SqlAlchemyUnitOfWork) -> Page[Document]:
             _require_scope(uow, context)
             if await uow.knowledge_bases.get(kb_id) is None:
                 raise ResourceNotFoundError("knowledge base was not found")
@@ -561,7 +568,7 @@ class DocumentService:
             }
         )
 
-        async def persist(uow: UnitOfWork) -> DocumentMutationResult:
+        async def persist(uow: SqlAlchemyUnitOfWork) -> DocumentMutationResult:
             _require_scope(uow, context)
             await uow.content_mutations.lock(scope)
             prior = await uow.content_mutations.get(scope)
@@ -597,7 +604,7 @@ class DocumentService:
 
         self._authorize(context)
 
-        async def persist(uow: UnitOfWork) -> DocumentMutationResult:
+        async def persist(uow: SqlAlchemyUnitOfWork) -> DocumentMutationResult:
             _require_scope(uow, context)
             selected_scope = None
             mutation = None
@@ -633,7 +640,7 @@ class DocumentService:
         scope = IdempotencyScope(context.principal_id, context.client_id, DELETE_DOCUMENT_ENDPOINT, idempotency_key)
         request_hash = canonical_request_hash({"document_id": str(document_id)})
 
-        async def persist(uow: UnitOfWork) -> DocumentMutationResult:
+        async def persist(uow: SqlAlchemyUnitOfWork) -> DocumentMutationResult:
             _require_scope(uow, context)
             await uow.content_mutations.lock(scope)
             prior = await uow.content_mutations.get(scope)
@@ -663,7 +670,7 @@ class DocumentService:
     ) -> datetime:
         self._authorize(context)
 
-        async def persist(uow: UnitOfWork) -> datetime:
+        async def persist(uow: SqlAlchemyUnitOfWork) -> datetime:
             _require_scope(uow, context)
             excluded_at = await uow.documents.exclude_chunk(
                 document_id=document_id,
@@ -679,7 +686,9 @@ class DocumentService:
         self._access_policy.metadata_filter(context)
 
 
-async def _document_result_from_mutation(uow: UnitOfWork, mutation) -> DocumentMutationResult:
+async def _document_result_from_mutation(
+    uow: SqlAlchemyUnitOfWork, mutation
+) -> DocumentMutationResult:
     _require_replayable_mutation(mutation)
     assert mutation.document_id is not None
     document = await uow.documents.get(mutation.document_id)
@@ -708,6 +717,6 @@ def _require_replayable_mutation(mutation) -> None:
         )
 
 
-def _require_scope(uow: UnitOfWork, context: AuthContext) -> None:
+def _require_scope(uow: SqlAlchemyUnitOfWork, context: AuthContext) -> None:
     if uow.workspace_id != context.workspace_id:
         raise RuntimeError("Unit of Work workspace does not match authorized identity")

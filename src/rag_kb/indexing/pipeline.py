@@ -7,7 +7,7 @@ import hashlib
 import json
 from dataclasses import replace
 from collections.abc import Awaitable, Callable, Mapping
-from typing import TypeVar
+from typing import TYPE_CHECKING, TypeVar
 from uuid import UUID
 
 from docling_core.types.doc import DoclingDocument
@@ -93,7 +93,10 @@ from rag_kb.ports.parsing import (
     DocumentParseResult,
     DocumentParser,
 )
-from rag_kb.uow import UnitOfWork, UnitOfWorkFactory, execute_in_transaction
+from rag_kb.uow import execute_in_transaction
+
+if TYPE_CHECKING:
+    from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWork, SqlAlchemyUnitOfWorkFactory
 
 
 ResultT = TypeVar("ResultT")
@@ -109,7 +112,7 @@ _LEXICAL_CAS_BATCH_SIZE = 250
 class IndexingPipeline:
     def __init__(
         self,
-        unit_of_work: UnitOfWorkFactory,
+        unit_of_work: SqlAlchemyUnitOfWorkFactory,
         file_store: SourceFileStore,
         document_parser: DocumentParser,
         embedding_provider: EmbeddingModelAdapter,
@@ -355,7 +358,7 @@ class IndexingPipeline:
         command: IndexingCommand,
         error: IndexingExecutionError,
     ) -> None:
-        async def persist(uow: UnitOfWork) -> bool:
+        async def persist(uow: SqlAlchemyUnitOfWork) -> bool:
             return await uow.indexing.fail(
                 command,
                 phase=error.phase,
@@ -370,7 +373,7 @@ class IndexingPipeline:
 
     async def _transaction(
         self,
-        operation: Callable[[UnitOfWork], Awaitable[ResultT]],
+        operation: Callable[[SqlAlchemyUnitOfWork], Awaitable[ResultT]],
     ) -> ResultT:
         return await execute_in_transaction(
             self._unit_of_work,

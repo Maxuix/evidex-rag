@@ -155,7 +155,6 @@ class RelationHydrationRepositoryQueryTests(unittest.IsolatedAsyncioTestCase):
         repository = SqlAlchemyIndexingRepository(
             session,
             WORKSPACE,
-            lambda: None,
         )
 
         relations = await repository.list_relations(

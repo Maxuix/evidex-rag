@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Mapping
 from time import perf_counter
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, TypeAlias
+
+from rag_kb.domain import ChatRunLease, GraphWorkItem, IndexingLease
 
 from rag_kb.observability import (
     bind_log_context,
@@ -14,22 +16,21 @@ from rag_kb.observability import (
     log_exception,
 )
 
+if TYPE_CHECKING:
+    from rag_kb.scheduling.chat import ChatRunScheduler
+    from rag_kb.scheduling.indexing import IndexingJobScheduler
+
 
 DEFAULT_RECONCILIATION_INTERVAL_SECONDS = 30.0
 LOGGER = get_logger("rag_kb.scheduling.worker")
 
 
-class LaneScheduler(Protocol):
-    async def claim_once(self) -> Any | None: ...
-
-    async def reconcile_once(self) -> Any: ...
-
-    async def execute(self, lease: Any, stopped: asyncio.Event) -> None: ...
+LaneLease: TypeAlias = ChatRunLease | IndexingLease | GraphWorkItem
 
 
 async def consume_lane(
     lane: str,
-    scheduler: LaneScheduler,
+    scheduler: ChatRunScheduler | IndexingJobScheduler,
     stopped: asyncio.Event,
     *,
     poll_interval_seconds: float,
@@ -69,7 +70,7 @@ async def consume_lane(
 
 
 async def reconcile_lanes(
-    schedulers: Mapping[str, LaneScheduler],
+    schedulers: Mapping[str, ChatRunScheduler | IndexingJobScheduler],
     stopped: asyncio.Event,
     *,
     interval_seconds: float = DEFAULT_RECONCILIATION_INTERVAL_SECONDS,
@@ -121,7 +122,7 @@ def _log_failure(event: str, lane: str, error: Exception) -> None:
     )
 
 
-def _lease_context(lane: str, lease: Any) -> dict[str, object]:
+def _lease_context(lane: str, lease: LaneLease) -> dict[str, object]:
     context: dict[str, object] = {"lane": lane}
     for field in (
         "attempt",

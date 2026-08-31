@@ -1,56 +1,31 @@
-"""SQLAlchemy implementation of the asynchronous Unit of Work."""
+"""SQLAlchemy implementation of the asynchronous transaction boundary."""
 
 from __future__ import annotations
 
-import asyncio
-from enum import StrEnum
 from types import TracebackType
 from uuid import UUID
 
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession, AsyncSessionTransaction, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from rag_kb.repositories import (
-    ChatRepository,
-    ContentMutationRepository,
-    DocumentRepository,
-    FileConsistencyRepository,
-    GraphRepository,
-    IndexingRepository,
-    KnowledgeBaseRepository,
-    ModelSettingsRepository,
-    WorkspaceRepository,
-)
+from rag_kb.repositories.sqlalchemy import SqlAlchemyWorkspaceRepository
+from rag_kb.repositories.sqlalchemy_chat import SqlAlchemyChatRepository
 from rag_kb.repositories.sqlalchemy_content import (
     SqlAlchemyContentMutationRepository,
     SqlAlchemyDocumentRepository,
     SqlAlchemyFileConsistencyRepository,
     SqlAlchemyKnowledgeBaseRepository,
 )
-from rag_kb.repositories.sqlalchemy_chat import SqlAlchemyChatRepository
-from rag_kb.repositories.sqlalchemy_indexing import SqlAlchemyIndexingRepository
 from rag_kb.repositories.sqlalchemy_graph import SqlAlchemyGraphRepository
+from rag_kb.repositories.sqlalchemy_indexing import SqlAlchemyIndexingRepository
 from rag_kb.repositories.sqlalchemy_model_settings import (
     SqlAlchemyModelSettingsRepository,
 )
-from rag_kb.repositories.sqlalchemy import SqlAlchemyWorkspaceRepository
-from rag_kb.uow.contracts import (
-    TransactionMode,
-    UnitOfWorkConcurrencyError,
-    UnitOfWorkStateError,
-)
-
-
-class _State(StrEnum):
-    NEW = "new"
-    ACTIVE = "active"
-    COMMITTED = "committed"
-    ROLLED_BACK = "rolled_back"
-    CLOSED = "closed"
+from rag_kb.uow.mode import TransactionMode
 
 
 class SqlAlchemyUnitOfWork:
-    """One session and one transaction, owned by one asyncio task."""
+    """One SQLAlchemy session with one explicit transaction."""
 
     def __init__(
         self,
@@ -63,125 +38,103 @@ class SqlAlchemyUnitOfWork:
         self.mode = mode
         self._sessions = sessions
         self._session: AsyncSession | None = None
-        self._transaction: AsyncSessionTransaction | None = None
-        self._workspace_repository: WorkspaceRepository | None = None
-        self._knowledge_base_repository: KnowledgeBaseRepository | None = None
-        self._document_repository: DocumentRepository | None = None
-        self._chat_repository: ChatRepository | None = None
-        self._content_mutation_repository: ContentMutationRepository | None = None
-        self._file_consistency_repository: FileConsistencyRepository | None = None
-        self._indexing_repository: IndexingRepository | None = None
-        self._model_settings_repository: ModelSettingsRepository | None = None
-        self._graph_repository: GraphRepository | None = None
-        self._owner_task: asyncio.Task[object] | None = None
-        self._state = _State.NEW
+        self._workspace_repository: SqlAlchemyWorkspaceRepository | None = None
+        self._knowledge_base_repository: SqlAlchemyKnowledgeBaseRepository | None = None
+        self._document_repository: SqlAlchemyDocumentRepository | None = None
+        self._chat_repository: SqlAlchemyChatRepository | None = None
+        self._content_mutation_repository: SqlAlchemyContentMutationRepository | None = None
+        self._file_consistency_repository: SqlAlchemyFileConsistencyRepository | None = None
+        self._indexing_repository: SqlAlchemyIndexingRepository | None = None
+        self._model_settings_repository: SqlAlchemyModelSettingsRepository | None = None
+        self._graph_repository: SqlAlchemyGraphRepository | None = None
 
     @property
-    def workspaces(self) -> WorkspaceRepository:
-        self._ensure_active()
+    def workspaces(self) -> SqlAlchemyWorkspaceRepository:
         assert self._workspace_repository is not None
         return self._workspace_repository
 
     @property
-    def knowledge_bases(self) -> KnowledgeBaseRepository:
-        self._ensure_active()
+    def knowledge_bases(self) -> SqlAlchemyKnowledgeBaseRepository:
         assert self._knowledge_base_repository is not None
         return self._knowledge_base_repository
 
     @property
-    def documents(self) -> DocumentRepository:
-        self._ensure_active()
+    def documents(self) -> SqlAlchemyDocumentRepository:
         assert self._document_repository is not None
         return self._document_repository
 
     @property
-    def chat(self) -> ChatRepository:
-        self._ensure_active()
+    def chat(self) -> SqlAlchemyChatRepository:
         assert self._chat_repository is not None
         return self._chat_repository
 
     @property
-    def content_mutations(self) -> ContentMutationRepository:
-        self._ensure_active()
+    def content_mutations(self) -> SqlAlchemyContentMutationRepository:
         assert self._content_mutation_repository is not None
         return self._content_mutation_repository
 
     @property
-    def file_consistency(self) -> FileConsistencyRepository:
-        self._ensure_active()
+    def file_consistency(self) -> SqlAlchemyFileConsistencyRepository:
         assert self._file_consistency_repository is not None
         return self._file_consistency_repository
 
     @property
-    def indexing(self) -> IndexingRepository:
-        self._ensure_active()
+    def indexing(self) -> SqlAlchemyIndexingRepository:
         assert self._indexing_repository is not None
         return self._indexing_repository
 
     @property
-    def model_settings(self) -> ModelSettingsRepository:
-        self._ensure_active()
+    def model_settings(self) -> SqlAlchemyModelSettingsRepository:
         assert self._model_settings_repository is not None
         return self._model_settings_repository
 
     @property
-    def graph(self) -> GraphRepository:
-        self._ensure_active()
+    def graph(self) -> SqlAlchemyGraphRepository:
         assert self._graph_repository is not None
         return self._graph_repository
 
     async def __aenter__(self) -> SqlAlchemyUnitOfWork:
-        if self._state is not _State.NEW:
-            raise UnitOfWorkStateError("a Unit of Work instance is single-use")
-
-        owner_task = asyncio.current_task()
-        if owner_task is None:
-            raise UnitOfWorkStateError("Unit of Work requires an asyncio task")
-
         session = self._sessions()
-        self._owner_task = owner_task
+        # Repositories only run inside this explicit boundary.  Disabling
+        # autobegin also prevents a post-commit repository call from silently
+        # opening a second transaction on the same session.
+        session.sync_session.autobegin = False
         self._session = session
-        self._state = _State.ACTIVE
-        self._workspace_repository = SqlAlchemyWorkspaceRepository(
-            session,
-            self.workspace_id,
-            self._ensure_active,
-        )
-        self._knowledge_base_repository = SqlAlchemyKnowledgeBaseRepository(
-            session, self.workspace_id, self._ensure_active
-        )
-        self._document_repository = SqlAlchemyDocumentRepository(
-            session, self.workspace_id, self._ensure_active
-        )
-        self._chat_repository = SqlAlchemyChatRepository(
-            session, self.workspace_id, self._ensure_active
-        )
-        self._content_mutation_repository = SqlAlchemyContentMutationRepository(
-            session, self.workspace_id, self._ensure_active
-        )
-        self._file_consistency_repository = SqlAlchemyFileConsistencyRepository(
-            session, self.workspace_id, self._ensure_active
-        )
-        self._indexing_repository = SqlAlchemyIndexingRepository(
-            session, self.workspace_id, self._ensure_active
-        )
-        self._model_settings_repository = SqlAlchemyModelSettingsRepository(
-            session, self.workspace_id, self._ensure_active
-        )
-        self._graph_repository = SqlAlchemyGraphRepository(
-            session, self.workspace_id, self._ensure_active
-        )
         try:
-            self._transaction = await session.begin()
+            await session.begin()
             if self.mode is TransactionMode.REPEATABLE_READ_ONLY:
                 await session.execute(
-                    text(
-                        "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"
-                    )
+                    text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
                 )
+            self._workspace_repository = SqlAlchemyWorkspaceRepository(
+                session, self.workspace_id
+            )
+            self._knowledge_base_repository = SqlAlchemyKnowledgeBaseRepository(
+                session, self.workspace_id
+            )
+            self._document_repository = SqlAlchemyDocumentRepository(
+                session, self.workspace_id
+            )
+            self._chat_repository = SqlAlchemyChatRepository(session, self.workspace_id)
+            self._content_mutation_repository = SqlAlchemyContentMutationRepository(
+                session, self.workspace_id
+            )
+            self._file_consistency_repository = SqlAlchemyFileConsistencyRepository(
+                session, self.workspace_id
+            )
+            self._indexing_repository = SqlAlchemyIndexingRepository(
+                session, self.workspace_id
+            )
+            self._model_settings_repository = SqlAlchemyModelSettingsRepository(
+                session, self.workspace_id
+            )
+            self._graph_repository = SqlAlchemyGraphRepository(
+                session, self.workspace_id
+            )
         except BaseException:
+            await session.rollback()
             await session.close()
-            self._state = _State.CLOSED
+            self._session = None
             raise
         return self
 
@@ -191,58 +144,28 @@ class SqlAlchemyUnitOfWork:
         exception: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        self._ensure_owner()
-        session = self._require_session()
+        session = self._session
+        if session is None:
+            return
         try:
-            if self._state is _State.ACTIVE:
-                await self._rollback_active()
+            if session.in_transaction():
+                await session.rollback()
         finally:
             await session.close()
-            self._state = _State.CLOSED
 
     async def commit(self) -> None:
-        self._ensure_active()
-        transaction = self._require_transaction()
+        session = self._session
+        assert session is not None
         try:
-            await transaction.commit()
+            await session.commit()
         except BaseException:
-            await self._require_session().rollback()
-            self._state = _State.ROLLED_BACK
+            await session.rollback()
             raise
-        self._state = _State.COMMITTED
 
     async def rollback(self) -> None:
-        self._ensure_active()
-        await self._rollback_active()
-
-    async def _rollback_active(self) -> None:
-        transaction = self._require_transaction()
-        if transaction.is_active:
-            await transaction.rollback()
-        self._state = _State.ROLLED_BACK
-
-    def _ensure_active(self) -> None:
-        self._ensure_owner()
-        if self._state is not _State.ACTIVE:
-            raise UnitOfWorkStateError(
-                f"Unit of Work transaction is not active: {self._state.value}"
-            )
-
-    def _ensure_owner(self) -> None:
-        if self._owner_task is not None and asyncio.current_task() is not self._owner_task:
-            raise UnitOfWorkConcurrencyError(
-                "an AsyncSession cannot be shared with another asyncio task"
-            )
-
-    def _require_session(self) -> AsyncSession:
-        if self._session is None:
-            raise UnitOfWorkStateError("Unit of Work has not been entered")
-        return self._session
-
-    def _require_transaction(self) -> AsyncSessionTransaction:
-        if self._transaction is None:
-            raise UnitOfWorkStateError("Unit of Work transaction has not started")
-        return self._transaction
+        session = self._session
+        assert session is not None
+        await session.rollback()
 
 
 class SqlAlchemyUnitOfWorkFactory:

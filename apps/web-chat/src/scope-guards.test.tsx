@@ -7,6 +7,7 @@ import { KnowledgeBaseManagementPage } from "./KnowledgeBaseManagementPage";
 import type { ApiClient } from "./api/client";
 import type {
   DocumentRecord,
+  IndexingJob,
   KnowledgeBase,
   ModelSettings,
   Page,
@@ -215,5 +216,48 @@ describe("component request scopes", () => {
     await waitFor(() => expect(screen.queryByText("A 会话")).toBeNull());
     expect((screen.getByLabelText("输入问题") as HTMLTextAreaElement).disabled).toBe(true);
     expect((screen.getByRole("button", { name: "发送问题" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("shows the server's actionable indexing failure and retry affordance", async () => {
+    const kb = knowledgeBase("kb-a", "知识库 A");
+    const doc = document(kb.id, "doc-a", "故障文档");
+    const failedJob: IndexingJob = {
+      job_id: "job-a",
+      kb_id: kb.id,
+      document_id: doc.id,
+      document_version_id: "version-a",
+      indexed_document_version_id: "version-a",
+      index_revision_id: "index-a",
+      status: "failed",
+      phase: "failed",
+      progress: null,
+      attempt: 1,
+      build_status: "failed",
+      serving_status: "candidate",
+      claimed_at: null,
+      heartbeat_at: null,
+      next_attempt_at: null,
+      error: {
+        code: "EMBEDDING_PROVIDER_UNAVAILABLE",
+        detail: { provider: "local" },
+      },
+      can_retry: true,
+      created_at: NOW,
+      updated_at: NOW,
+    };
+    const client = {
+      listDocuments: vi.fn().mockResolvedValue({ items: [doc], next_cursor: null }),
+      listIndexingJobs: vi.fn().mockResolvedValue({
+        items: [failedJob],
+        next_cursor: null,
+      }),
+    } as unknown as ApiClient;
+
+    render(
+      <KnowledgeBaseManagementPage {...managementProps(client, [kb], kb.id)} />,
+    );
+
+    await waitFor(() => expect(screen.getByText(/Embedding 服务不可用/)).toBeTruthy());
+    expect(screen.getByRole("button", { name: "重试索引" })).toBeTruthy();
   });
 });

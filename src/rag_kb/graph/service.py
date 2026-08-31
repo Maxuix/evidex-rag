@@ -6,9 +6,10 @@ import asyncio
 from dataclasses import dataclass
 from datetime import UTC, datetime
 import hashlib
+from typing import TYPE_CHECKING
 from uuid import UUID
 
-from rag_kb.auth import AccessPolicy, AuthContext
+from rag_kb.auth import AuthContext, SingleWorkspaceAccessPolicy
 from rag_kb.domain import (
     GRAPH_EXTRACTOR_VERSION,
     GRAPH_LEGACY_EXTRACTOR_VERSION,
@@ -25,11 +26,10 @@ from rag_kb.graph.schema_profiles import (
     GraphSchemaProfileMismatch,
     get_graph_schema_registry,
 )
-from rag_kb.uow import (
-    UnitOfWork,
-    UnitOfWorkFactory,
-    execute_in_transaction,
-)
+from rag_kb.uow import execute_in_transaction
+
+if TYPE_CHECKING:
+    from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWork, SqlAlchemyUnitOfWorkFactory
 
 
 LOGGER = get_logger(__name__)
@@ -56,8 +56,8 @@ class GraphConfigView:
 class GraphConfigurationService:
     def __init__(
         self,
-        unit_of_work: UnitOfWorkFactory,
-        access_policy: AccessPolicy,
+        unit_of_work: SqlAlchemyUnitOfWorkFactory,
+        access_policy: SingleWorkspaceAccessPolicy,
         graphiti_graph: GraphitiGraph,
     ) -> None:
         self._unit_of_work = unit_of_work
@@ -67,7 +67,7 @@ class GraphConfigurationService:
     async def get(self, context: AuthContext, kb_id: UUID) -> GraphConfigSnapshot:
         self._access_policy.require_workspace(context, context.workspace_id)
 
-        async def load(uow: UnitOfWork) -> GraphConfigSnapshot:
+        async def load(uow: SqlAlchemyUnitOfWork) -> GraphConfigSnapshot:
             _require_scope(uow, context)
             return await uow.graph.ensure_config(kb_id)
 
@@ -79,7 +79,7 @@ class GraphConfigurationService:
     async def get_view(self, context: AuthContext, kb_id: UUID) -> GraphConfigView:
         self._access_policy.require_workspace(context, context.workspace_id)
 
-        async def load(uow: UnitOfWork) -> GraphConfigView:
+        async def load(uow: SqlAlchemyUnitOfWork) -> GraphConfigView:
             _require_scope(uow, context)
             snapshot = await uow.graph.ensure_config(kb_id)
             return _config_view(snapshot, await _profile_bundle(uow, snapshot))
@@ -103,7 +103,7 @@ class GraphConfigurationService:
         self._access_policy.require_workspace(context, context.workspace_id)
 
         async def persist(
-            uow: UnitOfWork,
+            uow: SqlAlchemyUnitOfWork,
         ) -> tuple[GraphConfigSnapshot, tuple[GraphitiBuildSnapshot, ...]]:
             _require_scope(uow, context)
             snapshot = await uow.graph.configure(
@@ -132,7 +132,7 @@ class GraphConfigurationService:
         self._access_policy.require_workspace(context, context.workspace_id)
 
         async def persist(
-            uow: UnitOfWork,
+            uow: SqlAlchemyUnitOfWork,
         ) -> tuple[GraphConfigSnapshot, tuple[GraphitiBuildSnapshot, ...]]:
             _require_scope(uow, context)
             snapshot = await uow.graph.retry(
@@ -154,7 +154,7 @@ class GraphExtractionWorker:
 
     def __init__(
         self,
-        unit_of_work: UnitOfWorkFactory,
+        unit_of_work: SqlAlchemyUnitOfWorkFactory,
         graphiti_graph: GraphitiGraph,
         *,
         worker_id: str | None = None,
@@ -174,7 +174,7 @@ class GraphExtractionWorker:
 
     async def process_next_work_item(self) -> bool:
         async def claim(
-            uow: UnitOfWork,
+            uow: SqlAlchemyUnitOfWork,
         ) -> tuple[GraphWorkItem | None, tuple[GraphitiBuildSnapshot, ...]]:
             if self._worker_id is None:
                 work = await uow.graph.next_work_item()
@@ -240,7 +240,7 @@ class GraphExtractionWorker:
                 assert chunk is not None
                 bulk_adder = getattr(self._graphiti_graph, "add_episodes_bulk", None)
                 if callable(bulk_adder):
-                    async def load_batch(uow: UnitOfWork):
+                    async def load_batch(uow: SqlAlchemyUnitOfWork):
                         loader = getattr(uow.graph, "missing_graph_chunks", None)
                         if callable(loader):
                             batch = tuple(
@@ -266,7 +266,7 @@ class GraphExtractionWorker:
                 if len(episode_uuids) != len(chunks):
                     raise RuntimeError("Graphiti episode batch count mismatch")
 
-                async def persist_batch(uow: UnitOfWork) -> None:
+                async def persist_batch(uow: SqlAlchemyUnitOfWork) -> None:
                     for batch_chunk, episode_uuid in zip(
                         chunks, episode_uuids, strict=True
                     ):
@@ -334,7 +334,7 @@ class GraphExtractionWorker:
             )
 
             async def finalize(
-                uow: UnitOfWork,
+                uow: SqlAlchemyUnitOfWork,
             ) -> tuple[GraphConfigSnapshot | None, tuple[GraphitiBuildSnapshot, ...]]:
                 snapshot = await uow.graph.finalize_graphiti_if_complete(
                     work.config.knowledge_base_id,
@@ -368,7 +368,7 @@ class GraphExtractionWorker:
             await self._release(work)
 
     async def _mark_failed(self, work: GraphWorkItem, error_code: str) -> None:
-        async def persist(uow: UnitOfWork) -> tuple[GraphitiBuildSnapshot, ...]:
+        async def persist(uow: SqlAlchemyUnitOfWork) -> tuple[GraphitiBuildSnapshot, ...]:
             await uow.graph.mark_failed(
                 work.config.knowledge_base_id,
                 build_id=work.config.build_id,
@@ -462,7 +462,7 @@ async def _recycle_graphiti_graphs(
             )
 
 
-def _require_scope(uow: UnitOfWork, context: AuthContext) -> None:
+def _require_scope(uow: SqlAlchemyUnitOfWork, context: AuthContext) -> None:
     if uow.workspace_id != context.workspace_id:
         raise ResourceNotFoundError("resource was not found")
 
@@ -496,7 +496,7 @@ def _lease_kwargs(work: GraphWorkItem) -> dict[str, UUID]:
     return {"lease_token": work.lease_token}
 
 
-async def _profile_bundle(uow: UnitOfWork, snapshot: GraphConfigSnapshot):
+async def _profile_bundle(uow: SqlAlchemyUnitOfWork, snapshot: GraphConfigSnapshot):
     if snapshot.chat_profile_revision_id is None:
         return None
     return await uow.model_settings.get_profile_revision(

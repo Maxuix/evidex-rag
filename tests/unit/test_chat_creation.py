@@ -498,9 +498,7 @@ class ChatHistoryRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self,
     ) -> None:
         session = _CompileOnlySession()
-        repository = SqlAlchemyChatRepository(
-            session, uuid4(), lambda: None  # type: ignore[arg-type]
-        )
+        repository = SqlAlchemyChatRepository(session, uuid4())
 
         turns = await repository.list_completed_turns(
             session_id=uuid4(),

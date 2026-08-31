@@ -383,7 +383,6 @@ export interface ChatAgent {
     max_total_tokens?: number;
     max_evidence_items?: number;
     max_retrieval_calls?: number;
-    soft_deadline_reserve_seconds?: number;
   };
   trace: {
     version: "native_tool_calling_agent_v3";
@@ -405,7 +404,6 @@ export interface ChatAgent {
       elapsed_ms: number | null;
       deadline_ms: number | null;
       deadline_remaining_ms: number | null;
-      near_deadline: boolean;
       deadline_exceeded: boolean;
     };
     outcome: "answered" | "partial" | "refused" | "clarify";

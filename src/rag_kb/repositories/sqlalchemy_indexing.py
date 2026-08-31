@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
@@ -79,14 +78,11 @@ class SqlAlchemyIndexingRepository:
         self,
         session: AsyncSession,
         workspace_id: UUID,
-        ensure_active: Callable[[], None],
     ) -> None:
         self._session = session
         self._workspace_id = workspace_id
-        self._ensure_active = ensure_active
 
     async def get_asset(self, asset_id: UUID) -> IndexAssetSnapshot | None:
-        self._ensure_active()
         row = await self._session.scalar(
             select(IndexAssetRow)
             .join(
@@ -117,7 +113,6 @@ class SqlAlchemyIndexingRepository:
     async def list_retired_target_assets(
         self, *, data_before: datetime, limit: int
     ) -> tuple[RetiredIndexTargetAssets, ...]:
-        self._ensure_active()
         if limit < 1:
             raise ValueError("retired target limit must be positive")
         target_ids = tuple(
@@ -230,7 +225,6 @@ class SqlAlchemyIndexingRepository:
         asset_ids: tuple[UUID, ...] = (),
         limit: int = 500,
     ) -> tuple[IndexChunkAssetRelationSnapshot, ...]:
-        self._ensure_active()
         if not chunk_ids and not asset_ids:
             return ()
         if not 1 <= limit <= 2_000:
@@ -383,7 +377,6 @@ class SqlAlchemyIndexingRepository:
         )
 
     async def get_job(self, job_id: UUID) -> IndexingJobSnapshot | None:
-        self._ensure_active()
         row = await self._job_row(job_id)
         return _job_snapshot(row) if row is not None else None
 
@@ -394,7 +387,6 @@ class SqlAlchemyIndexingRepository:
         limit: int,
         after: tuple[str, ...] | None,
     ) -> Page[IndexingJobSnapshot]:
-        self._ensure_active()
         statement = (
             select(
                 IndexingJobRow,
@@ -465,7 +457,6 @@ class SqlAlchemyIndexingRepository:
         *,
         observed_at: datetime,
     ) -> IndexingJobSnapshot | None:
-        self._ensure_active()
         identity = (
             await self._session.execute(
                 select(
@@ -579,7 +570,6 @@ class SqlAlchemyIndexingRepository:
         tasks_before: datetime,
         limit: int,
     ) -> IndexCleanupResult:
-        self._ensure_active()
         if limit < 1:
             raise ValueError("retired cleanup limit must be positive")
         requested_target_ids = tuple(dict.fromkeys(target_ids))
@@ -786,7 +776,6 @@ class SqlAlchemyIndexingRepository:
         observed_at: datetime,
         max_attempts: int,
     ) -> IndexingLease | None:
-        self._ensure_active()
         row = (
             await self._session.execute(
                 select(IndexingJobRow, IndexedDocumentVersionRow)
@@ -862,7 +851,6 @@ class SqlAlchemyIndexingRepository:
         *,
         observed_at: datetime,
     ) -> bool:
-        self._ensure_active()
         updated = await self._session.scalar(
             update(IndexingJobRow)
             .where(*_owned_execution(lease, self._workspace_id))
@@ -880,7 +868,6 @@ class SqlAlchemyIndexingRepository:
         error_code: str,
         error_detail: dict[str, Any],
     ) -> bool:
-        self._ensure_active()
         target_id = await self._session.scalar(
             update(IndexingJobRow)
             .where(
@@ -919,7 +906,6 @@ class SqlAlchemyIndexingRepository:
         error_code: str,
         error_detail: dict[str, Any],
     ) -> bool:
-        self._ensure_active()
         target_id = await self._session.scalar(
             update(IndexingJobRow)
             .where(
@@ -951,7 +937,6 @@ class SqlAlchemyIndexingRepository:
         return True
 
     async def release_terminal(self, lease: IndexingLease) -> bool:
-        self._ensure_active()
         updated = await self._session.scalar(
             update(IndexingJobRow)
             .where(
@@ -980,7 +965,6 @@ class SqlAlchemyIndexingRepository:
         retry_at_by_attempt: tuple[datetime, ...],
         limit: int,
     ) -> ReconciliationResult:
-        self._ensure_active()
         if len(retry_at_by_attempt) < max_attempts:
             raise ValueError("retry schedule must cover every configured attempt")
         rows = (
@@ -1075,7 +1059,6 @@ class SqlAlchemyIndexingRepository:
     async def promote(self, command: PromotionCommand) -> PromotionResult | None:
         """Conditionally switch one complete candidate using lifecycle lock order."""
 
-        self._ensure_active()
         document_id = await self._session.scalar(
             select(IndexedDocumentVersionRow.document_id)
             .join(
@@ -1248,7 +1231,6 @@ class SqlAlchemyIndexingRepository:
         )
 
     async def prepare(self, command: IndexingCommand) -> IndexingTarget | None:
-        self._ensure_active()
         row = await self._load(command, lock=True)
         if row is None:
             return None
@@ -1301,7 +1283,6 @@ class SqlAlchemyIndexingRepository:
     async def discard_partial_assets(self, command: IndexingCommand) -> bool:
         """Forget candidate asset rows after their local files are removed."""
 
-        self._ensure_active()
         row = await self._load(command, lock=True)
         if row is None:
             return False
@@ -1384,7 +1365,6 @@ class SqlAlchemyIndexingRepository:
         command: IndexingCommand,
         proposed: IndexChunkPlan,
     ) -> bool:
-        self._ensure_active()
         row = await self._load(command, lock=True)
         if row is None:
             raise IndexingCancelled
@@ -1422,7 +1402,6 @@ class SqlAlchemyIndexingRepository:
     async def save_artifact_manifest(
         self, command: IndexingCommand, proposed: IndexArtifactManifest
     ) -> bool:
-        self._ensure_active()
         row = await self._load(command, lock=True)
         if row is None or not _is_writable(row[0], row[1]):
             raise IndexingCancelled
@@ -1456,7 +1435,6 @@ class SqlAlchemyIndexingRepository:
     async def upsert_assets(
         self, command: IndexingCommand, assets: tuple[IndexAssetWrite, ...]
     ) -> bool:
-        self._ensure_active()
         row = await self._load(command, lock=True)
         if row is None:
             return False
@@ -1519,7 +1497,6 @@ class SqlAlchemyIndexingRepository:
         command: IndexingCommand,
         relations: tuple[IndexChunkAssetRelationWrite, ...],
     ) -> bool:
-        self._ensure_active()
         row = await self._load(command, lock=True)
         if row is None:
             return False
@@ -1605,7 +1582,6 @@ class SqlAlchemyIndexingRepository:
         return True
 
     async def set_phase(self, command: IndexingCommand, phase: IndexingPhase) -> bool:
-        self._ensure_active()
         row = await self._load(command, lock=True)
         if row is None:
             return False
@@ -1621,7 +1597,6 @@ class SqlAlchemyIndexingRepository:
         command: IndexingCommand,
         progress: dict[str, Any],
     ) -> bool:
-        self._ensure_active()
         row = await self._load(command, lock=True)
         if row is None:
             return False
@@ -1641,7 +1616,6 @@ class SqlAlchemyIndexingRepository:
         command: IndexingCommand,
         progress: dict[str, Any],
     ) -> bool:
-        self._ensure_active()
         row = await self._load(command, lock=True)
         if row is None:
             return False
@@ -1666,7 +1640,6 @@ class SqlAlchemyIndexingRepository:
         chunks: tuple[IndexChunkWrite, ...],
         vectors: tuple[VectorRecordWrite, ...],
     ) -> bool:
-        self._ensure_active()
         row = await self._load(command, lock=True)
         if row is None:
             return False
@@ -1788,7 +1761,6 @@ class SqlAlchemyIndexingRepository:
         command: IndexingCommand,
         rows: tuple[IndexChunkLexicalWrite, ...],
     ) -> bool:
-        self._ensure_active()
         loaded = await self._load(command, lock=True)
         if loaded is None:
             return False
@@ -1848,7 +1820,6 @@ class SqlAlchemyIndexingRepository:
         command: IndexingCommand,
         proposed: IndexLexicalManifest,
     ) -> bool:
-        self._ensure_active()
         loaded = await self._load(command, lock=True)
         if loaded is None:
             return False
@@ -1919,7 +1890,6 @@ class SqlAlchemyIndexingRepository:
         return True
 
     async def complete(self, command: IndexingCommand, *, expected_chunks: int) -> bool:
-        self._ensure_active()
         row = await self._load(command, lock=True)
         if row is None:
             return False
@@ -2133,7 +2103,6 @@ class SqlAlchemyIndexingRepository:
         return True
 
     async def count_chunks(self, command: IndexingCommand) -> int:
-        self._ensure_active()
         count = await self._session.scalar(
             select(func.count(IndexChunkRow.id))
             .join(
@@ -2163,7 +2132,6 @@ class SqlAlchemyIndexingRepository:
         error_code: str,
         error_detail: dict[str, Any],
     ) -> bool:
-        self._ensure_active()
         row = await self._load(command, lock=True)
         if row is None:
             return False

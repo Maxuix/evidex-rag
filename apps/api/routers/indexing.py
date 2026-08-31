@@ -10,7 +10,6 @@ from fastapi import APIRouter, Depends, Query, Request, Response
 
 from apps.api.errors import ApiProblem
 from apps.api.idempotency import RequiredIdempotencyKey
-from apps.api.openapi import problem_responses
 from apps.api.pagination import (
     API_CURSOR_MAX_LENGTH,
     API_PAGINATION_MAX_LIMIT,
@@ -34,7 +33,6 @@ router = APIRouter(tags=["indexing"])
 @router.get(
     "/knowledge-bases/{kb_id}/indexing-jobs",
     response_model=IndexingJobPage,
-    responses=problem_responses(400, 404, 422),
 )
 async def list_indexing_jobs(
     request: Request,
@@ -64,7 +62,6 @@ async def list_indexing_jobs(
 @router.get(
     "/indexing-jobs/{job_id}",
     response_model=IndexingJobResponse,
-    responses=problem_responses(404, 422),
 )
 async def get_indexing_job(
     request: Request,
@@ -81,7 +78,6 @@ async def get_indexing_job(
     "/indexing-jobs/{job_id}/retry",
     response_model=IndexingJobResponse,
     status_code=202,
-    responses=problem_responses(404, 409, 422),
 )
 async def retry_indexing_job(
     request: Request,

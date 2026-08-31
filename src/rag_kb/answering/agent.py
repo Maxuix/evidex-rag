@@ -7,7 +7,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 import json
 import time
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from rag_kb.answering.model_execution import (
@@ -35,7 +35,6 @@ from rag_kb.domain import (
     CHAT_AGENT_CLAIM_LIMIT,
     CHAT_AGENT_DEFAULT_EVIDENCE_ITEMS,
     CHAT_AGENT_DEFAULT_RETRIEVAL_CALLS,
-    CHAT_AGENT_DEFAULT_SOFT_DEADLINE_RESERVE_SECONDS,
     CHAT_AGENT_DEFAULT_TOTAL_TOKENS,
     CHAT_AGENT_EVIDENCE_REF_LIMIT,
     CHAT_AGENT_TRACE_EVENT_LIMIT,
@@ -74,6 +73,10 @@ from rag_kb.retrieval.calculator import (
 )
 from rag_kb.retrieval.eligibility import EvidenceEligibilityPolicy
 from rag_kb.retrieval.profile import parse_chat_retrieval_snapshot
+
+if TYPE_CHECKING:
+    from rag_kb.services.chat_execution import ChatEvidenceRetriever
+    from rag_kb.services.chat_visuals import VisualEvidencePreparationStep
 
 
 AGENT_TRACE_ARTIFACT = CHAT_AGENT_TRACE_ARTIFACT
@@ -185,11 +188,6 @@ class ChatAgentProgress:
         remaining_ms = (
             max(0, deadline_ms - elapsed_ms) if deadline_ms is not None else None
         )
-        reserve_ms = (
-            round(self.budget.soft_deadline_reserve_seconds * 1000)
-            if self.budget is not None
-            else 0
-        )
         return {
             "stop_reason": stop_reason,
             "forced_finalize": forced_finalize,
@@ -197,10 +195,6 @@ class ChatAgentProgress:
             "elapsed_ms": elapsed_ms,
             "deadline_ms": deadline_ms,
             "deadline_remaining_ms": remaining_ms,
-            "near_deadline": bool(
-                deadline_ms is not None
-                and (deadline_exceeded or remaining_ms <= reserve_ms)
-            ),
             "deadline_exceeded": deadline_exceeded,
         }
 
@@ -235,46 +229,14 @@ class ChatAgentProgress:
         }
 
 
-class EvidenceRetriever(Protocol):
-    async def retrieve_query(
-        self,
-        context: ChatExecutionContext,
-        query: str,
-        *,
-        top_k_override: int | None = None,
-    ) -> EvidencePack: ...
-
-    async def search_graph_relations(
-        self,
-        context: ChatExecutionContext,
-        query: str,
-        *,
-        excluded_index_chunk_ids: tuple[UUID, ...],
-    ) -> GraphSearchResult: ...
-
-    async def graph_relations_capable(
-        self,
-        context: ChatExecutionContext,
-    ) -> bool: ...
-
-
-class VisualEvidencePreparer(Protocol):
-    async def run(
-        self,
-        state: ChatPipelineState,
-        *,
-        previous_visuals: tuple[ChatModelVisualContent, ...] = (),
-    ) -> ChatPipelineState: ...
-
-
 class NativeToolCallingAgent:
     """Execute only search, calculate, and submit in a plain async loop."""
 
     def __init__(
         self,
         model: ChatModelAdapter,
-        retriever: EvidenceRetriever,
-        visual_preparer: VisualEvidencePreparer,
+        retriever: ChatEvidenceRetriever,
+        visual_preparer: VisualEvidencePreparationStep,
         *,
         min_cosine_similarity: float,
         min_rerank_score: float,
@@ -2046,7 +2008,6 @@ def _final_state(
         elapsed_ms=diagnostics["elapsed_ms"],
         deadline_ms=diagnostics["deadline_ms"],
         deadline_remaining_ms=diagnostics["deadline_remaining_ms"],
-        near_deadline=diagnostics["near_deadline"],
         deadline_exceeded=diagnostics["deadline_exceeded"],
     )
     return ChatPipelineState(
@@ -2208,6 +2169,14 @@ def _model_output_limit(context: ChatExecutionContext) -> int:
 def _budget_from_context(
     context: ChatExecutionContext,
 ) -> ChatAgentBudget:
+    current_budget_keys = {
+        "max_model_rounds",
+        "max_graph_calls",
+        "max_total_tokens",
+        "max_evidence_items",
+        "max_retrieval_calls",
+    }
+    legacy_ignored_budget_keys = {"soft_deadline_reserve_seconds"}
     value = context.agent_configuration
     raw = value.get("budget")
     try:
@@ -2219,14 +2188,7 @@ def _budget_from_context(
             or not isinstance(raw, Mapping)
             or not {"max_model_rounds", "max_graph_calls"}.issubset(raw)
             or not set(raw).issubset(
-                {
-                    "max_model_rounds",
-                    "max_graph_calls",
-                    "max_total_tokens",
-                    "max_evidence_items",
-                    "max_retrieval_calls",
-                    "soft_deadline_reserve_seconds",
-                }
+                current_budget_keys | legacy_ignored_budget_keys
             )
             or isinstance(max_model_rounds, bool)
             or not isinstance(max_model_rounds, int)
@@ -2245,10 +2207,6 @@ def _budget_from_context(
             ),
             max_retrieval_calls=raw.get(
                 "max_retrieval_calls", CHAT_AGENT_DEFAULT_RETRIEVAL_CALLS
-            ),
-            soft_deadline_reserve_seconds=raw.get(
-                "soft_deadline_reserve_seconds",
-                CHAT_AGENT_DEFAULT_SOFT_DEADLINE_RESERVE_SECONDS,
             ),
         )
     except (KeyError, TypeError, ValueError):

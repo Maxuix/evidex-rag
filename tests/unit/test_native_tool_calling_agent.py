@@ -546,7 +546,6 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
                 "max_total_tokens": 150000,
                 "max_evidence_items": 64,
                 "max_retrieval_calls": 16,
-                "soft_deadline_reserve_seconds": 60.0,
             },
         )
         for kwargs in (
@@ -563,19 +562,20 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
             {"max_evidence_items": 513},
             {"max_retrieval_calls": 0},
             {"max_retrieval_calls": 65},
-            {"soft_deadline_reserve_seconds": -1.0},
-            {"soft_deadline_reserve_seconds": 601.0},
-            {"soft_deadline_reserve_seconds": True},
         ):
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
                 ChatAgentBudget(**kwargs)
 
-    def test_agent_budget_defaults_fill_legacy_two_key_configuration(self) -> None:
+    def test_agent_budget_ignores_retired_deadline_field(self) -> None:
         context = replace(
             _context(),
             agent_configuration={
                 "version": "native_tool_calling_agent_v3",
-                "budget": {"max_model_rounds": 8, "max_graph_calls": 2},
+                "budget": {
+                    "max_model_rounds": 8,
+                    "max_graph_calls": 2,
+                    "soft_deadline_reserve_seconds": 60.0,
+                },
             },
         )
         from rag_kb.answering.agent import _budget_from_context
@@ -583,7 +583,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         budget = _budget_from_context(context)
         self.assertEqual(budget, ChatAgentBudget())
 
-    async def test_agent_configuration_is_strictly_current_v3(self) -> None:
+    async def test_agent_configuration_requires_current_v3_shape(self) -> None:
         invalid_configurations = (
             {
                 "version": "native_tool_calling_agent_v2",

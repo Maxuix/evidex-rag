@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Protocol
 from uuid import UUID
 
 from rag_kb.auth.context import AuthContext, MetadataFilter
@@ -10,18 +9,6 @@ from rag_kb.auth.context import AuthContext, MetadataFilter
 
 class AccessDeniedError(RuntimeError):
     """The supplied identity is absent or outside the configured workspace."""
-
-
-class AccessPolicy(Protocol):
-    def metadata_filter(self, context: AuthContext) -> MetadataFilter: ...
-
-    def authorize_retrieval_debug(self, context: AuthContext) -> None: ...
-
-    def require_workspace(
-        self,
-        context: AuthContext,
-        workspace_id: UUID,
-    ) -> MetadataFilter: ...
 
 
 class SingleWorkspaceAccessPolicy:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from datetime import datetime
 from typing import Annotated, Literal
 from uuid import UUID
@@ -12,7 +12,6 @@ from fastapi.sse import EventSourceResponse, ServerSentEvent
 
 from apps.api.errors import ApiProblem
 from apps.api.idempotency import RequiredIdempotencyKey
-from apps.api.openapi import problem_responses
 from apps.api.pagination import (
     API_CURSOR_MAX_LENGTH,
     API_PAGINATION_DEFAULT_LIMIT,
@@ -65,7 +64,6 @@ MessageSort = Literal["created_at", "-created_at"]
     "/sessions",
     response_model=ChatSessionResponse,
     status_code=status.HTTP_201_CREATED,
-    responses=problem_responses(404, 422),
 )
 async def create_chat_session(
     request: Request,
@@ -85,7 +83,6 @@ async def create_chat_session(
 @router.get(
     "/sessions",
     response_model=ChatSessionPage,
-    responses=problem_responses(400, 422),
 )
 async def list_chat_sessions(
     request: Request,
@@ -112,7 +109,6 @@ async def list_chat_sessions(
 @router.get(
     "/sessions/{session_id}/messages",
     response_model=ChatMessagePage,
-    responses=problem_responses(400, 404, 422),
 )
 async def list_chat_messages(
     request: Request,
@@ -140,7 +136,6 @@ async def list_chat_messages(
     "/runs",
     response_model=ChatRunResponse,
     status_code=status.HTTP_202_ACCEPTED,
-    responses=problem_responses(404, 409, 422),
 )
 async def create_chat_run(
     request: Request,
@@ -169,7 +164,6 @@ async def create_chat_run(
 @router.get(
     "/runs/{run_id}",
     response_model=ChatRunResponse,
-    responses=problem_responses(404, 422),
 )
 async def get_chat_run(
     request: Request,
@@ -235,7 +229,6 @@ async def _prepare_chat_sse_subscription(
 @router.get(
     "/runs/{run_id}/events",
     response_class=EventSourceResponse,
-    responses=problem_responses(400, 404, 429, 422),
 )
 async def stream_chat_run_events(
     request: Request,
@@ -459,9 +452,13 @@ def _policy_response(value: ChatRun) -> EffectiveAnswerPolicyResponse:
 
 def _agent_response(value: ChatRun) -> ChatAgentResponse:
     try:
+        configuration = dict(value.agent_configuration)
+        configuration["budget"] = _without_retired_budget_field(
+            configuration.get("budget")
+        )
         return ChatAgentResponse.model_validate(
             {
-                **value.agent_configuration,
+                **configuration,
                 "trace": _public_agent_trace(value.agent_trace),
             }
         )
@@ -480,6 +477,14 @@ def _public_agent_trace(value: dict[str, object] | None) -> dict[str, object] | 
     if value is None:
         return None
     trace = dict(value)
+    trace["budget"] = _without_retired_budget_field(trace.get("budget"))
+    diagnostics = trace.get("diagnostics")
+    if isinstance(diagnostics, Mapping):
+        trace["diagnostics"] = {
+            key: item
+            for key, item in diagnostics.items()
+            if key != "near_deadline"
+        }
     events = trace.get("events")
     if isinstance(events, list):
         internal_keys = {
@@ -502,6 +507,16 @@ def _public_agent_trace(value: dict[str, object] | None) -> dict[str, object] | 
             public_events.append(public_event)
         trace["events"] = public_events
     return trace
+
+
+def _without_retired_budget_field(value: object) -> object:
+    if not isinstance(value, Mapping):
+        return value
+    return {
+        key: item
+        for key, item in value.items()
+        if key != "soft_deadline_reserve_seconds"
+    }
 
 
 def _run_error(value: ChatRun) -> ChatRunErrorResponse | None:

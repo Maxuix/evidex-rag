@@ -125,7 +125,13 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
             first.agent_configuration,
             {
                 "version": "native_tool_calling_agent_v3",
-                "budget": {"max_model_rounds": 8, "max_graph_calls": 2},
+                "budget": {
+                    "max_model_rounds": 8,
+                    "max_graph_calls": 2,
+                    "max_total_tokens": 150000,
+                    "max_evidence_items": 64,
+                    "max_retrieval_calls": 16,
+                },
             },
         )
         self.assertEqual(first.effective_policy["grounding_policy"], "evidence_only")
