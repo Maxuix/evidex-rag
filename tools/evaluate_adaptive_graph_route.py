@@ -603,7 +603,7 @@ def validate_evaluation_readiness(
             for key, value in dict(empirical["required_categories"]).items()
         },
     )
-    if len(cases) != 39 or len(fixture) != 22:
+    if len(cases) != 43 or len(fixture) != 26:
         raise ValueError("evaluation readiness case or fixture count changed")
     if [str(item["case_id"]) for item in cases] != list(loaded["case_ids"]):
         raise ValueError("evaluation readiness case order changed")
@@ -688,7 +688,7 @@ def validate_evaluation_readiness(
         ) or not isinstance(item.get("filename"), str):
             raise ValueError("evaluation readiness corpus document is invalid")
         document_filename_by_id[str(item["document_id"])] = str(item["filename"])
-    if len(graph_locators) != 40 or len({str(item["relation_id"]) for item in graph_locators}) != 35:
+    if len(graph_locators) != 52 or len({str(item["relation_id"]) for item in graph_locators}) != 42:
         raise ValueError("evaluation readiness graph locator coverage changed")
     for locator in graph_locators:
         relation_id = str(locator["relation_id"])

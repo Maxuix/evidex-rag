@@ -278,7 +278,7 @@ class AdaptiveGraphEvaluationTests(unittest.IsolatedAsyncioTestCase):
                 manifest=manifest,
                 expected_runtime=runtime,
             )
-            self.assertEqual(len(columns["capability"]), 20)
+            self.assertEqual(len(columns["capability"]), 24)
             diagnostic["runtime"]["graph_build_id"] = str(uuid4())
             path.write_text(json.dumps(diagnostic), encoding="utf-8")
             with self.assertRaisesRegex(
@@ -380,7 +380,7 @@ class AdaptiveGraphEvaluationTests(unittest.IsolatedAsyncioTestCase):
     def test_latest_routing_manifest_has_frozen_contract(self) -> None:
         manifest = load_manifest()
         self.assertEqual(manifest["dataset_id"], "routing-rag-v2")
-        self.assertEqual(manifest["case_count"], 39)
+        self.assertEqual(manifest["case_count"], 43)
         self.assertEqual(
             [item["id"] for item in manifest["routes"]],
             ["vector-only", "hybrid-control", "manual-graph", "auto-route"],
@@ -410,7 +410,7 @@ class AdaptiveGraphEvaluationTests(unittest.IsolatedAsyncioTestCase):
                 readiness["graph_locator_count"],
                 readiness["graph_unique_relation_count"],
             },
-            {39, 22, 40, 35},
+            {43, 26, 52, 42},
         )
         for key in (
             "manifest_file_sha256",
