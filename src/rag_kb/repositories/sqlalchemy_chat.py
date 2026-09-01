@@ -48,10 +48,10 @@ class SqlAlchemyChatRepository:
         self._workspace_id = workspace_id
 
     async def claim_run(
-        self, *, worker_id: str, observed_at: datetime, max_attempts: int
+        self, *, observed_at: datetime, max_attempts: int
     ) -> ChatRunLease | None:
-        if not worker_id.strip() or max_attempts < 1:
-            raise ValueError("worker_id and max_attempts must be valid")
+        if max_attempts < 1:
+            raise ValueError("max_attempts must be positive")
         row = await self._session.scalar(
             select(ChatRunRow)
             .where(*_claimable_run(observed_at, max_attempts, self._workspace_id))
@@ -67,7 +67,6 @@ class SqlAlchemyChatRepository:
             return None
         row.status = ChatRunStatus.RUNNING
         row.attempt += 1
-        row.claimed_by = worker_id
         row.claimed_at = observed_at
         row.heartbeat_at = observed_at
         row.next_attempt_at = None
@@ -78,7 +77,6 @@ class SqlAlchemyChatRepository:
         return ChatRunLease(
             run_id=row.id,
             workspace_id=row.workspace_id,
-            claimed_by=worker_id,
             attempt=row.attempt,
             claimed_at=observed_at,
         )
@@ -136,7 +134,6 @@ class SqlAlchemyChatRepository:
                 "retryable": True,
                 "exhausted": exhausted,
                 "diagnostic": {"check": "stale_heartbeat"},
-                "claimed_by": run.claimed_by or "unknown",
                 "claimed_at": claimed_at.isoformat(),
                 "finished_at": observed_at.isoformat(),
                 "duration_ms": _duration_ms(claimed_at, observed_at),
@@ -153,7 +150,6 @@ class SqlAlchemyChatRepository:
             run.error_detail = {"check": "stale_heartbeat"}
             run.error_retryable = True
             run.next_attempt_at = next_attempt_at
-            run.claimed_by = None
             run.claimed_at = None
             run.heartbeat_at = None
             run.completed_at = observed_at if exhausted else None
@@ -187,7 +183,6 @@ class SqlAlchemyChatRepository:
         }
         stable_success = {
             **terminal_facts,
-            "claimed_by": command.lease.claimed_by,
             "claimed_at": command.lease.claimed_at.isoformat(),
         }
         citations = await self._citation_rows(assistant.id)
@@ -225,7 +220,6 @@ class SqlAlchemyChatRepository:
             command.lease.attempt,
             {
                 **terminal_facts,
-                "claimed_by": command.lease.claimed_by,
                 "claimed_at": command.lease.claimed_at.isoformat(),
                 "finished_at": command.finished_at.isoformat(),
                 "duration_ms": _duration_ms(
@@ -271,7 +265,6 @@ class SqlAlchemyChatRepository:
         run.error_detail = None
         run.error_retryable = None
         run.next_attempt_at = None
-        run.claimed_by = None
         run.claimed_at = None
         run.heartbeat_at = None
         run.completed_at = command.finished_at
@@ -295,7 +288,6 @@ class SqlAlchemyChatRepository:
         }
         stable_failure = {
             **facts,
-            "claimed_by": command.lease.claimed_by,
             "claimed_at": command.lease.claimed_at.isoformat(),
         }
         expected_status = (
@@ -327,7 +319,6 @@ class SqlAlchemyChatRepository:
             command.lease.attempt,
             {
                 **facts,
-                "claimed_by": command.lease.claimed_by,
                 "claimed_at": command.lease.claimed_at.isoformat(),
                 "finished_at": command.finished_at.isoformat(),
                 "duration_ms": _duration_ms(
@@ -350,7 +341,6 @@ class SqlAlchemyChatRepository:
         run.error_detail = dict(command.diagnostic)
         run.error_retryable = command.retryable
         run.next_attempt_at = command.next_attempt_at
-        run.claimed_by = None
         run.claimed_at = None
         run.heartbeat_at = None
         run.completed_at = (
@@ -413,7 +403,6 @@ class SqlAlchemyChatRepository:
                 ChatRunRow.workspace_id == self._workspace_id,
                 ChatRunRow.id == lease.run_id,
                 ChatRunRow.status == ChatRunStatus.RUNNING,
-                ChatRunRow.claimed_by == lease.claimed_by,
                 ChatRunRow.attempt == lease.attempt,
             )
             .values(heartbeat_at=observed_at, updated_at=observed_at)
@@ -439,7 +428,6 @@ class SqlAlchemyChatRepository:
                 ChatRunRow.workspace_id == self._workspace_id,
                 ChatRunRow.id == lease.run_id,
                 ChatRunRow.status == ChatRunStatus.RUNNING,
-                ChatRunRow.claimed_by == lease.claimed_by,
                 ChatRunRow.attempt == lease.attempt,
                 user.role == ChatMessageRole.USER,
             )
@@ -805,7 +793,6 @@ def _owns_running_lease(run: ChatRunRow, lease: ChatRunLease) -> bool:
         run.status == ChatRunStatus.RUNNING
         and run.workspace_id == lease.workspace_id
         and run.id == lease.run_id
-        and run.claimed_by == lease.claimed_by
         and run.attempt == lease.attempt
     )
 

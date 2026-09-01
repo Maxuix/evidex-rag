@@ -549,11 +549,11 @@ class _Lane:
 
 
 def _lease(*, attempt):
-    return IndexingLease(uuid4(), uuid4(), "worker-a", attempt, NOW)
+    return IndexingLease(uuid4(), uuid4(), attempt, NOW)
 
 
 def _chat_lease():
-    return ChatRunLease(uuid4(), uuid4(), "worker-a", 1, NOW)
+    return ChatRunLease(uuid4(), uuid4(), 1, NOW)
 
 
 def _scheduler(factory, pipeline, *, graph_worker=None):
@@ -588,7 +588,6 @@ def _chat_scheduler(coordinator, pipeline, settler):
         coordinator,
         pipeline,
         settler,
-        worker_id="worker-a",
         heartbeat_interval_seconds=0.005,
         stale_after_seconds=1,
         retry_policy=RetryPolicy(2, 0.01, 0.02),

@@ -160,6 +160,10 @@ Storage Init ─────> prepare source/asset/model-cache/model-secret/log 
   或队列年龄探测。当前 PDF 每完成一个页段便释放 indexing lease，让已经到期的其他任务有机会
   先运行；stale recovery 由独立的低频 reconciler 执行。Graph 回填复用 indexing lane，只有
   文档任务为空时才领取一个内存 work item，不新增 Graph 任务表或进程。
+- Chat 与索引任务的持久所有权令牌是递增 `attempt`，不保存 Worker 名称；heartbeat、终态、失败、
+  reschedule 及索引 promotion 都以 repository 已绑定 workspace 加资源 ID、attempt 和活动状态做
+  compare-and-set。`claimed_at`/`heartbeat_at` 继续支持超时回收。Graph build 仍使用独立的
+  owner + lease token + expiry 协议，Worker liveness heartbeat 文件也保持不变。
 - 显式 `POST /api/v1/retrieval/query` 是同步模型 I/O 的例外。
 - PostgreSQL 是业务和任务状态的权威来源；本地卷保存源文件与派生资产。
 - SSE 只交付完整但易失的安全 Agent 进度快照和已提交终态，不是持久事件系统；
@@ -297,7 +301,9 @@ file content mutation 增加 `pending/completed/failed` 终态、稳定 failure 
 截止预留），既有行原地补齐默认值；`0023` 增加公开 trace diagnostics；`0024` 移除
 `agent_configuration`/`agent_trace` 对旧截止预留字段和完整 JSON key 集合的 CHECK 约束，并将
 新默认值收敛为五个当前预算字段。既有 ChatRun 不回填、不删除；读取路径会忽略历史快照中残留
-的旧字段。
+的旧字段。`0025` 从单用户本地模型删除 principal/client 列并把幂等范围收敛为 endpoint + key；
+`0026` 在零活动 Chat、索引和 Graph work 前置条件下删除 ChatRun/IndexingJob 的 `claimed_by`，
+保留 attempt、claim/heartbeat、backoff、状态和错误事实；Graph work lease 不变。
 除此之外不承诺任意历史版本兼容。主要持久事实为：
 
 | 范围 | 主要实体 |

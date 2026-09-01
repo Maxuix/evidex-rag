@@ -71,13 +71,10 @@ class ChatToolCall:
 class ChatRunLease:
     run_id: UUID
     workspace_id: UUID
-    claimed_by: str
     attempt: int
     claimed_at: datetime
 
     def __post_init__(self) -> None:
-        if not self.claimed_by.strip():
-            raise ValueError("claimed_by must not be empty")
         if self.attempt < 1:
             raise ValueError("attempt must be positive")
         if self.claimed_at.tzinfo is None or self.claimed_at.utcoffset() is None:

@@ -361,7 +361,6 @@ def _lease(observed: datetime, *, attempt: int = 1) -> ChatRunLease:
     return ChatRunLease(
         run_id=uuid4(),
         workspace_id=uuid4(),
-        claimed_by="worker-1",
         attempt=attempt,
         claimed_at=observed,
     )

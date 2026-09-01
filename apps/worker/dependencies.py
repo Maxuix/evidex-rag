@@ -358,7 +358,6 @@ def build_worker_dependencies(
         chat_coordinator,
         chat_runner,
         failure_settler,
-        worker_id=resolved_worker_id,
         heartbeat_interval_seconds=poller.heartbeat_interval_seconds,
         stale_after_seconds=poller.stale_after_seconds,
         retry_policy=retry_policy,

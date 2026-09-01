@@ -1336,4 +1336,5 @@ def _promotion_command(command: IndexingCommand) -> PromotionCommand:
     return PromotionCommand(
         job_id=command.job_id,
         indexed_document_version_id=command.indexed_document_version_id,
+        attempt=command.attempt,
     )

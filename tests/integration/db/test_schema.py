@@ -162,6 +162,61 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await runtime.close()
 
+    async def test_attempt_ownership_migration_round_trip_is_idle_and_reversible(
+        self,
+    ) -> None:
+        migration = importlib.import_module(
+            "rag_kb.db.migrations.versions.0026_simplify_attempt_ownership"
+        )
+        engine = create_async_engine(
+            MIGRATION_DSN.replace("postgresql://", "postgresql+asyncpg://", 1)
+        )
+        try:
+            async with engine.begin() as migration_connection:
+                await migration_connection.run_sync(
+                    lambda sync_connection: self._invoke_migration(
+                        sync_connection, migration, "downgrade"
+                    )
+                )
+            connection = await asyncpg.connect(MIGRATION_DSN)
+            try:
+                restored = await connection.fetch(
+                    """
+                    SELECT table_name FROM information_schema.columns
+                     WHERE table_schema = 'public'
+                       AND column_name = 'claimed_by'
+                       AND table_name IN ('chat_run', 'indexing_job')
+                     ORDER BY table_name
+                    """
+                )
+            finally:
+                await connection.close()
+            self.assertEqual(
+                [row["table_name"] for row in restored],
+                ["chat_run", "indexing_job"],
+            )
+            async with engine.begin() as migration_connection:
+                await migration_connection.run_sync(
+                    lambda sync_connection: self._invoke_migration(
+                        sync_connection, migration, "upgrade"
+                    )
+                )
+            connection = await asyncpg.connect(MIGRATION_DSN)
+            try:
+                remaining = await connection.fetchval(
+                    """
+                    SELECT count(*) FROM information_schema.columns
+                     WHERE table_schema = 'public'
+                       AND column_name = 'claimed_by'
+                       AND table_name IN ('chat_run', 'indexing_job')
+                    """
+                )
+            finally:
+                await connection.close()
+            self.assertEqual(remaining, 0)
+        finally:
+            await engine.dispose()
+
     async def test_dynamic_identity_removal_round_trip_fails_closed(self) -> None:
         migration = importlib.import_module(
             "rag_kb.db.migrations.versions.0025_remove_dynamic_identity"

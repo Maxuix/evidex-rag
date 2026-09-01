@@ -39,11 +39,10 @@ class ChatRunCoordinator:
         self._unit_of_work = unit_of_work
 
     async def claim(
-        self, *, worker_id: str, observed_at: datetime, max_attempts: int
+        self, *, observed_at: datetime, max_attempts: int
     ) -> ChatRunLease | None:
         async def persist(uow: SqlAlchemyUnitOfWork) -> ChatRunLease | None:
             return await uow.chat.claim_run(
-                worker_id=worker_id,
                 observed_at=observed_at,
                 max_attempts=max_attempts,
             )

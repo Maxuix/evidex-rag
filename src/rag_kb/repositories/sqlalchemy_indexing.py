@@ -545,7 +545,6 @@ class SqlAlchemyIndexingRepository:
         job.status = JobStatus.QUEUED
         job.phase = "queued"
         job.attempt = 0
-        job.claimed_by = None
         job.claimed_at = None
         job.heartbeat_at = None
         job.continuation_pending = False
@@ -772,7 +771,6 @@ class SqlAlchemyIndexingRepository:
     async def claim(
         self,
         *,
-        worker_id: str,
         observed_at: datetime,
         max_attempts: int,
     ) -> IndexingLease | None:
@@ -829,7 +827,6 @@ class SqlAlchemyIndexingRepository:
                 job.attempt += 1
         elif job.attempt == 0:
             job.attempt = 1
-        job.claimed_by = worker_id
         job.claimed_at = observed_at
         job.heartbeat_at = observed_at
         job.next_attempt_at = None
@@ -840,7 +837,6 @@ class SqlAlchemyIndexingRepository:
         return IndexingLease(
             job_id=job.id,
             indexed_document_version_id=target.id,
-            claimed_by=worker_id,
             attempt=job.attempt,
             claimed_at=observed_at,
         )
@@ -878,7 +874,6 @@ class SqlAlchemyIndexingRepository:
                 status=JobStatus.QUEUED,
                 phase="queued",
                 continuation_pending=False,
-                claimed_by=None,
                 claimed_at=None,
                 heartbeat_at=None,
                 next_attempt_at=next_attempt_at,
@@ -916,7 +911,6 @@ class SqlAlchemyIndexingRepository:
                 status=JobStatus.FAILED,
                 phase="failed",
                 continuation_pending=False,
-                claimed_by=None,
                 claimed_at=None,
                 heartbeat_at=None,
                 next_attempt_at=None,
@@ -946,7 +940,6 @@ class SqlAlchemyIndexingRepository:
                 ),
             )
             .values(
-                claimed_by=None,
                 claimed_at=None,
                 heartbeat_at=None,
                 next_attempt_at=None,
@@ -995,7 +988,6 @@ class SqlAlchemyIndexingRepository:
         failed = 0
         for job, target in rows:
             if job.status is JobStatus.COMPLETED:
-                job.claimed_by = None
                 job.claimed_at = None
                 job.heartbeat_at = None
                 job.updated_at = observed_at
@@ -1010,7 +1002,6 @@ class SqlAlchemyIndexingRepository:
             target.error_code = ErrorCode.INDEXING_STALE_WORKER.value
             target.error_detail = detail
             target.updated_at = observed_at
-            job.claimed_by = None
             job.claimed_at = None
             job.heartbeat_at = None
             job.error_code = ErrorCode.INDEXING_STALE_WORKER.value
@@ -1072,6 +1063,7 @@ class SqlAlchemyIndexingRepository:
                 IndexedDocumentVersionRow.id
                 == command.indexed_document_version_id,
                 IndexingJobRow.id == command.job_id,
+                IndexingJobRow.attempt == command.attempt,
             )
         )
         if document_id is None:
@@ -1110,6 +1102,7 @@ class SqlAlchemyIndexingRepository:
                     IndexingJobRow.workspace_id == self._workspace_id,
                     IndexedDocumentVersionRow.workspace_id == self._workspace_id,
                     IndexingJobRow.id == command.job_id,
+                    IndexingJobRow.attempt == command.attempt,
                     IndexedDocumentVersionRow.id
                     == command.indexed_document_version_id,
                     IndexedDocumentVersionRow.document_id == document.id,
@@ -1231,7 +1224,7 @@ class SqlAlchemyIndexingRepository:
         )
 
     async def prepare(self, command: IndexingCommand) -> IndexingTarget | None:
-        row = await self._load(command, lock=True)
+        row = await self._load(command, lock=True, allow_initial_attempt=True)
         if row is None:
             return None
         job, target, version, revision, embedding, knowledge_base = row
@@ -1244,8 +1237,13 @@ class SqlAlchemyIndexingRepository:
                 already_complete=True,
                 space_roles=await self._space_roles(revision.id),
             )
-        if job.status is JobStatus.CANCELLED or target.serving_status is IndexServingStatus.RETIRED:
+        if (
+            job.status is JobStatus.CANCELLED
+            or target.serving_status is IndexServingStatus.RETIRED
+        ):
             raise IndexingCancelled
+        if job.attempt == 0:
+            job.attempt = command.attempt
         if knowledge_base.deleted_at is not None:
             raise IndexingCancelled
         if target.build_status is IndexBuildStatus.READY or job.status is JobStatus.COMPLETED:
@@ -1627,7 +1625,6 @@ class SqlAlchemyIndexingRepository:
         job.progress = dict(progress)
         job.continuation_pending = True
         job.continuation_count += 1
-        job.claimed_by = None
         job.claimed_at = None
         job.heartbeat_at = None
         job.next_attempt_at = func.now()
@@ -2118,6 +2115,7 @@ class SqlAlchemyIndexingRepository:
             .where(
                 IndexingJobRow.workspace_id == self._workspace_id,
                 IndexingJobRow.id == command.job_id,
+                IndexingJobRow.attempt == command.attempt,
                 IndexedDocumentVersionRow.id
                 == command.indexed_document_version_id,
             )
@@ -2152,7 +2150,13 @@ class SqlAlchemyIndexingRepository:
         await self._session.flush()
         return True
 
-    async def _load(self, command: IndexingCommand, *, lock: bool):
+    async def _load(
+        self,
+        command: IndexingCommand,
+        *,
+        lock: bool,
+        allow_initial_attempt: bool = False,
+    ):
         statement = (
             select(
                 IndexingJobRow,
@@ -2188,6 +2192,20 @@ class SqlAlchemyIndexingRepository:
                 IndexingJobRow.workspace_id == self._workspace_id,
                 IndexedDocumentVersionRow.workspace_id == self._workspace_id,
                 IndexingJobRow.id == command.job_id,
+                or_(
+                    IndexingJobRow.attempt == command.attempt,
+                    and_(
+                        allow_initial_attempt,
+                        command.attempt == 1,
+                        or_(
+                            and_(
+                                IndexingJobRow.attempt == 0,
+                                IndexingJobRow.status == JobStatus.QUEUED,
+                            ),
+                            IndexingJobRow.status == JobStatus.CANCELLED,
+                        ),
+                    ),
+                ),
                 IndexedDocumentVersionRow.id
                 == command.indexed_document_version_id,
             )
@@ -2332,7 +2350,6 @@ def _owned(lease: IndexingLease, workspace_id: UUID) -> tuple[Any, ...]:
         IndexingJobRow.id == lease.job_id,
         IndexingJobRow.indexed_document_version_id
         == lease.indexed_document_version_id,
-        IndexingJobRow.claimed_by == lease.claimed_by,
         IndexingJobRow.attempt == lease.attempt,
     )
 
@@ -2366,7 +2383,7 @@ def _claimable_job(
             ),
             and_(
                 IndexingJobRow.status == JobStatus.COMPLETED,
-                IndexingJobRow.claimed_by.is_(None),
+                IndexingJobRow.heartbeat_at.is_(None),
                 IndexedDocumentVersionRow.build_status == IndexBuildStatus.READY,
             ),
         ),

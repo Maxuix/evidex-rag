@@ -63,7 +63,7 @@ class LegacyQueryHistoryTests(unittest.TestCase):
 class QueryExecutionIsolationTests(unittest.IsolatedAsyncioTestCase):
     async def test_worker_ignores_retired_query_but_still_validates_session_context(self) -> None:
         run_id, workspace_id = uuid4(), uuid4()
-        lease = ChatRunLease(run_id, workspace_id, "worker", 1, datetime.now(UTC))
+        lease = ChatRunLease(run_id, workspace_id, 1, datetime.now(UTC))
         run = SimpleNamespace(
             id=run_id, workspace_id=workspace_id, kb_id=uuid4(), session_id=uuid4(),
             user_message_id=uuid4(), index_revision_id=uuid4(), principal_id="local",

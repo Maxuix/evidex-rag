@@ -5,7 +5,7 @@ from __future__ import annotations
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-EXPECTED_REVISION = "0025_remove_dynamic_identity"
+EXPECTED_REVISION = "0026_simplify_attempt_ownership"
 
 
 class DatabaseReadinessError(RuntimeError):

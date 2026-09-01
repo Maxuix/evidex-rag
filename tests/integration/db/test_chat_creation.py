@@ -265,10 +265,10 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
         claims = await asyncio.gather(
             coordinator.claim(
-                worker_id="worker-a", observed_at=observed_at, max_attempts=3
+                observed_at=observed_at, max_attempts=3
             ),
             coordinator.claim(
-                worker_id="worker-b", observed_at=observed_at, max_attempts=3
+                observed_at=observed_at, max_attempts=3
             ),
         )
         leases = [lease for lease in claims if lease is not None]
@@ -310,7 +310,7 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
         try:
             persisted = await connection.fetchrow(
                 """
-                SELECT status, attempt, claimed_by, heartbeat_at
+                SELECT status, attempt, heartbeat_at
                 FROM chat_run WHERE id = $1
                 """,
                 run.id,
@@ -319,7 +319,6 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await connection.close()
         self.assertEqual(persisted["status"], "running")
         self.assertEqual(persisted["attempt"], 1)
-        self.assertEqual(persisted["claimed_by"], lease.claimed_by)
         self.assertEqual(persisted["heartbeat_at"], heartbeat_at)
 
     async def test_terminal_success_is_atomic_and_lost_response_replay_is_exact(
@@ -330,7 +329,7 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
         run = await self._create_run(session.id, kb.id, uuid4())
         observed_at = datetime.now(UTC)
         lease = await ChatRunCoordinator(self.factory).claim(
-            worker_id="worker-success", observed_at=observed_at, max_attempts=3
+            observed_at=observed_at, max_attempts=3
         )
         self.assertIsNotNone(lease)
         context = await ChatExecutionContextLoader(self.factory).load(
@@ -350,7 +349,7 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
         try:
             persisted = await connection.fetchrow(
                 """
-                SELECT r.status, r.claimed_by, r.completed_at, r.usage, r.timing,
+                SELECT r.status, r.completed_at, r.usage, r.timing,
                        m.assistant_status, m.content,
                        (SELECT count(*) FROM citation c
                         WHERE c.assistant_message_id = m.id) AS citations
@@ -365,7 +364,6 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(persisted["status"], "completed")
         self.assertEqual(persisted["assistant_status"], "completed")
         self.assertEqual(persisted["content"], "无法基于当前证据回答。")
-        self.assertIsNone(persisted["claimed_by"])
         self.assertEqual(persisted["citations"], 0)
         usage = json.loads(persisted["usage"])
         timing = json.loads(persisted["timing"])
@@ -395,7 +393,7 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
         run = await self._create_run(session.id, kb.id, uuid4())
         observed_at = datetime.now(UTC)
         lease = await ChatRunCoordinator(self.factory).claim(
-            worker_id="worker-rollback", observed_at=observed_at, max_attempts=3
+            observed_at=observed_at, max_attempts=3
         )
         context = await ChatExecutionContextLoader(self.factory).load(
             ChatExecutionCommand(lease)
@@ -421,7 +419,7 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
         try:
             persisted = await connection.fetchrow(
                 """
-                SELECT r.status, r.claimed_by, r.usage, r.timing,
+                SELECT r.status, r.usage, r.timing,
                        m.assistant_status, m.content,
                        (SELECT count(*) FROM citation c
                         WHERE c.assistant_message_id = m.id) AS citations
@@ -434,7 +432,6 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await connection.close()
         self.assertEqual(persisted["status"], "running")
-        self.assertEqual(persisted["claimed_by"], lease.claimed_by)
         self.assertEqual(persisted["assistant_status"], "generating")
         self.assertEqual(persisted["content"], "")
         self.assertIsNone(persisted["usage"])
@@ -448,7 +445,7 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
         document_id, version_id, chunk_ids = await self._seed_citation_chunks(kb)
         observed_at = datetime.now(UTC)
         lease = await ChatRunCoordinator(self.factory).claim(
-            worker_id="worker-citations", observed_at=observed_at, max_attempts=3
+            observed_at=observed_at, max_attempts=3
         )
         context = await ChatExecutionContextLoader(self.factory).load(
             ChatExecutionCommand(lease)
@@ -572,7 +569,6 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertGreater(delay, 0)
             self.assertEqual(self.database.engine.pool.checkedout(), 0)
             lease = await ChatRunCoordinator(self.factory).claim(
-                worker_id="worker-watcher",
                 observed_at=observed_at,
                 max_attempts=3,
             )
@@ -628,7 +624,6 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 base_delay_seconds=1,
                 max_delay_seconds=4,
             ),
-            worker_id="worker-scheduled-chat",
             heartbeat_interval_seconds=0.005,
             stale_after_seconds=1,
             retry_policy=RetryPolicy(3, 1, 4),
@@ -653,7 +648,6 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
         coordinator = ChatRunCoordinator(self.factory)
         started_at = datetime.now(UTC)
         first = await coordinator.claim(
-            worker_id="worker-stale",
             observed_at=started_at,
             max_attempts=2,
         )
@@ -671,7 +665,6 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual((first_result.requeued, first_result.failed), (1, 0))
         second = await coordinator.claim(
-            worker_id="worker-stale",
             observed_at=observed_at + timedelta(seconds=2),
             max_attempts=2,
         )
@@ -709,7 +702,7 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
         observed_at = datetime.now(UTC)
         coordinator = ChatRunCoordinator(self.factory)
         first_lease = await coordinator.claim(
-            worker_id="worker-failure", observed_at=observed_at, max_attempts=2
+            observed_at=observed_at, max_attempts=2
         )
         service = ChatFailureSettlementService(
             self.factory,
@@ -733,7 +726,6 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
             ChatTerminalWriteStatus.IDEMPOTENT,
         )
         second_lease = await coordinator.claim(
-            worker_id="worker-failure",
             observed_at=observed_at + timedelta(seconds=3),
             max_attempts=2,
         )

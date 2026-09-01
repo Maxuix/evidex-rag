@@ -103,7 +103,6 @@ class IndexingJobScheduler:
 
         async def claim_or_graph(uow: SqlAlchemyUnitOfWork):
             lease = await uow.indexing.claim(
-                worker_id=self._worker_id,
                 observed_at=observed_at,
                 max_attempts=self._retry.max_attempts,
             )
@@ -168,6 +167,7 @@ class IndexingJobScheduler:
                 IndexingCommand(
                     lease.job_id,
                     lease.indexed_document_version_id,
+                    lease.attempt,
                 )
             )
         )

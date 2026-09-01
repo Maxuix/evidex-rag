@@ -174,7 +174,7 @@ def _context() -> ChatExecutionContext:
         "rerank_mode": "none",
     }
     return ChatExecutionContext(
-        lease=ChatRunLease(run_id, workspace_id, "worker", 1, datetime.now(UTC)),
+        lease=ChatRunLease(run_id, workspace_id, 1, datetime.now(UTC)),
         run_id=run_id,
         workspace_id=workspace_id,
         knowledge_base_id=uuid4(),

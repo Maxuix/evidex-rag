@@ -123,13 +123,11 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
         )
         provider = _Provider()
         pipeline = self._pipeline(provider)
-        not_ready = await CandidatePromotionService(self.factory).promote(
-            _promotion_command(uploaded[0])
-        )
-        self.assertEqual(
-            (not_ready.status, not_ready.reason),
-            ("not_ready", PromotionReason.NOT_READY),
-        )
+        with self.assertRaises(IndexingExecutionError) as unclaimed:
+            await CandidatePromotionService(self.factory).promote(
+                _promotion_command(uploaded[0])
+            )
+        self.assertEqual(unclaimed.exception.code, ErrorCode.INDEX_TARGET_INVALID)
         results = []
         for item in uploaded:
             results.append(await pipeline.execute(_command(item)))
@@ -530,7 +528,7 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.reason, PromotionReason.LATER_SOURCE_CHANGE)
         self.assertEqual(result.status, "retired")
 
-    async def test_claim_heartbeat_and_due_retry_use_owner_attempt_cas(self) -> None:
+    async def test_claim_heartbeat_and_due_retry_use_attempt_cas(self) -> None:
         kb = await self._create_kb()
         uploaded = await self._upload(kb.id, "guide.txt", "text/plain", b"safe")
         observed = datetime(2026, 7, 14, 9, 0, tzinfo=UTC)
@@ -550,12 +548,12 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
         assert lease is not None
         self.assertEqual(lease.attempt, 1)
         self.assertIsNone(await second.claim_once())
-        wrong_owner = replace(lease, claimed_by="worker-b")
+        stale_attempt = replace(lease, attempt=lease.attempt + 1)
         self.assertFalse(
             await execute_in_transaction(
                 self.factory,
                 lambda uow: uow.indexing.heartbeat(
-                    wrong_owner,
+                    stale_attempt,
                     observed_at=observed + timedelta(seconds=1),
                 ),
             )
@@ -592,7 +590,28 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
         retry = await due_scheduler.claim_once()
         self.assertIsNotNone(retry)
         assert retry is not None
-        self.assertEqual((retry.claimed_by, retry.attempt), ("worker-b", 2))
+        self.assertEqual(retry.attempt, 2)
+        self.assertFalse(
+            await execute_in_transaction(
+                self.factory,
+                lambda uow: uow.indexing.heartbeat(
+                    lease,
+                    observed_at=due + timedelta(seconds=1),
+                ),
+            )
+        )
+        with self.assertRaises(IndexingExecutionError) as stale_promotion:
+            await CandidatePromotionService(self.factory).promote(
+                PromotionCommand(
+                    lease.job_id,
+                    lease.indexed_document_version_id,
+                    lease.attempt,
+                )
+            )
+        self.assertEqual(
+            stale_promotion.exception.code,
+            ErrorCode.INDEX_TARGET_INVALID,
+        )
 
     async def test_segment_yield_is_fair_and_does_not_spend_retry_attempts(
         self,
@@ -694,7 +713,6 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
             (state["status"], state["attempt"], state["error_code"]),
             ("failed", 2, ErrorCode.INDEXING_STALE_WORKER.value),
         )
-        self.assertIsNone(state["claimed_by"])
 
     async def test_two_schedulers_execute_one_job_once_and_promote(self) -> None:
         kb = await self._create_kb()
@@ -739,7 +757,6 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
         claim = await self._job_claim_state(uploaded.job_id)
         self.assertEqual((claim["status"], claim["attempt"]), ("completed", 1))
-        self.assertIsNone(claim["claimed_by"])
         self.assertEqual(provider.calls, 1)
 
     async def test_independent_lanes_advance_chat_and_indexing_together(
@@ -795,7 +812,6 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 base_delay_seconds=0.01,
                 max_delay_seconds=0.02,
             ),
-            worker_id="worker-fair",
             heartbeat_interval_seconds=0.01,
             stale_after_seconds=1,
             retry_policy=retry,
@@ -880,7 +896,6 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(provider.calls, 0)
         claim = await self._job_claim_state(uploaded.job_id)
         self.assertEqual(claim["status"], "completed")
-        self.assertIsNone(claim["claimed_by"])
 
     async def test_status_and_idempotent_explicit_retry_reuse_the_same_target(self) -> None:
         kb = await self._create_kb()
@@ -1325,7 +1340,7 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
         try:
             return await connection.fetchrow(
                 """
-                SELECT status::text, attempt, claimed_by, claimed_at,
+                SELECT status::text, attempt, claimed_at,
                        heartbeat_at, next_attempt_at, error_code,
                        continuation_pending, continuation_count
                   FROM indexing_job
@@ -1368,7 +1383,7 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
                     await connection.execute(
                         """
                         UPDATE indexing_job
-                           SET status = 'completed', phase = 'completed'
+                           SET status = 'completed', phase = 'completed', attempt = 1
                          WHERE id = $1
                         """,
                         item.job_id,

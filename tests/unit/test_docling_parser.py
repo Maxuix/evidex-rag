@@ -1107,7 +1107,9 @@ class DoclingParserTests(unittest.IsolatedAsyncioTestCase):
         first = asyncio.create_task(
             harness.parser.parse(source, preset=ParsingPreset.TEXT_LOCAL_V1)
         )
-        for _ in range(500):
+        # Spawn must import the Docling test module; a cold local cache can
+        # take more than five seconds before the child reaches its target.
+        for _ in range(1500):
             if (harness.root / "first-child-hung").exists():
                 break
             await asyncio.sleep(0.01)
@@ -1175,7 +1177,8 @@ class DoclingParserTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         marker = harness.root / "first-child-hung"
-        for _ in range(500):
+        # This observes process startup, not a product conversion deadline.
+        for _ in range(1500):
             if marker.exists():
                 break
             await asyncio.sleep(0.01)

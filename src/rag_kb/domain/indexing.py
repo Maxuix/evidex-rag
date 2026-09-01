@@ -55,12 +55,22 @@ class PromotionReason(StrEnum):
 class IndexingCommand:
     job_id: UUID
     indexed_document_version_id: UUID
+    attempt: int = 1
+
+    def __post_init__(self) -> None:
+        if self.attempt < 1:
+            raise ValueError("attempt must be positive")
 
 
 @dataclass(frozen=True, slots=True)
 class PromotionCommand:
     job_id: UUID
     indexed_document_version_id: UUID
+    attempt: int = 1
+
+    def __post_init__(self) -> None:
+        if self.attempt < 1:
+            raise ValueError("attempt must be positive")
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,9 +86,14 @@ class PromotionResult:
 class IndexingLease:
     job_id: UUID
     indexed_document_version_id: UUID
-    claimed_by: str
     attempt: int
     claimed_at: datetime
+
+    def __post_init__(self) -> None:
+        if self.attempt < 1:
+            raise ValueError("attempt must be positive")
+        if self.claimed_at.tzinfo is None or self.claimed_at.utcoffset() is None:
+            raise ValueError("claimed_at must be timezone-aware")
 
 
 @dataclass(frozen=True, slots=True)

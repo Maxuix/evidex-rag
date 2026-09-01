@@ -32,7 +32,6 @@ def _context() -> ChatExecutionContext:
         lease=ChatRunLease(
             run_id=run_id,
             workspace_id=workspace_id,
-            claimed_by="worker",
             attempt=1,
             claimed_at=datetime.now(UTC),
         ),

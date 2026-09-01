@@ -444,7 +444,6 @@ class SqlAlchemyKnowledgeBaseRepository:
                 .values(
                     status=JobStatus.CANCELLED,
                     phase="knowledge_base_deleted",
-                    claimed_by=None,
                     claimed_at=None,
                     heartbeat_at=None,
                     next_attempt_at=None,
@@ -1103,7 +1102,6 @@ class SqlAlchemyDocumentRepository:
                 .values(
                     status=JobStatus.CANCELLED,
                     phase="cancelled",
-                    claimed_by=None,
                     claimed_at=None,
                     heartbeat_at=None,
                     next_attempt_at=None,
@@ -1610,7 +1608,6 @@ class SqlAlchemyFileConsistencyRepository:
             .values(
                 status=JobStatus.CANCELLED,
                 phase="source_missing",
-                claimed_by=None,
                 claimed_at=None,
                 heartbeat_at=None,
                 next_attempt_at=None,

@@ -38,7 +38,6 @@ class ChatRunScheduler:
         runner: NativeAgentRunner,
         failure_settler: ChatFailureSettlementService,
         *,
-        worker_id: str,
         heartbeat_interval_seconds: float,
         stale_after_seconds: float,
         retry_policy: RetryPolicy,
@@ -46,8 +45,7 @@ class ChatRunScheduler:
         clock: Clock | None = None,
     ) -> None:
         if (
-            not worker_id.strip()
-            or heartbeat_interval_seconds <= 0
+            heartbeat_interval_seconds <= 0
             or stale_after_seconds <= heartbeat_interval_seconds
             or reconciliation_batch_size <= 0
         ):
@@ -55,7 +53,6 @@ class ChatRunScheduler:
         self._coordinator = coordinator
         self._runner = runner
         self._failure_settler = failure_settler
-        self._worker_id = worker_id
         self._heartbeat_interval_seconds = heartbeat_interval_seconds
         self._stale_after_seconds = stale_after_seconds
         self._retry = retry_policy
@@ -64,7 +61,6 @@ class ChatRunScheduler:
 
     async def claim_once(self) -> ChatRunLease | None:
         return await self._coordinator.claim(
-            worker_id=self._worker_id,
             observed_at=self._clock(),
             max_attempts=self._retry.max_attempts,
         )
