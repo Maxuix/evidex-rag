@@ -26,6 +26,7 @@ x-app-image: &app-image
       RAG_KB_BUILD_DEBIAN_SECURITY_MIRROR: ${RAG_KB_BUILD_DEBIAN_SECURITY_MIRROR:-https://mirrors.tuna.tsinghua.edu.cn/debian-security}
       RAG_KB_BUILD_PYPI_INDEX_URL: ${RAG_KB_BUILD_PYPI_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
       RAG_KB_BUILD_HF_ENDPOINT: ${RAG_KB_BUILD_HF_ENDPOINT:-https://hf-mirror.com}
+      RAG_KB_BUILD_HF_DISABLE_XET: ${RAG_KB_BUILD_HF_DISABLE_XET:-1}
 
 x-user-frontend-image: &user-frontend-image
   image: rag-kb-user-frontend:local

@@ -48,6 +48,7 @@ FROM python-dependencies AS runtime
 
 ARG RAG_KB_BUILD_REVISION=unknown
 ARG RAG_KB_BUILD_HF_ENDPOINT=https://hf-mirror.com
+ARG RAG_KB_BUILD_HF_DISABLE_XET=1
 LABEL org.opencontainers.image.revision="${RAG_KB_BUILD_REVISION}"
 
 COPY config/docling-artifacts-v1.json /app/config/docling-artifacts-v1.json
@@ -64,6 +65,7 @@ RUN --mount=type=bind,from=model-assets,source=/,target=/mnt/rag-kb-model-assets
         && cp -a /mnt/rag-kb-model-assets/opt/rag-kb/docling-artifacts/. /opt/rag-kb/docling-artifacts/; \
     else \
         HF_ENDPOINT="${RAG_KB_BUILD_HF_ENDPOINT}" \
+        HF_HUB_DISABLE_XET="${RAG_KB_BUILD_HF_DISABLE_XET}" \
         python /app/tools/prepare_docling_artifacts.py \
             --download \
             --cache-path /var/cache/rag-kb-build-models \
@@ -85,6 +87,7 @@ RUN --mount=type=bind,from=model-assets,source=/,target=/mnt/rag-kb-model-assets
         && cp -a /mnt/rag-kb-model-assets/opt/rag-kb/local-reranker/. /opt/rag-kb/local-reranker/; \
     else \
         HF_ENDPOINT="${RAG_KB_BUILD_HF_ENDPOINT}" \
+        HF_HUB_DISABLE_XET="${RAG_KB_BUILD_HF_DISABLE_XET}" \
         python /app/tools/prepare_local_reranker_artifacts.py \
             --download \
             --cache-path /var/cache/rag-kb-build-models \

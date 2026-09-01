@@ -142,6 +142,10 @@ class StartLocalScriptTests(unittest.TestCase):
                 "https://hf-mirror.com}"
             ),
         )
+        self.assertEqual(
+            arguments["RAG_KB_BUILD_HF_DISABLE_XET"],
+            "${RAG_KB_BUILD_HF_DISABLE_XET:-1}",
+        )
         self.assertIn(
             'PIP_INDEX_URL="${RAG_KB_BUILD_PYPI_INDEX_URL}"',
             dockerfile,
@@ -150,8 +154,21 @@ class StartLocalScriptTests(unittest.TestCase):
             dockerfile.count('HF_ENDPOINT="${RAG_KB_BUILD_HF_ENDPOINT}"'),
             2,
         )
+        self.assertEqual(
+            dockerfile.count(
+                'HF_HUB_DISABLE_XET="${RAG_KB_BUILD_HF_DISABLE_XET}"'
+            ),
+            2,
+        )
+        self.assertEqual(
+            arguments["RAG_KB_BUILD_DEBIAN_SECURITY_MIRROR"],
+            (
+                "${RAG_KB_BUILD_DEBIAN_SECURITY_MIRROR:-"
+                "https://mirrors.tuna.tsinghua.edu.cn/debian-security}"
+            ),
+        )
         self.assertIn(
-            'grep -F "URIs: http://deb.debian.org/debian-security"',
+            'grep -F "URIs: ${RAG_KB_BUILD_DEBIAN_SECURITY_MIRROR}"',
             dockerfile,
         )
         self.assertNotIn("extra-index-url", dockerfile.lower())
