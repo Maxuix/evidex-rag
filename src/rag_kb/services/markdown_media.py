@@ -33,9 +33,6 @@ from rag_kb.document_processing.markdown_bundle import (
     read_markdown_bundle,
     safe_relative_path,
 )
-from rag_kb.ports.markdown_media import RemoteImageFetcher
-
-
 _MEDIA_DIRECTORY = ".rag-media"
 _ALLOWED_IMAGE_FORMATS = {
     "PNG": ("image/png", ".png"),
@@ -121,12 +118,6 @@ class _NormalizedImage:
 
 class MarkdownMediaNormalizer:
     """Resolve every Markdown image and emit one deterministic local-only ZIP."""
-
-    def __init__(
-        self,
-        fetcher: RemoteImageFetcher,
-    ) -> None:
-        self._fetcher = fetcher
 
     async def normalize(
         self,
@@ -275,15 +266,16 @@ class MarkdownMediaNormalizer:
         if _is_data_reference(reference):
             return _decode_data_uri(reference), "data", "data-uri"
         if reference.startswith("//"):
-            fetched = self._fetcher.fetch(
-                f"https:{reference}",
-                max_bytes=_MAX_IMAGE_BYTES,
+            raise FileAdmissionError(
+                ErrorCode.MARKDOWN_MEDIA_UNSUPPORTED,
+                check="remote_reference",
             )
-            return fetched.content, "remote", fetched.final_url
         parsed = urlsplit(reference)
         if parsed.scheme in {"http", "https"}:
-            fetched = self._fetcher.fetch(reference, max_bytes=_MAX_IMAGE_BYTES)
-            return fetched.content, "remote", fetched.final_url
+            raise FileAdmissionError(
+                ErrorCode.MARKDOWN_MEDIA_UNSUPPORTED,
+                check="remote_reference",
+            )
         if parsed.scheme or parsed.netloc:
             raise FileAdmissionError(
                 ErrorCode.MARKDOWN_MEDIA_UNSUPPORTED,

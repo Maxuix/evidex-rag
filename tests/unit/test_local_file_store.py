@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import io
 import os
@@ -27,7 +28,6 @@ from rag_kb.domain import (
     SourceFileMissingError,
 )
 from rag_kb.document_processing.markdown_bundle import MARKDOWN_BUNDLE_MEDIA_TYPE
-from rag_kb.ports.markdown_media import FetchedImage
 from rag_kb.services.files import SourceFileService
 from rag_kb.services.markdown_media import MarkdownMediaNormalizer
 
@@ -237,7 +237,7 @@ class SourceFileServiceTests(unittest.TestCase):
 
             asyncio.run(scenario())
 
-    def test_markdown_snapshot_replay_does_not_fetch_remote_media_again(self) -> None:
+    def test_markdown_snapshot_replay_reuses_local_media_bundle(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             staging = root / "staging"
@@ -246,17 +246,6 @@ class SourceFileServiceTests(unittest.TestCase):
             final.mkdir()
             store = LocalFileStore(staging, final)
             context = AuthContext("principal", "client", WORKSPACE)
-            image_target = io.BytesIO()
-            Image.new("RGB", (4, 3), "blue").save(image_target, "PNG")
-
-            class Fetcher:
-                calls = 0
-
-                def fetch(self, url: str, *, max_bytes: int) -> FetchedImage:
-                    del max_bytes
-                    self.calls += 1
-                    return FetchedImage(image_target.getvalue(), url)
-
             class Documents:
                 async def reserve_version(self, *args, **kwargs):
                     self_test.assertEqual(
@@ -273,13 +262,18 @@ class SourceFileServiceTests(unittest.TestCase):
                     )
 
             self_test = self
-            fetcher = Fetcher()
             service = SourceFileService(
                 Documents(),  # type: ignore[arg-type]
                 store,
-                MarkdownMediaNormalizer(fetcher),
+                MarkdownMediaNormalizer(),
             )
-            markdown = b"![chart](https://example.com/chart.png)\n"
+            image_target = io.BytesIO()
+            Image.new("RGB", (4, 3), "blue").save(image_target, "PNG")
+            markdown = (
+                "![chart](data:image/png;base64,"
+                + base64.b64encode(image_target.getvalue()).decode("ascii")
+                + ")\n"
+            ).encode()
 
             async def scenario() -> None:
                 for _ in range(2):
@@ -296,7 +290,6 @@ class SourceFileServiceTests(unittest.TestCase):
                     )
 
             asyncio.run(scenario())
-            self.assertEqual(fetcher.calls, 1)
 
 
 def _document() -> Document:

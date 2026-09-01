@@ -403,7 +403,8 @@ upload
 ```
 
 当前支持 TXT、Markdown、HTML、CSV、PDF、DOCX、PPTX 和 XLSX。Markdown 可使用 `.mdz` Bundle
-携带本地图片，普通公网图片会在准入阶段快照。本地 Docling 工件、格式/归档/像素/页数等
+携带本地图片，也可使用受限 data URI；HTTP(S) 与 protocol-relative 图片在准入阶段确定性拒绝，
+摄取过程不解析 DNS 或连接外部网址。本地 Docling 工件、格式/归档/像素/页数等
 资源限制和可终止的解析子进程用于保护本地数据与 Worker。文档索引不再按墙钟耗时失败；
 当前生产装配直接构造默认 `ParserLimits()`：PDF 使用 CPU 单线程、OCR/Layout/Table
 batch 1 和每段初始 20 页，这些值目前不是用户运行时配置项。系统在段间持久化进度、

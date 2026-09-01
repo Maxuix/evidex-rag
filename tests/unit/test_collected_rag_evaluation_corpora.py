@@ -29,6 +29,22 @@ class CollectedRagEvaluationCorporaTests(unittest.TestCase):
         self.assertEqual(manifest["case_counts"]["conflicting_info"], 20)
         self.assertEqual(manifest["case_counts"]["evidence_no-conflict"], 24)
 
+    def test_public_quality_suite_remote_image_correction_is_explicit(self) -> None:
+        source = (
+            "Before ![Action](https://example.com/action.png) after "
+            "![Page](//example.com/page.png)"
+        )
+        corrected = public._apply_remote_image_correction(
+            "ibmcld_16257-2972-4789",
+            source,
+        )
+        self.assertEqual(corrected, "Before  after ")
+        with self.assertRaises(public.CorpusError):
+            public._apply_remote_image_correction(
+                "ibmcld_16257-2972-4789",
+                "No remote images",
+            )
+
     def test_expanded_musique_pool_is_large_enough_for_host_qualification(self) -> None:
         self.assertEqual(
             musique.validate(musique.DEFAULT_OUTPUT),

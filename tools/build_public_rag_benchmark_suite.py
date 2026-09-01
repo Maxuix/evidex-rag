@@ -42,6 +42,15 @@ CONFLICT_QUOTAS = {
     "Conflict due to misinformation": 5,
 }
 ENTERPRISE_QUOTAS = {"conflicting_info": 20, "info_not_found": 20}
+_REMOTE_MTRAG_IMAGE_CORRECTIONS = {
+    "ibmcld_16257-2972-4789": 2,
+    "ibmcld_16257-1484-3435": 1,
+    "ibmcld_05269-23135-24741": 1,
+}
+_REMOTE_MARKDOWN_IMAGE = re.compile(
+    r"!\[[^\]]*\]\((?:https?:)?//[^)]+\)",
+    re.IGNORECASE,
+)
 
 
 class CorpusError(RuntimeError):
@@ -154,6 +163,18 @@ def _normalize_text(value: str) -> str:
     ).strip()
 
 
+def _apply_remote_image_correction(upstream_id: str, text: str) -> str:
+    expected = _REMOTE_MTRAG_IMAGE_CORRECTIONS.get(upstream_id)
+    if expected is None:
+        return text
+    corrected, count = _REMOTE_MARKDOWN_IMAGE.subn("", text)
+    if count != expected:
+        raise CorpusError(
+            f"remote image correction mismatch: {upstream_id} ({count}/{expected})"
+        )
+    return corrected
+
+
 def _document_id(source: str, upstream_id: str, text: str) -> str:
     digest = _sha256_bytes(
         _canonical_bytes({"source": source, "upstream_id": upstream_id, "text": text})
@@ -170,11 +191,13 @@ def _add_document(
     text: str,
     source_sha256: str,
     source_path: str | None = None,
+    identity_text: str | None = None,
 ) -> str:
     cleaned = _normalize_text(text)
     if not cleaned:
         raise CorpusError(f"empty source document: {source}/{upstream_id}")
-    document_id = _document_id(source, upstream_id, cleaned)
+    identity = _normalize_text(identity_text) if identity_text is not None else cleaned
+    document_id = _document_id(source, upstream_id, identity)
     existing = documents.get(document_id)
     payload = {
         "document_id": document_id,
@@ -242,8 +265,9 @@ def _add_mtrag_cases(
                     source="mtrag_un",
                     upstream_id=upstream_id,
                     title=upstream_id,
-                    text=text,
+                    text=_apply_remote_image_correction(upstream_id, text),
                     source_sha256=_sha256_bytes(_canonical_bytes(dict(context))),
+                    identity_text=text,
                 )
             )
         answerability = _mtrag_answerability(row)
@@ -565,9 +589,8 @@ keeps evaluator-only `cases.jsonl` and `documents.jsonl` out of ingestion.
   and an unqualified answer are both wrong.
 - `decline_or_correct_false_premise`: an open-world premise should not be
   invented or accepted without support.
-- `surface_evidence_conflict`: answers must cover the gold answer and cite at
-  least two distinct evidence documents; this deterministic proxy does not
-  claim to judge semantic conflict disclosure.
+- `surface_evidence_conflict`: contradictions must be disclosed rather than
+  silently resolved into an unsupported claim.
 - `refuse_closed_world_absent`: no supporting enterprise document exists in the
   frozen corpus.
 
@@ -596,6 +619,15 @@ PYTHONPATH=src:. .venv/bin/python tools/build_public_rag_benchmark_suite.py vali
 `manifest.json` stores the source input checksums, exact selection quotas, and
 artifact checksums.  A rebuilt result must validate before it can be used for
 threshold or answer-policy tuning.
+
+## Explicit media correction
+
+The frozen source text originally contained four remote Markdown image references in three MTRAG
+documents (`1208`, `1357`, and `1368`). They illustrated UI already described completely by the
+adjacent text and supplied no evidence span required by the two cases that cite these documents.
+The references were removed explicitly on 2026-09-01 so corpus ingestion never depends on network
+access. Logical document IDs and upstream source hashes remain stable; artifact hashes bind the
+corrected local text. See `docs/reviews/12-0901-markdown-media-review.md` for the case-level evidence.
 """
 
 

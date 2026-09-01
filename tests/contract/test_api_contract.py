@@ -164,6 +164,14 @@ async def markdown_html_image_error() -> None:
     )
 
 
+@router.get("/markdown-remote-image-error")
+async def markdown_remote_image_error() -> None:
+    raise FileAdmissionError(
+        ErrorCode.MARKDOWN_MEDIA_UNSUPPORTED,
+        check="remote_reference",
+    )
+
+
 @router.post("/validate")
 async def validate(payload: ExampleInput) -> dict[str, int]:
     return {"count": payload.count}
@@ -490,6 +498,18 @@ class ApiContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             html_record.safe_fields["reason_code"],
             "html_image_structure",
+        )
+
+        remote_response = await request(
+            self.app,
+            "GET",
+            f"{API_PREFIX}/markdown-remote-image-error",
+        )
+        self.assertEqual(remote_response.status, 422)
+        self.assertEqual(
+            remote_response.json()["detail"],
+            "Remote Markdown images are unsupported; include the image in a "
+            "Markdown bundle or use a supported image Data URI.",
         )
 
     async def test_health_routes_report_process_and_dependency_state(self) -> None:

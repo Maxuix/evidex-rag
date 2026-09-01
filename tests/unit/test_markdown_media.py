@@ -13,7 +13,6 @@ from zipfile import ZIP_STORED, ZipFile
 
 from PIL import Image
 
-from rag_kb.adapters.markdown_media.http import PublicHttpImageFetcher
 from rag_kb.adapters.parser.docling.parser import DoclingParser
 from rag_kb.domain import ErrorCode, FileAdmissionError
 from rag_kb.domain import ParserLimits, ParserSource, ParsingPreset
@@ -22,7 +21,6 @@ from rag_kb.document_processing.markdown_bundle import (
     read_normalized_markdown_bundle,
 )
 from rag_kb.document_processing.docling import extract_docling_assets
-from rag_kb.ports.markdown_media import FetchedImage
 from rag_kb.services.markdown_media import MarkdownMediaNormalizer
 
 
@@ -67,50 +65,31 @@ def _bundle(
     return target.getvalue()
 
 
-class _Fetcher:
-    def __init__(self, content: bytes) -> None:
-        self.content = content
-        self.calls: list[str] = []
-
-    def fetch(self, url: str, *, max_bytes: int) -> FetchedImage:
-        self.calls.append(url)
-        if len(self.content) > max_bytes:
-            raise AssertionError("fixture exceeded fetch budget")
-        return FetchedImage(content=self.content, final_url=url)
-
-
 class MarkdownMediaNormalizerTests(unittest.IsolatedAsyncioTestCase):
-    async def test_snapshots_remote_image_and_is_deterministic(self) -> None:
-        fetcher = _Fetcher(_image_bytes())
-        normalizer = MarkdownMediaNormalizer(fetcher)
-        source = b"# Evidence\n\n![chart](https://example.com/chart.png)\n"
-
-        first = await normalizer.normalize(
-            source,
-            original_filename="evidence.md",
-            media_type="text/markdown",
-        )
-        second = await normalizer.normalize(
-            source,
-            original_filename="evidence.md",
-            media_type="text/markdown",
+    async def test_rejects_remote_references_without_resolving_media(self) -> None:
+        normalizer = MarkdownMediaNormalizer()
+        cases = (
+            b"![chart](https://example.com/chart.png)\n",
+            b"![chart](http://example.com/chart.png)\n",
+            b"![chart](//example.com/chart.png)\n",
         )
 
-        self.assertEqual(first, second)
-        self.assertEqual(
-            fetcher.calls,
-            [
-                "https://example.com/chart.png",
-                "https://example.com/chart.png",
-            ],
-        )
-        entrypoint, files = read_normalized_markdown_bundle(first)
-        markdown = files[entrypoint].decode()
-        self.assertIn("![chart](.rag-media/", markdown)
-        self.assertEqual(
-            len([name for name in files if name.startswith(".rag-media/")]),
-            1,
-        )
+        for source in cases:
+            with self.subTest(source=source), patch(
+                "rag_kb.services.markdown_media._validate_image"
+            ) as validate_image, self.assertRaises(FileAdmissionError) as raised:
+                await normalizer.normalize(
+                    source,
+                    original_filename="evidence.md",
+                    media_type="text/markdown",
+                )
+
+            self.assertEqual(
+                raised.exception.code,
+                ErrorCode.MARKDOWN_MEDIA_UNSUPPORTED,
+            )
+            self.assertEqual(raised.exception.check, "remote_reference")
+            validate_image.assert_not_called()
 
     async def test_resolves_local_bundle_and_data_uri_with_content_dedup(self) -> None:
         image = _image_bytes("JPEG")
@@ -123,7 +102,7 @@ class MarkdownMediaNormalizerTests(unittest.IsolatedAsyncioTestCase):
             files={"images/chart.jpg": image},
         )
 
-        normalized = await MarkdownMediaNormalizer(_Fetcher(b"unused")).normalize(
+        normalized = await MarkdownMediaNormalizer().normalize(
             source,
             original_filename="evidence.mdz",
             media_type=MARKDOWN_BUNDLE_MEDIA_TYPE,
@@ -137,31 +116,26 @@ class MarkdownMediaNormalizerTests(unittest.IsolatedAsyncioTestCase):
             1,
         )
 
-    async def test_normalizes_html_images_static_gif_and_protocol_relative_url(
-        self,
-    ) -> None:
+    async def test_normalizes_html_images_and_static_gif(self) -> None:
         gif = _image_bytes("GIF")
         data_uri = (
             "data:image/gif;base64,"
             + base64.b64encode(gif).decode("ascii")
         )
         source = (
-            'Before <img src="//example.com/inline.gif" alt="inline" '
+            f'Before <img src="{data_uri}" alt="inline" '
             'width="80" height="80"> after\n\n'
             "<figure>\n"
             f'<img src="{data_uri}" alt="block">\n'
             "<figcaption>Important chart</figcaption>\n"
             "</figure>\n"
         ).encode()
-        fetcher = _Fetcher(gif)
-
-        normalized = await MarkdownMediaNormalizer(fetcher).normalize(
+        normalized = await MarkdownMediaNormalizer().normalize(
             source,
             original_filename="evidence.md",
             media_type="text/markdown",
         )
 
-        self.assertEqual(fetcher.calls, ["https://example.com/inline.gif"])
         entrypoint, files = read_normalized_markdown_bundle(normalized)
         markdown = files[entrypoint].decode()
         self.assertNotIn("<img", markdown)
@@ -192,15 +166,12 @@ class MarkdownMediaNormalizerTests(unittest.IsolatedAsyncioTestCase):
   <em>Original tutorial | Complete guide</em>
 </div>
 """
-        fetcher = _Fetcher(_image_bytes())
-
-        normalized = await MarkdownMediaNormalizer(fetcher).normalize(
+        normalized = await MarkdownMediaNormalizer().normalize(
             source,
             original_filename="guide.md",
             media_type="text/markdown",
         )
 
-        self.assertEqual(fetcher.calls, [])
         entrypoint, files = read_normalized_markdown_bundle(normalized)
         markdown = files[entrypoint].decode()
         self.assertNotIn("![", markdown)
@@ -226,9 +197,7 @@ class MarkdownMediaNormalizerTests(unittest.IsolatedAsyncioTestCase):
                     files={f"images/chart.{extension}": source_image},
                 )
 
-                normalized = await MarkdownMediaNormalizer(
-                    _Fetcher(b"unused")
-                ).normalize(
+                normalized = await MarkdownMediaNormalizer().normalize(
                     source,
                     original_filename="evidence.mdz",
                     media_type=MARKDOWN_BUNDLE_MEDIA_TYPE,
@@ -256,9 +225,7 @@ class MarkdownMediaNormalizerTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertGreater(len(data_uri), 4096)
 
-        normalized = await MarkdownMediaNormalizer(
-            _Fetcher(b"unused")
-        ).normalize(
+        normalized = await MarkdownMediaNormalizer().normalize(
             f"![chart]({data_uri})\n".encode(),
             original_filename="evidence.md",
             media_type="text/markdown",
@@ -270,31 +237,16 @@ class MarkdownMediaNormalizerTests(unittest.IsolatedAsyncioTestCase):
     async def test_repeated_references_are_cached_and_processing_is_bounded(
         self,
     ) -> None:
-        repeated = "\n".join(
-            "![chart](https://example.com/chart.png)"
-            for _ in range(64)
-        ).encode()
-        repeated_fetcher = _Fetcher(_image_bytes())
-
-        await MarkdownMediaNormalizer(repeated_fetcher).normalize(
-            repeated,
-            original_filename="evidence.md",
-            media_type="text/markdown",
+        image = _image_bytes()
+        data_uri = (
+            "data:image/png;base64," + base64.b64encode(image).decode("ascii")
         )
-
-        self.assertEqual(
-            repeated_fetcher.calls,
-            ["https://example.com/chart.png"],
-        )
-
-        pixel_fetcher = _Fetcher(_image_bytes())
         with patch(
             "rag_kb.services.markdown_media._MAX_TOTAL_IMAGE_PIXELS",
             10_000,
         ), self.assertRaises(FileAdmissionError) as pixel_error:
-            await MarkdownMediaNormalizer(pixel_fetcher).normalize(
-                b"![one](https://example.com/same.png)\n"
-                b"![two](https://example.com/same.png)\n",
+            await MarkdownMediaNormalizer().normalize(
+                f"![one]({data_uri})\n![two]({data_uri})\n".encode(),
                 original_filename="evidence.md",
                 media_type="text/markdown",
             )
@@ -306,36 +258,34 @@ class MarkdownMediaNormalizerTests(unittest.IsolatedAsyncioTestCase):
             pixel_error.exception.check,
             "image_total_pixels",
         )
-        self.assertEqual(
-            pixel_fetcher.calls,
-            ["https://example.com/same.png"],
-        )
-
-        large_bmp = BytesIO()
-        Image.new("RGB", (1024, 1024), "navy").save(
-            large_bmp,
-            format="BMP",
-        )
-        distinct_fetcher = _Fetcher(large_bmp.getvalue())
-        distinct = "\n".join(
-            f"![chart](https://example.com/chart-{index}.bmp)"
-            for index in range(8)
-        ).encode()
+        distinct_references: list[str] = []
+        for index in range(8):
+            large_bmp = BytesIO()
+            Image.new("RGB", (1024, 1024), (index, 0, 64)).save(
+                large_bmp,
+                format="BMP",
+            )
+            large_data_uri = (
+                "data:image/bmp;base64,"
+                + base64.b64encode(large_bmp.getvalue()).decode("ascii")
+            )
+            distinct_references.append(
+                f"![chart-{index}]({large_data_uri})"
+            )
+        distinct = "\n".join(distinct_references).encode()
 
         with self.assertRaises(FileAdmissionError) as raised:
-            await MarkdownMediaNormalizer(distinct_fetcher).normalize(
+            await MarkdownMediaNormalizer().normalize(
                 distinct,
                 original_filename="evidence.md",
                 media_type="text/markdown",
             )
 
         self.assertEqual(raised.exception.code, ErrorCode.FILE_TOO_LARGE)
-        self.assertEqual(len(distinct_fetcher.calls), 7)
 
     async def test_rejects_complex_html_blocks_and_attribute_injection(
         self,
     ) -> None:
-        fetcher = _Fetcher(_image_bytes())
         cases = (
             (
                 b"<table><tr><td><img "
@@ -350,7 +300,7 @@ class MarkdownMediaNormalizerTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(source=source), self.assertRaises(
                 FileAdmissionError
             ) as raised:
-                await MarkdownMediaNormalizer(fetcher).normalize(
+                await MarkdownMediaNormalizer().normalize(
                     source,
                     original_filename="evidence.md",
                     media_type="text/markdown",
@@ -363,7 +313,6 @@ class MarkdownMediaNormalizerTests(unittest.IsolatedAsyncioTestCase):
                 raised.exception.check,
                 {"html_image_attribute", "html_image_structure"},
             )
-        self.assertEqual(fetcher.calls, [])
 
     async def test_fails_closed_for_missing_and_unsafe_media(self) -> None:
         animated_gif = base64.b64encode(_animated_gif_bytes()).decode("ascii")
@@ -411,7 +360,7 @@ class MarkdownMediaNormalizerTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(code=code, check=check), self.assertRaises(
                 FileAdmissionError
             ) as raised:
-                await MarkdownMediaNormalizer(_Fetcher(b"unused")).normalize(
+                await MarkdownMediaNormalizer().normalize(
                     content,
                     original_filename=(
                         "evidence.mdz"
@@ -430,7 +379,7 @@ class MarkdownMediaNormalizerTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with self.assertRaises(FileAdmissionError) as raised:
-            await MarkdownMediaNormalizer(_Fetcher(b"unused")).normalize(
+            await MarkdownMediaNormalizer().normalize(
                 source,
                 original_filename="evidence.mdz",
                 media_type=MARKDOWN_BUNDLE_MEDIA_TYPE,
@@ -442,7 +391,7 @@ class MarkdownMediaNormalizerTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_img_example_inside_code_is_not_treated_as_media(self) -> None:
-        normalized = await MarkdownMediaNormalizer(_Fetcher(b"unused")).normalize(
+        normalized = await MarkdownMediaNormalizer().normalize(
             b'`<img src="https://example.com/chart.png">`\n\n'
             b"```html\n<img src=\"chart.png\">\n```\n",
             original_filename="example.md",
@@ -452,24 +401,16 @@ class MarkdownMediaNormalizerTests(unittest.IsolatedAsyncioTestCase):
         entrypoint, files = read_normalized_markdown_bundle(normalized)
         self.assertIn("<img src=", files[entrypoint].decode())
 
-    def test_remote_fetcher_rejects_private_network_targets(self) -> None:
-        with self.assertRaises(FileAdmissionError) as raised:
-            PublicHttpImageFetcher().fetch(
-                "http://127.0.0.1/image.png",
-                max_bytes=1024,
-            )
-        self.assertEqual(
-            raised.exception.code,
-            ErrorCode.MARKDOWN_MEDIA_FETCH_FAILED,
-        )
-
     async def test_docling_v2_loads_bundle_image_as_pixels(self) -> None:
         image = _image_bytes()
-        normalized = await MarkdownMediaNormalizer(_Fetcher(image)).normalize(
-            b'# Evidence\n\n<img src="https://example.com/chart.png" '
-            b'alt="chart">\n',
+        source = _bundle(
+            '# Evidence\n\n<img src="images/chart.png" alt="chart">\n',
+            files={"docs/images/chart.png": image},
+        )
+        normalized = await MarkdownMediaNormalizer().normalize(
+            source,
             original_filename="evidence.md",
-            media_type="text/markdown",
+            media_type=MARKDOWN_BUNDLE_MEDIA_TYPE,
         )
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

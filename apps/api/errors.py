@@ -202,13 +202,16 @@ async def _file_admission_handler(
         ErrorCode.MARKDOWN_BUNDLE_INVALID: "The Markdown bundle is invalid.",
         ErrorCode.MARKDOWN_MEDIA_UNRESOLVED: "A Markdown image could not be resolved.",
         ErrorCode.MARKDOWN_MEDIA_UNSUPPORTED: "A Markdown image format is unsupported.",
-        ErrorCode.MARKDOWN_MEDIA_FETCH_FAILED: "A remote Markdown image could not be fetched safely.",
         ErrorCode.PARSER_NOT_CONFIGURED: "No parser is configured for this document format.",
     }
     markdown_media_details = {
         "reference_scheme": (
-            "Markdown images must use HTTP(S), a protocol-relative public URL, "
-            "a bundle-relative path, or a supported image Data URI."
+            "Markdown images must use a bundle-relative path or a supported "
+            "image Data URI."
+        ),
+        "remote_reference": (
+            "Remote Markdown images are unsupported; include the image in a "
+            "Markdown bundle or use a supported image Data URI."
         ),
         "data_uri": "A Markdown image Data URI is invalid or unsupported.",
         "image_empty": "A Markdown image is empty.",
