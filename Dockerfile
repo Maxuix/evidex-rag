@@ -15,9 +15,12 @@ WORKDIR /app
 RUN sed -i \
         "s|URIs: http://deb.debian.org/debian$|URIs: ${RAG_KB_BUILD_DEBIAN_MIRROR}|" \
         /etc/apt/sources.list.d/debian.sources \
+    && sed -i \
+        "s|URIs: http://deb.debian.org/debian-security$|URIs: https://deb.debian.org/debian-security|" \
+        /etc/apt/sources.list.d/debian.sources \
     && grep -F "URIs: ${RAG_KB_BUILD_DEBIAN_MIRROR}" \
         /etc/apt/sources.list.d/debian.sources \
-    && grep -F "URIs: http://deb.debian.org/debian-security" \
+    && grep -F "URIs: https://deb.debian.org/debian-security" \
         /etc/apt/sources.list.d/debian.sources \
     && apt-get update \
     && apt-get install --yes --no-install-recommends \
