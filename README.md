@@ -120,14 +120,16 @@ Evaluator dry-runs are offline and do not need the personal stack or an
 evaluation runtime:
 
 ```bash
-PYTHONPATH=src:. .venv/bin/python tools/evaluate_adaptive_graph_route.py --dry-run
-PYTHONPATH=src:. .venv/bin/python tools/run_adaptive_graph_r4.py --dry-run
-PYTHONPATH=src:. .venv/bin/python tools/run_adaptive_graph_r7_stage_a.py --dry-run
 PYTHONPATH=src:. .venv/bin/python tools/evaluate_agent_complex_qa.py --dry-run
-PYTHONPATH=src:. .venv/bin/python tools/evaluate_multimodal_real.py --dry-run
 ```
 
-All evaluator commands, including real runs, execute in the host `.venv`. A
+This is the one maintained regression entry point. It validates the frozen
+`evaluation/document-qa-v1` corpus offline and, when separately authorized,
+measures retrieval, citation and answer quality through an identity-bound host
+test runtime. Completed campaign runners and corpora are archived under
+`archive/evaluations/` and are not current commands.
+
+All evaluator modes, including real runs, execute in the host `.venv`. A
 mode that accesses an API, database, Graph, or Provider may connect only to
 user-provided, already-running, disposable host-side test dependencies with a
 matching identity. If those dependencies are absent or incompatible, the run

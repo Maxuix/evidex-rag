@@ -16,7 +16,6 @@ from rag_kb.domain import (
 from rag_kb.answering.evidence import render_validated_answer
 from rag_kb.answering.agent import _validate_submission
 from rag_kb.repositories.sqlalchemy_chat import _citations_equal, _serialized_success
-from tools.run_large_evaluation import _score_enterprise, _score_graph
 
 
 class RenderedEvidenceTests(unittest.TestCase):
@@ -76,18 +75,6 @@ class RenderedEvidenceTests(unittest.TestCase):
         rows[0].quoted_text = "changed"
         self.assertFalse(_citations_equal(rows, command))
         self.assertFalse(_citations_equal(rows[:1], command))
-
-        answering = SimpleNamespace(validated=answer)
-        case = {"expected_answer": "Revenue was 10", "query_only_terms": ["Revenue"]}
-        enterprise = _score_enterprise(case, "source.txt")(rendered.content, rendered.citations, answering)
-        graph = _score_graph(case, "source.txt")(rendered.content, rendered.citations, answering)
-        self.assertTrue(enterprise["expected_citation_hit"])
-        self.assertTrue(enterprise["policy_correct"])
-        self.assertTrue(graph["expected_citation_hit"])
-        self.assertTrue(graph["citation_query_term_leakage"])
-        absent = _score_graph(case, "other.txt")(rendered.content, rendered.citations, answering)
-        self.assertFalse(absent["expected_citation_hit"])
-
 
 class SubmissionBoundaryTests(unittest.TestCase):
     def test_invalid_provider_claims_are_rejected_without_internal_dto_validation(self) -> None:

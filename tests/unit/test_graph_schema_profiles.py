@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import replace
-import json
-from pathlib import Path
 import unittest
 from uuid import UUID
 
@@ -269,23 +267,6 @@ class GraphSchemaProfileTests(unittest.TestCase):
                 digest=ENTERPRISE_GRAPH_SCHEMA_PROFILE_DIGEST,
                 extractor_version="graphiti_v3",
             )
-
-    def test_enterprise_corpus_freezes_the_installed_profile_identity(self) -> None:
-        project_root = Path(__file__).resolve().parents[2]
-        manifest = json.loads(
-            (
-                project_root / "evaluation" / "graph-rag-v1" / "manifest.json"
-            ).read_text(encoding="utf-8")
-        )
-
-        self.assertEqual(
-            manifest["recommended_schema_profile"],
-            {
-                "key": ENTERPRISE_GRAPH_SCHEMA_PROFILE_KEY,
-                "digest": ENTERPRISE_GRAPH_SCHEMA_PROFILE_DIGEST,
-                "extractor_version": GRAPH_EXTRACTOR_VERSION,
-            },
-        )
 
     def test_unknown_and_digest_mismatch_fail_closed(self) -> None:
         registry = get_graph_schema_registry()

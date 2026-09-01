@@ -8,9 +8,6 @@ from unittest.mock import patch
 
 from tools import evaluation_runtime as module
 from tools.evaluate_agent_complex_qa import _parser as complex_parser
-from tools.evaluate_multimodal_real import _parser as multimodal_parser
-from tools.run_adaptive_graph_r4 import _parser as r4_parser
-from tools.run_adaptive_graph_r7_stage_a import _parser as r7_parser
 
 
 _OWNER = "0123456789abcdef0123456789abcdef"
@@ -121,11 +118,9 @@ class EvaluationRuntimeTests(unittest.TestCase):
                     module.load_evaluation_runtime(manifest, require_adaptive_graph=True)
 
     def test_evaluator_clis_expose_only_runtime_or_offline_entrypoints(self) -> None:
-        for parser in (r4_parser(), r7_parser(), complex_parser(), multimodal_parser()):
-            with self.subTest(program=parser.prog):
-                help_text = parser.format_help()
-                self.assertIn("--evaluation-runtime", help_text)
-                self.assertIn("--dry-run", help_text)
-                self.assertNotIn("--api", help_text)
-                self.assertNotIn("--env-file", help_text)
-        self.assertTrue(r7_parser().parse_args(["--host-worker"]).host_worker)
+        parser = complex_parser()
+        help_text = parser.format_help()
+        self.assertIn("--evaluation-runtime", help_text)
+        self.assertIn("--dry-run", help_text)
+        self.assertNotIn("--api", help_text)
+        self.assertNotIn("--env-file", help_text)

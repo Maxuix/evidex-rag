@@ -329,53 +329,18 @@ lifecycle。当前修复与评测只从主 checkout 的 `.venv` 运行；需要�
 Python-side test services。任何正式 `rag` Docker lifecycle 都必须另有明确的 runtime 请求，不能从
 “运行测试/评测”推导。
 
-Adaptive Graph 路由评测使用成对的
-`evaluation/routing-rag-v2/` 与 `evaluation/adaptive-graph-route-v2/` 合同；`v1` 仅保留为不可变
-历史身份。`tools/evaluate_adaptive_graph_route.py --dry-run` 只校验 corpus、locator、fixture、
-关系端点、文件摘要以及 R4 参数/checkpoint 安全合同，不访问 Provider、数据库、Graph、Judge 或
-本地 MiniLM。v2 的 Graph 标签以 Simple 是否覆盖完整 required path 为准，不能以最后一跳 answer
-Chunk 代替路径完整度；主 route decision 要求 source-backed 新 Graph 证据实际准入，guard probe
-另报 attempt rate，不把无证据探测冒充成功或隐藏成本。R4 另在内存中把 Graph 端点/谓词与 relation
-gold 对齐，只把聚合计数和 synthetic relation id 写入安全工件。R7 主报告必须导入同 runtime 身份的 R4 分层工件。R4/R7 的
-外部运行仍是单独授权的评测入口，不属于 API、Worker 或业务 schema 的常规流程；其外部调用与
-本地评测工件保留边界按当前授权执行。若用户提供的 Python-side API/Worker provider 运行环境不可用，R7 answer 可显式使用
-`--host-worker`：宿主机 `.venv` 以有界方式处理当前 ChatRun 后再轮询 API 终态；该入口不创建或改变
-任何 Docker lifecycle，且不能绕过 R7 的 answer/judge/token budget。
+当前只维护 `tools/evaluate_agent_complex_qa.py` 一个通用回归入口及
+`evaluation/document-qa-v1/` 核心语料。`--dry-run` 离线验证冻结 corpus、case 顺序、证据 span 与摘要；
+经单独授权的真实运行可选择 exact-vector 或 hybrid 检索，验证回答、引用、算术、多文档与缺失证据，
+并使用独立 Judge profile 进行语义评分。入口只连接 identity-bound、owner-only 的 host test runtime，
+不 provision 服务、不管理 Docker/Compose lifecycle，也不把问题、回答、正文、Provider payload 或 secret
+写入 Git。Provider 或 runtime 身份缺失时在外部调用前停止；真实模型仍必须使用仓库规定的 OpenCode Go
+及固定模型，不允许 fallback。
 
-修复后复测由宿主机 `.venv` 执行评测 runner，连接用户当前明确授权的本地运行时，在其中创建新 KB，
-固定使用 semantic v4 摄取冻结语料，并仅在索引完成、目标 profile/extractor 的 processed/eligible 数一致且
-READY 质量门通过时更新评测 identity。评测入口不创建第二套 Compose project，也不管理镜像或容器
-lifecycle；依赖或 Provider 身份错误时 fail closed。
-
-公开来源 `routing-rag-v3-open-source` 的事实 gold 与运行观察分离。纯离线
-`tools/evaluate_open_source_rag_v3.py` 固定 semantic v4、索引/检索 profile、Simple `top_k` 和 Graph K，
-并要求完整观察绑定明确的 workspace、KB、index、Graph build、model profile、Software Schema Profile
-key/digest、extractor 与配置/document-set digest
-后才生成独立 locked manifest。v3 route gold 由 Simple 是否完整覆盖任一有效关系路径动态产生；
-`semantic_intent=graph` 只保留为候选设计事实。Graph benefit 必须由 packed 层 source-backed 新关系补齐
-完整路径，四层 path recall、Auto 混淆矩阵、关系抽取和拒答指标分别报告。空观察模板不构成完成评测，
-运行依赖或 Provider 授权缺失时保持未验证。
-真实 LLM 评测固定使用 OpenCode Go 的 `mimo-v2.5`；Provider secret 只保存在本机私有 secret store，
-不进入 runtime manifest、checkpoint、locked manifest、日志或 Git。文本与多模态 embedding 模型仍按
-仓库环境约束固定，禁止静默替换 Provider 或模型。
-`tools/run_open_source_rag_v3.py` 复用生产 Agent 的一次 actual-auto 执行，同时观察 Simple chunk、真实
-Graph admission 和最终 outcome；Graph candidate 另以同一冻结 query/profile 采集四层 replay。runner
-从 Git canonical checkout 定位并只读加载已绑定且身份匹配的 owner-only Python-side test runtime，
-因此 linked worktree 不复制 env/runtime 也能执行 host evaluator；这一 opt-in 不创建或改变任何 Docker
-lifecycle。
-`--preflight-only` 只验证既有数据库/Graph 身份，不要求 Provider 流量确认；真实 case 执行仍需显式确认。
-runner 逐 case 写 owner-only、content-safe checkpoint，不保存
-问题、回答、正文、文件名或 Provider payload；它不 provision KB、不管理容器，真实执行仍需显式 Provider
-确认。中断恢复只跳过身份一致的完整 case，避免重复流量。
-runtime manifest、Software 新观察、v4 报告和 MuSiQue qualification 都记录 profile key/digest 与
-extractor，preflight 不接受只匹配 KB/index/model 的错误 build；v3/v4 历史 locked artifacts 不重写。
-显式 `--host-worker` 用于已授权但 host-side Worker 无法访问 Provider 的场景；它从宿主 `.venv`
-执行，不创建或改变 Docker lifecycle。Graph retry 改变 build identity、冻结输入不匹配或仍失败时停止，
-不能借 host worker 绕过 runtime 版本或 identity 门。
-
-大型评测的长任务由用户级 macOS `launchd` 持有，不由 Codex 前台终端持有。`tools/install_large_evaluation_launchd.py` 为隔离 host runtime 安装 PostgreSQL、FalkorDB、API、Worker 与 supervisor Agent；五个 plist 都以 owner-only 文件保存，`RunAtLoad=false`，只有绑定 config、容错策略与评测实现 digest 的私有 `.evaluation-enabled` `PathState` 标记存在时才持续运行。supervisor 以 `indexing → graph → gate → provider smoke → quality evaluation → report` 的单向状态机运行；每个阶段有独立的 owner-only 原子 checkpoint、退出 sidecar、结构化日志、PID 和 `flock` 锁。checkpoint 同时绑定冻结语料 digest、文档数量、runtime build、plan/provider contract、model profile revision、provider smoke artifact、容错策略和评测实现。阶段只有在退出码为 0 且数量、失败数、身份/hash 校验通过后才完成，最终 transition audit 要求每个已完成阶段之后确有下一阶段的 `stage_started` 证据；受控失败、身份变化或重试耗尽保持 fail closed，不能跳过 gate 或伪造完成。
-
-OpenCode Go 的 transport/timeout/provider-unavailable 由 provider SDK 的单调用预算和 campaign 的持久化有界退避共同处理；provider smoke 与 quality runner 在同一 provider/case checkpoint 上每 30 秒写 content-safe heartbeat，成功 observation 原子落盘后不重复调用。Graph 只恢复同一 immutable build，累计恢复次数跨进程保留，只在 processed chunk 前进后重置连续失败退避。长阶段若 checkpoint 与日志均超过阶段 stall budget 没有活动，supervisor 最多从原 checkpoint 重启三次，之后仍以失败停止。supervisor 或 support service 崩溃时 marker 仍存在，launchd 自动重启；macOS 注销/关机的 `SIGTERM` 写 `stage_interrupted` 并保留 marker，下一次登录自动续跑，显式 `SIGUSR1` 才进入 operator `paused`。`tools/control_large_evaluation.py --pause` 先写 paused checkpoint、终止受管进程组，再移除 marker、卸载隔离 runtime 并验证端口关闭；`--resume` 只恢复当前 paused stage，`--retry-failed` 只恢复当前 failed stage。受控失败和完成都会移除 marker、卸载支持服务并检查 loopback 端口。最终 publisher 校验 artifact digest 后原子发布 JSON/Markdown，并生成 owner-only `analysis-bundle.tar.gz` 与逐文件 SHA-256 manifest，供后续 Agent 离线分析；整个流程不启动、停止或访问正式 `rag` Compose project。
+已完成的 Adaptive Graph、routing、open-source、enterprise 与 large-evaluation campaign runner、语料、
+launchd/supervisor/host-provisioning 控制代码和专属测试位于
+`archive/evaluations/01-0901-completed-campaigns/`，不再是当前命令或架构依赖。忽略目录下的历史 runtime
+checkpoint/报告保持原位，归档不删除用户结果。
 
 `text/plain` 是公开上传合同的一部分，不经过 Docling 不支持的 TXT converter，而是以严格 UTF-8 直接构造
 受同一 item/character 预算约束的 `DoclingDocument`。Markdown/CSV/Office simple pipeline 不消费 PDF
