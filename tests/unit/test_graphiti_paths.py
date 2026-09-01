@@ -6,16 +6,26 @@ from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 from rag_kb.adapters.graphiti.client import (
-    GRAPHITI_EDGE_TYPE_MAP,
-    GRAPHITI_EDGE_TYPES,
-    GRAPHITI_ENTITY_TYPES,
-    GRAPHITI_V3_EXTRACTION_INSTRUCTIONS,
     GraphitiRuntime,
     _GraphitiEntityResult,
     _grounded_entity_ids,
     _rank_graphiti_paths,
 )
-from rag_kb.domain import GraphitiEdgeResult, GraphitiSearchQuery
+from rag_kb.domain import (
+    GRAPH_EXTRACTOR_VERSION,
+    GraphitiEdgeResult,
+    GraphitiSearchQuery,
+    SOFTWARE_GRAPH_SCHEMA_PROFILE_DIGEST,
+    SOFTWARE_GRAPH_SCHEMA_PROFILE_KEY,
+)
+from rag_kb.graph.schema_profiles import get_graph_schema_registry
+
+
+SOFTWARE_SCHEMA = get_graph_schema_registry().compile(
+    SOFTWARE_GRAPH_SCHEMA_PROFILE_KEY,
+    digest=SOFTWARE_GRAPH_SCHEMA_PROFILE_DIGEST,
+    extractor_version=GRAPH_EXTRACTOR_VERSION,
+)
 
 
 class GraphitiPathResolutionTests(unittest.IsolatedAsyncioTestCase):
@@ -198,12 +208,12 @@ class GraphitiPathResolutionTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(episode_uuid, graphiti.add_episode.await_args.kwargs["uuid"])
         kwargs = graphiti.add_episode.await_args.kwargs
-        self.assertEqual(kwargs["entity_types"], GRAPHITI_ENTITY_TYPES)
-        self.assertEqual(kwargs["edge_types"], GRAPHITI_EDGE_TYPES)
-        self.assertEqual(kwargs["edge_type_map"], GRAPHITI_EDGE_TYPE_MAP)
+        self.assertEqual(kwargs["entity_types"], SOFTWARE_SCHEMA.entity_types)
+        self.assertEqual(kwargs["edge_types"], SOFTWARE_SCHEMA.edge_types)
+        self.assertEqual(kwargs["edge_type_map"], SOFTWARE_SCHEMA.edge_type_map)
         self.assertEqual(
             kwargs["custom_extraction_instructions"],
-            GRAPHITI_V3_EXTRACTION_INSTRUCTIONS,
+            SOFTWARE_SCHEMA.extraction_instructions,
         )
         cleanup_call = next(
             call
@@ -390,9 +400,9 @@ class GraphitiPathResolutionTests(unittest.IsolatedAsyncioTestCase):
         )
 
     def test_extraction_contract_rejects_structure_and_alias_self_loops(self) -> None:
-        self.assertIn("section labels", GRAPHITI_V3_EXTRACTION_INSTRUCTIONS)
-        self.assertIn("distinct concepts", GRAPHITI_V3_EXTRACTION_INSTRUCTIONS)
-        self.assertIn("do not infer", GRAPHITI_V3_EXTRACTION_INSTRUCTIONS.lower())
+        self.assertIn("section labels", SOFTWARE_SCHEMA.extraction_instructions)
+        self.assertIn("distinct concepts", SOFTWARE_SCHEMA.extraction_instructions)
+        self.assertIn("do not infer", SOFTWARE_SCHEMA.extraction_instructions.lower())
 
 
 def _edge(

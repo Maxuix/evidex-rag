@@ -133,6 +133,19 @@ def docker_run_command(
     ]
 
 
+def postgres_entrypoint_ready_command(identity: ContainerIdentity) -> list[str]:
+    """Require the official image entrypoint to have exec'd the final server."""
+
+    return [
+        "docker",
+        "exec",
+        identity.name,
+        "sh",
+        "-c",
+        'test "$(cat /proc/1/comm)" = postgres',
+    ]
+
+
 def _run_capture(command: list[str]) -> str:
     completed = subprocess.run(
         command,
@@ -220,6 +233,25 @@ def _test_python() -> Path:
 def _wait_until_ready(identity: ContainerIdentity) -> None:
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
+        status = subprocess.run(
+            ["docker", "inspect", "--format", "{{.State.Running}}", identity.name],
+            cwd=PROJECT_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if status.returncode != 0 or status.stdout.strip() != "true":
+            raise RuntimeError("temporary PostgreSQL exited before becoming ready")
+        entrypoint_ready = subprocess.run(
+            postgres_entrypoint_ready_command(identity),
+            cwd=PROJECT_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if entrypoint_ready.returncode != 0:
+            time.sleep(0.5)
+            continue
         ready = subprocess.run(
             [
                 "docker",
@@ -238,15 +270,6 @@ def _wait_until_ready(identity: ContainerIdentity) -> None:
         )
         if ready.returncode == 0:
             return
-        status = subprocess.run(
-            ["docker", "inspect", "--format", "{{.State.Running}}", identity.name],
-            cwd=PROJECT_ROOT,
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        if status.returncode != 0 or status.stdout.strip() != "true":
-            raise RuntimeError("temporary PostgreSQL exited before becoming ready")
         time.sleep(0.5)
     raise RuntimeError("temporary PostgreSQL did not become ready within 60 seconds")
 
@@ -319,6 +342,9 @@ def run_database_tests(unittest_arguments: list[str]) -> int:
             "RAG_KB__IDENTITY__WORKSPACE_ID": (
                 "01900000-0000-7000-8000-000000000001"
             ),
+            # Historical migration 0025 preflights the fixed labels before
+            # dropping them. These are migration-chain inputs only, not
+            # supported current Settings or example-file keys.
             "RAG_KB__IDENTITY__PRINCIPAL_ID": "database-test-principal",
             "RAG_KB__IDENTITY__CLIENT_ID": "database-test-client",
             "PYTHONPATH": os.pathsep.join(

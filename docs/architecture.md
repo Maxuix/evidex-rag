@@ -68,7 +68,9 @@
   `graphiti_v1` 仅作为历史配置/build identity 读取，不参与 Graph serving 或 build。默认的
   `generic_open_domain_v1` 不传自定义 Graphiti ontology/instructions；`software_knowledge_v1`
   保留 Organization、Project、Repository、Service、
-  License、LicenseExpression 与 AliasSurface 类型化抽取，并保存稳定的有向关系类型。检索先用
+  License、LicenseExpression 与 AliasSurface 类型化抽取，并保存稳定的有向关系类型；
+  `enterprise_knowledge_v1` 提供组织、职责、政策、流程、系统、项目、产品、设施、文档、术语和地点
+  的类型化选择。检索先用
   Graphiti node hybrid search 解析题面实体，再以实体 UUID 为中心执行 node-distance、BM25、向量与
   原生 BFS 的组合搜索，最后只形成真实连通、无环的一至三跳路径。每一跳都必须回映射到当前 serving
   原始 Chunk。实体搜索窗口独立于最终路径 K；显式“最终/经由”问题优先完整长链，仅由多个关系词
@@ -111,7 +113,7 @@
 | 范围 | 当前选择 |
 | --- | --- |
 | 后端 | Python 3.12、FastAPI、Pydantic、异步 SQLAlchemy、asyncpg、Alembic |
-| 数据库 | PostgreSQL 18 + pgvector；当前 migration head 为 `0024_remove_agent_deadline_reserve` |
+| 数据库 | PostgreSQL 18 + pgvector；当前 migration head 为 `0026_simplify_attempt_ownership` |
 | 文档解析 | 原生 Docling；当前 PDF profile 在 Worker 管理的可终止子进程内按确定性页段解析 |
 | Chat 执行 | 普通异步原生 Tool-Calling loop；无 Agent 框架或图运行时 |
 | 模型接入 | OpenAI-compatible Chat/文本 Embedding；Tongyi 多模态 Embedding；固定离线 MiniLM reranker；已验证 Embedding 维度 64..4096 |
@@ -304,6 +306,11 @@ file content mutation 增加 `pending/completed/failed` 终态、稳定 failure 
 的旧字段。`0025` 从单用户本地模型删除 principal/client 列并把幂等范围收敛为 endpoint + key；
 `0026` 在零活动 Chat、索引和 Graph work 前置条件下删除 ChatRun/IndexingJob 的 `claimed_by`，
 保留 attempt、claim/heartbeat、backoff、状态和错误事实；Graph work lease 不变。
+P2 的实际数据核查确认 active/retired revision 指针仍承担当前与软删除恢复，两个 READY Graph build
+均为 active，PDF 分段任务真实使用 continuation；因此 revision/build identity、完整性 manifest、Graph
+lease 与 PDF checkpoint 都保留。未使用的 Enterprise Graph profile 只作为需单独授权的完整产品删除
+候选，不在配置收敛中隐式移除。详见
+[index/Graph/PDF retention review](reviews/16-0902-index-graph-retention-review.md)。
 除此之外不承诺任意历史版本兼容。主要持久事实为：
 
 | 范围 | 主要实体 |

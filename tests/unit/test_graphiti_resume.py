@@ -7,8 +7,6 @@ from unittest.mock import AsyncMock, patch
 from uuid import UUID
 
 from rag_kb.adapters.graphiti.client import (
-    GRAPHITI_ENTITY_TYPES,
-    GRAPHITI_V3_EXTRACTION_INSTRUCTIONS,
     GraphitiRuntime,
     graphiti_episode_uuid,
 )
@@ -17,7 +15,10 @@ from rag_kb.domain import (
     GraphChunkSource,
     GraphitiBuildSnapshot,
     GraphitiBuildStatus,
+    SOFTWARE_GRAPH_SCHEMA_PROFILE_DIGEST,
+    SOFTWARE_GRAPH_SCHEMA_PROFILE_KEY,
 )
+from rag_kb.graph.schema_profiles import get_graph_schema_registry
 
 
 WORKSPACE_ID = UUID("01900000-0000-7000-8000-000000000a01")
@@ -29,6 +30,11 @@ CHUNK_ID = UUID("01900000-0000-7000-8000-000000000a06")
 TARGET_ID = UUID("01900000-0000-7000-8000-000000000a07")
 DOCUMENT_ID = UUID("01900000-0000-7000-8000-000000000a08")
 DOCUMENT_VERSION_ID = UUID("01900000-0000-7000-8000-000000000a09")
+SOFTWARE_SCHEMA = get_graph_schema_registry().compile(
+    SOFTWARE_GRAPH_SCHEMA_PROFILE_KEY,
+    digest=SOFTWARE_GRAPH_SCHEMA_PROFILE_DIGEST,
+    extractor_version=GRAPH_EXTRACTOR_VERSION,
+)
 
 
 class GraphitiEpisodeResumeTests(unittest.IsolatedAsyncioTestCase):
@@ -77,9 +83,9 @@ class GraphitiEpisodeResumeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(graphiti.added[0]["previous_episode_uuids"], ["previous"])
         self.assertEqual(
             graphiti.added[0]["custom_extraction_instructions"],
-            GRAPHITI_V3_EXTRACTION_INSTRUCTIONS,
+            SOFTWARE_SCHEMA.extraction_instructions,
         )
-        self.assertEqual(graphiti.added[0]["entity_types"], GRAPHITI_ENTITY_TYPES)
+        self.assertEqual(graphiti.added[0]["entity_types"], SOFTWARE_SCHEMA.entity_types)
         self.assertEqual(driver.episode_ids, {first})
 
     async def test_bulk_failure_does_not_replay_the_batch_serially(self) -> None:

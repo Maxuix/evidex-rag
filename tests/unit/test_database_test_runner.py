@@ -12,6 +12,7 @@ from tools.run_database_tests import (
     database_environment,
     docker_run_command,
     parse_published_port,
+    postgres_entrypoint_ready_command,
 )
 
 
@@ -86,6 +87,21 @@ class DatabaseTestRunnerTests(unittest.TestCase):
         self.assertIn("/var/lib/postgresql:rw,nosuid,size=1024m", command)
         self.assertIn(f"{CONTAINER_LABEL}=owner", command)
         self.assertNotIn(".env", rendered)
+
+    def test_readiness_waits_for_the_final_postgres_server(self) -> None:
+        identity = ContainerIdentity(name="rag-kb-db-test-fixed", owner="owner")
+
+        self.assertEqual(
+            postgres_entrypoint_ready_command(identity),
+            [
+                "docker",
+                "exec",
+                identity.name,
+                "sh",
+                "-c",
+                'test "$(cat /proc/1/comm)" = postgres',
+            ],
+        )
 
 
 if __name__ == "__main__":

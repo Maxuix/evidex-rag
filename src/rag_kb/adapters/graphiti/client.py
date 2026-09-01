@@ -43,20 +43,6 @@ from rag_kb.graph.schema_profiles import (
 
 
 _GRAPH_SCHEMA_REGISTRY = get_graph_schema_registry()
-_SOFTWARE_SCHEMA = _GRAPH_SCHEMA_REGISTRY.compile(
-    SOFTWARE_GRAPH_SCHEMA_PROFILE_KEY,
-    digest=SOFTWARE_GRAPH_SCHEMA_PROFILE_DIGEST,
-    extractor_version="graphiti_v4",
-)
-
-# Transitional import compatibility for locked software evaluation tooling.
-# Runtime calls resolve the profile from each immutable build instead of using
-# these aliases as a global extraction choice.
-GRAPHITI_V3_EXTRACTION_INSTRUCTIONS = _SOFTWARE_SCHEMA.extraction_instructions
-GRAPHITI_V2_EXTRACTION_INSTRUCTIONS = GRAPHITI_V3_EXTRACTION_INSTRUCTIONS
-GRAPHITI_ENTITY_TYPES = _SOFTWARE_SCHEMA.entity_types
-GRAPHITI_EDGE_TYPES = _SOFTWARE_SCHEMA.edge_types
-GRAPHITI_EDGE_TYPE_MAP = _SOFTWARE_SCHEMA.edge_type_map
 
 _GRAPHITI_ADJACENCY_MULTIPLIER = 8
 _EPISODE_COMPLETION_STATE = "rag-kb-complete-v1"

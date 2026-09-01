@@ -78,17 +78,21 @@ class IndexingSchedulerTests(unittest.IsolatedAsyncioTestCase):
     async def test_long_running_attempt_is_not_cancelled_or_requeued(self) -> None:
         repository = _Repository()
         factory = _Factory(repository)
-        scheduler = _scheduler(factory, _Pipeline(factory, delay=0.04))
+        release = asyncio.Event()
+        scheduler = _scheduler(factory, _Pipeline(factory, release=release))
         execution = asyncio.create_task(
             scheduler._execute(_lease(attempt=1), asyncio.Event())  # noqa: SLF001
         )
 
-        await asyncio.sleep(0.02)
+        async with asyncio.timeout(0.5):
+            while repository.heartbeats < 1:
+                await asyncio.sleep(0)
 
         self.assertFalse(execution.done())
         self.assertGreaterEqual(repository.heartbeats, 1)
         self.assertIsNone(repository.rescheduled)
         self.assertEqual(repository.failed, 0)
+        release.set()
         await execution
         self.assertEqual(repository.released, 1)
 
@@ -419,17 +423,28 @@ class _Repository:
 
 
 class _Pipeline:
-    def __init__(self, factory, *, delay=0, never=False, error=None) -> None:
+    def __init__(
+        self,
+        factory,
+        *,
+        delay=0,
+        never=False,
+        error=None,
+        release=None,
+    ) -> None:
         self.factory = factory
         self.delay = delay
         self.never = never
         self.error = error
+        self.release = release
 
     async def execute(self, command):
         del command
         if self.factory.active:
             raise AssertionError("pipeline ran inside a transaction")
-        if self.never:
+        if self.release is not None:
+            await self.release.wait()
+        elif self.never:
             await asyncio.Event().wait()
         await asyncio.sleep(self.delay)
         if self.error is not None:

@@ -332,8 +332,6 @@ class SettingsTests(unittest.TestCase):
     def test_identity_and_cors_settings_fail_closed(self) -> None:
         invalid_overrides = (
             {"identity": {"workspace_id": "550e8400-e29b-41d4-a716-446655440000"}},
-            {"identity": {"principal_id": ""}},
-            {"identity": {"client_id": "client selected"}},
             {"security": {"allowed_cors_origins": []}},
             {"security": {"allowed_cors_origins": ["*"]}},
             {"security": {"allowed_cors_origins": ["https://example.com"]}},
