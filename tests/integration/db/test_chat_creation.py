@@ -11,7 +11,6 @@ from uuid import UUID, uuid4
 import asyncpg
 
 from tests.integration.db import require_database_test_dsns
-from rag_kb.auth import AuthContext, SingleWorkspaceAccessPolicy
 from rag_kb.db import DatabaseProcess, create_database_resources
 from rag_kb.document_processing.profiles import index_profile
 from rag_kb.domain import (
@@ -82,17 +81,13 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
             process=DatabaseProcess.API,
         )
         self.factory = SqlAlchemyUnitOfWorkFactory(self.database.sessions, WORKSPACE)
-        self.policy = SingleWorkspaceAccessPolicy(WORKSPACE)
-        self.context = AuthContext("principal", "client", WORKSPACE)
         self.knowledge_bases = KnowledgeBaseService(
             self.factory,
-            self.policy,
             embedding_space=_embedding(),
             index_profile=_profile(),
         )
         self.chat = ChatService(
             self.factory,
-            self.policy,
             model_configuration=_model_configuration(),
             retrieval_profile_factory=lambda _strategy, top_k, rerank_mode: (
                 exact_profile(top_k=top_k, rerank_mode=rerank_mode)
@@ -105,7 +100,7 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def test_concurrent_lost_response_replay_is_one_atomic_run(self) -> None:
         kb = await self._create_kb("primary")
         session = await self.chat.create_session(
-            self.context, kb_id=kb.id, title="Incident response"
+            kb_id=kb.id, title="Incident response"
         )
         key = uuid4()
 
@@ -145,7 +140,6 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaises(IdempotencyKeyReusedError):
             await self.chat.create_run(
-                self.context,
                 key,
                 session_id=session.id,
                 kb_id=kb.id,
@@ -173,7 +167,7 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def test_concurrent_distinct_runs_make_the_session_busy(self) -> None:
         kb = await self._create_kb("session-busy")
         session = await self.chat.create_session(
-            self.context, kb_id=kb.id, title=None
+            kb_id=kb.id, title=None
         )
 
         outcomes = await asyncio.gather(
@@ -190,30 +184,27 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
             1,
         )
 
-    async def test_history_status_and_authorization_are_principal_bound(self) -> None:
+    async def test_history_status_and_session_knowledge_base_are_bound(self) -> None:
         kb = await self._create_kb("authorized")
         other_kb = await self._create_kb("other")
         session = await self.chat.create_session(
-            self.context, kb_id=kb.id, title=None
+            kb_id=kb.id, title=None
         )
         run = await self._create_run(session.id, kb.id, uuid4())
 
-        status = await self.chat.get_run(self.context, run.id)
+        status = await self.chat.get_run(run.id)
         messages = await self.chat.list_messages(
-            self.context,
             session.id,
             limit=10,
             sort="created_at",
             after=None,
         )
         sessions = await self.chat.list_sessions(
-            self.context,
             limit=10,
             sort="-updated_at",
             after=None,
         )
         filtered_sessions = await self.chat.list_sessions(
-            self.context,
             limit=10,
             sort="-updated_at",
             after=None,
@@ -226,7 +217,6 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaises(ResourceStateConflictError):
             await self.chat.create_run(
-                self.context,
                 uuid4(),
                 session_id=session.id,
                 kb_id=other_kb.id,
@@ -235,22 +225,10 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 top_k=10,
             )
 
-        other_principal = AuthContext("other-principal", "client", WORKSPACE)
-        with self.assertRaises(ResourceNotFoundError):
-            await self.chat.get_run(other_principal, run.id)
-        with self.assertRaises(ResourceNotFoundError):
-            await self.chat.list_messages(
-                other_principal,
-                session.id,
-                limit=10,
-                sort="created_at",
-                after=None,
-            )
-
     async def test_retired_policy_snapshots_are_read_only_and_do_not_affect_new_runs(self) -> None:
         kb = await self._create_kb("policy-history")
         self.assertEqual(kb.answer_policy_defaults, {})
-        session = await self.chat.create_session(self.context, kb_id=kb.id, title=None)
+        session = await self.chat.create_session(kb_id=kb.id, title=None)
         run = await self._create_run(session.id, kb.id, uuid4())
         historical = {"answer_style": "summary", "insufficiency_policy": "refuse"}
         connection = await asyncpg.connect(MIGRATION_DSN)
@@ -265,13 +243,13 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
             )
         finally:
             await connection.close()
-        stored = await self.chat.get_run(self.context, run.id)
+        stored = await self.chat.get_run(run.id)
         self.assertEqual(stored.effective_policy, historical)
         updated = await self.knowledge_bases.update(
-            self.context, uuid4(), kb.id, name="renamed-policy-history", retrieval_defaults=None,
+            uuid4(), kb.id, name="renamed-policy-history", retrieval_defaults=None,
         )
         self.assertEqual(updated.answer_policy_defaults, historical)
-        another = await self.chat.create_session(self.context, kb_id=kb.id, title=None)
+        another = await self.chat.create_session(kb_id=kb.id, title=None)
         current = await self._create_run(another.id, kb.id, uuid4())
         self.assertEqual(current.requested_policy, {})
         self.assertEqual(current.effective_policy, {})
@@ -279,7 +257,7 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def test_competing_claims_and_lease_cas_load_one_frozen_context(self) -> None:
         kb = await self._create_kb("claimable")
         session = await self.chat.create_session(
-            self.context, kb_id=kb.id, title="Claim behavior"
+            kb_id=kb.id, title="Claim behavior"
         )
         run = await self._create_run(session.id, kb.id, uuid4())
         coordinator = ChatRunCoordinator(self.factory)
@@ -348,7 +326,7 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self,
     ) -> None:
         kb = await self._create_kb("terminal-success")
-        session = await self.chat.create_session(self.context, kb_id=kb.id, title=None)
+        session = await self.chat.create_session(kb_id=kb.id, title=None)
         run = await self._create_run(session.id, kb.id, uuid4())
         observed_at = datetime.now(UTC)
         lease = await ChatRunCoordinator(self.factory).claim(
@@ -413,7 +391,7 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_terminal_write_rolls_back_before_commit(self) -> None:
         kb = await self._create_kb("terminal-rollback")
-        session = await self.chat.create_session(self.context, kb_id=kb.id, title=None)
+        session = await self.chat.create_session(kb_id=kb.id, title=None)
         run = await self._create_run(session.id, kb.id, uuid4())
         observed_at = datetime.now(UTC)
         lease = await ChatRunCoordinator(self.factory).claim(
@@ -465,7 +443,7 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_terminal_success_persists_ordered_citation_snapshots(self) -> None:
         kb = await self._create_kb("terminal-citations")
-        session = await self.chat.create_session(self.context, kb_id=kb.id, title=None)
+        session = await self.chat.create_session(kb_id=kb.id, title=None)
         run = await self._create_run(session.id, kb.id, uuid4())
         document_id, version_id, chunk_ids = await self._seed_citation_chunks(kb)
         observed_at = datetime.now(UTC)
@@ -567,7 +545,7 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
             {row["document_original_filename_snapshot"] for row in rows},
             {"source.txt"},
         )
-        authoritative = await self.chat.get_run(self.context, run.id)
+        authoritative = await self.chat.get_run(run.id)
         self.assertEqual(
             [item.index_chunk_id for item in authoritative.citations],
             [chunk_ids[1], chunk_ids[0]],
@@ -585,9 +563,9 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self,
     ) -> None:
         kb = await self._create_kb("terminal-watcher")
-        session = await self.chat.create_session(self.context, kb_id=kb.id, title=None)
+        session = await self.chat.create_session(kb_id=kb.id, title=None)
         created = await self._create_run(session.id, kb.id, uuid4())
-        initial = await self.chat.get_run(self.context, created.id)
+        initial = await self.chat.get_run(created.id)
         observed_at = datetime.now(UTC)
 
         async def finish_during_wait(delay: float) -> None:
@@ -626,7 +604,6 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
         results = [
             item
             async for item in watcher.watch(
-                self.context,
                 created.id,
                 initial=initial,
                 disconnected=connected,
@@ -638,7 +615,7 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_chat_scheduler_claims_and_completes_independently(self) -> None:
         kb = await self._create_kb("scheduled-chat")
-        session = await self.chat.create_session(self.context, kb_id=kb.id, title=None)
+        session = await self.chat.create_session(kb_id=kb.id, title=None)
         created = await self._create_run(session.id, kb.id, uuid4())
         coordinator = _CountingCoordinator(ChatRunCoordinator(self.factory))
         pipeline = _PersistingPipeline(self.factory)
@@ -662,7 +639,7 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(lease)
         await scheduler.execute(lease, asyncio.Event())
 
-        terminal = await self.chat.get_run(self.context, created.id)
+        terminal = await self.chat.get_run(created.id)
         self.assertEqual(terminal.status, "completed")
         self.assertEqual(terminal.assistant_status, "completed")
         self.assertEqual(terminal.assistant_content, "无法基于当前证据回答。")
@@ -671,7 +648,7 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_stale_chat_reconciliation_requeues_then_exhausts(self) -> None:
         kb = await self._create_kb("stale-chat")
-        session = await self.chat.create_session(self.context, kb_id=kb.id, title=None)
+        session = await self.chat.create_session(kb_id=kb.id, title=None)
         created = await self._create_run(session.id, kb.id, uuid4())
         coordinator = ChatRunCoordinator(self.factory)
         started_at = datetime.now(UTC)
@@ -712,7 +689,7 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual((second_result.requeued, second_result.failed), (0, 1))
-        terminal = await self.chat.get_run(self.context, created.id)
+        terminal = await self.chat.get_run(created.id)
         self.assertEqual(terminal.status, "failed")
         self.assertEqual(terminal.assistant_status, "failed")
         self.assertEqual(terminal.error_code, "CHAT_STALE_WORKER")
@@ -727,7 +704,7 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self,
     ) -> None:
         kb = await self._create_kb("terminal-failure")
-        session = await self.chat.create_session(self.context, kb_id=kb.id, title=None)
+        session = await self.chat.create_session(kb_id=kb.id, title=None)
         run = await self._create_run(session.id, kb.id, uuid4())
         observed_at = datetime.now(UTC)
         coordinator = ChatRunCoordinator(self.factory)
@@ -818,7 +795,6 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
     async def _create_kb(self, name: str):
         return await self.knowledge_bases.create(
-            self.context,
             uuid4(),
             name=name,
             retrieval_defaults={"strategy": "exact_vector", "top_k": 10},
@@ -826,7 +802,6 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
     async def _create_run(self, session_id: UUID, kb_id: UUID, key: UUID):
         return await self.chat.create_run(
-            self.context,
             key,
             session_id=session_id,
             kb_id=kb_id,

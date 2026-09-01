@@ -8,7 +8,6 @@ from uuid import UUID, uuid4
 import asyncpg
 
 from tests.integration.db import require_database_test_dsns
-from rag_kb.auth import AuthContext, SingleWorkspaceAccessPolicy
 from rag_kb.db import DatabaseProcess, create_database_resources
 from rag_kb.document_processing.profiles import index_profile
 from rag_kb.domain import (
@@ -48,15 +47,12 @@ class ContentLifecycleTests(unittest.IsolatedAsyncioTestCase):
             process=DatabaseProcess.API,
         )
         self.factory = SqlAlchemyUnitOfWorkFactory(self.database.sessions, WORKSPACE)
-        self.policy = SingleWorkspaceAccessPolicy(WORKSPACE)
-        self.context = AuthContext("principal", "client", WORKSPACE)
         self.knowledge_bases = KnowledgeBaseService(
             self.factory,
-            self.policy,
             embedding_space=_embedding(),
             index_profile=_profile(),
         )
-        self.documents = DocumentService(self.factory, self.policy)
+        self.documents = DocumentService(self.factory)
 
     async def asyncTearDown(self) -> None:
         await self.database.close()
@@ -65,13 +61,11 @@ class ContentLifecycleTests(unittest.IsolatedAsyncioTestCase):
         key = uuid4()
         first, second = await asyncio.gather(
             self.knowledge_bases.create(
-                self.context,
                 key,
                 name="engineering",
                 retrieval_defaults={"strategy": "exact_vector", "top_k": 10},
             ),
             self.knowledge_bases.create(
-                self.context,
                 key,
                 name="engineering",
                 retrieval_defaults={"strategy": "exact_vector", "top_k": 10},
@@ -82,14 +76,12 @@ class ContentLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaises(IdempotencyKeyReusedError):
             await self.knowledge_bases.create(
-                self.context,
                 key,
                 name="different",
                 retrieval_defaults={"strategy": "exact_vector", "top_k": 10},
             )
         with self.assertRaises(IdempotencyKeyReusedError):
             await self.knowledge_bases.create(
-                self.context,
                 key,
                 name="engineering",
                 chunking_preset=ChunkingPreset.SEMANTIC_BALANCED_V1,
@@ -115,7 +107,6 @@ class ContentLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self,
     ) -> None:
         knowledge_base = await self.knowledge_bases.create(
-            self.context,
             uuid4(),
             name="semantic-roles",
             chunking_preset=ChunkingPreset.SEMANTIC_BALANCED_V1,
@@ -148,7 +139,6 @@ class ContentLifecycleTests(unittest.IsolatedAsyncioTestCase):
         kb = await self._create_kb()
         create_key = uuid4()
         reserved = await self.documents.reserve_version(
-            self.context,
             create_key,
             kb_id=kb.id,
             document_id=None,
@@ -174,7 +164,6 @@ class ContentLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tuple(before), (0, 0, 0))
 
         activated = await self.documents.activate_reserved_version(
-            self.context,
             create_key,
             document_id=reserved.document.id,
         )
@@ -200,10 +189,10 @@ class ContentLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
         delete_key = uuid4()
         deleted = await self.documents.delete(
-            self.context, delete_key, activated.document.id
+            delete_key, activated.document.id
         )
         replay = await self.documents.delete(
-            self.context, delete_key, activated.document.id
+            delete_key, activated.document.id
         )
         self.assertEqual(deleted.document.id, replay.document.id)
         self.assertIsNotNone(deleted.document.deleted_at)
@@ -238,7 +227,6 @@ class ContentLifecycleTests(unittest.IsolatedAsyncioTestCase):
         for ordinal in (1, 2):
             key = uuid4()
             reserved = await self.documents.reserve_version(
-                self.context,
                 key,
                 kb_id=kb.id,
                 document_id=None,
@@ -250,7 +238,7 @@ class ContentLifecycleTests(unittest.IsolatedAsyncioTestCase):
         activated = await asyncio.gather(
             *(
                 self.documents.activate_reserved_version(
-                    self.context, key, document_id=reserved.document.id
+                    key, document_id=reserved.document.id
                 )
                 for key, reserved in reservations
             )
@@ -272,7 +260,6 @@ class ContentLifecycleTests(unittest.IsolatedAsyncioTestCase):
         kb = await self._create_kb()
         upload_key = uuid4()
         reserved = await self.documents.reserve_version(
-            self.context,
             upload_key,
             kb_id=kb.id,
             document_id=None,
@@ -280,31 +267,27 @@ class ContentLifecycleTests(unittest.IsolatedAsyncioTestCase):
             source=_source("8"),
         )
         activated = await self.documents.activate_reserved_version(
-            self.context,
             upload_key,
             document_id=reserved.document.id,
         )
 
         delete_key = uuid4()
         deleted = await self.knowledge_bases.delete(
-            self.context,
             delete_key,
             kb.id,
         )
         replay = await self.knowledge_bases.delete(
-            self.context,
             delete_key,
             kb.id,
         )
         self.assertEqual(replay.id, deleted.id)
         self.assertIsNotNone(deleted.deleted_at)
         with self.assertRaises(ResourceNotFoundError):
-            await self.knowledge_bases.get(self.context, kb.id)
+            await self.knowledge_bases.get(kb.id)
         with self.assertRaises(ResourceNotFoundError):
-            await self.documents.get(self.context, activated.document.id)
+            await self.documents.get(activated.document.id)
 
         recreated = await self.knowledge_bases.create(
-            self.context,
             uuid4(),
             name="lifecycle-kb",
             retrieval_defaults={"strategy": "exact_vector", "top_k": 10},
@@ -349,7 +332,6 @@ class ContentLifecycleTests(unittest.IsolatedAsyncioTestCase):
         kb = await self._create_kb()
         key = uuid4()
         reserved = await self.documents.reserve_version(
-            self.context,
             key,
             kb_id=kb.id,
             document_id=None,
@@ -357,7 +339,6 @@ class ContentLifecycleTests(unittest.IsolatedAsyncioTestCase):
             source=_source("7"),
         )
         activated = await self.documents.activate_reserved_version(
-            self.context,
             key,
             document_id=reserved.document.id,
         )
@@ -401,7 +382,7 @@ class ContentLifecycleTests(unittest.IsolatedAsyncioTestCase):
             await connection.close()
 
         detail = await self.documents.get_detail(
-            self.context, activated.document.id
+            activated.document.id
         )
 
         self.assertEqual(detail.document.id, activated.document.id)
@@ -424,22 +405,17 @@ class ContentLifecycleTests(unittest.IsolatedAsyncioTestCase):
         )
         other_service = KnowledgeBaseService(
             other_factory,
-            SingleWorkspaceAccessPolicy(OTHER_WORKSPACE),
             embedding_space=_embedding(),
             index_profile=_profile(),
         )
         with self.assertRaises(ResourceNotFoundError):
-            await other_service.get(
-                AuthContext("other-principal", "other-client", OTHER_WORKSPACE),
-                kb.id,
-            )
+            await other_service.get(kb.id)
 
     async def test_update_and_keyset_pagination_persist_typed_configuration(self) -> None:
         created = []
         for name in ("charlie", "alpha", "bravo"):
             created.append(
                 await self.knowledge_bases.create(
-                    self.context,
                     uuid4(),
                     name=name,
                     retrieval_defaults={"strategy": "exact_vector", "top_k": 10},
@@ -447,14 +423,12 @@ class ContentLifecycleTests(unittest.IsolatedAsyncioTestCase):
             )
         update_key = uuid4()
         updated = await self.knowledge_bases.update(
-            self.context,
             update_key,
             created[0].id,
             name="delta",
             retrieval_defaults={"strategy": "exact_vector", "top_k": 7},
         )
         replay = await self.knowledge_bases.update(
-            self.context,
             update_key,
             created[0].id,
             name="delta",
@@ -465,10 +439,10 @@ class ContentLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(replay.answer_policy_defaults, {})
 
         first = await self.knowledge_bases.list(
-            self.context, limit=2, sort="name", after=None
+            limit=2, sort="name", after=None
         )
         second = await self.knowledge_bases.list(
-            self.context, limit=2, sort="name", after=first.next_values
+            limit=2, sort="name", after=first.next_values
         )
         self.assertEqual(
             [item.name for item in (*first.items, *second.items)],
@@ -477,7 +451,6 @@ class ContentLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaises(ResourceNameConflictError):
             await self.knowledge_bases.update(
-                self.context,
                 uuid4(),
                 created[1].id,
                 name="bravo",
@@ -491,7 +464,6 @@ class ContentLifecycleTests(unittest.IsolatedAsyncioTestCase):
         source = _source("9")
         first_key = uuid4()
         first = await self.documents.reserve_version(
-            self.context,
             first_key,
             kb_id=kb.id,
             document_id=None,
@@ -500,7 +472,6 @@ class ContentLifecycleTests(unittest.IsolatedAsyncioTestCase):
         )
 
         replay = await self.documents.reserve_version(
-            self.context,
             first_key,
             kb_id=kb.id,
             document_id=None,
@@ -509,14 +480,12 @@ class ContentLifecycleTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(replay.document.id, first.document.id)
         await self.documents.activate_reserved_version(
-            self.context,
             first_key,
             document_id=first.document.id,
         )
 
         with self.assertRaises(DuplicateDocumentError) as raised:
             await self.documents.reserve_version(
-                self.context,
                 uuid4(),
                 kb_id=kb.id,
                 document_id=None,
@@ -526,7 +495,6 @@ class ContentLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(raised.exception.existing_document_id, first.document.id)
 
         new_version = await self.documents.reserve_version(
-            self.context,
             uuid4(),
             kb_id=kb.id,
             document_id=first.document.id,
@@ -537,7 +505,6 @@ class ContentLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
     async def _create_kb(self):
         return await self.knowledge_bases.create(
-            self.context,
             uuid4(),
             name="lifecycle-kb",
             retrieval_defaults={"strategy": "exact_vector", "top_k": 10},

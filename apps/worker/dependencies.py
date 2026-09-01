@@ -32,7 +32,6 @@ from rag_kb.adapters.parser.docling.parser import DoclingParser
 from rag_kb.adapters.vector_store.pgvector import PgVectorStore
 from rag_kb.answering.agent import NativeToolCallingAgent
 from rag_kb.answering.runner import NativeAgentRunner
-from rag_kb.auth import DevelopmentAuthProvider, SingleWorkspaceAccessPolicy
 from rag_kb.config import (
     Settings,
     StartupValidation,
@@ -98,8 +97,6 @@ class WorkerDependencies:
     startup: StartupValidation
     database: DatabaseResources
     unit_of_work: SqlAlchemyUnitOfWorkFactory
-    auth_provider: DevelopmentAuthProvider
-    access_policy: SingleWorkspaceAccessPolicy
     file_store: LocalFileStore
     asset_store: IndexAssetStore
     index_asset_service: IndexAssetService
@@ -158,7 +155,6 @@ def build_worker_dependencies(
     startup = validate_startup_environment(resolved_settings)
     database_settings = resolved_settings.database
     identity = resolved_settings.identity
-    access_policy = SingleWorkspaceAccessPolicy(identity.workspace_id)
     database = create_database_resources(
         database_settings.runtime_dsn.get_secret_value(),
         pool_size=database_settings.worker_pool_size,
@@ -181,7 +177,6 @@ def build_worker_dependencies(
     multimodal_settings = model_assets.multimodal_settings
     content_services = build_content_services(
         unit_of_work,
-        access_policy,
         embedding_settings,
         multimodal_settings,
     )
@@ -264,7 +259,7 @@ def build_worker_dependencies(
     )
     graph_store = PgGraphStore(database.sessions)
     retrieval_service = RetrievalService(
-        access_policy,
+        identity.workspace_id,
         embedding_provider,
         vector_store,
         candidate_multiplier=resolved_settings.retrieval.candidate_multiplier,
@@ -314,7 +309,6 @@ def build_worker_dependencies(
     )
     index_asset_service = IndexAssetService(
         unit_of_work,
-        access_policy,
         asset_store,
     )
     visual_evidence_preparer = VisualEvidencePreparationStep(
@@ -396,13 +390,6 @@ def build_worker_dependencies(
         startup=startup,
         database=database,
         unit_of_work=unit_of_work,
-        auth_provider=DevelopmentAuthProvider(
-            deployment_profile=resolved_settings.app.deployment_profile.value,
-            principal_id=identity.principal_id,
-            client_id=identity.client_id,
-            workspace_id=identity.workspace_id,
-        ),
-        access_policy=access_policy,
         file_store=file_store,
         asset_store=asset_store,
         index_asset_service=index_asset_service,
@@ -410,6 +397,7 @@ def build_worker_dependencies(
             unit_of_work,
             content_services.documents,
             file_store,
+            identity.workspace_id,
             batch_size=resolved_settings.file_store.reconciliation_batch_size,
             orphan_grace_seconds=resolved_settings.file_store.orphan_grace_seconds,
             cleanup_max_attempts=resolved_settings.file_store.cleanup_max_attempts,

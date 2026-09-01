@@ -40,7 +40,6 @@ SAFE_FIELDS: Final = frozenset(
         "batch_count",
         "build_id",
         "chunks_deleted",
-        "client_id",
         "cleanup_completed",
         "cleanup_failed",
         "completion_tokens",
@@ -85,7 +84,6 @@ SAFE_FIELDS: Final = frozenset(
         "prompt_tokens",
         "phase",
         "plans_deleted",
-        "principal_id",
         "queue",
         "queue_backend",
         "recovered_count",
@@ -106,11 +104,9 @@ SAFE_FIELDS: Final = frozenset(
 CONTEXT_FIELDS: Final = frozenset(
     {
         "attempt",
-        "client_id",
         "indexed_document_version_id",
         "job_id",
         "lane",
-        "principal_id",
         "run_id",
         "trace_id",
         "workspace_id",

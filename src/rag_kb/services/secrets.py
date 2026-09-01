@@ -7,7 +7,6 @@ from datetime import UTC, datetime, timedelta
 import logging
 from typing import TYPE_CHECKING
 
-from rag_kb.auth import AuthContext
 from rag_kb.domain import ModelSecretReconciliationResult
 from rag_kb.ports.model_secrets import ModelSecretStore
 from rag_kb.uow import (
@@ -40,15 +39,12 @@ class ModelSecretReconciliationService:
 
     async def run_once(
         self,
-        context: AuthContext,
         *,
         now: datetime | None = None,
     ) -> ModelSecretReconciliationResult:
         observed_at = now or datetime.now(UTC)
 
         async def load(uow: SqlAlchemyUnitOfWork) -> tuple[str, ...]:
-            if uow.workspace_id != context.workspace_id:
-                raise RuntimeError("secret reconciliation workspace does not match identity")
             return await uow.model_settings.list_secret_references()
 
         # A failed read-only transaction must happen before any filesystem

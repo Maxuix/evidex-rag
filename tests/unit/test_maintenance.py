@@ -11,7 +11,6 @@ from unittest.mock import patch
 from uuid import UUID, uuid4
 
 from rag_kb.adapters.file_store.assets import LocalIndexAssetStore
-from rag_kb.auth import AuthContext
 from rag_kb.config import DeploymentProfile
 from rag_kb.domain import (
     FileReconciliationResult,
@@ -287,7 +286,7 @@ class MaintenanceCleanupServiceTests(unittest.IsolatedAsyncioTestCase):
         store = _AssetStore()
         service = _service(repository, asset_store=store, batch_size=2)
 
-        result = await service.run_once(_context(), now=_NOW)
+        result = await service.run_once(now=_NOW)
 
         self.assertEqual(repository.list_limits, [2])
         self.assertEqual(
@@ -318,7 +317,7 @@ class MaintenanceCleanupServiceTests(unittest.IsolatedAsyncioTestCase):
         store = _AssetStore(failed_keys={failed_key})
         service = _service(repository, asset_store=store)
 
-        result = await service.run_once(_context(), now=_NOW)
+        result = await service.run_once(now=_NOW)
 
         self.assertEqual(
             [identity.indexed_document_version_id for identity in store.deletes],
@@ -340,7 +339,7 @@ class MaintenanceCleanupServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         service = _service(repository, asset_store=None)
 
-        result = await service.run_once(_context(), now=_NOW)
+        result = await service.run_once(now=_NOW)
 
         self.assertEqual(repository.cleanup_target_ids, [(text_target,)])
         self.assertEqual(result.index.retired_targets_cleaned, 1)
@@ -357,8 +356,8 @@ class MaintenanceCleanupServiceTests(unittest.IsolatedAsyncioTestCase):
         service = _service(repository, asset_store=store)
 
         with self.assertRaisesRegex(RuntimeError, "database cleanup failed"):
-            await service.run_once(_context(), now=_NOW)
-        result = await service.run_once(_context(), now=_NOW)
+            await service.run_once(now=_NOW)
+        result = await service.run_once(now=_NOW)
 
         self.assertEqual(len(store.deletes), 2)
         self.assertEqual(
@@ -390,7 +389,6 @@ class MaintenanceCleanupServiceTests(unittest.IsolatedAsyncioTestCase):
             await store.put(identity, content, checksum)
 
             result = await _service(repository, asset_store=store).run_once(
-                _context(),
                 now=_NOW,
             )
 
@@ -434,7 +432,6 @@ class MaintenanceCleanupServiceTests(unittest.IsolatedAsyncioTestCase):
             await store.put(retained, content, checksum)
 
             result = await _service(repository, asset_store=store).run_once(
-                _context(),
                 now=_NOW,
             )
 
@@ -445,7 +442,7 @@ class MaintenanceCleanupServiceTests(unittest.IsolatedAsyncioTestCase):
 
 
 class _FileReconciliation:
-    async def run_once(self, context, *, now):
+    async def run_once(self, *, now):
         return FileReconciliationResult()
 
 
@@ -555,6 +552,7 @@ def _service(
     return MaintenanceCleanupService(
         _UnitOfWorkFactory(repository),
         _FileReconciliation(),
+        _WORKSPACE_ID,
         batch_size=batch_size,
         retired_data_grace_seconds=300,
         task_retention_seconds=600,
@@ -606,10 +604,6 @@ def _asset_snapshot(
         media_type="image/png",
         checksum_sha256=checksum_sha256,
     )
-
-
-def _context() -> AuthContext:
-    return AuthContext("principal", "client", _WORKSPACE_ID)
 
 
 if __name__ == "__main__":

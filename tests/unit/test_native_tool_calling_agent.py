@@ -149,8 +149,7 @@ class _AssetReader:
         self.content = content
         self.asset_ids = []
 
-    async def read(self, context, asset_id):
-        del context
+    async def read(self, asset_id):
         self.asset_ids.append(asset_id)
         return self.content
 
@@ -160,8 +159,7 @@ class _AssetMapReader:
         self.contents = {item.snapshot.id: item for item in contents}
         self.asset_ids = []
 
-    async def read(self, context, asset_id):
-        del context
+    async def read(self, asset_id):
         self.asset_ids.append(asset_id)
         return self.contents[asset_id]
 
@@ -184,8 +182,6 @@ def _context() -> ChatExecutionContext:
         user_message_id=uuid4(),
         assistant_message_id=uuid4(),
         index_revision_id=uuid4(),
-        principal_id="principal",
-        client_id="client",
         query="What was the revenue and change?",
         retrieval_strategy=retrieval,
         model_configuration={"resolved_model": "fixed-model", "max_tokens": 2048},

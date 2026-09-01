@@ -43,8 +43,6 @@ def _context() -> ChatExecutionContext:
         user_message_id=uuid4(),
         assistant_message_id=uuid4(),
         index_revision_id=uuid4(),
-        principal_id="principal",
-        client_id="client",
         query="What is frozen?",
         retrieval_strategy=exact_profile(
             top_k=3, rerank_mode=RerankMode.NONE
@@ -178,8 +176,7 @@ class ChatExecutionServiceTests(unittest.IsolatedAsyncioTestCase):
             request = None
             graph_call = None
 
-            async def retrieve(self, auth, request):
-                del auth
+            async def retrieve(self, request):
                 self.request = request
                 return EvidencePack(
                     knowledge_base_id=request.knowledge_base_id,
@@ -187,8 +184,7 @@ class ChatExecutionServiceTests(unittest.IsolatedAsyncioTestCase):
                     strategy=RetrievalStrategy.EXACT_VECTOR,
                 )
 
-            async def search_graph_relations(self, auth, **kwargs):
-                del auth
+            async def search_graph_relations(self, **kwargs):
                 self.graph_call = kwargs
                 return GraphSearchResult(
                     "admitted",
@@ -202,8 +198,8 @@ class ChatExecutionServiceTests(unittest.IsolatedAsyncioTestCase):
                     hop3_count=0,
                 )
 
-            async def search_graph_relations_capable(self, auth, **kwargs):
-                del auth, kwargs
+            async def search_graph_relations_capable(self, **kwargs):
+                del kwargs
                 return True
 
         retrieval = Retrieval()
@@ -235,7 +231,7 @@ class ChatExecutionServiceTests(unittest.IsolatedAsyncioTestCase):
         context = _context()
 
         class Retrieval:
-            async def retrieve(self, auth, request):
+            async def retrieve(self, request):
                 return EvidencePack(
                     knowledge_base_id=request.knowledge_base_id,
                     index_revision_id=uuid4(),
@@ -259,8 +255,7 @@ class ChatExecutionServiceTests(unittest.IsolatedAsyncioTestCase):
         evidence = _graph_evidence(context, chunk_id=chunk_id)
 
         class Retrieval:
-            async def search_graph_relations(self, auth, **kwargs):
-                del auth, kwargs
+            async def search_graph_relations(self, **kwargs):
                 return GraphSearchResult(
                     "no_evidence",
                     (evidence,),
@@ -293,8 +288,7 @@ class ChatExecutionServiceTests(unittest.IsolatedAsyncioTestCase):
         chunk_id = uuid4()
 
         class Retrieval:
-            async def search_graph_relations(self, auth, **kwargs):
-                del auth, kwargs
+            async def search_graph_relations(self, **kwargs):
                 return GraphSearchResult(
                     "admitted",
                     (_graph_evidence(context, chunk_id=chunk_id),),
@@ -314,8 +308,8 @@ class ChatExecutionServiceTests(unittest.IsolatedAsyncioTestCase):
         context = _context()
 
         class Retrieval:
-            async def search_graph_relations_capable(self, auth, **kwargs):
-                del auth, kwargs
+            async def search_graph_relations_capable(self, **kwargs):
+                del kwargs
                 return True
 
         with self.assertRaises(ChatPipelineExecutionError) as raised:
@@ -349,8 +343,7 @@ class ChatExecutionServiceTests(unittest.IsolatedAsyncioTestCase):
         )
 
         class Retrieval:
-            async def retrieve(self, auth, request):
-                del auth
+            async def retrieve(self, request):
                 return EvidencePack(
                     knowledge_base_id=request.knowledge_base_id,
                     index_revision_id=context.index_revision_id,
@@ -383,8 +376,7 @@ class ChatExecutionServiceTests(unittest.IsolatedAsyncioTestCase):
         )
 
         class Retrieval:
-            async def retrieve(self, auth, request):
-                del auth
+            async def retrieve(self, request):
                 return EvidencePack(
                     knowledge_base_id=request.knowledge_base_id,
                     index_revision_id=context.index_revision_id,

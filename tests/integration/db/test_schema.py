@@ -162,6 +162,103 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await runtime.close()
 
+    async def test_dynamic_identity_removal_round_trip_fails_closed(self) -> None:
+        migration = importlib.import_module(
+            "rag_kb.db.migrations.versions.0025_remove_dynamic_identity"
+        )
+        engine = create_async_engine(
+            MIGRATION_DSN.replace("postgresql://", "postgresql+asyncpg://", 1)
+        )
+        workspace_id = UUID(os.environ["RAG_KB__IDENTITY__WORKSPACE_ID"])
+        principal = os.environ["RAG_KB__IDENTITY__PRINCIPAL_ID"]
+        try:
+            async with engine.begin() as migration_connection:
+                await migration_connection.run_sync(
+                    lambda sync_connection: self._invoke_migration(
+                        sync_connection, migration, "downgrade"
+                    )
+                )
+
+            connection = await asyncpg.connect(MIGRATION_DSN)
+            try:
+                await connection.execute(
+                    "INSERT INTO workspace (id, name) VALUES ($1, 'identity-test')",
+                    workspace_id,
+                )
+                kb_id = await connection.fetchval(
+                    """
+                    INSERT INTO knowledge_base (workspace_id, name)
+                    VALUES ($1, 'identity-test-kb') RETURNING id
+                    """,
+                    workspace_id,
+                )
+                session_id = await connection.fetchval(
+                    """
+                    INSERT INTO chat_session (
+                        workspace_id, kb_id, principal_id, title
+                    ) VALUES ($1, $2, 'wrong-principal', 'identity-test')
+                    RETURNING id
+                    """,
+                    workspace_id,
+                    kb_id,
+                )
+            finally:
+                await connection.close()
+
+            with self.assertRaisesRegex(
+                RuntimeError, "dynamic identity removal preflight failed"
+            ):
+                async with engine.begin() as migration_connection:
+                    await migration_connection.run_sync(
+                        lambda sync_connection: self._invoke_migration(
+                            sync_connection, migration, "upgrade"
+                        )
+                    )
+
+            connection = await asyncpg.connect(MIGRATION_DSN)
+            try:
+                await connection.execute(
+                    "UPDATE chat_session SET principal_id = $1 WHERE id = $2",
+                    principal,
+                    session_id,
+                )
+            finally:
+                await connection.close()
+
+            async with engine.begin() as migration_connection:
+                await migration_connection.run_sync(
+                    lambda sync_connection: self._invoke_migration(
+                        sync_connection, migration, "upgrade"
+                    )
+                )
+
+            connection = await asyncpg.connect(MIGRATION_DSN)
+            try:
+                columns = await connection.fetch(
+                    """
+                    SELECT table_name, column_name
+                      FROM information_schema.columns
+                     WHERE table_schema = 'public'
+                       AND table_name IN (
+                           'chat_session', 'chat_run', 'content_mutation'
+                       )
+                       AND column_name IN ('principal_id', 'client_id')
+                    """
+                )
+                self.assertEqual(columns, [])
+                self.assertEqual(
+                    await connection.fetchval(
+                        "SELECT count(*) FROM chat_session WHERE id = $1",
+                        session_id,
+                    ),
+                    1,
+                )
+            finally:
+                await connection.close()
+        finally:
+            await self._restore_dynamic_identity_schema(engine)
+            await engine.dispose()
+
     async def test_retired_final_llm_context_migration_round_trip(self) -> None:
         migration = importlib.import_module(
             "rag_kb.db.migrations.versions.0015_remove_retired_chat_state"
@@ -436,6 +533,23 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
     def _prepare_historical_v3_schema_sync(
         cls, sync_connection, migration
     ) -> None:
+        has_principal = sync_connection.exec_driver_sql(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                 WHERE table_schema = 'public'
+                   AND table_name = 'chat_session'
+                   AND column_name = 'principal_id'
+            )
+            """
+        ).scalar_one()
+        if not has_principal:
+            identity_migration = importlib.import_module(
+                "rag_kb.db.migrations.versions.0025_remove_dynamic_identity"
+            )
+            cls._invoke_migration(
+                sync_connection, identity_migration, "downgrade"
+            )
         # 0024 intentionally removes these checks from the current head. The
         # old 0016 round-trip tests need the historical v3 boundary restored
         # temporarily so they can exercise that migration in isolation.
@@ -452,7 +566,7 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def _restore_current_agent_schema(self, engine) -> None:
-        """Return a historical migration test database to the 0024 head."""
+        """Return a historical migration test database to the 0025 head."""
 
         for module_name in (
             "rag_kb.db.migrations.versions.0022_agent_resource_budget",
@@ -466,6 +580,33 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
                         sync_connection, migration, "upgrade"
                     )
                 )
+        await self._restore_dynamic_identity_schema(engine)
+
+    async def _restore_dynamic_identity_schema(self, engine) -> None:
+        identity_migration = importlib.import_module(
+            "rag_kb.db.migrations.versions.0025_remove_dynamic_identity"
+        )
+        async with engine.begin() as migration_connection:
+            result = await migration_connection.exec_driver_sql(
+                """
+                SELECT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                     WHERE table_schema = 'public'
+                       AND table_name = 'chat_session'
+                       AND column_name = 'principal_id'
+                )
+                """
+            )
+            if not result.scalar_one():
+                return
+            await migration_connection.exec_driver_sql(
+                "TRUNCATE TABLE workspace CASCADE"
+            )
+            await migration_connection.run_sync(
+                lambda sync_connection: self._invoke_migration(
+                    sync_connection, identity_migration, "upgrade"
+                )
+            )
 
     async def test_legacy_chat_workflow_columns_are_removed(self) -> None:
         connection = await asyncpg.connect(MIGRATION_DSN)
@@ -700,6 +841,7 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
                         )
                 except Exception:
                     pass
+            await self._restore_dynamic_identity_schema(engine)
             await engine.dispose()
 
     async def test_native_agent_round_limit_migration_preserves_trace_facts(
@@ -1247,6 +1389,12 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
         first_class_migration = importlib.import_module(
             "rag_kb.db.migrations.versions.0016_first_class_graph_tool"
         )
+        engine = create_async_engine(
+            MIGRATION_DSN.replace("postgresql://", "postgresql+asyncpg://", 1)
+        )
+        await self._prepare_historical_v3_schema(
+            engine, first_class_migration
+        )
         connection = await asyncpg.connect(MIGRATION_DSN)
         try:
             workspace_id, embedding_space_id, kb_id = await self.create_foundation(
@@ -1318,12 +1466,6 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
                 )
 
             # Fixture rows must target the v2 schema.
-            engine = create_async_engine(
-                MIGRATION_DSN.replace("postgresql://", "postgresql+asyncpg://", 1)
-            )
-            await self._prepare_historical_v3_schema(
-                engine, first_class_migration
-            )
             prep_downgraded = False
             try:
                 async with engine.begin() as migration_connection:

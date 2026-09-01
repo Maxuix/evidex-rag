@@ -21,7 +21,6 @@ from rag_kb.adapters.model_api.multimodal_embeddings import (
     TongyiVisionEmbeddingAdapter,
 )
 from apps.api.routers.assets import read_index_asset
-from rag_kb.auth import AuthContext, SingleWorkspaceAccessPolicy
 from rag_kb.adapters.parser.scanned_pages import scanned_surfaces
 from rag_kb.domain import (
     ContentModality,
@@ -229,12 +228,10 @@ class IndexAssetStoreTests(unittest.IsolatedAsyncioTestCase):
             )
             service = IndexAssetService(
                 _AssetUowFactory(snapshot),
-                SingleWorkspaceAccessPolicy(WORKSPACE),
                 store,
             )
-            context = AuthContext("principal", "client", WORKSPACE)
 
-            loaded = await service.read(context, snapshot.id)
+            loaded = await service.read(snapshot.id)
             response = await read_index_asset(
                 SimpleNamespace(
                     app=SimpleNamespace(
@@ -246,7 +243,6 @@ class IndexAssetStoreTests(unittest.IsolatedAsyncioTestCase):
                     )
                 ),
                 snapshot.id,
-                context,
             )
 
             self.assertEqual(loaded.content, content)

@@ -799,8 +799,6 @@ class ContentMutation(Base):
     __tablename__ = "content_mutation"
     __table_args__ = (
         UniqueConstraint(
-            "principal_id",
-            "client_id",
             "endpoint",
             "idempotency_key",
             name="uq_content_mutation_idempotency_scope",
@@ -824,8 +822,6 @@ class ContentMutation(Base):
     workspace_id: Mapped[UUID] = mapped_column(
         ForeignKey("workspace.id", ondelete="RESTRICT"), nullable=False, index=True
     )
-    principal_id: Mapped[str] = mapped_column(String(255), nullable=False)
-    client_id: Mapped[str] = mapped_column(String(255), nullable=False)
     endpoint: Mapped[str] = mapped_column(String(255), nullable=False)
     idempotency_key: Mapped[UUID] = mapped_column(
         PostgreSQLUUID(as_uuid=True), nullable=False
@@ -1557,7 +1553,6 @@ class ChatSession(Base):
     id: Mapped[UUID] = uuid_primary_key()
     workspace_id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), nullable=False)
     kb_id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), nullable=False)
-    principal_id: Mapped[str] = mapped_column(String(255), nullable=False)
     title: Mapped[str | None] = mapped_column(String(512))
     created_at: Mapped[datetime] = created_timestamp()
     updated_at: Mapped[datetime] = updated_timestamp()
@@ -1610,8 +1605,6 @@ class ChatRun(Base):
     __tablename__ = "chat_run"
     __table_args__ = (
         UniqueConstraint(
-            "principal_id",
-            "client_id",
             "endpoint",
             "idempotency_key",
             name="uq_chat_run_idempotency_scope",
@@ -1646,8 +1639,6 @@ class ChatRun(Base):
     status: Mapped[ChatRunStatus] = mapped_column(
         enum_type(ChatRunStatus, "chat_run_status"), nullable=False
     )
-    principal_id: Mapped[str] = mapped_column(String(255), nullable=False)
-    client_id: Mapped[str] = mapped_column(String(255), nullable=False)
     endpoint: Mapped[str] = mapped_column(String(255), nullable=False)
     idempotency_key: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), nullable=False)
     request_hash: Mapped[str] = mapped_column(String(71), nullable=False)

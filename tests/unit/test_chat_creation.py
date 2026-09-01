@@ -8,7 +8,6 @@ from uuid import UUID, uuid4
 from pydantic import ValidationError
 from sqlalchemy.dialects import postgresql
 
-from rag_kb.auth import AuthContext, SingleWorkspaceAccessPolicy
 from rag_kb.domain import (
     ChatSessionBusyError,
     ConversationTurn,
@@ -114,12 +113,10 @@ class ChatCreationServiceTests(unittest.IsolatedAsyncioTestCase):
         chat = _ChatRepository(kb_id=kb_id)
         service = ChatService(
             _Factory(workspace_id, chat, kb_id),
-            SingleWorkspaceAccessPolicy(workspace_id),
             model_configuration={"resolved_model": "fixed-model"},
             retrieval_profile_factory=_profile_factory,
         )
         created = await service.create_run(
-            AuthContext("principal", "client", workspace_id),
             uuid4(),
             session_id=uuid4(),
             kb_id=kb_id,
@@ -139,14 +136,12 @@ class ChatCreationServiceTests(unittest.IsolatedAsyncioTestCase):
         chat = _ChatRepository(kb_id=kb_id)
         service = ChatService(
             _Factory(workspace_id, chat, kb_id),
-            SingleWorkspaceAccessPolicy(workspace_id),
             model_configuration={"resolved_model": "fixed-model"},
             retrieval_profile_factory=_profile_factory,
         )
 
         with self.assertRaises(RetrievalExecutionError) as failure:
             await service.create_run(
-                AuthContext("principal", "client", workspace_id),
                 uuid4(),
                 session_id=uuid4(),
                 kb_id=kb_id,
@@ -180,14 +175,12 @@ class ChatCreationServiceTests(unittest.IsolatedAsyncioTestCase):
 
         service = ChatService(
             _Factory(workspace_id, chat, kb_id),
-            SingleWorkspaceAccessPolicy(workspace_id),
             model_configuration={"resolved_model": "fixed-model"},
             hybrid_enabled=True,
             retrieval_profile_factory=profile_factory,
         )
 
         created = await service.create_run(
-            AuthContext("principal", "client", workspace_id),
             uuid4(),
             session_id=uuid4(),
             kb_id=kb_id,
@@ -216,14 +209,12 @@ class ChatCreationServiceTests(unittest.IsolatedAsyncioTestCase):
         chat = _ChatRepository(kb_id=kb_id)
         service = ChatService(
             _Factory(workspace_id, chat, kb_id),
-            SingleWorkspaceAccessPolicy(workspace_id),
             model_configuration={"resolved_model": "fixed-model"},
             hybrid_enabled=False,
             retrieval_profile_factory=_profile_factory,
         )
 
         created = await service.create_run(
-            AuthContext("principal", "client", workspace_id),
             uuid4(),
             session_id=uuid4(),
             kb_id=kb_id,
@@ -250,13 +241,11 @@ class ChatCreationServiceTests(unittest.IsolatedAsyncioTestCase):
         chat = _ChatRepository(kb_id=kb_id)
         service = ChatService(
             _Factory(workspace_id, chat, kb_id),
-            SingleWorkspaceAccessPolicy(workspace_id),
             model_configuration={"resolved_model": "fixed-model"},
             retrieval_profile_factory=_profile_factory,
         )
 
         created = await service.create_run(
-            AuthContext("principal", "client", workspace_id),
             uuid4(),
             session_id=uuid4(),
             kb_id=kb_id,
@@ -288,13 +277,11 @@ class ChatCreationServiceTests(unittest.IsolatedAsyncioTestCase):
         chat = _ChatRepository(kb_id=kb_id)
         service = ChatService(
             _Factory(workspace_id, chat, kb_id),
-            SingleWorkspaceAccessPolicy(workspace_id),
             model_configuration={"resolved_model": "fixed-model"},
             retrieval_profile_factory=_profile_factory,
         )
 
         result = await service.list_sessions(
-            AuthContext("principal", "client", workspace_id),
             limit=20,
             sort="-updated_at",
             after=None,
@@ -315,13 +302,11 @@ class ChatCreationServiceTests(unittest.IsolatedAsyncioTestCase):
         chat = _ChatRepository(kb_id=kb_id, turns=tuple(reversed(turns)))
         service = ChatService(
             _Factory(workspace_id, chat, kb_id),
-            SingleWorkspaceAccessPolicy(workspace_id),
             model_configuration={"resolved_model": "fixed-model"},
             retrieval_profile_factory=_profile_factory,
         )
 
         created = await service.create_run(
-            AuthContext("principal", "client", workspace_id),
             uuid4(),
             session_id=session_id,
             kb_id=kb_id,
@@ -343,14 +328,12 @@ class ChatCreationServiceTests(unittest.IsolatedAsyncioTestCase):
         chat = _ChatRepository(kb_id=kb_id, busy=True)
         service = ChatService(
             _Factory(workspace_id, chat, kb_id),
-            SingleWorkspaceAccessPolicy(workspace_id),
             model_configuration={"resolved_model": "fixed-model"},
             retrieval_profile_factory=_profile_factory,
         )
 
         with self.assertRaises(ChatSessionBusyError):
             await service.create_run(
-                AuthContext("principal", "client", workspace_id),
                 uuid4(),
                 session_id=uuid4(),
                 kb_id=kb_id,
@@ -372,7 +355,6 @@ class ChatHistoryRepositoryTests(unittest.IsolatedAsyncioTestCase):
 
         turns = await repository.list_completed_turns(
             session_id=uuid4(),
-            principal_id="principal",
             kb_id=uuid4(),
             limit=7,
         )
@@ -403,8 +385,7 @@ class _ChatRepository:
         del scope
         return None
 
-    async def lock_session(self, session_id, *, principal_id):
-        del principal_id
+    async def lock_session(self, session_id):
         self.events.append("lock_session")
         return SimpleNamespace(id=session_id, kb_id=self.kb_id)
 

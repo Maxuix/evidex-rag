@@ -147,16 +147,13 @@ async def serve(*, env_file: Path | None = None) -> None:
 
 
 async def _run_janitor(dependencies, stopped: asyncio.Event, interval: float) -> None:
-    context = dependencies.auth_provider.get_context()
     with bind_log_context(
-        principal_id=context.principal_id,
-        client_id=context.client_id,
-        workspace_id=context.workspace_id,
+        workspace_id=dependencies.settings.identity.workspace_id,
     ):
         while not stopped.is_set():
             try:
-                result = await dependencies.reconciliation_service.run_once(context)
-                secret_result = await dependencies.model_secret_reconciliation_service.run_once(context)
+                result = await dependencies.reconciliation_service.run_once()
+                secret_result = await dependencies.model_secret_reconciliation_service.run_once()
                 changed = any(
                     (
                         result.pending_activated,

@@ -23,7 +23,6 @@ from docling.document_converter import DocumentConverter
 from tests.integration.db import require_database_test_dsns
 from rag_kb.adapters.file_store.assets import LocalIndexAssetStore
 from rag_kb.adapters.file_store.local import LocalFileStore
-from rag_kb.auth import AuthContext, SingleWorkspaceAccessPolicy
 from rag_kb.db import DatabaseProcess, create_database_resources
 from rag_kb.document_processing.profiles import index_profile
 from rag_kb.document_processing.tokenization import count_chunk_tokens
@@ -88,15 +87,12 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
             process=DatabaseProcess.WORKER,
         )
         self.factory = SqlAlchemyUnitOfWorkFactory(self.database.sessions, WORKSPACE)
-        self.policy = SingleWorkspaceAccessPolicy(WORKSPACE)
-        self.context = AuthContext("principal", "client", WORKSPACE)
         self.knowledge_bases = KnowledgeBaseService(
             self.factory,
-            self.policy,
             embedding_space=_embedding(),
             index_profile=_profile(),
         )
-        self.documents = DocumentService(self.factory, self.policy)
+        self.documents = DocumentService(self.factory)
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
         (self.root / "staging").mkdir()
@@ -444,7 +440,7 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def test_late_worker_after_delete_cannot_restore_serving_state(self) -> None:
         kb = await self._create_kb()
         uploaded = await self._upload(kb.id, "guide.txt", "text/plain", b"safe")
-        await self.documents.delete(self.context, uuid4(), uploaded.document.id)
+        await self.documents.delete(uuid4(), uploaded.document.id)
 
         result = await self._pipeline(_Provider()).execute(_command(uploaded))
 
@@ -493,7 +489,7 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
         await asyncio.gather(
             promotion.promote(_promotion_command(uploaded)),
-            self.documents.delete(self.context, uuid4(), uploaded.document.id),
+            self.documents.delete(uuid4(), uploaded.document.id),
         )
 
         self.assertEqual(
@@ -761,7 +757,6 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
         ]
         chat = ChatService(
             self.factory,
-            self.policy,
             model_configuration={
                 "provider_identity": "chat-provider",
                 "logical_endpoint_identity": "chat-endpoint",
@@ -776,9 +771,8 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 exact_profile(top_k=top_k, rerank_mode=rerank_mode)
             ),
         )
-        session = await chat.create_session(self.context, kb_id=kb.id, title=None)
+        session = await chat.create_session(kb_id=kb.id, title=None)
         run = await chat.create_run(
-            self.context,
             uuid4(),
             session_id=session.id,
             kb_id=kb.id,
@@ -829,7 +823,7 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
         )
         try:
             for _ in range(400):
-                state = await chat.get_run(self.context, run.id)
+                state = await chat.get_run(run.id)
                 if state.status == "failed" and provider.calls >= 1:
                     break
                 await asyncio.sleep(0.01)
@@ -894,21 +888,21 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
         provider = _Provider(fail_call=1)
         with self.assertRaises(IndexingExecutionError):
             await self._pipeline(provider).execute(_command(uploaded))
-        service = IndexingJobService(self.factory, self.policy)
+        service = IndexingJobService(self.factory)
 
-        failed = await service.get(self.context, uploaded.job_id)
+        failed = await service.get(uploaded.job_id)
         self.assertEqual((failed.job_status, failed.build_status), ("failed", "failed"))
         self.assertTrue(failed.can_retry)
         key = uuid4()
-        retried = await service.retry(self.context, key, uploaded.job_id)
-        replay = await service.retry(self.context, key, uploaded.job_id)
+        retried = await service.retry(key, uploaded.job_id)
+        replay = await service.retry(key, uploaded.job_id)
 
         self.assertEqual(retried.job_id, uploaded.job_id)
         self.assertEqual(retried.indexed_document_version_id, uploaded.indexed_document_version_id)
         self.assertEqual((retried.job_status, retried.build_status, retried.attempt), ("queued", "queued", 0))
         self.assertEqual(replay.job_id, retried.job_id)
         with self.assertRaises(ResourceStateConflictError):
-            await service.retry(self.context, uuid4(), uploaded.job_id)
+            await service.retry(uuid4(), uploaded.job_id)
 
     async def test_cleanup_removes_only_retired_derived_data_and_expired_job(self) -> None:
         kb = await self._create_kb()
@@ -1277,7 +1271,6 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
         preset: ChunkingPreset = ChunkingPreset.STRUCTURAL_BALANCED_V2,
     ):
         return await self.knowledge_bases.create(
-            self.context,
             uuid4(),
             name=f"kb-{uuid4()}",
             chunking_preset=preset,
@@ -1293,8 +1286,7 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
         *,
         document_id=None,
     ):
-        return await SourceFileService(self.documents, self.store).store_and_activate(
-            self.context,
+        return await SourceFileService(self.documents, self.store, WORKSPACE).store_and_activate(
             uuid4(),
             kb_id=kb_id,
             document_id=document_id,

@@ -10,7 +10,6 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException
 
-from rag_kb.auth import AccessDeniedError
 from rag_kb.domain import (
     ChatSessionBusyError,
     DuplicateDocumentError,
@@ -52,10 +51,6 @@ class ApiProblem(Exception):
 
 def install_problem_handlers(app: FastAPI) -> None:
     app.add_exception_handler(ApiProblem, _api_problem_handler)  # type: ignore[arg-type]
-    app.add_exception_handler(
-        AccessDeniedError,
-        _access_denied_handler,  # type: ignore[arg-type]
-    )
     app.add_exception_handler(
         RequestValidationError,
         _request_validation_handler,  # type: ignore[arg-type]
@@ -340,21 +335,6 @@ async def _api_problem_handler(request: Request, error: ApiProblem) -> JSONRespo
         detail=error.detail,
         retryable=error.retryable,
         errors=error.errors,
-    )
-
-
-async def _access_denied_handler(
-    request: Request,
-    error: AccessDeniedError,
-) -> JSONResponse:
-    del error
-    return problem_response(
-        request,
-        code=ErrorCode.ACCESS_DENIED,
-        status=403,
-        title="Access denied",
-        detail="The requested resource is not authorized for this identity.",
-        retryable=False,
     )
 
 

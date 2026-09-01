@@ -316,6 +316,11 @@ def run_database_tests(unittest_arguments: list[str]) -> int:
         environment = {
             **os.environ,
             **database_environment(port),
+            "RAG_KB__IDENTITY__WORKSPACE_ID": (
+                "01900000-0000-7000-8000-000000000001"
+            ),
+            "RAG_KB__IDENTITY__PRINCIPAL_ID": "database-test-principal",
+            "RAG_KB__IDENTITY__CLIENT_ID": "database-test-client",
             "PYTHONPATH": os.pathsep.join(
                 (str(PROJECT_ROOT / "src"), str(PROJECT_ROOT))
             ),

@@ -387,8 +387,6 @@ def _completed_state(observed: datetime) -> ChatPipelineState:
         user_message_id=uuid4(),
         assistant_message_id=uuid4(),
         index_revision_id=uuid4(),
-        principal_id="principal",
-        client_id="client",
         query="question",
         retrieval_strategy={},
         model_configuration={},

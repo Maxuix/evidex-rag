@@ -74,12 +74,6 @@ class AppSettings(StrictSettingsModel):
 
 
 class IdentitySettings(StrictSettingsModel):
-    principal_id: Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")] = (
-        "development-principal"
-    )
-    client_id: Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")] = (
-        "development-web"
-    )
     workspace_id: UUID = UUID("01900000-0000-7000-8000-000000000001")
 
     @field_validator("workspace_id")
@@ -231,7 +225,7 @@ class ChatDeliverySettings(StrictSettingsModel):
     poll_interval_seconds: PositiveFloat = 1.0
     jitter_ratio: Annotated[float, Field(ge=0, le=0.5)] = 0.2
     max_connection_duration_seconds: PositiveFloat = 600.0
-    max_connections_per_principal_run: PositiveInt = 2
+    max_connections_per_run: PositiveInt = 2
     preview_enabled: bool = False
     preview_queue_size: Annotated[int, Field(ge=8, le=256)] = 64
 

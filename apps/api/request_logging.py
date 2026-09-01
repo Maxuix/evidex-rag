@@ -7,7 +7,6 @@ from time import perf_counter
 
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from rag_kb.auth import AuthContext
 from rag_kb.observability import get_logger, log_event
 
 
@@ -36,8 +35,6 @@ class RequestLoggingMiddleware:
             await self.app(scope, receive, capture_status)
         finally:
             state = scope.get("state", {})
-            context = state.get("auth_context")
-            identity = context if isinstance(context, AuthContext) else None
             duration_ms = round((perf_counter() - started) * 1000, 3)
             path = _request_path(scope)
             level = _request_log_level(path, status_code)
@@ -50,9 +47,6 @@ class RequestLoggingMiddleware:
                 path=path,
                 status_code=status_code,
                 duration_ms=duration_ms,
-                principal_id=identity.principal_id if identity else None,
-                client_id=identity.client_id if identity else None,
-                workspace_id=identity.workspace_id if identity else None,
             )
 
 

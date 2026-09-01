@@ -1202,7 +1202,7 @@ class SqlAlchemyContentMutationRepository:
         self._workspace_id = workspace_id
 
     async def lock(self, scope: IdempotencyScope) -> None:
-        key = f"{scope.principal_id}\x1f{scope.client_id}\x1f{scope.endpoint}\x1f{scope.idempotency_key}"
+        key = f"{scope.endpoint}\x1f{scope.idempotency_key}"
         await self._session.execute(
             text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
             {"key": key},
@@ -1212,8 +1212,6 @@ class SqlAlchemyContentMutationRepository:
         row = await self._session.scalar(
             select(ContentMutationRow).where(
                 ContentMutationRow.workspace_id == self._workspace_id,
-                ContentMutationRow.principal_id == scope.principal_id,
-                ContentMutationRow.client_id == scope.client_id,
                 ContentMutationRow.endpoint == scope.endpoint,
                 ContentMutationRow.idempotency_key == scope.idempotency_key,
             )
@@ -1232,8 +1230,6 @@ class SqlAlchemyContentMutationRepository:
         values = _result_ids(result)
         row = ContentMutationRow(
             workspace_id=self._workspace_id,
-            principal_id=scope.principal_id,
-            client_id=scope.client_id,
             endpoint=scope.endpoint,
             idempotency_key=scope.idempotency_key,
             request_hash=request_hash,
@@ -1251,8 +1247,6 @@ class SqlAlchemyContentMutationRepository:
         row = await self._session.scalar(
             select(ContentMutationRow).where(
                 ContentMutationRow.workspace_id == self._workspace_id,
-                ContentMutationRow.principal_id == scope.principal_id,
-                ContentMutationRow.client_id == scope.client_id,
                 ContentMutationRow.endpoint == scope.endpoint,
                 ContentMutationRow.idempotency_key == scope.idempotency_key,
             ).with_for_update()
@@ -1282,8 +1276,6 @@ class SqlAlchemyContentMutationRepository:
     ) -> ContentMutation:
         row = ContentMutationRow(
             workspace_id=self._workspace_id,
-            principal_id=scope.principal_id,
-            client_id=scope.client_id,
             endpoint=scope.endpoint,
             idempotency_key=scope.idempotency_key,
             request_hash=request_hash,
@@ -1385,8 +1377,6 @@ class SqlAlchemyFileConsistencyRepository:
         return tuple(
             PendingFileMutation(
                 scope=IdempotencyScope(
-                    mutation.principal_id,
-                    mutation.client_id,
                     mutation.endpoint,
                     mutation.idempotency_key,
                 ),
@@ -1499,8 +1489,6 @@ class SqlAlchemyFileConsistencyRepository:
             select(ContentMutationRow)
             .where(
                 ContentMutationRow.workspace_id == self._workspace_id,
-                ContentMutationRow.principal_id == scope.principal_id,
-                ContentMutationRow.client_id == scope.client_id,
                 ContentMutationRow.endpoint == scope.endpoint,
                 ContentMutationRow.idempotency_key == scope.idempotency_key,
             )
@@ -1777,7 +1765,7 @@ def _document(row: DocumentRow, version: DocumentVersionRow | None) -> Document:
 
 def _mutation(row: ContentMutationRow) -> ContentMutation:
     return ContentMutation(
-        scope=IdempotencyScope(row.principal_id, row.client_id, row.endpoint, row.idempotency_key),
+        scope=IdempotencyScope(row.endpoint, row.idempotency_key),
         request_hash=row.request_hash,
         operation=row.operation,
         status=row.status,

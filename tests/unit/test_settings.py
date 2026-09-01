@@ -140,7 +140,7 @@ class SettingsTests(unittest.TestCase):
             600.0,
         )
         self.assertEqual(
-            settings.chat_delivery.max_connections_per_principal_run,
+            settings.chat_delivery.max_connections_per_run,
             2,
         )
         self.assertFalse(settings.chat_delivery.preview_enabled)
@@ -188,7 +188,7 @@ class SettingsTests(unittest.TestCase):
             for chat_delivery in (
                 {"jitter_ratio": 0.6},
                 {"max_connection_duration_seconds": 0},
-                {"max_connections_per_principal_run": 0},
+                {"max_connections_per_run": 0},
                 {"preview_queue_size": 7},
                 {"preview_queue_size": 257},
             ):
@@ -814,13 +814,9 @@ class StartupValidationTests(unittest.TestCase):
                 worker.retrieval_service.hybrid_request_enabled(),
                 settings.retrieval.hybrid_enabled,
             )
-            api_context = api.auth_provider.get_context()
-            worker_context = worker.auth_provider.get_context()
-            self.assertEqual(api_context, worker_context)
-            self.assertEqual(api.unit_of_work().workspace_id, api_context.workspace_id)
             self.assertEqual(
+                api.unit_of_work().workspace_id,
                 worker.unit_of_work().workspace_id,
-                worker_context.workspace_id,
             )
             self.assertEqual(worker.agent._eligibility.min_cosine_similarity, settings.retrieval.min_cosine_similarity)
             self.assertEqual(
@@ -861,10 +857,6 @@ class StartupValidationTests(unittest.TestCase):
             self.assertIs(
                 worker.indexing_scheduler._pipeline,
                 worker.indexing_pipeline,
-            )
-            self.assertEqual(
-                api.access_policy.metadata_filter(api_context).workspace_id,
-                api_context.workspace_id,
             )
             asyncio.run(api.close())
             asyncio.run(worker.close())

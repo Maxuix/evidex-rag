@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Request, status
 
-from apps.api.security import get_auth_context
-from rag_kb.auth import AuthContext
 from rag_kb.domain import ModelProfileBundle, ModelProviderBundle, ModelSelection
 from rag_kb.services.model_settings import ModelSettingsSnapshot
 from rag_kb.schemas import (
@@ -36,9 +33,8 @@ router = APIRouter(tags=["model-settings"])
 )
 async def get_model_settings(
     request: Request,
-    context: Annotated[AuthContext, Depends(get_auth_context)],
 ) -> ModelSettingsResponse:
-    return await _snapshot_response(request, context)
+    return await _snapshot_response(request)
 
 
 @router.post(
@@ -49,10 +45,8 @@ async def get_model_settings(
 async def create_model_provider(
     request: Request,
     payload: ModelProviderCreate,
-    context: Annotated[AuthContext, Depends(get_auth_context)],
 ) -> ModelProviderResponse:
     value = await request.app.state.dependencies.model_settings_service.create_provider(
-        context,
         name=payload.name,
         protocol=payload.protocol,
         base_url=str(payload.base_url),
@@ -62,7 +56,7 @@ async def create_model_provider(
         max_concurrency=payload.max_concurrency,
     )
     available = await request.app.state.dependencies.model_settings_service.provider_secret_available(
-        context, value
+        value
     )
     return _provider_response(value, api_key_configured=available)
 
@@ -75,10 +69,8 @@ async def update_model_provider(
     request: Request,
     provider_id: UUID,
     payload: ModelProviderUpdate,
-    context: Annotated[AuthContext, Depends(get_auth_context)],
 ) -> ModelProviderResponse:
     value = await request.app.state.dependencies.model_settings_service.update_provider(
-        context,
         provider_id,
         name=payload.name,
         protocol=payload.protocol,
@@ -92,7 +84,7 @@ async def update_model_provider(
         enabled=payload.enabled,
     )
     available = await request.app.state.dependencies.model_settings_service.provider_secret_available(
-        context, value
+        value
     )
     return _provider_response(value, api_key_configured=available)
 
@@ -104,11 +96,9 @@ async def update_model_provider(
 async def list_provider_models(
     request: Request,
     provider_id: UUID,
-    context: Annotated[AuthContext, Depends(get_auth_context)],
 ) -> ModelCatalogResponse:
     models = (
         await request.app.state.dependencies.model_settings_service.list_provider_models(
-            context,
             provider_id,
         )
     )
@@ -123,10 +113,8 @@ async def list_provider_models(
 async def create_model_profile(
     request: Request,
     payload: ModelProfileCreate,
-    context: Annotated[AuthContext, Depends(get_auth_context)],
 ) -> ModelProfileResponse:
     value = await request.app.state.dependencies.model_settings_service.create_profile(
-        context,
         provider_id=payload.provider_id,
         name=payload.name,
         kind=payload.kind,
@@ -134,7 +122,7 @@ async def create_model_profile(
         parameters=payload.parameters.model_dump(mode="json"),
     )
     available = await request.app.state.dependencies.model_settings_service.profile_secret_available(
-        context, value
+        value
     )
     return _profile_response(value, provider_secret_available=available)
 
@@ -146,14 +134,12 @@ async def create_model_profile(
 async def validate_model_profile(
     request: Request,
     profile_id: UUID,
-    context: Annotated[AuthContext, Depends(get_auth_context)],
 ) -> ModelProfileResponse:
     value = await request.app.state.dependencies.model_settings_service.validate_profile(
-        context,
         profile_id,
     )
     available = await request.app.state.dependencies.model_settings_service.profile_secret_available(
-        context, value
+        value
     )
     return _profile_response(value, provider_secret_available=available)
 
@@ -166,10 +152,8 @@ async def update_model_profile(
     request: Request,
     profile_id: UUID,
     payload: ModelProfileUpdate,
-    context: Annotated[AuthContext, Depends(get_auth_context)],
 ) -> ModelProfileResponse:
     value = await request.app.state.dependencies.model_settings_service.update_profile(
-        context,
         profile_id,
         provider_id=payload.provider_id,
         name=payload.name,
@@ -182,7 +166,7 @@ async def update_model_profile(
         enabled=payload.enabled,
     )
     available = await request.app.state.dependencies.model_settings_service.profile_secret_available(
-        context, value
+        value
     )
     return _profile_response(value, provider_secret_available=available)
 
@@ -194,10 +178,8 @@ async def update_model_profile(
 async def update_model_selection(
     request: Request,
     payload: ModelSelectionUpdate,
-    context: Annotated[AuthContext, Depends(get_auth_context)],
 ) -> ModelSelectionResponse:
     value = await request.app.state.dependencies.model_settings_service.update_selection(
-        context,
         chat_profile_revision_id=payload.chat_profile_revision_id,
         text_embedding_profile_revision_id=(
             payload.text_embedding_profile_revision_id
@@ -211,10 +193,9 @@ async def update_model_selection(
 
 async def _snapshot_response(
     request: Request,
-    context: AuthContext,
 ) -> ModelSettingsResponse:
     snapshot = (
-        await request.app.state.dependencies.model_settings_service.snapshot(context)
+        await request.app.state.dependencies.model_settings_service.snapshot()
     )
     return _settings_response(snapshot)
 

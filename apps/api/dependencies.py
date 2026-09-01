@@ -32,7 +32,6 @@ from rag_kb.adapters.model_api.multimodal_embeddings import (
 )
 from rag_kb.adapters.model_secrets.local import LocalModelSecretStore
 from rag_kb.adapters.vector_store.pgvector import PgVectorStore
-from rag_kb.auth import DevelopmentAuthProvider, SingleWorkspaceAccessPolicy
 from rag_kb.config import (
     Settings,
     StartupValidation,
@@ -99,8 +98,6 @@ class ApiDependencies:
     startup: StartupValidation
     database: DatabaseResources
     unit_of_work: SqlAlchemyUnitOfWorkFactory
-    auth_provider: DevelopmentAuthProvider
-    access_policy: SingleWorkspaceAccessPolicy
     knowledge_base_service: KnowledgeBaseService
     document_service: DocumentService
     file_store: LocalFileStore
@@ -169,7 +166,6 @@ def build_api_dependencies(
         database.sessions,
         identity.workspace_id,
     )
-    access_policy = SingleWorkspaceAccessPolicy(identity.workspace_id)
     model_secret_store = LocalModelSecretStore(
         resolved_settings.model_secrets.root_path
     )
@@ -178,7 +174,6 @@ def build_api_dependencies(
     )
     model_settings_service = ModelSettingsService(
         unit_of_work,
-        access_policy,
         model_secret_store,
         profile_validator=_validate_model_profile,
         provider_catalog=OpenAICompatibleModelCatalogAdapter().list_models,
@@ -203,7 +198,6 @@ def build_api_dependencies(
     graph_store = PgGraphStore(database.sessions)
     content_services = build_content_services(
         unit_of_work,
-        access_policy,
         embedding,
         multimodal_settings,
     )
@@ -212,7 +206,7 @@ def build_api_dependencies(
         resolved_settings.file_store.final_path,
     )
     retrieval_service = RetrievalService(
-        access_policy,
+        identity.workspace_id,
         embedding_provider,
         vector_store,
         candidate_multiplier=resolved_settings.retrieval.candidate_multiplier,
@@ -260,7 +254,6 @@ def build_api_dependencies(
     )
     chat_service = ChatService(
         unit_of_work,
-        access_policy,
         model_configuration=(
             chat_model_configuration(legacy_models.chat)
             if legacy_models is not None
@@ -299,41 +292,34 @@ def build_api_dependencies(
         startup=startup,
         database=database,
         unit_of_work=unit_of_work,
-        auth_provider=DevelopmentAuthProvider(
-            deployment_profile=resolved_settings.app.deployment_profile.value,
-            principal_id=identity.principal_id,
-            client_id=identity.client_id,
-            workspace_id=identity.workspace_id,
-        ),
-        access_policy=access_policy,
         knowledge_base_service=content_services.knowledge_bases,
         document_service=content_services.documents,
         file_store=file_store,
         asset_store=asset_store,
         index_asset_service=IndexAssetService(
             unit_of_work,
-            access_policy,
             asset_store,
         ),
         source_file_service=SourceFileService(
             content_services.documents,
             file_store,
+            identity.workspace_id,
             MarkdownMediaNormalizer(),
         ),
         file_admission_service=FileAdmissionService(AdmissionLimits()),
-        indexing_job_service=IndexingJobService(unit_of_work, access_policy),
+        indexing_job_service=IndexingJobService(unit_of_work),
         embedding_provider=embedding_provider,
         multimodal_embedding_provider=multimodal_embedding_provider,
         vector_store=vector_store,
         retrieval_service=retrieval_service,
         graph_configuration_service=GraphConfigurationService(
-            unit_of_work, access_policy, graphiti_runtime
+            unit_of_work, graphiti_runtime
         ),
         chat_service=chat_service,
         chat_terminal_watcher=chat_terminal_watcher,
         chat_event_watcher=ChatEventWatcher(chat_terminal_watcher),
         chat_sse_connection_limiter=ChatSseConnectionLimiter(
-            chat_delivery.max_connections_per_principal_run
+            chat_delivery.max_connections_per_run
         ),
         chat_preview_broker=chat_preview_broker,
         model_secret_store=model_secret_store,

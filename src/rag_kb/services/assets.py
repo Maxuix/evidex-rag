@@ -6,7 +6,6 @@ import hashlib
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from rag_kb.auth import AuthContext, SingleWorkspaceAccessPolicy
 from rag_kb.domain import (
     IndexAssetContent,
     ResourceNotFoundError,
@@ -23,16 +22,12 @@ class IndexAssetService:
     def __init__(
         self,
         unit_of_work: SqlAlchemyUnitOfWorkFactory,
-        access_policy: SingleWorkspaceAccessPolicy,
         asset_store: IndexAssetStore,
     ) -> None:
         self._unit_of_work = unit_of_work
-        self._access_policy = access_policy
         self._asset_store = asset_store
 
-    async def read(self, context: AuthContext, asset_id: UUID) -> IndexAssetContent:
-        metadata = self._access_policy.metadata_filter(context)
-
+    async def read(self, asset_id: UUID) -> IndexAssetContent:
         async def load(uow: SqlAlchemyUnitOfWork):
             return await uow.indexing.get_asset(asset_id)
 
@@ -41,10 +36,9 @@ class IndexAssetService:
         )
         if snapshot is None:
             raise ResourceNotFoundError("index asset was not found")
-        self._access_policy.require_workspace(context, snapshot.workspace_id)
         identity = self._asset_store.parse_uri(snapshot.storage_uri)
         if (
-            identity.workspace_id != metadata.workspace_id
+            identity.workspace_id != snapshot.workspace_id
             or identity.indexed_document_version_id
             != snapshot.indexed_document_version_id
         ):

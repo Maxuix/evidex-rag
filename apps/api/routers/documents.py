@@ -8,7 +8,7 @@ from typing import Annotated, Literal
 import unicodedata
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, Query, Request
+from fastapi import APIRouter, Header, Query, Request
 
 from apps.api.errors import ApiProblem
 from apps.api.idempotency import RequiredIdempotencyKey
@@ -19,9 +19,7 @@ from apps.api.pagination import (
     decode_cursor,
     encode_cursor,
 )
-from apps.api.security import get_auth_context
 from apps.api.upload_metadata import resolve_upload_metadata
-from rag_kb.auth import AuthContext
 from rag_kb.domain import (
     Document,
     DocumentChunk,
@@ -77,7 +75,6 @@ async def upload_document(
     request: Request,
     kb_id: UUID,
     idempotency_key: RequiredIdempotencyKey,
-    context: Annotated[AuthContext, Depends(get_auth_context)],
     encoded_metadata: Annotated[
         str,
         Header(alias="X-Document-Metadata", min_length=1, max_length=4096),
@@ -88,7 +85,6 @@ async def upload_document(
     )
     return await _accept_upload(
         request,
-        context=context,
         idempotency_key=idempotency_key,
         kb_id=kb_id,
         document_id=None,
@@ -109,7 +105,6 @@ async def upload_document_version(
     request: Request,
     document_id: UUID,
     idempotency_key: RequiredIdempotencyKey,
-    context: Annotated[AuthContext, Depends(get_auth_context)],
     encoded_metadata: Annotated[
         str,
         Header(alias="X-Document-Metadata", min_length=1, max_length=4096),
@@ -119,11 +114,10 @@ async def upload_document_version(
         encoded_metadata=encoded_metadata,
     )
     document = await request.app.state.dependencies.document_service.get(
-        context, document_id
+        document_id
     )
     return await _accept_upload(
         request,
-        context=context,
         idempotency_key=idempotency_key,
         kb_id=document.kb_id,
         document_id=document_id,
@@ -141,14 +135,13 @@ async def upload_document_version(
 async def list_documents(
     request: Request,
     kb_id: UUID,
-    context: Annotated[AuthContext, Depends(get_auth_context)],
     limit: Annotated[int, Query(ge=1, le=API_PAGINATION_MAX_LIMIT)] = API_PAGINATION_DEFAULT_LIMIT,
     cursor: Annotated[str | None, Query(min_length=1, max_length=API_CURSOR_MAX_LENGTH)] = None,
     sort: DocumentSort = "created_at",
 ) -> DocumentPage:
     after = _after(cursor, sort)
     page = await request.app.state.dependencies.document_service.list(
-        context, kb_id=kb_id, limit=limit, sort=sort, after=after
+        kb_id=kb_id, limit=limit, sort=sort, after=after
     )
     next_cursor = (
         encode_cursor(CursorPayload(sort=sort, values=page.next_values))
@@ -168,12 +161,10 @@ async def list_documents(
 async def inspect_document_chunks(
     request: Request,
     document_id: UUID,
-    context: Annotated[AuthContext, Depends(get_auth_context)],
     limit: Annotated[int, Query(ge=1, le=API_PAGINATION_MAX_LIMIT)] = API_PAGINATION_DEFAULT_LIMIT,
     cursor: Annotated[str | None, Query(min_length=1, max_length=API_CURSOR_MAX_LENGTH)] = None,
 ) -> DocumentChunkInspectionResponse:
     inspection = await request.app.state.dependencies.document_service.inspect_chunks(
-        context,
         document_id,
         limit=limit,
         after=_chunk_after(cursor),
@@ -201,10 +192,8 @@ async def delete_document_chunk(
     request: Request,
     document_id: UUID,
     chunk_id: UUID,
-    context: Annotated[AuthContext, Depends(get_auth_context)],
 ) -> DocumentChunkDeleteResponse:
     excluded_at = await request.app.state.dependencies.document_service.exclude_chunk(
-        context,
         document_id=document_id,
         chunk_id=chunk_id,
     )
@@ -222,10 +211,9 @@ async def delete_document_chunk(
 async def get_document(
     request: Request,
     document_id: UUID,
-    context: Annotated[AuthContext, Depends(get_auth_context)],
 ) -> DocumentDetailResponse:
     detail = await request.app.state.dependencies.document_service.get_detail(
-        context, document_id
+        document_id
     )
     document = _response(detail.document)
     summary = detail.index
@@ -263,10 +251,9 @@ async def delete_document(
     request: Request,
     document_id: UUID,
     idempotency_key: RequiredIdempotencyKey,
-    context: Annotated[AuthContext, Depends(get_auth_context)],
 ) -> DocumentDeleteResponse:
     result = await request.app.state.dependencies.document_service.delete(
-        context, idempotency_key, document_id
+        idempotency_key, document_id
     )
     return _delete_response(result)
 
@@ -392,7 +379,6 @@ def _delete_response(value: DocumentMutationResult) -> DocumentDeleteResponse:
 async def _accept_upload(
     request: Request,
     *,
-    context: AuthContext,
     idempotency_key: UUID,
     kb_id: UUID,
     document_id: UUID | None,
@@ -418,7 +404,6 @@ async def _accept_upload(
     size = 0
     try:
         knowledge_base = await dependencies.knowledge_base_service.get(
-            context,
             kb_id,
         )
         markdown_v2 = (
@@ -444,7 +429,6 @@ async def _accept_upload(
         ):
             raise FileAdmissionError(ErrorCode.PARSER_NOT_CONFIGURED)
         result = await dependencies.source_file_service.store_and_activate(
-            context,
             idempotency_key,
             kb_id=kb_id,
             document_id=document_id,

@@ -463,8 +463,6 @@ class SqlAlchemyChatRepository:
             user_message_id=run.user_message_id,
             assistant_message_id=assistant_message.id,
             index_revision_id=run.index_revision_id,
-            principal_id=run.principal_id,
-            client_id=run.client_id,
             query=user_message.content,
             retrieval_strategy=run.retrieval_strategy,
             model_configuration=run.model_configuration,
@@ -473,40 +471,31 @@ class SqlAlchemyChatRepository:
             agent_configuration=dict(run.agent_configuration),
         )
 
-    async def create_session(
-        self, *, kb_id: UUID, principal_id: str, title: str | None
-    ) -> ChatSession:
+    async def create_session(self, *, kb_id: UUID, title: str | None) -> ChatSession:
         row = ChatSessionRow(
             workspace_id=self._workspace_id,
             kb_id=kb_id,
-            principal_id=principal_id,
             title=title,
         )
         self._session.add(row)
         await self._session.flush()
         return _session(row)
 
-    async def get_session(
-        self, session_id: UUID, *, principal_id: str
-    ) -> ChatSession | None:
+    async def get_session(self, session_id: UUID) -> ChatSession | None:
         row = await self._session.scalar(
             select(ChatSessionRow).where(
                 ChatSessionRow.workspace_id == self._workspace_id,
                 ChatSessionRow.id == session_id,
-                ChatSessionRow.principal_id == principal_id,
             )
         )
         return _session(row) if row is not None else None
 
-    async def lock_session(
-        self, session_id: UUID, *, principal_id: str
-    ) -> ChatSession | None:
+    async def lock_session(self, session_id: UUID) -> ChatSession | None:
         row = await self._session.scalar(
             select(ChatSessionRow)
             .where(
                 ChatSessionRow.workspace_id == self._workspace_id,
                 ChatSessionRow.id == session_id,
-                ChatSessionRow.principal_id == principal_id,
             )
             .with_for_update()
         )
@@ -531,7 +520,6 @@ class SqlAlchemyChatRepository:
         self,
         *,
         session_id: UUID,
-        principal_id: str,
         kb_id: UUID,
         limit: int,
     ) -> tuple[ConversationTurn, ...]:
@@ -552,7 +540,6 @@ class SqlAlchemyChatRepository:
                     ChatRunRow.workspace_id == self._workspace_id,
                     ChatRunRow.session_id == session_id,
                     ChatRunRow.kb_id == kb_id,
-                    ChatRunRow.principal_id == principal_id,
                     ChatRunRow.status == ChatRunStatus.COMPLETED,
                     user.workspace_id == self._workspace_id,
                     user.session_id == session_id,
@@ -578,7 +565,6 @@ class SqlAlchemyChatRepository:
     async def list_sessions(
         self,
         *,
-        principal_id: str,
         limit: int,
         sort: str,
         after: tuple[str, ...] | None,
@@ -592,7 +578,6 @@ class SqlAlchemyChatRepository:
         }[field]
         statement = select(ChatSessionRow).where(
             ChatSessionRow.workspace_id == self._workspace_id,
-            ChatSessionRow.principal_id == principal_id,
         )
         if kb_id is not None:
             statement = statement.where(ChatSessionRow.kb_id == kb_id)
@@ -621,7 +606,6 @@ class SqlAlchemyChatRepository:
         self,
         *,
         session_id: UUID,
-        principal_id: str,
         limit: int,
         sort: str,
         after: tuple[str, ...] | None,
@@ -630,7 +614,6 @@ class SqlAlchemyChatRepository:
             select(ChatSessionRow.id).where(
                 ChatSessionRow.workspace_id == self._workspace_id,
                 ChatSessionRow.id == session_id,
-                ChatSessionRow.principal_id == principal_id,
             )
         )
         if authorized_session is None:
@@ -672,18 +655,13 @@ class SqlAlchemyChatRepository:
         await self._session.execute(
             text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
             {
-                "key": (
-                    f"chat-run:{scope.principal_id}:{scope.client_id}:"
-                    f"{scope.endpoint}:{scope.idempotency_key}"
-                )
+                "key": f"chat-run:{scope.endpoint}:{scope.idempotency_key}"
             },
         )
 
     async def get_run_by_scope(self, scope: IdempotencyScope) -> ChatRun | None:
         statement = _run_statement().where(
             ChatRunRow.workspace_id == self._workspace_id,
-            ChatRunRow.principal_id == scope.principal_id,
-            ChatRunRow.client_id == scope.client_id,
             ChatRunRow.endpoint == scope.endpoint,
             ChatRunRow.idempotency_key == scope.idempotency_key,
         )
@@ -692,14 +670,10 @@ class SqlAlchemyChatRepository:
             return None
         return _run_rows(rows)
 
-    async def get_run(
-        self, run_id: UUID, *, principal_id: str, client_id: str
-    ) -> ChatRun | None:
+    async def get_run(self, run_id: UUID) -> ChatRun | None:
         statement = _run_statement().where(
             ChatRunRow.workspace_id == self._workspace_id,
             ChatRunRow.id == run_id,
-            ChatRunRow.principal_id == principal_id,
-            ChatRunRow.client_id == client_id,
         )
         rows = (await self._session.execute(statement)).all()
         if not rows:
@@ -737,8 +711,6 @@ class SqlAlchemyChatRepository:
             user_message_id=user_message.id,
             index_revision_id=index_revision_id,
             status=ChatRunStatus.QUEUED,
-            principal_id=scope.principal_id,
-            client_id=scope.client_id,
             endpoint=scope.endpoint,
             idempotency_key=scope.idempotency_key,
             request_hash=request_hash,
@@ -1099,7 +1071,6 @@ def _session(row: ChatSessionRow) -> ChatSession:
         id=row.id,
         workspace_id=row.workspace_id,
         kb_id=row.kb_id,
-        principal_id=row.principal_id,
         title=row.title,
         created_at=row.created_at,
         updated_at=row.updated_at,
@@ -1137,8 +1108,6 @@ def _run(
         assistant_message_id=assistant.id,
         index_revision_id=run.index_revision_id,
         status=run.status.value,
-        principal_id=run.principal_id,
-        client_id=run.client_id,
         endpoint=run.endpoint,
         idempotency_key=run.idempotency_key,
         request_hash=run.request_hash,

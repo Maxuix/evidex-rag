@@ -5,7 +5,6 @@ import unittest
 from datetime import UTC, datetime
 from uuid import UUID
 
-from rag_kb.auth import AuthContext
 from rag_kb.domain import (
     ChatProgressActivity,
     ChatProgressSnapshot,
@@ -23,7 +22,6 @@ from rag_kb.services.chat_delivery import (
 
 RUN_ID = UUID("01900000-0000-7000-8000-000000000701")
 WORKSPACE = UUID("01900000-0000-7000-8000-000000000702")
-CONTEXT = AuthContext("principal", "client", WORKSPACE)
 
 
 class ChatTerminalWatcherTests(unittest.IsolatedAsyncioTestCase):
@@ -41,7 +39,6 @@ class ChatTerminalWatcherTests(unittest.IsolatedAsyncioTestCase):
         results = [
             item
             async for item in watcher.watch(
-                CONTEXT,
                 RUN_ID,
                 initial=_run("completed"),
                 disconnected=_connected,
@@ -69,7 +66,6 @@ class ChatTerminalWatcherTests(unittest.IsolatedAsyncioTestCase):
         results = [
             item
             async for item in watcher.watch(
-                CONTEXT,
                 RUN_ID,
                 initial=_run("queued"),
                 disconnected=_connected,
@@ -91,7 +87,6 @@ class ChatTerminalWatcherTests(unittest.IsolatedAsyncioTestCase):
         disconnected = [
             item
             async for item in watcher.watch(
-                CONTEXT,
                 RUN_ID,
                 initial=_run("queued"),
                 disconnected=_disconnected,
@@ -113,7 +108,6 @@ class ChatTerminalWatcherTests(unittest.IsolatedAsyncioTestCase):
         results = [
             item
             async for item in timed.watch(
-                CONTEXT,
                 RUN_ID,
                 initial=_run("queued"),
                 disconnected=_connected,
@@ -207,21 +201,19 @@ class ChatEventWatcherTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ChatSseConnectionLimiterTests(unittest.IsolatedAsyncioTestCase):
-    async def test_limit_is_atomic_per_principal_and_run_and_releases(self) -> None:
+    async def test_limit_is_atomic_per_run_and_releases(self) -> None:
         limiter = ChatSseConnectionLimiter(2)
 
-        self.assertTrue(await limiter.acquire("principal", RUN_ID))
-        self.assertTrue(await limiter.acquire("principal", RUN_ID))
-        self.assertFalse(await limiter.acquire("principal", RUN_ID))
-        self.assertTrue(await limiter.acquire("other", RUN_ID))
-        self.assertEqual(await limiter.active("principal", RUN_ID), 2)
+        self.assertTrue(await limiter.acquire(RUN_ID))
+        self.assertTrue(await limiter.acquire(RUN_ID))
+        self.assertFalse(await limiter.acquire(RUN_ID))
+        self.assertEqual(await limiter.active(RUN_ID), 2)
 
-        await limiter.release("principal", RUN_ID)
-        self.assertTrue(await limiter.acquire("principal", RUN_ID))
-        await limiter.release("principal", RUN_ID)
-        await limiter.release("principal", RUN_ID)
-        await limiter.release("other", RUN_ID)
-        self.assertEqual(await limiter.active("principal", RUN_ID), 0)
+        await limiter.release(RUN_ID)
+        self.assertTrue(await limiter.acquire(RUN_ID))
+        await limiter.release(RUN_ID)
+        await limiter.release(RUN_ID)
+        self.assertEqual(await limiter.active(RUN_ID), 0)
 
 
 class _Chat:
@@ -229,9 +221,9 @@ class _Chat:
         self.results = list(results)
         self.calls = 0
 
-    async def get_run(self, context, run_id):
+    async def get_run(self, run_id):
         self.calls += 1
-        self.assert_scope = (context, run_id)
+        self.assert_scope = run_id
         if not self.results:
             raise AssertionError("unexpected status reload")
         return self.results.pop(0)
@@ -295,7 +287,6 @@ async def _collect_events(
     return [
         event
         async for event in watcher.watch(
-            CONTEXT,
             RUN_ID,
             initial=initial,
             disconnected=_connected,
@@ -328,8 +319,6 @@ def _run(status: str) -> ChatRun:
         assistant_message_id=UUID("01900000-0000-7000-8000-000000000706"),
         index_revision_id=UUID("01900000-0000-7000-8000-000000000707"),
         status=status,
-        principal_id="principal",
-        client_id="client",
         endpoint="POST /api/v1/chat/runs",
         idempotency_key=UUID("01900000-0000-7000-8000-000000000708"),
         request_hash="sha256:" + "1" * 64,

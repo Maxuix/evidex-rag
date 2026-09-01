@@ -9,7 +9,6 @@ import random
 import time
 from uuid import UUID
 
-from rag_kb.auth import AuthContext
 from rag_kb.domain import ChatPreviewEvent, ChatRun
 from rag_kb.ports.chat_preview import ChatPreviewSubscription
 from rag_kb.services.chat import ChatService
@@ -47,7 +46,6 @@ class ChatTerminalWatcher:
 
     async def watch(
         self,
-        context: AuthContext,
         run_id: UUID,
         *,
         initial: ChatRun,
@@ -75,7 +73,7 @@ class ChatTerminalWatcher:
                 return
             if self._monotonic() - started_at >= self._max_duration_seconds:
                 return
-            current = await self._chat.get_run(context, run_id)
+            current = await self._chat.get_run(run_id)
 
 
 class ChatEventWatcher:
@@ -86,7 +84,6 @@ class ChatEventWatcher:
 
     async def watch(
         self,
-        context: AuthContext,
         run_id: UUID,
         *,
         initial: ChatRun,
@@ -94,7 +91,6 @@ class ChatEventWatcher:
         preview: ChatPreviewSubscription | None,
     ) -> AsyncIterator[ChatPreviewEvent | ChatRun]:
         terminal_iterator = self._terminal.watch(
-            context,
             run_id,
             initial=initial,
             disconnected=disconnected,
@@ -151,42 +147,39 @@ class ChatEventWatcher:
 
 
 class ChatSseConnectionLimiter:
-    """Process-local P1A limit for one principal and ChatRun pair."""
+    """Process-local connection limit for one ChatRun."""
 
-    def __init__(self, max_connections_per_principal_run: int) -> None:
-        if max_connections_per_principal_run < 1:
+    def __init__(self, max_connections_per_run: int) -> None:
+        if max_connections_per_run < 1:
             raise ValueError("chat SSE connection limit must be positive")
-        self._maximum = max_connections_per_principal_run
-        self._counts: dict[tuple[str, UUID], int] = {}
+        self._maximum = max_connections_per_run
+        self._counts: dict[UUID, int] = {}
         self._lock = asyncio.Lock()
 
-    async def acquire(self, principal_id: str, run_id: UUID) -> bool:
-        key = (principal_id, run_id)
+    async def acquire(self, run_id: UUID) -> bool:
         async with self._lock:
-            current = self._counts.get(key, 0)
+            current = self._counts.get(run_id, 0)
             if current >= self._maximum:
                 return False
-            self._counts[key] = current + 1
+            self._counts[run_id] = current + 1
             return True
 
-    async def release(self, principal_id: str, run_id: UUID) -> None:
-        key = (principal_id, run_id)
+    async def release(self, run_id: UUID) -> None:
         async with self._lock:
-            current = self._counts.get(key)
+            current = self._counts.get(run_id)
             if current is None:
                 raise RuntimeError("chat SSE connection was not acquired")
             if current == 1:
-                del self._counts[key]
+                del self._counts[run_id]
             else:
-                self._counts[key] = current - 1
+                self._counts[run_id] = current - 1
 
-    async def active(self, principal_id: str, run_id: UUID) -> int:
+    async def active(self, run_id: UUID) -> int:
         async with self._lock:
-            return self._counts.get((principal_id, run_id), 0)
+            return self._counts.get(run_id, 0)
 
 
 @dataclass(frozen=True, slots=True)
 class ChatSseSubscription:
-    context: AuthContext
     run: ChatRun
     preview: ChatPreviewSubscription | None = None

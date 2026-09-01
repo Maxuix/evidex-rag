@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi import APIRouter, Query, Request, status
 
 from apps.api.errors import ApiProblem
 from apps.api.idempotency import RequiredIdempotencyKey
@@ -17,8 +17,6 @@ from apps.api.pagination import (
     decode_cursor,
     encode_cursor,
 )
-from apps.api.security import get_auth_context
-from rag_kb.auth import AuthContext
 from rag_kb.domain import KnowledgeBase
 from rag_kb.schemas import (
     CursorPayload,
@@ -48,10 +46,8 @@ async def create_knowledge_base(
     request: Request,
     payload: KnowledgeBaseCreate,
     idempotency_key: RequiredIdempotencyKey,
-    context: Annotated[AuthContext, Depends(get_auth_context)],
 ) -> KnowledgeBaseResponse:
     created = await request.app.state.dependencies.knowledge_base_service.create(
-        context,
         idempotency_key,
         name=payload.name,
         parsing_preset=payload.parsing.preset,
@@ -72,14 +68,13 @@ async def create_knowledge_base(
 )
 async def list_knowledge_bases(
     request: Request,
-    context: Annotated[AuthContext, Depends(get_auth_context)],
     limit: Annotated[int, Query(ge=1, le=API_PAGINATION_MAX_LIMIT)] = API_PAGINATION_DEFAULT_LIMIT,
     cursor: Annotated[str | None, Query(min_length=1, max_length=API_CURSOR_MAX_LENGTH)] = None,
     sort: KnowledgeBaseSort = "created_at",
 ) -> KnowledgeBasePage:
     after = _after(cursor, sort)
     page = await request.app.state.dependencies.knowledge_base_service.list(
-        context, limit=limit, sort=sort, after=after
+        limit=limit, sort=sort, after=after
     )
     next_cursor = (
         encode_cursor(CursorPayload(sort=sort, values=page.next_values))
@@ -99,10 +94,9 @@ async def list_knowledge_bases(
 async def get_knowledge_base(
     request: Request,
     kb_id: UUID,
-    context: Annotated[AuthContext, Depends(get_auth_context)],
 ) -> KnowledgeBaseResponse:
     return _response(
-        await request.app.state.dependencies.knowledge_base_service.get(context, kb_id)
+        await request.app.state.dependencies.knowledge_base_service.get(kb_id)
     )
 
 
@@ -115,10 +109,8 @@ async def update_knowledge_base(
     kb_id: UUID,
     payload: KnowledgeBaseUpdate,
     idempotency_key: RequiredIdempotencyKey,
-    context: Annotated[AuthContext, Depends(get_auth_context)],
 ) -> KnowledgeBaseResponse:
     updated = await request.app.state.dependencies.knowledge_base_service.update(
-        context,
         idempotency_key,
         kb_id,
         name=payload.name,
@@ -139,10 +131,8 @@ async def delete_knowledge_base(
     request: Request,
     kb_id: UUID,
     idempotency_key: RequiredIdempotencyKey,
-    context: Annotated[AuthContext, Depends(get_auth_context)],
 ) -> KnowledgeBaseDeleteResponse:
     deleted = await request.app.state.dependencies.knowledge_base_service.delete(
-        context,
         idempotency_key,
         kb_id,
     )

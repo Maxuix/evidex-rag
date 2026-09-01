@@ -10,12 +10,6 @@ from sqlalchemy.dialects import postgresql
 
 from rag_kb.adapters.lexical_store.postgres import PgLexicalStore
 from rag_kb.adapters.vector_store.pgvector import PgVectorStore
-from rag_kb.auth import (
-    AccessDeniedError,
-    AuthContext,
-    MetadataFilter,
-    SingleWorkspaceAccessPolicy,
-)
 from rag_kb.domain import (
     AdjacentChunkHit,
     AdjacentChunkResult,
@@ -180,7 +174,7 @@ class RelationHydrationRepositoryQueryTests(unittest.IsolatedAsyncioTestCase):
 class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
     def test_hybrid_request_enabled_requires_store_and_flag(self) -> None:
         service = RetrievalService(
-            SingleWorkspaceAccessPolicy(WORKSPACE),
+            WORKSPACE,
             _Provider(),
             _Store(VectorSearchResult(REVISION_ID)),
             hybrid_enabled=True,
@@ -196,7 +190,7 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         enabled = RetrievalService(
-            SingleWorkspaceAccessPolicy(WORKSPACE),
+            WORKSPACE,
             _Provider(),
             _Store(VectorSearchResult(REVISION_ID)),
             lexical_store=lexical,
@@ -270,13 +264,12 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         provider = _Provider()
         service = RetrievalService(
-            SingleWorkspaceAccessPolicy(WORKSPACE),
+            WORKSPACE,
             provider,
             store,
         )
 
         evidence = await service.retrieve_adjacent_evidence(
-            _context(),
             knowledge_base_id=KB_ID,
             index_revision_id=REVISION_ID,
             anchors=(anchor,),
@@ -300,14 +293,13 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
         service = RetrievalService(
-            SingleWorkspaceAccessPolicy(WORKSPACE),
+            WORKSPACE,
             _Provider(),
             store,
         )
 
         with self.assertRaises(RetrievalExecutionError) as raised:
             await service.retrieve_adjacent_evidence(
-                _context(),
                 knowledge_base_id=KB_ID,
                 index_revision_id=REVISION_ID,
                 anchors=(_evidence(CHUNK_1, ordinal=4),),
@@ -331,11 +323,10 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         service = RetrievalService(
-            SingleWorkspaceAccessPolicy(WORKSPACE), provider, store
+            WORKSPACE, provider, store
         )
 
         pack = await service.retrieve(
-            _context(),
             RetrievalRequest(KB_ID, " query ", top_k=5, include_debug=True),
         )
 
@@ -366,13 +357,12 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         store = _Store(VectorSearchResult(REVISION_ID, (generic, matching)))
         service = RetrievalService(
-            SingleWorkspaceAccessPolicy(WORKSPACE),
+            WORKSPACE,
             _Provider(),
             store,
         )
 
         pack = await service.retrieve(
-            _context(),
             RetrievalRequest(
                 KB_ID,
                 "policy deadline",
@@ -401,13 +391,12 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
             text="unrelated surface words",
         )
         service = RetrievalService(
-            SingleWorkspaceAccessPolicy(WORKSPACE),
+            WORKSPACE,
             _Provider(),
             _Store(VectorSearchResult(REVISION_ID, (semantic,))),
         )
 
         pack = await service.retrieve(
-            _context(),
             RetrievalRequest(
                 KB_ID,
                 "policy deadline",
@@ -439,14 +428,13 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
             }
         )
         service = RetrievalService(
-            SingleWorkspaceAccessPolicy(WORKSPACE),
+            WORKSPACE,
             _Provider(),
             store,
             text_reranker=reranker,
         )
 
         pack = await service.retrieve(
-            _context(),
             RetrievalRequest(
                 KB_ID,
                 "policy deadline",
@@ -481,14 +469,13 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
         self,
     ) -> None:
         service = RetrievalService(
-            SingleWorkspaceAccessPolicy(WORKSPACE),
+            WORKSPACE,
             _Provider(),
             _Store(VectorSearchResult(REVISION_ID, (_hit(CHUNK_1),))),
         )
 
         with self.assertRaises(RetrievalExecutionError) as failure:
             await service.retrieve(
-                _context(),
                 RetrievalRequest(
                     KB_ID,
                     "query",
@@ -504,11 +491,11 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_empty_and_underfilled_results_are_valid_without_filter_relaxation(self) -> None:
         store = _Store(VectorSearchResult(REVISION_ID))
         service = RetrievalService(
-            SingleWorkspaceAccessPolicy(WORKSPACE), _Provider(), store
+            WORKSPACE, _Provider(), store
         )
 
         pack = await service.retrieve(
-            _context(), RetrievalRequest(KB_ID, "no match", top_k=10)
+            RetrievalRequest(KB_ID, "no match", top_k=10)
         )
 
         self.assertEqual(pack.evidence, ())
@@ -522,10 +509,10 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
             provider = _Provider()
             store = _Store(VectorSearchResult(REVISION_ID))
             service = RetrievalService(
-                SingleWorkspaceAccessPolicy(WORKSPACE), provider, store
+                WORKSPACE, provider, store
             )
             with self.assertRaises(RetrievalExecutionError) as failure:
-                await service.retrieve(_context(), request)
+                await service.retrieve(request)
             self.assertEqual(failure.exception.code, ErrorCode.CAPABILITY_NOT_ENABLED)
             self.assertEqual(provider.queries, [])
             self.assertEqual(store.plans, [])
@@ -554,7 +541,7 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         provider = _Provider()
         service = RetrievalService(
-            SingleWorkspaceAccessPolicy(WORKSPACE),
+            WORKSPACE,
             provider,
             vector_store,
             lexical_store=lexical_store,
@@ -562,7 +549,6 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
         )
 
         pack = await service.retrieve(
-            _context(),
             RetrievalRequest(
                 KB_ID,
                 "policy deadline",
@@ -602,7 +588,7 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
             lexical_score=0.9,
         )
         service = RetrievalService(
-            SingleWorkspaceAccessPolicy(WORKSPACE),
+            WORKSPACE,
             _Provider(),
             _HybridVectorStore(VectorSearchResult(REVISION_ID, (dense,))),
             lexical_store=_LexicalStore(
@@ -617,7 +603,6 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
         )
 
         pack = await service.retrieve(
-            _context(),
             RetrievalRequest(
                 KB_ID,
                 "policy deadline",
@@ -642,7 +627,7 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
     ) -> None:
         vector_store = _CancellableHybridVectorStore()
         service = RetrievalService(
-            SingleWorkspaceAccessPolicy(WORKSPACE),
+            WORKSPACE,
             _Provider(),
             vector_store,
             lexical_store=_FailingLexicalStore(),
@@ -652,7 +637,6 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(RetrievalExecutionError) as failure:
             await asyncio.wait_for(
                 service.retrieve(
-                    _context(),
                     RetrievalRequest(
                         KB_ID,
                         "query",
@@ -668,27 +652,6 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
             ErrorCode.INDEX_REVISION_INCOMPATIBLE,
         )
         self.assertTrue(vector_store.cancelled)
-
-    async def test_workspace_and_debug_authorization_fail_closed(self) -> None:
-        service = RetrievalService(
-            SingleWorkspaceAccessPolicy(WORKSPACE),
-            _Provider(),
-            _Store(VectorSearchResult(REVISION_ID)),
-        )
-        with self.assertRaises(AccessDeniedError):
-            await service.retrieve(
-                _context(OTHER_WORKSPACE), RetrievalRequest(KB_ID, "query")
-            )
-
-        provider = _Provider()
-        store = _Store(VectorSearchResult(REVISION_ID))
-        denied = RetrievalService(_DebugDeniedPolicy(), provider, store)
-        with self.assertRaises(AccessDeniedError):
-            await denied.retrieve(
-                _context(), RetrievalRequest(KB_ID, "query", include_debug=True)
-            )
-        self.assertEqual(provider.queries, [])
-        self.assertEqual(store.plans, [])
 
     async def test_wrong_scope_status_revision_and_duplicates_are_rejected(self) -> None:
         invalid_results = (
@@ -716,12 +679,12 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
         for result in invalid_results:
             with self.subTest(result=result):
                 service = RetrievalService(
-                    SingleWorkspaceAccessPolicy(WORKSPACE),
+                    WORKSPACE,
                     _Provider(),
                     _Store(result),
                 )
                 with self.assertRaises(RetrievalExecutionError) as failure:
-                    await service.retrieve(_context(), RetrievalRequest(KB_ID, "query"))
+                    await service.retrieve(RetrievalRequest(KB_ID, "query"))
                 self.assertEqual(
                     failure.exception.code, ErrorCode.INTERNAL_SERVER_ERROR
                 )
@@ -730,11 +693,11 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
         provider = _Provider(vector=())
         store = _Store(VectorSearchResult(REVISION_ID))
         service = RetrievalService(
-            SingleWorkspaceAccessPolicy(WORKSPACE), provider, store
+            WORKSPACE, provider, store
         )
 
         with self.assertRaises(RetrievalExecutionError) as failure:
-            await service.retrieve(_context(), RetrievalRequest(KB_ID, "query"))
+            await service.retrieve(RetrievalRequest(KB_ID, "query"))
 
         self.assertEqual(failure.exception.code, ErrorCode.EMBEDDING_RESPONSE_INVALID)
         self.assertEqual(store.plans, [])
@@ -742,14 +705,14 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_absolute_deadline_cancels_hanging_retrieval(self) -> None:
         provider = _HangingProvider()
         service = RetrievalService(
-            SingleWorkspaceAccessPolicy(WORKSPACE),
+            WORKSPACE,
             provider,
             _Store(VectorSearchResult(REVISION_ID)),
             deadline_seconds=0.01,
         )
 
         with self.assertRaises(RetrievalExecutionError) as failure:
-            await service.retrieve(_context(), RetrievalRequest(KB_ID, "query"))
+            await service.retrieve(RetrievalRequest(KB_ID, "query"))
 
         self.assertEqual(
             failure.exception.code,
@@ -767,7 +730,7 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
                 ValueError
             ):
                 RetrievalService(
-                    SingleWorkspaceAccessPolicy(WORKSPACE),
+                    WORKSPACE,
                     _Provider(),
                     _Store(VectorSearchResult(REVISION_ID)),
                     deadline_seconds=deadline_seconds,
@@ -791,7 +754,7 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
             gates,
         )
         service = RetrievalService(
-            SingleWorkspaceAccessPolicy(WORKSPACE),
+            WORKSPACE,
             _ParallelTextProvider(gates),
             store,
             multimodal_embedding_provider=_ParallelMultimodalProvider(gates),
@@ -809,7 +772,6 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
 
         pack = await asyncio.wait_for(
             service.retrieve(
-                _context(),
                 RetrievalRequest(KB_ID, "Figure 1", top_k=3, include_debug=True),
             ),
             timeout=1.0,
@@ -839,14 +801,14 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
             gates,
         )
         service = RetrievalService(
-            SingleWorkspaceAccessPolicy(WORKSPACE),
+            WORKSPACE,
             provider,
             store,
             multimodal_embedding_provider=provider,
         )
 
         await service.retrieve(
-            _context(), RetrievalRequest(KB_ID, "unified query")
+            RetrievalRequest(KB_ID, "unified query")
         )
 
         self.assertEqual(provider.queries, ["unified query"])
@@ -872,7 +834,7 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         service = RetrievalService(
-            SingleWorkspaceAccessPolicy(WORKSPACE),
+            WORKSPACE,
             provider,
             store,
             multimodal_embedding_provider=provider,
@@ -881,7 +843,6 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
         )
 
         await service.retrieve(
-            _context(),
             RetrievalRequest(
                 KB_ID,
                 "unified hybrid",
@@ -905,7 +866,7 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
             index_asset_id=ASSET_1,
         )
         service = RetrievalService(
-            SingleWorkspaceAccessPolicy(WORKSPACE),
+            WORKSPACE,
             _ParallelTextProvider(gates),
             _MultimodalStore(
                 VectorSearchResult(REVISION_ID),
@@ -917,7 +878,7 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
         )
 
         pack = await service.retrieve(
-            _context(), RetrievalRequest(KB_ID, "diagram", top_k=2)
+            RetrievalRequest(KB_ID, "diagram", top_k=2)
         )
 
         self.assertEqual(pack.evidence[0].index_chunk_id, CHUNK_1)
@@ -947,7 +908,7 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
             representation_kind="table_text",
         )
         service = RetrievalService(
-            SingleWorkspaceAccessPolicy(WORKSPACE),
+            WORKSPACE,
             _ParallelTextProvider(gates),
             _MultimodalStore(
                 VectorSearchResult(REVISION_ID, (first, second)),
@@ -961,7 +922,6 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
         )
 
         pack = await service.retrieve(
-            _context(),
             RetrievalRequest(
                 KB_ID,
                 "budget headcount",
@@ -984,7 +944,7 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_weak_relation_does_not_expand_visual(self) -> None:
         gates = _ParallelGates()
         service = RetrievalService(
-            SingleWorkspaceAccessPolicy(WORKSPACE),
+            WORKSPACE,
             _ParallelTextProvider(gates),
             _MultimodalStore(
                 VectorSearchResult(REVISION_ID, (_hit(CHUNK_1, distance=0.2),)),
@@ -996,7 +956,7 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
         )
 
         pack = await service.retrieve(
-            _context(), RetrievalRequest(KB_ID, "page", top_k=2)
+            RetrievalRequest(KB_ID, "page", top_k=2)
         )
 
         self.assertEqual(pack.evidence[0].related_visuals, ())
@@ -1208,24 +1168,9 @@ class _Hydrator:
     def __init__(self, relations) -> None:
         self.relations = relations
 
-    async def hydrate(self, context, **kwargs):
-        del context, kwargs
+    async def hydrate(self, **kwargs):
+        del kwargs
         return self.relations
-
-
-class _DebugDeniedPolicy:
-    def metadata_filter(self, context: AuthContext) -> MetadataFilter:
-        if context.workspace_id != WORKSPACE:
-            raise AccessDeniedError("wrong workspace")
-        return MetadataFilter(WORKSPACE)
-
-    def authorize_retrieval_debug(self, context: AuthContext) -> None:
-        del context
-        raise AccessDeniedError("retrieval debug is not authorized")
-
-
-def _context(workspace_id: UUID = WORKSPACE) -> AuthContext:
-    return AuthContext("principal", "client", workspace_id)
 
 
 def _plan() -> RetrievalQueryPlan:

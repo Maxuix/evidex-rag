@@ -5,7 +5,7 @@ from __future__ import annotations
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-EXPECTED_REVISION = "0024_remove_agent_deadline_reserve"
+EXPECTED_REVISION = "0025_remove_dynamic_identity"
 
 
 class DatabaseReadinessError(RuntimeError):

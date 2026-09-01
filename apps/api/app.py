@@ -14,7 +14,6 @@ from apps.api.health import install_health_routes
 from apps.api.middleware import TraceIdMiddleware
 from apps.api.request_logging import RequestLoggingMiddleware
 from apps.api.routers import BUSINESS_ROUTERS
-from apps.api.security import IdentityOverrideMiddleware
 from rag_kb.observability import configure_logging, get_logger, log_event
 from rag_kb.config import Settings
 
@@ -65,7 +64,6 @@ def create_app(
         redoc_url=None,
         lifespan=lifespan,
     )
-    app.add_middleware(IdentityOverrideMiddleware)
     app.add_middleware(ConfiguredCorsMiddleware)
     app.add_middleware(TraceIdMiddleware)
     app.add_middleware(RequestLoggingMiddleware)

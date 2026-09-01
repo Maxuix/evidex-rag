@@ -11,7 +11,6 @@ import logging
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
-from rag_kb.auth import AuthContext, SingleWorkspaceAccessPolicy
 from rag_kb.domain import (
     EmbeddingInputCapability,
     EmbeddingValidationSnapshot,
@@ -57,25 +56,18 @@ class ModelSettingsService:
     def __init__(
         self,
         unit_of_work: SqlAlchemyUnitOfWorkFactory,
-        access_policy: SingleWorkspaceAccessPolicy,
         secret_store: ModelSecretStore,
         *,
         profile_validator: ModelProfileValidator | None = None,
         provider_catalog: ModelProviderCatalog | None = None,
     ) -> None:
         self._unit_of_work = unit_of_work
-        self._access_policy = access_policy
         self._secret_store = secret_store
         self._profile_validator = profile_validator
         self._provider_catalog = provider_catalog
 
-    async def snapshot(
-        self, context: AuthContext
-    ) -> ModelSettingsSnapshot:
-        self._authorize(context)
-
+    async def snapshot(self) -> ModelSettingsSnapshot:
         async def load(uow: SqlAlchemyUnitOfWork):
-            _require_scope(uow, context)
             providers = await uow.model_settings.list_providers()
             profiles = await uow.model_settings.list_profiles()
             selection = await uow.model_settings.get_selection()
@@ -108,15 +100,13 @@ class ModelSettingsService:
         )
 
     async def provider_secret_available(
-        self, context: AuthContext, value: ModelProviderBundle
+        self, value: ModelProviderBundle
     ) -> bool:
-        self._authorize(context)
         return await self._secret_available(value.current_revision.secret_reference)
 
     async def profile_secret_available(
-        self, context: AuthContext, value: ModelProfileBundle
+        self, value: ModelProfileBundle
     ) -> bool:
-        self._authorize(context)
         return await self._secret_available(value.provider_revision.secret_reference)
 
     async def _secret_available(self, reference: str) -> bool:
@@ -132,7 +122,6 @@ class ModelSettingsService:
 
     async def create_provider(
         self,
-        context: AuthContext,
         *,
         name: str,
         protocol: ModelProviderProtocol,
@@ -142,7 +131,6 @@ class ModelSettingsService:
         max_retries: int,
         max_concurrency: int,
     ) -> ModelProviderBundle:
-        self._authorize(context)
         secret_reference = await asyncio.to_thread(self._secret_store.write, api_key)
         fingerprint = provider_fingerprint(
             protocol=protocol,
@@ -153,7 +141,6 @@ class ModelSettingsService:
         )
 
         async def persist(uow: SqlAlchemyUnitOfWork) -> ModelProviderBundle:
-            _require_scope(uow, context)
             return await uow.model_settings.create_provider(
                 name=name,
                 protocol=protocol,
@@ -173,7 +160,6 @@ class ModelSettingsService:
 
     async def update_provider(
         self,
-        context: AuthContext,
         provider_id: UUID,
         *,
         name: str | None,
@@ -185,7 +171,6 @@ class ModelSettingsService:
         max_concurrency: int | None,
         enabled: bool | None,
     ) -> ModelProviderBundle:
-        self._authorize(context)
         secret_reference = (
             await asyncio.to_thread(self._secret_store.write, api_key)
             if api_key is not None
@@ -193,7 +178,6 @@ class ModelSettingsService:
         )
 
         async def persist(uow: SqlAlchemyUnitOfWork) -> ModelProviderBundle:
-            _require_scope(uow, context)
             current = await uow.model_settings.get_provider(provider_id)
             if current is None:
                 raise ResourceNotFoundError("model provider was not found")
@@ -253,7 +237,6 @@ class ModelSettingsService:
 
     async def create_profile(
         self,
-        context: AuthContext,
         *,
         provider_id: UUID,
         name: str,
@@ -261,12 +244,10 @@ class ModelSettingsService:
         model: str,
         parameters: dict[str, Any],
     ) -> ModelProfileBundle:
-        self._authorize(context)
         configuration = dict(parameters)
         _require_parameters(kind, configuration)
 
         async def persist(uow: SqlAlchemyUnitOfWork) -> ModelProfileBundle:
-            _require_scope(uow, context)
             provider = await uow.model_settings.get_provider(provider_id)
             if provider is None:
                 raise ResourceNotFoundError("model provider was not found")
@@ -297,7 +278,6 @@ class ModelSettingsService:
 
     async def update_profile(
         self,
-        context: AuthContext,
         profile_id: UUID,
         *,
         provider_id: UUID | None,
@@ -306,10 +286,7 @@ class ModelSettingsService:
         parameters: dict[str, Any] | None,
         enabled: bool | None,
     ) -> ModelProfileBundle:
-        self._authorize(context)
-
         async def persist(uow: SqlAlchemyUnitOfWork) -> ModelProfileBundle:
-            _require_scope(uow, context)
             current = await uow.model_settings.get_profile(profile_id)
             if current is None:
                 raise ResourceNotFoundError("model profile was not found")
@@ -369,16 +346,12 @@ class ModelSettingsService:
 
     async def update_selection(
         self,
-        context: AuthContext,
         *,
         chat_profile_revision_id: UUID | None,
         text_embedding_profile_revision_id: UUID | None,
         multimodal_embedding_profile_revision_id: UUID | None,
     ) -> ModelSelection:
-        self._authorize(context)
-
         async def persist(uow: SqlAlchemyUnitOfWork) -> ModelSelection:
-            _require_scope(uow, context)
             for revision_id, kind in (
                 (chat_profile_revision_id, ModelKind.CHAT),
                 (text_embedding_profile_revision_id, ModelKind.TEXT_EMBEDDING),
@@ -415,15 +388,12 @@ class ModelSettingsService:
 
     async def list_provider_models(
         self,
-        context: AuthContext,
         provider_id: UUID,
     ) -> tuple[str, ...]:
-        self._authorize(context)
         if self._provider_catalog is None:
             raise ResourceStateConflictError("provider model discovery is unavailable")
 
         async def load(uow: SqlAlchemyUnitOfWork) -> ModelProviderBundle:
-            _require_scope(uow, context)
             provider = await uow.model_settings.get_provider(provider_id)
             if provider is None:
                 raise ResourceNotFoundError("model provider was not found")
@@ -455,15 +425,12 @@ class ModelSettingsService:
 
     async def validate_profile(
         self,
-        context: AuthContext,
         profile_id: UUID,
     ) -> ModelProfileBundle:
-        self._authorize(context)
         if self._profile_validator is None:
             raise ResourceStateConflictError("model validation is unavailable")
 
         async def load(uow: SqlAlchemyUnitOfWork) -> ModelProfileBundle:
-            _require_scope(uow, context)
             bundle = await uow.model_settings.get_profile(profile_id)
             if bundle is None:
                 raise ResourceNotFoundError("model profile was not found")
@@ -528,7 +495,6 @@ class ModelSettingsService:
                     )
 
         async def persist(uow: SqlAlchemyUnitOfWork) -> ModelProfileBundle:
-            _require_scope(uow, context)
             updated = await uow.model_settings.set_validation(
                 bundle.current_revision.id,
                 status=status,
@@ -542,10 +508,6 @@ class ModelSettingsService:
             return updated
 
         return await execute_in_transaction(self._unit_of_work, persist)
-
-    def _authorize(self, context: AuthContext) -> None:
-        self._access_policy.metadata_filter(context)
-
 
 def provider_fingerprint(
     *,
@@ -699,8 +661,3 @@ def _require_parameters(kind: ModelKind, parameters: dict[str, Any]) -> None:
         raise ResourceStateConflictError(
             "text embedding models cannot confirm a shared image space"
         )
-
-
-def _require_scope(uow: SqlAlchemyUnitOfWork, context: AuthContext) -> None:
-    if uow.workspace_id != context.workspace_id:
-        raise RuntimeError("Unit of Work workspace does not match AuthContext")

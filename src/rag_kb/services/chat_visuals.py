@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
-from rag_kb.auth import AuthContext
 from rag_kb.domain import (
     ChatAnsweringState,
     ChatModelVisualContent,
@@ -92,12 +91,6 @@ class VisualEvidencePreparationStep:
         )
         remaining_images = max(0, max_images - len(previous_visuals))
         remaining_total_bytes = max(0, max_total_bytes - previous_total_bytes)
-        auth = AuthContext(
-            principal_id=context.principal_id,
-            client_id=context.client_id,
-            workspace_id=context.workspace_id,
-        )
-
         candidates = self._admission_policy.rank_candidates(
             pack, answering.usable_citation_ids
         )
@@ -161,7 +154,7 @@ class VisualEvidencePreparationStep:
                 continue
 
             try:
-                loaded = await self._asset_reader.read(auth, asset.id)
+                loaded = await self._asset_reader.read(asset.id)
             except (FileStoreError, ResourceNotFoundError):
                 _record_decision(
                     decisions,

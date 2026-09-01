@@ -9,7 +9,6 @@ import hashlib
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from rag_kb.auth import AuthContext, SingleWorkspaceAccessPolicy
 from rag_kb.domain import (
     GRAPH_EXTRACTOR_VERSION,
     GRAPH_LEGACY_EXTRACTOR_VERSION,
@@ -57,18 +56,13 @@ class GraphConfigurationService:
     def __init__(
         self,
         unit_of_work: SqlAlchemyUnitOfWorkFactory,
-        access_policy: SingleWorkspaceAccessPolicy,
         graphiti_graph: GraphitiGraph,
     ) -> None:
         self._unit_of_work = unit_of_work
-        self._access_policy = access_policy
         self._graphiti_graph = graphiti_graph
 
-    async def get(self, context: AuthContext, kb_id: UUID) -> GraphConfigSnapshot:
-        self._access_policy.require_workspace(context, context.workspace_id)
-
+    async def get(self, kb_id: UUID) -> GraphConfigSnapshot:
         async def load(uow: SqlAlchemyUnitOfWork) -> GraphConfigSnapshot:
-            _require_scope(uow, context)
             return await uow.graph.ensure_config(kb_id)
 
         return await execute_in_transaction(
@@ -76,11 +70,8 @@ class GraphConfigurationService:
             load,
         )
 
-    async def get_view(self, context: AuthContext, kb_id: UUID) -> GraphConfigView:
-        self._access_policy.require_workspace(context, context.workspace_id)
-
+    async def get_view(self, kb_id: UUID) -> GraphConfigView:
         async def load(uow: SqlAlchemyUnitOfWork) -> GraphConfigView:
-            _require_scope(uow, context)
             snapshot = await uow.graph.ensure_config(kb_id)
             return _config_view(snapshot, await _profile_bundle(uow, snapshot))
 
@@ -91,7 +82,6 @@ class GraphConfigurationService:
 
     async def configure(
         self,
-        context: AuthContext,
         kb_id: UUID,
         *,
         enabled: bool,
@@ -100,12 +90,9 @@ class GraphConfigurationService:
         extractor_version: str = GRAPH_EXTRACTOR_VERSION,
         force_rebuild: bool = False,
     ) -> GraphConfigSnapshot:
-        self._access_policy.require_workspace(context, context.workspace_id)
-
         async def persist(
             uow: SqlAlchemyUnitOfWork,
         ) -> tuple[GraphConfigSnapshot, tuple[GraphitiBuildSnapshot, ...]]:
-            _require_scope(uow, context)
             snapshot = await uow.graph.configure(
                 kb_id,
                 chat_profile_revision_id=chat_profile_revision_id,
@@ -124,17 +111,13 @@ class GraphConfigurationService:
 
     async def retry(
         self,
-        context: AuthContext,
         kb_id: UUID,
         *,
         force_rebuild: bool = False,
     ) -> GraphConfigSnapshot:
-        self._access_policy.require_workspace(context, context.workspace_id)
-
         async def persist(
             uow: SqlAlchemyUnitOfWork,
         ) -> tuple[GraphConfigSnapshot, tuple[GraphitiBuildSnapshot, ...]]:
-            _require_scope(uow, context)
             snapshot = await uow.graph.retry(
                 kb_id,
                 extractor_version=GRAPH_EXTRACTOR_VERSION,
@@ -460,11 +443,6 @@ async def _recycle_graphiti_graphs(
                 operation="recycle",
                 error_code="graph_recycle_failed",
             )
-
-
-def _require_scope(uow: SqlAlchemyUnitOfWork, context: AuthContext) -> None:
-    if uow.workspace_id != context.workspace_id:
-        raise ResourceNotFoundError("resource was not found")
 
 
 def _graph_build_phase_code(kind: GraphWorkKind) -> str:

@@ -6,7 +6,6 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from rag_kb.auth import AuthContext
 from rag_kb.domain import (
     ChatExecutionCommand,
     ChatExecutionContext,
@@ -156,15 +155,10 @@ class ChatEvidenceRetriever:
                 diagnostic={"check": "retrieval_snapshot"},
             ) from error
         try:
-            auth_context = AuthContext(
-                principal_id=context.principal_id,
-                client_id=context.client_id,
-                workspace_id=context.workspace_id,
-            )
             pack = (
-                await self._retrieval.retrieve_graph(auth_context, request)
+                await self._retrieval.retrieve_graph(request)
                 if execution_type == "manual_graph"
-                else await self._retrieval.retrieve(auth_context, request)
+                else await self._retrieval.retrieve(request)
             )
         except RetrievalExecutionError as error:
             raise ChatPipelineExecutionError(
@@ -208,11 +202,6 @@ class ChatEvidenceRetriever:
             ) from error
         try:
             result = await self._retrieval.search_graph_relations(
-                AuthContext(
-                    principal_id=context.principal_id,
-                    client_id=context.client_id,
-                    workspace_id=context.workspace_id,
-                ),
                 knowledge_base_id=context.knowledge_base_id,
                 index_revision_id=context.index_revision_id,
                 query=query,
@@ -266,11 +255,6 @@ class ChatEvidenceRetriever:
             ) from error
         try:
             return await self._retrieval.search_graph_relations_capable(
-                AuthContext(
-                    principal_id=context.principal_id,
-                    client_id=context.client_id,
-                    workspace_id=context.workspace_id,
-                ),
                 knowledge_base_id=context.knowledge_base_id,
                 index_revision_id=context.index_revision_id,
             )

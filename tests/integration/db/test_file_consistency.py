@@ -12,7 +12,6 @@ import asyncpg
 
 from tests.integration.db import require_database_test_dsns
 from rag_kb.adapters.file_store.local import LocalFileStore
-from rag_kb.auth import AuthContext, SingleWorkspaceAccessPolicy
 from rag_kb.db import DatabaseProcess, create_database_resources
 from rag_kb.document_processing.profiles import index_profile
 from rag_kb.domain import (
@@ -51,15 +50,12 @@ class FileConsistencyTests(unittest.IsolatedAsyncioTestCase):
             process=DatabaseProcess.WORKER,
         )
         self.factory = SqlAlchemyUnitOfWorkFactory(self.database.sessions, WORKSPACE)
-        self.policy = SingleWorkspaceAccessPolicy(WORKSPACE)
-        self.context = AuthContext("principal", "client", WORKSPACE)
         self.knowledge_bases = KnowledgeBaseService(
             self.factory,
-            self.policy,
             embedding_space=_embedding(),
             index_profile=_profile(),
         )
-        self.documents = DocumentService(self.factory, self.policy)
+        self.documents = DocumentService(self.factory)
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
         (self.root / "staging").mkdir()
@@ -75,6 +71,7 @@ class FileConsistencyTests(unittest.IsolatedAsyncioTestCase):
             self.factory,
             self.documents,
             LocalFileStore(self.root / "staging", self.root / "final"),
+            WORKSPACE,
             batch_size=100,
             orphan_grace_seconds=orphan_grace_seconds,
             cleanup_max_attempts=3,
@@ -83,8 +80,7 @@ class FileConsistencyTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_committed_file_survives_restart_and_missing_file_is_compensated(self) -> None:
         kb = await self._create_kb()
-        result = await SourceFileService(self.documents, self.store).store_and_activate(
-            self.context,
+        result = await SourceFileService(self.documents, self.store, WORKSPACE).store_and_activate(
             uuid4(),
             kb_id=kb.id,
             document_id=None,
@@ -100,7 +96,7 @@ class FileConsistencyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await restarted.read_final(identity), b"restart-safe source")
 
         await restarted.delete(identity)
-        reconciled = await self.reconciler().run_once(self.context)
+        reconciled = await self.reconciler().run_once()
         self.assertEqual(reconciled.missing_compensated, 1)
 
         connection = await asyncpg.connect(MIGRATION_DSN)
@@ -131,7 +127,7 @@ class FileConsistencyTests(unittest.IsolatedAsyncioTestCase):
     async def test_admitted_upload_is_idempotent_and_never_serves_partial_content(self) -> None:
         kb = await self._create_kb()
         admission = FileAdmissionService(AdmissionLimits())
-        source_files = SourceFileService(self.documents, self.store)
+        source_files = SourceFileService(self.documents, self.store, WORKSPACE)
         key = uuid4()
 
         source = io.BytesIO(b"# Guide\r\nrestart-safe")
@@ -141,7 +137,6 @@ class FileConsistencyTests(unittest.IsolatedAsyncioTestCase):
             media_type="text/markdown; charset=utf-8",
         )
         first = await source_files.store_and_activate(
-            self.context,
             key,
             kb_id=kb.id,
             document_id=None,
@@ -158,7 +153,6 @@ class FileConsistencyTests(unittest.IsolatedAsyncioTestCase):
             media_type="text/markdown",
         )
         replay = await source_files.store_and_activate(
-            self.context,
             key,
             kb_id=kb.id,
             document_id=None,
@@ -178,7 +172,6 @@ class FileConsistencyTests(unittest.IsolatedAsyncioTestCase):
         )
         with self.assertRaises(IdempotencyKeyReusedError):
             await source_files.store_and_activate(
-                self.context,
                 key,
                 kb_id=kb.id,
                 document_id=None,
@@ -225,7 +218,6 @@ class FileConsistencyTests(unittest.IsolatedAsyncioTestCase):
                 io.BytesIO(f"pending-{ordinal}".encode()),
             )
             reserved = await self.documents.reserve_version(
-                self.context,
                 key,
                 kb_id=kb.id,
                 document_id=None,
@@ -242,7 +234,7 @@ class FileConsistencyTests(unittest.IsolatedAsyncioTestCase):
             if finalize_first:
                 await self.store.finalize(staged.identity, staged.digest)
 
-        reconciled = await self.reconciler().run_once(self.context)
+        reconciled = await self.reconciler().run_once()
         self.assertEqual(reconciled.pending_activated, 2)
 
         connection = await asyncpg.connect(MIGRATION_DSN)
@@ -262,8 +254,7 @@ class FileConsistencyTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_delete_cleanup_and_orphan_sweep_are_idempotent(self) -> None:
         kb = await self._create_kb()
-        result = await SourceFileService(self.documents, self.store).store_and_activate(
-            self.context,
+        result = await SourceFileService(self.documents, self.store, WORKSPACE).store_and_activate(
             uuid4(),
             kb_id=kb.id,
             document_id=None,
@@ -272,7 +263,7 @@ class FileConsistencyTests(unittest.IsolatedAsyncioTestCase):
             media_type="text/plain",
             source=io.BytesIO(b"delete me"),
         )
-        await self.documents.delete(self.context, uuid4(), result.document.id)
+        await self.documents.delete(uuid4(), result.document.id)
 
         orphan = await self.store.stage(
             WORKSPACE, "orphan", io.BytesIO(b"orphan")
@@ -289,10 +280,10 @@ class FileConsistencyTests(unittest.IsolatedAsyncioTestCase):
 
         now = datetime.now(UTC) + timedelta(seconds=1)
         first = await self.reconciler(orphan_grace_seconds=0).run_once(
-            self.context, now=now
+            now=now
         )
         second = await self.reconciler(orphan_grace_seconds=0).run_once(
-            self.context, now=now
+            now=now
         )
         self.assertEqual(first.cleanup_completed, 1)
         self.assertEqual(first.orphans_removed, 1)
@@ -311,7 +302,6 @@ class FileConsistencyTests(unittest.IsolatedAsyncioTestCase):
         kb = await self._create_kb()
         key = uuid4()
         reserved = await self.documents.reserve_version(
-            self.context,
             key,
             kb_id=kb.id,
             document_id=None,
@@ -325,17 +315,15 @@ class FileConsistencyTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
         await self.documents.activate_reserved_version(
-            self.context,
             key,
             document_id=reserved.document.id,
         )
-        await self.documents.delete(self.context, uuid4(), reserved.document.id)
+        await self.documents.delete(uuid4(), reserved.document.id)
 
         start = datetime.now(UTC)
         reconciler = self.reconciler()
         for offset in (0, 1, 2):
             result = await reconciler.run_once(
-                self.context,
                 now=start + timedelta(seconds=offset),
             )
             self.assertEqual(result.cleanup_failed, 1)
@@ -357,7 +345,6 @@ class FileConsistencyTests(unittest.IsolatedAsyncioTestCase):
 
     async def _create_kb(self):
         return await self.knowledge_bases.create(
-            self.context,
             uuid4(),
             name="file-consistency-kb",
             retrieval_defaults={"strategy": "exact_vector", "top_k": 10},

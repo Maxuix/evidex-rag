@@ -7,7 +7,6 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
-from rag_kb.auth import AuthContext, SingleWorkspaceAccessPolicy
 from rag_kb.document_processing.profiles import index_profile, profile_for_preset
 from rag_kb.domain import (
     ChunkingPreset,
@@ -51,7 +50,6 @@ class ContentServices:
 
 def build_content_services(
     unit_of_work: SqlAlchemyUnitOfWorkFactory,
-    access_policy: SingleWorkspaceAccessPolicy,
     embedding: Any,
     multimodal_embedding: Any | None = None,
 ) -> ContentServices:
@@ -69,12 +67,11 @@ def build_content_services(
     return ContentServices(
         knowledge_bases=KnowledgeBaseService(
             unit_of_work,
-            access_policy,
             embedding_space=definition,
             cross_modal_embedding_space=multimodal_definition,
             index_profile=profile,
         ),
-        documents=DocumentService(unit_of_work, access_policy),
+        documents=DocumentService(unit_of_work),
     )
 
 
@@ -187,14 +184,12 @@ class KnowledgeBaseService:
     def __init__(
         self,
         unit_of_work: SqlAlchemyUnitOfWorkFactory,
-        access_policy: SingleWorkspaceAccessPolicy,
         *,
         embedding_space: EmbeddingSpaceDefinition | None,
         cross_modal_embedding_space: EmbeddingSpaceDefinition | None = None,
         index_profile: IndexProfileDefinition,
     ) -> None:
         self._unit_of_work = unit_of_work
-        self._access_policy = access_policy
         self._embedding_space = embedding_space
         self._cross_modal_embedding_space = cross_modal_embedding_space
         expected = profile_for_preset(ChunkingPreset.STRUCTURAL_BALANCED_V2)
@@ -203,7 +198,6 @@ class KnowledgeBaseService:
 
     async def create(
         self,
-        context: AuthContext,
         idempotency_key: UUID,
         *,
         name: str,
@@ -212,13 +206,10 @@ class KnowledgeBaseService:
         retrieval_defaults: dict[str, Any],
         embedding_selection: dict[str, Any] | None = None,
     ) -> KnowledgeBase:
-        self._authorize(context)
         resolved_preset = ChunkingPreset(chunking_preset)
         resolved_parsing = ParsingPreset(parsing_preset)
         resolved_profile = profile_for_preset(resolved_preset, resolved_parsing)
         scope = IdempotencyScope(
-            context.principal_id,
-            context.client_id,
             CREATE_KB_ENDPOINT,
             idempotency_key,
         )
@@ -236,7 +227,6 @@ class KnowledgeBaseService:
             }
         )
         async def persist(uow: SqlAlchemyUnitOfWork) -> KnowledgeBase:
-            _require_scope(uow, context)
             await uow.content_mutations.lock(scope)
             prior = await uow.content_mutations.get(scope)
             if prior is not None:
@@ -315,11 +305,8 @@ class KnowledgeBaseService:
 
         return await execute_in_transaction(self._unit_of_work, persist)
 
-    async def get(self, context: AuthContext, kb_id: UUID) -> KnowledgeBase:
-        self._authorize(context)
-
+    async def get(self, kb_id: UUID) -> KnowledgeBase:
         async def load(uow: SqlAlchemyUnitOfWork) -> KnowledgeBase:
-            _require_scope(uow, context)
             result = await uow.knowledge_bases.get(kb_id)
             if result is None:
                 raise ResourceNotFoundError("knowledge base was not found")
@@ -329,33 +316,25 @@ class KnowledgeBaseService:
 
     async def list(
         self,
-        context: AuthContext,
         *,
         limit: int,
         sort: str,
         after: tuple[str, ...] | None,
     ) -> Page[KnowledgeBase]:
-        self._authorize(context)
-
         async def load(uow: SqlAlchemyUnitOfWork) -> Page[KnowledgeBase]:
-            _require_scope(uow, context)
             return await uow.knowledge_bases.list(limit=limit, sort=sort, after=after)
 
         return await execute_in_transaction(self._unit_of_work, load)
 
     async def update(
         self,
-        context: AuthContext,
         idempotency_key: UUID,
         kb_id: UUID,
         *,
         name: str | None,
         retrieval_defaults: dict[str, Any] | None,
     ) -> KnowledgeBase:
-        self._authorize(context)
         scope = IdempotencyScope(
-            context.principal_id,
-            context.client_id,
             PATCH_KB_ENDPOINT,
             idempotency_key,
         )
@@ -368,7 +347,6 @@ class KnowledgeBaseService:
         )
 
         async def persist(uow: SqlAlchemyUnitOfWork) -> KnowledgeBase:
-            _require_scope(uow, context)
             await uow.content_mutations.lock(scope)
             prior = await uow.content_mutations.get(scope)
             if prior is not None:
@@ -398,21 +376,16 @@ class KnowledgeBaseService:
 
     async def delete(
         self,
-        context: AuthContext,
         idempotency_key: UUID,
         kb_id: UUID,
     ) -> KnowledgeBase:
-        self._authorize(context)
         scope = IdempotencyScope(
-            context.principal_id,
-            context.client_id,
             DELETE_KB_ENDPOINT,
             idempotency_key,
         )
         request_hash = canonical_request_hash({"kb_id": str(kb_id)})
 
         async def persist(uow: SqlAlchemyUnitOfWork) -> KnowledgeBase:
-            _require_scope(uow, context)
             await uow.content_mutations.lock(scope)
             prior = await uow.content_mutations.get(scope)
             if prior is not None:
@@ -438,26 +411,14 @@ class KnowledgeBaseService:
 
         return await execute_in_transaction(self._unit_of_work, persist)
 
-    def _authorize(self, context: AuthContext) -> None:
-        self._access_policy.metadata_filter(context)
-
-
 class DocumentService:
     """Relational lifecycle; file orchestration is intentionally a later layer."""
 
-    def __init__(
-        self,
-        unit_of_work: SqlAlchemyUnitOfWorkFactory,
-        access_policy: SingleWorkspaceAccessPolicy,
-    ) -> None:
+    def __init__(self, unit_of_work: SqlAlchemyUnitOfWorkFactory) -> None:
         self._unit_of_work = unit_of_work
-        self._access_policy = access_policy
 
-    async def get(self, context: AuthContext, document_id: UUID) -> Document:
-        self._authorize(context)
-
+    async def get(self, document_id: UUID) -> Document:
         async def load(uow: SqlAlchemyUnitOfWork) -> Document:
-            _require_scope(uow, context)
             document = await uow.documents.get(document_id)
             if document is None:
                 raise ResourceNotFoundError("document was not found")
@@ -466,12 +427,9 @@ class DocumentService:
         return await execute_in_transaction(self._unit_of_work, load)
 
     async def get_detail(
-        self, context: AuthContext, document_id: UUID
+        self, document_id: UUID
     ) -> DocumentDetail:
-        self._authorize(context)
-
         async def load(uow: SqlAlchemyUnitOfWork) -> DocumentDetail:
-            _require_scope(uow, context)
             detail = await uow.documents.get_detail(document_id)
             if detail is None:
                 raise ResourceNotFoundError("document was not found")
@@ -483,16 +441,12 @@ class DocumentService:
 
     async def inspect_chunks(
         self,
-        context: AuthContext,
         document_id: UUID,
         *,
         limit: int,
         after: tuple[str, ...] | None,
     ) -> DocumentChunkInspection:
-        self._authorize(context)
-
         async def load(uow: SqlAlchemyUnitOfWork) -> DocumentChunkInspection:
-            _require_scope(uow, context)
             inspection = await uow.documents.inspect_chunks(
                 document_id, limit=limit, after=after
             )
@@ -506,17 +460,13 @@ class DocumentService:
 
     async def list(
         self,
-        context: AuthContext,
         *,
         kb_id: UUID,
         limit: int,
         sort: str,
         after: tuple[str, ...] | None,
     ) -> Page[Document]:
-        self._authorize(context)
-
         async def load(uow: SqlAlchemyUnitOfWork) -> Page[Document]:
-            _require_scope(uow, context)
             if await uow.knowledge_bases.get(kb_id) is None:
                 raise ResourceNotFoundError("knowledge base was not found")
             return await uow.documents.list(kb_id=kb_id, limit=limit, sort=sort, after=after)
@@ -525,7 +475,6 @@ class DocumentService:
 
     async def reserve_version(
         self,
-        context: AuthContext,
         idempotency_key: UUID,
         *,
         kb_id: UUID,
@@ -535,9 +484,8 @@ class DocumentService:
     ) -> DocumentMutationResult:
         """Reserve an unavailable immutable version before later file finalization."""
 
-        self._authorize(context)
         endpoint = CREATE_DOCUMENT_ENDPOINT if document_id is None else CREATE_VERSION_ENDPOINT
-        scope = IdempotencyScope(context.principal_id, context.client_id, endpoint, idempotency_key)
+        scope = IdempotencyScope(endpoint, idempotency_key)
         request_hash = canonical_request_hash(
             {
                 "kb_id": str(kb_id),
@@ -552,7 +500,6 @@ class DocumentService:
         )
 
         async def persist(uow: SqlAlchemyUnitOfWork) -> DocumentMutationResult:
-            _require_scope(uow, context)
             await uow.content_mutations.lock(scope)
             prior = await uow.content_mutations.get(scope)
             if prior is not None:
@@ -578,21 +525,17 @@ class DocumentService:
 
     async def activate_reserved_version(
         self,
-        context: AuthContext,
         idempotency_key: UUID,
         *,
         document_id: UUID,
     ) -> DocumentMutationResult:
         """Publish a finalized source and create its index target atomically."""
 
-        self._authorize(context)
-
         async def persist(uow: SqlAlchemyUnitOfWork) -> DocumentMutationResult:
-            _require_scope(uow, context)
             selected_scope = None
             mutation = None
             for endpoint in (CREATE_DOCUMENT_ENDPOINT, CREATE_VERSION_ENDPOINT):
-                candidate = IdempotencyScope(context.principal_id, context.client_id, endpoint, idempotency_key)
+                candidate = IdempotencyScope(endpoint, idempotency_key)
                 await uow.content_mutations.lock(candidate)
                 found = await uow.content_mutations.get(candidate)
                 if found is not None:
@@ -615,16 +558,13 @@ class DocumentService:
 
     async def delete(
         self,
-        context: AuthContext,
         idempotency_key: UUID,
         document_id: UUID,
     ) -> DocumentMutationResult:
-        self._authorize(context)
-        scope = IdempotencyScope(context.principal_id, context.client_id, DELETE_DOCUMENT_ENDPOINT, idempotency_key)
+        scope = IdempotencyScope(DELETE_DOCUMENT_ENDPOINT, idempotency_key)
         request_hash = canonical_request_hash({"document_id": str(document_id)})
 
         async def persist(uow: SqlAlchemyUnitOfWork) -> DocumentMutationResult:
-            _require_scope(uow, context)
             await uow.content_mutations.lock(scope)
             prior = await uow.content_mutations.get(scope)
             if prior is not None:
@@ -646,15 +586,11 @@ class DocumentService:
 
     async def exclude_chunk(
         self,
-        context: AuthContext,
         *,
         document_id: UUID,
         chunk_id: UUID,
     ) -> datetime:
-        self._authorize(context)
-
         async def persist(uow: SqlAlchemyUnitOfWork) -> datetime:
-            _require_scope(uow, context)
             excluded_at = await uow.documents.exclude_chunk(
                 document_id=document_id,
                 chunk_id=chunk_id,
@@ -664,10 +600,6 @@ class DocumentService:
             return excluded_at
 
         return await execute_in_transaction(self._unit_of_work, persist)
-
-    def _authorize(self, context: AuthContext) -> None:
-        self._access_policy.metadata_filter(context)
-
 
 async def _document_result_from_mutation(
     uow: SqlAlchemyUnitOfWork, mutation
@@ -698,8 +630,3 @@ def _require_replayable_mutation(mutation) -> None:
         raise ResourceStateConflictError(
             mutation.failure_code or "content mutation reached a terminal failure"
         )
-
-
-def _require_scope(uow: SqlAlchemyUnitOfWork, context: AuthContext) -> None:
-    if uow.workspace_id != context.workspace_id:
-        raise RuntimeError("Unit of Work workspace does not match authorized identity")

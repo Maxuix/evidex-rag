@@ -15,18 +15,12 @@ JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
 
 @dataclass(frozen=True, slots=True)
 class IdempotencyScope:
-    """The frozen four-part uniqueness boundary for a mutating endpoint."""
+    """The local endpoint/key uniqueness boundary for a mutating request."""
 
-    principal_id: str
-    client_id: str
     endpoint: str
     idempotency_key: UUID
 
     def __post_init__(self) -> None:
-        if not self.principal_id:
-            raise ValueError("principal_id must not be empty")
-        if not self.client_id:
-            raise ValueError("client_id must not be empty")
         method, separator, path = self.endpoint.partition(" ")
         if not separator or not method.isalpha() or method != method.upper():
             raise ValueError("endpoint must start with an uppercase HTTP method")

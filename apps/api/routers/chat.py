@@ -19,8 +19,6 @@ from apps.api.pagination import (
     decode_cursor,
     encode_cursor,
 )
-from apps.api.security import get_auth_context
-from rag_kb.auth import AuthContext
 from rag_kb.domain import (
     CHAT_GRAPH_SEARCH_REASONS,
     ChatMessage,
@@ -67,10 +65,8 @@ async def create_chat_session(
     request: Request,
     response: Response,
     payload: ChatSessionCreate,
-    context: Annotated[AuthContext, Depends(get_auth_context)],
 ) -> ChatSessionResponse:
     value = await request.app.state.dependencies.chat_service.create_session(
-        context,
         kb_id=payload.knowledge_base_id,
         title=payload.title,
     )
@@ -84,7 +80,6 @@ async def create_chat_session(
 )
 async def list_chat_sessions(
     request: Request,
-    context: Annotated[AuthContext, Depends(get_auth_context)],
     limit: Annotated[int, Query(ge=1, le=API_PAGINATION_MAX_LIMIT)] = API_PAGINATION_DEFAULT_LIMIT,
     cursor: Annotated[str | None, Query(min_length=1, max_length=API_CURSOR_MAX_LENGTH)] = None,
     sort: SessionSort = "-updated_at",
@@ -92,7 +87,6 @@ async def list_chat_sessions(
 ) -> ChatSessionPage:
     after = _after(cursor, sort)
     page = await request.app.state.dependencies.chat_service.list_sessions(
-        context,
         limit=limit,
         sort=sort,
         after=after,
@@ -111,14 +105,12 @@ async def list_chat_sessions(
 async def list_chat_messages(
     request: Request,
     session_id: UUID,
-    context: Annotated[AuthContext, Depends(get_auth_context)],
     limit: Annotated[int, Query(ge=1, le=API_PAGINATION_MAX_LIMIT)] = API_PAGINATION_DEFAULT_LIMIT,
     cursor: Annotated[str | None, Query(min_length=1, max_length=API_CURSOR_MAX_LENGTH)] = None,
     sort: MessageSort = "created_at",
 ) -> ChatMessagePage:
     after = _after(cursor, sort)
     page = await request.app.state.dependencies.chat_service.list_messages(
-        context,
         session_id,
         limit=limit,
         sort=sort,
@@ -140,10 +132,8 @@ async def create_chat_run(
     response: Response,
     payload: ChatRunCreate,
     idempotency_key: RequiredIdempotencyKey,
-    context: Annotated[AuthContext, Depends(get_auth_context)],
 ) -> ChatRunResponse:
     value = await request.app.state.dependencies.chat_service.create_run(
-        context,
         idempotency_key,
         session_id=payload.session_id,
         kb_id=payload.knowledge_base_id,
@@ -164,17 +154,15 @@ async def create_chat_run(
 async def get_chat_run(
     request: Request,
     run_id: UUID,
-    context: Annotated[AuthContext, Depends(get_auth_context)],
 ) -> ChatRunResponse:
     return _run_response(
-        await request.app.state.dependencies.chat_service.get_run(context, run_id)
+        await request.app.state.dependencies.chat_service.get_run(run_id)
     )
 
 
 async def _prepare_chat_sse_subscription(
     request: Request,
     run_id: UUID,
-    context: Annotated[AuthContext, Depends(get_auth_context)],
     last_event_id: Annotated[
         str | None, Header(alias="Last-Event-ID", max_length=2048)
     ] = None,
@@ -187,9 +175,9 @@ async def _prepare_chat_sse_subscription(
             detail="Last-Event-ID is not accepted by this non-replayable stream.",
         )
     chat = request.app.state.dependencies.chat_service
-    value = await chat.get_run(context, run_id)
+    value = await chat.get_run(run_id)
     limiter = request.app.state.dependencies.chat_sse_connection_limiter
-    acquired = await limiter.acquire(context.principal_id, run_id)
+    acquired = await limiter.acquire(run_id)
     if not acquired:
         raise ApiProblem(
             code=ErrorCode.CHAT_SSE_CONNECTION_LIMIT_EXCEEDED,
@@ -210,7 +198,6 @@ async def _prepare_chat_sse_subscription(
             preview = None
     try:
         yield ChatSseSubscription(
-            context=context,
             run=value,
             preview=preview,
         )
@@ -219,7 +206,7 @@ async def _prepare_chat_sse_subscription(
             if preview is not None:
                 await preview.close()
         finally:
-            await limiter.release(context.principal_id, run_id)
+            await limiter.release(run_id)
 
 
 @router.get(
@@ -234,7 +221,6 @@ async def stream_chat_run_events(
 ) -> AsyncIterator[ServerSentEvent]:
     watcher = request.app.state.dependencies.chat_event_watcher
     async for value in watcher.watch(
-        subscription.context,
         subscription.run.id,
         initial=subscription.run,
         disconnected=request.is_disconnected,

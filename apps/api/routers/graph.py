@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Request
 
-from apps.api.security import get_auth_context
-from rag_kb.auth import AuthContext
 from rag_kb.domain import GRAPH_EXTRACTOR_VERSION
 from rag_kb.graph import GraphConfigView
 from rag_kb.graph.schema_profiles import get_graph_schema_registry
@@ -27,10 +24,7 @@ profile_router = APIRouter(prefix="/graph-schema-profiles", tags=["graph"])
     "",
     response_model=list[GraphSchemaProfileResponse],
 )
-async def list_graph_schema_profiles(
-    context: Annotated[AuthContext, Depends(get_auth_context)],
-) -> list[GraphSchemaProfileResponse]:
-    del context
+async def list_graph_schema_profiles() -> list[GraphSchemaProfileResponse]:
     return [
         GraphSchemaProfileResponse(
             key=profile.key,
@@ -49,10 +43,9 @@ async def list_graph_schema_profiles(
 async def get_graph_config(
     request: Request,
     kb_id: UUID,
-    context: Annotated[AuthContext, Depends(get_auth_context)],
 ) -> GraphConfigResponse:
     view = await request.app.state.dependencies.graph_configuration_service.get_view(
-        context, kb_id
+        kb_id
     )
     return _response(view)
 
@@ -65,21 +58,19 @@ async def update_graph_config(
     request: Request,
     kb_id: UUID,
     payload: GraphConfigUpdate,
-    context: Annotated[AuthContext, Depends(get_auth_context)],
 ) -> GraphConfigResponse:
     service = request.app.state.dependencies.graph_configuration_service
     if payload.retry:
-        await service.retry(context, kb_id, force_rebuild=payload.force_rebuild)
+        await service.retry(kb_id, force_rebuild=payload.force_rebuild)
     else:
         await service.configure(
-            context,
             kb_id,
             enabled=payload.enabled,
             chat_profile_revision_id=payload.chat_profile_revision_id,
             schema_profile_key=payload.schema_profile_key,
             force_rebuild=payload.force_rebuild,
         )
-    return _response(await service.get_view(context, kb_id))
+    return _response(await service.get_view(kb_id))
 
 
 def _response(view: GraphConfigView) -> GraphConfigResponse:

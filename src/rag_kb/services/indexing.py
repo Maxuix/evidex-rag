@@ -6,7 +6,6 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from rag_kb.auth import AuthContext, SingleWorkspaceAccessPolicy
 from rag_kb.domain import (
     IdempotencyKeyReusedError,
     IdempotencyScope,
@@ -25,23 +24,14 @@ RETRY_INDEXING_JOB_ENDPOINT = "POST /api/v1/indexing-jobs/{job_id}/retry"
 
 
 class IndexingJobService:
-    def __init__(
-        self,
-        unit_of_work: SqlAlchemyUnitOfWorkFactory,
-        access_policy: SingleWorkspaceAccessPolicy,
-    ) -> None:
+    def __init__(self, unit_of_work: SqlAlchemyUnitOfWorkFactory) -> None:
         self._unit_of_work = unit_of_work
-        self._access_policy = access_policy
 
     async def get(
         self,
-        context: AuthContext,
         job_id: UUID,
     ) -> IndexingJobSnapshot:
-        self._authorize(context)
-
         async def load(uow: SqlAlchemyUnitOfWork) -> IndexingJobSnapshot:
-            _require_scope(uow, context)
             result = await uow.indexing.get_job(job_id)
             if result is None:
                 raise ResourceNotFoundError("indexing job was not found")
@@ -54,16 +44,12 @@ class IndexingJobService:
 
     async def list(
         self,
-        context: AuthContext,
         *,
         kb_id: UUID,
         limit: int,
         after: tuple[str, ...] | None,
     ) -> Page[IndexingJobSnapshot]:
-        self._authorize(context)
-
         async def load(uow: SqlAlchemyUnitOfWork) -> Page[IndexingJobSnapshot]:
-            _require_scope(uow, context)
             if await uow.knowledge_bases.get(kb_id) is None:
                 raise ResourceNotFoundError("knowledge base was not found")
             return await uow.indexing.list_jobs(
@@ -79,21 +65,16 @@ class IndexingJobService:
 
     async def retry(
         self,
-        context: AuthContext,
         idempotency_key: UUID,
         job_id: UUID,
     ) -> IndexingJobSnapshot:
-        self._authorize(context)
         scope = IdempotencyScope(
-            context.principal_id,
-            context.client_id,
             RETRY_INDEXING_JOB_ENDPOINT,
             idempotency_key,
         )
         request_hash = canonical_request_hash({"job_id": str(job_id)})
 
         async def persist(uow: SqlAlchemyUnitOfWork) -> IndexingJobSnapshot:
-            _require_scope(uow, context)
             await uow.content_mutations.lock(scope)
             prior = await uow.content_mutations.get(scope)
             if prior is not None:
@@ -124,11 +105,3 @@ class IndexingJobService:
             return retried
 
         return await execute_in_transaction(self._unit_of_work, persist)
-
-    def _authorize(self, context: AuthContext) -> None:
-        self._access_policy.metadata_filter(context)
-
-
-def _require_scope(uow: SqlAlchemyUnitOfWork, context: AuthContext) -> None:
-    if uow.workspace_id != context.workspace_id:
-        raise RuntimeError("Unit of Work scope does not match authenticated workspace")

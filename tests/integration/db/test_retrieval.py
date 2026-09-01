@@ -12,7 +12,6 @@ from sqlalchemy import event
 from tests.integration.db import require_database_test_dsns
 from rag_kb.adapters.lexical_store.postgres import PgLexicalStore
 from rag_kb.adapters.vector_store.pgvector import PgVectorStore
-from rag_kb.auth import AuthContext, SingleWorkspaceAccessPolicy
 from rag_kb.db import DatabaseProcess, create_database_resources
 from rag_kb.domain import (
     EmbeddingSpaceDefinition,
@@ -60,8 +59,6 @@ class ExactRetrievalDatabaseTests(unittest.IsolatedAsyncioTestCase):
             process=DatabaseProcess.API,
         )
         self.definition = _embedding_space()
-        self.policy = SingleWorkspaceAccessPolicy(WORKSPACE)
-        self.context = AuthContext("principal", "client", WORKSPACE)
         self.provider = _Provider(self.definition, _axis_vector(0))
         self.vector_store = PgVectorStore(
             self.database.sessions,
@@ -72,10 +69,9 @@ class ExactRetrievalDatabaseTests(unittest.IsolatedAsyncioTestCase):
         )
         self.documents = DocumentService(
             SqlAlchemyUnitOfWorkFactory(self.database.sessions, WORKSPACE),
-            self.policy,
         )
         self.service = RetrievalService(
-            self.policy,
+            WORKSPACE,
             self.provider,
             self.vector_store,
         )
@@ -103,7 +99,6 @@ class ExactRetrievalDatabaseTests(unittest.IsolatedAsyncioTestCase):
         )
         try:
             pack = await self.service.retrieve(
-                self.context,
                 RetrievalRequest(
                     foundation.kb_id,
                     "query",
@@ -219,7 +214,6 @@ class ExactRetrievalDatabaseTests(unittest.IsolatedAsyncioTestCase):
         )
         try:
             evidence = await self.service.retrieve_adjacent_evidence(
-                self.context,
                 knowledge_base_id=foundation.kb_id,
                 index_revision_id=foundation.revision_id,
                 anchors=anchors,
@@ -264,7 +258,7 @@ class ExactRetrievalDatabaseTests(unittest.IsolatedAsyncioTestCase):
         await self._lexical_target(foundation, target)
         lexical_store = PgLexicalStore(self.database.sessions)
         service = RetrievalService(
-            self.policy,
+            WORKSPACE,
             self.provider,
             self.vector_store,
             lexical_store=lexical_store,
@@ -272,7 +266,6 @@ class ExactRetrievalDatabaseTests(unittest.IsolatedAsyncioTestCase):
         )
 
         pack = await service.retrieve(
-            self.context,
             RetrievalRequest(
                 foundation.kb_id,
                 "evidence",
@@ -306,25 +299,22 @@ class ExactRetrievalDatabaseTests(unittest.IsolatedAsyncioTestCase):
         )
         await self._lexical_target(foundation, target)
         excluded_at = await self.documents.exclude_chunk(
-            self.context,
             document_id=target.document_id,
             chunk_id=target.chunk_id,
         )
         self.assertIsNotNone(excluded_at)
 
         exact = await self.service.retrieve(
-            self.context,
             RetrievalRequest(foundation.kb_id, "evidence", top_k=3),
         )
         hybrid_service = RetrievalService(
-            self.policy,
+            WORKSPACE,
             self.provider,
             self.vector_store,
             lexical_store=PgLexicalStore(self.database.sessions),
             hybrid_enabled=True,
         )
         hybrid = await hybrid_service.retrieve(
-            self.context,
             RetrievalRequest(
                 foundation.kb_id,
                 "evidence",
@@ -353,7 +343,7 @@ class ExactRetrievalDatabaseTests(unittest.IsolatedAsyncioTestCase):
             create_manifest=False,
         )
         service = RetrievalService(
-            self.policy,
+            WORKSPACE,
             self.provider,
             self.vector_store,
             lexical_store=PgLexicalStore(self.database.sessions),
@@ -362,7 +352,6 @@ class ExactRetrievalDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaises(RetrievalExecutionError) as failure:
             await service.retrieve(
-                self.context,
                 RetrievalRequest(
                     foundation.kb_id,
                     "evidence",
@@ -384,7 +373,6 @@ class ExactRetrievalDatabaseTests(unittest.IsolatedAsyncioTestCase):
         foundation = await self._foundation()
 
         empty = await self.service.retrieve(
-            self.context,
             RetrievalRequest(foundation.kb_id, "no matches", top_k=10),
         )
 
@@ -392,7 +380,6 @@ class ExactRetrievalDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(empty.evidence, ())
         with self.assertRaises(ResourceNotFoundError):
             await self.service.retrieve(
-                self.context,
                 RetrievalRequest(uuid4(), "missing knowledge base"),
             )
 
@@ -402,7 +389,6 @@ class ExactRetrievalDatabaseTests(unittest.IsolatedAsyncioTestCase):
         )
         with self.assertRaises(ResourceNotFoundError):
             await self.service.retrieve(
-                self.context,
                 RetrievalRequest(other.kb_id, "cross workspace"),
             )
 
@@ -452,7 +438,6 @@ class ExactRetrievalDatabaseTests(unittest.IsolatedAsyncioTestCase):
         )
 
         pack = await self.service.retrieve(
-            self.context,
             RetrievalRequest(foundation.kb_id, "query", top_k=100),
         )
 
@@ -575,7 +560,6 @@ class ExactRetrievalDatabaseTests(unittest.IsolatedAsyncioTestCase):
         )
 
         before_promotion = await self.service.retrieve(
-            self.context,
             RetrievalRequest(foundation.kb_id, "during update", top_k=10),
         )
         self.assertEqual(
@@ -647,7 +631,6 @@ class ExactRetrievalDatabaseTests(unittest.IsolatedAsyncioTestCase):
         )
 
         during_update = await self.hydrator.hydrate(
-            self.context,
             kb_id=foundation.kb_id,
             index_revision_id=foundation.revision_id,
             chunk_ids=(old.chunk_id, candidate.chunk_id),
@@ -675,7 +658,6 @@ class ExactRetrievalDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await connection.close()
 
         unavailable = await self.hydrator.hydrate(
-            self.context,
             kb_id=foundation.kb_id,
             index_revision_id=foundation.revision_id,
             chunk_ids=(old.chunk_id,),
@@ -736,7 +718,6 @@ class ExactRetrievalDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaises(RetrievalExecutionError) as failure:
             await self.service.retrieve(
-                self.context,
                 RetrievalRequest(foundation.kb_id, "query"),
             )
 
@@ -1183,7 +1164,6 @@ class ExactRetrievalDatabaseTests(unittest.IsolatedAsyncioTestCase):
         async def read_repeatedly() -> None:
             for _ in range(8):
                 pack = await self.service.retrieve(
-                    self.context,
                     RetrievalRequest(knowledge_base_id, "race", top_k=100),
                 )
                 observations.append(
@@ -1203,7 +1183,6 @@ class ExactRetrievalDatabaseTests(unittest.IsolatedAsyncioTestCase):
         await transaction.commit()
         await asyncio.gather(*readers)
         final = await self.service.retrieve(
-            self.context,
             RetrievalRequest(knowledge_base_id, "after commit", top_k=100),
         )
         observations.append(

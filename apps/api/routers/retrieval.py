@@ -2,12 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Annotated
+from fastapi import APIRouter, Request
 
-from fastapi import APIRouter, Depends, Request
-
-from apps.api.security import get_auth_context
-from rag_kb.auth import AuthContext
 from rag_kb.domain import GraphRetrievalRequest
 from rag_kb.retrieval import RetrievalRequest
 from rag_kb.schemas import (
@@ -26,11 +22,9 @@ router = APIRouter(prefix="/retrieval", tags=["retrieval"])
 async def query_retrieval(
     request: Request,
     payload: RetrievalQueryRequest,
-    context: Annotated[AuthContext, Depends(get_auth_context)],
 ) -> EvidencePackResponse:
     if payload.mode == "graph":
         evidence = await request.app.state.dependencies.retrieval_service.retrieve_graph(
-            context,
             GraphRetrievalRequest(
                 knowledge_base_id=payload.knowledge_base_id,
                 query=payload.query,
@@ -40,7 +34,6 @@ async def query_retrieval(
         )
     else:
         evidence = await request.app.state.dependencies.retrieval_service.retrieve(
-            context,
             RetrievalRequest(
                 knowledge_base_id=payload.knowledge_base_id,
                 query=payload.query,

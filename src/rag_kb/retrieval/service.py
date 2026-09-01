@@ -11,7 +11,6 @@ import math
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
-from rag_kb.auth import AuthContext, SingleWorkspaceAccessPolicy
 from rag_kb.domain import (
     AdjacentChunkAnchor,
     AdjacentChunkQuery,
@@ -117,7 +116,7 @@ class RetrievalService:
 
     def __init__(
         self,
-        access_policy: SingleWorkspaceAccessPolicy,
+        workspace_id: UUID,
         embedding_provider: EmbeddingModelAdapter,
         vector_store: VectorStore,
         *,
@@ -164,7 +163,7 @@ class RetrievalService:
             raise ValueError("mmr_lambda must be between zero and one")
         if not math.isfinite(deadline_seconds) or deadline_seconds <= 0:
             raise ValueError("retrieval deadline must be positive")
-        self._access_policy = access_policy
+        self._workspace_id = workspace_id
         self._embedding_provider = embedding_provider
         self._vector_store = vector_store
         self._candidate_multiplier = candidate_multiplier
@@ -276,13 +275,12 @@ class RetrievalService:
 
     async def retrieve(
         self,
-        context: AuthContext,
         request: RetrievalRequest,
     ) -> EvidencePack:
         deadline = asyncio.timeout(self._deadline_seconds)
         try:
             async with deadline:
-                return await self._retrieve(context, request)
+                return await self._retrieve(request)
         except TimeoutError as error:
             if not deadline.expired():
                 raise
@@ -293,7 +291,6 @@ class RetrievalService:
 
     async def retrieve_graph(
         self,
-        context: AuthContext,
         request: GraphRetrievalRequest,
     ) -> EvidencePack:
         """Retrieve hybrid seeds and augment them with bounded graph paths."""
@@ -301,7 +298,7 @@ class RetrievalService:
         deadline = asyncio.timeout(self._deadline_seconds)
         try:
             async with deadline:
-                return await self._retrieve_graph(context, request)
+                return await self._retrieve_graph(request)
         except TimeoutError as error:
             if not deadline.expired():
                 raise
@@ -312,7 +309,6 @@ class RetrievalService:
 
     async def search_graph_relations(
         self,
-        context: AuthContext,
         *,
         knowledge_base_id: UUID,
         index_revision_id: UUID,
@@ -328,7 +324,6 @@ class RetrievalService:
         try:
             async with deadline:
                 result = await self._search_graph_relations(
-                    context,
                     knowledge_base_id=knowledge_base_id,
                     index_revision_id=index_revision_id,
                     query=query,
@@ -357,7 +352,6 @@ class RetrievalService:
 
     async def search_graph_relations_capable(
         self,
-        context: AuthContext,
         *,
         knowledge_base_id: UUID,
         index_revision_id: UUID,
@@ -371,7 +365,6 @@ class RetrievalService:
 
         return (
             await self.search_graph_relations_capability(
-                context,
                 knowledge_base_id=knowledge_base_id,
                 index_revision_id=index_revision_id,
             )
@@ -380,17 +373,13 @@ class RetrievalService:
 
     async def search_graph_relations_capability(
         self,
-        context: AuthContext,
         *,
         knowledge_base_id: UUID,
         index_revision_id: UUID,
     ) -> GraphCapabilityStatus:
         """Return a diagnosable, fail-closed graph capability state."""
 
-        # Authorization errors must never be converted into a capability
-        # downgrade.  Resolve the policy before the infrastructure fallback.
-        metadata_filter = self._access_policy.metadata_filter(context)
-        workspace_id = metadata_filter.workspace_id
+        workspace_id = self._workspace_id
         graph_store = self._graph_store
         if graph_store is None or self._graphiti_graph is None:
             return GraphCapabilityStatus.NOT_READY
@@ -441,7 +430,6 @@ class RetrievalService:
 
     async def _search_graph_relations(
         self,
-        context: AuthContext,
         *,
         knowledge_base_id: UUID,
         index_revision_id: UUID,
@@ -453,8 +441,7 @@ class RetrievalService:
         source_chunk_limit: int,
         call_timeout_seconds: int,
     ) -> GraphSearchResult:
-        metadata_filter = self._access_policy.metadata_filter(context)
-        workspace_id = metadata_filter.workspace_id
+        workspace_id = self._workspace_id
         graph_store = self._graph_store
         if graph_store is None:
             return GraphSearchResult("not_ready")
@@ -583,12 +570,8 @@ class RetrievalService:
 
     async def _retrieve_graph(
         self,
-        context: AuthContext,
         request: GraphRetrievalRequest,
     ) -> EvidencePack:
-        metadata_filter = self._access_policy.metadata_filter(context)
-        if request.include_debug:
-            self._access_policy.authorize_retrieval_debug(context)
         graph_store = self._graph_store
         graphiti = self._graphiti_graph
         if graph_store is None or graphiti is None or self._lexical_store is None:
@@ -597,7 +580,7 @@ class RetrievalService:
                 diagnostic={"check": "graph_store"},
             )
         build = await graph_store.get_active_graphiti_build(
-            metadata_filter.workspace_id,
+            self._workspace_id,
             request.knowledge_base_id,
         )
         if build is None:
@@ -617,7 +600,6 @@ class RetrievalService:
             cross_modal_candidate_count=max(request.top_k, seed_count),
         )
         seed_pack = await self._retrieve_hybrid(
-            context,
             RetrievalRequest(
                 knowledge_base_id=request.knowledge_base_id,
                 query=request.query,
@@ -640,7 +622,7 @@ class RetrievalService:
                 diagnostic={"check": "graph_frozen_revision"},
             )
         candidate_set = await self._search_graphiti_candidates(
-            metadata_filter.workspace_id,
+            self._workspace_id,
             request.knowledge_base_id,
             build=build,
             index_revision_id=seed_pack.index_revision_id,
@@ -922,7 +904,6 @@ class RetrievalService:
 
     async def retrieve_adjacent_evidence(
         self,
-        context: AuthContext,
         *,
         knowledge_base_id: UUID,
         index_revision_id: UUID,
@@ -932,7 +913,6 @@ class RetrievalService:
         try:
             async with deadline:
                 return await self._retrieve_adjacent_evidence(
-                    context,
                     knowledge_base_id=knowledge_base_id,
                     index_revision_id=index_revision_id,
                     anchors=anchors,
@@ -947,13 +927,11 @@ class RetrievalService:
 
     async def _retrieve_adjacent_evidence(
         self,
-        context: AuthContext,
         *,
         knowledge_base_id: UUID,
         index_revision_id: UUID,
         anchors: tuple[Evidence, ...],
     ) -> tuple[Evidence, ...]:
-        metadata_filter = self._access_policy.metadata_filter(context)
         if (
             not 1 <= len(anchors) <= 2
             or len({item.index_chunk_id for item in anchors}) != len(anchors)
@@ -969,7 +947,7 @@ class RetrievalService:
                 diagnostic={"check": "adjacency_anchor_scope"},
             )
         query = AdjacentChunkQuery(
-            workspace_id=metadata_filter.workspace_id,
+            workspace_id=self._workspace_id,
             knowledge_base_id=knowledge_base_id,
             index_revision_id=index_revision_id,
             anchors=tuple(
@@ -1030,23 +1008,19 @@ class RetrievalService:
 
     async def _retrieve(
         self,
-        context: AuthContext,
         request: RetrievalRequest,
     ) -> EvidencePack:
-        metadata_filter = self._access_policy.metadata_filter(context)
         self._require_enabled(request)
-        if request.include_debug:
-            self._access_policy.authorize_retrieval_debug(context)
         profile = self.execution_profile(
             strategy=request.strategy,
             top_k=request.top_k,
             rerank_mode=request.rerank_mode,
         )
         if request.strategy is RetrievalStrategy.HYBRID:
-            return await self._retrieve_hybrid(context, request, profile)
+            return await self._retrieve_hybrid(request, profile)
 
         plan = RetrievalQueryPlan(
-            workspace_id=metadata_filter.workspace_id,
+            workspace_id=self._workspace_id,
             knowledge_base_id=request.knowledge_base_id,
             strategy=request.strategy,
             top_k=request.top_k,
@@ -1108,7 +1082,6 @@ class RetrievalService:
             if self._relation_hydrator is not None:
                 all_hits = result.hits + cross_result.hits
                 relations = await self._relation_hydrator.hydrate(
-                    context,
                     kb_id=plan.knowledge_base_id,
                     index_revision_id=result.resolved_active_revision_id,
                     chunk_ids=tuple(dict.fromkeys(hit.index_chunk_id for hit in all_hits)),
@@ -1198,16 +1171,14 @@ class RetrievalService:
 
     async def _retrieve_hybrid(
         self,
-        context: AuthContext,
         request: RetrievalRequest,
         profile: RetrievalExecutionProfile,
     ) -> EvidencePack:
         lexical_store = self._lexical_store
         assert lexical_store is not None
-        metadata_filter = self._access_policy.metadata_filter(context)
         dense_count = profile.dense_candidate_count
         plan = RetrievalQueryPlan(
-            workspace_id=metadata_filter.workspace_id,
+            workspace_id=self._workspace_id,
             knowledge_base_id=request.knowledge_base_id,
             strategy=RetrievalStrategy.HYBRID,
             top_k=request.top_k,
@@ -1292,7 +1263,6 @@ class RetrievalService:
         relations: tuple[IndexChunkAssetRelationSnapshot, ...] = ()
         if self._relation_hydrator is not None and all_hits:
             relations = await self._relation_hydrator.hydrate(
-                context,
                 kb_id=plan.knowledge_base_id,
                 index_revision_id=dense_result.resolved_active_revision_id,
                 chunk_ids=tuple(

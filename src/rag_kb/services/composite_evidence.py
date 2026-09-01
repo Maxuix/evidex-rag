@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from rag_kb.auth import AuthContext
 from rag_kb.domain import IndexChunkAssetRelationSnapshot
 from rag_kb.uow import (
     TransactionMode,
@@ -27,7 +26,6 @@ class CompositeEvidenceHydrationService:
 
     async def hydrate(
         self,
-        context: AuthContext,
         *,
         kb_id: UUID,
         index_revision_id: UUID,
@@ -37,8 +35,6 @@ class CompositeEvidenceHydrationService:
         async def load(
             unit_of_work: SqlAlchemyUnitOfWork,
         ) -> tuple[IndexChunkAssetRelationSnapshot, ...]:
-            if unit_of_work.workspace_id != context.workspace_id:
-                raise RuntimeError("unit of work workspace scope mismatch")
             return await unit_of_work.indexing.list_relations(
                 kb_id=kb_id,
                 index_revision_id=index_revision_id,

@@ -17,7 +17,6 @@ class ChatSession:
     id: UUID
     workspace_id: UUID
     kb_id: UUID
-    principal_id: str
     title: str | None
     created_at: datetime
     updated_at: datetime
@@ -74,8 +73,6 @@ class ChatRun:
     assistant_message_id: UUID
     index_revision_id: UUID
     status: str
-    principal_id: str
-    client_id: str
     endpoint: str
     idempotency_key: UUID
     request_hash: str

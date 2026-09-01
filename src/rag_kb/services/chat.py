@@ -6,7 +6,6 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
-from rag_kb.auth import AuthContext, SingleWorkspaceAccessPolicy
 from rag_kb.domain import (
     ChatMessage,
     ChatRun,
@@ -57,7 +56,6 @@ class ChatService:
     def __init__(
         self,
         unit_of_work: SqlAlchemyUnitOfWorkFactory,
-        access_policy: SingleWorkspaceAccessPolicy,
         *,
         model_configuration: dict[str, Any],
         default_rerank: bool = False,
@@ -72,7 +70,6 @@ class ChatService:
         allow_legacy_model_configuration: bool = True,
     ) -> None:
         self._unit_of_work = unit_of_work
-        self._access_policy = access_policy
         self._model_configuration = dict(model_configuration)
         self._allow_legacy_model_configuration = allow_legacy_model_configuration
         self._default_rerank_mode = (
@@ -96,20 +93,15 @@ class ChatService:
 
     async def create_session(
         self,
-        context: AuthContext,
         *,
         kb_id: UUID,
         title: str | None,
     ) -> ChatSession:
-        self._authorize(context)
-
         async def persist(uow: SqlAlchemyUnitOfWork) -> ChatSession:
-            _require_scope(uow, context)
             if await uow.knowledge_bases.get(kb_id) is None:
                 raise ResourceNotFoundError("knowledge base was not found")
             return await uow.chat.create_session(
                 kb_id=kb_id,
-                principal_id=context.principal_id,
                 title=title,
             )
 
@@ -117,21 +109,16 @@ class ChatService:
 
     async def list_sessions(
         self,
-        context: AuthContext,
         *,
         limit: int,
         sort: str,
         after: tuple[str, ...] | None,
         kb_id: UUID | None = None,
     ) -> Page[ChatSession]:
-        self._authorize(context)
-
         async def load(uow: SqlAlchemyUnitOfWork) -> Page[ChatSession]:
-            _require_scope(uow, context)
             if kb_id is not None and await uow.knowledge_bases.get(kb_id) is None:
                 raise ResourceNotFoundError("knowledge base was not found")
             return await uow.chat.list_sessions(
-                principal_id=context.principal_id,
                 limit=limit,
                 sort=sort,
                 after=after,
@@ -144,20 +131,15 @@ class ChatService:
 
     async def list_messages(
         self,
-        context: AuthContext,
         session_id: UUID,
         *,
         limit: int,
         sort: str,
         after: tuple[str, ...] | None,
     ) -> Page[ChatMessage]:
-        self._authorize(context)
-
         async def load(uow: SqlAlchemyUnitOfWork) -> Page[ChatMessage]:
-            _require_scope(uow, context)
             result = await uow.chat.list_messages(
                 session_id=session_id,
-                principal_id=context.principal_id,
                 limit=limit,
                 sort=sort,
                 after=after,
@@ -170,16 +152,9 @@ class ChatService:
             self._unit_of_work, load
         )
 
-    async def get_run(self, context: AuthContext, run_id: UUID) -> ChatRun:
-        self._authorize(context)
-
+    async def get_run(self, run_id: UUID) -> ChatRun:
         async def load(uow: SqlAlchemyUnitOfWork) -> ChatRun:
-            _require_scope(uow, context)
-            result = await uow.chat.get_run(
-                run_id,
-                principal_id=context.principal_id,
-                client_id=context.client_id,
-            )
+            result = await uow.chat.get_run(run_id)
             if result is None:
                 raise ResourceNotFoundError("chat run was not found")
             return result
@@ -190,7 +165,6 @@ class ChatService:
 
     async def create_run(
         self,
-        context: AuthContext,
         idempotency_key: UUID,
         *,
         session_id: UUID,
@@ -201,7 +175,6 @@ class ChatService:
         rerank_mode: RerankMode | None = None,
         model_profile_revision_id: UUID | None = None,
     ) -> ChatRun:
-        self._authorize(context)
         if retrieval_mode not in {"vector", "hybrid", "graph", "auto"}:
             raise ResourceStateConflictError("retrieval mode is unsupported")
         if retrieval_mode == "hybrid" and not self._hybrid_enabled:
@@ -246,8 +219,6 @@ class ChatService:
             raise ValueError("message must contain non-whitespace characters")
 
         scope = IdempotencyScope(
-            context.principal_id,
-            context.client_id,
             CREATE_CHAT_RUN_ENDPOINT,
             idempotency_key,
         )
@@ -287,7 +258,6 @@ class ChatService:
         )
 
         async def persist(uow: SqlAlchemyUnitOfWork) -> ChatRun:
-            _require_scope(uow, context)
             await uow.chat.lock_idempotency(scope)
             prior = await uow.chat.get_run_by_scope(scope)
             if prior is not None:
@@ -297,9 +267,7 @@ class ChatService:
                     )
                 return prior
 
-            session = await uow.chat.lock_session(
-                session_id, principal_id=context.principal_id
-            )
+            session = await uow.chat.lock_session(session_id)
             if session is None:
                 raise ResourceNotFoundError("chat session was not found")
             if session.kb_id != kb_id:
@@ -320,7 +288,6 @@ class ChatService:
             retrieval_strategy_snapshot = dict(retrieval_strategy)
             recent_turns = await uow.chat.list_completed_turns(
                 session_id=session_id,
-                principal_id=context.principal_id,
                 kb_id=kb_id,
                 limit=self._context_max_turns + 1,
             )
@@ -377,10 +344,6 @@ class ChatService:
         ):
             raise ResourceStateConflictError("chat model profile is not validated")
         return _chat_profile_configuration(bundle, self._model_configuration)
-
-    def _authorize(self, context: AuthContext) -> None:
-        self._access_policy.metadata_filter(context)
-
 
 def chat_model_configuration(settings: Any) -> dict[str, Any]:
     """Return the reproducibility snapshot without endpoint URLs or secrets."""
@@ -451,8 +414,3 @@ def _chat_profile_configuration(
             "visual_media_profile", DEFAULT_CHAT_VISUAL_MEDIA_PROFILE
         ),
     }
-
-
-def _require_scope(uow: SqlAlchemyUnitOfWork, context: AuthContext) -> None:
-    if uow.workspace_id != context.workspace_id:
-        raise RuntimeError("Unit of Work workspace does not match AuthContext")

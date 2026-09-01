@@ -4,7 +4,6 @@ import unittest
 from dataclasses import replace
 from uuid import UUID
 
-from rag_kb.auth import SingleWorkspaceAccessPolicy
 from rag_kb.domain import (
     GRAPH_EXTRACTOR_VERSION,
     GraphChunkEvidence,
@@ -41,9 +40,7 @@ from tests.unit.test_retrieval_service import (
     WORKSPACE,
     _Provider,
     _LocalReranker,
-    _Store,
-    _context,
-    _hit,
+    _Store,    _hit,
 )
 from rag_kb.domain import Evidence
 from rag_kb.document_processing.lexical import LEXICAL_ANALYZER_VERSION
@@ -65,7 +62,7 @@ class GraphRetrievalTests(unittest.IsolatedAsyncioTestCase):
     async def test_search_exception_fails_closed_without_rebuild(self) -> None:
         graph_store = _GraphStore(_ready_config(), _path_result())
         service = RetrievalService(
-            SingleWorkspaceAccessPolicy(WORKSPACE),
+            WORKSPACE,
             _Provider(),
             _Store(VectorSearchResult(REVISION_ID, (_hit(CHUNK_3, ordinal=0),))),
             lexical_store=_LexicalStore(),
@@ -75,7 +72,7 @@ class GraphRetrievalTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaises(RetrievalExecutionError) as raised:
             await service.retrieve_graph(
-                _context(), GraphRetrievalRequest(KB_ID, "Atlas", top_k=4)
+                GraphRetrievalRequest(KB_ID, "Atlas", top_k=4)
             )
 
         self.assertEqual(raised.exception.code.value, "GRAPH_NOT_READY")
@@ -84,7 +81,7 @@ class GraphRetrievalTests(unittest.IsolatedAsyncioTestCase):
     async def test_probe_exception_fails_closed_without_rebuild(self) -> None:
         graph_store = _GraphStore(_ready_config(), _path_result())
         service = RetrievalService(
-            SingleWorkspaceAccessPolicy(WORKSPACE),
+            WORKSPACE,
             _Provider(),
             _Store(VectorSearchResult(REVISION_ID, (_hit(CHUNK_3, ordinal=0),))),
             lexical_store=_LexicalStore(),
@@ -94,7 +91,7 @@ class GraphRetrievalTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaises(RetrievalExecutionError) as raised:
             await service.retrieve_graph(
-                _context(), GraphRetrievalRequest(KB_ID, "Atlas", top_k=4)
+                GraphRetrievalRequest(KB_ID, "Atlas", top_k=4)
             )
 
         self.assertEqual(raised.exception.code.value, "GRAPH_NOT_READY")
@@ -103,7 +100,7 @@ class GraphRetrievalTests(unittest.IsolatedAsyncioTestCase):
     async def test_runtime_probe_failure_fails_closed_without_scheduling_rebuild(self) -> None:
         graph_store = _GraphStore(_ready_config(), _path_result())
         service = RetrievalService(
-            SingleWorkspaceAccessPolicy(WORKSPACE),
+            WORKSPACE,
             _Provider(),
             _Store(VectorSearchResult(REVISION_ID, (_hit(CHUNK_3, ordinal=0),))),
             lexical_store=_LexicalStore(),
@@ -113,7 +110,7 @@ class GraphRetrievalTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaises(RetrievalExecutionError) as raised:
             await service.retrieve_graph(
-                _context(), GraphRetrievalRequest(KB_ID, "Atlas", top_k=4)
+                GraphRetrievalRequest(KB_ID, "Atlas", top_k=4)
             )
 
         self.assertEqual(raised.exception.code.value, "GRAPH_NOT_READY")
@@ -128,7 +125,7 @@ class GraphRetrievalTests(unittest.IsolatedAsyncioTestCase):
         lexical_store = _LexicalStore()
         graph_store = _GraphStore(_ready_config(), _path_result())
         service = RetrievalService(
-            SingleWorkspaceAccessPolicy(WORKSPACE),
+            WORKSPACE,
             _Provider(),
             vector_store,
             lexical_store=lexical_store,
@@ -138,7 +135,7 @@ class GraphRetrievalTests(unittest.IsolatedAsyncioTestCase):
         )
 
         pack = await service.retrieve_graph(
-            _context(), GraphRetrievalRequest(KB_ID, "Atlas", top_k=4, include_debug=True)
+            GraphRetrievalRequest(KB_ID, "Atlas", top_k=4, include_debug=True)
         )
 
         self.assertIs(pack.strategy, RetrievalStrategy.HYBRID)
@@ -155,7 +152,7 @@ class GraphRetrievalTests(unittest.IsolatedAsyncioTestCase):
         seed_a = UUID("01900000-0000-7000-8000-000000000941")
         seed_b = UUID("01900000-0000-7000-8000-000000000942")
         service = RetrievalService(
-            SingleWorkspaceAccessPolicy(WORKSPACE),
+            WORKSPACE,
             _Provider(),
             _Store(
                 VectorSearchResult(
@@ -172,7 +169,7 @@ class GraphRetrievalTests(unittest.IsolatedAsyncioTestCase):
         )
 
         pack = await service.retrieve_graph(
-            _context(), GraphRetrievalRequest(KB_ID, "Atlas", top_k=4, include_debug=True)
+            GraphRetrievalRequest(KB_ID, "Atlas", top_k=4, include_debug=True)
         )
 
         self.assertEqual(len(pack.evidence), 4)
@@ -188,7 +185,7 @@ class GraphRetrievalTests(unittest.IsolatedAsyncioTestCase):
         graph_store = _GraphStore(replace(_ready_config(), status=GraphConfigStatus.BUILDING), None)
         provider = _Provider()
         service = RetrievalService(
-            SingleWorkspaceAccessPolicy(WORKSPACE),
+            WORKSPACE,
             provider,
             vector_store,
             lexical_store=_LexicalStore(),
@@ -198,7 +195,7 @@ class GraphRetrievalTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaises(RetrievalExecutionError) as raised:
             await service.retrieve_graph(
-                _context(), GraphRetrievalRequest(KB_ID, "Atlas", top_k=4)
+                GraphRetrievalRequest(KB_ID, "Atlas", top_k=4)
             )
 
         self.assertEqual(raised.exception.code.value, "GRAPH_NOT_READY")
@@ -211,7 +208,7 @@ class GraphRetrievalTests(unittest.IsolatedAsyncioTestCase):
         provider = _Provider()
         graph_store = _GraphStore(_ready_config(), _path_result())
         service = RetrievalService(
-            SingleWorkspaceAccessPolicy(WORKSPACE),
+            WORKSPACE,
             provider,
             _Store(VectorSearchResult(REVISION_ID, ())),
             lexical_store=_LexicalStore(),
@@ -220,7 +217,6 @@ class GraphRetrievalTests(unittest.IsolatedAsyncioTestCase):
         )
 
         result = await service.search_graph_relations(
-            _context(),
             knowledge_base_id=KB_ID,
             index_revision_id=REVISION_ID,
             query="Atlas relation",
@@ -248,7 +244,7 @@ class GraphRetrievalTests(unittest.IsolatedAsyncioTestCase):
             replace(_ready_config(), status=GraphConfigStatus.BUILDING), None
         )
         service = RetrievalService(
-            SingleWorkspaceAccessPolicy(WORKSPACE),
+            WORKSPACE,
             _Provider(),
             _Store(VectorSearchResult(REVISION_ID, ())),
             lexical_store=_LexicalStore(),
@@ -257,7 +253,6 @@ class GraphRetrievalTests(unittest.IsolatedAsyncioTestCase):
         )
 
         result = await service.search_graph_relations(
-            _context(),
             knowledge_base_id=KB_ID,
             index_revision_id=REVISION_ID,
             query="Atlas relation",
@@ -277,7 +272,7 @@ class GraphRetrievalTests(unittest.IsolatedAsyncioTestCase):
             _path_result(),
         )
         service = RetrievalService(
-            SingleWorkspaceAccessPolicy(WORKSPACE),
+            WORKSPACE,
             _Provider(),
             _Store(VectorSearchResult(REVISION_ID, ())),
             lexical_store=_LexicalStore(),
@@ -286,7 +281,6 @@ class GraphRetrievalTests(unittest.IsolatedAsyncioTestCase):
         )
 
         result = await service.search_graph_relations(
-            _context(),
             knowledge_base_id=KB_ID,
             index_revision_id=REVISION_ID,
             query="Atlas relation",
@@ -303,7 +297,7 @@ class GraphRetrievalTests(unittest.IsolatedAsyncioTestCase):
     async def test_graph_classic_uses_native_order_without_local_reranker(self) -> None:
         traversal = _path_result()
         service = RetrievalService(
-            SingleWorkspaceAccessPolicy(WORKSPACE),
+            WORKSPACE,
             _Provider(),
             _Store(VectorSearchResult(REVISION_ID, ())),
         )
@@ -326,7 +320,7 @@ class GraphRetrievalTests(unittest.IsolatedAsyncioTestCase):
             }
         )
         service = RetrievalService(
-            SingleWorkspaceAccessPolicy(WORKSPACE),
+            WORKSPACE,
             _Provider(),
             _Store(VectorSearchResult(REVISION_ID, ())),
             text_reranker=reranker,
@@ -350,7 +344,7 @@ class GraphRetrievalTests(unittest.IsolatedAsyncioTestCase):
             mapped_episode_chunks=(("episode-1", CHUNK_1),),
         )
         service = RetrievalService(
-            SingleWorkspaceAccessPolicy(WORKSPACE),
+            WORKSPACE,
             _Provider(),
             _Store(VectorSearchResult(REVISION_ID, ())),
             graph_store=_GraphStore(_ready_config(), traversal),
@@ -382,7 +376,7 @@ class GraphRetrievalTests(unittest.IsolatedAsyncioTestCase):
         )
         provider = _Provider()
         service = RetrievalService(
-            SingleWorkspaceAccessPolicy(WORKSPACE),
+            WORKSPACE,
             provider,
             _Store(VectorSearchResult(REVISION_ID, ())),
             lexical_store=_LexicalStore(),
@@ -392,7 +386,7 @@ class GraphRetrievalTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaises(RetrievalExecutionError):
             await service.retrieve_graph(
-                _context(), GraphRetrievalRequest(KB_ID, "Atlas", top_k=4)
+                GraphRetrievalRequest(KB_ID, "Atlas", top_k=4)
             )
 
         self.assertEqual(provider.queries, [])

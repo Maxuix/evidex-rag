@@ -194,7 +194,7 @@ src/rag_kb/
   adapters/            文件、Docling、模型和检索存储实现
   repositories/        持久化访问
   uow/                 事务边界
-  config/ db/ auth/ observability/
+  config/ db/ observability/
 ```
 
 根目录 `architecture.toml` 描述当前 Python 顶层 import 方向。它用于防止环依赖和基础设施
@@ -221,7 +221,8 @@ READY 旧 build 在切换完成前继续服务。
 - API/Worker/Maintenance 继续保留各自 `dependencies.py` composition root；仅重复的模型/资产
   分支由 `apps/model_asset_runtime.py` 共享，不提供 registry、插件或通用 DI。
 - 文件、数据库和 provider I/O 的 async/transaction 边界保持明确。
-- 安全相关的 workspace 过滤、asset 授权、引用校验和 secret 隔离不得因简化而绕过。
+- 安全相关的 workspace-bound repository、asset workspace 校验、引用校验和 secret 隔离不得因
+  简化而绕过。
 
 ### 5.2 不再强制复制的分层
 
@@ -247,7 +248,9 @@ READY 旧 build 在切换完成前继续服务。
 
 当前重要选择：
 
-- 身份固定为本地 development principal/workspace；调用者不能选择身份。
+- 应用只保留一个配置确定的内部 workspace namespace。请求不携带、解析或传播 principal/client
+  身份，旧身份 header 也不能改变 workspace；repository、文件和资产服务在 composition root
+  绑定该 workspace。ChatRun 与 ContentMutation 幂等范围为 `endpoint + idempotency_key`。
 - ChatRun 冻结所选 Chat profile revision；索引与检索按 EmbeddingSpace 绑定的 profile revision
   解析 adapter。Simple 与手动 Graph snapshot 保存 profile version、strategy、`top_k` 和
   `rerank_mode`；Graph 外层模式额外冻结 `graphiti_path_augmented_v3` 与 `graphiti_path_v3`
@@ -332,7 +335,7 @@ Python-side test services。任何正式 `rag` Docker lifecycle 都必须另有�
 当前只维护 `tools/evaluate_agent_complex_qa.py` 一个通用回归入口及
 `evaluation/document-qa-v1/` 核心语料。`--dry-run` 离线验证冻结 corpus、case 顺序、证据 span 与摘要；
 经单独授权的真实运行可选择 exact-vector 或 hybrid 检索，验证回答、引用、算术、多文档与缺失证据，
-并使用独立 Judge profile 进行语义评分。入口只连接 identity-bound、owner-only 的 host test runtime，
+并使用独立 Judge profile 进行语义评分。入口只连接 workspace-bound、owner-only 的 host test runtime，
 不 provision 服务、不管理 Docker/Compose lifecycle，也不把问题、回答、正文、Provider payload 或 secret
 写入 Git。Provider 或 runtime 身份缺失时在外部调用前停止；真实模型仍必须使用仓库规定的 OpenCode Go
 及固定模型，不允许 fallback。

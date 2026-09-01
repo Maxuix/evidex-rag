@@ -8,7 +8,6 @@ from pathlib import Path
 from apps.model_asset_runtime import assemble_model_asset_runtime
 from rag_kb.adapters.file_store.local import LocalFileStore
 from rag_kb.adapters.model_secrets.local import LocalModelSecretStore
-from rag_kb.auth import DevelopmentAuthProvider, SingleWorkspaceAccessPolicy
 from rag_kb.config import (
     Settings,
     StartupValidation,
@@ -29,7 +28,6 @@ class MaintenanceDependencies:
     settings: Settings
     startup: StartupValidation
     database: DatabaseResources
-    auth_provider: DevelopmentAuthProvider
     asset_store: IndexAssetStore
     cleanup: MaintenanceCleanupService
 
@@ -45,7 +43,6 @@ def build_maintenance_dependencies(
     resolved = settings or load_settings(env_file=env_file)
     startup = validate_startup_environment(resolved)
     identity = resolved.identity
-    access_policy = SingleWorkspaceAccessPolicy(identity.workspace_id)
     database = create_database_resources(
         resolved.database.runtime_dsn.get_secret_value(),
         pool_size=resolved.database.worker_pool_size,
@@ -66,7 +63,6 @@ def build_maintenance_dependencies(
     model_assets = assemble_model_asset_runtime(resolved)
     content = build_content_services(
         unit_of_work,
-        access_policy,
         model_assets.embedding_settings,
         model_assets.multimodal_settings,
     )
@@ -78,6 +74,7 @@ def build_maintenance_dependencies(
         unit_of_work,
         content.documents,
         file_store,
+        identity.workspace_id,
         batch_size=resolved.file_store.reconciliation_batch_size,
         orphan_grace_seconds=resolved.file_store.orphan_grace_seconds,
         cleanup_max_attempts=resolved.file_store.cleanup_max_attempts,
@@ -95,16 +92,11 @@ def build_maintenance_dependencies(
         settings=resolved,
         startup=startup,
         database=database,
-        auth_provider=DevelopmentAuthProvider(
-            deployment_profile=resolved.app.deployment_profile.value,
-            principal_id=identity.principal_id,
-            client_id=identity.client_id,
-            workspace_id=identity.workspace_id,
-        ),
         asset_store=model_assets.asset_store,
         cleanup=MaintenanceCleanupService(
             unit_of_work,
             files,
+            identity.workspace_id,
             batch_size=maintenance.batch_size,
             retired_data_grace_seconds=maintenance.retired_data_grace_seconds,
             task_retention_seconds=maintenance.task_retention_seconds,

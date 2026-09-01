@@ -99,8 +99,6 @@ class ChatExecutionContext:
     user_message_id: UUID
     assistant_message_id: UUID
     index_revision_id: UUID
-    principal_id: str
-    client_id: str
     query: str
     retrieval_strategy: Mapping[str, Any]
     model_configuration: Mapping[str, Any]

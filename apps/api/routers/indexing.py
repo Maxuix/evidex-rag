@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Annotated, Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Request, Response
+from fastapi import APIRouter, Query, Request, Response
 
 from apps.api.errors import ApiProblem
 from apps.api.idempotency import RequiredIdempotencyKey
@@ -16,8 +16,6 @@ from apps.api.pagination import (
     decode_cursor,
     encode_cursor,
 )
-from apps.api.security import get_auth_context
-from rag_kb.auth import AuthContext
 from rag_kb.schemas import (
     CursorPayload,
     ErrorCode,
@@ -37,12 +35,10 @@ router = APIRouter(tags=["indexing"])
 async def list_indexing_jobs(
     request: Request,
     kb_id: UUID,
-    context: Annotated[AuthContext, Depends(get_auth_context)],
     limit: Annotated[int, Query(ge=1, le=API_PAGINATION_MAX_LIMIT)] = API_PAGINATION_MAX_LIMIT,
     cursor: Annotated[str | None, Query(min_length=1, max_length=API_CURSOR_MAX_LENGTH)] = None,
 ) -> IndexingJobPage:
     page = await request.app.state.dependencies.indexing_job_service.list(
-        context,
         kb_id=kb_id,
         limit=limit,
         after=_after(cursor),
@@ -66,10 +62,9 @@ async def list_indexing_jobs(
 async def get_indexing_job(
     request: Request,
     job_id: UUID,
-    context: Annotated[AuthContext, Depends(get_auth_context)],
 ) -> IndexingJobResponse:
     value = await request.app.state.dependencies.indexing_job_service.get(
-        context, job_id
+        job_id
     )
     return _response(value)
 
@@ -84,10 +79,8 @@ async def retry_indexing_job(
     response: Response,
     job_id: UUID,
     idempotency_key: RequiredIdempotencyKey,
-    context: Annotated[AuthContext, Depends(get_auth_context)],
 ) -> IndexingJobResponse:
     value = await request.app.state.dependencies.indexing_job_service.retry(
-        context,
         idempotency_key,
         job_id,
     )

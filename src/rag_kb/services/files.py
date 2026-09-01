@@ -9,7 +9,6 @@ import logging
 from typing import TYPE_CHECKING, BinaryIO
 from uuid import UUID
 
-from rag_kb.auth import AuthContext
 from rag_kb.domain import (
     DocumentMutationResult,
     DocumentSource,
@@ -46,15 +45,16 @@ class SourceFileService:
         self,
         documents: DocumentService,
         file_store: SourceFileStore,
+        workspace_id: UUID,
         markdown_media: MarkdownMediaNormalizer | None = None,
     ) -> None:
         self._documents = documents
         self._file_store = file_store
+        self._workspace_id = workspace_id
         self._markdown_media = markdown_media
 
     async def store_and_activate(
         self,
-        context: AuthContext,
         idempotency_key: UUID,
         *,
         kb_id: UUID,
@@ -73,9 +73,7 @@ class SourceFileService:
         key_material = hashlib.sha256(
             "\x1f".join(
                 (
-                    str(context.workspace_id),
-                    context.principal_id,
-                    context.client_id,
+                    str(self._workspace_id),
                     endpoint,
                     str(idempotency_key),
                     str(kb_id),
@@ -93,7 +91,7 @@ class SourceFileService:
                 raise TypeError("source file must yield bytes")
             raw_checksum = hashlib.sha256(raw_content).hexdigest()
             identity = SourceFileIdentity(
-                workspace_id=context.workspace_id,
+                workspace_id=self._workspace_id,
                 key=hashlib.sha256(
                     f"markdown-media-v2\x1f{key_material}\x1f{raw_checksum}".encode(
                         "utf-8"
@@ -124,13 +122,12 @@ class SourceFileService:
             stored_media_type = MARKDOWN_BUNDLE_MEDIA_TYPE
         else:
             staged = await self._file_store.stage(
-                context.workspace_id,
+                self._workspace_id,
                 key_material,
                 source,
             )
         try:
             reserved = await self._documents.reserve_version(
-                context,
                 idempotency_key,
                 kb_id=kb_id,
                 document_id=document_id,
@@ -149,7 +146,6 @@ class SourceFileService:
             raise
         await self._file_store.finalize(staged.identity, staged.digest)
         return await self._documents.activate_reserved_version(
-            context,
             idempotency_key,
             document_id=reserved.document.id,
         )
@@ -163,6 +159,7 @@ class FileReconciliationService:
         unit_of_work: SqlAlchemyUnitOfWorkFactory,
         documents: DocumentService,
         file_store: SourceFileStore,
+        workspace_id: UUID,
         *,
         batch_size: int,
         orphan_grace_seconds: float,
@@ -172,6 +169,7 @@ class FileReconciliationService:
         self._unit_of_work = unit_of_work
         self._documents = documents
         self._file_store = file_store
+        self._workspace_id = workspace_id
         self._batch_size = batch_size
         self._orphan_grace = timedelta(seconds=orphan_grace_seconds)
         self._cleanup_max_attempts = cleanup_max_attempts
@@ -179,15 +177,12 @@ class FileReconciliationService:
 
     async def run_once(
         self,
-        context: AuthContext,
         *,
         now: datetime | None = None,
     ) -> FileReconciliationResult:
         observed_at = now or datetime.now(UTC)
 
         async def load(uow: SqlAlchemyUnitOfWork):
-            if uow.workspace_id != context.workspace_id:
-                raise RuntimeError("reconciliation workspace does not match identity")
             return (
                 await uow.file_consistency.list_references(),
                 await uow.file_consistency.list_pending_mutations(
@@ -237,14 +232,9 @@ class FileReconciliationService:
                 mutation.checksum_sha256,
                 mutation.size_bytes,
             )
-            mutation_context = AuthContext(
-                mutation.scope.principal_id,
-                mutation.scope.client_id,
-                context.workspace_id,
-            )
             try:
                 identity = self._checked_identity(
-                    mutation.storage_uri, context.workspace_id
+                    mutation.storage_uri, self._workspace_id
                 )
                 final = await self._file_store.inspect(identity, FileLocation.FINAL)
                 if final is not None:
@@ -301,7 +291,6 @@ class FileReconciliationService:
                                 final_references.discard(mutation.storage_uri)
                             continue
                 await self._documents.activate_reserved_version(
-                    mutation_context,
                     mutation.scope.idempotency_key,
                     document_id=mutation.document_id,
                 )
@@ -346,7 +335,7 @@ class FileReconciliationService:
             needs_compensation = False
             try:
                 identity = self._checked_identity(
-                    reference.storage_uri, context.workspace_id
+                    reference.storage_uri, self._workspace_id
                 )
                 actual = await self._file_store.inspect(identity, FileLocation.FINAL)
                 needs_compensation = actual != expected
@@ -368,7 +357,7 @@ class FileReconciliationService:
             if changed:
                 try:
                     identity = self._checked_identity(
-                        reference.storage_uri, context.workspace_id
+                        reference.storage_uri, self._workspace_id
                     )
                     actual = await self._file_store.inspect(
                         identity, FileLocation.FINAL
@@ -386,7 +375,7 @@ class FileReconciliationService:
         cleanup_failed = 0
         for task in cleanup:
             try:
-                identity = self._checked_identity(task.storage_uri, context.workspace_id)
+                identity = self._checked_identity(task.storage_uri, self._workspace_id)
                 await self._file_store.delete(identity)
             except (FileStoreError, OSError) as error:
                 attempt = task.attempt_count + 1
@@ -431,12 +420,12 @@ class FileReconciliationService:
             if stored.modified_at > cutoff:
                 continue
             if stored.identity is not None:
-                if stored.identity.workspace_id != context.workspace_id:
+                if stored.identity.workspace_id != self._workspace_id:
                     continue
                 uri = stored.identity.storage_uri
             else:
                 first_segment = stored.opaque_name.split("/", 1)[0]
-                if first_segment != str(context.workspace_id):
+                if first_segment != str(self._workspace_id):
                     continue
                 uri = None
             referenced = (

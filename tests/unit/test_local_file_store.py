@@ -15,7 +15,6 @@ from PIL import Image
 
 from rag_kb.adapters.file_store.assets import LocalIndexAssetStore
 from rag_kb.adapters.file_store.local import LocalFileStore
-from rag_kb.auth import AuthContext
 from rag_kb.domain import (
     Document,
     DocumentMutationResult,
@@ -156,7 +155,6 @@ class SourceFileServiceTests(unittest.TestCase):
             staging.mkdir()
             final.mkdir()
             store = LocalFileStore(staging, final)
-            context = AuthContext("principal", "client", WORKSPACE)
             events: list[str] = []
 
             class Documents:
@@ -189,8 +187,7 @@ class SourceFileServiceTests(unittest.TestCase):
             self_test = self
 
             async def scenario() -> None:
-                result = await SourceFileService(Documents(), store).store_and_activate(  # type: ignore[arg-type]
-                    context,
+                result = await SourceFileService(Documents(), store, WORKSPACE).store_and_activate(  # type: ignore[arg-type]
                     IDEMPOTENCY_KEY,
                     kb_id=KB_ID,
                     document_id=None,
@@ -212,7 +209,6 @@ class SourceFileServiceTests(unittest.TestCase):
             staging.mkdir()
             final.mkdir()
             store = LocalFileStore(staging, final)
-            context = AuthContext("principal", "client", WORKSPACE)
             existing_id = UUID("01900000-0000-7000-8000-000000000099")
 
             class Documents:
@@ -222,8 +218,7 @@ class SourceFileServiceTests(unittest.TestCase):
 
             async def scenario() -> None:
                 with self.assertRaises(DuplicateDocumentError) as raised:
-                    await SourceFileService(Documents(), store).store_and_activate(  # type: ignore[arg-type]
-                        context,
+                    await SourceFileService(Documents(), store, WORKSPACE).store_and_activate(  # type: ignore[arg-type]
                         IDEMPOTENCY_KEY,
                         kb_id=KB_ID,
                         document_id=None,
@@ -245,7 +240,6 @@ class SourceFileServiceTests(unittest.TestCase):
             staging.mkdir()
             final.mkdir()
             store = LocalFileStore(staging, final)
-            context = AuthContext("principal", "client", WORKSPACE)
             class Documents:
                 async def reserve_version(self, *args, **kwargs):
                     self_test.assertEqual(
@@ -265,6 +259,7 @@ class SourceFileServiceTests(unittest.TestCase):
             service = SourceFileService(
                 Documents(),  # type: ignore[arg-type]
                 store,
+                WORKSPACE,
                 MarkdownMediaNormalizer(),
             )
             image_target = io.BytesIO()
@@ -278,7 +273,6 @@ class SourceFileServiceTests(unittest.TestCase):
             async def scenario() -> None:
                 for _ in range(2):
                     await service.store_and_activate(
-                        context,
                         IDEMPOTENCY_KEY,
                         kb_id=KB_ID,
                         document_id=None,

@@ -11,7 +11,7 @@ from types import SimpleNamespace
 from typing import Annotated
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter
 from pydantic import BaseModel, Field, ValidationError
 
 from apps.api.app import API_PREFIX, create_app
@@ -20,18 +20,6 @@ from apps.api.idempotency import RequiredIdempotencyKey
 from apps.api.pagination import decode_cursor, encode_cursor
 from apps.api.routers.chat import _agent_response
 from apps.api.routers.retrieval import router as retrieval_router
-from apps.api.security import (
-    SafeRequestMetadata,
-    get_auth_context,
-    get_metadata_filter,
-)
-from rag_kb.auth import (
-    AccessDeniedError,
-    AuthContext,
-    DevelopmentAuthProvider,
-    MetadataFilter,
-    SingleWorkspaceAccessPolicy,
-)
 from rag_kb.document_processing.profiles import DOCLING_TEXT_PARSER_CONFIG
 from rag_kb.domain import (
     AdmissionLimits,
@@ -143,11 +131,6 @@ async def unexpected_with_path_parameter(resource_id: str) -> None:
     raise RuntimeError("internal-secret-must-not-leak")
 
 
-@router.get("/denied")
-async def denied() -> None:
-    raise AccessDeniedError("policy internals must not leak")
-
-
 @router.get("/markdown-media-error")
 async def markdown_media_error() -> None:
     raise FileAdmissionError(
@@ -187,27 +170,9 @@ async def cursor(value: str) -> CursorPayload:
     return decode_cursor(value)
 
 
-@router.get("/identity")
-async def identity(
-    request: Request,
-    context: Annotated[AuthContext, Depends(get_auth_context)],
-    metadata_filter: Annotated[MetadataFilter, Depends(get_metadata_filter)],
-) -> dict[str, object]:
-    safe = SafeRequestMetadata.from_request(request, context)
-    return {
-        "principal_id": context.principal_id,
-        "client_id": context.client_id,
-        "workspace_id": context.workspace_id,
-        "filter_workspace_id": metadata_filter.workspace_id,
-        "safe_request_metadata": {
-            "trace_id": safe.trace_id,
-            "method": safe.method,
-            "path": safe.path,
-            "principal_id": safe.principal_id,
-            "client_id": safe.client_id,
-            "workspace_id": safe.workspace_id,
-        },
-    }
+@router.get("/probe")
+async def probe() -> dict[str, str]:
+    return {"workspace_id": str(WORKSPACE)}
 
 
 class StubApiDependencies:
@@ -216,13 +181,6 @@ class StubApiDependencies:
             security=SimpleNamespace(allowed_cors_origins=(ALLOWED_ORIGIN,)),
             observability=SimpleNamespace(log_level="INFO"),
         )
-        self.auth_provider = DevelopmentAuthProvider(
-            deployment_profile="development",
-            principal_id="development-principal",
-            client_id="development-web",
-            workspace_id=WORKSPACE,
-        )
-        self.access_policy = SingleWorkspaceAccessPolicy(WORKSPACE)
         self.closed = False
         self.started = False
 
@@ -242,13 +200,13 @@ class StubRetrievalService:
         self.requests = []
         self.failure: RetrievalExecutionError | None = None
 
-    async def retrieve(self, context, retrieval_request):
-        self.requests.append((context, retrieval_request))
+    async def retrieve(self, retrieval_request):
+        self.requests.append(retrieval_request)
         if self.failure is not None:
             raise self.failure
         revision_id = UUID("01900000-0000-7000-8000-000000000092")
         plan = RetrievalQueryPlan(
-            workspace_id=context.workspace_id,
+            workspace_id=WORKSPACE,
             knowledge_base_id=retrieval_request.knowledge_base_id,
             strategy=RetrievalStrategy.EXACT_VECTOR,
             top_k=retrieval_request.top_k,
@@ -285,8 +243,8 @@ class StubRetrievalService:
             ),
         )
 
-    async def retrieve_graph(self, context, retrieval_request: GraphRetrievalRequest):
-        return await self.retrieve(context, retrieval_request)
+    async def retrieve_graph(self, retrieval_request: GraphRetrievalRequest):
+        return await self.retrieve(retrieval_request)
 
 
 class _PreviewSubscription:
@@ -599,12 +557,6 @@ class ApiContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("internal-secret", repr(captured.records))
         self.assertNotIn("runtime-resource-id", repr(captured.records))
 
-    async def test_access_denial_is_normalized_without_policy_details(self) -> None:
-        response = await request(self.app, "GET", f"{API_PREFIX}/denied")
-        self.assertEqual(response.status, 403)
-        self.assertEqual(response.json()["code"], "ACCESS_DENIED")
-        self.assertNotIn("policy internals", response.body.decode("utf-8"))
-
     async def test_unknown_route_uses_problem_details(self) -> None:
         response = await request(self.app, "GET", f"{API_PREFIX}/missing")
         self.assertEqual(response.status, 404)
@@ -636,30 +588,23 @@ class ApiContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status, 200)
         self.assertEqual(response.json()["key"], str(key))
 
-    async def test_identity_is_server_owned_and_safe_metadata_excludes_input(self) -> None:
+    async def test_workspace_is_server_owned_and_request_input_is_ignored(self) -> None:
         response = await request(
             self.app,
             "GET",
-            f"{API_PREFIX}/identity",
+            f"{API_PREFIX}/probe",
             query="secret=must-not-appear",
             headers={"x-api-key": "must-not-appear"},
         )
 
         body = response.json()
         self.assertEqual(response.status, 200)
-        self.assertEqual(body["principal_id"], "development-principal")
-        self.assertEqual(body["client_id"], "development-web")
         self.assertEqual(body["workspace_id"], str(WORKSPACE))
-        self.assertEqual(body["filter_workspace_id"], str(WORKSPACE))
-        self.assertEqual(
-            body["safe_request_metadata"]["path"],  # type: ignore[index]
-            f"{API_PREFIX}/identity",
-        )
         rendered = response.body.decode("utf-8")
         self.assertNotIn("must-not-appear", rendered)
         self.assertNotIn("x-api-key", rendered)
 
-    async def test_identity_override_headers_are_rejected(self) -> None:
+    async def test_legacy_identity_headers_cannot_change_workspace(self) -> None:
         header_names = (
             "authorization",
             "x-auth-request-user",
@@ -673,24 +618,17 @@ class ApiContractTests(unittest.IsolatedAsyncioTestCase):
                 response = await request(
                     self.app,
                     "GET",
-                    f"{API_PREFIX}/identity",
+                    f"{API_PREFIX}/probe",
                     headers={header_name: "client-selected-value"},
                 )
-                self.assertEqual(response.status, 400)
-                self.assertEqual(
-                    response.json()["code"],
-                    "IDENTITY_OVERRIDE_NOT_ALLOWED",
-                )
-                self.assertEqual(
-                    response.json()["trace_id"],
-                    response.headers["x-trace-id"],
-                )
+                self.assertEqual(response.status, 200)
+                self.assertEqual(response.json(), {"workspace_id": str(WORKSPACE)})
 
     async def test_cors_is_explicit_origin_only_and_never_credentialed(self) -> None:
         allowed = await request(
             self.app,
             "GET",
-            f"{API_PREFIX}/identity",
+            f"{API_PREFIX}/probe",
             headers={"origin": ALLOWED_ORIGIN},
         )
         self.assertEqual(allowed.headers["access-control-allow-origin"], ALLOWED_ORIGIN)
@@ -699,7 +637,7 @@ class ApiContractTests(unittest.IsolatedAsyncioTestCase):
         disallowed = await request(
             self.app,
             "GET",
-            f"{API_PREFIX}/identity",
+            f"{API_PREFIX}/probe",
             headers={"origin": "https://attacker.example"},
         )
         self.assertNotIn("access-control-allow-origin", disallowed.headers)
@@ -709,7 +647,7 @@ class ApiContractTests(unittest.IsolatedAsyncioTestCase):
         allowed = await request(
             self.app,
             "OPTIONS",
-            f"{API_PREFIX}/identity",
+            f"{API_PREFIX}/probe",
             headers={
                 "origin": ALLOWED_ORIGIN,
                 "access-control-request-method": "GET",
@@ -725,7 +663,7 @@ class ApiContractTests(unittest.IsolatedAsyncioTestCase):
         put_allowed = await request(
             self.app,
             "OPTIONS",
-            f"{API_PREFIX}/identity",
+            f"{API_PREFIX}/probe",
             headers={
                 "origin": ALLOWED_ORIGIN,
                 "access-control-request-method": "PUT",
@@ -736,7 +674,7 @@ class ApiContractTests(unittest.IsolatedAsyncioTestCase):
         disallowed = await request(
             self.app,
             "OPTIONS",
-            f"{API_PREFIX}/identity",
+            f"{API_PREFIX}/probe",
             headers={
                 "origin": ALLOWED_ORIGIN,
                 "access-control-request-method": "CONNECT",
@@ -864,12 +802,10 @@ class CommonContractTests(unittest.TestCase):
 
         key = uuid4()
         endpoint = "POST /api/v1/chat/runs"
-        scope = IdempotencyScope("principal", "client", endpoint, key)
+        scope = IdempotencyScope(endpoint, key)
         self.assertEqual(scope.idempotency_key, key)
         with self.assertRaises(ValueError):
-            IdempotencyScope("", "client", endpoint, key)
-        with self.assertRaises(ValueError):
-            IdempotencyScope("principal", "client", "/api/v1/chat/runs", key)
+            IdempotencyScope("/api/v1/chat/runs", key)
 
     def test_production_openapi_publishes_only_eligible_business_routes(self) -> None:
         production = create_app().openapi()
@@ -1029,7 +965,7 @@ class RetrievalApiContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body["evidence"][0]["text"], "safe evidence")
         self.assertEqual(body["debug"]["query_plan"]["strategy"], "exact_vector")
         self.assertNotIn("query", body["debug"]["query_plan"])
-        _, retrieval_request = self.service.requests[0]
+        retrieval_request = self.service.requests[0]
         self.assertEqual(retrieval_request.query, "查询 ABC-42")
         self.assertEqual(retrieval_request.top_k, 5)
 
@@ -1047,7 +983,7 @@ class RetrievalApiContractTests(unittest.IsolatedAsyncioTestCase):
             },
         )
         self.assertEqual(response.status, 200)
-        _, graph_request = self.service.requests[-1]
+        graph_request = self.service.requests[-1]
         self.assertIsInstance(graph_request, GraphRetrievalRequest)
         self.assertEqual(graph_request.top_k, 4)
 
@@ -1161,7 +1097,6 @@ class _FakeKnowledgeBaseService:
 
     async def create(
         self,
-        context,
         key,
         *,
         name,
@@ -1170,7 +1105,7 @@ class _FakeKnowledgeBaseService:
         retrieval_defaults,
         embedding_selection=None,
     ):
-        del context, key, embedding_selection
+        del key, embedding_selection
         from rag_kb.document_processing.profiles import profile_for_preset
 
         self.value = dataclass_replace(
@@ -1187,26 +1122,25 @@ class _FakeKnowledgeBaseService:
         )
         return self.value
 
-    async def get(self, context, kb_id):
-        del context
+    async def get(self, kb_id):
+
         if kb_id != self.value.id:
             raise ResourceNotFoundError("internal detail")
         return self.value
 
-    async def list(self, context, *, limit, sort, after):
-        del context, limit, sort, after
+    async def list(self, *, limit, sort, after):
+        del limit, sort, after
         return Page(items=(self.value,))
 
     async def update(
         self,
-        context,
         key,
         kb_id,
         *,
         name,
         retrieval_defaults,
     ):
-        del context
+
         if key == UUID("00000000-0000-0000-0000-000000000099"):
             raise IdempotencyKeyReusedError("internal hash detail")
         if kb_id != self.value.id:
@@ -1218,8 +1152,8 @@ class _FakeKnowledgeBaseService:
         )
         return self.value
 
-    async def delete(self, context, key, kb_id):
-        del context, key
+    async def delete(self, key, kb_id):
+        del key
         if kb_id != self.value.id:
             raise ResourceNotFoundError("internal detail")
         self.value = dataclass_replace(
@@ -1233,14 +1167,14 @@ class _FakeDocumentService:
     def __init__(self) -> None:
         self.value = _document_value()
 
-    async def get(self, context, document_id):
-        del context
+    async def get(self, document_id):
+
         if document_id != self.value.id:
             raise ResourceNotFoundError("internal detail")
         return self.value
 
-    async def get_detail(self, context, document_id):
-        document = await self.get(context, document_id)
+    async def get_detail(self, document_id):
+        document = await self.get(document_id)
         return DocumentDetail(
             document=document,
             index=DocumentIndexSummary(
@@ -1264,12 +1198,12 @@ class _FakeDocumentService:
             ),
         )
 
-    async def list(self, context, *, kb_id, limit, sort, after):
-        del context, limit, sort, after
+    async def list(self, *, kb_id, limit, sort, after):
+        del limit, sort, after
         return Page(items=(self.value,)) if kb_id == self.value.kb_id else Page(items=())
 
-    async def inspect_chunks(self, context, document_id, *, limit, after):
-        del context, limit
+    async def inspect_chunks(self, document_id, *, limit, after):
+        del limit
         if document_id != self.value.id:
             raise ResourceNotFoundError("internal detail")
         return DocumentChunkInspection(
@@ -1294,8 +1228,8 @@ class _FakeDocumentService:
             ) if after is None else (),
         )
 
-    async def delete(self, context, key, document_id):
-        del context, key
+    async def delete(self, key, document_id):
+        del key
         if document_id != self.value.id:
             raise ResourceNotFoundError("internal detail")
         return DocumentMutationResult(
@@ -1305,8 +1239,8 @@ class _FakeDocumentService:
             index_revision_id=UUID("01900000-0000-7000-8000-000000000012"),
         )
 
-    async def exclude_chunk(self, context, *, document_id, chunk_id):
-        del context
+    async def exclude_chunk(self, *, document_id, chunk_id):
+
         if (
             document_id != self.value.id
             or chunk_id != UUID("01900000-0000-7000-8000-000000000031")
@@ -1320,8 +1254,8 @@ class _FakeSourceFileService:
         self.documents = documents
         self.calls: list[dict[str, object]] = []
 
-    async def store_and_activate(self, context, key, **kwargs):
-        del context, key
+    async def store_and_activate(self, key, **kwargs):
+        del key
         content = kwargs["source"].read()
         self.calls.append({**kwargs, "content": content, "source": None})
         prior = self.documents.value
@@ -1376,20 +1310,20 @@ class _FakeIndexingJobService:
             updated_at=now,
         )
 
-    async def get(self, context, job_id):
-        del context
+    async def get(self, job_id):
+
         if job_id != self.value.job_id:
             raise ResourceNotFoundError("internal indexing detail")
         return self.value
 
-    async def list(self, context, *, kb_id, limit, after):
-        del context, limit, after
+    async def list(self, *, kb_id, limit, after):
+        del limit, after
         if kb_id != self.value.kb_id:
             raise ResourceNotFoundError("internal knowledge base detail")
         return Page(items=(self.value,))
 
-    async def retry(self, context, key, job_id):
-        del context, key
+    async def retry(self, key, job_id):
+        del key
         if job_id != self.value.job_id:
             raise ResourceNotFoundError("internal indexing detail")
         if not self.value.can_retry:
@@ -1413,30 +1347,30 @@ class _FakeChatService:
         self.run = _chat_run_value(self.session)
         self.create_run_calls: list[dict[str, object]] = []
 
-    async def create_session(self, context, *, kb_id, title):
-        del context
+    async def create_session(self, *, kb_id, title):
+
         if kb_id != _knowledge_base_value().id:
             raise ResourceNotFoundError("internal chat knowledge-base detail")
         self.session = dataclass_replace(self.session, kb_id=kb_id, title=title)
         self.run = _chat_run_value(self.session)
         return self.session
 
-    async def list_sessions(self, context, *, limit, sort, after, kb_id=None):
-        del context, limit, sort, after
+    async def list_sessions(self, *, limit, sort, after, kb_id=None):
+        del limit, sort, after
         if kb_id is not None and kb_id != self.session.kb_id:
             raise ResourceNotFoundError("internal chat knowledge-base detail")
         return Page(items=(self.session,))
 
     async def list_messages(
-        self, context, session_id, *, limit, sort, after
+        self, session_id, *, limit, sort, after
     ):
-        del context, limit, sort, after
+        del limit, sort, after
         if session_id != self.session.id:
             raise ResourceNotFoundError("internal chat session detail")
         return Page(items=_chat_messages(self.run))
 
-    async def create_run(self, context, key, **values):
-        del context
+    async def create_run(self, key, **values):
+
         if values["retrieval_mode"] == "hybrid":
             raise RetrievalExecutionError(
                 ErrorCode.CAPABILITY_NOT_ENABLED,
@@ -1462,8 +1396,8 @@ class _FakeChatService:
         )
         return self.run
 
-    async def get_run(self, context, run_id):
-        del context
+    async def get_run(self, run_id):
+
         if run_id != self.run.id:
             raise ResourceNotFoundError("internal chat run detail")
         return self.run
@@ -2272,7 +2206,7 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status_response.json()["citations"], event["citations"])
         self.assertEqual(
             await self.dependencies.chat_sse_connection_limiter.active(
-                "development-principal", chat.run.id
+                chat.run.id
             ),
             0,
         )
@@ -2347,7 +2281,7 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(subscription.closed)
         self.assertEqual(
             await self.dependencies.chat_sse_connection_limiter.active(
-                "development-principal", chat.run.id
+                chat.run.id
             ),
             0,
         )
@@ -2388,15 +2322,15 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(replay.json()["code"], "REQUEST_VALIDATION_FAILED")
 
         limiter = self.dependencies.chat_sse_connection_limiter
-        self.assertTrue(await limiter.acquire("development-principal", chat.run.id))
-        self.assertTrue(await limiter.acquire("development-principal", chat.run.id))
+        self.assertTrue(await limiter.acquire(chat.run.id))
+        self.assertTrue(await limiter.acquire(chat.run.id))
         limited = await request(self.app, "GET", path)
         self.assertEqual(limited.status, 429)
         self.assertEqual(
             limited.json()["code"], "CHAT_SSE_CONNECTION_LIMIT_EXCEEDED"
         )
-        await limiter.release("development-principal", chat.run.id)
-        await limiter.release("development-principal", chat.run.id)
+        await limiter.release(chat.run.id)
+        await limiter.release(chat.run.id)
 
         missing = await request(
             self.app,
@@ -2416,7 +2350,7 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(chat.run.status, "queued")
         self.assertEqual(
             await self.dependencies.chat_sse_connection_limiter.active(
-                "development-principal", chat.run.id
+                chat.run.id
             ),
             0,
         )
@@ -2517,7 +2451,6 @@ def _chat_session_value() -> ChatSession:
         id=UUID("01900000-0000-7000-8000-000000000030"),
         workspace_id=WORKSPACE,
         kb_id=_knowledge_base_value().id,
-        principal_id="development-principal",
         title=None,
         created_at=now,
         updated_at=now,
@@ -2535,8 +2468,6 @@ def _chat_run_value(session: ChatSession) -> ChatRun:
         assistant_message_id=UUID("01900000-0000-7000-8000-000000000033"),
         index_revision_id=_knowledge_base_value().active_index_revision_id,
         status="queued",
-        principal_id="development-principal",
-        client_id="development-web",
         endpoint="POST /api/v1/chat/runs",
         idempotency_key=UUID("01900000-0000-7000-8000-000000000034"),
         request_hash="sha256:" + "1" * 64,

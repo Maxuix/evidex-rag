@@ -22,9 +22,7 @@ async def cleanup(settings: Settings | None = None) -> dict[str, int]:
         log_directory=dependencies.settings.observability.log_directory,
     )
     try:
-        result = await dependencies.cleanup.run_once(
-            dependencies.auth_provider.get_context()
-        )
+        result = await dependencies.cleanup.run_once()
         summary = {
             "pending_activated": result.files.pending_activated,
             "pending_waiting": result.files.pending_waiting,

@@ -7,7 +7,6 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from rag_kb.auth import AuthContext
 from rag_kb.domain import (
     FileReconciliationResult,
     IndexCleanupResult,
@@ -36,6 +35,7 @@ class MaintenanceCleanupService:
         self,
         unit_of_work: SqlAlchemyUnitOfWorkFactory,
         file_reconciliation: FileReconciliationService,
+        workspace_id: UUID,
         *,
         batch_size: int,
         retired_data_grace_seconds: float,
@@ -45,6 +45,7 @@ class MaintenanceCleanupService:
     ) -> None:
         self._unit_of_work = unit_of_work
         self._file_reconciliation = file_reconciliation
+        self._workspace_id = workspace_id
         self._batch_size = batch_size
         self._retired_data_grace = timedelta(seconds=retired_data_grace_seconds)
         self._task_retention = timedelta(seconds=task_retention_seconds)
@@ -53,22 +54,19 @@ class MaintenanceCleanupService:
 
     async def run_once(
         self,
-        context: AuthContext,
         *,
         now: datetime | None = None,
     ) -> MaintenanceCleanupResult:
         observed_at = now or datetime.now(UTC)
-        files = await self._file_reconciliation.run_once(context, now=observed_at)
+        files = await self._file_reconciliation.run_once(now=observed_at)
         secrets = (
-            await self._model_secret_reconciliation.run_once(context, now=observed_at)
+            await self._model_secret_reconciliation.run_once(now=observed_at)
             if self._model_secret_reconciliation is not None
             else ModelSecretReconciliationResult()
         )
         data_before = observed_at - self._retired_data_grace
 
         async def list_targets(uow: SqlAlchemyUnitOfWork):
-            if uow.workspace_id != context.workspace_id:
-                raise RuntimeError("maintenance workspace does not match identity")
             return await uow.indexing.list_retired_target_assets(
                 data_before=data_before,
                 limit=self._batch_size,
@@ -90,10 +88,10 @@ class MaintenanceCleanupService:
                 try:
                     identity = self._asset_store.parse_uri(asset.storage_uri)
                     if (
-                        asset.workspace_id != context.workspace_id
+                        asset.workspace_id != self._workspace_id
                         or asset.indexed_document_version_id
                         != target.indexed_document_version_id
-                        or identity.workspace_id != context.workspace_id
+                        or identity.workspace_id != self._workspace_id
                         or identity.indexed_document_version_id
                         != target.indexed_document_version_id
                     ):
@@ -105,8 +103,6 @@ class MaintenanceCleanupService:
                 approved_target_ids.append(target.indexed_document_version_id)
 
         async def clean(uow: SqlAlchemyUnitOfWork) -> IndexCleanupResult:
-            if uow.workspace_id != context.workspace_id:
-                raise RuntimeError("maintenance workspace does not match identity")
             index = await uow.indexing.cleanup_retired(
                 target_ids=tuple(approved_target_ids),
                 data_before=data_before,
