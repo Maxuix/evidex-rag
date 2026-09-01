@@ -1,6 +1,7 @@
 FROM docker.io/library/python:3.12.13-slim-bookworm@sha256:8a7e7cc04fd3e2bd787f7f24e22d5d119aa590d429b50c95dfe12b3abe52f48b AS python-dependencies
 
 ARG RAG_KB_BUILD_DEBIAN_MIRROR=https://mirrors.tuna.tsinghua.edu.cn/debian
+ARG RAG_KB_BUILD_DEBIAN_SECURITY_MIRROR=https://mirrors.tuna.tsinghua.edu.cn/debian-security
 ARG RAG_KB_BUILD_PYPI_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -16,11 +17,11 @@ RUN sed -i \
         "s|URIs: http://deb.debian.org/debian$|URIs: ${RAG_KB_BUILD_DEBIAN_MIRROR}|" \
         /etc/apt/sources.list.d/debian.sources \
     && sed -i \
-        "s|URIs: http://deb.debian.org/debian-security$|URIs: https://deb.debian.org/debian-security|" \
+        "s|URIs: http://deb.debian.org/debian-security$|URIs: ${RAG_KB_BUILD_DEBIAN_SECURITY_MIRROR}|" \
         /etc/apt/sources.list.d/debian.sources \
     && grep -F "URIs: ${RAG_KB_BUILD_DEBIAN_MIRROR}" \
         /etc/apt/sources.list.d/debian.sources \
-    && grep -F "URIs: https://deb.debian.org/debian-security" \
+    && grep -F "URIs: ${RAG_KB_BUILD_DEBIAN_SECURITY_MIRROR}" \
         /etc/apt/sources.list.d/debian.sources \
     && apt-get update \
     && apt-get install --yes --no-install-recommends \
