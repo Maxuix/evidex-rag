@@ -23,6 +23,7 @@ from rag_kb.domain import (
 
 
 _RETRYABLE_STATUSES = frozenset({408, 409, 429, 500, 502, 503, 504})
+_NON_PERSISTENT_CONNECTION_HEADERS = {"Connection": "close"}
 
 
 class LangChainEmbeddingModelAdapter:
@@ -62,6 +63,13 @@ class LangChainEmbeddingModelAdapter:
             "chunk_size": max_batch_size,
             "check_embedding_ctx_length": False,
             "model_kwargs": {"encoding_format": "float"},
+            # Some OpenAI-compatible gateways leave an idle HTTP/1.1 connection
+            # open even though it can no longer serve another request.  Semantic
+            # chunking performs several embedding calls in sequence, so reusing
+            # that connection turns an otherwise healthy provider into repeated
+            # read timeouts.  Embedding calls are coarse-grained and bounded; a
+            # fresh connection is preferable to a stuck indexing job here.
+            "default_headers": _NON_PERSISTENT_CONNECTION_HEADERS,
         }
         if embedding_space.dimension_request_mode == "explicit":
             model_arguments["dimensions"] = embedding_space.dimension
@@ -204,6 +212,7 @@ async def probe_openai_embedding_dimension(
         "max_retries": max_retries,
         "check_embedding_ctx_length": False,
         "model_kwargs": {"encoding_format": "float"},
+        "default_headers": _NON_PERSISTENT_CONNECTION_HEADERS,
     }
     if requested_dimension is not None:
         arguments["dimensions"] = requested_dimension

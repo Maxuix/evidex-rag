@@ -131,6 +131,7 @@ class LangChainEmbeddingAdapterTests(unittest.IsolatedAsyncioTestCase):
             arguments["model_kwargs"],
             {"encoding_format": "float"},
         )
+        self.assertEqual(arguments["default_headers"], {"Connection": "close"})
         zero_retry_arguments = constructor.call_args_list[1].kwargs
         self.assertEqual(zero_retry_arguments["timeout"], 30)
         self.assertEqual(zero_retry_arguments["max_retries"], 0)
@@ -175,10 +176,12 @@ class LangChainEmbeddingAdapterTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_real_openai_embeddings_round_trip_uses_public_api(self) -> None:
         payloads: list[dict[str, object]] = []
+        connection_headers: list[str | None] = []
 
         def respond(request: httpx.Request) -> httpx.Response:
             payload = json.loads(request.content)
             payloads.append(payload)
+            connection_headers.append(request.headers.get("connection"))
             inputs = payload["input"]
             return httpx.Response(
                 200,
@@ -212,6 +215,7 @@ class LangChainEmbeddingAdapterTests(unittest.IsolatedAsyncioTestCase):
                 chunk_size=10,
                 check_embedding_ctx_length=False,
                 model_kwargs={"encoding_format": "float"},
+                default_headers={"Connection": "close"},
                 http_async_client=async_client,
             )
             adapter = _adapter(model)
@@ -222,6 +226,7 @@ class LangChainEmbeddingAdapterTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(documents.vectors, ((0.6, 0.8), (0.6, 0.8)))
         self.assertEqual(query, (0.6, 0.8))
+        self.assertEqual(connection_headers, ["close", "close"])
         self.assertEqual(
             payloads,
             [
