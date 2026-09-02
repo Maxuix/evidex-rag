@@ -95,20 +95,26 @@ def _adapter(
 
 
 class LangChainEmbeddingAdapterTests(unittest.IsolatedAsyncioTestCase):
-    def test_constructor_configures_fixed_provider_request(self) -> None:
-        model = _FakeEmbeddings()
-        http_client = object()
+    async def test_constructor_configures_fixed_provider_request(self) -> None:
+        models = (
+            _FakeEmbeddings(query=[0.6, 0.8]),
+            _FakeEmbeddings(query=[0.6, 0.8]),
+        )
+        http_clients = (
+            AsyncMock(spec=httpx.AsyncClient),
+            AsyncMock(spec=httpx.AsyncClient),
+        )
         with (
             patch(
                 "rag_kb.adapters.model_api.langchain_embeddings.OpenAIEmbeddings",
-                return_value=model,
+                side_effect=models,
             ) as constructor,
             patch(
                 "rag_kb.adapters.model_api.langchain_embeddings.httpx.AsyncClient",
-                return_value=http_client,
+                side_effect=http_clients,
             ) as client_constructor,
         ):
-            LangChainEmbeddingModelAdapter(
+            first = LangChainEmbeddingModelAdapter(
                 base_url="https://provider.invalid/v1",
                 api_key="secret",
                 embedding_space=_space(dimension=1024),
@@ -117,7 +123,7 @@ class LangChainEmbeddingAdapterTests(unittest.IsolatedAsyncioTestCase):
                 max_retries=2,
                 max_concurrency=2,
             )
-            LangChainEmbeddingModelAdapter(
+            second = LangChainEmbeddingModelAdapter(
                 base_url="https://provider.invalid/v1",
                 api_key="secret",
                 embedding_space=_space(dimension=1024),
@@ -126,6 +132,10 @@ class LangChainEmbeddingAdapterTests(unittest.IsolatedAsyncioTestCase):
                 max_retries=0,
                 max_concurrency=2,
             )
+            first_client, _ = first._new_model()
+            second_client, _ = second._new_model()
+            await first_client.aclose()
+            await second_client.aclose()
 
         arguments = constructor.call_args_list[0].kwargs
         self.assertEqual(arguments["model"], "qwen3.7-text-embedding")
@@ -138,11 +148,17 @@ class LangChainEmbeddingAdapterTests(unittest.IsolatedAsyncioTestCase):
             arguments["model_kwargs"],
             {"encoding_format": "float"},
         )
-        self.assertIs(arguments["http_async_client"], http_client)
+        self.assertIs(arguments["http_async_client"], http_clients[0])
         self.assertEqual(client_constructor.call_count, 2)
+        for call in client_constructor.call_args_list:
+            limits = call.kwargs["limits"]
+            self.assertEqual(limits.max_connections, 2)
+            self.assertEqual(limits.max_keepalive_connections, 0)
         zero_retry_arguments = constructor.call_args_list[1].kwargs
         self.assertEqual(zero_retry_arguments["timeout"], 30)
         self.assertEqual(zero_retry_arguments["max_retries"], 0)
+        for client in http_clients:
+            client.aclose.assert_awaited_once()
 
     async def test_transport_retry_replaces_the_entire_http_client(self) -> None:
         request = httpx.Request("POST", "https://provider.invalid/v1/embeddings")
@@ -175,15 +191,84 @@ class LangChainEmbeddingAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(vector, (0.6, 0.8))
         self.assertEqual(constructor.call_count, 2)
         first_client.aclose.assert_awaited_once()
+        second_client.aclose.assert_awaited_once()
         self.assertEqual(first_model.query_calls, ["query"])
         self.assertEqual(second_model.query_calls, ["query"])
 
-    def test_constructor_omits_dimension_for_fixed_provider_default(self) -> None:
+    async def test_failed_document_batch_is_bisected_without_dropping_inputs(
+        self,
+    ) -> None:
+        request = httpx.Request("POST", "https://provider.invalid/v1/embeddings")
+
+        class _SplitRequiredEmbeddings(_FakeEmbeddings):
+            def __init__(self) -> None:
+                super().__init__()
+
+            async def aembed_documents(self, texts: list[str]) -> object:
+                self.document_calls.append(texts)
+                if len(texts) > 1:
+                    raise openai.APITimeoutError(request)
+                return [[0.6, 0.8]]
+
+        model = _SplitRequiredEmbeddings()
+        result = await _adapter(model, max_batch_size=4).embed_documents(
+            ("zero", "one", "two", "three")
+        )
+
+        self.assertEqual(
+            result.vectors,
+            ((0.6, 0.8), (0.6, 0.8), (0.6, 0.8), (0.6, 0.8)),
+        )
+        self.assertEqual(
+            model.document_calls,
+            [
+                ["zero", "one", "two", "three"],
+                ["zero", "one"],
+                ["zero"],
+                ["one"],
+                ["two", "three"],
+                ["two"],
+                ["three"],
+            ],
+        )
+
+    async def test_terminal_document_failure_has_content_safe_locator(self) -> None:
+        request = httpx.Request("POST", "https://provider.invalid/v1/embeddings")
+        text = "sensitive contract fragment"
+
+        with self.assertRaises(IndexingExecutionError) as raised:
+            await _adapter(
+                _FakeEmbeddings(error=openai.APITimeoutError(request)),
+                max_batch_size=1,
+            ).embed_documents((text,))
+
+        self.assertEqual(raised.exception.diagnostic["input_index"], 0)
+        self.assertEqual(raised.exception.diagnostic["input_characters"], len(text))
+        self.assertEqual(len(raised.exception.diagnostic["input_sha256"]), 64)
+        self.assertNotIn(text, str(raised.exception.diagnostic))
+
+    async def test_global_provider_error_does_not_trigger_batch_bisection(self) -> None:
+        request = httpx.Request("POST", "https://provider.invalid/v1/embeddings")
+        response = httpx.Response(429, request=request)
+        model = _FakeEmbeddings(
+            error=openai.APIStatusError("rate limited", response=response, body=None)
+        )
+
+        with self.assertRaises(IndexingExecutionError):
+            await _adapter(model, max_batch_size=2).embed_documents(("one", "two"))
+
+        self.assertEqual(model.document_calls, [["one", "two"]])
+
+    async def test_constructor_omits_dimension_for_fixed_provider_default(self) -> None:
+        http_client = AsyncMock(spec=httpx.AsyncClient)
         with patch(
             "rag_kb.adapters.model_api.langchain_embeddings.OpenAIEmbeddings",
             return_value=_FakeEmbeddings(),
-        ) as constructor:
-            LangChainEmbeddingModelAdapter(
+        ) as constructor, patch(
+            "rag_kb.adapters.model_api.langchain_embeddings.httpx.AsyncClient",
+            return_value=http_client,
+        ):
+            adapter = LangChainEmbeddingModelAdapter(
                 base_url="https://provider.invalid/v1",
                 api_key="secret",
                 embedding_space=_space(
@@ -195,6 +280,8 @@ class LangChainEmbeddingAdapterTests(unittest.IsolatedAsyncioTestCase):
                 max_retries=0,
                 max_concurrency=1,
             )
+            client, _ = adapter._new_model()
+            await client.aclose()
 
         self.assertNotIn("dimensions", constructor.call_args.kwargs)
 

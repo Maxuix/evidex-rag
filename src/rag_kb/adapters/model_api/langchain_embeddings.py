@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from collections.abc import Awaitable, Callable
 
 import httpx
@@ -54,9 +55,8 @@ class LangChainEmbeddingModelAdapter:
             max_retries,
         )
         self._max_retries = max_retries
+        self._max_concurrency = max_concurrency
         self._semaphore = asyncio.Semaphore(max_concurrency)
-        self._refresh_lock = asyncio.Lock()
-        self._http_client: httpx.AsyncClient | None = None
         self._model_arguments: dict[str, object] | None = None
         model_arguments: dict[str, object] = {
             "model": embedding_space.requested_model,
@@ -76,9 +76,7 @@ class LangChainEmbeddingModelAdapter:
             raise ValueError("unsupported embedding dimension request mode")
         if embedding_model is None:
             self._model_arguments = model_arguments
-            self._http_client, self._model = self._new_model()
-        else:
-            self._model = embedding_model
+        self._model = embedding_model
 
     @property
     def embedding_space(self) -> EmbeddingSpaceDefinition:
@@ -91,24 +89,78 @@ class LangChainEmbeddingModelAdapter:
     async def embed_documents(self, texts: tuple[str, ...]) -> EmbeddingBatch:
         if not texts or len(texts) > self._max_batch_size:
             raise ValueError("embedding batch size is outside the configured bound")
-        vectors = await self._invoke(lambda model: model.aembed_documents(list(texts)))
+        vectors = await self._embed_document_vectors(texts, offset=0)
+        normalized: list[tuple[float, ...]] = []
+        for index, (text, vector) in enumerate(zip(texts, vectors, strict=True)):
+            try:
+                normalized.append(
+                    _numeric_vector(
+                        vector,
+                        check="document_vector",
+                        dimension=self._embedding_space.dimension,
+                        normalization=self._embedding_space.normalization,
+                    )
+                )
+            except IndexingExecutionError as error:
+                raise _with_input_diagnostic(
+                    error,
+                    text=text,
+                    input_index=index,
+                ) from error
+        return EmbeddingBatch(vectors=tuple(normalized))
+
+    async def _embed_document_vectors(
+        self,
+        texts: tuple[str, ...],
+        *,
+        offset: int,
+    ) -> list[object]:
+        try:
+            vectors = await self._invoke(
+                lambda model: model.aembed_documents(list(texts))
+            )
+        except IndexingExecutionError as error:
+            if len(texts) > 1 and _is_batch_isolatable(error):
+                midpoint = len(texts) // 2
+                left = await self._embed_document_vectors(
+                    texts[:midpoint],
+                    offset=offset,
+                )
+                right = await self._embed_document_vectors(
+                    texts[midpoint:],
+                    offset=offset + midpoint,
+                )
+                return [*left, *right]
+            if len(texts) == 1:
+                raise _with_input_diagnostic(
+                    error,
+                    text=texts[0],
+                    input_index=offset,
+                ) from error
+            raise
         if not isinstance(vectors, list) or len(vectors) != len(texts):
-            raise _invalid_response(
+            error = _invalid_response(
                 "batch_count",
                 expected=len(texts),
                 observed=len(vectors) if isinstance(vectors, list) else None,
             )
-        return EmbeddingBatch(
-            vectors=tuple(
-                _numeric_vector(
-                    vector,
-                    check="document_vector",
-                    dimension=self._embedding_space.dimension,
-                    normalization=self._embedding_space.normalization,
+            if len(texts) > 1:
+                midpoint = len(texts) // 2
+                left = await self._embed_document_vectors(
+                    texts[:midpoint],
+                    offset=offset,
                 )
-                for vector in vectors
+                right = await self._embed_document_vectors(
+                    texts[midpoint:],
+                    offset=offset + midpoint,
+                )
+                return [*left, *right]
+            raise _with_input_diagnostic(
+                error,
+                text=texts[0],
+                input_index=offset,
             )
-        )
+        return list(vectors)
 
     async def embed_query(self, text: str) -> tuple[float, ...]:
         if not text:
@@ -130,7 +182,13 @@ class LangChainEmbeddingModelAdapter:
                 async with asyncio.timeout(self._total_timeout_seconds):
                     attempt = 0
                     while True:
-                        model = self._model
+                        client: httpx.AsyncClient | None = None
+                        if self._model_arguments is None:
+                            model = self._model
+                            if model is None:
+                                raise RuntimeError("embedding model is unavailable")
+                        else:
+                            client, model = self._new_model()
                         try:
                             return await operation(model)
                         except (
@@ -145,7 +203,6 @@ class LangChainEmbeddingModelAdapter:
                                     {"check": "transport", "retryable": True}
                                 ) from error
                             attempt += 1
-                            await self._refresh_model(model)
                         except openai.APIStatusError as error:
                             status = error.status_code
                             retryable = status in _RETRYABLE_STATUSES or status >= 500
@@ -162,6 +219,9 @@ class LangChainEmbeddingModelAdapter:
                                 ) from error
                             attempt += 1
                             await asyncio.sleep(min(0.5 * (2**attempt), 5.0))
+                        finally:
+                            if client is not None:
+                                await client.aclose()
             except TimeoutError as error:
                 raise _provider_unavailable({"check": "total_timeout"}) from error
             except openai.OpenAIError as error:
@@ -174,20 +234,20 @@ class LangChainEmbeddingModelAdapter:
     def _new_model(self) -> tuple[httpx.AsyncClient, OpenAIEmbeddings]:
         if self._model_arguments is None:
             raise RuntimeError("embedding model factory is unavailable")
-        client = httpx.AsyncClient()
+        # Some otherwise OpenAI-compatible gateways close or poison an idle
+        # HTTP/1.1 connection without signalling it correctly.  Disabling idle
+        # reuse is a provider-neutral correctness trade-off: every logical call
+        # gets a clean transport route while in-flight concurrency is preserved.
+        client = httpx.AsyncClient(
+            limits=httpx.Limits(
+                max_connections=self._max_concurrency,
+                max_keepalive_connections=0,
+            )
+        )
         return client, OpenAIEmbeddings(
             **self._model_arguments,
             http_async_client=client,
         )
-
-    async def _refresh_model(self, failed_model: Embeddings) -> None:
-        async with self._refresh_lock:
-            if self._model is not failed_model:
-                return
-            previous_client = self._http_client
-            self._http_client, self._model = self._new_model()
-            if previous_client is not None:
-                await previous_client.aclose()
 
 
 def _numeric_vector(
@@ -280,6 +340,38 @@ async def probe_openai_embedding_dimension(
 def _provider_unavailable(diagnostic: dict[str, object]) -> IndexingExecutionError:
     return IndexingExecutionError(
         ErrorCode.EMBEDDING_PROVIDER_UNAVAILABLE,
+        phase=IndexingPhase.EMBEDDING,
+        diagnostic=diagnostic,
+    )
+
+
+def _is_batch_isolatable(error: IndexingExecutionError) -> bool:
+    if error.code == ErrorCode.EMBEDDING_RESPONSE_INVALID:
+        return True
+    if error.code != ErrorCode.EMBEDDING_PROVIDER_UNAVAILABLE:
+        return False
+    check = error.diagnostic.get("check")
+    if check in {"transport", "total_timeout", "provider_result"}:
+        return True
+    return error.diagnostic.get("http_status") in {400, 408, 409, 413, 422}
+
+
+def _with_input_diagnostic(
+    error: IndexingExecutionError,
+    *,
+    text: str,
+    input_index: int,
+) -> IndexingExecutionError:
+    diagnostic = dict(error.diagnostic)
+    diagnostic.update(
+        {
+            "input_index": input_index,
+            "input_characters": len(text),
+            "input_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        }
+    )
+    return IndexingExecutionError(
+        error.code,
         phase=IndexingPhase.EMBEDDING,
         diagnostic=diagnostic,
     )

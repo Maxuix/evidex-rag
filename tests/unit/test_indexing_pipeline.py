@@ -520,14 +520,14 @@ class IndexingPipelineTests(unittest.IsolatedAsyncioTestCase):
         )
         with self.assertRaises(IndexingExecutionError):
             await pipeline.execute(command)
-        self.assertEqual(len(repository.vectors), 2)
+        self.assertEqual(len(repository.vectors), 4)
 
         provider.fail_call = None
         provider.calls = 0
         result = await pipeline.execute(command)
 
         self.assertEqual(result.status, "ready")
-        self.assertEqual(provider.calls, 5)
+        self.assertEqual(provider.calls, 3)
         self.assertEqual(len(repository.vectors), 5)
 
     async def test_completed_replay_compensates_interrupted_promotion(self) -> None:
@@ -685,7 +685,7 @@ class IndexingPipelineTests(unittest.IsolatedAsyncioTestCase):
             list(range(result.chunk_count)),
         )
 
-    async def test_final_semantic_chunks_are_embedded_one_at_a_time(self) -> None:
+    async def test_final_semantic_chunks_use_configured_batch_size(self) -> None:
         repository = _Repository(_target(ChunkingPreset.SEMANTIC_BALANCED_V1))
         factory = _Factory(repository)
         provider = _Provider(factory, max_batch_size=10)
@@ -698,11 +698,8 @@ class IndexingPipelineTests(unittest.IsolatedAsyncioTestCase):
         result = await pipeline.execute(command)
 
         self.assertGreater(result.chunk_count, 1)
-        final_batches = provider.inputs[-result.chunk_count :]
-        self.assertTrue(all(len(batch) == 1 for batch in final_batches))
-        self.assertTrue(
-            any(len(batch) > 1 for batch in provider.inputs[: -result.chunk_count])
-        )
+        self.assertEqual(len(provider.inputs[-1]), result.chunk_count)
+        self.assertLessEqual(len(provider.inputs[-1]), provider.max_batch_size)
 
     async def test_semantic_strategy_requires_analysis_role_on_primary_text_space(
         self,

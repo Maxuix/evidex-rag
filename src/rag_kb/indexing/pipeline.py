@@ -1095,12 +1095,9 @@ class IndexingPipeline:
             for item in planned
             if item["space_role"] == "text_retrieval"
         )
-        # Final chunks are substantially longer than semantic-analysis units.
-        # Some OpenAI-compatible gateways accept short batches but leave larger
-        # aggregate requests unanswered instead of returning a size error.  A
-        # single-item request preserves each chunk's embedding semantics while
-        # preventing one oversized batch from stalling the whole document.
-        text_batch_size = 1
+        # The adapter can bisect a failed batch without dropping any input, so
+        # normal provider batching remains efficient on healthy endpoints.
+        text_batch_size = embedding_provider.max_batch_size
         for offset in range(0, len(text_items), text_batch_size):
             batch = text_items[offset : offset + text_batch_size]
             usable = tuple(
