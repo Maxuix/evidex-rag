@@ -511,8 +511,7 @@ class IndexingPipelineTests(unittest.IsolatedAsyncioTestCase):
     async def test_retry_rebuilds_all_embedding_batches(self) -> None:
         repository = _Repository(_target())
         factory = _Factory(repository)
-        provider = _Provider(factory, fail_call=3)
-        provider.max_batch_size = 2
+        provider = _Provider(factory, fail_call=3, max_batch_size=2)
         parser = _Parser(factory, document=_many_text_document(5))
         pipeline = _pipeline(factory, provider, parser)
         command = IndexingCommand(
@@ -521,14 +520,14 @@ class IndexingPipelineTests(unittest.IsolatedAsyncioTestCase):
         )
         with self.assertRaises(IndexingExecutionError):
             await pipeline.execute(command)
-        self.assertEqual(len(repository.vectors), 4)
+        self.assertEqual(len(repository.vectors), 2)
 
         provider.fail_call = None
         provider.calls = 0
         result = await pipeline.execute(command)
 
         self.assertEqual(result.status, "ready")
-        self.assertEqual(provider.calls, 3)
+        self.assertEqual(provider.calls, 5)
         self.assertEqual(len(repository.vectors), 5)
 
     async def test_completed_replay_compensates_interrupted_promotion(self) -> None:
@@ -684,6 +683,25 @@ class IndexingPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [repository.chunks[index].ordinal for index in repository.chunks],
             list(range(result.chunk_count)),
+        )
+
+    async def test_final_semantic_chunks_are_embedded_one_at_a_time(self) -> None:
+        repository = _Repository(_target(ChunkingPreset.SEMANTIC_BALANCED_V1))
+        factory = _Factory(repository)
+        provider = _Provider(factory, max_batch_size=10)
+        pipeline = _pipeline(factory, provider, _SemanticParser(factory))
+        command = IndexingCommand(
+            repository.target.job_id,
+            repository.target.indexed_document_version_id,
+        )
+
+        result = await pipeline.execute(command)
+
+        self.assertGreater(result.chunk_count, 1)
+        final_batches = provider.inputs[-result.chunk_count :]
+        self.assertTrue(all(len(batch) == 1 for batch in final_batches))
+        self.assertTrue(
+            any(len(batch) > 1 for batch in provider.inputs[: -result.chunk_count])
         )
 
     async def test_semantic_strategy_requires_analysis_role_on_primary_text_space(
@@ -1200,10 +1218,10 @@ def _table_and_picture_document() -> DoclingDocument:
 
 
 class _Provider:
-    def __init__(self, factory, *, fail_call=None) -> None:
+    def __init__(self, factory, *, fail_call=None, max_batch_size=1) -> None:
         self.factory = factory
         self.embedding_space = _embedding()
-        self.max_batch_size = 1
+        self.max_batch_size = max_batch_size
         self.calls = 0
         self.inputs = []
         self.fail_call = fail_call
