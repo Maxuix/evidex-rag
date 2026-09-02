@@ -24,7 +24,6 @@ from rag_kb.domain import (
 
 
 _RETRYABLE_STATUSES = frozenset({408, 409, 429, 500, 502, 503, 504})
-_NON_PERSISTENT_CONNECTION_HEADERS = {"Connection": "close"}
 
 
 class LangChainEmbeddingModelAdapter:
@@ -54,33 +53,30 @@ class LangChainEmbeddingModelAdapter:
             timeout_seconds,
             max_retries,
         )
+        self._max_retries = max_retries
         self._semaphore = asyncio.Semaphore(max_concurrency)
+        self._refresh_lock = asyncio.Lock()
+        self._http_client: httpx.AsyncClient | None = None
+        self._model_arguments: dict[str, object] | None = None
         model_arguments: dict[str, object] = {
             "model": embedding_space.requested_model,
             "api_key": api_key,
             "base_url": base_url,
             "timeout": timeout_seconds,
-            "max_retries": max_retries,
+            # Retries are performed below so a transport failure can replace the
+            # entire client instead of reusing the same unresponsive route.
+            "max_retries": 0,
             "chunk_size": max_batch_size,
             "check_embedding_ctx_length": False,
             "model_kwargs": {"encoding_format": "float"},
-            # Some OpenAI-compatible gateways leave an idle HTTP/1.1 connection
-            # open even though it can no longer serve another request.  Semantic
-            # chunking performs several embedding calls in sequence, so reusing
-            # that connection turns an otherwise healthy provider into repeated
-            # read timeouts.  Embedding calls are coarse-grained and bounded; a
-            # fresh connection is preferable to a stuck indexing job here.
-            "default_headers": _NON_PERSISTENT_CONNECTION_HEADERS,
         }
         if embedding_space.dimension_request_mode == "explicit":
             model_arguments["dimensions"] = embedding_space.dimension
         elif embedding_space.dimension_request_mode != "omitted":
             raise ValueError("unsupported embedding dimension request mode")
         if embedding_model is None:
-            model_arguments["http_async_client"] = _non_persistent_http_client(
-                max_connections=max_concurrency,
-            )
-            self._model = OpenAIEmbeddings(**model_arguments)
+            self._model_arguments = model_arguments
+            self._http_client, self._model = self._new_model()
         else:
             self._model = embedding_model
 
@@ -95,9 +91,7 @@ class LangChainEmbeddingModelAdapter:
     async def embed_documents(self, texts: tuple[str, ...]) -> EmbeddingBatch:
         if not texts or len(texts) > self._max_batch_size:
             raise ValueError("embedding batch size is outside the configured bound")
-        vectors = await self._invoke(
-            lambda: self._model.aembed_documents(list(texts))
-        )
+        vectors = await self._invoke(lambda model: model.aembed_documents(list(texts)))
         if not isinstance(vectors, list) or len(vectors) != len(texts):
             raise _invalid_response(
                 "batch_count",
@@ -119,7 +113,7 @@ class LangChainEmbeddingModelAdapter:
     async def embed_query(self, text: str) -> tuple[float, ...]:
         if not text:
             raise ValueError("embedding query must not be empty")
-        vector = await self._invoke(lambda: self._model.aembed_query(text))
+        vector = await self._invoke(lambda model: model.aembed_query(text))
         return _numeric_vector(
             vector,
             check="query_vector",
@@ -129,34 +123,71 @@ class LangChainEmbeddingModelAdapter:
 
     async def _invoke(
         self,
-        operation: Callable[[], Awaitable[object]],
+        operation: Callable[[Embeddings], Awaitable[object]],
     ) -> object:
         async with self._semaphore:
             try:
                 async with asyncio.timeout(self._total_timeout_seconds):
-                    return await operation()
+                    attempt = 0
+                    while True:
+                        model = self._model
+                        try:
+                            return await operation(model)
+                        except (
+                            openai.APITimeoutError,
+                            openai.APIConnectionError,
+                        ) as error:
+                            if (
+                                self._model_arguments is None
+                                or attempt >= self._max_retries
+                            ):
+                                raise _provider_unavailable(
+                                    {"check": "transport", "retryable": True}
+                                ) from error
+                            attempt += 1
+                            await self._refresh_model(model)
+                        except openai.APIStatusError as error:
+                            status = error.status_code
+                            retryable = status in _RETRYABLE_STATUSES or status >= 500
+                            if (
+                                self._model_arguments is None
+                                or not retryable
+                                or attempt >= self._max_retries
+                            ):
+                                raise _provider_unavailable(
+                                    {
+                                        "http_status": status,
+                                        "retryable": retryable,
+                                    }
+                                ) from error
+                            attempt += 1
+                            await asyncio.sleep(min(0.5 * (2**attempt), 5.0))
             except TimeoutError as error:
                 raise _provider_unavailable({"check": "total_timeout"}) from error
-            except openai.APIStatusError as error:
-                status = error.status_code
-                raise _provider_unavailable(
-                    {
-                        "http_status": status,
-                        "retryable": (
-                            status in _RETRYABLE_STATUSES or status >= 500
-                        ),
-                    }
-                ) from error
-            except (openai.APITimeoutError, openai.APIConnectionError) as error:
-                raise _provider_unavailable(
-                    {"check": "transport", "retryable": True}
-                ) from error
             except openai.OpenAIError as error:
                 raise _provider_unavailable({"check": "provider_sdk"}) from error
             except IndexingExecutionError:
                 raise
             except (KeyError, TypeError, ValueError, IndexError) as error:
                 raise _invalid_response("provider_result") from error
+
+    def _new_model(self) -> tuple[httpx.AsyncClient, OpenAIEmbeddings]:
+        if self._model_arguments is None:
+            raise RuntimeError("embedding model factory is unavailable")
+        client = httpx.AsyncClient()
+        return client, OpenAIEmbeddings(
+            **self._model_arguments,
+            http_async_client=client,
+        )
+
+    async def _refresh_model(self, failed_model: Embeddings) -> None:
+        async with self._refresh_lock:
+            if self._model is not failed_model:
+                return
+            previous_client = self._http_client
+            self._http_client, self._model = self._new_model()
+            if previous_client is not None:
+                await previous_client.aclose()
 
 
 def _numeric_vector(
@@ -217,17 +248,11 @@ async def probe_openai_embedding_dimension(
         "max_retries": max_retries,
         "check_embedding_ctx_length": False,
         "model_kwargs": {"encoding_format": "float"},
-        "default_headers": _NON_PERSISTENT_CONNECTION_HEADERS,
     }
     if requested_dimension is not None:
         arguments["dimensions"] = requested_dimension
-    client = _non_persistent_http_client(max_connections=1)
-    arguments["http_async_client"] = client
     adapter = OpenAIEmbeddings(**arguments)
-    try:
-        value = await adapter.aembed_query("model validation")
-    finally:
-        await client.aclose()
+    value = await adapter.aembed_query("model validation")
     if not isinstance(value, (list, tuple)):
         raise ValueError("embedding response is not a vector")
     dimension = len(value)
@@ -250,16 +275,6 @@ async def probe_openai_embedding_dimension(
     )
     normalize_embedding_vector(value, probe_definition)
     return dimension
-
-
-def _non_persistent_http_client(*, max_connections: int) -> httpx.AsyncClient:
-    return httpx.AsyncClient(
-        headers=_NON_PERSISTENT_CONNECTION_HEADERS,
-        limits=httpx.Limits(
-            max_connections=max_connections,
-            max_keepalive_connections=0,
-        ),
-    )
 
 
 def _provider_unavailable(diagnostic: dict[str, object]) -> IndexingExecutionError:

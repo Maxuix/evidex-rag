@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import openai
@@ -132,20 +132,51 @@ class LangChainEmbeddingAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(arguments["dimensions"], 1024)
         self.assertEqual(arguments["chunk_size"], 10)
         self.assertEqual(arguments["timeout"], 30)
-        self.assertEqual(arguments["max_retries"], 2)
+        self.assertEqual(arguments["max_retries"], 0)
         self.assertFalse(arguments["check_embedding_ctx_length"])
         self.assertEqual(
             arguments["model_kwargs"],
             {"encoding_format": "float"},
         )
-        self.assertEqual(arguments["default_headers"], {"Connection": "close"})
         self.assertIs(arguments["http_async_client"], http_client)
-        limits = client_constructor.call_args_list[0].kwargs["limits"]
-        self.assertEqual(limits.max_connections, 2)
-        self.assertEqual(limits.max_keepalive_connections, 0)
+        self.assertEqual(client_constructor.call_count, 2)
         zero_retry_arguments = constructor.call_args_list[1].kwargs
         self.assertEqual(zero_retry_arguments["timeout"], 30)
         self.assertEqual(zero_retry_arguments["max_retries"], 0)
+
+    async def test_transport_retry_replaces_the_entire_http_client(self) -> None:
+        request = httpx.Request("POST", "https://provider.invalid/v1/embeddings")
+        first_model = _FakeEmbeddings(error=openai.APITimeoutError(request))
+        second_model = _FakeEmbeddings(query=[0.6, 0.8])
+        first_client = AsyncMock(spec=httpx.AsyncClient)
+        second_client = AsyncMock(spec=httpx.AsyncClient)
+
+        with (
+            patch(
+                "rag_kb.adapters.model_api.langchain_embeddings.OpenAIEmbeddings",
+                side_effect=(first_model, second_model),
+            ) as constructor,
+            patch(
+                "rag_kb.adapters.model_api.langchain_embeddings.httpx.AsyncClient",
+                side_effect=(first_client, second_client),
+            ),
+        ):
+            adapter = LangChainEmbeddingModelAdapter(
+                base_url="https://provider.invalid/v1",
+                api_key="secret",
+                embedding_space=_space(),
+                max_batch_size=10,
+                timeout_seconds=1,
+                max_retries=1,
+                max_concurrency=1,
+            )
+            vector = await adapter.embed_query("query")
+
+        self.assertEqual(vector, (0.6, 0.8))
+        self.assertEqual(constructor.call_count, 2)
+        first_client.aclose.assert_awaited_once()
+        self.assertEqual(first_model.query_calls, ["query"])
+        self.assertEqual(second_model.query_calls, ["query"])
 
     def test_constructor_omits_dimension_for_fixed_provider_default(self) -> None:
         with patch(
