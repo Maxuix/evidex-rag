@@ -232,6 +232,28 @@ class LangChainEmbeddingAdapterTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
+    async def test_multi_item_batch_uses_short_non_retrying_probe_budget(self) -> None:
+        real_timeout = asyncio.timeout
+        observed_budgets: list[float | None] = []
+
+        def recording_timeout(delay: float | None) -> asyncio.Timeout:
+            observed_budgets.append(delay)
+            return real_timeout(delay)
+
+        with patch(
+            "rag_kb.adapters.model_api.langchain_embeddings.asyncio.timeout",
+            side_effect=recording_timeout,
+        ):
+            result = await _adapter(
+                _FakeEmbeddings(documents=[[0.6, 0.8], [0.6, 0.8]]),
+                timeout_seconds=60,
+                max_retries=3,
+                max_batch_size=2,
+            ).embed_documents(("one", "two"))
+
+        self.assertEqual(len(result.vectors), 2)
+        self.assertEqual(observed_budgets, [11.0])
+
     async def test_terminal_document_failure_has_content_safe_locator(self) -> None:
         request = httpx.Request("POST", "https://provider.invalid/v1/embeddings")
         text = "sensitive contract fragment"

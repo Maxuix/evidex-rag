@@ -25,6 +25,7 @@ from rag_kb.domain import (
 
 
 _RETRYABLE_STATUSES = frozenset({408, 409, 429, 500, 502, 503, 504})
+_BATCH_PROBE_TIMEOUT_SECONDS = 10.0
 
 
 class LangChainEmbeddingModelAdapter:
@@ -50,6 +51,7 @@ class LangChainEmbeddingModelAdapter:
             raise ValueError("embedding provider retries must be non-negative")
         self._embedding_space = embedding_space
         self._max_batch_size = max_batch_size
+        self._timeout_seconds = timeout_seconds
         self._total_timeout_seconds = provider_retry_budget_seconds(
             timeout_seconds,
             max_retries,
@@ -117,7 +119,13 @@ class LangChainEmbeddingModelAdapter:
     ) -> list[object]:
         try:
             vectors = await self._invoke(
-                lambda model: model.aembed_documents(list(texts))
+                lambda model: model.aembed_documents(list(texts)),
+                timeout_seconds=(
+                    min(self._timeout_seconds, _BATCH_PROBE_TIMEOUT_SECONDS)
+                    if len(texts) > 1
+                    else None
+                ),
+                max_retries=0 if len(texts) > 1 else None,
             )
         except IndexingExecutionError as error:
             if len(texts) > 1 and _is_batch_isolatable(error):
@@ -176,10 +184,22 @@ class LangChainEmbeddingModelAdapter:
     async def _invoke(
         self,
         operation: Callable[[Embeddings], Awaitable[object]],
+        *,
+        timeout_seconds: float | None = None,
+        max_retries: int | None = None,
     ) -> object:
+        retry_count = self._max_retries if max_retries is None else max_retries
+        total_timeout_seconds = (
+            self._total_timeout_seconds
+            if timeout_seconds is None and max_retries is None
+            else provider_retry_budget_seconds(
+                timeout_seconds or self._timeout_seconds,
+                retry_count,
+            )
+        )
         async with self._semaphore:
             try:
-                async with asyncio.timeout(self._total_timeout_seconds):
+                async with asyncio.timeout(total_timeout_seconds):
                     attempt = 0
                     while True:
                         client: httpx.AsyncClient | None = None
@@ -197,7 +217,7 @@ class LangChainEmbeddingModelAdapter:
                         ) as error:
                             if (
                                 self._model_arguments is None
-                                or attempt >= self._max_retries
+                                or attempt >= retry_count
                             ):
                                 raise _provider_unavailable(
                                     {"check": "transport", "retryable": True}
@@ -209,7 +229,7 @@ class LangChainEmbeddingModelAdapter:
                             if (
                                 self._model_arguments is None
                                 or not retryable
-                                or attempt >= self._max_retries
+                                or attempt >= retry_count
                             ):
                                 raise _provider_unavailable(
                                     {
