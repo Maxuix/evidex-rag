@@ -13,13 +13,16 @@ from rag_kb.domain import (
     ChatPipelinePhase,
     ChatRunLease,
     ErrorCode,
+    Evidence,
     EvidencePack,
     GraphRetrievalRequest,
     GraphSearchResult,
+    ResourceNotFoundError,
     RetrievalRequest,
     RetrievalExecutionError,
     RetrievalStrategy,
     ReconciliationResult,
+    ServingDocumentList,
 )
 from rag_kb.retrieval import RetrievalService
 from rag_kb.retrieval.profile import (
@@ -109,10 +112,7 @@ class ChatEvidenceRetriever:
     def __init__(self, retrieval: RetrievalService) -> None:
         self._retrieval = retrieval
 
-    async def retrieve(self, context: ChatExecutionContext) -> EvidencePack:
-        return await self.retrieve_query(context, context.query)
-
-    async def retrieve_query(
+    async def semantic_search(
         self,
         context: ChatExecutionContext,
         query: str,
@@ -181,6 +181,113 @@ class ChatEvidenceRetriever:
             evidence=pack.evidence,
             debug=pack.debug,
         )
+
+    async def keyword_search(
+        self,
+        context: ChatExecutionContext,
+        query: str,
+        *,
+        top_k_override: int | None = None,
+    ) -> EvidencePack:
+        try:
+            _strategy, top_k, _rerank_mode, _execution_type = (
+                parse_chat_retrieval_snapshot(context.retrieval_strategy)
+            )
+            if top_k_override is not None:
+                if not 1 <= top_k_override <= top_k:
+                    raise ValueError
+                top_k = top_k_override
+            request = RetrievalRequest(
+                knowledge_base_id=context.knowledge_base_id,
+                query=query,
+                top_k=top_k,
+                include_debug=True,
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise ChatPipelineExecutionError(
+                ErrorCode.CHAT_CONTEXT_INVALID,
+                phase=ChatPipelinePhase.RETRIEVE_EVIDENCE,
+                diagnostic={"check": "retrieval_snapshot"},
+            ) from error
+        try:
+            pack = await self._retrieval.retrieve_lexical_only(request)
+        except RetrievalExecutionError as error:
+            raise ChatPipelineExecutionError(
+                error.code,
+                phase=ChatPipelinePhase.RETRIEVE_EVIDENCE,
+                diagnostic=error.diagnostic,
+            ) from error
+        if (
+            pack.knowledge_base_id != context.knowledge_base_id
+            or pack.index_revision_id != context.index_revision_id
+        ):
+            raise ChatPipelineExecutionError(
+                ErrorCode.CHAT_REVISION_MISMATCH,
+                phase=ChatPipelinePhase.RETRIEVE_EVIDENCE,
+                diagnostic={"check": "frozen_revision"},
+            )
+        return EvidencePack(
+            knowledge_base_id=pack.knowledge_base_id,
+            index_revision_id=pack.index_revision_id,
+            strategy=pack.strategy,
+            evidence=pack.evidence,
+            debug=pack.debug,
+        )
+
+    async def keyword_search_capable(
+        self,
+        context: ChatExecutionContext,
+    ) -> bool:
+        try:
+            if not self._retrieval.hybrid_request_enabled():
+                return False
+            status = await self._retrieval.lexical_manifest_status(
+                context.knowledge_base_id
+            )
+        except RetrievalExecutionError:
+            return False
+        return (
+            status is not None
+            and status.complete
+            and status.resolved_active_revision_id == context.index_revision_id
+        )
+
+    async def read_chunk_context(
+        self,
+        context: ChatExecutionContext,
+        anchors: tuple[Evidence, ...],
+    ) -> tuple[Evidence, ...]:
+        try:
+            return await self._retrieval.retrieve_adjacent_evidence(
+                knowledge_base_id=context.knowledge_base_id,
+                index_revision_id=context.index_revision_id,
+                anchors=anchors,
+            )
+        except RetrievalExecutionError as error:
+            raise ChatPipelineExecutionError(
+                error.code,
+                phase=ChatPipelinePhase.RETRIEVE_EVIDENCE,
+                diagnostic=error.diagnostic,
+            ) from error
+
+    async def list_documents(
+        self,
+        context: ChatExecutionContext,
+    ) -> ServingDocumentList:
+        listed = await self._retrieval.list_serving_documents(
+            context.knowledge_base_id
+        )
+        if listed is None:
+            raise ResourceNotFoundError(
+                "knowledge base or active revision was not found"
+            )
+        if listed.resolved_active_revision_id != context.index_revision_id:
+            raise ChatPipelineExecutionError(
+                ErrorCode.CHAT_REVISION_MISMATCH,
+                phase=ChatPipelinePhase.RETRIEVE_EVIDENCE,
+                diagnostic={"check": "frozen_revision"},
+            )
+        return listed
 
     async def search_graph_relations(
         self,

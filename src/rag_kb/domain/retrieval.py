@@ -40,6 +40,90 @@ class EvidenceScoreKind(StrEnum):
     RECIPROCAL_RANK_FUSION = "reciprocal_rank_fusion"
     ADJACENCY = "adjacency"
     GRAPH_PATH = "graph_path"
+    LEXICAL = "lexical"
+
+
+SERVING_DOCUMENT_LIST_LIMIT = 50
+SERVING_DOCUMENT_OUTLINE_LIMIT = 8
+
+
+@dataclass(frozen=True, slots=True)
+class ServingScopeQuery:
+    workspace_id: UUID
+    knowledge_base_id: UUID
+
+
+@dataclass(frozen=True, slots=True)
+class ServingDocumentEntry:
+    document_id: UUID
+    document_version_id: UUID
+    indexed_document_version_id: UUID
+    display_name: str
+    original_filename: str
+    version_number: int
+    chunk_count: int
+    outline: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        display_name = self.display_name.strip()
+        original_filename = self.original_filename.strip()
+        if not display_name:
+            raise ValueError("serving document display_name must not be empty")
+        if not original_filename:
+            raise ValueError("serving document original_filename must not be empty")
+        if self.version_number < 1:
+            raise ValueError("serving document version_number must be at least 1")
+        if self.chunk_count < 0:
+            raise ValueError("serving document chunk_count must be non-negative")
+        outline: list[str] = []
+        seen: set[str] = set()
+        for item in self.outline:
+            title = item.strip()
+            if not 1 <= len(title) <= 256:
+                raise ValueError("serving document outline title is invalid")
+            if title in seen:
+                raise ValueError("serving document outline titles must be unique")
+            seen.add(title)
+            outline.append(title)
+        if len(outline) > SERVING_DOCUMENT_OUTLINE_LIMIT:
+            raise ValueError("serving document outline exceeds the bound")
+        object.__setattr__(self, "display_name", display_name)
+        object.__setattr__(self, "original_filename", original_filename)
+        object.__setattr__(self, "outline", tuple(outline))
+
+
+@dataclass(frozen=True, slots=True)
+class ServingDocumentList:
+    resolved_active_revision_id: UUID
+    entries: tuple[ServingDocumentEntry, ...] = ()
+    truncated: bool = False
+
+    def __post_init__(self) -> None:
+        if len(self.entries) > SERVING_DOCUMENT_LIST_LIMIT:
+            raise ValueError("serving document list exceeds the bound")
+        document_ids = [item.document_id for item in self.entries]
+        if len(document_ids) != len(set(document_ids)):
+            raise ValueError("serving document list entries must be unique")
+
+
+@dataclass(frozen=True, slots=True)
+class LexicalManifestStatus:
+    resolved_active_revision_id: UUID
+    serving_target_count: int
+    manifested_target_count: int
+
+    def __post_init__(self) -> None:
+        if self.serving_target_count < 0 or self.manifested_target_count < 0:
+            raise ValueError("lexical manifest counts must be non-negative")
+        if self.manifested_target_count > self.serving_target_count:
+            raise ValueError("manifested targets cannot exceed serving targets")
+
+    @property
+    def complete(self) -> bool:
+        return (
+            self.serving_target_count > 0
+            and self.manifested_target_count == self.serving_target_count
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -487,7 +571,28 @@ class Evidence:
                 )
             ):
                 raise ValueError("graph path evidence metadata is invalid")
-        elif (
+        elif self.score_kind is EvidenceScoreKind.LEXICAL:
+            if (
+                self.lexical_rank is None
+                or self.lexical_rank < 1
+                or self.vector_similarity is not None
+                or self.lexical_score != 0.0
+                or self.lexical_coverage != 0.0
+                or any(
+                    value is not None
+                    for value in (
+                        self.model_rerank_score,
+                        self.model_rerank_rank,
+                        self.model_rerank_window_count,
+                        self.model_rerank_winning_window_index,
+                    )
+                )
+                or not math.isclose(
+                    self.score, 1.0 / self.lexical_rank, rel_tol=1e-9
+                )
+            ):
+                raise ValueError("lexical evidence metadata is invalid")
+        if self.score_kind is not EvidenceScoreKind.ADJACENCY and (
             self.adjacency_anchor_index_chunk_id is not None
             or self.adjacency_offset is not None
         ):

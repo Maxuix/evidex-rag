@@ -117,6 +117,10 @@ class ChatAgentBudgetResponse(PublicSchema):
 class ChatAgentTraceEventResponse(PublicSchema):
     tool: Literal[
         "search_knowledge_base",
+        "semantic_search",
+        "keyword_search",
+        "read_chunk_context",
+        "list_documents",
         "search_graph_relations",
         "calculate",
         "submit_answer",
@@ -127,7 +131,14 @@ class ChatAgentTraceEventResponse(PublicSchema):
     tool_call_id: Annotated[str, Field(min_length=1, max_length=128)]
     refs: tuple[Annotated[str, Field(min_length=1, max_length=128)], ...] = ()
     count: Annotated[int, Field(ge=0)] = 0
-    retrieval_lane: Literal["simple", "graph_relations"] | None = None
+    retrieval_lane: Literal[
+        "simple",
+        "semantic",
+        "keyword",
+        "chunk_context",
+        "document_list",
+        "graph_relations",
+    ] | None = None
     route_reason_code: Literal[
         "direct_relation",
         "relation_chain",
@@ -176,7 +187,10 @@ class ChatAgentTraceDiagnosticsResponse(PublicSchema):
 
 
 class ChatAgentTraceResponse(PublicSchema):
-    version: Literal["native_tool_calling_agent_v3"]
+    version: Literal[
+        "native_tool_calling_agent_v3",
+        "native_tool_calling_agent_v4",
+    ]
     events: tuple[ChatAgentTraceEventResponse, ...]
     budget: ChatAgentBudgetResponse
     usage: dict[str, Annotated[int, Field(ge=0)]]
@@ -185,7 +199,10 @@ class ChatAgentTraceResponse(PublicSchema):
 
 
 class ChatAgentResponse(PublicSchema):
-    version: Literal["native_tool_calling_agent_v3"]
+    version: Literal[
+        "native_tool_calling_agent_v3",
+        "native_tool_calling_agent_v4",
+    ]
     budget: ChatAgentBudgetResponse
     trace: ChatAgentTraceResponse | None = None
 

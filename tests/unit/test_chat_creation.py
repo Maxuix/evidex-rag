@@ -9,6 +9,8 @@ from pydantic import ValidationError
 from sqlalchemy.dialects import postgresql
 
 from rag_kb.domain import (
+    CHAT_AGENT_VERSION,
+    ChatAgentBudget,
     ChatSessionBusyError,
     ConversationTurn,
     ErrorCode,
@@ -128,6 +130,24 @@ class ChatCreationServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             created["retrieval_strategy"]["rerank_mode"],
             "local_minilm_v1",
+        )
+        self.assertEqual(
+            created["agent_configuration"],
+            {
+                "version": CHAT_AGENT_VERSION,
+                "budget": ChatAgentBudget().as_dict(),
+            },
+        )
+        self.assertEqual(created["agent_configuration"]["version"], "native_tool_calling_agent_v4")
+        self.assertEqual(
+            set(created["agent_configuration"]["budget"]),
+            {
+                "max_model_rounds",
+                "max_graph_calls",
+                "max_total_tokens",
+                "max_evidence_items",
+                "max_retrieval_calls",
+            },
         )
 
     async def test_disabled_hybrid_run_uses_capability_error(self) -> None:

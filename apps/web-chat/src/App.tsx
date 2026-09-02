@@ -1759,7 +1759,14 @@ function AnswerProcessTechnicalDetails({
 function answerProcessMetrics(run: ChatRun): AnswerProcessMetrics {
   const trace = run.agent.trace;
   const searchEvents = trace?.events.filter(
-    (event) => event.tool === "search_knowledge_base" && event.status === "ok",
+    (event) =>
+      (
+        event.tool === "search_knowledge_base"
+        || event.tool === "semantic_search"
+        || event.tool === "keyword_search"
+        || event.tool === "read_chunk_context"
+      )
+      && event.status === "ok",
   ) ?? [];
   const eventCandidateCount = Math.max(0, ...searchEvents.map((event) => event.count));
   const graphEvents = trace?.events.filter(
@@ -1960,7 +1967,7 @@ function completedAnswerSteps(
 function liveActivityView(
   activity: ChatProgressSnapshot["activity"],
 ): { step: number; title: string; description: string } {
-  const views: Record<ChatProgressSnapshot["activity"], {
+  const views: Record<ChatProgressSnapshot["activity"] | "semantic_search" | "keyword_search" | "read_chunk_context" | "list_documents", {
     step: number;
     title: string;
     description: string;
@@ -1979,6 +1986,26 @@ function liveActivityView(
       step: 2,
       title: "查找资料",
       description: "正在知识库中查找与问题相关的候选内容。",
+    },
+    semantic_search: {
+      step: 2,
+      title: "语义检索",
+      description: "正在按概念和释义查找相关内容。",
+    },
+    keyword_search: {
+      step: 2,
+      title: "关键词检索",
+      description: "正在按专名、编号或精确短语查找相关内容。",
+    },
+    read_chunk_context: {
+      step: 2,
+      title: "阅读相邻片段",
+      description: "正在读取已命中片段的相邻上下文。",
+    },
+    list_documents: {
+      step: 2,
+      title: "盘点文档",
+      description: "正在列出知识库中的文档清单。",
     },
     search_graph_relations: {
       step: 2,

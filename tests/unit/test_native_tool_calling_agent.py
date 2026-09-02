@@ -12,11 +12,12 @@ from rag_kb.answering.agent import (
     NativeToolCallingAgent,
     _graph_arguments,
     _initial_messages,
-    _search_arguments,
+    _search_queries_arguments,
     _tools,
 )
 from rag_kb.domain import (
     AnswerOutcome,
+    CHAT_AGENT_VERSION,
     CHAT_GRAPH_SEARCH_REASONS,
     ChatAgentBudget,
     ChatExecutionContext,
@@ -33,6 +34,8 @@ from rag_kb.domain import (
     EvidenceScoreKind,
     ErrorCode,
     GraphSearchResult,
+    ServingDocumentEntry,
+    ServingDocumentList,
     IndexAssetContent,
     IndexAssetSnapshot,
     RelatedVisualEvidence,
@@ -71,16 +74,47 @@ class _Model:
 
 
 class _Retriever:
-    def __init__(self, pack: EvidencePack, *, graph_ready: bool = False) -> None:
+    def __init__(
+        self,
+        pack: EvidencePack,
+        *,
+        graph_ready: bool = False,
+        keyword_ready: bool = False,
+        neighbors: tuple = (),
+        documents=None,
+    ) -> None:
         self.pack = pack
         self.queries = []
+        self.keyword_queries = []
         self.graph_ready = graph_ready
+        self.keyword_ready = keyword_ready
+        self.neighbors = neighbors
+        self.documents = documents
+        self.anchors = ()
         self.capability_calls = 0
 
-    async def retrieve_query(self, context, query, *, top_k_override=None):
+    async def semantic_search(self, context, query, *, top_k_override=None):
         del context, top_k_override
         self.queries.append(query)
         return self.pack
+
+    async def keyword_search(self, context, query, *, top_k_override=None):
+        del context, top_k_override
+        self.keyword_queries.append(query)
+        return self.pack
+
+    async def keyword_search_capable(self, context):
+        del context
+        return self.keyword_ready
+
+    async def read_chunk_context(self, context, anchors):
+        del context
+        self.anchors = anchors
+        return self.neighbors
+
+    async def list_documents(self, context):
+        del context
+        return self.documents
 
     async def graph_relations_capable(self, context):
         del context
@@ -98,10 +132,14 @@ class _QueryRetriever:
         self.packs_by_query = packs_by_query
         self.queries = []
 
-    async def retrieve_query(self, context, query, *, top_k_override=None):
+    async def semantic_search(self, context, query, *, top_k_override=None):
         del context, top_k_override
         self.queries.append(query)
         return self.packs_by_query[query]
+
+    async def keyword_search_capable(self, context):
+        del context
+        return False
 
     async def graph_relations_capable(self, context):
         del context
@@ -124,10 +162,14 @@ class _GraphRetriever:
         self.capability_calls = 0
         self.graph_ready = graph_ready
 
-    async def retrieve_query(self, context, query, *, top_k_override=None):
+    async def semantic_search(self, context, query, *, top_k_override=None):
         del context, top_k_override
         self.queries.append(query)
         return self.pack
+
+    async def keyword_search_capable(self, context):
+        del context
+        return False
 
     async def graph_relations_capable(self, context):
         del context
@@ -485,14 +527,37 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("search_graph_relations", [tool.name for tool in plain])
         self.assertEqual(
             [tool.name for tool in ready],
-            ["search_knowledge_base", "search_graph_relations", "calculate", "submit_answer"],
+            [
+                "semantic_search",
+                "read_chunk_context",
+                "list_documents",
+                "search_graph_relations",
+                "calculate",
+                "submit_answer",
+            ],
         )
         graph_schema = next(
             tool.input_schema for tool in ready if tool.name == "search_graph_relations"
         )
         self.assertEqual(tuple(graph_schema["required"]), ("query", "reason"))
-        self.assertEqual(_search_arguments({"queries": ["one", "two"]}), ("one", "two"))
-        self.assertIsNone(_search_arguments({"retrieval_lane": "simple", "queries": ["one"]}))
+        self.assertEqual(
+            _search_queries_arguments({"queries": ["one", "two"]}, max_top_k=3),
+            (("one", "two"), None),
+        )
+        self.assertEqual(
+            _search_queries_arguments(
+                {"queries": ["one"], "top_k": 2}, max_top_k=3
+            ),
+            (("one",), 2),
+        )
+        self.assertIsNone(
+            _search_queries_arguments(
+                {"retrieval_lane": "simple", "queries": ["one"]}, max_top_k=3
+            )
+        )
+        self.assertIsNone(
+            _search_queries_arguments({"queries": ["one"], "top_k": 4}, max_top_k=3)
+        )
 
     def test_agent_budget_configures_rounds_and_graph_calls(self) -> None:
         self.assertEqual(
@@ -647,7 +712,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
     async def test_search_issues_stable_ref_and_submit_answer_completes(self) -> None:
         context = _context()
         model = _Model(
-            ChatToolCall("search-1", "search_knowledge_base", {"queries": ["revenue"]}),
+            ChatToolCall("search-1", "semantic_search", {"queries": ["revenue"]}),
             ChatToolCall(
                 "submit-1",
                 "submit_answer",
@@ -672,7 +737,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(state.answering.rendered.citations), 1)
         self.assertNotIn("ev_1", state.answering.rendered.content)
         self.assertEqual([tool.name for tool in model.requests[0].tools], [
-            "search_knowledge_base", "calculate", "submit_answer"
+            "semantic_search", "read_chunk_context", "list_documents", "calculate", "submit_answer"
         ])
         self.assertIn('"evidence_ref":"ev_1"', model.requests[1].messages[-1].content)
         self.assertIn('"groups":[{"query":"revenue"', model.requests[1].messages[-1].content)
@@ -694,7 +759,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
                 context = _context()
                 model = _Model(
                     ChatToolCall(
-                        "search", "search_knowledge_base", {"queries": ["revenue"]}
+                        "search", "semantic_search", {"queries": ["revenue"]}
                     ),
                     ChatToolCall(
                         "submit",
@@ -727,7 +792,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
                 trace = state.artifacts[AGENT_TRACE_ARTIFACT]
                 self.assertEqual(
                     [event.tool for event in trace.events],
-                    ["search_knowledge_base", "submit_answer"],
+                    ["semantic_search", "submit_answer"],
                 )
                 self.assertEqual(trace.total_tokens, 10)
 
@@ -747,7 +812,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         model = _Model(
             ChatToolCall(
                 "search-lexical",
-                "search_knowledge_base",
+                "semantic_search",
                 {"queries": ["revenue"]},
             ),
             ChatToolCall(
@@ -855,7 +920,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         )
         model = _Model(
             ChatToolCall(
-                "simple-1", "search_knowledge_base", {"queries": ["revenue"]}
+                "simple-1", "semantic_search", {"queries": ["revenue"]}
             ),
             ChatToolCall(
                 "graph-1",
@@ -892,7 +957,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         trace = state.artifacts[AGENT_TRACE_ARTIFACT]
         self.assertEqual(trace.retrieval_calls, 3)
         self.assertEqual(trace.retrieval_tool_calls, 3)
-        self.assertEqual(trace.simple_tool_calls, 1)
+        self.assertEqual(trace.semantic_tool_calls, 1)
         self.assertEqual(trace.graph_tool_calls, 2)
         graph_events = [
             event for event in trace.events if event.retrieval_lane == "graph_relations"
@@ -1005,7 +1070,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
             [],
         )
         model = _Model(
-            ChatToolCall("simple", "search_knowledge_base", {"queries": ["short query"]}),
+            ChatToolCall("simple", "semantic_search", {"queries": ["short query"]}),
             ChatToolCall(
                 "submit-1",
                 "submit_answer",
@@ -1212,7 +1277,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
     async def test_invalid_claim_is_removed_and_valid_claim_is_salvaged_as_partial(self) -> None:
         context = _context()
         model = _Model(
-            ChatToolCall("search-1", "search_knowledge_base", {"queries": ["revenue"]}),
+            ChatToolCall("search-1", "semantic_search", {"queries": ["revenue"]}),
             ChatToolCall(
                 "submit-1",
                 "submit_answer",
@@ -1247,7 +1312,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
     async def test_conflicting_evidence_uses_plain_claim_and_all_refs(self) -> None:
         context = _context()
         model = _Model(
-            ChatToolCall("search-1", "search_knowledge_base", {"queries": ["revenue"]}),
+            ChatToolCall("search-1", "semantic_search", {"queries": ["revenue"]}),
             ChatToolCall(
                 "submit-1",
                 "submit_answer",
@@ -1278,7 +1343,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
     async def test_retired_conflict_fields_are_rejected_as_claim_shape(self) -> None:
         context = _context()
         model = _Model(
-            ChatToolCall("search-1", "search_knowledge_base", {"queries": ["revenue"]}),
+            ChatToolCall("search-1", "semantic_search", {"queries": ["revenue"]}),
             ChatToolCall(
                 "submit-1",
                 "submit_answer",
@@ -1314,7 +1379,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
     async def test_all_invalid_claims_refuse_without_a_repair_call(self) -> None:
         context = _context()
         model = _Model(
-            ChatToolCall("search-1", "search_knowledge_base", {"queries": ["revenue"]}),
+            ChatToolCall("search-1", "semantic_search", {"queries": ["revenue"]}),
             ChatToolCall(
                 "submit-invalid",
                 "submit_answer",
@@ -1387,7 +1452,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
     async def test_invalid_budget_wrap_up_never_adds_another_finalize_call(self) -> None:
         for response in (
             None,
-            ChatToolCall("search-again", "search_knowledge_base", {"queries": ["more"]}),
+            ChatToolCall("search-again", "semantic_search", {"queries": ["more"]}),
             ChatToolCall("submit-invalid", "submit_answer", {"outcome": "answered"}),
         ):
             with self.subTest(response=response):
@@ -1399,7 +1464,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
                     },
                 )
                 model = _Model(
-                    ChatToolCall("search-1", "search_knowledge_base", {"queries": ["revenue"]}),
+                    ChatToolCall("search-1", "semantic_search", {"queries": ["revenue"]}),
                     response,
                     usage={"total_tokens": 1000},
                 )
@@ -1426,8 +1491,8 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
             },
         )
         model = _Model(
-            ChatToolCall("search-1", "search_knowledge_base", {"queries": ["revenue"]}),
-            ChatToolCall("search-2", "search_knowledge_base", {"queries": ["change"]}),
+            ChatToolCall("search-1", "semantic_search", {"queries": ["revenue"]}),
+            ChatToolCall("search-2", "semantic_search", {"queries": ["change"]}),
             ChatToolCall(
                 "submit-1",
                 "submit_answer",
@@ -1479,7 +1544,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
             },
         )
         model = _Model(
-            ChatToolCall("search-1", "search_knowledge_base", {"queries": ["revenue"]}),
+            ChatToolCall("search-1", "semantic_search", {"queries": ["revenue"]}),
             ChatToolCall(
                 "submit-1",
                 "submit_answer",
@@ -1519,7 +1584,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
             },
         )
         model = _Model(
-            ChatToolCall("search-1", "search_knowledge_base", {"queries": ["revenue"]}),
+            ChatToolCall("search-1", "semantic_search", {"queries": ["revenue"]}),
             ChatToolCall(
                 "submit-1",
                 "submit_answer",
@@ -1565,7 +1630,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         model = _Model(
             ChatToolCall(
                 "search-1",
-                "search_knowledge_base",
+                "semantic_search",
                 {"queries": ["revenue", "margin", "guidance"]},
             ),
             ChatToolCall(
@@ -1594,10 +1659,10 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         context = _context()
         retriever = _Retriever(_pack(context))
         model = _Model(
-            ChatToolCall("search-1", "search_knowledge_base", {"queries": ["one"]}),
-            ChatToolCall("search-2", "search_knowledge_base", {"queries": ["two"]}),
-            ChatToolCall("search-3", "search_knowledge_base", {"queries": ["three"]}),
-            ChatToolCall("search-4", "search_knowledge_base", {"queries": ["four"]}),
+            ChatToolCall("search-1", "semantic_search", {"queries": ["one"]}),
+            ChatToolCall("search-2", "semantic_search", {"queries": ["two"]}),
+            ChatToolCall("search-3", "semantic_search", {"queries": ["three"]}),
+            ChatToolCall("search-4", "semantic_search", {"queries": ["four"]}),
             ChatToolCall(
                 "submit-1",
                 "submit_answer",
@@ -1636,9 +1701,9 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         empty_pack = replace(_pack(context), evidence=())
         retriever = _Retriever(empty_pack)
         model = _Model(
-            ChatToolCall("search-1", "search_knowledge_base", {"queries": ["one"]}),
-            ChatToolCall("search-2", "search_knowledge_base", {"queries": ["two"]}),
-            ChatToolCall("search-3", "search_knowledge_base", {"queries": ["three"]}),
+            ChatToolCall("search-1", "semantic_search", {"queries": ["one"]}),
+            ChatToolCall("search-2", "semantic_search", {"queries": ["two"]}),
+            ChatToolCall("search-3", "semantic_search", {"queries": ["three"]}),
             ChatToolCall(
                 "submit-1",
                 "submit_answer",
@@ -1693,10 +1758,10 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         )
         retriever = _GraphRetriever(simple_pack, [no_new_graph])
         model = _Model(
-            ChatToolCall("search-1", "search_knowledge_base", {"queries": ["seed"]}),
+            ChatToolCall("search-1", "semantic_search", {"queries": ["seed"]}),
             ChatToolCall(
                 "search-2",
-                "search_knowledge_base",
+                "semantic_search",
                 {"queries": ["duplicate"]},
             ),
             ChatToolCall(
@@ -1706,7 +1771,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
             ),
             ChatToolCall(
                 "search-3",
-                "search_knowledge_base",
+                "semantic_search",
                 {"queries": ["must not execute"]},
             ),
             ChatToolCall(
@@ -1744,10 +1809,10 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         context = _context()
         retriever = _Retriever(_pack(context, count=65))
         model = _Model(
-            ChatToolCall("search-1", "search_knowledge_base", {"queries": ["fill"]}),
+            ChatToolCall("search-1", "semantic_search", {"queries": ["fill"]}),
             ChatToolCall(
                 "search-2",
-                "search_knowledge_base",
+                "semantic_search",
                 {"queries": ["must not execute"]},
             ),
             ChatToolCall(
@@ -1785,21 +1850,21 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
             }
         )
         model = _Model(
-            ChatToolCall("search-1", "search_knowledge_base", {"queries": ["one"]}),
+            ChatToolCall("search-1", "semantic_search", {"queries": ["one"]}),
             ChatToolCall(
                 "search-2",
-                "search_knowledge_base",
+                "semantic_search",
                 {"queries": ["duplicate-one"]},
             ),
-            ChatToolCall("search-3", "search_knowledge_base", {"queries": ["two"]}),
+            ChatToolCall("search-3", "semantic_search", {"queries": ["two"]}),
             ChatToolCall(
                 "search-4",
-                "search_knowledge_base",
+                "semantic_search",
                 {"queries": ["duplicate-two-a"]},
             ),
             ChatToolCall(
                 "search-5",
-                "search_knowledge_base",
+                "semantic_search",
                 {"queries": ["duplicate-two-b"]},
             ),
             ChatToolCall(
@@ -1831,9 +1896,9 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         context = _context()
         retriever = _Retriever(_pack(context))
         model = _Model(
-            ChatToolCall("search-1", "search_knowledge_base", {"queries": ["one"]}),
-            ChatToolCall("search-2", "search_knowledge_base", {"queries": ["two"]}),
-            ChatToolCall("search-3", "search_knowledge_base", {"queries": ["three"]}),
+            ChatToolCall("search-1", "semantic_search", {"queries": ["one"]}),
+            ChatToolCall("search-2", "semantic_search", {"queries": ["two"]}),
+            ChatToolCall("search-3", "semantic_search", {"queries": ["three"]}),
             ChatToolCall(
                 "calc-1",
                 "calculate",
@@ -1872,7 +1937,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
     async def test_agent_deadline_does_not_override_deterministic_budgets(self) -> None:
         context = _context()
         model = _Model(
-            ChatToolCall("search-1", "search_knowledge_base", {"queries": ["revenue"]}),
+            ChatToolCall("search-1", "semantic_search", {"queries": ["revenue"]}),
             ChatToolCall(
                 "submit-1",
                 "submit_answer",
@@ -1888,14 +1953,14 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.REFUSED)
         self.assertEqual(
             tuple(tool.name for tool in model.requests[0].tools),
-            ("search_knowledge_base", "calculate", "submit_answer"),
+            ("semantic_search", "read_chunk_context", "list_documents", "calculate", "submit_answer"),
         )
 
     async def test_active_partial_submission_preserves_unanswered_aspects(self) -> None:
         context = _context()
         model = _Model(
             ChatToolCall(
-                "search-1", "search_knowledge_base", {"queries": ["revenue"]}
+                "search-1", "semantic_search", {"queries": ["revenue"]}
             ),
             ChatToolCall(
                 "submit-1",
@@ -2018,7 +2083,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         model = _Model(
             ChatToolCall(
                 "search-normalized-submit",
-                "search_knowledge_base",
+                "semantic_search",
                 {"queries": ["revenue"]},
             ),
             ChatToolCall(
@@ -2048,7 +2113,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
     async def test_calculation_ref_expands_to_original_evidence_citation(self) -> None:
         context = _context()
         model = _Model(
-            ChatToolCall("search-1", "search_knowledge_base", {"queries": ["revenue"]}),
+            ChatToolCall("search-1", "semantic_search", {"queries": ["revenue"]}),
             ChatToolCall("calc-1", "calculate", {"expression": "10-5", "evidence_refs": ["ev_1"]}),
             ChatToolCall(
                 "submit-1",
@@ -2073,7 +2138,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         context = _context()
         model = _Model(
             ChatToolCall(
-                "search-1", "search_knowledge_base", {"queries": ["revenue"]}
+                "search-1", "semantic_search", {"queries": ["revenue"]}
             ),
             *(
                 ChatToolCall(
@@ -2113,7 +2178,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         context = _context()
         model = _Model(
             None,
-            ChatToolCall("search-1", "search_knowledge_base", {"queries": ["revenue"]}),
+            ChatToolCall("search-1", "semantic_search", {"queries": ["revenue"]}),
             ChatToolCall(
                 "submit-final",
                 "submit_answer",
@@ -2137,7 +2202,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(
             all(
                 [tool.name for tool in request.tools]
-                == ["search_knowledge_base", "calculate", "submit_answer"]
+                == ["semantic_search", "read_chunk_context", "list_documents", "calculate", "submit_answer"]
                 for request in model.requests[:2]
             )
         )
@@ -2160,7 +2225,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         )
         model = _Model(
             ChatToolCall(
-                "search-1", "search_knowledge_base", {"queries": ["revenue"]}
+                "search-1", "semantic_search", {"queries": ["revenue"]}
             ),
             None,
             ChatToolCall(
@@ -2204,7 +2269,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         )
         model = _Model(
             ChatToolCall(
-                "search-1", "search_knowledge_base", {"queries": ["revenue"]}
+                "search-1", "semantic_search", {"queries": ["revenue"]}
             ),
             ChatToolCall(
                 "submit-final",
@@ -2246,7 +2311,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
                 ),
             ),
             "wrong_tool": ChatToolCall(
-                "search-final", "search_knowledge_base", {"queries": ["revenue"]}
+                "search-final", "semantic_search", {"queries": ["revenue"]}
             ),
             "malformed_payload": ChatToolCall(
                 "submit-malformed",
@@ -2293,7 +2358,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         model = _Model(
             ChatToolCall(
                 "search-1",
-                "search_knowledge_base",
+                "semantic_search",
                 {"queries": ["one", "two", "three"]},
             ),
             ChatToolCall(
@@ -2311,7 +2376,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         trace = state.artifacts[AGENT_TRACE_ARTIFACT]
         self.assertEqual(trace.retrieval_calls, 3)
         self.assertEqual(trace.retrieval_tool_calls, 1)
-        self.assertEqual(trace.simple_tool_calls, 1)
+        self.assertEqual(trace.semantic_tool_calls, 1)
         self.assertEqual(trace.graph_tool_calls, 0)
         self.assertEqual(trace.prompt_tokens, 6)
         self.assertEqual(trace.completion_tokens, 4)
@@ -2331,7 +2396,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         )
         model = _Model(
             ChatToolCall(
-                "search-1", "search_knowledge_base", {"queries": ["revenue"]}
+                "search-1", "semantic_search", {"queries": ["revenue"]}
             ),
             None,
             ChatToolCall(
@@ -2395,17 +2460,17 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         model = _Model(
             ChatToolCall(
                 "search-1",
-                "search_knowledge_base",
+                "semantic_search",
                 {"queries": ["revenue", "revenue", "revenue"]},
             ),
             ChatToolCall(
                 "search-2",
-                "search_knowledge_base",
+                "semantic_search",
                 {"queries": ["revenue", "revenue", "revenue"]},
             ),
             ChatToolCall(
                 "search-3",
-                "search_knowledge_base",
+                "semantic_search",
                 {"queries": ["revenue", "revenue", "revenue"]},
             ),
             ChatToolCall(
@@ -2450,7 +2515,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         model = _Model(
             ChatToolCall(
                 "search-long",
-                "search_knowledge_base",
+                "semantic_search",
                 {"queries": list(queries)},
             ),
             ChatToolCall(
@@ -2498,12 +2563,12 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         model = _Model(
             ChatToolCall(
                 "search-table-1",
-                "search_knowledge_base",
+                "semantic_search",
                 {"queries": ["gross margin table"]},
             ),
             ChatToolCall(
                 "search-table-2",
-                "search_knowledge_base",
+                "semantic_search",
                 {"queries": ["same gross margin table"]},
             ),
             ChatToolCall(
@@ -2576,12 +2641,12 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         model = _Model(
             ChatToolCall(
                 "search-same-unit-1",
-                "search_knowledge_base",
+                "semantic_search",
                 {"queries": ["revenue table"]},
             ),
             ChatToolCall(
                 "search-same-unit-2",
-                "search_knowledge_base",
+                "semantic_search",
                 {"queries": ["same revenue table"]},
             ),
             ChatToolCall(
@@ -2709,12 +2774,12 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         model = _Model(
             ChatToolCall(
                 "search-parent",
-                "search_knowledge_base",
+                "semantic_search",
                 {"queries": ["narrative figure"]},
             ),
             ChatToolCall(
                 "search-table",
-                "search_knowledge_base",
+                "semantic_search",
                 {"queries": ["revenue table"]},
             ),
             ChatToolCall(
@@ -2794,12 +2859,12 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         model = _Model(
             ChatToolCall(
                 "search-visual-1",
-                "search_knowledge_base",
+                "semantic_search",
                 {"queries": ["chart"]},
             ),
             ChatToolCall(
                 "search-visual-2",
-                "search_knowledge_base",
+                "semantic_search",
                 {"queries": ["same chart"]},
             ),
             ChatToolCall(
@@ -2872,7 +2937,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         model = _Model(
             ChatToolCall(
                 "search-visual",
-                "search_knowledge_base",
+                "semantic_search",
                 {"queries": ["chart"]},
             ),
             ChatToolCall(
@@ -2924,7 +2989,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         model = _Model(
             ChatToolCall(
                 "search-caption",
-                "search_knowledge_base",
+                "semantic_search",
                 {"queries": ["revenue caption"]},
             ),
             ChatToolCall(
@@ -2975,12 +3040,12 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         model = _Model(
             ChatToolCall(
                 "search-first-visual",
-                "search_knowledge_base",
+                "semantic_search",
                 {"queries": ["first chart"]},
             ),
             ChatToolCall(
                 "search-second-visual",
-                "search_knowledge_base",
+                "semantic_search",
                 {"queries": ["second chart"]},
             ),
             ChatToolCall(
@@ -3029,7 +3094,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         )
         model = _Model(
             ChatToolCall(
-                "search-1", "search_knowledge_base", {"queries": ["revenue"]}
+                "search-1", "semantic_search", {"queries": ["revenue"]}
             ),
             ChatToolCall(
                 "submit-1",
@@ -3070,7 +3135,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         evidence_refs = [f"ev_{index}" for index in range(1, 106)]
         model = _Model(
             ChatToolCall(
-                "search-1", "search_knowledge_base", {"queries": ["revenue"]}
+                "search-1", "semantic_search", {"queries": ["revenue"]}
             ),
             ChatToolCall(
                 "submit-1",
@@ -3102,6 +3167,259 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
             100,
         )
 
+    def test_tool_surface_follows_keyword_and_graph_capability(self) -> None:
+        hidden = _tools()
+        keyword = _tools(keyword_ready=True)
+        both = _tools(
+            keyword_ready=True,
+            adaptive=True,
+            graph_ready=True,
+            graph_calls_remaining=2,
+        )
+        self.assertEqual(
+            [tool.name for tool in hidden],
+            [
+                "semantic_search",
+                "read_chunk_context",
+                "list_documents",
+                "calculate",
+                "submit_answer",
+            ],
+        )
+        self.assertEqual(
+            [tool.name for tool in keyword],
+            [
+                "semantic_search",
+                "keyword_search",
+                "read_chunk_context",
+                "list_documents",
+                "calculate",
+                "submit_answer",
+            ],
+        )
+        self.assertEqual(
+            [tool.name for tool in both],
+            [
+                "semantic_search",
+                "keyword_search",
+                "read_chunk_context",
+                "list_documents",
+                "search_graph_relations",
+                "calculate",
+                "submit_answer",
+            ],
+        )
+
+    def test_prompt_describes_channels_and_keeps_citation_boundaries(self) -> None:
+        plain = _initial_messages(_context(), ChatAgentBudget())[0].content
+        self.assertIn("semantic_search", plain)
+        self.assertIn("read_chunk_context", plain)
+        self.assertIn("list_documents", plain)
+        self.assertNotIn("keyword_search", plain)
+        self.assertIn("metadata, not evidence", plain)
+        self.assertIn("untrusted data", plain)
+        keyword = _initial_messages(
+            _context(), ChatAgentBudget(), keyword_ready=True
+        )[0].content
+        self.assertIn("keyword_search", keyword)
+        self.assertIn("proper names", keyword)
+
+    async def test_list_documents_does_not_enter_the_evidence_pool(self) -> None:
+        context = _context()
+        listed = ServingDocumentList(
+            resolved_active_revision_id=context.index_revision_id,
+            entries=(
+                ServingDocumentEntry(
+                    document_id=context.knowledge_base_id,
+                    document_version_id=context.index_revision_id,
+                    indexed_document_version_id=context.index_revision_id,
+                    display_name="Report",
+                    original_filename="report.pdf",
+                    version_number=1,
+                    chunk_count=2,
+                    outline=("Intro",),
+                ),
+            ),
+        )
+        retriever = _Retriever(_pack(context), documents=listed)
+        model = _Model(
+            ChatToolCall("list-1", "list_documents", {"include_outline": True}),
+            ChatToolCall(
+                "submit-1",
+                "submit_answer",
+                {
+                    "outcome": "answered",
+                    "claims": [
+                        {
+                            "text": "Report exists.",
+                            "evidence_refs": ["ev_1"],
+                        }
+                    ],
+                    "unanswered": [],
+                },
+            ),
+            ChatToolCall(
+                "submit-2",
+                "submit_answer",
+                {"outcome": "refused", "claims": [], "unanswered": []},
+            ),
+        )
+
+        state = await _agent(model, retriever).run(context)
+
+        payload = _tool_payload(model.requests[1], "list-1")
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["document_count"], 1)
+        self.assertEqual(payload["documents"][0]["outline"], ["Intro"])
+        self.assertNotIn("evidence_ref", json.dumps(payload))
+        self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.REFUSED)
+        trace = state.artifacts[AGENT_TRACE_ARTIFACT]
+        self.assertEqual(trace.document_list_calls, 1)
+        self.assertEqual(trace.retrieval_calls, 1)
+        self.assertEqual(trace.consecutive_no_new_evidence, 0)
+        self.assertEqual(trace.evidence_ref_count, 0)
+
+    async def test_read_chunk_context_admits_neighbors_for_citation(self) -> None:
+        context = _context()
+        pack = _pack(context)
+        anchor = pack.evidence[0]
+        neighbor = Evidence(
+            rank=1,
+            index_chunk_id=uuid4(),
+            indexed_document_version_id=anchor.indexed_document_version_id,
+            document_id=anchor.document_id,
+            document_version_id=anchor.document_version_id,
+            index_revision_id=context.index_revision_id,
+            ordinal=anchor.ordinal + 1,
+            text="continued revenue note",
+            source_location={"page": 2},
+            hierarchy={},
+            source_metadata={},
+            score=0.0,
+            score_kind=EvidenceScoreKind.ADJACENCY,
+            document_display_name="Report",
+            document_original_filename="report.pdf",
+            adjacency_anchor_index_chunk_id=anchor.index_chunk_id,
+            adjacency_offset=1,
+        )
+        retriever = _Retriever(pack, neighbors=(neighbor,))
+        model = _Model(
+            ChatToolCall("search-1", "semantic_search", {"queries": ["revenue"]}),
+            ChatToolCall(
+                "read-1", "read_chunk_context", {"evidence_refs": ["ev_1"]}
+            ),
+            ChatToolCall(
+                "submit-1",
+                "submit_answer",
+                {
+                    "outcome": "answered",
+                    "claims": [
+                        {
+                            "text": "Revenue continues.",
+                            "evidence_refs": ["ev_1", "ev_2"],
+                        }
+                    ],
+                    "unanswered": [],
+                },
+            ),
+        )
+
+        state = await _agent(model, retriever).run(context)
+        payload = _tool_payload(model.requests[2], "read-1")
+        self.assertEqual(payload["groups"][0]["query"], "ev_1")
+        self.assertEqual(
+            payload["groups"][0]["results"][0]["adjacency_offset"], 1
+        )
+        self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.ANSWERED)
+        self.assertEqual(len(state.answering.rendered.citations), 2)
+        trace = state.artifacts[AGENT_TRACE_ARTIFACT]
+        self.assertEqual(trace.chunk_context_calls, 1)
+        self.assertEqual(trace.semantic_tool_calls, 1)
+        self.assertEqual(trace.retrieval_tool_calls, 2)
+
+    async def test_keyword_incompatible_index_is_soft_failure(self) -> None:
+        context = _context()
+
+        class FailingKeyword(_Retriever):
+            async def keyword_search(self, context, query, *, top_k_override=None):
+                del context, query, top_k_override
+                raise ChatPipelineExecutionError(
+                    ErrorCode.INDEX_REVISION_INCOMPATIBLE,
+                    phase=ChatPipelinePhase.RETRIEVE_EVIDENCE,
+                    diagnostic={"check": "lexical_manifest_hash"},
+                )
+
+        retriever = FailingKeyword(_pack(context), keyword_ready=True)
+        model = _Model(
+            ChatToolCall("key-1", "keyword_search", {"queries": ["ABC-42"]}),
+            ChatToolCall(
+                "key-2", "keyword_search", {"queries": ["ABC-42"]}
+            ),
+            ChatToolCall(
+                "submit-1",
+                "submit_answer",
+                {"outcome": "refused", "claims": [], "unanswered": []},
+            ),
+        )
+
+        state = await _agent(model, retriever).run(context)
+        self.assertEqual(
+            json.loads(model.requests[1].messages[-1].content)["code"],
+            "keyword_unavailable",
+        )
+        self.assertNotIn(
+            "keyword_search",
+            [tool.name for tool in model.requests[1].tools],
+        )
+        self.assertEqual(
+            state.artifacts[AGENT_TRACE_ARTIFACT].events[0].status, "rejected"
+        )
+
+    async def test_keyword_revision_mismatch_is_fatal(self) -> None:
+        context = _context()
+
+        class MismatchKeyword(_Retriever):
+            async def keyword_search(self, context, query, *, top_k_override=None):
+                del context, query, top_k_override
+                raise ChatPipelineExecutionError(
+                    ErrorCode.CHAT_REVISION_MISMATCH,
+                    phase=ChatPipelinePhase.RETRIEVE_EVIDENCE,
+                    diagnostic={"check": "frozen_revision"},
+                )
+
+        with self.assertRaises(ChatPipelineExecutionError) as raised:
+            await _agent(
+                _Model(ChatToolCall("key-1", "keyword_search", {"queries": ["ABC-42"]})),
+                MismatchKeyword(_pack(context), keyword_ready=True),
+            ).run(context)
+        self.assertEqual(raised.exception.code, ErrorCode.CHAT_REVISION_MISMATCH)
+
+    async def test_v4_trace_counts_and_usage_keys(self) -> None:
+        context = _context()
+        model = _Model(
+            ChatToolCall("search-1", "semantic_search", {"queries": ["revenue"]}),
+            ChatToolCall(
+                "submit-1",
+                "submit_answer",
+                {"outcome": "refused", "claims": [], "unanswered": []},
+            ),
+        )
+        state = await _agent(model, _Retriever(_pack(context))).run(context)
+        trace = state.artifacts[AGENT_TRACE_ARTIFACT]
+        self.assertEqual(trace.version, CHAT_AGENT_VERSION)
+        self.assertEqual(
+            trace.retrieval_tool_calls,
+            trace.semantic_tool_calls
+            + trace.keyword_tool_calls
+            + trace.graph_tool_calls
+            + trace.chunk_context_calls
+            + trace.document_list_calls,
+        )
+        usage = trace.as_dict()["usage"]
+        self.assertIn("semantic_tool_calls", usage)
+        self.assertNotIn("simple_tool_calls", usage)
+
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -14,8 +14,11 @@ from rag_kb.domain import (
     GraphitiEdgeResult,
     GraphitiPathResult,
     GraphTraversalResult,
+    LexicalManifestStatus,
     LexicalSearchResult,
     RetrievalQueryPlan,
+    ServingDocumentList,
+    ServingScopeQuery,
     VectorSearchResult,
 )
 
@@ -59,6 +62,10 @@ class VectorStore(Protocol):
         expected_space: EmbeddingSpaceDefinition,
     ) -> VectorSearchResult | None: ...
 
+    async def list_serving_documents(
+        self, query: ServingScopeQuery
+    ) -> ServingDocumentList | None: ...
+
 
 class LexicalStore(Protocol):
     async def search(
@@ -71,6 +78,10 @@ class LexicalStore(Protocol):
         query_version: str,
         candidate_count: int,
     ) -> LexicalSearchResult | None: ...
+
+    async def manifest_status(
+        self, query: ServingScopeQuery
+    ) -> LexicalManifestStatus | None: ...
 
 
 class GraphStore(Protocol):

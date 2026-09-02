@@ -33,6 +33,7 @@ from rag_kb.domain import (
     GRAPH_SUPPORTED_EXTRACTOR_VERSIONS,
     IndexChunkAssetRelationSnapshot,
     IndexingExecutionError,
+    LexicalManifestStatus,
     LexicalSearchResult,
     ResourceNotFoundError,
     RetrievalDebug,
@@ -41,6 +42,8 @@ from rag_kb.domain import (
     RetrievalRequest,
     RetrievalStrategy,
     RelatedVisualEvidence,
+    ServingDocumentList,
+    ServingScopeQuery,
     RerankDocument,
     RerankMode,
     VectorSearchHit,
@@ -288,6 +291,46 @@ class RetrievalService:
                 ErrorCode.RETRIEVAL_DEADLINE_EXCEEDED,
                 diagnostic={"check": "absolute_deadline"},
             ) from error
+
+    async def retrieve_lexical_only(
+        self,
+        request: RetrievalRequest,
+    ) -> EvidencePack:
+        deadline = asyncio.timeout(self._deadline_seconds)
+        try:
+            async with deadline:
+                return await self._retrieve_lexical_only(request)
+        except TimeoutError as error:
+            if not deadline.expired():
+                raise
+            raise RetrievalExecutionError(
+                ErrorCode.RETRIEVAL_DEADLINE_EXCEEDED,
+                diagnostic={"check": "absolute_deadline"},
+            ) from error
+
+    async def lexical_manifest_status(
+        self,
+        knowledge_base_id: UUID,
+    ) -> LexicalManifestStatus | None:
+        if self._lexical_store is None:
+            return None
+        return await self._lexical_store.manifest_status(
+            ServingScopeQuery(
+                workspace_id=self._workspace_id,
+                knowledge_base_id=knowledge_base_id,
+            )
+        )
+
+    async def list_serving_documents(
+        self,
+        knowledge_base_id: UUID,
+    ) -> ServingDocumentList | None:
+        return await self._vector_store.list_serving_documents(
+            ServingScopeQuery(
+                workspace_id=self._workspace_id,
+                knowledge_base_id=knowledge_base_id,
+            )
+        )
 
     async def retrieve_graph(
         self,
@@ -995,7 +1038,7 @@ class RetrievalService:
                 modality=hit.modality,
                 asset=self._asset(hit),
                 evidence_group_key=hit.evidence_group_key,
-                matched_representations=("adjacency",),
+                matched_representations=_adjacent_representations(hit.modality),
                 document_display_name=hit.document_display_name,
                 document_original_filename=hit.document_original_filename,
                 adjacency_anchor_index_chunk_id=(
@@ -1004,6 +1047,100 @@ class RetrievalService:
                 adjacency_offset=hit.offset,
             )
             for rank, hit in enumerate(result.hits, start=1)
+        )
+
+    async def _retrieve_lexical_only(
+        self,
+        request: RetrievalRequest,
+    ) -> EvidencePack:
+        if not self.hybrid_request_enabled():
+            raise RetrievalExecutionError(
+                ErrorCode.CAPABILITY_NOT_ENABLED,
+                diagnostic={"capability": "keyword_search"},
+            )
+        lexical_store = self._lexical_store
+        assert lexical_store is not None
+        profile = self.execution_profile(
+            strategy=RetrievalStrategy.HYBRID,
+            top_k=request.top_k,
+            rerank_mode=RerankMode.CLASSIC,
+        )
+        plan = RetrievalQueryPlan(
+            workspace_id=self._workspace_id,
+            knowledge_base_id=request.knowledge_base_id,
+            strategy=RetrievalStrategy.HYBRID,
+            top_k=request.top_k,
+            candidate_count=profile.lexical_candidate_count,
+            rerank_mode=RerankMode.CLASSIC,
+        )
+        embedding_provider, _ = await self._embedding_providers(plan)
+        query_embedding = await self._embed_query(
+            request.query, embedding_provider
+        )
+        lexical_result = await lexical_store.search(
+            plan,
+            request.query,
+            query_embedding,
+            analyzer_version=profile.lexical_analyzer_version or "",
+            query_version=profile.lexical_query_version or "",
+            candidate_count=profile.lexical_candidate_count,
+        )
+        if lexical_result is None:
+            raise ResourceNotFoundError(
+                "knowledge base or active revision was not found"
+            )
+        self._validate_lexical_only_result(plan, lexical_result)
+        selected = sorted(
+            lexical_result.hits,
+            key=lambda hit: (hit.lexical_rank or 0, hit.index_chunk_id.int),
+        )[: request.top_k]
+        evidence = tuple(
+            Evidence(
+                rank=rank,
+                index_chunk_id=hit.index_chunk_id,
+                indexed_document_version_id=hit.indexed_document_version_id,
+                document_id=hit.document_id,
+                document_version_id=hit.document_version_id,
+                index_revision_id=hit.index_revision_id,
+                ordinal=hit.ordinal,
+                text=hit.text,
+                source_location=hit.source_location,
+                hierarchy=hit.hierarchy,
+                source_metadata=hit.source_metadata,
+                score=1.0 / rank,
+                score_kind=EvidenceScoreKind.LEXICAL,
+                lexical_rank=rank,
+                modality=hit.modality,
+                asset=self._asset(hit),
+                evidence_group_key=hit.evidence_group_key,
+                matched_representations=(hit.representation_kind,),
+                document_display_name=hit.document_display_name,
+                document_original_filename=hit.document_original_filename,
+            )
+            for rank, hit in enumerate(selected, start=1)
+        )
+        debug = (
+            RetrievalDebug(
+                query_plan=plan,
+                resolved_active_revision_id=(
+                    lexical_result.resolved_active_revision_id
+                ),
+                result_count=len(evidence),
+                lexical_candidate_count=len(lexical_result.hits),
+                lexical_analyzer_version=lexical_result.analyzer_version,
+                lexical_manifest_target_count=(
+                    lexical_result.manifest_target_count
+                ),
+            )
+            if request.include_debug
+            else None
+        )
+        return EvidencePack(
+            knowledge_base_id=plan.knowledge_base_id,
+            index_revision_id=lexical_result.resolved_active_revision_id,
+            strategy=RetrievalStrategy.HYBRID,
+            evidence=evidence,
+            debug=debug,
         )
 
     async def _retrieve(
@@ -2273,6 +2410,32 @@ class RetrievalService:
                 )
 
     @staticmethod
+    def _validate_lexical_only_result(
+        plan: RetrievalQueryPlan,
+        lexical_result: LexicalSearchResult,
+    ) -> None:
+        if lexical_result.analyzer_version != LEXICAL_ANALYZER_VERSION:
+            raise RetrievalExecutionError(
+                ErrorCode.INDEX_REVISION_INCOMPATIBLE,
+                diagnostic={"check": "lexical_revision_snapshot"},
+            )
+        for hit in lexical_result.hits:
+            if (
+                hit.workspace_id != plan.workspace_id
+                or hit.knowledge_base_id != plan.knowledge_base_id
+                or hit.index_revision_id
+                != lexical_result.resolved_active_revision_id
+                or hit.build_status != "ready"
+                or hit.serving_status != "serving"
+                or not hit.is_current_serving_version
+                or hit.lexical_rank is None
+            ):
+                raise RetrievalExecutionError(
+                    ErrorCode.INTERNAL_SERVER_ERROR,
+                    diagnostic={"check": "lexical_mandatory_scope"},
+                )
+
+    @staticmethod
     def _validate_relations(
         plan: RetrievalQueryPlan,
         result: VectorSearchResult,
@@ -2343,6 +2506,12 @@ class RetrievalService:
             width=relation.asset_width,
             height=relation.asset_height,
         )
+
+
+def _adjacent_representations(modality: str) -> tuple[str, ...]:
+    if modality == "table":
+        return ("table_text",)
+    return ("text",)
 
 
 def _validate_graph_traversal(

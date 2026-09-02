@@ -80,8 +80,9 @@
   hybrid Evidence 回填余额。每个成功 Episode 的映射独立
   短事务提交；Episode UUID 由 build、Chunk 与 content hash 确定。失败 build 保留其 group 与映射，
   冻结输入未变化时显式 retry 复用同一 build 并只处理缺失 Chunk；输入变化或 force rebuild 才换代。
-- Chat 可选择 Chat-only 的 auto 模式：在冻结 revision 上首轮同时暴露普通 Simple 检索与一等
-  `search_graph_relations` Graph Tool，由原生 Agent 自主选择，Simple 不是 Graph 的前置条件。
+- Chat 可选择 Chat-only 的 auto 模式：在冻结 revision 上首轮同时暴露语义/关键词/邻域/文档清单
+  检索与一等 `search_graph_relations` Graph Tool，由原生 Agent 自主选择，语义检索不是 Graph
+  的前置条件。
   Graph Tool 只在存在 active READY build 时可见；每个 ChatRun 最多两次 Graph 调用，Graph 单次
   90 秒（ChatRun 绝对 deadline 为 600 秒形成 `min(90, remaining)`），候选 K 冻结为 16，完整
   一至三跳路径按 soft 12 / hard 16 去重 source chunk 原子打包，两次调用累计最多新增 32。
@@ -90,8 +91,10 @@
   只返回 source chunk；edge fact 不进入 prompt、Citation 或回答正文；未配置、未就绪、
   运行时不可用、超时、被拒绝和无新增证据都以安全结果码返回，取消与超时可区分。
 - 持久 ChatSession / ChatRun、Session 短期上下文，以及动态提供当前可用工具的原生
-  Tool-Calling Agent。常规工具为检索、计算和提交回答；Graph READY 时首轮同时暴露
-  `search_graph_relations`，Graph 用完后从工具集移除。所有运行共享证据约束回答、拒答与引用边界。
+  Tool-Calling Agent。常规工具为 `semantic_search`、`keyword_search`（hybrid
+  进程且 lexical manifest 覆盖完整时暴露）、`read_chunk_context`、`list_documents`、
+  计算和提交回答；Graph READY 时首轮同时暴露 `search_graph_relations`，Graph 用完后从工具集移除。
+  所有运行共享证据约束回答、拒答与引用边界。
 - 本地用户 Chat 前端，以及文件协调、数据清理和本地评测工具。
 
 ### 2.3 当前明确不具备
@@ -114,7 +117,7 @@
 | 范围 | 当前选择 |
 | --- | --- |
 | 后端 | Python 3.12、FastAPI、Pydantic、异步 SQLAlchemy、asyncpg、Alembic |
-| 数据库 | PostgreSQL 18 + pgvector；当前 migration head 为 `0026_simplify_attempt_ownership` |
+| 数据库 | PostgreSQL 18 + pgvector；当前 migration head 为 `0027_agent_v4_default` |
 | 文档解析 | 原生 Docling；当前 PDF profile 在 Worker 管理的可终止子进程内按确定性页段解析 |
 | Chat 执行 | 普通异步原生 Tool-Calling loop；无 Agent 框架或图运行时 |
 | 模型接入 | OpenAI-compatible Chat/文本 Embedding；Tongyi 多模态 Embedding；固定离线 MiniLM reranker；已验证 Embedding 维度 64..4096 |
@@ -309,6 +312,8 @@ file content mutation 增加 `pending/completed/failed` 终态、稳定 failure 
 的旧字段。`0025` 从单用户本地模型删除 principal/client 列并把幂等范围收敛为 endpoint + key；
 `0026` 在零活动 Chat、索引和 Graph work 前置条件下删除 ChatRun/IndexingJob 的 `claimed_by`，
 保留 attempt、claim/heartbeat、backoff、状态和错误事实；Graph work lease 不变。
+`0027` 把新 ChatRun 的 `agent_configuration` 列默认值改为 `native_tool_calling_agent_v4`
+与同值五键预算，不回填历史行。
 P2 的实际数据核查确认 active/retired revision 指针仍承担当前与软删除恢复，两个 READY Graph build
 均为 active，PDF 分段任务真实使用 continuation；因此 revision/build identity、完整性 manifest、Graph
 lease 与 PDF checkpoint 都保留。未使用的 Enterprise Graph profile 只作为需单独授权的完整产品删除
@@ -437,8 +442,18 @@ tokens、层级截至 32 tokens，并把超过剩余 512-token pair 预算的正
 Evidence score/准入事实，窗口也不持久化；纯视觉候选不送入模型。Native Agent 与
 Retrieval Debug 都可使用该冻结模式；模型不可用时明确失败且不静默回退。
 
-Native Agent 可通过 `search_knowledge_base` 每轮提交一至三条 Query，服务端在冻结的
-workspace/knowledge-base/index revision、检索策略与 top-k 内执行并在证据池中按 chunk 去重。
+Native Agent 通过按召回通道划分的工具选择检索方式，每轮恰好一个工具调用。
+`semantic_search` 在冻结 workspace/knowledge-base/index revision、检索策略与 top-k 内做
+exact dense（含跨模态 lane）加冻结 rerank；manual graph ChatRun 仍经该工具分派到
+`retrieve_graph`。`keyword_search` 只在进程 hybrid 开启且 lexical manifest 覆盖完整时暴露，
+执行 FTS 后按 `lexical_rank` 截取，证据 `score_kind=LEXICAL`、`score=1.0/lexical_rank`，
+不伪装 cosine 分；manifest/版本类 `INDEX_REVISION_INCOMPATIBLE` 软失败并摘除该工具，
+`CHAT_REVISION_MISMATCH` 仍 fatal。`read_chunk_context` 锚定已签发的 text/table EvidenceRef，
+固定 ±1 邻域，邻域证据 `matched_representations` 按 modality 派生为 `text`/`table_text`，
+准入只做池去重与证据预算，不走搜索语义下恒为 False 的 `eligibility.usable()`。
+`list_documents` 返回 serving 文档元数据（可选大纲），不进证据池、不可引用，每次计 1 次
+retrieval。结果在证据池中按 chunk 去重。`search_closed` 时四个证据获取工具与 Graph 一并移除，
+只留 calculate 与 submit。
 adaptive ChatRun 在存在 active READY build 时首轮同时暴露一等 `search_graph_relations` Tool；
 Graph 调用数达到冻结上限（默认 2）后该 Tool 从后续轮次移除，超限调用被拒绝且不发起外部查询。
 Graph 每次沿冻结的 build/extractor 身份执行，配置进入 building 只表示 staging，不会遮蔽仍
@@ -447,7 +462,7 @@ serving Chunk hydration；缺任意一跳来源时整条路径拒绝。`classic`
 搜索顺序；显式 `local_minilm_v1` 在水合后按路径最弱来源分重排。低分或未打分 Chunk 不会因此被
 删除，模型分也不写入 `GRAPH_PATH` Evidence。候选 K 与 soft/hard source chunk 上限来自冻结的
 `adaptive_graphiti_v3` snapshot；完整一至三跳路径是唯一打包原子，不拆断路径，path 可复用
-Simple/上一次 Graph 已发送 Chunk（重复结果合并 provenance），`new_evidence_count` 只计真正新增
+普通检索/上一次 Graph 已发送 Chunk（重复结果合并 provenance），`new_evidence_count` 只计真正新增
 Chunk；达到 soft 12 后下一条完整路径加入后不超过 hard 16 则整条接收，超过才停止。它不执行
 第二次 vector/FTS seed，也没有服务端提交 guard：submit 永远不再隐式触发 Graph 调用。
 Graph 的 route result 只允许 `admitted`、`no_evidence`、`not_ready`、`timeout`、
@@ -461,15 +476,17 @@ Agent 保留最多 8 个普通模型轮次的有限循环护栏，并另有累�
 （默认 16）。Agent 不以时间决定控制流；每轮按 response usage
 累计 token，token 或检索预算耗尽时进入 wrap-up
 收尾模式，只留 `submit_answer` 工具并提示直接提交。每次检索按准入、chunk 去重与证据上限
-处理后计算实际新增量；连续两次无新增或证据池已满时确定性关闭 Simple/Graph 检索，保留
+处理后计算实际新增量；连续两次无新增（semantic/keyword/graph/read_chunk_context 参与，
+list_documents 不参与）或证据池已满时确定性关闭证据获取工具，保留
 至多一次 `calculate` 机会后只允许提交。多 Query 调用只执行剩余检索预算允许的有序前缀，
 不会突破冻结的累计上限。预算只限制探索行为，仍保留一次提交机会；普通轮次耗尽时另有
 一次 submit-only forced finalize。普通探索中的首个 malformed `submit_answer` 可获得一次
 submit-only 修复调用；修复提交、预算收尾或 forced-finalize 提交仍非法时直接确定性拒答。
 Agent 不比较或拒绝重复 Query 本身。
 历史 `retrieval_calls` 与 `max_retrieval_calls` 实际按 Query 执行数计量并继续保留兼容；Trace
-同时发布语义明确的 `retrieval_queries`、`retrieval_tool_calls`、`simple_tool_calls` 与
-`graph_tool_calls`。成功 Trace 另汇总 prompt/completion/total token、停止原因、
+同时发布语义明确的 `retrieval_queries`、`retrieval_tool_calls`、`semantic_tool_calls`、
+`keyword_tool_calls`、`chunk_context_calls`、`document_list_calls` 与 `graph_tool_calls`。
+v4 不再发布 `simple_tool_calls`。成功 Trace 另汇总 prompt/completion/total token、停止原因、
 forced-finalize、连续无新增次数、累计耗时、hard deadline 与 deadline remaining。Runner 为每次 attempt 维护纯
 内存 checkpoint；外层 deadline 取消 Agent 时，把已经完成的安全计数、事件与 model calls 写入
 该 attempt 的 timing ledger，不在主循环增加 I/O，也不覆盖后来重试成功的最终 Trace。
@@ -508,7 +525,8 @@ JSON，不作为当前执行配置，也不做旧枚举解析。旧客户端提�
 ```text
 load_context
   -> active READY build capability read without any model call
-  -> model chooses search_knowledge_base / search_graph_relations / calculate
+  -> model chooses semantic_search / keyword_search / read_chunk_context /
+       list_documents / search_graph_relations / calculate
   -> server executes bounded tool and returns stable refs
   -> adaptive mode: Graph visible from the first round, at most twice per run
   -> model calls submit_answer when ready

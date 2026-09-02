@@ -680,6 +680,7 @@ class SqlAlchemyChatRepository:
         retrieval_strategy: dict[str, Any],
         model_configuration: dict[str, Any],
         conversation_context: dict[str, Any],
+        agent_configuration: dict[str, Any],
     ) -> ChatRun:
         user_message = ChatMessageRow(
             workspace_id=self._workspace_id,
@@ -707,6 +708,7 @@ class SqlAlchemyChatRepository:
             retrieval_strategy=dict(retrieval_strategy),
             model_configuration=dict(model_configuration),
             conversation_context=dict(conversation_context),
+            agent_configuration=dict(agent_configuration),
             contextualized_query=None,  # Retired snapshot; keep old rows read-only.
         )
         self._session.add(run)

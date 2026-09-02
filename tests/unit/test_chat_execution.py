@@ -15,10 +15,15 @@ from rag_kb.domain import (
     EvidencePack,
     EvidenceScoreKind,
     GraphSearchResult,
+    LexicalManifestStatus,
+    ResourceNotFoundError,
     RetrievalDebug,
+    RetrievalExecutionError,
     RetrievalQueryPlan,
     RerankMode,
     RetrievalStrategy,
+    ServingDocumentEntry,
+    ServingDocumentList,
 )
 from rag_kb.services.chat_execution import ChatEvidenceRetriever
 from rag_kb.retrieval.profile import exact_profile
@@ -203,7 +208,7 @@ class ChatExecutionServiceTests(unittest.IsolatedAsyncioTestCase):
 
         retrieval = Retrieval()
         retriever = ChatEvidenceRetriever(retrieval)  # type: ignore[arg-type]
-        await retriever.retrieve_query(context, "query")
+        await retriever.semantic_search(context, "query")
         result = await retriever.search_graph_relations(
             context,
             "relation",
@@ -239,7 +244,7 @@ class ChatExecutionServiceTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaises(ChatPipelineExecutionError) as raised:
             retriever = ChatEvidenceRetriever(Retrieval())  # type: ignore[arg-type]
-            await retriever.retrieve(context)
+            await retriever.semantic_search(context, context.query)
 
         self.assertEqual(raised.exception.code, ErrorCode.CHAT_REVISION_MISMATCH)
 
@@ -351,7 +356,7 @@ class ChatExecutionServiceTests(unittest.IsolatedAsyncioTestCase):
                 )
 
         retriever = ChatEvidenceRetriever(Retrieval())  # type: ignore[arg-type]
-        result = await retriever.retrieve(context)
+        result = await retriever.semantic_search(context, context.query)
 
         self.assertEqual(result.evidence, (visual,))
 
@@ -383,10 +388,249 @@ class ChatExecutionServiceTests(unittest.IsolatedAsyncioTestCase):
                     debug=debug,
                 )
 
-        result = await ChatEvidenceRetriever(Retrieval()).retrieve(context)  # type: ignore[arg-type]
+        result = await ChatEvidenceRetriever(Retrieval()).semantic_search(  # type: ignore[arg-type]
+            context, context.query
+        )
 
         self.assertIs(result.debug, debug)
+
+    async def test_semantic_search_rejects_top_k_above_frozen_limit(self) -> None:
+        context = _context()
+
+        class Retrieval:
+            async def retrieve(self, request):
+                raise AssertionError("invalid override must fail before retrieve")
+
+        with self.assertRaises(ChatPipelineExecutionError) as raised:
+            await ChatEvidenceRetriever(Retrieval()).semantic_search(  # type: ignore[arg-type]
+                context, "query", top_k_override=4
+            )
+        self.assertEqual(raised.exception.code, ErrorCode.CHAT_CONTEXT_INVALID)
+
+    async def test_keyword_search_uses_frozen_top_k_and_translates_errors(
+        self,
+    ) -> None:
+        context = _context()
+        captured = {}
+
+        class Retrieval:
+            async def retrieve_lexical_only(self, request):
+                captured["request"] = request
+                return EvidencePack(
+                    knowledge_base_id=request.knowledge_base_id,
+                    index_revision_id=context.index_revision_id,
+                    strategy=RetrievalStrategy.HYBRID,
+                )
+
+        pack = await ChatEvidenceRetriever(Retrieval()).keyword_search(  # type: ignore[arg-type]
+            context, "ABC-42", top_k_override=2
+        )
+        self.assertEqual(captured["request"].query, "ABC-42")
+        self.assertEqual(captured["request"].top_k, 2)
+        self.assertEqual(pack.index_revision_id, context.index_revision_id)
+
+        class Mismatch:
+            async def retrieve_lexical_only(self, request):
+                return EvidencePack(
+                    knowledge_base_id=request.knowledge_base_id,
+                    index_revision_id=uuid4(),
+                    strategy=RetrievalStrategy.HYBRID,
+                )
+
+        with self.assertRaises(ChatPipelineExecutionError) as mismatch:
+            await ChatEvidenceRetriever(Mismatch()).keyword_search(  # type: ignore[arg-type]
+                context, "ABC-42"
+            )
+        self.assertEqual(mismatch.exception.code, ErrorCode.CHAT_REVISION_MISMATCH)
+
+        class Failing:
+            async def retrieve_lexical_only(self, request):
+                del request
+                raise RetrievalExecutionError(
+                    ErrorCode.INDEX_REVISION_INCOMPATIBLE,
+                    diagnostic={"check": "lexical_manifest_hash"},
+                )
+
+        with self.assertRaises(ChatPipelineExecutionError) as failed:
+            await ChatEvidenceRetriever(Failing()).keyword_search(  # type: ignore[arg-type]
+                context, "ABC-42"
+            )
+        self.assertEqual(failed.exception.code, ErrorCode.INDEX_REVISION_INCOMPATIBLE)
+        self.assertEqual(
+            failed.exception.diagnostic,
+            {"check": "lexical_manifest_hash"},
+        )
+
+    async def test_keyword_search_capable_true_false_and_swallowed_error(
+        self,
+    ) -> None:
+        context = _context()
+
+        class Ready:
+            def hybrid_request_enabled(self):
+                return True
+
+            async def lexical_manifest_status(self, knowledge_base_id):
+                del knowledge_base_id
+                return LexicalManifestStatus(
+                    resolved_active_revision_id=context.index_revision_id,
+                    serving_target_count=1,
+                    manifested_target_count=1,
+                )
+
+        self.assertTrue(
+            await ChatEvidenceRetriever(Ready()).keyword_search_capable(  # type: ignore[arg-type]
+                context
+            )
+        )
+
+        class Disabled:
+            def hybrid_request_enabled(self):
+                return False
+
+            async def lexical_manifest_status(self, knowledge_base_id):
+                raise AssertionError("disabled hybrid must not probe manifests")
+
+        self.assertFalse(
+            await ChatEvidenceRetriever(Disabled()).keyword_search_capable(  # type: ignore[arg-type]
+                context
+            )
+        )
+
+        class Incomplete:
+            def hybrid_request_enabled(self):
+                return True
+
+            async def lexical_manifest_status(self, knowledge_base_id):
+                del knowledge_base_id
+                return LexicalManifestStatus(
+                    resolved_active_revision_id=context.index_revision_id,
+                    serving_target_count=2,
+                    manifested_target_count=1,
+                )
+
+        self.assertFalse(
+            await ChatEvidenceRetriever(Incomplete()).keyword_search_capable(  # type: ignore[arg-type]
+                context
+            )
+        )
+
+        class Failing:
+            def hybrid_request_enabled(self):
+                return True
+
+            async def lexical_manifest_status(self, knowledge_base_id):
+                del knowledge_base_id
+                raise RetrievalExecutionError(ErrorCode.INTERNAL_SERVER_ERROR)
+
+        self.assertFalse(
+            await ChatEvidenceRetriever(Failing()).keyword_search_capable(  # type: ignore[arg-type]
+                context
+            )
+        )
+
+    async def test_read_chunk_context_delegates_and_translates_errors(self) -> None:
+        context = _context()
+        anchor = Evidence(
+            rank=1,
+            index_chunk_id=uuid4(),
+            indexed_document_version_id=uuid4(),
+            document_id=uuid4(),
+            document_version_id=uuid4(),
+            index_revision_id=context.index_revision_id,
+            ordinal=0,
+            text="anchor",
+            source_location={},
+            hierarchy={},
+            source_metadata={},
+            score=0.9,
+        )
+        neighbor = replace(
+            anchor,
+            rank=1,
+            index_chunk_id=uuid4(),
+            ordinal=1,
+            text="neighbor",
+            score=0.0,
+            score_kind=EvidenceScoreKind.ADJACENCY,
+            vector_similarity=None,
+            adjacency_anchor_index_chunk_id=anchor.index_chunk_id,
+            adjacency_offset=1,
+        )
+
+        class Retrieval:
+            async def retrieve_adjacent_evidence(self, **kwargs):
+                self.kwargs = kwargs
+                return (neighbor,)
+
+        retrieval = Retrieval()
+        result = await ChatEvidenceRetriever(retrieval).read_chunk_context(  # type: ignore[arg-type]
+            context, (anchor,)
+        )
+        self.assertEqual(result, (neighbor,))
+        self.assertEqual(
+            retrieval.kwargs["index_revision_id"], context.index_revision_id
+        )
+
+        class Failing:
+            async def retrieve_adjacent_evidence(self, **kwargs):
+                del kwargs
+                raise RetrievalExecutionError(
+                    ErrorCode.INTERNAL_SERVER_ERROR,
+                    diagnostic={"check": "adjacency_anchor_scope"},
+                )
+
+        with self.assertRaises(ChatPipelineExecutionError) as raised:
+            await ChatEvidenceRetriever(Failing()).read_chunk_context(  # type: ignore[arg-type]
+                context, (anchor,)
+            )
+        self.assertEqual(raised.exception.code, ErrorCode.INTERNAL_SERVER_ERROR)
+
+    async def test_list_documents_none_and_revision_guards(self) -> None:
+        context = _context()
+        listed = ServingDocumentList(
+            resolved_active_revision_id=context.index_revision_id,
+            entries=(
+                ServingDocumentEntry(
+                    document_id=uuid4(),
+                    document_version_id=uuid4(),
+                    indexed_document_version_id=uuid4(),
+                    display_name="Report",
+                    original_filename="report.pdf",
+                    version_number=1,
+                    chunk_count=2,
+                ),
+            ),
+        )
+
+        class Retrieval:
+            async def list_serving_documents(self, knowledge_base_id):
+                del knowledge_base_id
+                return listed
+
+        result = await ChatEvidenceRetriever(Retrieval()).list_documents(  # type: ignore[arg-type]
+            context
+        )
+        self.assertEqual(result, listed)
+
+        class Missing:
+            async def list_serving_documents(self, knowledge_base_id):
+                del knowledge_base_id
+                return None
+
+        with self.assertRaises(ResourceNotFoundError):
+            await ChatEvidenceRetriever(Missing()).list_documents(context)  # type: ignore[arg-type]
+
+        class Moved:
+            async def list_serving_documents(self, knowledge_base_id):
+                del knowledge_base_id
+                return replace(listed, resolved_active_revision_id=uuid4())
+
+        with self.assertRaises(ChatPipelineExecutionError) as raised:
+            await ChatEvidenceRetriever(Moved()).list_documents(context)  # type: ignore[arg-type]
+        self.assertEqual(raised.exception.code, ErrorCode.CHAT_REVISION_MISMATCH)
 
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -6,9 +6,35 @@ from dataclasses import dataclass
 from typing import Any
 
 
-CHAT_AGENT_VERSION = "native_tool_calling_agent_v3"
+CHAT_AGENT_VERSION = "native_tool_calling_agent_v4"
 CHAT_AGENT_TRACE_ARTIFACT = "chat_agent_trace"
-CHAT_RETRIEVAL_LANES = frozenset({"simple", "graph_relations"})
+CHAT_RETRIEVAL_LANES = frozenset(
+    {
+        "semantic",
+        "keyword",
+        "chunk_context",
+        "document_list",
+        "graph_relations",
+    }
+)
+CHAT_AGENT_EVENT_TOOLS = frozenset(
+    {
+        "semantic_search",
+        "keyword_search",
+        "read_chunk_context",
+        "list_documents",
+        "search_graph_relations",
+        "calculate",
+        "submit_answer",
+        "protocol",
+    }
+)
+CHAT_AGENT_ACCEPTED_VERSIONS = frozenset(
+    {
+        "native_tool_calling_agent_v3",
+        "native_tool_calling_agent_v4",
+    }
+)
 CHAT_GRAPH_SEARCH_REASONS = frozenset(
     {
         "direct_relation",
@@ -150,14 +176,7 @@ class ChatAgentTraceEvent:
 
     def __post_init__(self) -> None:
         if (
-            self.tool
-            not in {
-                "search_knowledge_base",
-                "search_graph_relations",
-                "calculate",
-                "submit_answer",
-                "protocol",
-            }
+            self.tool not in CHAT_AGENT_EVENT_TOOLS
             or self.status not in {"ok", "rejected", "salvaged", "refused"}
             or not self.tool_call_id.strip()
             or len(self.tool_call_id) > 128
@@ -229,7 +248,10 @@ class ChatAgentTraceEvent:
             )
         ):
             raise ValueError("trace route fields require a retrieval lane")
-        if self.retrieval_lane == "simple":
+        if (
+            self.retrieval_lane is not None
+            and self.retrieval_lane != "graph_relations"
+        ):
             if self.route_reason_code is not None or self.route_result_code != "not_requested":
                 raise ValueError("simple trace route fields are invalid")
             if self.new_evidence_count is not None:
@@ -351,8 +373,11 @@ class ChatAgentTrace:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     retrieval_tool_calls: int = 0
-    simple_tool_calls: int = 0
+    semantic_tool_calls: int = 0
+    keyword_tool_calls: int = 0
     graph_tool_calls: int = 0
+    chunk_context_calls: int = 0
+    document_list_calls: int = 0
     consecutive_no_new_evidence: int = 0
     stop_reason: str = "submitted"
     forced_finalize: bool = False
@@ -374,10 +399,19 @@ class ChatAgentTrace:
             or self.prompt_tokens < 0
             or self.completion_tokens < 0
             or self.retrieval_tool_calls < 0
-            or self.simple_tool_calls < 0
+            or self.semantic_tool_calls < 0
+            or self.keyword_tool_calls < 0
             or self.graph_tool_calls < 0
+            or self.chunk_context_calls < 0
+            or self.document_list_calls < 0
             or self.retrieval_tool_calls
-            != self.simple_tool_calls + self.graph_tool_calls
+            != (
+                self.semantic_tool_calls
+                + self.keyword_tool_calls
+                + self.graph_tool_calls
+                + self.chunk_context_calls
+                + self.document_list_calls
+            )
             or self.consecutive_no_new_evidence < 0
             or self.stop_reason not in CHAT_AGENT_STOP_REASONS
             or not isinstance(self.forced_finalize, bool)
@@ -407,8 +441,11 @@ class ChatAgentTrace:
                 "retrieval_calls": self.retrieval_calls,
                 "retrieval_queries": self.retrieval_calls,
                 "retrieval_tool_calls": self.retrieval_tool_calls,
-                "simple_tool_calls": self.simple_tool_calls,
+                "semantic_tool_calls": self.semantic_tool_calls,
+                "keyword_tool_calls": self.keyword_tool_calls,
                 "graph_tool_calls": self.graph_tool_calls,
+                "chunk_context_calls": self.chunk_context_calls,
+                "document_list_calls": self.document_list_calls,
                 "calculation_calls": self.calculation_calls,
                 "evidence_refs": self.evidence_ref_count,
                 "prompt_tokens": self.prompt_tokens,

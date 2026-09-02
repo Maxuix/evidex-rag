@@ -19,13 +19,19 @@ from rag_kb.domain import (
     Evidence,
     EvidenceScoreKind,
     IndexChunkAssetRelationSnapshot,
+    LexicalManifestStatus,
     LexicalSearchResult,
     ModelRerankScore,
+    ResourceNotFoundError,
     RerankMode,
     RetrievalExecutionError,
     RetrievalQueryPlan,
     RetrievalRequest,
     RetrievalStrategy,
+    SERVING_DOCUMENT_LIST_LIMIT,
+    ServingDocumentEntry,
+    ServingDocumentList,
+    ServingScopeQuery,
     VectorSearchHit,
     VectorSearchResult,
 )
@@ -283,6 +289,7 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(evidence[0].vector_similarity)
         self.assertEqual(evidence[0].adjacency_anchor_index_chunk_id, CHUNK_1)
         self.assertEqual(evidence[0].adjacency_offset, 1)
+        self.assertEqual(evidence[0].matched_representations, ("table_text",))
 
     async def test_adjacent_evidence_rejects_partial_anchor_validation(self) -> None:
         store = _Store(
@@ -310,6 +317,210 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
             raised.exception.diagnostic,
             {"check": "adjacency_anchor_scope"},
         )
+
+    async def test_adjacent_text_evidence_uses_text_representation(self) -> None:
+        anchor = _evidence(CHUNK_1, ordinal=4)
+        store = _Store(
+            None,
+            adjacent_result=AdjacentChunkResult(
+                resolved_active_revision_id=REVISION_ID,
+                validated_anchor_count=1,
+                hits=(
+                    AdjacentChunkHit(
+                        workspace_id=WORKSPACE,
+                        knowledge_base_id=KB_ID,
+                        index_revision_id=REVISION_ID,
+                        index_chunk_id=CHUNK_2,
+                        indexed_document_version_id=(
+                            anchor.indexed_document_version_id
+                        ),
+                        document_id=anchor.document_id,
+                        document_version_id=anchor.document_version_id,
+                        ordinal=5,
+                        text="continued definition",
+                        source_location={"line_start": 5},
+                        hierarchy={"section": "test"},
+                        source_metadata={},
+                        anchor_index_chunk_id=CHUNK_1,
+                        anchor_rank=1,
+                        offset=1,
+                        build_status="ready",
+                        serving_status="serving",
+                        is_current_serving_version=True,
+                        modality="text",
+                    ),
+                ),
+            ),
+        )
+        evidence = await RetrievalService(
+            WORKSPACE, _Provider(), store
+        ).retrieve_adjacent_evidence(
+            knowledge_base_id=KB_ID,
+            index_revision_id=REVISION_ID,
+            anchors=(anchor,),
+        )
+        self.assertEqual(evidence[0].matched_representations, ("text",))
+
+    async def test_lexical_only_orders_by_rank_and_uses_reciprocal_score(
+        self,
+    ) -> None:
+        first = replace(_hit(CHUNK_2, distance=0.4, ordinal=2), lexical_rank=2)
+        second = replace(_hit(CHUNK_1, distance=0.1, ordinal=1), lexical_rank=1)
+        lexical = _LexicalStore(
+            LexicalSearchResult(
+                REVISION_ID,
+                analyzer_version="lexical_simple_cjk_bigram_v1",
+                manifest_target_count=1,
+                hits=(first, second),
+            )
+        )
+        service = RetrievalService(
+            WORKSPACE,
+            _Provider(),
+            _Store(None),
+            lexical_store=lexical,
+            hybrid_enabled=True,
+        )
+
+        pack = await service.retrieve_lexical_only(
+            RetrievalRequest(KB_ID, "policy", top_k=1, include_debug=True),
+        )
+
+        self.assertEqual(lexical.queries, ["policy"])
+        self.assertEqual([item.index_chunk_id for item in pack.evidence], [CHUNK_1])
+        self.assertEqual(pack.evidence[0].rank, 1)
+        self.assertEqual(pack.evidence[0].lexical_rank, 1)
+        self.assertEqual(pack.evidence[0].score, 1.0)
+        self.assertIs(pack.evidence[0].score_kind, EvidenceScoreKind.LEXICAL)
+        self.assertIsNone(pack.evidence[0].vector_similarity)
+        self.assertIs(pack.strategy, RetrievalStrategy.HYBRID)
+        assert pack.debug is not None
+        self.assertEqual(pack.debug.lexical_candidate_count, 2)
+        self.assertEqual(pack.debug.lexical_manifest_target_count, 1)
+        self.assertEqual(
+            pack.debug.lexical_analyzer_version,
+            "lexical_simple_cjk_bigram_v1",
+        )
+
+    async def test_lexical_only_rejects_when_hybrid_is_disabled(self) -> None:
+        service = RetrievalService(
+            WORKSPACE,
+            _Provider(),
+            _Store(None),
+            lexical_store=_LexicalStore(
+                LexicalSearchResult(
+                    REVISION_ID,
+                    analyzer_version="lexical_simple_cjk_bigram_v1",
+                    manifest_target_count=0,
+                )
+            ),
+            hybrid_enabled=False,
+        )
+        with self.assertRaises(RetrievalExecutionError) as raised:
+            await service.retrieve_lexical_only(
+                RetrievalRequest(KB_ID, "policy", top_k=3),
+            )
+        self.assertEqual(raised.exception.code, ErrorCode.CAPABILITY_NOT_ENABLED)
+
+    async def test_lexical_only_rejects_invalid_hit_scope(self) -> None:
+        hit = replace(
+            _hit(CHUNK_1, ordinal=1),
+            lexical_rank=1,
+            serving_status="retired",
+        )
+        service = RetrievalService(
+            WORKSPACE,
+            _Provider(),
+            _Store(None),
+            lexical_store=_LexicalStore(
+                LexicalSearchResult(
+                    REVISION_ID,
+                    analyzer_version="lexical_simple_cjk_bigram_v1",
+                    manifest_target_count=1,
+                    hits=(hit,),
+                )
+            ),
+            hybrid_enabled=True,
+        )
+        with self.assertRaises(RetrievalExecutionError) as raised:
+            await service.retrieve_lexical_only(
+                RetrievalRequest(KB_ID, "policy", top_k=3),
+            )
+        self.assertEqual(raised.exception.code, ErrorCode.INTERNAL_SERVER_ERROR)
+        self.assertEqual(
+            raised.exception.diagnostic,
+            {"check": "lexical_mandatory_scope"},
+        )
+
+    async def test_lexical_only_missing_revision_is_not_found(self) -> None:
+        service = RetrievalService(
+            WORKSPACE,
+            _Provider(),
+            _Store(None),
+            lexical_store=_LexicalStore(None),
+            hybrid_enabled=True,
+        )
+        with self.assertRaises(ResourceNotFoundError):
+            await service.retrieve_lexical_only(
+                RetrievalRequest(KB_ID, "policy", top_k=3),
+            )
+
+    async def test_manifest_status_and_document_list_delegate_or_return_none(
+        self,
+    ) -> None:
+        listed = ServingDocumentList(
+            resolved_active_revision_id=REVISION_ID,
+            entries=(
+                ServingDocumentEntry(
+                    document_id=UUID("01900000-0000-7000-8000-000000000822"),
+                    document_version_id=UUID(
+                        "01900000-0000-7000-8000-000000000823"
+                    ),
+                    indexed_document_version_id=UUID(
+                        "01900000-0000-7000-8000-000000000821"
+                    ),
+                    display_name="Report",
+                    original_filename="report.pdf",
+                    version_number=1,
+                    chunk_count=3,
+                    outline=("Intro",),
+                ),
+            ),
+        )
+        status = LexicalManifestStatus(
+            resolved_active_revision_id=REVISION_ID,
+            serving_target_count=1,
+            manifested_target_count=1,
+        )
+        store = _Store(None, documents=listed)
+        lexical = _LexicalStore(
+            LexicalSearchResult(
+                REVISION_ID,
+                analyzer_version="lexical_simple_cjk_bigram_v1",
+                manifest_target_count=1,
+            ),
+            status=status,
+        )
+        service = RetrievalService(
+            WORKSPACE,
+            _Provider(),
+            store,
+            lexical_store=lexical,
+            hybrid_enabled=True,
+        )
+        self.assertEqual(
+            await service.list_serving_documents(KB_ID),
+            listed,
+        )
+        self.assertEqual(await service.lexical_manifest_status(KB_ID), status)
+        self.assertIsNone(
+            await RetrievalService(
+                WORKSPACE, _Provider(), _Store(None)
+            ).lexical_manifest_status(KB_ID)
+        )
+        self.assertLessEqual(len(listed.entries), SERVING_DOCUMENT_LIST_LIMIT)
+        self.assertEqual(store.scope_queries[0].knowledge_base_id, KB_ID)
+        self.assertEqual(lexical.scope_queries[0].knowledge_base_id, KB_ID)
 
     async def test_builds_mandatory_plan_and_returns_deterministic_evidence(self) -> None:
         provider = _Provider()
@@ -1023,12 +1234,15 @@ class _Store:
         result: VectorSearchResult | None,
         *,
         adjacent_result: AdjacentChunkResult | None = None,
+        documents: ServingDocumentList | None = None,
     ) -> None:
         self.result = result
         self.adjacent_result = adjacent_result
+        self.documents = documents
         self.plans = []
         self.embeddings = []
         self.adjacent_queries = []
+        self.scope_queries: list[ServingScopeQuery] = []
 
     async def adjacent_chunks(self, query):
         self.adjacent_queries.append(query)
@@ -1039,6 +1253,10 @@ class _Store:
         self.embeddings.append(query_embedding)
         return self.result
 
+    async def list_serving_documents(self, query: ServingScopeQuery):
+        self.scope_queries.append(query)
+        return self.documents
+
 
 class _HybridVectorStore(_Store):
     async def has_space_role(self, plan, role):
@@ -1047,16 +1265,27 @@ class _HybridVectorStore(_Store):
 
 
 class _LexicalStore:
-    def __init__(self, result: LexicalSearchResult | None) -> None:
+    def __init__(
+        self,
+        result: LexicalSearchResult | None,
+        *,
+        status: LexicalManifestStatus | None = None,
+    ) -> None:
         self.result = result
+        self.status = status
         self.queries: list[str] = []
         self.embeddings: list[tuple[float, ...]] = []
+        self.scope_queries: list[ServingScopeQuery] = []
 
     async def search(self, plan, query, query_embedding, **kwargs):
         del plan, kwargs
         self.queries.append(query)
         self.embeddings.append(query_embedding)
         return self.result
+
+    async def manifest_status(self, query: ServingScopeQuery):
+        self.scope_queries.append(query)
+        return self.status
 
 
 class _FailingLexicalStore:

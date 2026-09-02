@@ -725,7 +725,7 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(columns[0]["is_nullable"], "NO")
         self.assertEqual(columns[1]["is_nullable"], "YES")
-        self.assertIn("native_tool_calling_agent_v3", columns[0]["column_default"])
+        self.assertIn("native_tool_calling_agent_v4", columns[0]["column_default"])
         self.assertIn("max_model_rounds", columns[0]["column_default"])
         self.assertIn("max_graph_calls", columns[0]["column_default"])
         self.assertIn("max_total_tokens", columns[0]["column_default"])

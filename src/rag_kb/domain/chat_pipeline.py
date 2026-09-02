@@ -15,6 +15,7 @@ from rag_kb.domain.answering import (
     ChatModelCallRecord,
     ChatModelVisualContent,
 )
+from rag_kb.domain.chat_agent import CHAT_AGENT_VERSION, ChatAgentBudget
 from rag_kb.domain.errors import ErrorCode
 from rag_kb.domain.retrieval import EvidencePack
 from rag_kb.domain.memory import (
@@ -105,8 +106,8 @@ class ChatExecutionContext:
     )
     agent_configuration: Mapping[str, Any] = field(
         default_factory=lambda: {
-            "version": "native_tool_calling_agent_v3",
-            "budget": {"max_model_rounds": 8, "max_graph_calls": 2},
+            "version": CHAT_AGENT_VERSION,
+            "budget": ChatAgentBudget().as_dict(),
         }
     )
 

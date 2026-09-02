@@ -16,9 +16,11 @@ from rag_kb.document_processing.lexical import (
 )
 from rag_kb.domain import (
     ErrorCode,
+    LexicalManifestStatus,
     LexicalSearchResult,
     RetrievalExecutionError,
     RetrievalQueryPlan,
+    ServingScopeQuery,
     VectorSearchHit,
 )
 
@@ -58,59 +60,14 @@ class PgLexicalStore:
                         "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"
                     )
                 )
-                active_revision_id = await session.scalar(
-                    text(
-                        "SELECT kb.active_index_revision_id "
-                        "FROM knowledge_base kb "
-                        "JOIN index_revision revision "
-                        " ON revision.id = kb.active_index_revision_id "
-                        " AND revision.kb_id = kb.id "
-                        " AND revision.workspace_id = kb.workspace_id "
-                        " AND revision.status = 'active' "
-                        "WHERE kb.workspace_id = :workspace_id "
-                        " AND kb.id = :kb_id "
-                        " AND kb.deleted_at IS NULL"
-                    ),
-                    {
-                        "workspace_id": plan.workspace_id,
-                        "kb_id": plan.knowledge_base_id,
-                    },
+                resolved = await self._serving_scope(
+                    session,
+                    workspace_id=plan.workspace_id,
+                    knowledge_base_id=plan.knowledge_base_id,
                 )
-                if active_revision_id is None:
+                if resolved is None:
                     return None
-                scope_statement = (
-                    "SELECT target.id "
-                    "FROM indexed_document_version target "
-                    "JOIN document doc ON doc.id = target.document_id "
-                    " AND doc.kb_id = target.kb_id "
-                    " AND doc.workspace_id = target.workspace_id "
-                    "JOIN document_version version "
-                    " ON version.id = target.document_version_id "
-                    " AND version.document_id = target.document_id "
-                    " AND version.kb_id = target.kb_id "
-                    " AND version.workspace_id = target.workspace_id "
-                    "WHERE target.workspace_id = :workspace_id "
-                    " AND target.kb_id = :kb_id "
-                    " AND target.index_revision_id = :revision_id "
-                    " AND target.build_status = 'ready' "
-                    " AND target.serving_status = 'serving' "
-                    " AND doc.deleted_at IS NULL "
-                    " AND version.source_status = 'available'"
-                )
-                scope_parameters = {
-                    "workspace_id": plan.workspace_id,
-                    "kb_id": plan.knowledge_base_id,
-                    "revision_id": active_revision_id,
-                }
-                scope_statement += " ORDER BY target.id"
-                scope_query = text(scope_statement)
-                scope_rows = (
-                    await session.execute(
-                        scope_query,
-                        scope_parameters,
-                    )
-                ).scalars().all()
-                target_ids = tuple(scope_rows)
+                active_revision_id, target_ids = resolved
                 await self._validate_manifests(
                     session,
                     target_ids,
@@ -152,6 +109,110 @@ class PgLexicalStore:
             manifest_target_count=len(target_ids),
             hits=hits,
         )
+
+    async def manifest_status(
+        self, query: ServingScopeQuery
+    ) -> LexicalManifestStatus | None:
+        async with self._sessions() as session:
+            async with session.begin():
+                await session.execute(
+                    text(
+                        "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"
+                    )
+                )
+                resolved = await self._serving_scope(
+                    session,
+                    workspace_id=query.workspace_id,
+                    knowledge_base_id=query.knowledge_base_id,
+                )
+                if resolved is None:
+                    return None
+                active_revision_id, target_ids = resolved
+                if not target_ids:
+                    return LexicalManifestStatus(
+                        resolved_active_revision_id=active_revision_id,
+                        serving_target_count=0,
+                        manifested_target_count=0,
+                    )
+                manifested = (
+                    await session.execute(
+                        text(
+                            "SELECT indexed_document_version_id "
+                            "FROM index_lexical_manifest "
+                            "WHERE indexed_document_version_id IN :target_ids "
+                            "AND analyzer_version = :analyzer_version"
+                        ).bindparams(bindparam("target_ids", expanding=True)),
+                        {
+                            "target_ids": list(target_ids),
+                            "analyzer_version": LEXICAL_ANALYZER_VERSION,
+                        },
+                    )
+                ).scalars().all()
+        return LexicalManifestStatus(
+            resolved_active_revision_id=active_revision_id,
+            serving_target_count=len(target_ids),
+            manifested_target_count=len(set(manifested)),
+        )
+
+    @staticmethod
+    async def _serving_scope(
+        session: AsyncSession,
+        *,
+        workspace_id,
+        knowledge_base_id,
+    ) -> tuple | None:
+        active_revision_id = await session.scalar(
+            text(
+                "SELECT kb.active_index_revision_id "
+                "FROM knowledge_base kb "
+                "JOIN index_revision revision "
+                " ON revision.id = kb.active_index_revision_id "
+                " AND revision.kb_id = kb.id "
+                " AND revision.workspace_id = kb.workspace_id "
+                " AND revision.status = 'active' "
+                "WHERE kb.workspace_id = :workspace_id "
+                " AND kb.id = :kb_id "
+                " AND kb.deleted_at IS NULL"
+            ),
+            {
+                "workspace_id": workspace_id,
+                "kb_id": knowledge_base_id,
+            },
+        )
+        if active_revision_id is None:
+            return None
+        target_ids = tuple(
+            (
+                await session.execute(
+                    text(
+                        "SELECT target.id "
+                        "FROM indexed_document_version target "
+                        "JOIN document doc ON doc.id = target.document_id "
+                        " AND doc.kb_id = target.kb_id "
+                        " AND doc.workspace_id = target.workspace_id "
+                        "JOIN document_version version "
+                        " ON version.id = target.document_version_id "
+                        " AND version.document_id = target.document_id "
+                        " AND version.kb_id = target.kb_id "
+                        " AND version.workspace_id = target.workspace_id "
+                        "WHERE target.workspace_id = :workspace_id "
+                        " AND target.kb_id = :kb_id "
+                        " AND target.index_revision_id = :revision_id "
+                        " AND target.build_status = 'ready' "
+                        " AND target.serving_status = 'serving' "
+                        " AND doc.deleted_at IS NULL "
+                        " AND version.source_status = 'available' "
+                        "ORDER BY target.id"
+                    ),
+                    {
+                        "workspace_id": workspace_id,
+                        "kb_id": knowledge_base_id,
+                        "revision_id": active_revision_id,
+                    },
+                )
+            ).scalars().all()
+        )
+        return active_revision_id, target_ids
 
     @staticmethod
     async def _validate_manifests(

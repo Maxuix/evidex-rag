@@ -25,8 +25,11 @@ from rag_kb.domain import (
     AnswerControlReason,
     AnswerDraftSource,
     AnswerOutcome,
+    CHAT_AGENT_ACCEPTED_VERSIONS,
+    CHAT_AGENT_EVENT_TOOLS,
     CHAT_AGENT_REJECTION_REASONS,
     CHAT_AGENT_TRACE_ARTIFACT,
+    CHAT_AGENT_VERSION,
     CHAT_GRAPH_SEARCH_REASONS,
     ChatAgentBudget,
     CHAT_AGENT_CLAIM_LIMIT,
@@ -78,10 +81,20 @@ if TYPE_CHECKING:
 AGENT_TRACE_ARTIFACT = CHAT_AGENT_TRACE_ARTIFACT
 _PROTOCOL_ERROR = '{"status":"error","code":"invalid_tool_protocol"}'
 _ARGUMENT_ERROR = '{"status":"error","code":"invalid_tool_arguments"}'
+_KEYWORD_UNAVAILABLE = '{"status":"error","code":"keyword_unavailable"}'
 _TRACE_REF_LIMIT = CHAT_AGENT_TRACE_REF_LIMIT
 _SIMPLE_QUERY_MAX_COUNT = 3
 _MAX_CONSECUTIVE_NO_NEW_SEARCHES = 2
 _QUERY_MAX_CHARS = 2048
+_EVIDENCE_TOOLS = frozenset(
+    {
+        "semantic_search",
+        "keyword_search",
+        "read_chunk_context",
+        "list_documents",
+        "search_graph_relations",
+    }
+)
 _BUDGET_EXHAUSTED_FEEDBACK = (
     "The retrieval budget for this run is exhausted. Do not call search "
     "tools; submit the best possible answer now with the evidence already "
@@ -125,8 +138,11 @@ class ChatAgentProgress:
     model_rounds: int = 0
     retrieval_queries: int = 0
     retrieval_tool_calls: int = 0
-    simple_tool_calls: int = 0
+    semantic_tool_calls: int = 0
+    keyword_tool_calls: int = 0
     graph_tool_calls: int = 0
+    chunk_context_calls: int = 0
+    document_list_calls: int = 0
     calculation_calls: int = 0
     evidence_ref_count: int = 0
     consecutive_no_new_evidence: int = 0
@@ -163,8 +179,11 @@ class ChatAgentProgress:
             model_rounds=self.model_rounds,
             retrieval_queries=self.retrieval_queries,
             retrieval_tool_calls=self.retrieval_tool_calls,
-            simple_tool_calls=self.simple_tool_calls,
+            semantic_tool_calls=self.semantic_tool_calls,
+            keyword_tool_calls=self.keyword_tool_calls,
             graph_tool_calls=self.graph_tool_calls,
+            chunk_context_calls=self.chunk_context_calls,
+            document_list_calls=self.document_list_calls,
             calculation_calls=self.calculation_calls,
             evidence_ref_count=self.evidence_ref_count,
         )
@@ -175,7 +194,7 @@ class ChatAgentProgress:
         )
         diagnostics["partial"] = True
         return {
-            "version": "native_tool_calling_agent_v3",
+            "version": CHAT_AGENT_VERSION,
             "events": [
                 item.as_dict()
                 for item in self.events[-CHAT_AGENT_TRACE_EVENT_LIMIT:]
@@ -220,12 +239,21 @@ class NativeToolCallingAgent:
         budget = _budget_from_context(context)
         progress.budget = budget
         adaptive_graphiti = _adaptive_graphiti_enabled(context)
+        _, frozen_top_k, _, _ = parse_chat_retrieval_snapshot(
+            context.retrieval_strategy
+        )
         graph_ready = (
             await self._retriever.graph_relations_capable(context)
             if adaptive_graphiti
             else False
         )
-        messages = _initial_messages(context, budget, adaptive=adaptive_graphiti)
+        keyword_ready = await self._retriever.keyword_search_capable(context)
+        messages = _initial_messages(
+            context,
+            budget,
+            adaptive=adaptive_graphiti,
+            keyword_ready=keyword_ready,
+        )
         evidence: list[Evidence] = []
         evidence_ids: set[object] = set()
         prompt_by_ref: dict[str, PromptEvidence] = {}
@@ -243,7 +271,10 @@ class NativeToolCallingAgent:
         events = progress.events
         retrieval_calls = 0
         retrieval_tool_calls = 0
-        simple_tool_calls = 0
+        semantic_tool_calls = 0
+        keyword_tool_calls = 0
+        chunk_context_calls = 0
+        document_list_calls = 0
         calculation_calls = 0
         graph_call_count = 0
         latest_visual_state: ChatAnsweringState | None = None
@@ -257,6 +288,267 @@ class NativeToolCallingAgent:
         submission_repair_pending = False
         search_stop_reason: str | None = None
         forced_stop_reason = "model_round_limit"
+
+        async def _absorb_retrieval_results(
+            *,
+            packs: tuple[EvidencePack, ...],
+            queries: tuple[str, ...],
+            lane: str,
+            skipped_query_count: int = 0,
+            graph_search_result=None,
+            graph_duration_ms: int | None = None,
+            route_reason_code: str | None = None,
+            admit_without_eligibility: bool = False,
+            count_no_new: bool = True,
+            item_extras: dict[str, dict[str, Any]] | None = None,
+        ) -> None:
+            nonlocal evidence, strategy, consecutive_no_new_searches
+            nonlocal search_closed, search_stop_reason, latest_visual_state
+            nonlocal search_closed_notice_sent
+            for pack in packs:
+                strategy = strategy or pack.strategy
+            query_candidates = _query_candidates(
+                packs,
+                eligibility=self._eligibility,
+                admit_all=admit_without_eligibility,
+            )
+            evidence_count_before = len(evidence_ids)
+            evidence_limit_hit = False
+            for offset in range(
+                max((len(items) for items in query_candidates), default=0)
+            ):
+                for items in query_candidates:
+                    if offset >= len(items):
+                        continue
+                    item = items[offset]
+                    if item.index_chunk_id in evidence_ids:
+                        if item.graph_path_id is not None:
+                            for index, existing in enumerate(evidence):
+                                if existing.index_chunk_id == item.index_chunk_id:
+                                    evidence[index] = replace(
+                                        item, rank=existing.rank
+                                    )
+                                    break
+                        continue
+                    if len(evidence) >= budget.max_evidence_items:
+                        evidence_limit_hit = True
+                        continue
+                    evidence_ids.add(item.index_chunk_id)
+                    evidence.append(item)
+            accepted_new_evidence_count = len(evidence_ids) - evidence_count_before
+            if count_no_new:
+                if accepted_new_evidence_count > 0:
+                    consecutive_no_new_searches = 0
+                else:
+                    consecutive_no_new_searches += 1
+            if len(evidence) >= budget.max_evidence_items:
+                search_closed = True
+                search_stop_reason = "evidence_budget"
+            elif (
+                count_no_new
+                and consecutive_no_new_searches
+                >= _MAX_CONSECUTIVE_NO_NEW_SEARCHES
+            ):
+                search_closed = True
+                search_stop_reason = "no_new_evidence"
+            progress.consecutive_no_new_evidence = consecutive_no_new_searches
+            cumulative = _pack(context, evidence, strategy)
+            visual_state = await self._prepare_visuals(
+                context,
+                cumulative,
+                tuple(calls),
+                previous_visuals=tuple(sent_visuals),
+            )
+            latest_visual_state = visual_state.answering
+            assert latest_visual_state is not None
+            for decision in latest_visual_state.visual_decisions:
+                key = (decision.visual_unit_id, decision.asset_id)
+                existing = visual_decisions.get(key)
+                if existing is None or not existing.selected:
+                    visual_decisions[key] = decision
+            _assign_refs(
+                latest_visual_state.evidence,
+                cumulative.evidence,
+                ref_by_prompt_id,
+                prompt_by_ref,
+                evidence_by_ref,
+            )
+            progress.evidence_ref_count = len(prompt_by_ref)
+            cite_to_ref = {
+                item.citation_id: ref_by_prompt_id[item.index_chunk_id]
+                for item in latest_visual_state.evidence.items
+                if item.index_chunk_id in ref_by_prompt_id
+            }
+            new_visuals, new_visual_refs = _new_visuals(
+                latest_visual_state.visual_content,
+                cite_to_ref,
+                prompt_by_ref,
+                sent_visual_asset_ids,
+            )
+            visible_visual_refs = loaded_visual_refs.union(new_visual_refs)
+            result_groups = tuple(
+                (
+                    query,
+                    tuple(
+                        ref_by_prompt_id[item.index_chunk_id]
+                        for item in items
+                        if item.index_chunk_id in ref_by_prompt_id
+                    ),
+                )
+                for query, items in zip(queries, query_candidates, strict=True)
+            )
+            result_refs = tuple(
+                dict.fromkeys(ref for _, refs in result_groups for ref in refs)
+            )
+            extras = dict(item_extras or {})
+            for ref in result_refs:
+                source = evidence_by_ref.get(ref)
+                if source is None or source.adjacency_offset is None:
+                    continue
+                extras.setdefault(ref, {}).update(
+                    {
+                        "anchor_evidence_ref": next(
+                            (
+                                issued
+                                for issued, item in evidence_by_ref.items()
+                                if item.index_chunk_id
+                                == source.adjacency_anchor_index_chunk_id
+                            ),
+                            None,
+                        ),
+                        "adjacency_offset": source.adjacency_offset,
+                    }
+                )
+            tool_result, newly_sent_content_refs = _search_result(
+                result_groups,
+                prompt_by_ref,
+                visible_visual_refs,
+                sent_content_refs,
+                status=(
+                    "graph_relations"
+                    if graph_search_result is not None
+                    else "ok"
+                ),
+                notice=(
+                    "evidence_limit_reached" if evidence_limit_hit else None
+                ),
+                route_result_code=(
+                    graph_search_result.route_result_code
+                    if graph_search_result is not None
+                    else None
+                ),
+                new_evidence_count=(
+                    graph_search_result.new_evidence_count
+                    if graph_search_result is not None
+                    else None
+                ),
+                accepted_new_evidence_count=accepted_new_evidence_count,
+                skipped_query_count=skipped_query_count,
+                item_extras=extras or None,
+            )
+            messages.append(
+                ChatModelMessage("tool", tool_result, tool_call_id=call.id)
+            )
+            sent_content_refs.update(newly_sent_content_refs)
+            if new_visuals:
+                mapping = {
+                    citation_id: ref
+                    for visual, refs in new_visuals
+                    for citation_id, ref in zip(
+                        visual.citation_ids,
+                        refs,
+                        strict=True,
+                    )
+                }
+                messages.append(
+                    ChatModelMessage(
+                        "evidence",
+                        json.dumps(
+                            {"visual_evidence_refs": mapping},
+                            separators=(",", ":"),
+                            sort_keys=True,
+                        ),
+                        visual_content=tuple(
+                            visual for visual, _ in new_visuals
+                        ),
+                    )
+                )
+                loaded_visual_refs.update(new_visual_refs)
+                for visual, _ in new_visuals:
+                    sent_visual_asset_ids.add(visual.asset_id)
+                    sent_visuals.append(visual)
+            if search_closed and not search_closed_notice_sent:
+                search_closed_notice_sent = True
+                messages.append(ChatModelMessage("user", _SEARCH_CLOSED_FEEDBACK))
+            events.append(
+                ChatAgentTraceEvent(
+                    tool=call.name,
+                    status="ok",
+                    tool_call_id=call.id,
+                    refs=result_refs[:_TRACE_REF_LIMIT],
+                    count=len(result_refs),
+                    retrieval_lane=lane,
+                    route_reason_code=(
+                        route_reason_code
+                        if lane == "graph_relations"
+                        else None
+                    ),
+                    route_result_code=(
+                        graph_search_result.route_result_code
+                        if graph_search_result is not None
+                        else "not_requested"
+                    ),
+                    new_evidence_count=(
+                        graph_search_result.new_evidence_count
+                        if graph_search_result is not None
+                        else None
+                    ),
+                    call_index=(
+                        graph_call_count
+                        if graph_search_result is not None
+                        else None
+                    ),
+                    invocation_source=(
+                        "agent" if graph_search_result is not None else None
+                    ),
+                    duration_ms=graph_duration_ms,
+                    candidate_count=(
+                        graph_search_result.candidate_count
+                        if graph_search_result is not None
+                        else None
+                    ),
+                    path_count=(
+                        graph_search_result.path_count
+                        if graph_search_result is not None
+                        else None
+                    ),
+                    hydrated_chunk_count=(
+                        graph_search_result.hydrated_chunk_count
+                        if graph_search_result is not None
+                        else None
+                    ),
+                    returned_chunk_count=(
+                        len(graph_search_result.evidence)
+                        if graph_search_result is not None
+                        else None
+                    ),
+                    hop1_count=(
+                        graph_search_result.hop1_count
+                        if graph_search_result is not None
+                        else None
+                    ),
+                    hop2_count=(
+                        graph_search_result.hop2_count
+                        if graph_search_result is not None
+                        else None
+                    ),
+                    hop3_count=(
+                        graph_search_result.hop3_count
+                        if graph_search_result is not None
+                        else None
+                    ),
+                )
+            )
 
         # One reserved submit-only round follows normal exploration and can also
         # serve the single malformed-submission repair.
@@ -283,6 +575,7 @@ class NativeToolCallingAgent:
                 or submission_repair_pending
             )
             available_tools = _tools(
+                keyword_ready=keyword_ready,
                 adaptive=adaptive_graphiti,
                 graph_ready=graph_ready,
                 graph_calls_remaining=budget.max_graph_calls - graph_call_count,
@@ -359,326 +652,251 @@ class NativeToolCallingAgent:
                     or ("model_round_limit" if forced_finalize else "submit_protocol_invalid")
                 )
                 break
-            if search_closed and call.name in {
-                "search_knowledge_base",
-                "search_graph_relations",
-            }:
+            if search_closed and call.name in _EVIDENCE_TOOLS:
                 events.append(_rejected_event(call))
                 messages.append(
                     ChatModelMessage("tool", _PROTOCOL_ERROR, tool_call_id=call.id)
                 )
                 continue
-            if call.name in {"search_knowledge_base", "search_graph_relations"}:
-                graph_search_result = None
-                graph_duration_ms: int | None = None
-                route_reason_code: str | None = None
-                skipped_query_count = 0
-                if call.name == "search_knowledge_base":
-                    queries = _search_arguments(call.arguments)
-                    lane = "simple"
-                    if queries is None:
-                        events.append(_rejected_event(call))
-                        messages.append(
-                            ChatModelMessage("tool", _ARGUMENT_ERROR, tool_call_id=call.id)
-                        )
-                        continue
-                    remaining_retrieval_calls = (
-                        budget.max_retrieval_calls - retrieval_calls
-                    )
-                    skipped_query_count = max(
-                        0, len(queries) - remaining_retrieval_calls
-                    )
-                    queries = queries[:remaining_retrieval_calls]
-                    retrieval_calls += len(queries)
-                    retrieval_tool_calls += 1
-                    simple_tool_calls += 1
-                    progress.retrieval_queries = retrieval_calls
-                    progress.retrieval_tool_calls = retrieval_tool_calls
-                    progress.simple_tool_calls = simple_tool_calls
-                elif (
-                    not adaptive_graphiti
-                    or not graph_ready
-                    or graph_call_count >= budget.max_graph_calls
-                ):
-                    # The model invoked a Graph tool that is not currently
-                    # available; fail closed without any external query.
+            if call.name in {"semantic_search", "keyword_search"}:
+                if call.name == "keyword_search" and not keyword_ready:
                     events.append(_rejected_event(call))
                     messages.append(
                         ChatModelMessage("tool", _ARGUMENT_ERROR, tool_call_id=call.id)
                     )
                     continue
+                parsed_queries = _search_queries_arguments(
+                    call.arguments, max_top_k=frozen_top_k
+                )
+                if parsed_queries is None:
+                    events.append(_rejected_event(call))
+                    messages.append(
+                        ChatModelMessage("tool", _ARGUMENT_ERROR, tool_call_id=call.id)
+                    )
+                    continue
+                queries, top_k_override = parsed_queries
+                remaining_retrieval_calls = (
+                    budget.max_retrieval_calls - retrieval_calls
+                )
+                skipped_query_count = max(
+                    0, len(queries) - remaining_retrieval_calls
+                )
+                queries = queries[:remaining_retrieval_calls]
+                retrieval_calls += len(queries)
+                retrieval_tool_calls += 1
+                progress.retrieval_queries = retrieval_calls
+                progress.retrieval_tool_calls = retrieval_tool_calls
+                if call.name == "semantic_search":
+                    semantic_tool_calls += 1
+                    progress.semantic_tool_calls = semantic_tool_calls
+                    search_method = self._retriever.semantic_search
+                    lane = "semantic"
                 else:
-                    graph_request = _graph_arguments(call.arguments)
-                    if graph_request is None:
-                        events.append(_rejected_event(call))
-                        messages.append(
-                            ChatModelMessage("tool", _ARGUMENT_ERROR, tool_call_id=call.id)
-                        )
-                        continue
-                    query, route_reason_code = graph_request
-                    queries = (query,)
-                    lane = "graph_relations"
-                    graph_call_count += 1
-                    retrieval_calls += 1
-                    retrieval_tool_calls += 1
-                    progress.retrieval_queries = retrieval_calls
-                    progress.retrieval_tool_calls = retrieval_tool_calls
-                    progress.graph_tool_calls = graph_call_count
-                    started = time.monotonic()
-                    try:
-                        graph_search_result = (
-                            await self._retriever.search_graph_relations(
+                    keyword_tool_calls += 1
+                    progress.keyword_tool_calls = keyword_tool_calls
+                    search_method = self._retriever.keyword_search
+                    lane = "keyword"
+                try:
+                    packs = await asyncio.gather(
+                        *(
+                            search_method(
                                 context,
-                                queries[0],
-                                excluded_index_chunk_ids=tuple(evidence_ids),
+                                query,
+                                top_k_override=top_k_override,
+                            )
+                            for query in queries
+                        )
+                    )
+                except ChatPipelineExecutionError as error:
+                    if (
+                        call.name == "keyword_search"
+                        and error.code is ErrorCode.INDEX_REVISION_INCOMPATIBLE
+                    ):
+                        keyword_ready = False
+                        events.append(
+                            ChatAgentTraceEvent(
+                                tool=call.name,
+                                status="rejected",
+                                tool_call_id=call.id,
+                                retrieval_lane="keyword",
+                                route_result_code="not_requested",
                             )
                         )
-                    except ChatPipelineExecutionError as error:
-                        raise error.retain_model_calls(tuple(calls))
-                    graph_duration_ms = int((time.monotonic() - started) * 1000)
-                    packs = (
+                        messages.append(
+                            ChatModelMessage(
+                                "tool",
+                                _KEYWORD_UNAVAILABLE,
+                                tool_call_id=call.id,
+                            )
+                        )
+                        continue
+                    raise error.retain_model_calls(tuple(calls))
+                await _absorb_retrieval_results(
+                    packs=tuple(packs),
+                    queries=queries,
+                    lane=lane,
+                    skipped_query_count=skipped_query_count,
+                )
+                continue
+
+            if call.name == "read_chunk_context":
+                refs = _read_context_arguments(call.arguments)
+                if refs is None or any(ref not in evidence_by_ref for ref in refs):
+                    events.append(_rejected_event(call))
+                    messages.append(
+                        ChatModelMessage("tool", _ARGUMENT_ERROR, tool_call_id=call.id)
+                    )
+                    continue
+                retrieval_calls += 1
+                retrieval_tool_calls += 1
+                chunk_context_calls += 1
+                progress.retrieval_queries = retrieval_calls
+                progress.retrieval_tool_calls = retrieval_tool_calls
+                progress.chunk_context_calls = chunk_context_calls
+                anchors = tuple(evidence_by_ref[ref] for ref in refs)
+                try:
+                    neighbors = await self._retriever.read_chunk_context(
+                        context, anchors
+                    )
+                except ChatPipelineExecutionError as error:
+                    raise error.retain_model_calls(tuple(calls))
+                packs = tuple(
+                    EvidencePack(
+                        knowledge_base_id=context.knowledge_base_id,
+                        index_revision_id=context.index_revision_id,
+                        strategy=strategy or RetrievalStrategy.EXACT_VECTOR,
+                        evidence=tuple(
+                            replace(item, rank=rank)
+                            for rank, item in enumerate(
+                                (
+                                    item
+                                    for item in neighbors
+                                    if item.adjacency_anchor_index_chunk_id
+                                    == evidence_by_ref[ref].index_chunk_id
+                                ),
+                                start=1,
+                            )
+                        ),
+                    )
+                    for ref in refs
+                )
+                await _absorb_retrieval_results(
+                    packs=packs,
+                    queries=refs,
+                    lane="chunk_context",
+                    admit_without_eligibility=True,
+                )
+                continue
+
+            if call.name == "list_documents":
+                include_outline = _list_documents_arguments(call.arguments)
+                if include_outline is None:
+                    events.append(_rejected_event(call))
+                    messages.append(
+                        ChatModelMessage("tool", _ARGUMENT_ERROR, tool_call_id=call.id)
+                    )
+                    continue
+                retrieval_calls += 1
+                retrieval_tool_calls += 1
+                document_list_calls += 1
+                progress.retrieval_queries = retrieval_calls
+                progress.retrieval_tool_calls = retrieval_tool_calls
+                progress.document_list_calls = document_list_calls
+                try:
+                    listed = await self._retriever.list_documents(context)
+                except ChatPipelineExecutionError as error:
+                    raise error.retain_model_calls(tuple(calls))
+                documents = []
+                for entry in listed.entries:
+                    item = {
+                        "document_id": str(entry.document_id),
+                        "document_version_id": str(entry.document_version_id),
+                        "display_name": entry.display_name,
+                        "original_filename": entry.original_filename,
+                        "version_number": entry.version_number,
+                        "chunk_count": entry.chunk_count,
+                    }
+                    if include_outline:
+                        item["outline"] = list(entry.outline)
+                    documents.append(item)
+                messages.append(
+                    ChatModelMessage(
+                        "tool",
+                        json.dumps(
+                            {
+                                "status": "ok",
+                                "document_count": len(listed.entries),
+                                "truncated": listed.truncated,
+                                "documents": documents,
+                            },
+                            separators=(",", ":"),
+                            sort_keys=True,
+                        ),
+                        tool_call_id=call.id,
+                    )
+                )
+                events.append(
+                    ChatAgentTraceEvent(
+                        tool=call.name,
+                        status="ok",
+                        tool_call_id=call.id,
+                        retrieval_lane="document_list",
+                        route_result_code="not_requested",
+                    )
+                )
+                continue
+
+            if call.name == "search_graph_relations":
+                if (
+                    not adaptive_graphiti
+                    or not graph_ready
+                    or graph_call_count >= budget.max_graph_calls
+                ):
+                    events.append(_rejected_event(call))
+                    messages.append(
+                        ChatModelMessage("tool", _ARGUMENT_ERROR, tool_call_id=call.id)
+                    )
+                    continue
+                graph_request = _graph_arguments(call.arguments)
+                if graph_request is None:
+                    events.append(_rejected_event(call))
+                    messages.append(
+                        ChatModelMessage("tool", _ARGUMENT_ERROR, tool_call_id=call.id)
+                    )
+                    continue
+                query, route_reason_code = graph_request
+                graph_call_count += 1
+                retrieval_calls += 1
+                retrieval_tool_calls += 1
+                progress.retrieval_queries = retrieval_calls
+                progress.retrieval_tool_calls = retrieval_tool_calls
+                progress.graph_tool_calls = graph_call_count
+                started = time.monotonic()
+                try:
+                    graph_search_result = (
+                        await self._retriever.search_graph_relations(
+                            context,
+                            query,
+                            excluded_index_chunk_ids=tuple(evidence_ids),
+                        )
+                    )
+                except ChatPipelineExecutionError as error:
+                    raise error.retain_model_calls(tuple(calls))
+                graph_duration_ms = int((time.monotonic() - started) * 1000)
+                await _absorb_retrieval_results(
+                    packs=(
                         EvidencePack(
                             knowledge_base_id=context.knowledge_base_id,
                             index_revision_id=context.index_revision_id,
                             strategy=RetrievalStrategy.EXACT_VECTOR,
                             evidence=graph_search_result.evidence,
                         ),
-                    )
-                if lane == "simple":
-                    try:
-                        packs = await asyncio.gather(
-                            *(
-                                self._retriever.retrieve_query(
-                                    context,
-                                    query,
-                                )
-                                for query in queries
-                            )
-                        )
-                    except ChatPipelineExecutionError as error:
-                        raise error.retain_model_calls(tuple(calls))
-                for pack in packs:
-                    strategy = strategy or pack.strategy
-                query_candidates = _query_candidates(
-                    packs,
-                    eligibility=self._eligibility,
-                )
-                evidence_count_before = len(evidence_ids)
-                evidence_limit_hit = False
-                for offset in range(max((len(items) for items in query_candidates), default=0)):
-                    for items in query_candidates:
-                        if offset >= len(items):
-                            continue
-                        item = items[offset]
-                        if item.index_chunk_id in evidence_ids:
-                            if item.graph_path_id is not None:
-                                for index, existing in enumerate(evidence):
-                                    if existing.index_chunk_id == item.index_chunk_id:
-                                        evidence[index] = replace(item, rank=existing.rank)
-                                        break
-                            continue
-                        if len(evidence) >= budget.max_evidence_items:
-                            # The per-run evidence budget is exhausted; further
-                            # hits are dropped before they reach the prompt.
-                            evidence_limit_hit = True
-                            continue
-                        evidence_ids.add(item.index_chunk_id)
-                        evidence.append(item)
-                accepted_new_evidence_count = (
-                    len(evidence_ids) - evidence_count_before
-                )
-                if accepted_new_evidence_count > 0:
-                    consecutive_no_new_searches = 0
-                else:
-                    consecutive_no_new_searches += 1
-                if (
-                    len(evidence) >= budget.max_evidence_items
-                ):
-                    search_closed = True
-                    search_stop_reason = "evidence_budget"
-                elif (
-                    consecutive_no_new_searches
-                    >= _MAX_CONSECUTIVE_NO_NEW_SEARCHES
-                ):
-                    search_closed = True
-                    search_stop_reason = "no_new_evidence"
-                progress.consecutive_no_new_evidence = consecutive_no_new_searches
-                cumulative = _pack(context, evidence, strategy)
-                visual_state = await self._prepare_visuals(
-                    context,
-                    cumulative,
-                    tuple(calls),
-                    previous_visuals=tuple(sent_visuals),
-                )
-                latest_visual_state = visual_state.answering
-                assert latest_visual_state is not None
-                for decision in latest_visual_state.visual_decisions:
-                    key = (decision.visual_unit_id, decision.asset_id)
-                    existing = visual_decisions.get(key)
-                    if existing is None or not existing.selected:
-                        visual_decisions[key] = decision
-                _assign_refs(
-                    latest_visual_state.evidence,
-                    cumulative.evidence,
-                    ref_by_prompt_id,
-                    prompt_by_ref,
-                    evidence_by_ref,
-                )
-                progress.evidence_ref_count = len(prompt_by_ref)
-                cite_to_ref = {
-                    item.citation_id: ref_by_prompt_id[item.index_chunk_id]
-                    for item in latest_visual_state.evidence.items
-                    if item.index_chunk_id in ref_by_prompt_id
-                }
-                new_visuals, new_visual_refs = _new_visuals(
-                    latest_visual_state.visual_content,
-                    cite_to_ref,
-                    prompt_by_ref,
-                    sent_visual_asset_ids,
-                )
-                visible_visual_refs = loaded_visual_refs.union(new_visual_refs)
-                result_groups = tuple(
-                    (
-                        query,
-                        tuple(
-                            ref_by_prompt_id[item.index_chunk_id]
-                            for item in items
-                            if item.index_chunk_id in ref_by_prompt_id
-                        ),
-                    )
-                    for query, items in zip(queries, query_candidates, strict=True)
-                )
-                result_refs = tuple(
-                    dict.fromkeys(ref for _, refs in result_groups for ref in refs)
-                )
-                tool_result, newly_sent_content_refs = _search_result(
-                    result_groups,
-                    prompt_by_ref,
-                    visible_visual_refs,
-                    sent_content_refs,
-                    status=(
-                        "graph_relations"
-                        if graph_search_result is not None
-                        else "ok"
                     ),
-                    notice=(
-                        "evidence_limit_reached" if evidence_limit_hit else None
-                    ),
-                    route_result_code=(
-                        graph_search_result.route_result_code
-                        if graph_search_result is not None
-                        else None
-                    ),
-                    new_evidence_count=(
-                        graph_search_result.new_evidence_count
-                        if graph_search_result is not None
-                        else None
-                    ),
-                    accepted_new_evidence_count=accepted_new_evidence_count,
-                    skipped_query_count=skipped_query_count,
-                )
-                messages.append(
-                    ChatModelMessage("tool", tool_result, tool_call_id=call.id)
-                )
-                sent_content_refs.update(newly_sent_content_refs)
-                if new_visuals:
-                    mapping = {
-                        citation_id: ref
-                        for visual, refs in new_visuals
-                        for citation_id, ref in zip(
-                            visual.citation_ids,
-                            refs,
-                            strict=True,
-                        )
-                    }
-                    messages.append(
-                        ChatModelMessage(
-                            "evidence",
-                            json.dumps(
-                                {"visual_evidence_refs": mapping},
-                                separators=(",", ":"),
-                                sort_keys=True,
-                            ),
-                            visual_content=tuple(
-                                visual for visual, _ in new_visuals
-                            ),
-                        )
-                    )
-                    loaded_visual_refs.update(new_visual_refs)
-                    for visual, _ in new_visuals:
-                        sent_visual_asset_ids.add(visual.asset_id)
-                        sent_visuals.append(visual)
-                if search_closed and not search_closed_notice_sent:
-                    search_closed_notice_sent = True
-                    messages.append(ChatModelMessage("user", _SEARCH_CLOSED_FEEDBACK))
-                events.append(
-                    ChatAgentTraceEvent(
-                        tool=call.name,
-                        status="ok",
-                        tool_call_id=call.id,
-                        refs=result_refs[:_TRACE_REF_LIMIT],
-                        count=len(result_refs),
-                        retrieval_lane=(lane if adaptive_graphiti else None),
-                        route_reason_code=(
-                            route_reason_code if adaptive_graphiti else None
-                        ),
-                        route_result_code=(
-                            graph_search_result.route_result_code
-                            if graph_search_result is not None
-                            else "not_requested"
-                            if adaptive_graphiti
-                            else None
-                        ),
-                        new_evidence_count=(
-                            graph_search_result.new_evidence_count
-                            if graph_search_result is not None
-                            else None
-                        ),
-                        call_index=(
-                            graph_call_count
-                            if graph_search_result is not None
-                            else None
-                        ),
-                        invocation_source=(
-                            "agent" if graph_search_result is not None else None
-                        ),
-                        duration_ms=graph_duration_ms,
-                        candidate_count=(
-                            graph_search_result.candidate_count
-                            if graph_search_result is not None
-                            else None
-                        ),
-                        path_count=(
-                            graph_search_result.path_count
-                            if graph_search_result is not None
-                            else None
-                        ),
-                        hydrated_chunk_count=(
-                            graph_search_result.hydrated_chunk_count
-                            if graph_search_result is not None
-                            else None
-                        ),
-                        returned_chunk_count=(
-                            len(graph_search_result.evidence)
-                            if graph_search_result is not None
-                            else None
-                        ),
-                        hop1_count=(
-                            graph_search_result.hop1_count
-                            if graph_search_result is not None
-                            else None
-                        ),
-                        hop2_count=(
-                            graph_search_result.hop2_count
-                            if graph_search_result is not None
-                            else None
-                        ),
-                        hop3_count=(
-                            graph_search_result.hop3_count
-                            if graph_search_result is not None
-                            else None
-                        ),
-                    )
+                    queries=(query,),
+                    lane="graph_relations",
+                    graph_search_result=graph_search_result,
+                    graph_duration_ms=graph_duration_ms,
+                    route_reason_code=route_reason_code,
                 )
                 continue
 
@@ -900,18 +1118,26 @@ def _initial_messages(
     budget: ChatAgentBudget,
     *,
     adaptive: bool = False,
+    keyword_ready: bool = False,
 ) -> list[ChatModelMessage]:
     adaptive_instruction = (
         " This ChatRun exposes the first-class search_graph_relations tool up "
         "to twice per run: use it when a direct relation between question "
         "entities, an entity alias, a relation chain, or a cross-document "
-        "relation is needed and Simple retrieval alone is not enough. A "
-        "single hop is already a complete path; one-to-three-hop chains are "
-        "supported. Simple retrieval is never a prerequisite for Graph, and "
-        "either tool may be used in any order. search_graph_relations "
+        "relation is needed and semantic or keyword retrieval alone is not "
+        "enough. A single hop is already a complete path; one-to-three-hop "
+        "chains are supported. Semantic retrieval is never a prerequisite for "
+        "Graph, and either tool may be used in any order. search_graph_relations "
         "returns source chunks only; never treat edge facts as answer "
         "evidence. A Graph miss never proves that a relation does not exist."
         if adaptive
+        else ""
+    )
+    keyword_instruction = (
+        " Use keyword_search for proper names, identifiers, exact phrases, "
+        "and abbreviations. The two search channels may be used in any order "
+        "and can complement each other. "
+        if keyword_ready
         else ""
     )
     messages = [
@@ -931,7 +1157,21 @@ def _initial_messages(
             "never happened (for example asking why or when something occurred); when the "
             "evidence does not confirm the presupposed fact, refuse instead of answering as "
             "if it were true. Call exactly one tool per turn; "
-            "never emit multiple or parallel tool calls. Use calculate for arithmetic. "
+            "never emit multiple or parallel tool calls. "
+            "Judge the question shape and choose a channel: semantic_search for "
+            "concepts, definitions, and paraphrases; "
+            + (
+                "keyword_search for proper names, identifiers, exact phrases, "
+                "and abbreviations; "
+                if keyword_ready
+                else ""
+            )
+            + "read_chunk_context to read the adjacent ±1 chunk when a hit is "
+            "incomplete (the anchor must already be an issued EvidenceRef); "
+            "list_documents to inventory the knowledge base or locate a document "
+            "(its results are metadata, not evidence, and cannot be cited). "
+            "Prefer multiple queries in one call to reduce rounds. "
+            "Use calculate for arithmetic. "
             "Finish only with submit_answer. You may submit an answered, partial, or refused "
             "result as soon as further tool use would not improve it. "
             "Put EvidenceRefs only in each claim's evidence_refs field; never repeat internal "
@@ -951,6 +1191,7 @@ def _initial_messages(
             f"{budget.max_evidence_items} retained evidence items. Stop searching and submit "
             "as soon as the gathered evidence can support an answer; when a budget notice "
             "arrives, submit immediately with the evidence already gathered."
+            + keyword_instruction
             + adaptive_instruction,
         ),
     ]
@@ -967,6 +1208,7 @@ def _initial_messages(
 
 def _tools(
     *,
+    keyword_ready: bool = False,
     adaptive: bool = False,
     graph_ready: bool = False,
     graph_calls_remaining: int = 0,
@@ -977,22 +1219,60 @@ def _tools(
             "items": {"type": "string", "minLength": 1, "maxLength": _QUERY_MAX_CHARS},
             "minItems": 1,
             "maxItems": _SIMPLE_QUERY_MAX_COUNT,
-        }
+        },
+        "top_k": {"type": "integer", "minimum": 1},
     }
-    search_required = ["queries"]
-    search_description = (
-        "Search the frozen ChatRun knowledge-base scope with one to three "
-        "queries. Not a prerequisite for search_graph_relations."
-        if adaptive
-        else "Search only the frozen ChatRun knowledge-base scope with one to three queries."
-    )
-    search = ChatToolDefinition(
-        "search_knowledge_base",
-        search_description,
+    semantic = ChatToolDefinition(
+        "semantic_search",
+        "Dense retrieval for concepts, definitions, and paraphrases. "
+        "A miss never proves that a document does not mention something. "
+        "Not a prerequisite for search_graph_relations.",
         {
             "type": "object",
             "properties": search_properties,
-            "required": search_required,
+            "required": ["queries"],
+            "additionalProperties": False,
+        },
+    )
+    keyword = ChatToolDefinition(
+        "keyword_search",
+        "Lexical retrieval for proper names, identifiers, exact phrases, "
+        "and abbreviations. A miss never proves absence.",
+        {
+            "type": "object",
+            "properties": search_properties,
+            "required": ["queries"],
+            "additionalProperties": False,
+        },
+    )
+    read_context = ChatToolDefinition(
+        "read_chunk_context",
+        "Read the adjacent ±1 chunk of an already issued EvidenceRef when "
+        "the hit is incomplete. Anchors must be issued text or table refs, "
+        "not previous neighbors.",
+        {
+            "type": "object",
+            "properties": {
+                "evidence_refs": {
+                    "type": "array",
+                    "items": {"type": "string", "minLength": 1},
+                    "minItems": 1,
+                    "maxItems": 2,
+                    "uniqueItems": True,
+                }
+            },
+            "required": ["evidence_refs"],
+            "additionalProperties": False,
+        },
+    )
+    list_documents = ChatToolDefinition(
+        "list_documents",
+        "Inventory serving documents (display name, version, chunk count, "
+        "optional outline). Results are metadata, not evidence, and cannot "
+        "be cited.",
+        {
+            "type": "object",
+            "properties": {"include_outline": {"type": "boolean"}},
             "additionalProperties": False,
         },
     )
@@ -1068,9 +1348,14 @@ def _tools(
             "additionalProperties": False,
         },
     )
+    tools: list[ChatToolDefinition] = [semantic]
+    if keyword_ready:
+        tools.append(keyword)
+    tools.extend((read_context, list_documents))
     if adaptive and graph_ready and graph_calls_remaining > 0:
-        return search, graph, calculate, submit
-    return search, calculate, submit
+        tools.append(graph)
+    tools.extend((calculate, submit))
+    return tuple(tools)
 
 
 def _tool_by_name(
@@ -1083,10 +1368,16 @@ def _tool_by_name(
     raise RuntimeError(f"missing chat tool: {name}")
 
 
-def _search_arguments(
+def _search_queries_arguments(
     value: Mapping[str, Any],
-) -> tuple[str, ...] | None:
-    if not isinstance(value, Mapping) or set(value) != {"queries"}:
+    *,
+    max_top_k: int,
+) -> tuple[tuple[str, ...], int | None] | None:
+    if (
+        not isinstance(value, Mapping)
+        or "queries" not in value
+        or not set(value) <= {"queries", "top_k"}
+    ):
         return None
     raw = value.get("queries")
     if not isinstance(raw, (list, tuple)) or not 1 <= len(raw) <= _SIMPLE_QUERY_MAX_COUNT:
@@ -1096,7 +1387,37 @@ def _search_arguments(
         not item or len(item) > _QUERY_MAX_CHARS for item in queries
     ):
         return None
-    return queries
+    if "top_k" not in value:
+        return queries, None
+    top_k = value.get("top_k")
+    if (
+        isinstance(top_k, bool)
+        or not isinstance(top_k, int)
+        or not 1 <= top_k <= max_top_k
+    ):
+        return None
+    return queries, top_k
+
+
+def _read_context_arguments(value: Mapping[str, Any]) -> tuple[str, ...] | None:
+    if not isinstance(value, Mapping) or set(value) != {"evidence_refs"}:
+        return None
+    return _strings(
+        value.get("evidence_refs"),
+        maximum=2,
+        require_nonempty=True,
+    )
+
+
+def _list_documents_arguments(value: Mapping[str, Any]) -> bool | None:
+    if not isinstance(value, Mapping) or not set(value) <= {"include_outline"}:
+        return None
+    if "include_outline" not in value:
+        return False
+    include_outline = value.get("include_outline")
+    if not isinstance(include_outline, bool):
+        return None
+    return include_outline
 
 
 def _graph_arguments(
@@ -1220,13 +1541,16 @@ def _query_candidates(
     packs: Sequence[EvidencePack],
     *,
     eligibility: EvidenceEligibilityPolicy,
+    admit_all: bool = False,
 ) -> tuple[tuple[Evidence, ...], ...]:
     groups: list[tuple[Evidence, ...]] = []
     for pack in packs:
         selected: list[Evidence] = []
         selected_ids: set[object] = set()
         for item in pack.evidence:
-            if item.index_chunk_id in selected_ids or not eligibility.usable(item):
+            if item.index_chunk_id in selected_ids:
+                continue
+            if not admit_all and not eligibility.usable(item):
                 continue
             selected_ids.add(item.index_chunk_id)
             selected.append(item)
@@ -1246,6 +1570,7 @@ def _search_result(
     new_evidence_count: int | None = None,
     accepted_new_evidence_count: int | None = None,
     skipped_query_count: int = 0,
+    item_extras: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> tuple[str, tuple[str, ...]]:
     observed_refs = set(sent_content_refs)
     newly_sent_refs: list[str] = []
@@ -1267,12 +1592,17 @@ def _search_result(
                 and prompt.graph_anchor_index_chunk_id is not None
                 else {}
             )
+            extras = dict(item_extras.get(ref, {})) if item_extras else {}
+            extras = {
+                key: value for key, value in extras.items() if value is not None
+            }
             if ref in observed_refs:
                 items.append(
                     {
                         "evidence_ref": ref,
                         "content_already_provided": True,
                         **graph_metadata,
+                        **extras,
                     }
                 )
                 continue
@@ -1289,6 +1619,7 @@ def _search_result(
                     "content": prompt.excerpt,
                     "visual_attached": ref in loaded_visual_refs,
                     **graph_metadata,
+                    **extras,
                 }
             )
         result_groups.append({"query": query, "results": items})
@@ -1522,8 +1853,11 @@ def _final_state(
         model_rounds=rounds,
         retrieval_queries=retrieval_calls,
         retrieval_tool_calls=progress.retrieval_tool_calls,
-        simple_tool_calls=progress.simple_tool_calls,
+        semantic_tool_calls=progress.semantic_tool_calls,
+        keyword_tool_calls=progress.keyword_tool_calls,
         graph_tool_calls=progress.graph_tool_calls,
+        chunk_context_calls=progress.chunk_context_calls,
+        document_list_calls=progress.document_list_calls,
         calculation_calls=calculation_calls,
         evidence_ref_count=len(prompt_by_ref),
     )
@@ -1537,8 +1871,11 @@ def _final_state(
         model_rounds=rounds,
         retrieval_calls=retrieval_calls,
         retrieval_tool_calls=progress.retrieval_tool_calls,
-        simple_tool_calls=progress.simple_tool_calls,
+        semantic_tool_calls=progress.semantic_tool_calls,
+        keyword_tool_calls=progress.keyword_tool_calls,
         graph_tool_calls=progress.graph_tool_calls,
+        chunk_context_calls=progress.chunk_context_calls,
+        document_list_calls=progress.document_list_calls,
         calculation_calls=calculation_calls,
         evidence_ref_count=len(prompt_by_ref),
         consecutive_no_new_evidence=progress.consecutive_no_new_evidence,
@@ -1576,8 +1913,11 @@ def _trace_usage(
     model_rounds: int,
     retrieval_queries: int,
     retrieval_tool_calls: int,
-    simple_tool_calls: int,
+    semantic_tool_calls: int,
+    keyword_tool_calls: int,
     graph_tool_calls: int,
+    chunk_context_calls: int,
+    document_list_calls: int,
     calculation_calls: int,
     evidence_ref_count: int,
 ) -> dict[str, int]:
@@ -1590,8 +1930,11 @@ def _trace_usage(
         "retrieval_calls": retrieval_queries,
         "retrieval_queries": retrieval_queries,
         "retrieval_tool_calls": retrieval_tool_calls,
-        "simple_tool_calls": simple_tool_calls,
+        "semantic_tool_calls": semantic_tool_calls,
+        "keyword_tool_calls": keyword_tool_calls,
         "graph_tool_calls": graph_tool_calls,
+        "chunk_context_calls": chunk_context_calls,
+        "document_list_calls": document_list_calls,
         "calculation_calls": calculation_calls,
         "evidence_refs": evidence_ref_count,
         **totals,
@@ -1665,10 +2008,7 @@ def _normalized_unanswered(
 def _rejected_event(call: ChatToolCall, tool: str | None = None) -> ChatAgentTraceEvent:
     resolved_tool = tool or call.name
     return ChatAgentTraceEvent(
-        tool=resolved_tool
-        if resolved_tool
-        in {"search_knowledge_base", "search_graph_relations", "calculate", "submit_answer", "protocol"}
-        else "protocol",
+        tool=resolved_tool if resolved_tool in CHAT_AGENT_EVENT_TOOLS else "protocol",
         status="rejected",
         tool_call_id=call.id,
     )
@@ -1724,7 +2064,7 @@ def _budget_from_context(
         max_graph_calls = raw["max_graph_calls"]
         if (
             set(value) != {"version", "budget"}
-            or value.get("version") != "native_tool_calling_agent_v3"
+            or value.get("version") not in CHAT_AGENT_ACCEPTED_VERSIONS
             or not isinstance(raw, Mapping)
             or not {"max_model_rounds", "max_graph_calls"}.issubset(raw)
             or not set(raw).issubset(

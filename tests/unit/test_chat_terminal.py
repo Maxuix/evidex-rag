@@ -137,7 +137,7 @@ class ChatTerminalServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIsNone(repository.success.agent_trace)
 
-    async def test_success_persists_current_agent_trace_v3(self) -> None:
+    async def test_success_persists_current_agent_trace_v4(self) -> None:
         observed = datetime(2026, 7, 15, 8, 0, tzinfo=UTC)
         state = replace(
             _completed_state(observed),
@@ -159,7 +159,7 @@ class ChatTerminalServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             repository.success.agent_trace["version"],
-            "native_tool_calling_agent_v3",
+            "native_tool_calling_agent_v4",
         )
         self.assertEqual(
             repository.success.agent_trace["budget"],

@@ -705,6 +705,7 @@ class AgentComplexEvaluationToolTests(unittest.TestCase):
             "native_tool_calling_agent_v1",
             "native_tool_calling_agent_v2",
             "native_tool_calling_agent_v3",
+            "native_tool_calling_agent_v4",
         ):
             with self.subTest(version=version):
                 score = score_complex_case(

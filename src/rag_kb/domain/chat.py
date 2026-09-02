@@ -7,6 +7,8 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
+from rag_kb.domain.chat_agent import CHAT_AGENT_VERSION, ChatAgentBudget
+
 
 class ChatSessionBusyError(RuntimeError):
     """A Session already owns a queued or running ChatRun."""
@@ -96,8 +98,8 @@ class ChatRun:
     contextualized_query: dict[str, Any] | None = None
     agent_configuration: dict[str, Any] = field(
         default_factory=lambda: {
-            "version": "native_tool_calling_agent_v3",
-            "budget": {"max_model_rounds": 8, "max_graph_calls": 2},
+            "version": CHAT_AGENT_VERSION,
+            "budget": ChatAgentBudget().as_dict(),
         }
     )
     agent_trace: dict[str, Any] | None = None

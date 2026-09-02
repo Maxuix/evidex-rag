@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from rag_kb.domain import (
+    CHAT_AGENT_VERSION,
+    ChatAgentBudget,
     ChatMessage,
     ChatRun,
     ChatSession,
@@ -304,6 +306,10 @@ class ChatService:
                 conversation_context=serialize_conversation_context(
                     conversation_context
                 ),
+                agent_configuration={
+                    "version": CHAT_AGENT_VERSION,
+                    "budget": ChatAgentBudget().as_dict(),
+                },
             )
 
         return await execute_in_transaction(self._unit_of_work, persist)

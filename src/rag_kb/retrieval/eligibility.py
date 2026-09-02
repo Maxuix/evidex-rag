@@ -29,6 +29,8 @@ class EvidenceEligibilityPolicy:
             return False
         if item.score_kind is EvidenceScoreKind.ADJACENCY:
             return False
+        if item.score_kind is EvidenceScoreKind.LEXICAL:
+            return item.lexical_rank is not None
         if item.score_kind is EvidenceScoreKind.GRAPH_PATH:
             return (
                 item.graph_path_id is not None

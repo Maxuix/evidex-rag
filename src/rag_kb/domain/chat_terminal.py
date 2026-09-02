@@ -11,6 +11,7 @@ from typing import Any
 from uuid import UUID
 
 from rag_kb.domain.answering import ChatModelCallRecord, RenderedAnswer
+from rag_kb.domain.chat_agent import CHAT_AGENT_ACCEPTED_VERSIONS
 from rag_kb.domain.chat_pipeline import ChatPipelinePhase, ChatRunLease
 from rag_kb.domain.errors import ErrorCode
 from rag_kb.domain.composite import VisualEvidenceDecision
@@ -53,7 +54,7 @@ class ChatTerminalSuccessCommand:
         )
         if self.agent_trace is not None:
             if (
-                self.agent_trace.get("version") != "native_tool_calling_agent_v3"
+                self.agent_trace.get("version") not in CHAT_AGENT_ACCEPTED_VERSIONS
                 or not isinstance(self.agent_trace.get("events"), (list, tuple))
                 or len(self.agent_trace["events"]) > 32
             ):
@@ -91,7 +92,7 @@ class ChatFailureSettlementCommand:
         object.__setattr__(self, "diagnostic", MappingProxyType(dict(self.diagnostic)))
         if self.agent_trace is not None:
             if (
-                self.agent_trace.get("version") != "native_tool_calling_agent_v3"
+                self.agent_trace.get("version") not in CHAT_AGENT_ACCEPTED_VERSIONS
                 or self.agent_trace.get("outcome") is not None
                 or not isinstance(self.agent_trace.get("events"), (list, tuple))
                 or len(self.agent_trace["events"]) > 32

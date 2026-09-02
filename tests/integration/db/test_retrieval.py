@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import unittest
 from dataclasses import dataclass, replace
@@ -23,6 +24,7 @@ from rag_kb.domain import (
     RetrievalRequest,
     RerankMode,
     RetrievalStrategy,
+    SERVING_DOCUMENT_LIST_LIMIT,
 )
 from rag_kb.document_processing.lexical import (
     LEXICAL_ANALYZER_VERSION,
@@ -242,6 +244,7 @@ class ExactRetrievalDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 item.score_kind is EvidenceScoreKind.ADJACENCY
                 and item.score == 0.0
                 and item.modality == "table"
+                and item.matched_representations == ("table_text",)
                 for item in evidence
             )
         )
@@ -368,6 +371,126 @@ class ExactRetrievalDatabaseTests(unittest.IsolatedAsyncioTestCase):
             failure.exception.diagnostic,
             {"check": "lexical_manifest_coverage"},
         )
+
+    async def test_lexical_only_hits_and_skips_excluded_chunks(self) -> None:
+        foundation = await self._foundation()
+        kept = await self._target(
+            foundation,
+            chunk_id=UUID("01900000-0000-7000-8000-000000001123"),
+            vector=_axis_vector(0),
+        )
+        excluded = await self._target(
+            foundation,
+            chunk_id=UUID("01900000-0000-7000-8000-000000001124"),
+            vector=_axis_vector(1),
+        )
+        await self._lexical_target(foundation, kept)
+        await self._lexical_target(foundation, excluded)
+        await self.documents.exclude_chunk(
+            document_id=excluded.document_id,
+            chunk_id=excluded.chunk_id,
+        )
+        service = RetrievalService(
+            WORKSPACE,
+            self.provider,
+            self.vector_store,
+            lexical_store=PgLexicalStore(self.database.sessions),
+            hybrid_enabled=True,
+        )
+
+        pack = await service.retrieve_lexical_only(
+            RetrievalRequest(
+                foundation.kb_id,
+                "evidence",
+                top_k=3,
+                include_debug=True,
+            ),
+        )
+
+        self.assertEqual(
+            [item.index_chunk_id for item in pack.evidence],
+            [kept.chunk_id],
+        )
+        self.assertIs(pack.evidence[0].score_kind, EvidenceScoreKind.LEXICAL)
+        self.assertEqual(pack.evidence[0].lexical_rank, 1)
+        self.assertIsNone(pack.evidence[0].vector_similarity)
+        assert pack.debug is not None
+        self.assertEqual(pack.debug.lexical_candidate_count, 1)
+
+    async def test_manifest_status_reports_coverage_without_hash(self) -> None:
+        foundation = await self._foundation()
+        complete = await self._target(
+            foundation,
+            chunk_id=UUID("01900000-0000-7000-8000-000000001125"),
+            vector=_axis_vector(0),
+        )
+        missing = await self._target(
+            foundation,
+            chunk_id=UUID("01900000-0000-7000-8000-000000001126"),
+            vector=_axis_vector(1),
+        )
+        await self._lexical_target(foundation, complete)
+        await self._lexical_target(foundation, missing, create_manifest=False)
+        service = RetrievalService(
+            WORKSPACE,
+            self.provider,
+            self.vector_store,
+            lexical_store=PgLexicalStore(self.database.sessions),
+            hybrid_enabled=True,
+        )
+
+        status = await service.lexical_manifest_status(foundation.kb_id)
+
+        self.assertIsNotNone(status)
+        assert status is not None
+        self.assertEqual(status.resolved_active_revision_id, foundation.revision_id)
+        self.assertEqual(status.serving_target_count, 2)
+        self.assertEqual(status.manifested_target_count, 1)
+        self.assertFalse(status.complete)
+
+    async def test_list_serving_documents_counts_outline_and_truncation(
+        self,
+    ) -> None:
+        foundation = await self._foundation()
+        first = await self._target(
+            foundation,
+            chunk_id=UUID("01900000-0000-7000-8000-000000001130"),
+            vector=_axis_vector(0),
+        )
+        await self._set_chunk_hierarchy(
+            first.chunk_id,
+            {
+                "titles": [
+                    {"depth": 1, "text": "Section"},
+                    {"depth": 0, "text": "Root"},
+                    {"depth": 0, "text": "Root"},
+                    {"depth": 0, "text": "Also root"},
+                ]
+            },
+        )
+        listed = await self.service.list_serving_documents(foundation.kb_id)
+        self.assertIsNotNone(listed)
+        assert listed is not None
+        self.assertEqual(listed.resolved_active_revision_id, foundation.revision_id)
+        self.assertFalse(listed.truncated)
+        self.assertEqual(len(listed.entries), 1)
+        outlined = listed.entries[0]
+        self.assertEqual(outlined.document_id, first.document_id)
+        self.assertEqual(outlined.chunk_count, 1)
+        self.assertEqual(outlined.outline, ("Root", "Also root"))
+        self.assertEqual(outlined.version_number, 1)
+
+        for index in range(SERVING_DOCUMENT_LIST_LIMIT):
+            await self._target(
+                foundation,
+                chunk_id=UUID(f"01900000-0000-7000-8000-0000000012{index:02d}"),
+                vector=_axis_vector(index % 8),
+            )
+        truncated = await self.service.list_serving_documents(foundation.kb_id)
+        self.assertIsNotNone(truncated)
+        assert truncated is not None
+        self.assertTrue(truncated.truncated)
+        self.assertEqual(len(truncated.entries), SERVING_DOCUMENT_LIST_LIMIT)
 
     async def test_empty_result_keeps_revision_and_missing_scope_is_not_found(self) -> None:
         foundation = await self._foundation()
@@ -1195,6 +1318,21 @@ class ExactRetrievalDatabaseTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         return observations
+
+    async def _set_chunk_hierarchy(
+        self,
+        chunk_id: UUID,
+        hierarchy: dict,
+    ) -> None:
+        connection = await asyncpg.connect(MIGRATION_DSN)
+        try:
+            await connection.execute(
+                "UPDATE index_chunk SET hierarchy = $1::jsonb WHERE id = $2",
+                json.dumps(hierarchy),
+                chunk_id,
+            )
+        finally:
+            await connection.close()
 
     async def _document_version(
         self,

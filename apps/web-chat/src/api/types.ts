@@ -341,12 +341,12 @@ export interface GraphSchemaProfile {
 
 export interface ChatAgentTraceEvent {
   // "verifier" is retained only for displaying historical runs.
-  tool: "search_knowledge_base" | "search_graph_relations" | "calculate" | "submit_answer" | "verifier" | "protocol";
+  tool: "search_knowledge_base" | "semantic_search" | "keyword_search" | "read_chunk_context" | "list_documents" | "search_graph_relations" | "calculate" | "submit_answer" | "verifier" | "protocol";
   status: "ok" | "rejected" | "salvaged" | "refused";
   tool_call_id: string;
   refs: string[];
   count: number;
-  retrieval_lane?: "simple" | "graph_relations";
+  retrieval_lane?: "simple" | "semantic" | "keyword" | "chunk_context" | "document_list" | "graph_relations";
   route_reason_code?:
     | "direct_relation"
     | "relation_chain"
@@ -374,7 +374,7 @@ export interface ChatAgentTraceEvent {
 }
 
 export interface ChatAgent {
-  version: "native_tool_calling_agent_v3";
+  version: "native_tool_calling_agent_v3" | "native_tool_calling_agent_v4";
   budget: {
     max_model_rounds: number;
     max_graph_calls: number;
@@ -383,7 +383,7 @@ export interface ChatAgent {
     max_retrieval_calls?: number;
   };
   trace: {
-    version: "native_tool_calling_agent_v3";
+    version: "native_tool_calling_agent_v3" | "native_tool_calling_agent_v4";
     events: ChatAgentTraceEvent[];
     budget: ChatAgent["budget"];
     usage: Record<string, number>;

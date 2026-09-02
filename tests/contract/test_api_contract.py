@@ -23,6 +23,7 @@ from apps.api.routers.retrieval import router as retrieval_router
 from rag_kb.document_processing.profiles import DOCLING_TEXT_PARSER_CONFIG
 from rag_kb.domain import (
     AdmissionLimits,
+    ChatAgentBudget,
     ChatCitation,
     ChatMessage,
     ChatProgressActivity,
@@ -926,6 +927,92 @@ class CommonContractTests(unittest.TestCase):
         self.assertNotIn("rejection_reasons", body["trace"]["events"][0])
         self.assertEqual(
             run.agent_trace["events"][0]["rejection_reasons"], ["false_premise"]
+        )
+
+    def test_v4_agent_trace_and_new_tool_lanes_are_accepted(self) -> None:
+        session = _chat_session_value()
+        run = dataclass_replace(
+            _chat_run_value(session),
+            agent_configuration={
+                "version": "native_tool_calling_agent_v4",
+                "budget": ChatAgentBudget().as_dict(),
+            },
+            agent_trace={
+                "version": "native_tool_calling_agent_v4",
+                "events": [
+                    {
+                        "tool": "semantic_search",
+                        "status": "ok",
+                        "tool_call_id": "semantic-1",
+                        "refs": ["ev_1"],
+                        "count": 1,
+                        "retrieval_lane": "semantic",
+                        "route_result_code": "not_requested",
+                    },
+                    {
+                        "tool": "keyword_search",
+                        "status": "ok",
+                        "tool_call_id": "keyword-1",
+                        "refs": [],
+                        "count": 0,
+                        "retrieval_lane": "keyword",
+                        "route_result_code": "not_requested",
+                    },
+                    {
+                        "tool": "read_chunk_context",
+                        "status": "ok",
+                        "tool_call_id": "read-1",
+                        "refs": ["ev_2"],
+                        "count": 1,
+                        "retrieval_lane": "chunk_context",
+                        "route_result_code": "not_requested",
+                    },
+                    {
+                        "tool": "list_documents",
+                        "status": "ok",
+                        "tool_call_id": "list-1",
+                        "refs": [],
+                        "count": 0,
+                        "retrieval_lane": "document_list",
+                        "route_result_code": "not_requested",
+                    },
+                    {
+                        "tool": "search_knowledge_base",
+                        "status": "ok",
+                        "tool_call_id": "legacy-search",
+                        "refs": ["ev_3"],
+                        "count": 1,
+                        "retrieval_lane": "simple",
+                        "route_result_code": "not_requested",
+                    },
+                ],
+                "budget": ChatAgentBudget().as_dict(),
+                "usage": {"model_rounds": 2},
+                "diagnostics": {
+                    "stop_reason": "submitted",
+                    "forced_finalize": False,
+                    "consecutive_no_new_evidence": 0,
+                    "deadline_exceeded": False,
+                },
+                "outcome": "answered",
+            },
+        )
+
+        body = _agent_response(run).model_dump()
+        self.assertEqual(body["version"], "native_tool_calling_agent_v4")
+        self.assertEqual(
+            [event["tool"] for event in body["trace"]["events"]],
+            [
+                "semantic_search",
+                "keyword_search",
+                "read_chunk_context",
+                "list_documents",
+                "search_knowledge_base",
+            ],
+        )
+        self.assertEqual(
+            [event["retrieval_lane"] for event in body["trace"]["events"]],
+            ["semantic", "keyword", "chunk_context", "document_list", "simple"],
         )
 
 
@@ -1986,7 +2073,7 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(created.headers["location"], body["status_url"])
         self.assertEqual(body["status"], "queued")
         self.assertEqual(body["assistant_status"], "generating")
-        self.assertEqual(body["agent"]["version"], "native_tool_calling_agent_v3")
+        self.assertEqual(body["agent"]["version"], "native_tool_calling_agent_v4")
         self.assertEqual(
             body["agent"]["budget"],
             {

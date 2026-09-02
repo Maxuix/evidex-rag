@@ -13,6 +13,7 @@ from sqlalchemy import (
     func,
     or_,
     select,
+    text,
     true,
     values,
 )
@@ -45,6 +46,11 @@ from rag_kb.domain import (
     RetrievalExecutionError,
     RetrievalQueryPlan,
     RetrievalStrategy,
+    SERVING_DOCUMENT_LIST_LIMIT,
+    SERVING_DOCUMENT_OUTLINE_LIMIT,
+    ServingDocumentEntry,
+    ServingDocumentList,
+    ServingScopeQuery,
     VectorSearchHit,
     VectorSearchResult,
     EmbeddingSpaceDefinition,
@@ -129,6 +135,190 @@ class PgVectorStore:
                 if row["index_chunk_id"] is not None
             ),
         )
+
+    async def list_serving_documents(
+        self, query: ServingScopeQuery
+    ) -> ServingDocumentList | None:
+        async with self._sessions() as session:
+            async with session.begin():
+                await session.execute(
+                    text(
+                        "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"
+                    )
+                )
+                active_revision_id = await session.scalar(
+                    text(
+                        "SELECT kb.active_index_revision_id "
+                        "FROM knowledge_base kb "
+                        "JOIN index_revision revision "
+                        " ON revision.id = kb.active_index_revision_id "
+                        " AND revision.kb_id = kb.id "
+                        " AND revision.workspace_id = kb.workspace_id "
+                        " AND revision.status = 'active' "
+                        "WHERE kb.workspace_id = :workspace_id "
+                        " AND kb.id = :kb_id "
+                        " AND kb.deleted_at IS NULL"
+                    ),
+                    {
+                        "workspace_id": query.workspace_id,
+                        "kb_id": query.knowledge_base_id,
+                    },
+                )
+                if active_revision_id is None:
+                    return None
+                rows = (
+                    await session.execute(
+                        text(
+                            "SELECT target.id AS indexed_document_version_id, "
+                            "doc.id AS document_id, "
+                            "version.id AS document_version_id, "
+                            "doc.display_name AS display_name, "
+                            "version.original_filename AS original_filename, "
+                            "version.version_number AS version_number, "
+                            "("
+                            " SELECT COUNT(*)::int FROM index_chunk chunk "
+                            " WHERE chunk.indexed_document_version_id = target.id "
+                            " AND chunk.workspace_id = target.workspace_id "
+                            " AND chunk.kb_id = target.kb_id "
+                            " AND chunk.excluded_at IS NULL"
+                            ") AS chunk_count "
+                            "FROM indexed_document_version target "
+                            "JOIN document doc ON doc.id = target.document_id "
+                            " AND doc.kb_id = target.kb_id "
+                            " AND doc.workspace_id = target.workspace_id "
+                            "JOIN document_version version "
+                            " ON version.id = target.document_version_id "
+                            " AND version.document_id = target.document_id "
+                            " AND version.kb_id = target.kb_id "
+                            " AND version.workspace_id = target.workspace_id "
+                            "WHERE target.workspace_id = :workspace_id "
+                            " AND target.kb_id = :kb_id "
+                            " AND target.index_revision_id = :revision_id "
+                            " AND target.build_status = 'ready' "
+                            " AND target.serving_status = 'serving' "
+                            " AND doc.deleted_at IS NULL "
+                            " AND version.source_status = 'available' "
+                            "ORDER BY doc.id "
+                            "LIMIT :limit"
+                        ),
+                        {
+                            "workspace_id": query.workspace_id,
+                            "kb_id": query.knowledge_base_id,
+                            "revision_id": active_revision_id,
+                            "limit": SERVING_DOCUMENT_LIST_LIMIT + 1,
+                        },
+                    )
+                ).mappings().all()
+                truncated = len(rows) > SERVING_DOCUMENT_LIST_LIMIT
+                selected = rows[:SERVING_DOCUMENT_LIST_LIMIT]
+                outlines = await self._serving_outlines(
+                    session,
+                    tuple(item["indexed_document_version_id"] for item in selected),
+                )
+        return ServingDocumentList(
+            resolved_active_revision_id=active_revision_id,
+            entries=tuple(
+                ServingDocumentEntry(
+                    document_id=item["document_id"],
+                    document_version_id=item["document_version_id"],
+                    indexed_document_version_id=item[
+                        "indexed_document_version_id"
+                    ],
+                    display_name=item["display_name"],
+                    original_filename=item["original_filename"],
+                    version_number=item["version_number"],
+                    chunk_count=item["chunk_count"],
+                    outline=outlines.get(item["indexed_document_version_id"], ()),
+                )
+                for item in selected
+            ),
+            truncated=truncated,
+        )
+
+    @staticmethod
+    async def _serving_outlines(
+        session: AsyncSession,
+        target_ids: tuple,
+    ) -> dict:
+        if not target_ids:
+            return {}
+        rows = (
+            await session.execute(
+                text(
+                    """
+                    WITH titles AS (
+                      SELECT chunk.indexed_document_version_id,
+                             chunk.ordinal,
+                             title_ord,
+                             btrim(title.value->>'text') AS title_text,
+                             COALESCE((title.value->>'depth')::int, 0)
+                               AS title_depth
+                      FROM index_chunk chunk
+                      CROSS JOIN LATERAL jsonb_array_elements(
+                        CASE
+                          WHEN jsonb_typeof(chunk.hierarchy->'titles') = 'array'
+                          THEN chunk.hierarchy->'titles'
+                          ELSE '[]'::jsonb
+                        END
+                      ) WITH ORDINALITY AS title(value, title_ord)
+                      WHERE chunk.indexed_document_version_id IN :target_ids
+                        AND chunk.excluded_at IS NULL
+                        AND jsonb_typeof(title.value) = 'object'
+                        AND char_length(
+                          btrim(COALESCE(title.value->>'text', ''))
+                        ) BETWEEN 1 AND 256
+                    ),
+                    min_depth AS (
+                      SELECT indexed_document_version_id,
+                             MIN(title_depth) AS min_depth
+                      FROM titles
+                      GROUP BY indexed_document_version_id
+                    ),
+                    first_seen AS (
+                      SELECT DISTINCT ON (
+                        titles.indexed_document_version_id, titles.title_text
+                      )
+                        titles.indexed_document_version_id,
+                        titles.title_text,
+                        titles.ordinal,
+                        titles.title_ord
+                      FROM titles
+                      JOIN min_depth
+                        ON min_depth.indexed_document_version_id
+                         = titles.indexed_document_version_id
+                       AND titles.title_depth = min_depth.min_depth
+                      ORDER BY titles.indexed_document_version_id,
+                               titles.title_text,
+                               titles.ordinal,
+                               titles.title_ord
+                    ),
+                    ranked AS (
+                      SELECT indexed_document_version_id,
+                             title_text,
+                             ROW_NUMBER() OVER (
+                               PARTITION BY indexed_document_version_id
+                               ORDER BY ordinal, title_ord, title_text
+                             ) AS title_rank
+                      FROM first_seen
+                    )
+                    SELECT indexed_document_version_id, title_text
+                    FROM ranked
+                    WHERE title_rank <= :outline_limit
+                    ORDER BY indexed_document_version_id, title_rank
+                    """
+                ).bindparams(bindparam("target_ids", expanding=True)),
+                {
+                    "target_ids": list(target_ids),
+                    "outline_limit": SERVING_DOCUMENT_OUTLINE_LIMIT,
+                },
+            )
+        ).mappings().all()
+        outlines: dict = {}
+        for row in rows:
+            outlines.setdefault(row["indexed_document_version_id"], []).append(
+                row["title_text"]
+            )
+        return {key: tuple(values) for key, values in outlines.items()}
 
     async def resolve_space(
         self,
