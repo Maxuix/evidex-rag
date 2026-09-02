@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import math
 from collections.abc import Awaitable, Callable
 
 import httpx
@@ -19,6 +20,7 @@ from rag_kb.domain import (
     IndexingExecutionError,
     IndexingPhase,
     MAX_EMBEDDING_DIMENSION,
+    MAX_EMBEDDING_INPUT_UTF8_BYTES,
     MIN_EMBEDDING_DIMENSION,
     normalize_embedding_vector,
 )
@@ -91,9 +93,14 @@ class LangChainEmbeddingModelAdapter:
     async def embed_documents(self, texts: tuple[str, ...]) -> EmbeddingBatch:
         if not texts or len(texts) > self._max_batch_size:
             raise ValueError("embedding batch size is outside the configured bound")
-        vectors = await self._embed_document_vectors(texts, offset=0)
+        windows_by_input = tuple(_utf8_windows(text) for text in texts)
+        flattened = tuple(window for windows in windows_by_input for window in windows)
+        vectors: list[object] = []
+        for offset in range(0, len(flattened), self._max_batch_size):
+            batch = flattened[offset : offset + self._max_batch_size]
+            vectors.extend(await self._embed_document_vectors(batch, offset=offset))
         normalized: list[tuple[float, ...]] = []
-        for index, (text, vector) in enumerate(zip(texts, vectors, strict=True)):
+        for index, (text, vector) in enumerate(zip(flattened, vectors, strict=True)):
             try:
                 normalized.append(
                     _numeric_vector(
@@ -109,7 +116,18 @@ class LangChainEmbeddingModelAdapter:
                     text=text,
                     input_index=index,
                 ) from error
-        return EmbeddingBatch(vectors=tuple(normalized))
+        collapsed: list[tuple[float, ...]] = []
+        vector_offset = 0
+        for windows in windows_by_input:
+            window_vectors = normalized[vector_offset : vector_offset + len(windows)]
+            vector_offset += len(windows)
+            collapsed.append(
+                _pool_vectors(
+                    window_vectors,
+                    tuple(len(window.encode("utf-8")) for window in windows),
+                )
+            )
+        return EmbeddingBatch(vectors=tuple(collapsed))
 
     async def _embed_document_vectors(
         self,
@@ -173,12 +191,23 @@ class LangChainEmbeddingModelAdapter:
     async def embed_query(self, text: str) -> tuple[float, ...]:
         if not text:
             raise ValueError("embedding query must not be empty")
-        vector = await self._invoke(lambda model: model.aembed_query(text))
-        return _numeric_vector(
-            vector,
-            check="query_vector",
-            dimension=self._embedding_space.dimension,
-            normalization=self._embedding_space.normalization,
+        windows = _utf8_windows(text)
+        vectors: list[tuple[float, ...]] = []
+        for window in windows:
+            raw_vector = await self._invoke(
+                lambda model, value=window: model.aembed_query(value)
+            )
+            vectors.append(
+                _numeric_vector(
+                    raw_vector,
+                    check="query_vector",
+                    dimension=self._embedding_space.dimension,
+                    normalization=self._embedding_space.normalization,
+                )
+            )
+        return _pool_vectors(
+            vectors,
+            tuple(len(window.encode("utf-8")) for window in windows),
         )
 
     async def _invoke(
@@ -309,6 +338,46 @@ def _numeric_vector(
             phase=IndexingPhase.EMBEDDING,
             diagnostic=diagnostic,
         ) from error
+
+
+def _utf8_windows(text: str) -> tuple[str, ...]:
+    if len(text.encode("utf-8")) <= MAX_EMBEDDING_INPUT_UTF8_BYTES:
+        return (text,)
+    windows: list[str] = []
+    current: list[str] = []
+    current_bytes = 0
+    for character in text:
+        character_bytes = len(character.encode("utf-8"))
+        if current and current_bytes + character_bytes > MAX_EMBEDDING_INPUT_UTF8_BYTES:
+            windows.append("".join(current))
+            current = []
+            current_bytes = 0
+        current.append(character)
+        current_bytes += character_bytes
+    if current:
+        windows.append("".join(current))
+    return tuple(windows)
+
+
+def _pool_vectors(
+    vectors: list[tuple[float, ...]] | tuple[tuple[float, ...], ...],
+    weights: tuple[int, ...],
+) -> tuple[float, ...]:
+    if len(vectors) == 1:
+        return vectors[0]
+    total_weight = sum(weights)
+    pooled = tuple(
+        math.fsum(
+            vector[index] * weight
+            for vector, weight in zip(vectors, weights, strict=True)
+        )
+        / total_weight
+        for index in range(len(vectors[0]))
+    )
+    norm = math.sqrt(math.fsum(value * value for value in pooled))
+    if not math.isfinite(norm) or norm <= 1e-12:
+        raise _invalid_response("document_vector_window_pooling")
+    return tuple(value / norm for value in pooled)
 
 
 async def probe_openai_embedding_dimension(

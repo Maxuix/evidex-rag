@@ -15,6 +15,8 @@ from rag_kb.domain import (
     EmbeddingInputCapability,
     EmbeddingValidationSnapshot,
     MAX_EMBEDDING_DIMENSION,
+    TEXT_DOCUMENT_TRANSFORMATION_VERSION,
+    TEXT_QUERY_TRANSFORMATION_VERSION,
     MIN_EMBEDDING_DIMENSION,
     ModelKind,
     ModelProfileBundle,
@@ -601,11 +603,13 @@ def embedding_compatibility_fingerprint(
             "distance_metric": snapshot.distance_metric,
             "vector_data_type": snapshot.vector_data_type,
             "normalization": snapshot.normalization,
-            "text_document_transformation_version": "document_text_v1",
+            "text_document_transformation_version": (
+                TEXT_DOCUMENT_TRANSFORMATION_VERSION
+            ),
             "text_query_transformation_version": (
                 "tongyi_query_prefix_v1"
                 if bundle.profile.kind is ModelKind.MULTIMODAL_EMBEDDING
-                else "query_text_v1"
+                else TEXT_QUERY_TRANSFORMATION_VERSION
             ),
             "image_preprocessing_version": image_preprocessing_version,
         }

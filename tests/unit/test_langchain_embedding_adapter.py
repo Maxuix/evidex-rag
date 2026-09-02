@@ -11,6 +11,7 @@ from langchain_openai import OpenAIEmbeddings
 
 from rag_kb.adapters.model_api.langchain_embeddings import (
     LangChainEmbeddingModelAdapter,
+    _utf8_windows,
 )
 from rag_kb.domain import (
     EmbeddingSpaceDefinition,
@@ -453,6 +454,50 @@ class LangChainEmbeddingAdapterTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(documents.vectors, ((0.6, 0.8),))
         self.assertEqual(query, (0.0, 1.0))
+
+    async def test_long_document_is_windowed_and_length_weighted(self) -> None:
+        class _WindowEmbeddings(_FakeEmbeddings):
+            async def aembed_documents(self, texts: list[str]) -> object:
+                self.document_calls.append(texts)
+                return [
+                    [1.0, 0.0] if text.startswith("a") else [0.0, 1.0]
+                    for text in texts
+                ]
+
+        model = _WindowEmbeddings()
+        document = "a" * 2048 + "b" * 2048
+        result = await _adapter(model).embed_documents((document,))
+
+        self.assertEqual(
+            [len(value.encode("utf-8")) for value in model.document_calls[0]],
+            [2048, 2048],
+        )
+        self.assertAlmostEqual(result.vectors[0][0], 2**-0.5)
+        self.assertAlmostEqual(result.vectors[0][1], 2**-0.5)
+
+    async def test_long_query_uses_the_same_safe_utf8_windows(self) -> None:
+        class _WindowEmbeddings(_FakeEmbeddings):
+            async def aembed_query(self, text: str) -> object:
+                self.query_calls.append(text)
+                return [1.0, 0.0] if text.startswith("a") else [0.0, 1.0]
+
+        model = _WindowEmbeddings()
+        query = "a" * 2048 + "b" * 2048
+        result = await _adapter(model).embed_query(query)
+
+        self.assertEqual([len(value) for value in model.query_calls], [2048, 2048])
+        self.assertAlmostEqual(result[0], 2**-0.5)
+        self.assertAlmostEqual(result[1], 2**-0.5)
+
+    def test_utf8_windows_never_split_or_drop_multibyte_characters(self) -> None:
+        text = "合同条款" * 1000
+        windows = _utf8_windows(text)
+
+        self.assertEqual("".join(windows), text)
+        self.assertGreater(len(windows), 1)
+        self.assertTrue(
+            all(len(window.encode("utf-8")) <= 2048 for window in windows)
+        )
 
     async def test_timeout_and_status_errors_are_stable_and_content_safe(self) -> None:
         with (

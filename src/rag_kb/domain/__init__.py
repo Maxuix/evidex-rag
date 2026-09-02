@@ -195,7 +195,10 @@ from rag_kb.domain.memory import (
 from rag_kb.domain.model_settings import (
     EMBEDDING_VALIDATION_SCHEMA_VERSION,
     MAX_EMBEDDING_DIMENSION,
+    MAX_EMBEDDING_INPUT_UTF8_BYTES,
     MIN_EMBEDDING_DIMENSION,
+    TEXT_DOCUMENT_TRANSFORMATION_VERSION,
+    TEXT_QUERY_TRANSFORMATION_VERSION,
     EmbeddingDimensionRequestMode,
     EmbeddingDimensionSelectionSource,
     EmbeddingInputCapability,

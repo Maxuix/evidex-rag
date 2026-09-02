@@ -47,6 +47,9 @@ class ModelSecretReconciliationResult:
 MIN_EMBEDDING_DIMENSION = 64
 MAX_EMBEDDING_DIMENSION = 4096
 EMBEDDING_VALIDATION_SCHEMA_VERSION = "embedding_validation_v1"
+MAX_EMBEDDING_INPUT_UTF8_BYTES = 2048
+TEXT_DOCUMENT_TRANSFORMATION_VERSION = "document_text_utf8_window_2048_v1"
+TEXT_QUERY_TRANSFORMATION_VERSION = "query_text_utf8_window_2048_v1"
 
 
 class EmbeddingDimensionRequestMode(StrEnum):
