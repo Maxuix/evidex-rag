@@ -120,7 +120,7 @@ class ChatEvidenceRetriever:
         top_k_override: int | None = None,
     ) -> EvidencePack:
         try:
-            strategy, top_k, rerank_mode, execution_type = parse_chat_retrieval_snapshot(
+            _strategy, top_k, rerank_mode, execution_type = parse_chat_retrieval_snapshot(
                 context.retrieval_strategy,
             )
             if top_k_override is not None:
@@ -140,9 +140,7 @@ class ChatEvidenceRetriever:
                     knowledge_base_id=context.knowledge_base_id,
                     query=query,
                     top_k=top_k,
-                    strategy=RetrievalStrategy.EXACT_VECTOR
-                    if execution_type == "adaptive_graphiti"
-                    else strategy,
+                    strategy=RetrievalStrategy.EXACT_VECTOR,
                     rerank_mode=rerank_mode,
                     include_debug=True,
                 )

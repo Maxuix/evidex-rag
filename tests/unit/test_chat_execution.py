@@ -26,8 +26,11 @@ from rag_kb.domain import (
     ServingDocumentList,
 )
 from rag_kb.services.chat_execution import ChatEvidenceRetriever
-from rag_kb.retrieval.profile import exact_profile
-from rag_kb.retrieval.profile import adaptive_graphiti_profile
+from rag_kb.retrieval.profile import (
+    HYBRID_PROFILE_VERSION,
+    adaptive_graphiti_profile,
+    exact_profile,
+)
 
 
 def _context() -> ChatExecutionContext:
@@ -230,6 +233,39 @@ class ChatExecutionServiceTests(unittest.IsolatedAsyncioTestCase):
             retrieval.graph_call["rerank_mode"],
             RerankMode.NONE,
         )
+
+    async def test_hybrid_snapshot_semantic_search_uses_exact_vector(self) -> None:
+        context = replace(
+            _context(),
+            retrieval_strategy={
+                "profile_version": HYBRID_PROFILE_VERSION,
+                "strategy": RetrievalStrategy.HYBRID.value,
+                "top_k": 7,
+                "rerank_mode": RerankMode.CLASSIC.value,
+            },
+        )
+        captured = {}
+
+        class Retrieval:
+            async def retrieve(self, request):
+                captured["request"] = request
+                return EvidencePack(
+                    knowledge_base_id=request.knowledge_base_id,
+                    index_revision_id=context.index_revision_id,
+                    strategy=request.strategy,
+                )
+
+        result = await ChatEvidenceRetriever(Retrieval()).semantic_search(  # type: ignore[arg-type]
+            context,
+            "conceptual query",
+            top_k_override=5,
+        )
+
+        request = captured["request"]
+        self.assertIs(request.strategy, RetrievalStrategy.EXACT_VECTOR)
+        self.assertEqual(request.top_k, 5)
+        self.assertIs(request.rerank_mode, RerankMode.CLASSIC)
+        self.assertIs(result.strategy, RetrievalStrategy.EXACT_VECTOR)
 
     async def test_retrieval_fails_closed_when_active_revision_moved(self) -> None:
         context = _context()
@@ -633,4 +669,3 @@ class ChatExecutionServiceTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
