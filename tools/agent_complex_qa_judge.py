@@ -16,6 +16,7 @@ from pypdf import PdfReader
 from rag_kb.adapters.model_api.langchain_chat import LangChainChatModelAdapter
 from rag_kb.adapters.model_secrets.local import LocalModelSecretStore
 from rag_kb.config import load_settings
+from rag_kb.config.settings import ChatProviderSettings
 from rag_kb.db import DatabaseProcess, DatabaseResources, create_database_resources
 from rag_kb.domain import (
     ChatModelMessage,
@@ -199,6 +200,9 @@ async def load_frozen_judge_runtime(
             max_tokens=max_output_tokens,
             thinking_enabled=reasoning_effort != "off",
             reasoning_effort=reasoning_effort,
+            max_visual_images=ChatProviderSettings.max_visual_images,
+            max_visual_image_bytes=ChatProviderSettings.max_visual_image_bytes,
+            max_visual_total_bytes=ChatProviderSettings.max_visual_total_bytes,
         )
         return FrozenJudgeRuntime(
             model=model,

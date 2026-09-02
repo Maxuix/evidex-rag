@@ -58,6 +58,7 @@ from rag_kb.domain import (
     Evidence,
     EvidenceEnvelope,
     EvidencePack,
+    EvidenceScoreKind,
     ErrorCode,
     PromptEvidence,
     RetrievalStrategy,
@@ -741,7 +742,16 @@ class NativeToolCallingAgent:
 
             if call.name == "read_chunk_context":
                 refs = _read_context_arguments(call.arguments)
-                if refs is None or any(ref not in evidence_by_ref for ref in refs):
+                anchors = (
+                    _read_context_anchors(
+                        refs,
+                        evidence_by_ref,
+                        index_revision_id=context.index_revision_id,
+                    )
+                    if refs is not None
+                    else None
+                )
+                if refs is None or anchors is None:
                     events.append(_rejected_event(call))
                     messages.append(
                         ChatModelMessage("tool", _ARGUMENT_ERROR, tool_call_id=call.id)
@@ -753,7 +763,6 @@ class NativeToolCallingAgent:
                 progress.retrieval_queries = retrieval_calls
                 progress.retrieval_tool_calls = retrieval_tool_calls
                 progress.chunk_context_calls = chunk_context_calls
-                anchors = tuple(evidence_by_ref[ref] for ref in refs)
                 try:
                     neighbors = await self._retriever.read_chunk_context(
                         context, anchors
@@ -1407,6 +1416,27 @@ def _read_context_arguments(value: Mapping[str, Any]) -> tuple[str, ...] | None:
         maximum=2,
         require_nonempty=True,
     )
+
+
+def _read_context_anchors(
+    refs: tuple[str, ...],
+    evidence_by_ref: Mapping[str, Evidence],
+    *,
+    index_revision_id: UUID,
+) -> tuple[Evidence, ...] | None:
+    if any(ref not in evidence_by_ref for ref in refs):
+        return None
+    anchors = tuple(evidence_by_ref[ref] for ref in refs)
+    if len({item.index_chunk_id for item in anchors}) != len(anchors):
+        return None
+    if any(
+        item.index_revision_id != index_revision_id
+        or item.modality not in {"text", "table"}
+        or item.score_kind is EvidenceScoreKind.ADJACENCY
+        for item in anchors
+    ):
+        return None
+    return anchors
 
 
 def _list_documents_arguments(value: Mapping[str, Any]) -> bool | None:

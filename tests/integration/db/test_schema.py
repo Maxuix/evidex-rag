@@ -621,7 +621,7 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def _restore_current_agent_schema(self, engine) -> None:
-        """Return a historical migration test database to the 0025 head."""
+        """Return a historical migration test database to the current head."""
 
         for module_name in (
             "rag_kb.db.migrations.versions.0022_agent_resource_budget",
@@ -638,8 +638,16 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
         await self._restore_dynamic_identity_schema(engine)
 
     async def _restore_dynamic_identity_schema(self, engine) -> None:
+        """Replay 0025–0027 when a historical test left the shared schema behind."""
+
         identity_migration = importlib.import_module(
             "rag_kb.db.migrations.versions.0025_remove_dynamic_identity"
+        )
+        ownership_migration = importlib.import_module(
+            "rag_kb.db.migrations.versions.0026_simplify_attempt_ownership"
+        )
+        v4_migration = importlib.import_module(
+            "rag_kb.db.migrations.versions.0027_agent_v4_default"
         )
         async with engine.begin() as migration_connection:
             result = await migration_connection.exec_driver_sql(
@@ -652,14 +660,37 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
                 )
                 """
             )
-            if not result.scalar_one():
-                return
-            await migration_connection.exec_driver_sql(
-                "TRUNCATE TABLE workspace CASCADE"
+            if result.scalar_one():
+                await migration_connection.exec_driver_sql(
+                    "TRUNCATE TABLE workspace CASCADE"
+                )
+                await migration_connection.run_sync(
+                    lambda sync_connection: self._invoke_migration(
+                        sync_connection, identity_migration, "upgrade"
+                    )
+                )
+        async with engine.begin() as migration_connection:
+            result = await migration_connection.exec_driver_sql(
+                """
+                SELECT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                     WHERE table_schema = 'public'
+                       AND table_name = 'chat_run'
+                       AND column_name = 'claimed_by'
+                )
+                """
             )
+            if result.scalar_one():
+                await migration_connection.run_sync(
+                    lambda sync_connection: self._invoke_migration(
+                        sync_connection, ownership_migration, "upgrade"
+                    )
+                )
+        # 0024 historical upgrades rewrite the column default back to v3.
+        async with engine.begin() as migration_connection:
             await migration_connection.run_sync(
                 lambda sync_connection: self._invoke_migration(
-                    sync_connection, identity_migration, "upgrade"
+                    sync_connection, v4_migration, "upgrade"
                 )
             )
 

@@ -3337,6 +3337,73 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(trace.semantic_tool_calls, 1)
         self.assertEqual(trace.retrieval_tool_calls, 2)
 
+    async def test_read_chunk_context_rejects_adjacency_anchors(self) -> None:
+        context = _context()
+        pack = _pack(context)
+        anchor = pack.evidence[0]
+        neighbor = Evidence(
+            rank=1,
+            index_chunk_id=uuid4(),
+            indexed_document_version_id=anchor.indexed_document_version_id,
+            document_id=anchor.document_id,
+            document_version_id=anchor.document_version_id,
+            index_revision_id=context.index_revision_id,
+            ordinal=anchor.ordinal + 1,
+            text="continued revenue note",
+            source_location={"page": 2},
+            hierarchy={},
+            source_metadata={},
+            score=0.0,
+            score_kind=EvidenceScoreKind.ADJACENCY,
+            document_display_name="Report",
+            document_original_filename="report.pdf",
+            adjacency_anchor_index_chunk_id=anchor.index_chunk_id,
+            adjacency_offset=1,
+        )
+        retriever = _Retriever(pack, neighbors=(neighbor,))
+        model = _Model(
+            ChatToolCall("search-1", "semantic_search", {"queries": ["revenue"]}),
+            ChatToolCall(
+                "read-1", "read_chunk_context", {"evidence_refs": ["ev_1"]}
+            ),
+            ChatToolCall(
+                "read-2", "read_chunk_context", {"evidence_refs": ["ev_2"]}
+            ),
+            ChatToolCall(
+                "submit-1",
+                "submit_answer",
+                {
+                    "outcome": "answered",
+                    "claims": [
+                        {
+                            "text": "Revenue continues.",
+                            "evidence_refs": ["ev_1", "ev_2"],
+                        }
+                    ],
+                    "unanswered": [],
+                },
+            ),
+        )
+
+        state = await _agent(model, retriever).run(context)
+        rejected = _tool_payload(model.requests[3], "read-2")
+        self.assertEqual(rejected["status"], "error")
+        self.assertEqual(rejected["code"], "invalid_tool_arguments")
+        self.assertEqual(retriever.anchors, (anchor,))
+        self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.ANSWERED)
+        trace = state.artifacts[AGENT_TRACE_ARTIFACT]
+        self.assertEqual(trace.chunk_context_calls, 1)
+        self.assertEqual(
+            [event.tool for event in trace.events],
+            [
+                "semantic_search",
+                "read_chunk_context",
+                "read_chunk_context",
+                "submit_answer",
+            ],
+        )
+        self.assertEqual(trace.events[2].status, "rejected")
+
     async def test_keyword_incompatible_index_is_soft_failure(self) -> None:
         context = _context()
 
