@@ -91,6 +91,12 @@ _SEARCH_CLOSED_FEEDBACK = (
     "further evidence can be added. Do not call search tools. You may calculate "
     "once if needed, then submit the best supported answer or refuse."
 )
+_SUBMISSION_REPAIR_FEEDBACK = (
+    "The submit_answer arguments were invalid. Call submit_answer again now. "
+    "Return exactly the required top-level fields outcome, claims, and unanswered; "
+    "use arrays for claims and unanswered, and include text and evidence_refs in "
+    "every claim. Do not call any other tool."
+)
 _GENERIC_UNANSWERED = "Some requested parts remain unanswered"
 
 
@@ -244,6 +250,7 @@ class NativeToolCallingAgent:
         search_closed = False
         search_closed_calculation_used = False
         search_closed_notice_sent = False
+        submission_repair_pending = False
         search_stop_reason: str | None = None
         forced_stop_reason = "model_round_limit"
 
@@ -265,7 +272,10 @@ class NativeToolCallingAgent:
                 search_closed and search_closed_calculation_used
             )
             submit_only_round = (
-                forced_finalize or wrap_up_round or search_submit_only_round
+                forced_finalize
+                or wrap_up_round
+                or search_submit_only_round
+                or submission_repair_pending
             )
             available_tools = _tools(
                 adaptive=adaptive_graphiti,
@@ -285,7 +295,11 @@ class NativeToolCallingAgent:
                 context,
                 messages,
                 tools,
-                "submit_answer" if forced_finalize else ChatToolChoice.REQUIRED,
+                (
+                    "submit_answer"
+                    if forced_finalize or submission_repair_pending
+                    else ChatToolChoice.REQUIRED
+                ),
                 tuple(calls),
             )
             call_record = model_call_record(ChatModelOperation.AGENT_ROUND, response)
@@ -721,6 +735,23 @@ class NativeToolCallingAgent:
                 )
                 if result is None:
                     events.append(_rejected_event(call))
+                    if (
+                        not submission_repair_pending
+                        and not forced_finalize
+                        and not wrap_up_round
+                    ):
+                        submission_repair_pending = True
+                        messages.append(
+                            ChatModelMessage(
+                                "tool",
+                                _ARGUMENT_ERROR,
+                                tool_call_id=call.id,
+                            )
+                        )
+                        messages.append(
+                            ChatModelMessage("user", _SUBMISSION_REPAIR_FEEDBACK)
+                        )
+                        continue
                     forced_stop_reason = (
                         budget_stop_reason
                         or search_stop_reason

@@ -1341,20 +1341,47 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("repair_rounds", trace.as_dict()["usage"])
         self.assertNotIn("submit_only_repair", trace.events[-1].as_dict())
 
-    async def test_malformed_submission_refuses_without_a_repair_call(self) -> None:
+    async def test_malformed_submission_gets_one_submit_only_repair_call(self) -> None:
         context = _context()
         model = _Model(
             ChatToolCall("submit-invalid", "submit_answer", {"outcome": "answered"}),
+            ChatToolCall(
+                "submit-repaired",
+                "submit_answer",
+                {"outcome": "refused", "claims": [], "unanswered": []},
+            ),
         )
 
         state = await _agent(model, _Retriever(_pack(context))).run(context)
 
         self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.REFUSED)
-        self.assertEqual(len(model.requests), 1)
+        self.assertEqual(len(model.requests), 2)
+        self.assertEqual(model.requests[-1].tool_choice, "submit_answer")
+        self.assertEqual(
+            [tool.name for tool in model.requests[-1].tools], ["submit_answer"]
+        )
+        self.assertIn(
+            "arguments were invalid", model.requests[-1].messages[-1].content
+        )
+        trace = state.artifacts[AGENT_TRACE_ARTIFACT]
+        self.assertEqual(trace.stop_reason, "submitted")
+        self.assertEqual(trace.model_rounds, 2)
+        self.assertFalse(trace.forced_finalize)
+
+    async def test_second_malformed_submission_refuses_without_more_repairs(self) -> None:
+        context = _context()
+        model = _Model(
+            ChatToolCall("submit-invalid-1", "submit_answer", {"outcome": "answered"}),
+            ChatToolCall("submit-invalid-2", "submit_answer", {"outcome": "answered"}),
+        )
+
+        state = await _agent(model, _Retriever(_pack(context))).run(context)
+
+        self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.REFUSED)
+        self.assertEqual(len(model.requests), 2)
         trace = state.artifacts[AGENT_TRACE_ARTIFACT]
         self.assertEqual(trace.stop_reason, "submit_protocol_invalid")
-        self.assertEqual(trace.model_rounds, 1)
-        self.assertFalse(trace.forced_finalize)
+        self.assertEqual(trace.model_rounds, 2)
 
     async def test_invalid_budget_wrap_up_never_adds_another_finalize_call(self) -> None:
         for response in (
@@ -1925,7 +1952,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([event.status for event in submit_events], ["ok"])
         self.assertEqual(len(model.requests), 1)
 
-    async def test_clarify_with_claims_refuses_without_a_repair_call(self) -> None:
+    async def test_clarify_with_claims_gets_one_repair_call(self) -> None:
         context = _context()
         model = _Model(
             ChatToolCall(
@@ -1943,6 +1970,11 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
                     "unanswered": ["Which project do you mean?"],
                 },
             ),
+            ChatToolCall(
+                "submit-2",
+                "submit_answer",
+                {"outcome": "refused", "claims": [], "unanswered": []},
+            ),
         )
 
         state = await _agent(model, _Retriever(_pack(context))).run(context)
@@ -1951,7 +1983,10 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         trace = state.artifacts[AGENT_TRACE_ARTIFACT]
         submit_events = [event for event in trace.events if event.tool == "submit_answer"]
         self.assertEqual([event.status for event in submit_events], ["rejected", "refused"])
-        self.assertEqual(len(model.requests), 1)
+        self.assertEqual(len(model.requests), 2)
+        self.assertEqual(
+            [tool.name for tool in model.requests[-1].tools], ["submit_answer"]
+        )
 
     async def test_clarify_submission_skips_verification(self) -> None:
         context = replace(_context(), query="这是否是同一个项目？")
