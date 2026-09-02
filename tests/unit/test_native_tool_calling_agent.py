@@ -655,7 +655,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
                     "outcome": "answered",
                     "claims": [
                         {
-                            "text": "Revenue was 10 in 2025.",
+                            "text": "Revenue was 10 in 2025. (ev_1)",
 
                             "evidence_refs": ["ev_1"],
                             "calculation_refs": [],
@@ -670,6 +670,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.ANSWERED)
         self.assertEqual(len(state.answering.rendered.citations), 1)
+        self.assertNotIn("ev_1", state.answering.rendered.content)
         self.assertEqual([tool.name for tool in model.requests[0].tools], [
             "search_knowledge_base", "calculate", "submit_answer"
         ])

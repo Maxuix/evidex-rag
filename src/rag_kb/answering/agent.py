@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 import json
+import re
 import time
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
@@ -98,6 +99,9 @@ _SUBMISSION_REPAIR_FEEDBACK = (
     "every claim. Do not call any other tool."
 )
 _GENERIC_UNANSWERED = "Some requested parts remain unanswered"
+_INTERNAL_EVIDENCE_MARKER_GROUP = re.compile(
+    r"\s*[\(\[（]\s*ev_\d+(?:\s*[,，;；、]\s*ev_\d+)*\s*[\)\]）]"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -929,6 +933,8 @@ def _initial_messages(
             "never emit multiple or parallel tool calls. Use calculate for arithmetic. "
             "Finish only with submit_answer. You may submit an answered, partial, or refused "
             "result as soon as further tool use would not improve it. "
+            "Put EvidenceRefs only in each claim's evidence_refs field; never repeat internal "
+            "EvidenceRef identifiers in the user-visible claim text. "
             "Submit outcome 'clarify' only when the question is genuinely ambiguous "
             "(an unclear reference, a same-named entity, or a missing qualifier) and "
             "conversation history cannot resolve it; put the clarification questions "
@@ -1425,7 +1431,11 @@ def _validate_submission(
             reject("visual_ref")
             continue
         citation_ids = tuple(prompt_by_ref[ref].citation_id for ref in expanded)
-        retained.append(AnswerClaim(text=text.strip(), citation_ids=citation_ids))
+        visible_text = _strip_internal_evidence_markers(text)
+        if not visible_text:
+            reject("claim_text")
+            continue
+        retained.append(AnswerClaim(text=visible_text, citation_ids=citation_ids))
         retained_refs.extend(expanded)
 
     if not retained:
@@ -1460,6 +1470,12 @@ def _validate_submission(
         rejected_claim_count=rejected,
         rejection_reasons=tuple(sorted(rejection_reasons)),
     )
+
+
+def _strip_internal_evidence_markers(value: str) -> str:
+    """Remove redundant provider-written ref groups from user-visible prose."""
+
+    return _INTERNAL_EVIDENCE_MARKER_GROUP.sub("", value).strip()
 
 
 def _final_state(
