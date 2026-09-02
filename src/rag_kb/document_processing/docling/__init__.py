@@ -16,37 +16,25 @@ from rag_kb.document_processing.docling.evidence import (
     text_only_document,
 )
 from rag_kb.document_processing.docling.provenance import (
-    PROVENANCE_VERSION,
-    ItemSurface,
-    aggregate_provenance,
     chunk_assembly_key,
     project_source_location,
-    surface_kind,
-    surface_ordinals,
 )
 from rag_kb.document_processing.docling.semantic import (
     assemble_semantic_chunks,
     docling_semantic_units,
     docling_unit_sequence_hash,
 )
-from rag_kb.document_processing.docling.figures import normalize_figure_labels
 from rag_kb.document_processing.docling.structural import assemble_structural
 from rag_kb.document_processing.docling.traversal import (
     ItemKind,
     classify_item,
     iterate_body_items,
-    item_ref,
     item_text,
     section_paths,
-    table_html,
-    table_text,
 )
 
 __all__ = [
     "ItemKind",
-    "ItemSurface",
-    "PROVENANCE_VERSION",
-    "aggregate_provenance",
     "assemble_semantic_chunks",
     "assemble_structural",
     "chunk_assembly_key",
@@ -59,14 +47,8 @@ __all__ = [
     "extract_docling_assets",
     "text_only_document",
     "iterate_body_items",
-    "item_ref",
     "item_text",
-    "normalize_figure_labels",
     "project_source_location",
     "relate_assets_to_chunks",
     "section_paths",
-    "surface_kind",
-    "surface_ordinals",
-    "table_html",
-    "table_text",
 ]

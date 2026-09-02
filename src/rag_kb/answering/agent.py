@@ -258,7 +258,8 @@ class NativeToolCallingAgent:
         search_stop_reason: str | None = None
         forced_stop_reason = "model_round_limit"
 
-        # One reserved submission round after normal exploration; no repair calls.
+        # One reserved submit-only round follows normal exploration and can also
+        # serve the single malformed-submission repair.
         for round_number in range(1, budget.max_model_rounds + 2):
             forced_finalize = round_number > budget.max_model_rounds
             budget_stop_reason = (

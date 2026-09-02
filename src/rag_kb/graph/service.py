@@ -17,7 +17,6 @@ from rag_kb.domain import (
     GRAPH_WORK_HEARTBEAT_SECONDS,
     GraphWorkItem,
     GraphWorkKind,
-    ResourceNotFoundError,
 )
 from rag_kb.observability import get_logger, log_event, log_exception
 from rag_kb.ports.graphiti import GraphitiGraph

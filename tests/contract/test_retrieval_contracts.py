@@ -108,6 +108,17 @@ class RetrievalTransportContractTests(unittest.TestCase):
                     }
                 )
 
+    def test_request_rejects_legacy_outer_modes(self) -> None:
+        for mode in ("vector", "hybrid", "auto"):
+            with self.subTest(mode=mode), self.assertRaises(ValidationError):
+                RetrievalQueryRequest.model_validate(
+                    {
+                        "knowledge_base_id": str(KB_ID),
+                        "query": "query",
+                        "mode": mode,
+                    }
+                )
+
     def test_request_rejects_invalid_rerank_combinations(self) -> None:
         for changes in (
             {

@@ -1007,18 +1007,22 @@ class RetrievalApiContractTests(unittest.IsolatedAsyncioTestCase):
                 )
                 self.assertEqual(invalid.status, 422)
 
-        auto = await request(
-            self.app,
-            "POST",
-            f"{API_PREFIX}/retrieval/query",
-            json_body={
-                "knowledge_base_id": "01900000-0000-7000-8000-000000000091",
-                "query": "Atlas Labs",
-                "mode": "auto",
-                "top_k": 10,
-            },
-        )
-        self.assertEqual(auto.status, 422)
+        for mode in ("vector", "hybrid", "auto"):
+            with self.subTest(mode=mode):
+                response = await request(
+                    self.app,
+                    "POST",
+                    f"{API_PREFIX}/retrieval/query",
+                    json_body={
+                        "knowledge_base_id": (
+                            "01900000-0000-7000-8000-000000000091"
+                        ),
+                        "query": "Atlas Labs",
+                        "mode": mode,
+                        "top_k": 10,
+                    },
+                )
+                self.assertEqual(response.status, 422)
 
     async def test_client_cannot_inject_mandatory_filters(self) -> None:
         forbidden_fields = (

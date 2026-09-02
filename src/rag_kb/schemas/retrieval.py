@@ -27,7 +27,7 @@ class RetrievalQueryRequest(RetrievalPublicSchema):
     strategy: RetrievalStrategy = RetrievalStrategy.EXACT_VECTOR
     rerank_mode: RerankMode = RerankMode.NONE
     include_debug: bool = False
-    mode: Literal["vector", "hybrid", "graph"] | None = None
+    mode: Literal["graph"] | None = None
 
     @model_validator(mode="after")
     def require_supported_rerank_combination(self) -> Self:

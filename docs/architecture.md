@@ -3,7 +3,7 @@
 | 字段 | 内容 |
 | --- | --- |
 | 文档状态 | 全项目唯一当前架构文档（描述事实，不是目标蓝图） |
-| 最后核对 | 2026-08-31 |
+| 最后核对 | 2026-09-02 |
 | 核对基线 | 当前 `main`、实际代码、配置、Alembic 迁移、Compose 与公开路由 |
 | 适用对象 | 个人维护者、CODE AGENTS |
 | 部署边界 | 单机、单用户、本地使用；不是共享或生产服务 |
@@ -19,8 +19,8 @@
 
 1. 可执行代码、Alembic 迁移、锁文件和实际运行配置是最终事实。
 2. 本文记录稳定的产品、进程、数据和主要调用链，应与第一项保持一致。
-3. [`.agent/PLAN.md`](../.agent/PLAN.md) 与 [`.agent/subplans/`](../.agent/subplans/)
-   记录当前打算怎么做；[`.agent/TODO.md`](../.agent/TODO.md) 记录当前具体动作。
+3. [`.agent/PLAN.md`](../.agent/PLAN.md) 记录当前打算怎么做；需要时可在 `.agent/subplans/`
+   放置独立子计划；[`.agent/TODO.md`](../.agent/TODO.md) 记录当前具体动作。
 4. [`.agent/TRACKER.md`](../.agent/TRACKER.md) 记录当前做到哪里；
    [`.agent/LOG.md`](../.agent/LOG.md) 只记录已经实际发生的历史。
 5. [`roadmap/`](roadmap/) 只保存候选方向；[`../archive/`](../archive/) 只保存历史快照。
@@ -85,7 +85,8 @@
   Graph Tool 只在存在 active READY build 时可见；每个 ChatRun 最多两次 Graph 调用，Graph 单次
   90 秒（ChatRun 绝对 deadline 为 600 秒形成 `min(90, remaining)`），候选 K 冻结为 16，完整
   一至三跳路径按 soft 12 / hard 16 去重 source chunk 原子打包，两次调用累计最多新增 32。
-  不存在服务端提交 completeness guard，也不存在累计 token quota 或按 token 截断。Graph Tool
+  不存在服务端提交 completeness guard。Agent 以冻结预算限制累计 token、证据和检索执行数；
+  达到预算后切换到一次 submit-only 收尾，不对单条证据正文做按 token 截断。Graph Tool
   只返回 source chunk；edge fact 不进入 prompt、Citation 或回答正文；未配置、未就绪、
   运行时不可用、超时、被拒绝和无新增证据都以安全结果码返回，取消与超时可区分。
 - 持久 ChatSession / ChatRun、Session 短期上下文，以及动态提供当前可用工具的原生
@@ -299,7 +300,8 @@ budget/trace，`0010` 删除旧 workflow configuration/state 及其中的 Resear
 普通索引发布，只有 build ready、覆盖完整且运行时探测通过时才可用于在线检索。`0019` 为 source
 file content mutation 增加 `pending/completed/failed` 终态、稳定 failure facts 和 reservation
 时间，并由 bounded reconciler 按条目原子收敛；不可恢复的文件清理保留 durable cleanup 记录。
-`0021` 允许 Agent trace 记录 `clarify` outcome；`0022` 把 ChatRun agent budget 从两键
+`0020` 显式授予 runtime role 对 Graphiti work lease 表的读写权限；`0021` 允许 Agent trace
+记录 `clarify` outcome；`0022` 把 ChatRun agent budget 从两键
 （模型轮次/Graph 调用）扩展为六键累计资源预算（新增 token 总量、证据条数、检索调用数与软
 截止预留），既有行原地补齐默认值；`0023` 增加公开 trace diagnostics；`0024` 移除
 `agent_configuration`/`agent_trace` 对旧截止预留字段和完整 JSON key 集合的 CHECK 约束，并将
@@ -462,7 +464,8 @@ Agent 保留最多 8 个普通模型轮次的有限循环护栏，并另有累�
 处理后计算实际新增量；连续两次无新增或证据池已满时确定性关闭 Simple/Graph 检索，保留
 至多一次 `calculate` 机会后只允许提交。多 Query 调用只执行剩余检索预算允许的有序前缀，
 不会突破冻结的累计上限。预算只限制探索行为，仍保留一次提交机会；普通轮次耗尽时另有
-一次 submit-only forced finalize。收尾提交仍非法则直接确定性拒答，不再追加模型调用。
+一次 submit-only forced finalize。普通探索中的首个 malformed `submit_answer` 可获得一次
+submit-only 修复调用；修复提交、预算收尾或 forced-finalize 提交仍非法时直接确定性拒答。
 Agent 不比较或拒绝重复 Query 本身。
 历史 `retrieval_calls` 与 `max_retrieval_calls` 实际按 Query 执行数计量并继续保留兼容；Trace
 同时发布语义明确的 `retrieval_queries`、`retrieval_tool_calls`、`simple_tool_calls` 与
@@ -511,6 +514,7 @@ load_context
   -> model calls submit_answer when ready
   -> if the ordinary loop reaches its limit, one extra submit-only call finalizes
   -> budget exhaustion switches to one submit-only wrap-up round
+  -> first malformed ordinary submission gets one submit-only repair attempt
   -> claim-level deterministic validation and salvage
   -> persist_result
 ```
@@ -538,8 +542,9 @@ ChatRun 内部 trace 保存 claim salvage 的 rejected count 与内部 reason，
   历史 Trace 中的 `verifier` 事件仍可只读展示，新运行不产生此类事件；历史 token 统计不改写。
 - 文档、历史与图片都是 prompt 中的不可信数据，不能扩大权限或引用范围。
 - `submit_answer` 必须通过严格参数和逐 claim 校验；非法 claim 被局部删除，仍有合法 claim 时
-  降级为 `partial`，零合法 claim 或提交外形非法时确定性拒答，不调用模型修复提交。
-  新 Trace 不再记录 repair 计数；历史 Trace 不改写。
+  降级为 `partial`，零合法 claim 确定性拒答。普通探索中提交外形非法时只允许一次
+  submit-only 模型修复；第二次非法、预算收尾或 forced-finalize 中非法则确定性拒答。
+  新 Trace 不设置独立 repair 计数，修复调用仍计入普通模型轮次；历史 Trace 不改写。
 - 事实 claim 只能引用本次已授权 Evidence；实际未加载的图片不能产生视觉引用。
 - 同一主题上互不兼容的证据直接写成普通 claim 文本，并在 `evidence_refs` 中引用冲突双方；
   没有 `kind/conflict/type/adjudication` 分支、冲突领域对象或额外持久化字段。
@@ -763,7 +768,7 @@ PYTHONPATH=src:. .venv/bin/python tools/reset_local.py \
 - routine work 可在完成时一次更新状态，不要求为开始工作制造计划或 authorization gate。
 
 Git 是恢复事实。小型可回退变更可以留在当前分支；大型、风险、并行或需独立 review 的工作才使用
-`feat/`、`fix/`、`refactor/`、`docs/` 或 `chore/` 短分支。只提交任务拥有的文件并做最小充分验证。
+`codex/` 前缀短分支。只提交任务拥有的文件并做最小充分验证。
 local branch/commit/fast-forward merge 是普通实现动作；remote mutation 和 history rewrite 仍需确认。
 
 只有依赖安装、不可恢复的本地数据操作、数据保留选择不清楚的 schema 变化、产品/架构扩张和远程
