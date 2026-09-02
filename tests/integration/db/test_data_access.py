@@ -15,6 +15,7 @@ from rag_kb.domain import (
     ModelKind,
     ModelProviderProtocol,
     ModelValidationStatus,
+    ResourceNameConflictError,
     Workspace,
 )
 from rag_kb.uow import (
@@ -167,6 +168,74 @@ class AsyncDataAccessTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(updated.current_revision.revision, 2)
         self.assertIsNone(updated.current_revision.validation_snapshot)
         self.assertTrue(snapshot_is_null)
+
+    async def test_model_setting_names_report_domain_conflicts(self) -> None:
+        async with self.factory() as unit_of_work:
+            await unit_of_work.workspaces.add("model-name-conflicts")
+            provider = await unit_of_work.model_settings.create_provider(
+                name="OpenCode Go",
+                protocol=ModelProviderProtocol.OPENAI_COMPATIBLE,
+                base_url="https://provider.invalid/v1",
+                secret_reference="test-secret-reference",
+                timeout_seconds=30,
+                max_retries=0,
+                max_concurrency=1,
+                configuration_fingerprint="sha256:provider",
+            )
+            with self.assertRaises(ResourceNameConflictError):
+                await unit_of_work.model_settings.create_provider(
+                    name="OpenCode Go",
+                    protocol=ModelProviderProtocol.OPENAI_COMPATIBLE,
+                    base_url="https://other.invalid/v1",
+                    secret_reference="other-secret-reference",
+                    timeout_seconds=30,
+                    max_retries=0,
+                    max_concurrency=1,
+                    configuration_fingerprint="sha256:other-provider",
+                )
+
+            await unit_of_work.model_settings.create_profile(
+                provider=provider,
+                name="mimo-v2.5",
+                kind=ModelKind.CHAT,
+                model="mimo-v2.5",
+                configuration={
+                    "type": "chat",
+                    "temperature": 0.2,
+                    "top_p": 0.9,
+                    "sampling_top_k": 40,
+                    "max_output_tokens": 8192,
+                    "reasoning_effort": "medium",
+                    "structured_output_mode": "json_object",
+                    "vision_enabled": True,
+                },
+                configuration_fingerprint="sha256:profile-1",
+                capability_fingerprint="sha256:capability-1",
+                compatibility_fingerprint=None,
+                validation_status=ModelValidationStatus.UNVERIFIED,
+            )
+            with self.assertRaises(ResourceNameConflictError):
+                await unit_of_work.model_settings.create_profile(
+                    provider=provider,
+                    name="mimo-v2.5",
+                    kind=ModelKind.CHAT,
+                    model="other-model",
+                    configuration={
+                        "type": "chat",
+                        "temperature": 0.2,
+                        "top_p": 0.9,
+                        "sampling_top_k": 40,
+                        "max_output_tokens": 8192,
+                        "reasoning_effort": "medium",
+                        "structured_output_mode": "json_object",
+                        "vision_enabled": True,
+                    },
+                    configuration_fingerprint="sha256:profile-2",
+                    capability_fingerprint="sha256:capability-2",
+                    compatibility_fingerprint=None,
+                    validation_status=ModelValidationStatus.UNVERIFIED,
+                )
+            await unit_of_work.rollback()
 
     async def test_each_concurrent_command_gets_an_independent_session(self) -> None:
         second_factory = SqlAlchemyUnitOfWorkFactory(

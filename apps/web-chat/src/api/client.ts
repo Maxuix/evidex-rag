@@ -723,6 +723,9 @@ function problemMessage(status: number, problem: ApiProblem): string {
   if (problem.code === "CHAT_SESSION_BUSY") {
     return "这个会话仍在生成回答，请稍候。";
   }
+  if (problem.code === "RESOURCE_NAME_CONFLICT") {
+    return "该名称已存在，请修改名称，或编辑现有配置。";
+  }
   const detail = typeof problem.detail === "string" ? problem.detail : null;
   const fieldDetail = problem.errors?.map((item) => item.message).join("；");
   if (status === 404) return detail || "请求的本地内容已不存在。";

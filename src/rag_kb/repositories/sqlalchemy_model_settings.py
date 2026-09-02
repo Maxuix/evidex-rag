@@ -28,6 +28,7 @@ from rag_kb.domain import (
     ModelProviderRevision,
     ModelSelection,
     ModelValidationStatus,
+    ResourceNameConflictError,
 )
 
 
@@ -79,6 +80,14 @@ class SqlAlchemyModelSettingsRepository:
         max_concurrency: int,
         configuration_fingerprint: str,
     ) -> ModelProviderBundle:
+        duplicate = await self._session.scalar(
+            select(ModelProviderRow.id).where(
+                ModelProviderRow.workspace_id == self._workspace_id,
+                ModelProviderRow.name == name,
+            )
+        )
+        if duplicate is not None:
+            raise ResourceNameConflictError("model-provider name already exists")
         row = ModelProviderRow(
             workspace_id=self._workspace_id,
             name=name,
@@ -127,7 +136,16 @@ class SqlAlchemyModelSettingsRepository:
         if row is None:
             return None
         current = await self._current_provider_revision(row.id)
-        if name is not None:
+        if name is not None and name != row.name:
+            duplicate = await self._session.scalar(
+                select(ModelProviderRow.id).where(
+                    ModelProviderRow.workspace_id == self._workspace_id,
+                    ModelProviderRow.name == name,
+                    ModelProviderRow.id != provider_id,
+                )
+            )
+            if duplicate is not None:
+                raise ResourceNameConflictError("model-provider name already exists")
             row.name = name
         if enabled is not None:
             row.enabled = enabled
@@ -230,6 +248,14 @@ class SqlAlchemyModelSettingsRepository:
         compatibility_fingerprint: str | None,
         validation_status: ModelValidationStatus,
     ) -> ModelProfileBundle:
+        duplicate = await self._session.scalar(
+            select(ModelProfileRow.id).where(
+                ModelProfileRow.workspace_id == self._workspace_id,
+                ModelProfileRow.name == name,
+            )
+        )
+        if duplicate is not None:
+            raise ResourceNameConflictError("model-profile name already exists")
         row = ModelProfileRow(
             workspace_id=self._workspace_id,
             provider_id=provider.provider.id,
@@ -283,7 +309,16 @@ class SqlAlchemyModelSettingsRepository:
         if row is None:
             return None
         current = await self._current_profile_revision(row.id)
-        if name is not None:
+        if name is not None and name != row.name:
+            duplicate = await self._session.scalar(
+                select(ModelProfileRow.id).where(
+                    ModelProfileRow.workspace_id == self._workspace_id,
+                    ModelProfileRow.name == name,
+                    ModelProfileRow.id != profile_id,
+                )
+            )
+            if duplicate is not None:
+                raise ResourceNameConflictError("model-profile name already exists")
             row.name = name
         if enabled is not None:
             row.enabled = enabled

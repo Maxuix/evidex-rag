@@ -61,6 +61,26 @@ describe("API error behavior", () => {
     expect(error.retryable).toBe(false);
   });
 
+  it("explains duplicate resource names instead of exposing the API detail", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response(409, {
+      code: "RESOURCE_NAME_CONFLICT",
+      detail: "A resource with the requested name already exists.",
+      retryable: false,
+    })));
+
+    const error = await rejected(() => client.createModelProfile({
+      provider_id: "provider-a",
+      name: "mimo-v2.5",
+      kind: "chat",
+      model: "mimo-v2.5",
+      parameters: {},
+    }));
+
+    expect(error.message).toBe("该名称已存在，请修改名称，或编辑现有配置。");
+    expect(error.code).toBe("RESOURCE_NAME_CONFLICT");
+    expect(error.retryable).toBe(false);
+  });
+
   it("marks transport failures as retryable with a safe local message", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("network detail")));
 

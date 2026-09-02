@@ -62,6 +62,8 @@ export function ModelSettingsDialog({
   const [catalogs, setCatalogs] = useState<Record<string, string[]>>({});
   const [editingProvider, setEditingProvider] = useState<ModelProvider | null>(null);
   const [editingProfile, setEditingProfile] = useState<ModelProfile | null>(null);
+  const [providerFormRevision, setProviderFormRevision] = useState(0);
+  const [profileFormRevision, setProfileFormRevision] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = async () => {
@@ -162,10 +164,12 @@ export function ModelSettingsDialog({
                 catalogs={catalogs}
                 catalogBusy={catalogBusy}
                 editing={editingProvider}
+                createFormRevision={providerFormRevision}
                 onEdit={setEditingProvider}
                 onLoadCatalog={loadCatalog}
                 onCreate={(payload) => run(
                   () => client.createModelProvider(requiredProviderPayload(payload)),
+                  () => setProviderFormRevision((current) => current + 1),
                 )}
                 onUpdate={(providerId, payload) => run(
                   () => client.updateModelProvider(providerId, payload),
@@ -180,11 +184,15 @@ export function ModelSettingsDialog({
                 catalogs={catalogs}
                 catalogBusy={catalogBusy}
                 editing={editingProfile}
+                createFormRevision={profileFormRevision}
                 onEdit={setEditingProfile}
                 onLoadCatalog={loadCatalog}
                 onValidate={(profileId) => run(() => client.validateModelProfile(profileId))}
                 onSaveDefaults={(selection) => run(() => client.updateModelSelection(selection))}
-                onCreate={(payload) => run(() => client.createModelProfile(payload))}
+                onCreate={(payload) => run(
+                  () => client.createModelProfile(payload),
+                  () => setProfileFormRevision((current) => current + 1),
+                )}
                 onUpdate={(profileId, payload) => run(
                   () => client.updateModelProfile(profileId, {
                     provider_id: payload.provider_id,
@@ -210,6 +218,7 @@ function ProviderPanel({
   catalogs,
   catalogBusy,
   editing,
+  createFormRevision,
   onEdit,
   onLoadCatalog,
   onCreate,
@@ -220,6 +229,7 @@ function ProviderPanel({
   catalogs: Record<string, string[]>;
   catalogBusy: string | null;
   editing: ModelProvider | null;
+  createFormRevision: number;
   onEdit: (value: ModelProvider | null) => void;
   onLoadCatalog: (providerId: string) => void;
   onCreate: (value: ProviderMutation) => void;
@@ -266,7 +276,11 @@ function ProviderPanel({
           onSubmit={(payload) => onUpdate(editing.id, payload)}
         />
       ) : null}
-      <ProviderForm disabled={disabled} onSubmit={onCreate} />
+      <ProviderForm
+        key={`create-provider-${createFormRevision}`}
+        disabled={disabled}
+        onSubmit={onCreate}
+      />
     </section>
   );
 }
@@ -329,6 +343,7 @@ function ModelPanel({
   catalogs,
   catalogBusy,
   editing,
+  createFormRevision,
   onEdit,
   onLoadCatalog,
   onValidate,
@@ -342,6 +357,7 @@ function ModelPanel({
   catalogs: Record<string, string[]>;
   catalogBusy: string | null;
   editing: ModelProfile | null;
+  createFormRevision: number;
   onEdit: (value: ModelProfile | null) => void;
   onLoadCatalog: (providerId: string) => void;
   onValidate: (profileId: string) => void;
@@ -405,7 +421,7 @@ function ModelPanel({
         />
       ) : null}
       <ProfileForm
-        key={`create-${category}`}
+        key={`create-${category}-${createFormRevision}`}
         settings={settings}
         disabled={disabled || !settings.providers.length}
         allowedKinds={kinds}
