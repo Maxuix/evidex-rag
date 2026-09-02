@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 
+import httpx
 from langchain_core.embeddings import Embeddings
 from langchain_openai import OpenAIEmbeddings
 import openai
@@ -75,9 +76,13 @@ class LangChainEmbeddingModelAdapter:
             model_arguments["dimensions"] = embedding_space.dimension
         elif embedding_space.dimension_request_mode != "omitted":
             raise ValueError("unsupported embedding dimension request mode")
-        self._model = embedding_model or OpenAIEmbeddings(
-            **model_arguments,
-        )
+        if embedding_model is None:
+            model_arguments["http_async_client"] = _non_persistent_http_client(
+                max_connections=max_concurrency,
+            )
+            self._model = OpenAIEmbeddings(**model_arguments)
+        else:
+            self._model = embedding_model
 
     @property
     def embedding_space(self) -> EmbeddingSpaceDefinition:
@@ -216,8 +221,13 @@ async def probe_openai_embedding_dimension(
     }
     if requested_dimension is not None:
         arguments["dimensions"] = requested_dimension
+    client = _non_persistent_http_client(max_connections=1)
+    arguments["http_async_client"] = client
     adapter = OpenAIEmbeddings(**arguments)
-    value = await adapter.aembed_query("model validation")
+    try:
+        value = await adapter.aembed_query("model validation")
+    finally:
+        await client.aclose()
     if not isinstance(value, (list, tuple)):
         raise ValueError("embedding response is not a vector")
     dimension = len(value)
@@ -240,6 +250,16 @@ async def probe_openai_embedding_dimension(
     )
     normalize_embedding_vector(value, probe_definition)
     return dimension
+
+
+def _non_persistent_http_client(*, max_connections: int) -> httpx.AsyncClient:
+    return httpx.AsyncClient(
+        headers=_NON_PERSISTENT_CONNECTION_HEADERS,
+        limits=httpx.Limits(
+            max_connections=max_connections,
+            max_keepalive_connections=0,
+        ),
+    )
 
 
 def _provider_unavailable(diagnostic: dict[str, object]) -> IndexingExecutionError:

@@ -97,10 +97,17 @@ def _adapter(
 class LangChainEmbeddingAdapterTests(unittest.IsolatedAsyncioTestCase):
     def test_constructor_configures_fixed_provider_request(self) -> None:
         model = _FakeEmbeddings()
-        with patch(
-            "rag_kb.adapters.model_api.langchain_embeddings.OpenAIEmbeddings",
-            return_value=model,
-        ) as constructor:
+        http_client = object()
+        with (
+            patch(
+                "rag_kb.adapters.model_api.langchain_embeddings.OpenAIEmbeddings",
+                return_value=model,
+            ) as constructor,
+            patch(
+                "rag_kb.adapters.model_api.langchain_embeddings.httpx.AsyncClient",
+                return_value=http_client,
+            ) as client_constructor,
+        ):
             LangChainEmbeddingModelAdapter(
                 base_url="https://provider.invalid/v1",
                 api_key="secret",
@@ -132,6 +139,10 @@ class LangChainEmbeddingAdapterTests(unittest.IsolatedAsyncioTestCase):
             {"encoding_format": "float"},
         )
         self.assertEqual(arguments["default_headers"], {"Connection": "close"})
+        self.assertIs(arguments["http_async_client"], http_client)
+        limits = client_constructor.call_args_list[0].kwargs["limits"]
+        self.assertEqual(limits.max_connections, 2)
+        self.assertEqual(limits.max_keepalive_connections, 0)
         zero_retry_arguments = constructor.call_args_list[1].kwargs
         self.assertEqual(zero_retry_arguments["timeout"], 30)
         self.assertEqual(zero_retry_arguments["max_retries"], 0)
