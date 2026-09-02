@@ -256,7 +256,8 @@ READY 旧 build 在切换完成前继续服务。
 
 - 应用只保留一个配置确定的内部 workspace namespace。请求不携带、解析或传播 principal/client
   身份，旧身份 header 也不能改变 workspace；repository、文件和资产服务在 composition root
-  绑定该 workspace。ChatRun 与 ContentMutation 幂等范围为 `endpoint + idempotency_key`。
+  绑定该 workspace。API 与 Worker 在 schema readiness 通过后幂等创建该 namespace，因此全新空库
+  不依赖外部 provisioning。ChatRun 与 ContentMutation 幂等范围为 `endpoint + idempotency_key`。
 - ChatRun 冻结所选 Chat profile revision；索引与检索按 EmbeddingSpace 绑定的 profile revision
   解析 adapter。Simple 与手动 Graph snapshot 保存 profile version、strategy、`top_k` 和
   `rerank_mode`；Graph 外层模式额外冻结 `graphiti_path_augmented_v3` 与 `graphiti_path_v3`

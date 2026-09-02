@@ -44,6 +44,7 @@ from rag_kb.db import (
     DatabaseResources,
     check_database_ready,
     create_database_resources,
+    ensure_local_workspace,
 )
 from rag_kb.domain import (
     AdmissionLimits,
@@ -137,6 +138,10 @@ class ApiDependencies:
 
     async def check_readiness(self) -> None:
         await check_database_ready(self.database.engine)
+        await ensure_local_workspace(
+            self.database.engine,
+            self.settings.identity.workspace_id,
+        )
 
 
 def build_api_dependencies(
