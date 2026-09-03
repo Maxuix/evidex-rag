@@ -498,6 +498,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("never proves that a document", prompt)
         self.assertIn("presuppose a fact", prompt)
         self.assertIn("several independent tools in the same turn", prompt)
+        self.assertIn("verify every requested entity, period, subquestion", prompt)
         # No routing directives and no removed-protocol leftovers.
         self.assertNotIn("Call exactly one tool per turn", prompt)
         self.assertNotIn("keyword_search", prompt)
@@ -585,7 +586,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
     def test_agent_budget_keeps_only_the_token_fuse(self) -> None:
         self.assertEqual(
             ChatAgentBudget().as_dict(),
-            {"max_total_tokens": 150000},
+            {"max_total_tokens": 300000},
         )
         for kwargs in (
             {"max_total_tokens": True},
@@ -3295,7 +3296,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         state = await _agent(model, retriever).run(context)
 
         # Round 5's request has round 1's payload compacted to a stub (the
-        # token trigger is past half the fuse and three recent rounds stay
+        # token trigger is past one quarter of the fuse and three recent rounds stay
         # intact).
         round_one_payload = _tool_payload(model.requests[4], "search-1")
         self.assertTrue(round_one_payload["compacted"])

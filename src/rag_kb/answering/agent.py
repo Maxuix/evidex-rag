@@ -84,10 +84,10 @@ _MAX_CONSECUTIVE_NO_NEW_EVIDENCE_ROUNDS = 2
 _MAX_CONSECUTIVE_STALLED_ROUNDS = 3
 _QUERY_MAX_CHARS = 2048
 _COMPACTION_KEEP_RECENT_ROUNDS = 3
-_COMPACTION_EXCERPT_CHARS = 1600
-# Old rounds keep full content until the run burns half the token fuse;
-# below that, history compaction would only cost answer fidelity.
-_COMPACTION_TOKEN_FRACTION = 2
+_COMPACTION_EXCERPT_CHARS = 800
+# Old rounds keep full content until the run burns one quarter of the token
+# fuse; with the 300k default this preserves the empirically useful 75k trigger.
+_COMPACTION_TOKEN_FRACTION = 4
 _MAX_CONTEXT_ANCHORS = 3
 _BUDGET_EXHAUSTED_FEEDBACK = (
     "The token budget for this run is nearly exhausted. Do not call search "
@@ -1173,6 +1173,10 @@ def _initial_messages(context: ChatExecutionContext) -> list[ChatModelMessage]:
             "if it were true. "
             "You may call several independent tools in the same turn. "
             "Use calculate for arithmetic. "
+            "Before submitting, verify every requested entity, period, subquestion, "
+            "ranking, exact figure, and arithmetic result against the cited evidence. "
+            "If any requested part is still unsupported, keep searching or mark that "
+            "part unanswered instead of guessing. "
             "Finish only with submit_answer. You may submit an answered, partial, or refused "
             "result as soon as further tool use would not improve it. "
             "Put EvidenceRefs only in each claim's evidence_refs field; never repeat internal "
@@ -1673,7 +1677,7 @@ def _compact_history(
     stub, while the last rounds stay intact. Refs whose content was stubbed
     become re-sendable so the model can fetch the full text again.
 
-    Compaction only starts once the run has burned half the token fuse;
+    Compaction only starts once the run has burned one quarter of the token fuse;
     lighter runs keep full fidelity.
     """
 

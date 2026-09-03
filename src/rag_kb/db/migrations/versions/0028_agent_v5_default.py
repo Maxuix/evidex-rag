@@ -23,7 +23,7 @@ _V5_AGENT_CONFIGURATION_DEFAULT = (
     "jsonb_build_object("
     "'version', 'native_tool_calling_agent_v5', "
     "'budget', jsonb_build_object("
-    "'max_total_tokens', 150000))"
+    "'max_total_tokens', 300000))"
 )
 
 

@@ -474,7 +474,7 @@ Graph 的 route result 只允许 `admitted`、`no_evidence`、`not_ready`、`tim
 manual Graph 的 hybrid 候选查询宽度按 `min(40, max(12, top_k * 2))` 计算；packing 按 path-whole
 规则优先保留完整图路径，再用未重复的 hybrid Evidence 回填到 `top_k`。
 Agent（v5）不再设模型轮次、检索次数、Graph 次数或证据条数上限；冻结 budget 只保留
-`max_total_tokens`（默认 150k）一个基础设施保险丝。模型在同一轮可以发起多个互不依赖的
+`max_total_tokens`（默认 300k）一个基础设施保险丝。模型在同一轮可以发起多个互不依赖的
 工具调用，服务端并发执行、按 `index_chunk_id` 去重合并进统一证据池，并给每个调用各自
 返回 tool 结果。Agent 不以时间决定控制流；每轮按 response usage
 累计 token，token 保险丝触发后进入软 wrap-up——只留 `submit_answer` 工具，由模型自行选择
