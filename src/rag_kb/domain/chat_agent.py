@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 
-CHAT_AGENT_VERSION = "native_tool_calling_agent_v4"
+CHAT_AGENT_VERSION = "native_tool_calling_agent_v5"
 CHAT_AGENT_TRACE_ARTIFACT = "chat_agent_trace"
 CHAT_RETRIEVAL_LANES = frozenset(
     {
@@ -33,6 +33,7 @@ CHAT_AGENT_ACCEPTED_VERSIONS = frozenset(
     {
         "native_tool_calling_agent_v3",
         "native_tool_calling_agent_v4",
+        "native_tool_calling_agent_v5",
     }
 )
 CHAT_GRAPH_SEARCH_REASONS = frozenset(
@@ -68,57 +69,34 @@ CHAT_AGENT_STOP_REASONS = frozenset(
     {
         "submitted",
         "token_budget",
+        "no_new_evidence",
+        "protocol_error",
+        "deadline_exceeded",
+        # Retained for historical v3/v4 trace reading only.
         "retrieval_query_budget",
         "evidence_budget",
-        "no_new_evidence",
         "model_round_limit",
         "submit_protocol_invalid",
-        "deadline_exceeded",
     }
 )
-CHAT_AGENT_DEFAULT_MODEL_ROUNDS = 8
-CHAT_AGENT_MAX_MODEL_ROUNDS = 12
-CHAT_AGENT_DEFAULT_GRAPH_CALLS = 2
-CHAT_AGENT_MAX_GRAPH_CALLS = 2
 CHAT_AGENT_DEFAULT_TOTAL_TOKENS = 150_000
 CHAT_AGENT_MIN_TOTAL_TOKENS = 1_000
 CHAT_AGENT_MAX_TOTAL_TOKENS = 10_000_000
-CHAT_AGENT_DEFAULT_EVIDENCE_ITEMS = 64
-CHAT_AGENT_MAX_EVIDENCE_ITEMS = 512
-CHAT_AGENT_DEFAULT_RETRIEVAL_CALLS = 16
-CHAT_AGENT_MAX_RETRIEVAL_CALLS = 64
 CHAT_AGENT_TRACE_REF_LIMIT = 100
-CHAT_AGENT_TRACE_EVENT_LIMIT = 32
+CHAT_AGENT_TRACE_EVENT_LIMIT = 64
 CHAT_AGENT_CLAIM_LIMIT = 100
 CHAT_AGENT_UNANSWERED_LIMIT = 100
-CHAT_AGENT_EVIDENCE_REF_LIMIT = 4
-# Per-run ceiling matched by ChatAgentBudget.max_graph_calls.
-CHAT_GRAPH_CALL_LIMIT = CHAT_AGENT_MAX_GRAPH_CALLS
 # Per-call hard ceiling for new source chunks returned by one Graph search.
 CHAT_GRAPH_NEW_CHUNK_LIMIT = 16
 
 
 @dataclass(frozen=True, slots=True)
 class ChatAgentBudget:
-    max_model_rounds: int = CHAT_AGENT_DEFAULT_MODEL_ROUNDS
-    max_graph_calls: int = CHAT_AGENT_DEFAULT_GRAPH_CALLS
+    """v5 keeps a single infrastructure fuse: total answer-model tokens."""
+
     max_total_tokens: int = CHAT_AGENT_DEFAULT_TOTAL_TOKENS
-    max_evidence_items: int = CHAT_AGENT_DEFAULT_EVIDENCE_ITEMS
-    max_retrieval_calls: int = CHAT_AGENT_DEFAULT_RETRIEVAL_CALLS
 
     def __post_init__(self) -> None:
-        if (
-            isinstance(self.max_model_rounds, bool)
-            or not isinstance(self.max_model_rounds, int)
-            or not 1 <= self.max_model_rounds <= CHAT_AGENT_MAX_MODEL_ROUNDS
-        ):
-            raise ValueError("chat agent budget is invalid")
-        if (
-            isinstance(self.max_graph_calls, bool)
-            or not isinstance(self.max_graph_calls, int)
-            or not 1 <= self.max_graph_calls <= CHAT_AGENT_MAX_GRAPH_CALLS
-        ):
-            raise ValueError("chat agent graph budget is invalid")
         if (
             isinstance(self.max_total_tokens, bool)
             or not isinstance(self.max_total_tokens, int)
@@ -127,25 +105,10 @@ class ChatAgentBudget:
             <= CHAT_AGENT_MAX_TOTAL_TOKENS
         ):
             raise ValueError("chat agent token budget is invalid")
-        if (
-            isinstance(self.max_evidence_items, bool)
-            or not isinstance(self.max_evidence_items, int)
-            or not 1 <= self.max_evidence_items <= CHAT_AGENT_MAX_EVIDENCE_ITEMS
-        ):
-            raise ValueError("chat agent evidence budget is invalid")
-        if (
-            isinstance(self.max_retrieval_calls, bool)
-            or not isinstance(self.max_retrieval_calls, int)
-            or not 1 <= self.max_retrieval_calls <= CHAT_AGENT_MAX_RETRIEVAL_CALLS
-        ):
-            raise ValueError("chat agent retrieval budget is invalid")
+
     def as_dict(self) -> dict[str, int | float]:
         return {
-            "max_model_rounds": self.max_model_rounds,
-            "max_graph_calls": self.max_graph_calls,
             "max_total_tokens": self.max_total_tokens,
-            "max_evidence_items": self.max_evidence_items,
-            "max_retrieval_calls": self.max_retrieval_calls,
         }
 
 
@@ -200,7 +163,7 @@ class ChatAgentTraceEvent:
                 and (
                     isinstance(self.call_index, bool)
                     or not isinstance(self.call_index, int)
-                    or not 1 <= self.call_index <= CHAT_GRAPH_CALL_LIMIT
+                    or self.call_index < 1
                 )
             )
             or self.invocation_source not in CHAT_AGENT_INVOCATION_SOURCES | {None}
@@ -391,7 +354,7 @@ class ChatAgentTrace:
         if (
             self.version != CHAT_AGENT_VERSION
             or len(self.events) > CHAT_AGENT_TRACE_EVENT_LIMIT
-            or not 0 <= self.model_rounds <= self.budget.max_model_rounds + 1
+            or self.model_rounds < 0
             or self.retrieval_calls < 0
             or self.calculation_calls < 0
             or self.evidence_ref_count < 0

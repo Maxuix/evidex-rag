@@ -137,14 +137,14 @@ class ChatTerminalServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIsNone(repository.success.agent_trace)
 
-    async def test_success_persists_current_agent_trace_v4(self) -> None:
+    async def test_success_persists_current_agent_trace_v5(self) -> None:
         observed = datetime(2026, 7, 15, 8, 0, tzinfo=UTC)
         state = replace(
             _completed_state(observed),
             artifacts={
                 "chat_agent_trace": ChatAgentTrace(
                     events=(),
-                    budget=ChatAgentBudget(max_model_rounds=1, max_graph_calls=2),
+                    budget=ChatAgentBudget(),
                     model_rounds=2,
                     retrieval_calls=7,
                     calculation_calls=5,
@@ -159,11 +159,11 @@ class ChatTerminalServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             repository.success.agent_trace["version"],
-            "native_tool_calling_agent_v4",
+            "native_tool_calling_agent_v5",
         )
         self.assertEqual(
             repository.success.agent_trace["budget"],
-            ChatAgentBudget(max_model_rounds=1, max_graph_calls=2).as_dict(),
+            ChatAgentBudget().as_dict(),
         )
         self.assertEqual(
             repository.success.agent_trace["usage"]["evidence_refs"], 105

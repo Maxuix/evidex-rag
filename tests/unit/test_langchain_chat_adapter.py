@@ -183,13 +183,13 @@ class LangChainChatAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(model.calls[0][2], HumanMessage)
         self.assertIsInstance(model.calls[0][2].content, list)
 
-    def test_parallel_tool_calls_are_rejected_by_domain_contract(self) -> None:
-        with self.assertRaises(ValueError):
-            ChatModelRequest(
-                messages=(ChatModelMessage("user", "search"),),
-                tools=(_tool(),),
-                parallel_tool_calls=True,
-            )
+    def test_parallel_tool_calls_are_forwarded_to_the_provider(self) -> None:
+        request = ChatModelRequest(
+            messages=(ChatModelMessage("user", "search"),),
+            tools=(_tool(),),
+            parallel_tool_calls=True,
+        )
+        self.assertTrue(request.parallel_tool_calls)
 
     async def test_total_timeout_is_content_safe(self) -> None:
         with self.assertRaises(ChatModelExecutionError) as raised:

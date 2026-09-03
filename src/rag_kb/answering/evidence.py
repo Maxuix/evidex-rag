@@ -91,7 +91,7 @@ def render_validated_answer(
                 )
             markers.append(f"[{ordinals[citation_id] + 1}]")
         paragraphs.append(f"{claim.text} {''.join(markers)}")
-    if answer.outcome is AnswerOutcome.PARTIAL:
+    if answer.missing_aspects:
         topics = tuple(value.rstrip("。.!！?？;；") for value in answer.missing_aspects)
         paragraphs.append(
             f"另外，关于{'、'.join(f'“{item}”' for item in topics)}，我目前无法给出可靠回答。"

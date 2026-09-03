@@ -11,7 +11,10 @@ from typing import Any
 from uuid import UUID
 
 from rag_kb.domain.answering import ChatModelCallRecord, RenderedAnswer
-from rag_kb.domain.chat_agent import CHAT_AGENT_ACCEPTED_VERSIONS
+from rag_kb.domain.chat_agent import (
+    CHAT_AGENT_ACCEPTED_VERSIONS,
+    CHAT_AGENT_TRACE_EVENT_LIMIT,
+)
 from rag_kb.domain.chat_pipeline import ChatPipelinePhase, ChatRunLease
 from rag_kb.domain.errors import ErrorCode
 from rag_kb.domain.composite import VisualEvidenceDecision
@@ -56,7 +59,7 @@ class ChatTerminalSuccessCommand:
             if (
                 self.agent_trace.get("version") not in CHAT_AGENT_ACCEPTED_VERSIONS
                 or not isinstance(self.agent_trace.get("events"), (list, tuple))
-                or len(self.agent_trace["events"]) > 32
+                or len(self.agent_trace["events"]) > CHAT_AGENT_TRACE_EVENT_LIMIT
             ):
                 raise ValueError("terminal agent trace is invalid")
             object.__setattr__(
@@ -95,7 +98,7 @@ class ChatFailureSettlementCommand:
                 self.agent_trace.get("version") not in CHAT_AGENT_ACCEPTED_VERSIONS
                 or self.agent_trace.get("outcome") is not None
                 or not isinstance(self.agent_trace.get("events"), (list, tuple))
-                or len(self.agent_trace["events"]) > 32
+                or len(self.agent_trace["events"]) > CHAT_AGENT_TRACE_EVENT_LIMIT
                 or not isinstance(self.agent_trace.get("usage"), Mapping)
                 or not isinstance(self.agent_trace.get("diagnostics"), Mapping)
                 or self.agent_trace["diagnostics"].get("partial") is not True

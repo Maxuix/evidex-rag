@@ -638,7 +638,7 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
         await self._restore_dynamic_identity_schema(engine)
 
     async def _restore_dynamic_identity_schema(self, engine) -> None:
-        """Replay 0025–0027 when a historical test left the shared schema behind."""
+        """Replay 0025–0028 when a historical test left the shared schema behind."""
 
         identity_migration = importlib.import_module(
             "rag_kb.db.migrations.versions.0025_remove_dynamic_identity"
@@ -648,6 +648,9 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
         )
         v4_migration = importlib.import_module(
             "rag_kb.db.migrations.versions.0027_agent_v4_default"
+        )
+        v5_migration = importlib.import_module(
+            "rag_kb.db.migrations.versions.0028_agent_v5_default"
         )
         async with engine.begin() as migration_connection:
             result = await migration_connection.exec_driver_sql(
@@ -691,6 +694,11 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
             await migration_connection.run_sync(
                 lambda sync_connection: self._invoke_migration(
                     sync_connection, v4_migration, "upgrade"
+                )
+            )
+            await migration_connection.run_sync(
+                lambda sync_connection: self._invoke_migration(
+                    sync_connection, v5_migration, "upgrade"
                 )
             )
 
@@ -756,12 +764,12 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(columns[0]["is_nullable"], "NO")
         self.assertEqual(columns[1]["is_nullable"], "YES")
-        self.assertIn("native_tool_calling_agent_v4", columns[0]["column_default"])
-        self.assertIn("max_model_rounds", columns[0]["column_default"])
-        self.assertIn("max_graph_calls", columns[0]["column_default"])
+        self.assertIn("native_tool_calling_agent_v5", columns[0]["column_default"])
         self.assertIn("max_total_tokens", columns[0]["column_default"])
-        self.assertIn("max_evidence_items", columns[0]["column_default"])
-        self.assertIn("max_retrieval_calls", columns[0]["column_default"])
+        self.assertNotIn("max_model_rounds", columns[0]["column_default"])
+        self.assertNotIn("max_graph_calls", columns[0]["column_default"])
+        self.assertNotIn("max_evidence_items", columns[0]["column_default"])
+        self.assertNotIn("max_retrieval_calls", columns[0]["column_default"])
         self.assertNotIn("soft_deadline_reserve_seconds", columns[0]["column_default"])
         self.assertNotIn("'retrieval_calls'", columns[0]["column_default"])
         self.assertNotIn("'calculation_calls'", columns[0]["column_default"])

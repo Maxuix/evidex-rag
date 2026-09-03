@@ -374,16 +374,23 @@ export interface ChatAgentTraceEvent {
 }
 
 export interface ChatAgent {
-  version: "native_tool_calling_agent_v3" | "native_tool_calling_agent_v4";
+  version:
+    | "native_tool_calling_agent_v3"
+    | "native_tool_calling_agent_v4"
+    | "native_tool_calling_agent_v5";
   budget: {
-    max_model_rounds: number;
-    max_graph_calls: number;
     max_total_tokens?: number;
+    // Legacy v3/v4 fields, present only on historical runs.
+    max_model_rounds?: number;
+    max_graph_calls?: number;
     max_evidence_items?: number;
     max_retrieval_calls?: number;
   };
   trace: {
-    version: "native_tool_calling_agent_v3" | "native_tool_calling_agent_v4";
+    version:
+      | "native_tool_calling_agent_v3"
+      | "native_tool_calling_agent_v4"
+      | "native_tool_calling_agent_v5";
     events: ChatAgentTraceEvent[];
     budget: ChatAgent["budget"];
     usage: Record<string, number>;
@@ -391,12 +398,14 @@ export interface ChatAgent {
       stop_reason:
         | "submitted"
         | "token_budget"
+        | "no_new_evidence"
+        | "protocol_error"
+        | "deadline_exceeded"
+        // Historical v3/v4 traces only.
         | "retrieval_query_budget"
         | "evidence_budget"
-        | "no_new_evidence"
         | "model_round_limit"
-        | "submit_protocol_invalid"
-        | "deadline_exceeded";
+        | "submit_protocol_invalid";
       forced_finalize: boolean;
       consecutive_no_new_evidence: number;
       elapsed_ms: number | null;

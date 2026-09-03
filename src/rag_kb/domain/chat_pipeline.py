@@ -212,8 +212,8 @@ class ChatModelRequest:
                 raise ValueError("chat model tool choice is invalid")
             if not self.tools and choice != ChatToolChoice.NONE.value:
                 raise ValueError("chat model tool choice requires tools")
-        if self.parallel_tool_calls:
-            raise ValueError("parallel chat tool calls are not supported")
+        if not isinstance(self.parallel_tool_calls, bool):
+            raise ValueError("chat model parallel tool-call flag is invalid")
         if self.response_format is not None:
             if not isinstance(self.response_format, Mapping):
                 raise ValueError("chat response format must be an object")

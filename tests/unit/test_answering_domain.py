@@ -77,45 +77,100 @@ class RenderedEvidenceTests(unittest.TestCase):
         self.assertFalse(_citations_equal(rows[:1], command))
 
 class SubmissionBoundaryTests(unittest.TestCase):
-    def test_invalid_provider_claims_are_rejected_without_internal_dto_validation(self) -> None:
+    def test_malformed_claims_invalidate_the_whole_submission(self) -> None:
         prompt = SimpleNamespace(citation_id="cite_1", matched_representations=("text",))
         good = {"text": " Supported fact ", "evidence_refs": ["ev_1"]}
-        for patch, reason in (
-            ({"text": ""}, "claim_text"),
-            ({"text": "x" * 4001}, "claim_text"),
-            ({"text": 17}, "claim_text"),
-            ({"evidence_refs": []}, "evidence_ref"),
-            ({"evidence_refs": ["unknown"]}, "evidence_ref"),
-            ({"evidence_refs": ["ev_1", "ev_1"]}, "evidence_ref"),
-            ({"calculation_refs": ["unknown"]}, "calculation_ref"),
-            ({"legacy_field": True}, "claim_shape"),
+        for patch in (
+            {"text": ""},
+            {"text": "x" * 4001},
+            {"text": 17},
+            {"evidence_refs": "ev_1"},
+            {"legacy_field": True},
         ):
             with self.subTest(patch=patch):
                 result = _validate_submission(
                     {"outcome": "answered", "claims": [good, {**good, **patch}], "unanswered": []},
-                    prompt_by_ref={"ev_1": prompt}, loaded_visual_refs=set(), calculations={},
+                    prompt_by_ref={"ev_1": prompt}, loaded_visual_refs=set(),
                 )
-                self.assertEqual(result.validated.outcome, AnswerOutcome.PARTIAL)
-                self.assertEqual(result.validated.claims, (AnswerClaim("Supported fact", ("cite_1",)),))
-                self.assertEqual(result.rejected_claim_count, 1)
-                self.assertIn(reason, result.rejection_reasons)
+                self.assertIsNone(result)
+
+    def test_unresolvable_refs_are_dropped_without_blocking_the_answer(self) -> None:
+        prompt = SimpleNamespace(citation_id="cite_1", matched_representations=("text",))
+        result = _validate_submission(
+            {
+                "outcome": "answered",
+                "claims": [
+                    {"text": "Cited fact", "evidence_refs": ["ev_1", "ev_1", "unknown"]},
+                    {"text": "Uncited remark", "evidence_refs": []},
+                ],
+                "unanswered": [],
+            },
+            prompt_by_ref={"ev_1": prompt}, loaded_visual_refs=set(),
+        )
+        self.assertIsNotNone(result)
+        # The model's outcome stands; no rewrite, no claim deletion.
+        self.assertEqual(result.validated.outcome, AnswerOutcome.ANSWERED)
+        self.assertEqual(
+            result.validated.claims,
+            (
+                AnswerClaim("Cited fact", ("cite_1",)),
+                AnswerClaim("Uncited remark", ()),
+            ),
+        )
+        self.assertEqual(result.retained_refs, ("ev_1",))
+
+    def test_refused_and_partial_shapes(self) -> None:
+        prompt = SimpleNamespace(citation_id="cite_1", matched_representations=("text",))
+        args = {"prompt_by_ref": {"ev_1": prompt}, "loaded_visual_refs": set()}
+        refused = _validate_submission(
+            {"outcome": "refused", "claims": [], "unanswered": []}, **args
+        )
+        self.assertEqual(refused.validated.outcome, AnswerOutcome.REFUSED)
+        # refused must not carry claims.
+        self.assertIsNone(
+            _validate_submission(
+                {
+                    "outcome": "refused",
+                    "claims": [{"text": "x", "evidence_refs": []}],
+                    "unanswered": [],
+                },
+                **args,
+            )
+        )
+        # answered/partial require at least one claim.
+        self.assertIsNone(
+            _validate_submission({"outcome": "answered", "claims": [], "unanswered": []}, **args)
+        )
+        partial = _validate_submission(
+            {
+                "outcome": "partial",
+                "claims": [{"text": "Half an answer", "evidence_refs": ["ev_1"]}],
+                "unanswered": ["the rest"],
+            },
+            **args,
+        )
+        self.assertEqual(partial.validated.outcome, AnswerOutcome.PARTIAL)
+        self.assertEqual(partial.validated.missing_aspects, ("the rest",))
 
     def test_submission_limits_and_visual_admission_remain_boundary_checks(self) -> None:
         claim = {"text": "A fact", "evidence_refs": ["ev_1"]}
         args = {
             "prompt_by_ref": {"ev_1": SimpleNamespace(citation_id="cite_1", matched_representations=("image",))},
-            "loaded_visual_refs": set(), "calculations": {},
+            "loaded_visual_refs": set(),
         }
         payload = {"outcome": "answered", "claims": [claim], "unanswered": []}
+        # An unloaded visual ref drops out of citations but never blocks the claim.
         result = _validate_submission(payload, **args)
-        self.assertEqual(result.validated.outcome, AnswerOutcome.REFUSED)
-        self.assertEqual(result.rejection_reasons, ("visual_ref",))
+        self.assertEqual(result.validated.outcome, AnswerOutcome.ANSWERED)
+        self.assertEqual(result.validated.claims, (AnswerClaim("A fact", ()),))
         args["loaded_visual_refs"] = {"ev_1"}
-        self.assertEqual(_validate_submission(payload, **args).validated.outcome, AnswerOutcome.ANSWERED)
+        with_visual = _validate_submission(payload, **args)
+        self.assertEqual(with_visual.validated.claims, (AnswerClaim("A fact", ("cite_1",)),))
         for invalid in (
             {**payload, "claims": [claim] * 101},
             {**payload, "unanswered": ["x" * 1001]},
             {**payload, "outcome": "invented"},
+            {**payload, "outcome": "clarify"},
         ):
             self.assertIsNone(_validate_submission(invalid, **args))
 

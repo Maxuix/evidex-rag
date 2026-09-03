@@ -198,7 +198,7 @@ class LangChainChatModelAdapter:
             model = model.bind_tools(
                 tools,
                 tool_choice=choice,
-                parallel_tool_calls=False,
+                parallel_tool_calls=request.parallel_tool_calls,
             )
             return await model.ainvoke(messages)
         return await model.ainvoke(messages)

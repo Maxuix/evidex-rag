@@ -1650,11 +1650,9 @@ class ChatRun(Base):
         nullable=False,
         server_default=text(
             "jsonb_build_object("
-            "'version', 'native_tool_calling_agent_v4', "
+            "'version', 'native_tool_calling_agent_v5', "
             "'budget', jsonb_build_object("
-            "'max_model_rounds', 8, 'max_graph_calls', 2, "
-            "'max_total_tokens', 150000, 'max_evidence_items', 64, "
-            "'max_retrieval_calls', 16))"
+            "'max_total_tokens', 150000))"
         ),
     )
     agent_trace: Mapped[dict[str, Any] | None] = mapped_column(JSONB)

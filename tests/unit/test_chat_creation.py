@@ -138,15 +138,11 @@ class ChatCreationServiceTests(unittest.IsolatedAsyncioTestCase):
                 "budget": ChatAgentBudget().as_dict(),
             },
         )
-        self.assertEqual(created["agent_configuration"]["version"], "native_tool_calling_agent_v4")
+        self.assertEqual(created["agent_configuration"]["version"], "native_tool_calling_agent_v5")
         self.assertEqual(
             set(created["agent_configuration"]["budget"]),
             {
-                "max_model_rounds",
-                "max_graph_calls",
                 "max_total_tokens",
-                "max_evidence_items",
-                "max_retrieval_calls",
             },
         )
 

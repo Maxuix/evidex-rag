@@ -9,15 +9,6 @@ from uuid import UUID
 from pydantic import Field, field_validator, model_validator
 
 from rag_kb.domain import (
-    CHAT_AGENT_DEFAULT_EVIDENCE_ITEMS,
-    CHAT_AGENT_DEFAULT_RETRIEVAL_CALLS,
-    CHAT_AGENT_DEFAULT_TOTAL_TOKENS,
-    CHAT_AGENT_MAX_EVIDENCE_ITEMS,
-    CHAT_AGENT_MAX_GRAPH_CALLS,
-    CHAT_AGENT_MAX_MODEL_ROUNDS,
-    CHAT_AGENT_MAX_RETRIEVAL_CALLS,
-    CHAT_AGENT_MAX_TOTAL_TOKENS,
-    CHAT_AGENT_MIN_TOTAL_TOKENS,
     RerankMode,
 )
 from rag_kb.schemas.common import OpaqueCursor, PublicSchema
@@ -99,21 +90,6 @@ class ChatRetrievalRequest(PublicSchema):
         return self
 
 
-class ChatAgentBudgetResponse(PublicSchema):
-    max_model_rounds: Annotated[int, Field(ge=1, le=CHAT_AGENT_MAX_MODEL_ROUNDS)]
-    max_graph_calls: Annotated[int, Field(ge=1, le=CHAT_AGENT_MAX_GRAPH_CALLS)]
-    max_total_tokens: Annotated[
-        int,
-        Field(ge=CHAT_AGENT_MIN_TOTAL_TOKENS, le=CHAT_AGENT_MAX_TOTAL_TOKENS),
-    ] = CHAT_AGENT_DEFAULT_TOTAL_TOKENS
-    max_evidence_items: Annotated[
-        int, Field(ge=1, le=CHAT_AGENT_MAX_EVIDENCE_ITEMS)
-    ] = CHAT_AGENT_DEFAULT_EVIDENCE_ITEMS
-    max_retrieval_calls: Annotated[
-        int, Field(ge=1, le=CHAT_AGENT_MAX_RETRIEVAL_CALLS)
-    ] = CHAT_AGENT_DEFAULT_RETRIEVAL_CALLS
-
-
 class ChatAgentTraceEventResponse(PublicSchema):
     tool: Literal[
         "search_knowledge_base",
@@ -155,7 +131,7 @@ class ChatAgentTraceEventResponse(PublicSchema):
         "rejected",
     ] | None = None
     new_evidence_count: Annotated[int, Field(ge=0, le=16)] | None = None
-    call_index: Annotated[int, Field(ge=1, le=2)] | None = None
+    call_index: Annotated[int, Field(ge=1)] | None = None
     invocation_source: Literal["agent", "legacy_guard"] | None = None
     duration_ms: Annotated[int, Field(ge=0)] | None = None
     candidate_count: Annotated[int, Field(ge=0)] | None = None
@@ -171,12 +147,14 @@ class ChatAgentTraceDiagnosticsResponse(PublicSchema):
     stop_reason: Literal[
         "submitted",
         "token_budget",
+        "no_new_evidence",
+        "protocol_error",
+        "deadline_exceeded",
+        # Historical v3/v4 traces only.
         "retrieval_query_budget",
         "evidence_budget",
-        "no_new_evidence",
         "model_round_limit",
         "submit_protocol_invalid",
-        "deadline_exceeded",
     ]
     forced_finalize: bool
     consecutive_no_new_evidence: Annotated[int, Field(ge=0)]
@@ -190,9 +168,12 @@ class ChatAgentTraceResponse(PublicSchema):
     version: Literal[
         "native_tool_calling_agent_v3",
         "native_tool_calling_agent_v4",
+        "native_tool_calling_agent_v5",
     ]
     events: tuple[ChatAgentTraceEventResponse, ...]
-    budget: ChatAgentBudgetResponse
+    # Stored budget shape passes through: v5 carries only max_total_tokens,
+    # historical v3/v4 runs keep their legacy fields.
+    budget: dict[str, int]
     usage: dict[str, Annotated[int, Field(ge=0)]]
     diagnostics: ChatAgentTraceDiagnosticsResponse | None = None
     outcome: Literal["answered", "partial", "refused", "clarify"]
@@ -202,8 +183,9 @@ class ChatAgentResponse(PublicSchema):
     version: Literal[
         "native_tool_calling_agent_v3",
         "native_tool_calling_agent_v4",
+        "native_tool_calling_agent_v5",
     ]
-    budget: ChatAgentBudgetResponse
+    budget: dict[str, int]
     trace: ChatAgentTraceResponse | None = None
 
 
