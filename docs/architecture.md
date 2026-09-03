@@ -117,7 +117,7 @@
 | 范围 | 当前选择 |
 | --- | --- |
 | 后端 | Python 3.12、FastAPI、Pydantic、异步 SQLAlchemy、asyncpg、Alembic |
-| 数据库 | PostgreSQL 18 + pgvector；当前 migration head 为 `0027_agent_v4_default` |
+| 数据库 | PostgreSQL 18 + pgvector；当前 migration head 为 `0028_agent_v5_default` |
 | 文档解析 | 原生 Docling；当前 PDF profile 在 Worker 管理的可终止子进程内按确定性页段解析 |
 | Chat 执行 | 普通异步原生 Tool-Calling loop；无 Agent 框架或图运行时 |
 | 模型接入 | OpenAI-compatible Chat/文本 Embedding；Tongyi 多模态 Embedding；固定离线 MiniLM reranker；已验证 Embedding 维度 64..4096 |
@@ -313,7 +313,9 @@ file content mutation 增加 `pending/completed/failed` 终态、稳定 failure 
 `0026` 在零活动 Chat、索引和 Graph work 前置条件下删除 ChatRun/IndexingJob 的 `claimed_by`，
 保留 attempt、claim/heartbeat、backoff、状态和错误事实；Graph work lease 不变。
 `0027` 把新 ChatRun 的 `agent_configuration` 列默认值改为 `native_tool_calling_agent_v4`
-与同值五键预算，不回填历史行。
+与同值五键预算，不回填历史行。`0028` 把默认值改为 `native_tool_calling_agent_v5` 与
+单键 token 预算（`max_total_tokens`），同样不回填历史行；v5 执行器读取历史 v3/v4
+配置时只取其中的 token 上限。
 P2 的实际数据核查确认 active/retired revision 指针仍承担当前与软删除恢复，两个 READY Graph build
 均为 active，PDF 分段任务真实使用 continuation；因此 revision/build identity、完整性 manifest、Graph
 lease 与 PDF checkpoint 都保留。未使用的 Enterprise Graph profile 只作为需单独授权的完整产品删除
@@ -471,33 +473,34 @@ Graph 的 route result 只允许 `admitted`、`no_evidence`、`not_ready`、`tim
 结果码可区分外层 ChatRun 取消。
 manual Graph 的 hybrid 候选查询宽度按 `min(40, max(12, top_k * 2))` 计算；packing 按 path-whole
 规则优先保留完整图路径，再用未重复的 hybrid Evidence 回填到 `top_k`。
-Agent 保留最多 8 个普通模型轮次的有限循环护栏，并另有累计资源预算：冻结 budget 记录
-`max_total_tokens`（默认 150k）、`max_evidence_items`（默认 64）、`max_retrieval_calls`
-（默认 16）。Agent 不以时间决定控制流；每轮按 response usage
-累计 token，token 或检索预算耗尽时进入 wrap-up
-收尾模式，只留 `submit_answer` 工具并提示直接提交。每次检索按准入、chunk 去重与证据上限
-处理后计算实际新增量；连续两次无新增（semantic/keyword/graph/read_chunk_context 参与，
-list_documents 不参与）或证据池已满时确定性关闭证据获取工具，保留
-至多一次 `calculate` 机会后只允许提交。多 Query 调用只执行剩余检索预算允许的有序前缀，
-不会突破冻结的累计上限。预算只限制探索行为，仍保留一次提交机会；普通轮次耗尽时另有
-一次 submit-only forced finalize。普通探索中的首个 malformed `submit_answer` 可获得一次
-submit-only 修复调用；修复提交、预算收尾或 forced-finalize 提交仍非法时直接确定性拒答。
-Agent 不比较或拒绝重复 Query 本身。
-历史 `retrieval_calls` 与 `max_retrieval_calls` 实际按 Query 执行数计量并继续保留兼容；Trace
+Agent（v5）不再设模型轮次、检索次数、Graph 次数或证据条数上限；冻结 budget 只保留
+`max_total_tokens`（默认 150k）一个基础设施保险丝。模型在同一轮可以发起多个互不依赖的
+工具调用，服务端并发执行、按 `index_chunk_id` 去重合并进统一证据池，并给每个调用各自
+返回 tool 结果。Agent 不以时间决定控制流；每轮按 response usage
+累计 token，token 保险丝触发后进入软 wrap-up——只留 `submit_answer` 工具，由模型自行选择
+answered/partial/refused；整体超时仍是硬资源错误。检索收敛按完整模型轮统计：一轮内任一
+检索产生新 chunk 即归零，成功检索但零新增记一次，连续两轮无新增后关闭检索工具，保留
+至多一次 `calculate` 机会后只允许提交；`calculate`、`list_documents` 不参与统计。
+检索执行失败只作为该调用的错误结果返回，不取消同轮其他调用；连续两轮没有任何成功工具
+执行或有效提交则按资源错误终止（`protocol_error`），不合成回答。系统 Prompt 只做身份、
+不可信数据与引用纪律约束，不做问题分类或通道路由；工具各自描述自身能力。
+`submit_answer` 与其他调用同轮出现时，提交有效即终止（同轮其余调用不执行），无效则其余
+调用照常执行并给一次修复反馈。Agent 不比较或拒绝重复 Query 本身。
+历史 `retrieval_calls` 与已删除的 `max_retrieval_calls` 实际按 Query 执行数计量并继续保留兼容；Trace
 同时发布语义明确的 `retrieval_queries`、`retrieval_tool_calls`、`semantic_tool_calls`、
 `keyword_tool_calls`、`chunk_context_calls`、`document_list_calls` 与 `graph_tool_calls`。
-v4 不再发布 `simple_tool_calls`。成功 Trace 另汇总 prompt/completion/total token、停止原因、
-forced-finalize、连续无新增次数、累计耗时、hard deadline 与 deadline remaining。Runner 为每次 attempt 维护纯
+v4 起不再发布 `simple_tool_calls`。成功 Trace 另汇总 prompt/completion/total token、停止原因、
+连续无新增次数、累计耗时、hard deadline 与 deadline remaining。Runner 为每次 attempt 维护纯
 内存 checkpoint；外层 deadline 取消 Agent 时，把已经完成的安全计数、事件与 model calls 写入
 该 attempt 的 timing ledger，不在主循环增加 I/O，也不覆盖后来重试成功的最终 Trace。
 题面中的文件名不触发分类、硬 document scope 或全文预读，因此同一知识库中被引用的其他文档
-仍可被检索。每个结果获得运行内稳定 EvidenceRef；首次命中向模型发送索引保存的完整 chunk，
-之后同一 EvidenceRef 只返回已发送标记，不截断、摘要
-或重复发送正文，也不阻止重复 Query。普通检索未命中不能证明内容未出现，Agent
+仍可被检索。每个结果获得运行内稳定 EvidenceRef；首次命中向模型发送索引保存的完整 chunk；
+旧轮次的工具结果在后续请求中压缩为「ref + 来源 + 截断摘录」占位，被压缩的 ref 经再次命中
+或 `read_chunk_context` 可重新获得完整正文。普通检索未命中不能证明内容未出现，Agent
 不支持以未命中构造缺失性结论。系统没有开放工具集、跨问题 planner、持久 step ledger 或
-跨 run provenance。固定 Agent 另有一个受限 Decimal
-`calculate` action：使用 512 字符表达式、只允许来源 Evidence 中的十进制操作数和
-`+ - * /`，结果继续引用原始 Evidence，不把计算器伪装成来源。
+跨 run provenance。固定 Agent 另有一个纯函数 Decimal
+`calculate` action：只接收 512 字符内的 `+ - * /` 表达式并返回结果，不绑定证据；
+引用哪些知识库内容由最终回答的 claim 自行决定。
 
 ## 10. Chat 与回答
 
@@ -525,15 +528,16 @@ JSON，不作为当前执行配置，也不做旧枚举解析。旧客户端提�
 ```text
 load_context
   -> active READY build capability read without any model call
-  -> model chooses semantic_search / keyword_search / read_chunk_context /
-       list_documents / search_graph_relations / calculate
-  -> server executes bounded tool and returns stable refs
-  -> adaptive mode: Graph visible from the first round, at most twice per run
-  -> model calls submit_answer when ready
-  -> if the ordinary loop reaches its limit, one extra submit-only call finalizes
-  -> budget exhaustion switches to one submit-only wrap-up round
-  -> first malformed ordinary submission gets one submit-only repair attempt
-  -> claim-level deterministic validation and salvage
+  -> model chooses any combination of semantic_search / keyword_search /
+       read_chunk_context / list_documents / search_graph_relations / calculate,
+       with independent calls executed concurrently in the same round
+  -> server executes tools and returns stable refs from one merged evidence pool
+  -> adaptive mode: Graph visible from the first round, uncapped per run
+  -> model calls submit_answer when ready (answered / partial / refused)
+  -> token fuse switches to a soft submit-only wrap-up round
+  -> two consecutive rounds without new evidence close retrieval
+  -> two consecutive stalled rounds end the run with a resource error
+  -> submission shape validation only; the model's outcome stands
   -> persist_result
 ```
 
@@ -553,16 +557,16 @@ ChatRun 内部 trace 保存 claim salvage 的 rejected count 与内部 reason，
 
 回答边界保持：
 
-- 零准入证据时确定性拒答；有证据时模型仍可判断问题无法充分回答。
-- 正常和 forced-finalize 提交通过确定性校验后直接渲染、持久化，不再追加独立
+- 拒答只由模型通过 `submit_answer` 自主给出（v5 起没有任何确定性拒答兜底）；
+  基础设施终止（超时、连续停滞）一律记录为资源错误，不合成回答或拒答。
+- 提交通过形状校验后直接渲染、持久化，不再追加独立
   LLM Verifier 或 JSON verdict 重试。语义支持度及题面预设命题由生成模型结合证据判断，
   不把引用合法性检查等同于事实正确性保证；原有 evidence-only 与错误前提拒答提示保留。
   历史 Trace 中的 `verifier` 事件仍可只读展示，新运行不产生此类事件；历史 token 统计不改写。
 - 文档、历史与图片都是 prompt 中的不可信数据，不能扩大权限或引用范围。
-- `submit_answer` 必须通过严格参数和逐 claim 校验；非法 claim 被局部删除，仍有合法 claim 时
-  降级为 `partial`，零合法 claim 确定性拒答。普通探索中提交外形非法时只允许一次
-  submit-only 模型修复；第二次非法、预算收尾或 forced-finalize 中非法则确定性拒答。
-  新 Trace 不设置独立 repair 计数，修复调用仍计入普通模型轮次；历史 Trace 不改写。
+- `submit_answer` 只做形状校验（outcome/claims/unanswered 结构）；claim 引用的非法 ref
+  从引用集中静默丢弃，不删除 claim、不改写 outcome、不阻塞回答；形状非法的提交获得
+  修复反馈并计入停滞保险丝。新 ChatRun 不再有 `clarify` outcome；历史 clarify 数据保持可读。
 - 事实 claim 只能引用本次已授权 Evidence；实际未加载的图片不能产生视觉引用。
 - 同一主题上互不兼容的证据直接写成普通 claim 文本，并在 `evidence_refs` 中引用冲突双方；
   没有 `kind/conflict/type/adjudication` 分支、冲突领域对象或额外持久化字段。
