@@ -119,7 +119,7 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
             {
                 "version": "native_tool_calling_agent_v5",
                 "budget": {
-                    "max_total_tokens": 300000,
+                    "max_total_tokens": 400000,
                 },
             },
         )

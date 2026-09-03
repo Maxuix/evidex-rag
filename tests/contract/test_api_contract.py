@@ -2077,7 +2077,7 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             body["agent"]["budget"],
             {
-                "max_total_tokens": 300000,
+                "max_total_tokens": 400000,
             },
         )
         self.assertIsNone(body["agent"]["trace"])
