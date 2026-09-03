@@ -519,13 +519,17 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             _graph_arguments({"query": "relation", "reason": "relation_chain"}),
-            ("relation", "relation_chain"),
+            (("relation", "relation_chain"), None),
         )
-        self.assertIsNone(
-            _graph_arguments({"query": "relation", "reason": "relational_query"})
+        self.assertEqual(
+            _graph_arguments({"query": "relation", "reason": "relational_query"}),
+            (None, "invalid_reason"),
         )
-        self.assertIsNone(
-            _graph_arguments({"query": "relation", "route_reason_code": "relation_chain"})
+        self.assertEqual(
+            _graph_arguments(
+                {"query": "relation", "route_reason_code": "relation_chain"}
+            ),
+            (None, "invalid_graph_arguments"),
         )
 
     def test_graph_tool_visibility_follows_capability(self) -> None:
@@ -553,21 +557,29 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tuple(graph_schema["required"]), ("query", "reason"))
         self.assertEqual(
             _search_queries_arguments({"queries": ["one", "two"]}, max_top_k=3),
-            (("one", "two"), None),
+            (("one", "two"), None, None),
         )
         self.assertEqual(
             _search_queries_arguments(
                 {"queries": ["one"], "top_k": 2}, max_top_k=3
             ),
-            (("one",), 2),
+            (("one",), 2, None),
         )
-        self.assertIsNone(
+        self.assertEqual(
             _search_queries_arguments(
                 {"retrieval_lane": "simple", "queries": ["one"]}, max_top_k=3
-            )
+            ),
+            (None, None, "queries_required"),
         )
-        self.assertIsNone(
-            _search_queries_arguments({"queries": ["one"], "top_k": 4}, max_top_k=3)
+        self.assertEqual(
+            _search_queries_arguments({"queries": ["one"], "top_k": 4}, max_top_k=3),
+            (None, None, "invalid_top_k"),
+        )
+        self.assertEqual(
+            _search_queries_arguments(
+                {"queries": ["a", "b", "c", "d"]}, max_top_k=3
+            ),
+            (None, None, "too_many_queries"),
         )
 
     def test_agent_budget_keeps_only_the_token_fuse(self) -> None:
@@ -1448,11 +1460,12 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(trace.stop_reason, "submitted")
         self.assertEqual(trace.model_rounds, 2)
 
-    async def test_two_stalled_rounds_trip_the_protocol_fuse(self) -> None:
+    async def test_three_stalled_rounds_trip_the_protocol_fuse(self) -> None:
         context = _context()
         model = _Model(
             ChatToolCall("submit-invalid-1", "submit_answer", {"outcome": "answered"}),
             ChatToolCall("submit-invalid-2", "submit_answer", {"outcome": "answered"}),
+            ChatToolCall("submit-invalid-3", "submit_answer", {"outcome": "answered"}),
         )
 
         with self.assertRaises(ChatPipelineExecutionError) as raised:
@@ -1461,8 +1474,8 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         error = raised.exception
         self.assertEqual(error.code, ErrorCode.CHAT_RESPONSE_INVALID)
         self.assertEqual(error.diagnostic, {"check": "agent_protocol_fuse"})
-        self.assertEqual(len(model.requests), 2)
-        self.assertEqual(len(error.model_calls), 2)
+        self.assertEqual(len(model.requests), 3)
+        self.assertEqual(len(error.model_calls), 3)
         partial = error.agent_trace
         self.assertIsNotNone(partial)
         self.assertEqual(partial["diagnostics"]["stop_reason"], "protocol_error")
@@ -1486,6 +1499,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
                     ChatToolCall("search-1", "semantic_search", {"queries": ["revenue"]}),
                     response,
                     response,
+                    response,
                     usage={"total_tokens": 1000},
                 )
                 retriever = _Retriever(_pack(context))
@@ -1496,7 +1510,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(
                     raised.exception.code, ErrorCode.CHAT_RESPONSE_INVALID
                 )
-                self.assertEqual(len(model.requests), 3)
+                self.assertEqual(len(model.requests), 4)
                 self.assertEqual(retriever.queries, ["revenue"])
                 self.assertEqual(
                     [tool.name for tool in model.requests[-1].tools],
@@ -3249,15 +3263,14 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_compaction_stubs_old_rounds_and_reenables_full_resend(self) -> None:
         context = _context()
-        long_text = "revenue detail " * 30  # 450 chars, over the stub limit
+        long_text = "revenue detail " * 200  # 3000 chars, over the stub limit
         first = _pack(context, text=long_text)
-        second = _pack(context, text="second evidence")
-        third = _pack(context, text="third evidence")
         retriever = _QueryRetriever(
             {
                 "one": first,
-                "two": second,
-                "three": third,
+                "two": _pack(context, text="second evidence"),
+                "three": _pack(context, text="third evidence"),
+                "four": _pack(context, text="fourth evidence"),
                 "again": first,
             }
         )
@@ -3265,7 +3278,8 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
             ChatToolCall("search-1", "semantic_search", {"queries": ["one"]}),
             ChatToolCall("search-2", "semantic_search", {"queries": ["two"]}),
             ChatToolCall("search-3", "semantic_search", {"queries": ["three"]}),
-            ChatToolCall("search-4", "semantic_search", {"queries": ["again"]}),
+            ChatToolCall("search-4", "semantic_search", {"queries": ["four"]}),
+            ChatToolCall("search-5", "semantic_search", {"queries": ["again"]}),
             ChatToolCall(
                 "submit-1",
                 "submit_answer",
@@ -3275,19 +3289,22 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
                     "unanswered": [],
                 },
             ),
+            usage={"total_tokens": 25_000},
         )
 
         state = await _agent(model, retriever).run(context)
 
-        # Round 4's request has round 1's payload compacted to a stub.
-        round_one_payload = _tool_payload(model.requests[3], "search-1")
+        # Round 5's request has round 1's payload compacted to a stub (the
+        # token trigger is past half the fuse and three recent rounds stay
+        # intact).
+        round_one_payload = _tool_payload(model.requests[4], "search-1")
         self.assertTrue(round_one_payload["compacted"])
         stub = round_one_payload["groups"][0]["results"][0]
         self.assertEqual(stub["evidence_ref"], "ev_1")
         self.assertLess(len(stub["content"]), len(long_text))
-        # The stubbed ref becomes re-sendable: the duplicate hit in round 4
+        # The stubbed ref becomes re-sendable: the duplicate hit in round 5
         # carries full content again instead of content_already_provided.
-        resent = _tool_payload(model.requests[4], "search-4")
+        resent = _tool_payload(model.requests[5], "search-5")
         resent_item = resent["groups"][0]["results"][0]
         self.assertEqual(resent_item["evidence_ref"], "ev_1")
         self.assertEqual(resent_item["content"], long_text)
@@ -3298,7 +3315,43 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
             state.answering.rendered.citations[0].evidence.excerpt, long_text
         )
 
+    async def test_light_runs_never_compact_history(self) -> None:
+        context = _context()
+        long_text = "revenue detail " * 200
+        first = _pack(context, text=long_text)
+        retriever = _QueryRetriever(
+            {
+                "one": first,
+                "two": _pack(context, text="second evidence"),
+                "three": _pack(context, text="third evidence"),
+                "four": _pack(context, text="fourth evidence"),
+                "again": first,
+            }
+        )
+        model = _Model(
+            ChatToolCall("search-1", "semantic_search", {"queries": ["one"]}),
+            ChatToolCall("search-2", "semantic_search", {"queries": ["two"]}),
+            ChatToolCall("search-3", "semantic_search", {"queries": ["three"]}),
+            ChatToolCall("search-4", "semantic_search", {"queries": ["four"]}),
+            ChatToolCall("search-5", "semantic_search", {"queries": ["again"]}),
+            ChatToolCall(
+                "submit-1",
+                "submit_answer",
+                {"outcome": "refused", "claims": [], "unanswered": []},
+            ),
+        )
+
+        state = await _agent(model, retriever).run(context)
+
+        # Default per-round usage keeps the run far below the token trigger:
+        # even the duplicate hit stays a cheap content_already_provided stub.
+        resent = _tool_payload(model.requests[5], "search-5")
+        self.assertEqual(
+            resent["groups"][0]["results"],
+            [{"evidence_ref": "ev_1", "content_already_provided": True}],
+        )
+        self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.REFUSED)
+
 
 if __name__ == "__main__":
     unittest.main()
-

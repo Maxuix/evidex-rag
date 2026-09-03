@@ -75,17 +75,20 @@ if TYPE_CHECKING:
 
 AGENT_TRACE_ARTIFACT = CHAT_AGENT_TRACE_ARTIFACT
 _PROTOCOL_ERROR = '{"status":"error","code":"invalid_tool_protocol"}'
-_ARGUMENT_ERROR = '{"status":"error","code":"invalid_tool_arguments"}'
 _KEYWORD_UNAVAILABLE = '{"status":"error","code":"keyword_unavailable"}'
 _TRACE_REF_LIMIT = CHAT_AGENT_TRACE_REF_LIMIT
 _SIMPLE_QUERY_MAX_COUNT = 3
 _MAX_CONSECUTIVE_NO_NEW_EVIDENCE_ROUNDS = 2
 # A round with no successfully executed tool and no valid submission is
-# stalled; two in a row mean the run cannot make progress.
-_MAX_CONSECUTIVE_STALLED_ROUNDS = 2
+# stalled; three in a row mean the run cannot make progress.
+_MAX_CONSECUTIVE_STALLED_ROUNDS = 3
 _QUERY_MAX_CHARS = 2048
-_COMPACTION_KEEP_RECENT_ROUNDS = 2
-_COMPACTION_EXCERPT_CHARS = 200
+_COMPACTION_KEEP_RECENT_ROUNDS = 3
+_COMPACTION_EXCERPT_CHARS = 1600
+# Old rounds keep full content until the run burns half the token fuse;
+# below that, history compaction would only cost answer fidelity.
+_COMPACTION_TOKEN_FRACTION = 2
+_MAX_CONTEXT_ANCHORS = 3
 _BUDGET_EXHAUSTED_FEEDBACK = (
     "The token budget for this run is nearly exhausted. Do not call search "
     "tools; submit the best possible answer now with the evidence already "
@@ -317,16 +320,20 @@ class NativeToolCallingAgent:
             if name in {"semantic_search", "keyword_search"}:
                 if name == "keyword_search" and not keyword_ready:
                     return _CallOutcome(
-                        call=call, response=_ARGUMENT_ERROR, event_status="rejected"
+                        call=call,
+                        response=_argument_error("keyword_unavailable"),
+                        event_status="rejected",
                     )
-                parsed = _search_queries_arguments(
+                queries, top_k_override, rejection = _search_queries_arguments(
                     call.arguments, max_top_k=frozen_top_k
                 )
-                if parsed is None:
+                if rejection is not None:
                     return _CallOutcome(
-                        call=call, response=_ARGUMENT_ERROR, event_status="rejected"
+                        call=call,
+                        response=_argument_error(rejection),
+                        event_status="rejected",
                     )
-                queries, top_k_override = parsed
+                assert queries is not None
                 lane = "semantic" if name == "semantic_search" else "keyword"
                 search_method = (
                     self._retriever.semantic_search
@@ -373,20 +380,23 @@ class NativeToolCallingAgent:
                 )
 
             if name == "read_chunk_context":
-                refs = _read_context_arguments(call.arguments)
-                anchors = (
-                    _read_context_anchors(
+                refs, refs_rejection = _read_context_arguments(call.arguments)
+                anchors = None
+                anchors_rejection = None
+                if refs is not None:
+                    anchors, anchors_rejection = _read_context_anchors(
                         refs,
                         evidence_by_ref,
                         index_revision_id=context.index_revision_id,
                     )
-                    if refs is not None
-                    else None
-                )
-                if refs is None or anchors is None:
+                rejection = refs_rejection or anchors_rejection
+                if rejection is not None:
                     return _CallOutcome(
-                        call=call, response=_ARGUMENT_ERROR, event_status="rejected"
+                        call=call,
+                        response=_argument_error(rejection),
+                        event_status="rejected",
                     )
+                assert refs is not None and anchors is not None
                 try:
                     neighbors = await self._retriever.read_chunk_context(
                         context, anchors
@@ -432,7 +442,9 @@ class NativeToolCallingAgent:
                 include_outline = _list_documents_arguments(call.arguments)
                 if include_outline is None:
                     return _CallOutcome(
-                        call=call, response=_ARGUMENT_ERROR, event_status="rejected"
+                        call=call,
+                        response=_argument_error("invalid_arguments"),
+                        event_status="rejected",
                     )
                 try:
                     listed = await self._retriever.list_documents(context)
@@ -476,12 +488,18 @@ class NativeToolCallingAgent:
             if name == "search_graph_relations":
                 if not adaptive_graphiti or not graph_ready:
                     return _CallOutcome(
-                        call=call, response=_ARGUMENT_ERROR, event_status="rejected"
+                        call=call,
+                        response=_argument_error("graph_unavailable"),
+                        event_status="rejected",
                     )
-                graph_request = _graph_arguments(call.arguments)
+                graph_request, graph_rejection = _graph_arguments(call.arguments)
                 if graph_request is None:
                     return _CallOutcome(
-                        call=call, response=_ARGUMENT_ERROR, event_status="rejected"
+                        call=call,
+                        response=_argument_error(
+                            graph_rejection or "invalid_graph_arguments"
+                        ),
+                        event_status="rejected",
                     )
                 query, route_reason_code = graph_request
                 started = time.monotonic()
@@ -525,13 +543,19 @@ class NativeToolCallingAgent:
                 expression = _calculate_arguments(call.arguments)
                 if expression is None:
                     return _CallOutcome(
-                        call=call, response=_ARGUMENT_ERROR, event_status="rejected"
+                        call=call,
+                        response=_argument_error("expression_required"),
+                        event_status="rejected",
                     )
                 try:
                     fact = evaluate_decimal_expression(expression)
-                except DecimalCalculationRejected:
+                except DecimalCalculationRejected as error:
                     return _CallOutcome(
-                        call=call, response=_ARGUMENT_ERROR, event_status="rejected"
+                        call=call,
+                        response=_argument_error(
+                            f"calculation_{error.reason.value}"
+                        ),
+                        event_status="rejected",
                     )
                 return _CallOutcome(
                     call=call,
@@ -792,7 +816,13 @@ class NativeToolCallingAgent:
                 wrap_up_notice_sent = True
                 messages.append(ChatModelMessage("user", _BUDGET_EXHAUSTED_FEEDBACK))
 
-            _compact_history(messages, round_spans, sent_content_refs)
+            _compact_history(
+                messages,
+                round_spans,
+                sent_content_refs,
+                total_tokens=total_tokens,
+                budget=budget,
+            )
             span_start = len(messages)
 
             available_tools = _tools(
@@ -1046,7 +1076,9 @@ class NativeToolCallingAgent:
                 # The submission was invalid; siblings still executed above.
                 messages.append(
                     ChatModelMessage(
-                        "tool", _ARGUMENT_ERROR, tool_call_id=submit_call.id
+                        "tool",
+                        _argument_error("invalid_submission_shape"),
+                        tool_call_id=submit_call.id,
                     )
                 )
             if submit_calls:
@@ -1212,7 +1244,7 @@ def _tools(
                     "type": "array",
                     "items": {"type": "string", "minLength": 1},
                     "minItems": 1,
-                    "maxItems": 2,
+                    "maxItems": _MAX_CONTEXT_ANCHORS,
                     "uniqueItems": True,
                 }
             },
@@ -1321,41 +1353,51 @@ def _search_queries_arguments(
     value: Mapping[str, Any],
     *,
     max_top_k: int,
-) -> tuple[tuple[str, ...], int | None] | None:
+) -> tuple[tuple[str, ...] | None, int | None, str | None]:
+    """Return (queries, top_k_override, rejection_reason)."""
+
     if (
         not isinstance(value, Mapping)
         or "queries" not in value
         or not set(value) <= {"queries", "top_k"}
     ):
-        return None
+        return None, None, "queries_required"
     raw = value.get("queries")
-    if not isinstance(raw, (list, tuple)) or not 1 <= len(raw) <= _SIMPLE_QUERY_MAX_COUNT:
-        return None
+    if not isinstance(raw, (list, tuple)) or not raw:
+        return None, None, "queries_required"
+    if len(raw) > _SIMPLE_QUERY_MAX_COUNT:
+        return None, None, "too_many_queries"
     queries = tuple(item.strip() for item in raw if isinstance(item, str))
-    if len(queries) != len(raw) or any(
-        not item or len(item) > _QUERY_MAX_CHARS for item in queries
-    ):
-        return None
+    if len(queries) != len(raw):
+        return None, None, "query_not_string"
+    if any(not item for item in queries):
+        return None, None, "empty_query"
+    if any(len(item) > _QUERY_MAX_CHARS for item in queries):
+        return None, None, "query_too_long"
     if "top_k" not in value:
-        return queries, None
+        return queries, None, None
     top_k = value.get("top_k")
     if (
         isinstance(top_k, bool)
         or not isinstance(top_k, int)
         or not 1 <= top_k <= max_top_k
     ):
-        return None
-    return queries, top_k
+        return None, None, "invalid_top_k"
+    return queries, top_k, None
 
 
-def _read_context_arguments(value: Mapping[str, Any]) -> tuple[str, ...] | None:
+def _read_context_arguments(
+    value: Mapping[str, Any],
+) -> tuple[tuple[str, ...] | None, str | None]:
     if not isinstance(value, Mapping) or set(value) != {"evidence_refs"}:
-        return None
-    return _strings(
-        value.get("evidence_refs"),
-        maximum=2,
-        require_nonempty=True,
-    )
+        return None, "evidence_refs_required"
+    raw = value.get("evidence_refs")
+    if not isinstance(raw, (list, tuple)) or not raw:
+        return None, "evidence_refs_required"
+    if len(raw) > _MAX_CONTEXT_ANCHORS:
+        return None, "too_many_anchors"
+    refs = _strings(raw, maximum=_MAX_CONTEXT_ANCHORS, require_nonempty=True)
+    return (refs, None) if refs is not None else (None, "invalid_evidence_refs")
 
 
 def _read_context_anchors(
@@ -1363,20 +1405,19 @@ def _read_context_anchors(
     evidence_by_ref: Mapping[str, Evidence],
     *,
     index_revision_id: UUID,
-) -> tuple[Evidence, ...] | None:
+) -> tuple[tuple[Evidence, ...] | None, str | None]:
     if any(ref not in evidence_by_ref for ref in refs):
-        return None
+        return None, "unknown_evidence_ref"
     anchors = tuple(evidence_by_ref[ref] for ref in refs)
     if len({item.index_chunk_id for item in anchors}) != len(anchors):
-        return None
-    if any(
-        item.index_revision_id != index_revision_id
-        or item.modality not in {"text", "table"}
-        or item.score_kind is EvidenceScoreKind.ADJACENCY
-        for item in anchors
-    ):
-        return None
-    return anchors
+        return None, "duplicate_anchor"
+    if any(item.index_revision_id != index_revision_id for item in anchors):
+        return None, "anchor_revision_mismatch"
+    if any(item.modality not in {"text", "table"} for item in anchors):
+        return None, "anchor_not_text_or_table"
+    if any(item.score_kind is EvidenceScoreKind.ADJACENCY for item in anchors):
+        return None, "anchor_is_neighbor"
+    return anchors, None
 
 
 def _list_documents_arguments(value: Mapping[str, Any]) -> bool | None:
@@ -1392,19 +1433,18 @@ def _list_documents_arguments(value: Mapping[str, Any]) -> bool | None:
 
 def _graph_arguments(
     value: Mapping[str, Any],
-) -> tuple[str, str] | None:
+) -> tuple[tuple[str, str] | None, str | None]:
     if not isinstance(value, Mapping) or set(value) != {"query", "reason"}:
-        return None
+        return None, "invalid_graph_arguments"
     query = value.get("query")
     reason = value.get("reason")
-    if (
-        not isinstance(query, str)
-        or not query.strip()
-        or len(query.strip()) > _QUERY_MAX_CHARS
-        or reason not in CHAT_GRAPH_SEARCH_REASONS
-    ):
-        return None
-    return query.strip(), str(reason)
+    if reason not in CHAT_GRAPH_SEARCH_REASONS:
+        return None, "invalid_reason"
+    if not isinstance(query, str) or not query.strip():
+        return None, "empty_query"
+    if len(query.strip()) > _QUERY_MAX_CHARS:
+        return None, "query_too_long"
+    return (query.strip(), str(reason)), None
 
 
 def _calculate_arguments(value: Mapping[str, Any]) -> str | None:
@@ -1414,6 +1454,16 @@ def _calculate_arguments(value: Mapping[str, Any]) -> str | None:
     if not isinstance(expression, str) or not expression.strip() or len(expression) > 512:
         return None
     return expression
+
+
+def _argument_error(detail: str) -> str:
+    """Content-free but machine-readable argument rejection."""
+
+    return json.dumps(
+        {"status": "error", "code": "invalid_tool_arguments", "detail": detail},
+        separators=(",", ":"),
+        sort_keys=True,
+    )
 
 
 def _tool_error(error: ChatPipelineExecutionError) -> str:
@@ -1615,11 +1665,20 @@ def _compact_history(
     messages: list[ChatModelMessage],
     round_spans: list[tuple[int, int]],
     sent_content_refs: set[str],
+    *,
+    total_tokens: int,
+    budget: ChatAgentBudget,
 ) -> None:
     """Shrink old rounds in place: full evidence content becomes a short
     stub, while the last rounds stay intact. Refs whose content was stubbed
-    become re-sendable so the model can fetch the full text again."""
+    become re-sendable so the model can fetch the full text again.
 
+    Compaction only starts once the run has burned half the token fuse;
+    lighter runs keep full fidelity.
+    """
+
+    if total_tokens * _COMPACTION_TOKEN_FRACTION < budget.max_total_tokens:
+        return
     if len(round_spans) <= _COMPACTION_KEEP_RECENT_ROUNDS:
         return
     cutoff = round_spans[-_COMPACTION_KEEP_RECENT_ROUNDS][0]
