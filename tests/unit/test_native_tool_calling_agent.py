@@ -1570,6 +1570,42 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(trace.stop_reason, "token_budget")
         self.assertEqual(trace.total_tokens, 600 * 3)
 
+    async def test_wrap_up_gets_fresh_protocol_repair_attempts(self) -> None:
+        context = replace(
+            _context(),
+            agent_configuration={
+                "version": "native_tool_calling_agent_v5",
+                "budget": {"max_total_tokens": 1000},
+            },
+        )
+        model = _Model(
+            ChatToolCall("invalid-1", "unknown_tool", {}),
+            ChatToolCall("invalid-2", "unknown_tool", {}),
+            ChatToolCall(
+                "invalid-submit-1", "submit_answer", {"outcome": "answered"}
+            ),
+            ChatToolCall(
+                "invalid-submit-2", "submit_answer", {"outcome": "answered"}
+            ),
+            ChatToolCall(
+                "submit-1",
+                "submit_answer",
+                {"outcome": "refused", "claims": [], "unanswered": []},
+            ),
+            usage={"total_tokens": 600},
+        )
+
+        state = await _agent(model, _Retriever(_pack(context))).run(context)
+
+        self.assertEqual(len(model.requests), 5)
+        self.assertEqual(
+            [tool.name for tool in model.requests[2].tools],
+            ["submit_answer"],
+        )
+        trace = state.artifacts[AGENT_TRACE_ARTIFACT]
+        self.assertEqual(trace.stop_reason, "token_budget")
+        self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.REFUSED)
+
     async def test_no_evidence_cap_admits_every_item(self) -> None:
         context = _context()
         model = _Model(

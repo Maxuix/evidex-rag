@@ -812,6 +812,10 @@ class NativeToolCallingAgent:
             progress.model_rounds = round_number
             if not wrap_up and total_tokens >= budget.max_total_tokens:
                 wrap_up = True
+                # Entering submit-only mode is a real progress opportunity.
+                # Search-phase stalls must not consume the repair attempts
+                # reserved for the final submission.
+                stalled_rounds = 0
             if wrap_up and not wrap_up_notice_sent:
                 wrap_up_notice_sent = True
                 messages.append(ChatModelMessage("user", _BUDGET_EXHAUSTED_FEEDBACK))
