@@ -306,6 +306,8 @@ def main() -> int:
         "created_at": datetime.now(timezone.utc).isoformat(),
         "config": {
             **base_config,
+            "answer_code_commit": base_config.get("code_commit"),
+            "judge_code_commit": arguments.code_commit,
             "case_count": len(cases),
             "corpus_sha256": corpus["dataset_sha256"],
             "rescore_only": arguments.rescore_input is not None,
