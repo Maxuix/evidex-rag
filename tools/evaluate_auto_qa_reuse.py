@@ -100,8 +100,9 @@ class CachedReranker:
 
     profile = RerankMode.LOCAL_MINILM_V1
 
-    def __init__(self, adapter, path, identity):
+    def __init__(self, adapter, path, identity, *, cache_only=False):
         self.adapter, self.path, self.identity = adapter, path, identity
+        self.cache_only = cache_only
         self.values = json.loads(path.read_text()) if path.exists() else {}
 
     @property
@@ -115,6 +116,8 @@ class CachedReranker:
     async def score(self, query, documents):
         missing = tuple(item for item in documents if self.key(query, item) not in self.values)
         if missing:
+            if self.cache_only:
+                raise RuntimeError("model score cache missing; local inference is disabled")
             scores = await self.adapter.score(query, missing)
             for document, score in zip(missing, scores, strict=True):
                 assert document.index_chunk_id == score.index_chunk_id
@@ -143,7 +146,8 @@ async def run(arguments):
     # it does not migrate the preserved evaluation DB or start brokers/workers.
     service = dependencies.retrieval_service
     cache = CachedReranker(LocalMiniLmReranker(artifacts_path=arguments.reranker_assets, manifest_path=manifest_path),
-                           arguments.output.parent / "model-scores.json", manifest.revision)
+                           arguments.output.parent / "model-scores.json", manifest.revision,
+                           cache_only=arguments.cached_model_scores_only)
     service._text_reranker = cache
     query_file = arguments.output.parent / "query-vectors.json"
     query_cache = json.loads(query_file.read_text()) if query_file.exists() else {}
@@ -257,6 +261,7 @@ def main():
     parser.add_argument("--output", type=Path, default=OUTPUT_ROOT / "retrieval.json")
     parser.add_argument("--reranker-assets", type=Path, default=ROOT / ".runtime/model-assets/local-reranker")
     parser.add_argument("--cached-queries-only", action="store_true")
+    parser.add_argument("--cached-model-scores-only", action="store_true")
     parser.add_argument("--preflight-only", action="store_true")
     asyncio.run(run(parser.parse_args()))
 

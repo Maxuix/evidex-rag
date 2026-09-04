@@ -1,7 +1,7 @@
 from copy import deepcopy
 import unittest
 
-from tools.evaluate_auto_qa_reuse import paired_changes, retrieval_gate_passed, trace_legacy_losses
+from tools.evaluate_auto_qa_reuse import CachedReranker, paired_changes, retrieval_gate_passed, trace_legacy_losses
 
 
 def _complete_result():
@@ -61,3 +61,20 @@ class LegacyLossTraceTests(unittest.TestCase):
         self.assertTrue(result["source_candidate_match"])
         self.assertTrue(result["scored_candidate_match"])
         self.assertIsNone(result["ranks"]["minilm_augmented"])
+
+
+class CachedScoreTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cache_only_miss_does_not_call_model(self):
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+        from unittest.mock import AsyncMock
+        from uuid import uuid4
+        from rag_kb.domain import RerankDocument
+
+        adapter = AsyncMock()
+        document = RerankDocument(index_chunk_id=uuid4(), text="source", hierarchy={}, modality="text")
+        with TemporaryDirectory() as directory:
+            cache = CachedReranker(adapter, Path(directory) / "scores.json", "fixed-model", cache_only=True)
+            with self.assertRaisesRegex(RuntimeError, "local inference is disabled"):
+                await cache.score("query", (document,))
+        adapter.score.assert_not_called()

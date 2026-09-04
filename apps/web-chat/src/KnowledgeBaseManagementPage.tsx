@@ -1204,8 +1204,8 @@ function KnowledgeBaseCreator({
             />
             <ChoiceCard
               active={autoQaEnabled}
-              title="开启"
-              description="每个文本 Chunk 最多保留 5 个通过原文支持校验的问题，允许零个。生成和校验会增加一次性模型用量，问句补充仅在显式选择本地模型重排时生效，不作为答案或引用。"
+              title="开启（实验）"
+              description="当前评测尚未证明检索效果提升。每个文本 Chunk 最多保留 5 个通过原文支持校验的问题，允许零个。生成和校验会增加一次性模型用量，问句补充仅在显式选择本地模型重排时生效，不作为答案或引用。"
               onClick={() => setAutoQaEnabled(true)}
             />
           </fieldset>
