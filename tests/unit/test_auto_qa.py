@@ -8,12 +8,14 @@ from rag_kb.domain import (
     ChatModelResponse,
     ChatToolCall,
     ContentModality,
+    EmbeddingBatch,
     ErrorCode,
     IndexChunkWrite,
     IndexingExecutionError,
     IndexingPhase,
 )
 from rag_kb.indexing.auto_qa import (
+    embed_auto_qa_questions,
     eligible_auto_qa_chunks,
     generate_auto_qa_questions,
     is_auto_qa_eligible,
@@ -166,6 +168,53 @@ class AutoQAChatContractTests(unittest.IsolatedAsyncioTestCase):
                 model_profile_revision_id=uuid4(),
             )
         self.assertEqual(raised.exception.code, ErrorCode.AUTO_QA_RESPONSE_INVALID)
+        self.assertEqual(len(chat.requests), 1)
+
+    async def test_question_count_gets_bounded_schema_repair_retry(self) -> None:
+        chunk = _chunk(content="安装客户端", embedding_text="安装客户端")
+        chat = _RepairingChatModel()
+        generated, usage, calls = await generate_auto_qa_questions(
+            chat,
+            (chunk,),
+            model_profile_revision_id=uuid4(),
+        )
+        self.assertEqual(len(generated[chunk.id]), 5)
+        self.assertEqual(calls, 2)
+        self.assertEqual(usage["prompt_tokens"], 10)
+        self.assertIn("schema-repair retry", chat.requests[1].messages[0].content)
+
+    async def test_question_length_gets_bounded_schema_repair_retry(self) -> None:
+        chunk = _chunk(content="安装客户端", embedding_text="安装客户端")
+        chat = _RepairingLongQuestionChatModel()
+        generated, _, calls = await generate_auto_qa_questions(
+            chat,
+            (chunk,),
+            model_profile_revision_id=uuid4(),
+        )
+        self.assertEqual(len(generated[chunk.id]), 5)
+        self.assertEqual(calls, 2)
+
+    async def test_question_embeddings_respect_provider_batch_limit(self) -> None:
+        embeddings = _EmbeddingModel(max_batch_size=2)
+        vectors = await embed_auto_qa_questions(
+            embeddings,
+            ("问题一", "问题二", "问题三", "问题四", "问题五"),
+        )
+        self.assertEqual(
+            embeddings.batches,
+            [("问题一", "问题二"), ("问题三", "问题四"), ("问题五",)],
+        )
+        self.assertEqual(len(vectors), 5)
+
+    async def test_question_embedding_rejects_short_provider_response(self) -> None:
+        embeddings = _EmbeddingModel(max_batch_size=2, short_response=True)
+        with self.assertRaises(IndexingExecutionError) as raised:
+            await embed_auto_qa_questions(embeddings, ("问题一", "问题二"))
+        self.assertEqual(raised.exception.code, ErrorCode.EMBEDDING_RESPONSE_INVALID)
+        self.assertEqual(
+            raised.exception.diagnostic["check"],
+            "auto_qa_embedding_batch_count",
+        )
 
 
 class _ChatModel:
@@ -202,6 +251,80 @@ class _ChatModel:
                 ),
             ),
         )
+
+
+class _RepairingChatModel(_ChatModel):
+    async def complete(self, request):
+        if not self.requests:
+            self.requests.append(request)
+            return ChatModelResponse(
+                content="",
+                model="mimo-v2.5",
+                finish_reason="tool_calls",
+                provider_request_id="req-invalid",
+                usage={"prompt_tokens": 10, "completion_tokens": 10},
+                tool_calls=(
+                    ChatToolCall(
+                        id="call-invalid",
+                        name="submit_auto_qa_questions",
+                        arguments={
+                            "items": [
+                                {
+                                    "ref": "c01",
+                                    "questions": ["一", "二", "三", "四"],
+                                }
+                            ]
+                        },
+                    ),
+                ),
+            )
+        return await super().complete(request)
+
+
+class _RepairingLongQuestionChatModel(_ChatModel):
+    async def complete(self, request):
+        if not self.requests:
+            self.requests.append(request)
+            return ChatModelResponse(
+                content="",
+                model="mimo-v2.5",
+                finish_reason="tool_calls",
+                provider_request_id="req-invalid-long",
+                usage={"prompt_tokens": 10, "completion_tokens": 10},
+                tool_calls=(
+                    ChatToolCall(
+                        id="call-invalid-long",
+                        name="submit_auto_qa_questions",
+                        arguments={
+                            "items": [
+                                {
+                                    "ref": "c01",
+                                    "questions": [
+                                        "问" * 501,
+                                        "安装需要什么",
+                                        "安装失败怎么办",
+                                        "支持哪些系统",
+                                        "如何升级",
+                                    ],
+                                }
+                            ]
+                        },
+                    ),
+                ),
+            )
+        return await super().complete(request)
+
+
+class _EmbeddingModel:
+    def __init__(self, *, max_batch_size: int, short_response: bool = False) -> None:
+        self.max_batch_size = max_batch_size
+        self.short_response = short_response
+        self.batches: list[tuple[str, ...]] = []
+
+    async def embed_documents(self, texts: tuple[str, ...]) -> EmbeddingBatch:
+        self.batches.append(texts)
+        count = len(texts) - 1 if self.short_response else len(texts)
+        return EmbeddingBatch(vectors=tuple((float(index),) for index in range(count)))
 
 
 if __name__ == "__main__":
