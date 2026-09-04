@@ -37,6 +37,7 @@ from rag_kb.domain import (
     LexicalSearchResult,
     ResourceNotFoundError,
     RetrievalDebug,
+    RetrievalMatchedQuestion,
     RetrievalExecutionError,
     RetrievalQueryPlan,
     RetrievalRequest,
@@ -1113,7 +1114,7 @@ class RetrievalService:
                 modality=hit.modality,
                 asset=self._asset(hit),
                 evidence_group_key=hit.evidence_group_key,
-                matched_representations=(hit.representation_kind,),
+                matched_representations=hit.representation_labels(),
                 document_display_name=hit.document_display_name,
                 document_original_filename=hit.document_original_filename,
             )
@@ -1294,6 +1295,7 @@ class RetrievalService:
                 ),
                 model_rerank_candidate_count=model_candidate_count,
                 model_rerank_window_count=model_window_count,
+                matched_questions=_matched_questions(result),
             )
             if request.include_debug
             else None
@@ -1457,6 +1459,7 @@ class RetrievalService:
                 ),
                 model_rerank_candidate_count=model_candidate_count,
                 model_rerank_window_count=model_window_count,
+                matched_questions=_matched_questions(dense_result),
             )
             if request.include_debug
             else None
@@ -2175,7 +2178,7 @@ class RetrievalService:
                 modality=hit.modality,
                 asset=RetrievalService._asset(hit),
                 evidence_group_key=hit.evidence_group_key,
-                matched_representations=(hit.representation_kind,),
+                matched_representations=hit.representation_labels(),
                 document_display_name=hit.document_display_name,
                 document_original_filename=hit.document_original_filename,
             )
@@ -2476,7 +2479,7 @@ class RetrievalService:
             modality=hit.modality,
             asset=RetrievalService._asset(hit),
             evidence_group_key=hit.evidence_group_key,
-            matched_representations=(hit.representation_kind,),
+            matched_representations=hit.representation_labels(),
             document_display_name=hit.document_display_name,
             document_original_filename=hit.document_original_filename,
         )
@@ -2783,6 +2786,32 @@ async def _gather_cancel_on_error(
                 task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         raise
+
+
+def _matched_questions(
+    *results: VectorSearchResult | None,
+) -> tuple[RetrievalMatchedQuestion, ...]:
+    items: list[RetrievalMatchedQuestion] = []
+    seen: set[UUID] = set()
+    for result in results:
+        if result is None:
+            continue
+        for hit in result.hits:
+            if (
+                hit.representation_kind != "auto_qa_question"
+                or not hit.matched_question
+                or hit.index_chunk_id in seen
+            ):
+                continue
+            seen.add(hit.index_chunk_id)
+            items.append(
+                RetrievalMatchedQuestion(
+                    index_chunk_id=hit.index_chunk_id,
+                    ordinal=hit.matched_question_ordinal or 0,
+                    question=hit.matched_question,
+                )
+            )
+    return tuple(items)
 
 
 def _preferred_asset_relations(

@@ -858,6 +858,7 @@ class _Repository:
         self.relations = ()
         self.lexical_rows = {}
         self.lexical_manifest = None
+        self.questions = {}
         self.asset_discard_calls = 0
         self.yield_allowed = True
 
@@ -874,6 +875,7 @@ class _Repository:
         self.relations = ()
         self.lexical_rows.clear()
         self.lexical_manifest = None
+        self.questions.clear()
         self.status = "running"
         self.failure = None
         return self.target
@@ -981,6 +983,18 @@ class _Repository:
                     vector.representation_kind,
                 )
             ] = vector
+        return True
+
+    async def set_auto_qa_progress(self, command, progress):
+        del command, progress
+        self._active()
+        return self.status == "running"
+
+    async def upsert_questions(self, command, rows):
+        del command
+        self._active()
+        for row in rows:
+            self.questions[(row.index_chunk_id, row.ordinal)] = row
         return True
 
     async def upsert_lexical_rows(self, command, rows):

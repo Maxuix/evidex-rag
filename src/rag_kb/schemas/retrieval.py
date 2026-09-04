@@ -146,6 +146,13 @@ class RetrievalDebugResponse(RetrievalPublicSchema):
     model_rerank_candidate_count: int | None = None
     model_rerank_window_count: int | None = None
     graph: "GraphDebugResponse | None" = None
+    matched_questions: tuple["RetrievalMatchedQuestionResponse", ...] = ()
+
+
+class RetrievalMatchedQuestionResponse(RetrievalPublicSchema):
+    index_chunk_id: UUID
+    ordinal: int
+    question: str
 
 
 class GraphPathDebugResponse(RetrievalPublicSchema):

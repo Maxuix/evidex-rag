@@ -3,8 +3,8 @@
 | 字段 | 内容 |
 | --- | --- |
 | 文档状态 | 全项目唯一当前架构文档（描述事实，不是目标蓝图） |
-| 最后核对 | 2026-09-02 |
-| 核对基线 | 当前 `main`、实际代码、配置、Alembic 迁移、Compose 与公开路由 |
+| 最后核对 | 2026-09-04 |
+| 核对基线 | 当前 `main`、实际代码、配置、Alembic 迁移 `0030`、Compose 与公开路由 |
 | 适用对象 | 个人维护者、CODE AGENTS |
 | 部署边界 | 单机、单用户、本地使用；不是共享或生产服务 |
 | 设计优先级 | 功能可用与个人可维护性优先于平台化、通用化和生产完备性 |
@@ -57,7 +57,7 @@
 
 - Chat 用户界面可创建和删除知识库，批量上传、更新、查看和软删除常见文本、PDF 与 Office
   文档，并预览/排除解析后的 chunk、查看索引进度和直接测试检索结果。
-- 单个 Worker 异步解析文档、切分、生成文本/可选多模态向量并建立索引。
+- 单个 Worker 异步解析文档、切分、生成文本/可选多模态向量并建立索引。新建知识库可选择冻结的 Auto-QA 问句索引：每个有文本表示的 Chunk 生成 5 个问题，问题向量进入同一 text_retrieval 空间，问题词项并入现有每 Chunk 词法行；问题不是证据、引用或 Graph Episode。
 - 默认精确向量检索；可选 PostgreSQL FTS 混合召回，并支持文本、双空间多模态和显式统一
   图文空间三种索引/检索模式。
 - 可选 Graphiti Graph 检索：由用户选择的 Chat Profile 和内置 Graph Schema Profile 在空闲
@@ -317,8 +317,9 @@ file content mutation 增加 `pending/completed/failed` 终态、稳定 failure 
 `0027` 把新 ChatRun 的 `agent_configuration` 列默认值改为 `native_tool_calling_agent_v4`
 与同值五键预算，不回填历史行。`0028` 把默认值改为 `native_tool_calling_agent_v5` 与
 单键 token 预算（`max_total_tokens`）；`0029` 只把新行默认版本推进到
-`native_tool_calling_agent_v6`。三者都不回填历史行；v6 执行器读取历史 v3/v4/v5 配置时
-只取其中的 token 上限。
+`native_tool_calling_agent_v6`。`0030` 为 `IndexRevision` 增加冻结的 Auto-QA 配置
+（默认关闭）和最小 `index_chunk_question` 表；旧知识库无需回填。`0027`–`0030` 都不回填历史行；
+v6 执行器读取历史 v3/v4/v5 配置时只取其中的 token 上限。
 P2 的实际数据核查确认 active/retired revision 指针仍承担当前与软删除恢复，两个 READY Graph build
 均为 active，PDF 分段任务真实使用 continuation；因此 revision/build identity、完整性 manifest、Graph
 lease 与 PDF checkpoint 都保留。未使用的 Enterprise Graph profile 只作为需单独授权的完整产品删除
@@ -330,7 +331,7 @@ lease 与 PDF checkpoint 都保留。未使用的 Enterprise Graph profile 只�
 | --- | --- |
 | 知识库与文档 | `Workspace`、`KnowledgeBase`、`Document`、`DocumentVersion` |
 | 索引 | `EmbeddingSpace`、`IndexRevision`、`IndexedDocumentVersion`、`IndexingJob` |
-| 检索数据 | `IndexChunk`、词法派生、资产/关系、可变维度 `VectorRecord`、Graph 配置、Graphiti build 与 Episode→Chunk 映射 |
+| 检索数据 | `IndexChunk`、词法派生、可选 `index_chunk_question`、资产/关系、可变维度 `VectorRecord`、Graph 配置、Graphiti build 与 Episode→Chunk 映射 |
 | Chat | `ChatSession`、`ChatMessage`、`ChatRun`、`Citation` |
 | 本地协调 | `ContentMutation` 幂等/终态记录、文件清理记录、必要的索引计划/manifest、本地 model-secret 引用 |
 
@@ -393,7 +394,8 @@ upload
   -> legacy/non-PDF profiles: one isolated Docling conversion
   -> structural or semantic chunks + optional visual assets
   -> role-bound text and optional multimodal embeddings
-  -> persist derived rows and mark target ready/serving
+  -> optional Auto-QA: constrained 5 questions per textual Chunk, then question embeddings
+  -> persist derived rows, enhance the existing lexical row, and mark target ready/serving
 ```
 
 当前支持 TXT、Markdown、HTML、CSV、PDF、DOCX、PPTX 和 XLSX。Markdown 可使用 `.mdz` Bundle
@@ -414,6 +416,10 @@ picture 或 table image，并把文本与视觉表示投影到现有 Evidence/as
 使用文本和跨模态 space；unified 模式让文本、查询和图片复用同一已确认的多模态 profile 与
 space。精确 profile
 名称、token/图片预算、hash 和持久字段由 registry、settings、迁移和测试负责，不在总览重复。
+Auto-QA 属于 IndexRevision 的不可变索引表示，创建知识库时选择并冻结 Chat Profile Revision；
+默认关闭。开启时 fail closed：每个合格 Chunk 必须恰好有 5 个唯一问题及合法维度向量，否则
+candidate 不能 READY。生成问题永不进入 Prompt Evidence、Citation 或 Graph Episode。
+已有知识库不能原地开启；后续如需启用，要另做整库重建与 revision 切换。
 
 删除先让数据库事实不可服务，再重试物理文件清理。Maintenance 只清理退休派生数据；不会
 自动删除 active/candidate 数据。
@@ -423,8 +429,13 @@ space。精确 profile
 默认路径是当前 serving revision 上的精确 pgvector cosine 检索。显式开启 hybrid 后，系统
 并行执行 dense 与 PostgreSQL FTS，并用确定性 RRF 融合。text-only 生成一个文本 query
 vector，dual 模式分别生成文本与跨模态 query vector，unified 模式只生成一个 query vector
-并复用于文本/视觉 lane；每条 SQL 仍强制限定 role 绑定的 space 与维度。检索结果统一投影为
-`EvidencePack`，再由回答链路进行阈值、关系和视觉准入。
+并复用于文本/视觉 lane；每条 SQL 仍强制限定 role 绑定的 space 与维度。`semantic_search`
+在一次精确查询中比较正文表示与 Auto-QA 问句表示，先按 Chunk 取最小距离再截取 Top-K；
+一个 Chunk 最多返回一次。`keyword_search` 仍读取每 Chunk 一行的现有 FTS，只是入库时把
+生成问题并入该词法行。检索结果统一投影为
+`EvidencePack`，再由回答链路进行阈值、关系和视觉准入。问句命中仍水合原始 Chunk 正文；
+`matched_question` 只出现在检索 debug。Agent 工具集合和 `tool_choice=auto` 不变，不新增
+`auto_qa_search`。
 
 检索始终限定当前 workspace、knowledge base、active revision、ready/serving target 和可用
 源版本。现有 hybrid manifest 检查用于避免返回半成品索引；不支持时明确失败，不把不一致的

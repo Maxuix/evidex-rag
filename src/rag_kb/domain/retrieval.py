@@ -428,6 +428,16 @@ class VectorSearchHit:
     document_original_filename: str | None = None
     lexical_rank: int | None = None
     lexical_score: float | None = None
+    matched_question: str | None = None
+    matched_question_ordinal: int | None = None
+
+    def representation_labels(self) -> tuple[str, ...]:
+        if self.representation_kind != "auto_qa_question":
+            return (self.representation_kind,)
+        body = {"table": "table_text", "image": "caption_text"}.get(
+            self.modality, "text"
+        )
+        return ("auto_qa_question", body)
 
     def __post_init__(self) -> None:
         if self.ordinal < 0:
@@ -661,6 +671,21 @@ class Evidence:
 
 
 @dataclass(frozen=True, slots=True)
+class RetrievalMatchedQuestion:
+    index_chunk_id: UUID
+    ordinal: int
+    question: str
+
+    def __post_init__(self) -> None:
+        if self.ordinal < 0:
+            raise ValueError("matched question ordinal must be non-negative")
+        if not self.question.strip():
+            raise ValueError("matched question must not be empty")
+        if len(self.question) > 200:
+            object.__setattr__(self, "question", self.question[:200])
+
+
+@dataclass(frozen=True, slots=True)
 class RetrievalDebug:
     query_plan: RetrievalQueryPlan
     resolved_active_revision_id: UUID
@@ -675,6 +700,7 @@ class RetrievalDebug:
     model_rerank_candidate_count: int | None = None
     model_rerank_window_count: int | None = None
     graph: Any | None = None
+    matched_questions: tuple[RetrievalMatchedQuestion, ...] = ()
 
     def __post_init__(self) -> None:
         if self.result_count < 0 or self.result_count > self.query_plan.top_k:

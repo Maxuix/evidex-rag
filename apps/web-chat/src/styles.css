@@ -2827,6 +2827,22 @@ input:focus-visible {
   font-size: 10px;
 }
 
+.chunk-questions {
+  margin-top: 8px;
+}
+
+.chunk-questions ol {
+  margin: 8px 0 0;
+  padding-left: 1.2rem;
+  color: #333333;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.chunk-questions p {
+  margin: 8px 0 0;
+}
+
 .chunk-card summary {
   cursor: pointer;
 }

@@ -28,9 +28,31 @@ class IndexingPhase(StrEnum):
     SEMANTIC_ANALYSIS = "semantic_analysis"
     EMBEDDING = "embedding"
     MULTIMODAL_EMBEDDING = "multimodal_embedding"
+    AUTO_QA_GENERATION = "auto_qa_generation"
     PERSISTING = "persisting"
     VALIDATING = "validating"
     COMPLETED = "completed"
+
+
+AUTO_QA_QUESTIONS_PER_CHUNK = 5
+AUTO_QA_QUESTION_MAX_CHARS = 200
+AUTO_QA_BATCH_SIZE = 8
+AUTO_QA_MAX_OUTPUT_TOKENS = 4096
+AUTO_QA_MATCHED_QUESTION_DEBUG_MAX_CHARS = 200
+AUTO_QA_CONFIG_DISABLED: dict[str, Any] = {"enabled": False}
+
+
+def auto_qa_config_payload(*, enabled: bool) -> dict[str, Any]:
+    if enabled:
+        return {
+            "enabled": True,
+            "questions_per_chunk": AUTO_QA_QUESTIONS_PER_CHUNK,
+        }
+    return {"enabled": False}
+
+
+def auto_qa_enabled(config: dict[str, Any] | None) -> bool:
+    return bool(config) and config.get("enabled") is True
 
 
 class PromotionStatus(StrEnum):
@@ -163,6 +185,8 @@ class IndexingTarget:
     representation_config: dict[str, Any] = field(default_factory=dict)
     embedding_space_ids: dict[str, UUID] = field(default_factory=dict)
     embedding_spaces: dict[str, EmbeddingSpaceDefinition] = field(default_factory=dict)
+    auto_qa_enabled: bool = False
+    auto_qa_model_profile_revision_id: UUID | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,6 +218,24 @@ class IndexChunkLexicalWrite:
     analyzer_version: str
     lexical_text: str
     lexical_text_hash: str
+
+
+@dataclass(frozen=True, slots=True)
+class IndexChunkQuestionWrite:
+    index_chunk_id: UUID
+    ordinal: int
+    question: str
+    embedding: tuple[float, ...]
+
+    def __post_init__(self) -> None:
+        if self.ordinal not in range(AUTO_QA_QUESTIONS_PER_CHUNK):
+            raise ValueError("auto-qa question ordinal must be 0..4")
+        if not self.question.strip():
+            raise ValueError("auto-qa question must not be empty")
+        if len(self.question) > AUTO_QA_QUESTION_MAX_CHARS:
+            raise ValueError("auto-qa question exceeds the character limit")
+        if not self.embedding:
+            raise ValueError("auto-qa question embedding is required")
 
 
 @dataclass(frozen=True, slots=True)

@@ -23,6 +23,7 @@ from rag_kb.domain import (
     FileStoreError,
     IndexChunkWrite,
     IndexChunkLexicalWrite,
+    IndexChunkQuestionWrite,
     IndexLexicalManifest,
     IndexChunkAssetRelationWrite,
     IndexArtifactManifest,
@@ -87,7 +88,16 @@ from rag_kb.document_processing.lexical import (
 from rag_kb.indexing.promotion import CandidatePromotionService
 from rag_kb.indexing.embedding_spaces import require_compatible_embedding_spaces
 from rag_kb.ports.files import IndexAssetStore, SourceFileStore
-from rag_kb.ports.model_api import EmbeddingModelAdapter, MultimodalEmbeddingAdapter
+from rag_kb.indexing.auto_qa import (
+    eligible_auto_qa_chunks,
+    embed_auto_qa_questions,
+    generate_auto_qa_questions,
+)
+from rag_kb.ports.model_api import (
+    ChatModelAdapter,
+    EmbeddingModelAdapter,
+    MultimodalEmbeddingAdapter,
+)
 from rag_kb.ports.parsing import (
     DocumentParseContinuation,
     DocumentParseResult,
@@ -123,6 +133,7 @@ class IndexingPipeline:
         parser_limits: ParserLimits | None = None,
         embedding_model_resolver: EmbeddingModelResolver | None = None,
         multimodal_embedding_model_resolver: MultimodalEmbeddingModelResolver | None = None,
+        chat_model: ChatModelAdapter | None = None,
     ) -> None:
         self._unit_of_work = unit_of_work
         self._file_store = file_store
@@ -134,6 +145,7 @@ class IndexingPipeline:
         self._parser_limits = parser_limits or ParserLimits()
         self._embedding_model_resolver = embedding_model_resolver
         self._multimodal_embedding_model_resolver = multimodal_embedding_model_resolver
+        self._chat_model = chat_model
         self._promotion = CandidatePromotionService(unit_of_work)
 
     async def execute(self, command: IndexingCommand) -> IndexingResult:
@@ -824,6 +836,9 @@ class IndexingPipeline:
         )
         if not changed:
             raise IndexingCancelled
+        questions_by_chunk = await self._generate_auto_qa(
+            command, target, chunks, embedding_provider
+        )
         await self._set_phase(command, IndexingPhase.VALIDATING)
         await self._persist_lexical(
             command,
@@ -834,6 +849,7 @@ class IndexingPipeline:
                 for item in planned
                 if item["space_role"] == "text_retrieval"
             ),
+            questions_by_chunk=questions_by_chunk,
         )
         await self._complete(command, expected_chunks=len(chunks))
         return len(chunks)
@@ -845,11 +861,13 @@ class IndexingPipeline:
         chunks: tuple[IndexChunkWrite, ...],
         *,
         allowed_chunk_ids: frozenset[UUID],
+        questions_by_chunk: dict[UUID, tuple[str, ...]] | None = None,
     ) -> None:
         rows = await asyncio.to_thread(
             _lexical_rows,
             chunks,
             allowed_chunk_ids,
+            questions_by_chunk or {},
         )
         for offset in range(0, len(rows), _LEXICAL_CAS_BATCH_SIZE):
             batch = rows[offset : offset + _LEXICAL_CAS_BATCH_SIZE]
@@ -879,6 +897,90 @@ class IndexingPipeline:
         )
         if not changed:
             raise IndexingCancelled
+
+    async def _generate_auto_qa(
+        self,
+        command: IndexingCommand,
+        target: IndexingTarget,
+        chunks: tuple[IndexChunkWrite, ...],
+        embedding_provider: EmbeddingModelAdapter,
+    ) -> dict[UUID, tuple[str, ...]]:
+        if not target.auto_qa_enabled:
+            return {}
+        if (
+            self._chat_model is None
+            or target.auto_qa_model_profile_revision_id is None
+        ):
+            raise IndexingExecutionError(
+                ErrorCode.AUTO_QA_MODEL_UNAVAILABLE,
+                phase=IndexingPhase.AUTO_QA_GENERATION,
+                diagnostic={"check": "auto_qa_chat_model"},
+            )
+        eligible = eligible_auto_qa_chunks(chunks)
+        progress = {
+            "schema_version": "auto_qa_generation_v1",
+            "eligible_chunks": len(eligible),
+            "processed_chunks": 0,
+            "question_count": 0,
+            "model_calls": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+        }
+        changed = await self._transaction(
+            lambda uow: uow.indexing.set_auto_qa_progress(command, progress)
+        )
+        if not changed:
+            raise IndexingCancelled
+        if not eligible:
+            return {}
+        generated, usage, model_calls = await generate_auto_qa_questions(
+            self._chat_model,
+            eligible,
+            model_profile_revision_id=target.auto_qa_model_profile_revision_id,
+        )
+        progress = {
+            **progress,
+            "processed_chunks": len(generated),
+            "question_count": sum(len(items) for items in generated.values()),
+            "model_calls": model_calls,
+            "prompt_tokens": usage.get("prompt_tokens", 0),
+            "completion_tokens": usage.get("completion_tokens", 0),
+        }
+        changed = await self._transaction(
+            lambda uow: uow.indexing.set_auto_qa_progress(command, progress)
+        )
+        if not changed:
+            raise IndexingCancelled
+        await self._set_phase(command, IndexingPhase.EMBEDDING)
+        ordered_chunks = tuple(chunk for chunk in eligible if chunk.id in generated)
+        questions = tuple(
+            question
+            for chunk in ordered_chunks
+            for question in generated[chunk.id]
+        )
+        vectors = await embed_auto_qa_questions(embedding_provider, questions)
+        writes: list[IndexChunkQuestionWrite] = []
+        offset = 0
+        for chunk in ordered_chunks:
+            items = generated[chunk.id]
+            for ordinal, question in enumerate(items):
+                vector = vectors[offset]
+                validate_embedding_vector(vector, target.embedding_space)
+                writes.append(
+                    IndexChunkQuestionWrite(
+                        index_chunk_id=chunk.id,
+                        ordinal=ordinal,
+                        question=question,
+                        embedding=vector,
+                    )
+                )
+                offset += 1
+        changed = await self._transaction(
+            lambda uow: uow.indexing.upsert_questions(command, tuple(writes))
+        )
+        if not changed:
+            raise IndexingCancelled
+        return generated
 
     def _composite_evidence(
         self,
@@ -1284,12 +1386,18 @@ def _requires_semantic_analysis(units: tuple[SemanticUnit, ...]) -> bool:
 def _lexical_rows(
     chunks: tuple[IndexChunkWrite, ...],
     allowed_chunk_ids: frozenset[UUID],
+    questions_by_chunk: dict[UUID, tuple[str, ...]] | None = None,
 ) -> tuple[IndexChunkLexicalWrite, ...]:
     rows: list[IndexChunkLexicalWrite] = []
+    questions = questions_by_chunk or {}
     for chunk in chunks:
         if chunk.id not in allowed_chunk_ids:
             continue
-        analyzed = analyze_document(chunk.embedding_text or chunk.content)
+        text = chunk.embedding_text or chunk.content
+        extra = questions.get(chunk.id) or ()
+        if extra:
+            text = text + "\n" + "\n".join(extra)
+        analyzed = analyze_document(text)
         if analyzed is None:
             continue
         rows.append(
@@ -1324,6 +1432,10 @@ def _safe_diagnostic(value: dict) -> dict:
         "analysis_batch_count",
         "page_from",
         "page_to",
+        "eligible_chunks",
+        "processed_chunks",
+        "question_count",
+        "model_calls",
     }
     return {key: item for key, item in value.items() if key in allowed}
 

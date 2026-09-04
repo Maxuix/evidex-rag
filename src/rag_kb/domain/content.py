@@ -65,6 +65,15 @@ class IndexProfileDefinition:
 
 
 @dataclass(frozen=True, slots=True)
+class KnowledgeBaseAutoQASummary:
+    enabled: bool = False
+    questions_per_chunk: int = 5
+    model_profile_revision_id: UUID | None = None
+    model_name: str | None = None
+    model_revision: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class KnowledgeBase:
     id: UUID
     workspace_id: UUID
@@ -81,6 +90,7 @@ class KnowledgeBase:
     parser_config: dict[str, Any] = field(default_factory=dict)
     embedding: KnowledgeBaseEmbeddingSummary | None = None
     deleted_at: datetime | None = None
+    auto_qa: KnowledgeBaseAutoQASummary = field(default_factory=KnowledgeBaseAutoQASummary)
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,6 +190,7 @@ class DocumentChunk:
     asset: DocumentChunkAsset | None = None
     related_visuals: tuple[DocumentChunkRelation, ...] = ()
     excluded_at: datetime | None = None
+    generated_questions: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

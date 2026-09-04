@@ -805,6 +805,36 @@ class CommonContractTests(unittest.TestCase):
                     "embedding": {"strategy": "dual_space"},
                 }
             )
+        disabled = KnowledgeBaseCreate.model_validate({"name": "Default Auto-QA"})
+        self.assertFalse(disabled.auto_qa.enabled)
+        self.assertIsNone(disabled.auto_qa.model_profile_revision_id)
+        enabled = KnowledgeBaseCreate.model_validate(
+            {
+                "name": "Enabled Auto-QA",
+                "auto_qa": {
+                    "enabled": True,
+                    "model_profile_revision_id": str(uuid4()),
+                },
+            }
+        )
+        self.assertTrue(enabled.auto_qa.enabled)
+        with self.assertRaises(ValidationError):
+            KnowledgeBaseCreate.model_validate(
+                {
+                    "name": "Missing model",
+                    "auto_qa": {"enabled": True},
+                }
+            )
+        with self.assertRaises(ValidationError):
+            KnowledgeBaseCreate.model_validate(
+                {
+                    "name": "Model without enable",
+                    "auto_qa": {
+                        "enabled": False,
+                        "model_profile_revision_id": str(uuid4()),
+                    },
+                }
+            )
 
     def test_pagination_bounds_and_sort_shape(self) -> None:
         self.assertEqual(PaginationQuery().limit, 50)
@@ -1213,8 +1243,9 @@ class _FakeKnowledgeBaseService:
         chunking_preset,
         retrieval_defaults,
         embedding_selection=None,
+        auto_qa=None,
     ):
-        del key, embedding_selection
+        del key, embedding_selection, auto_qa
         from rag_kb.document_processing.profiles import profile_for_preset
 
         self.value = dataclass_replace(
@@ -1570,6 +1601,16 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             created.json()["answer_policy_defaults"], {},
+        )
+        self.assertEqual(
+            created.json()["auto_qa"],
+            {
+                "enabled": False,
+                "questions_per_chunk": 5,
+                "model_profile_revision_id": None,
+                "model_name": None,
+                "model_revision": None,
+            },
         )
 
         updated = await request(

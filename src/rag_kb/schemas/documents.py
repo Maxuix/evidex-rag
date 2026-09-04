@@ -82,6 +82,7 @@ class DocumentChunkResponse(PublicSchema):
     asset: DocumentChunkAssetResponse | None = None
     related_visuals: tuple[DocumentChunkRelationResponse, ...] = ()
     excluded_at: datetime | None = None
+    generated_questions: tuple[str, ...] = ()
 
 
 class DocumentChunkDeleteResponse(PublicSchema):

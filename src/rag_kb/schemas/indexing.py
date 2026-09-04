@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal, Union
 from uuid import UUID
+
+from pydantic import Field
 
 from rag_kb.domain import ErrorCode
 from rag_kb.schemas.common import PublicSchema
@@ -16,7 +18,7 @@ class IndexingErrorResponse(PublicSchema):
     detail: dict[str, Any]
 
 
-class IndexingProgressResponse(PublicSchema):
+class PdfParsingProgressResponse(PublicSchema):
     schema_version: Literal["pdf_parsing_progress_v1"]
     stage: str
     total_pages: int
@@ -31,6 +33,22 @@ class IndexingProgressResponse(PublicSchema):
     table_candidates: int
     elapsed_ms: int
     child_peak_rss_bytes: int | None = None
+
+
+class AutoQAGenerationProgressResponse(PublicSchema):
+    schema_version: Literal["auto_qa_generation_v1"]
+    eligible_chunks: int
+    processed_chunks: int
+    question_count: int
+    model_calls: int
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+
+
+IndexingProgressResponse = Annotated[
+    Union[PdfParsingProgressResponse, AutoQAGenerationProgressResponse],
+    Field(discriminator="schema_version"),
+]
 
 
 class IndexingJobResponse(PublicSchema):

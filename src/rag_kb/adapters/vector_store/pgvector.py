@@ -7,14 +7,18 @@ from typing import Any
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     Integer,
+    SmallInteger,
+    Text,
     and_,
     bindparam,
     column,
     func,
+    literal,
     or_,
     select,
     text,
     true,
+    union_all,
     values,
 )
 from sqlalchemy.dialects.postgresql import UUID as PostgreSQLUUID
@@ -29,6 +33,7 @@ from rag_kb.db.models import (
     IndexAsset,
     IndexBuildStatus,
     IndexChunk,
+    IndexChunkQuestion,
     IndexedDocumentVersion,
     IndexRevision,
     IndexRevisionEmbeddingSpace,
@@ -429,7 +434,11 @@ class PgVectorStore:
             "semantic_analysis",
         } or not representation_kinds:
             raise ValueError("space role and representation allowlist are required")
-        statement = self._statement(expected_space.dimension)
+        statement = (
+            self._text_statement(expected_space.dimension)
+            if space_role == "text_retrieval"
+            else self._statement(expected_space.dimension)
+        )
         parameters = {
             "workspace_id": plan.workspace_id,
             "knowledge_base_id": plan.knowledge_base_id,
@@ -628,6 +637,238 @@ class PgVectorStore:
                 hits.c.cosine_distance,
                 hits.c.build_status,
                 hits.c.serving_status,
+            )
+            .select_from(KnowledgeBase)
+            .join(
+                IndexRevision,
+                and_(
+                    IndexRevision.id == KnowledgeBase.active_index_revision_id,
+                    IndexRevision.kb_id == KnowledgeBase.id,
+                    IndexRevision.workspace_id == KnowledgeBase.workspace_id,
+                    IndexRevision.status == IndexRevisionStatus.ACTIVE,
+                ),
+            )
+            .join(
+                IndexRevisionEmbeddingSpace,
+                and_(
+                    IndexRevisionEmbeddingSpace.index_revision_id == IndexRevision.id,
+                    IndexRevisionEmbeddingSpace.workspace_id == IndexRevision.workspace_id,
+                    IndexRevisionEmbeddingSpace.role == bindparam("space_role"),
+                ),
+            )
+            .join(
+                EmbeddingSpace,
+                and_(
+                    EmbeddingSpace.id
+                    == IndexRevisionEmbeddingSpace.embedding_space_id,
+                    EmbeddingSpace.workspace_id
+                    == IndexRevisionEmbeddingSpace.workspace_id,
+                ),
+            )
+            .outerjoin(hits, true())
+            .where(
+                KnowledgeBase.workspace_id == bindparam("workspace_id"),
+                KnowledgeBase.id == bindparam("knowledge_base_id"),
+                KnowledgeBase.deleted_at.is_(None),
+            )
+            .order_by(
+                hits.c.cosine_distance.asc().nulls_last(),
+                hits.c.index_chunk_id.asc().nulls_last(),
+            )
+        )
+
+    @staticmethod
+    def _text_statement(dimension: int = 1024):
+        vector_record = VectorRecord
+        query_vector = bindparam(
+            "query_embedding",
+            type_=Vector(dimension),
+        )
+        body_distance = vector_record.embedding.cosine_distance(query_vector).label(
+            "cosine_distance"
+        )
+        question_distance = IndexChunkQuestion.embedding.cosine_distance(
+            query_vector
+        ).label("cosine_distance")
+        chunk_columns = (
+            IndexChunk.workspace_id.label("hit_workspace_id"),
+            IndexChunk.kb_id.label("hit_knowledge_base_id"),
+            IndexedDocumentVersion.index_revision_id.label(
+                "hit_index_revision_id"
+            ),
+            IndexChunk.id.label("index_chunk_id"),
+            IndexedDocumentVersion.id.label("indexed_document_version_id"),
+            Document.id.label("document_id"),
+            DocumentVersion.id.label("document_version_id"),
+            Document.display_name.label("document_display_name"),
+            DocumentVersion.original_filename.label(
+                "document_original_filename"
+            ),
+            IndexChunk.ordinal.label("ordinal"),
+            IndexChunk.content.label("content"),
+            IndexChunk.source_location.label("source_location"),
+            IndexChunk.hierarchy.label("hierarchy"),
+            IndexChunk.source_metadata.label("source_metadata"),
+            IndexChunk.modality.label("modality"),
+            IndexChunk.evidence_group_key.label("evidence_group_key"),
+            IndexAsset.id.label("index_asset_id"),
+            IndexAsset.media_type.label("asset_media_type"),
+            IndexAsset.checksum_sha256.label("asset_checksum_sha256"),
+            IndexAsset.width.label("asset_width"),
+            IndexAsset.height.label("asset_height"),
+            IndexedDocumentVersion.build_status.label("build_status"),
+            IndexedDocumentVersion.serving_status.label("serving_status"),
+        )
+        scope = (
+            select(*chunk_columns)
+            .select_from(IndexedDocumentVersion)
+            .join(
+                Document,
+                and_(
+                    Document.id == IndexedDocumentVersion.document_id,
+                    Document.kb_id == IndexedDocumentVersion.kb_id,
+                    Document.workspace_id == IndexedDocumentVersion.workspace_id,
+                ),
+            )
+            .join(
+                DocumentVersion,
+                and_(
+                    DocumentVersion.id
+                    == IndexedDocumentVersion.document_version_id,
+                    DocumentVersion.document_id
+                    == IndexedDocumentVersion.document_id,
+                    DocumentVersion.kb_id == IndexedDocumentVersion.kb_id,
+                    DocumentVersion.workspace_id
+                    == IndexedDocumentVersion.workspace_id,
+                ),
+            )
+            .join(
+                IndexChunk,
+                and_(
+                    IndexChunk.indexed_document_version_id
+                    == IndexedDocumentVersion.id,
+                    IndexChunk.kb_id == IndexedDocumentVersion.kb_id,
+                    IndexChunk.workspace_id == IndexedDocumentVersion.workspace_id,
+                ),
+            )
+            .outerjoin(
+                IndexAsset,
+                and_(
+                    IndexAsset.id == IndexChunk.index_asset_id,
+                    IndexAsset.indexed_document_version_id
+                    == IndexChunk.indexed_document_version_id,
+                ),
+            )
+            .where(
+                IndexedDocumentVersion.workspace_id == KnowledgeBase.workspace_id,
+                IndexedDocumentVersion.kb_id == KnowledgeBase.id,
+                IndexedDocumentVersion.index_revision_id == IndexRevision.id,
+                IndexedDocumentVersion.build_status == IndexBuildStatus.READY,
+                IndexedDocumentVersion.serving_status == IndexServingStatus.SERVING,
+                Document.deleted_at.is_(None),
+                IndexChunk.excluded_at.is_(None),
+                DocumentVersion.source_status == DocumentSourceStatus.AVAILABLE,
+            )
+        )
+        body = (
+            scope.add_columns(
+                vector_record.representation_kind.label("representation_kind"),
+                literal(None, type_=Text()).label("matched_question"),
+                literal(None, type_=SmallInteger()).label("matched_ordinal"),
+                body_distance,
+            )
+            .join(
+                vector_record,
+                and_(
+                    vector_record.index_chunk_id == IndexChunk.id,
+                    vector_record.kb_id == IndexChunk.kb_id,
+                    vector_record.workspace_id == IndexChunk.workspace_id,
+                ),
+            )
+            .where(
+                vector_record.embedding_space_id
+                == IndexRevisionEmbeddingSpace.embedding_space_id,
+                vector_record.embedding_dimension
+                == bindparam("expected_dimension", type_=Integer),
+                vector_record.representation_kind.in_(
+                    bindparam("representation_kinds", expanding=True)
+                ),
+            )
+        )
+        questions = (
+            scope.add_columns(
+                literal("auto_qa_question").label("representation_kind"),
+                IndexChunkQuestion.question.label("matched_question"),
+                IndexChunkQuestion.ordinal.label("matched_ordinal"),
+                question_distance,
+            )
+            .join(
+                IndexChunkQuestion,
+                IndexChunkQuestion.index_chunk_id == IndexChunk.id,
+            )
+            .where(
+                func.vector_dims(IndexChunkQuestion.embedding)
+                == bindparam("expected_dimension", type_=Integer),
+            )
+        )
+        outer = (KnowledgeBase, IndexRevision, IndexRevisionEmbeddingSpace)
+        unioned = union_all(
+            body.correlate(*outer),
+            questions.correlate(*outer),
+        ).alias("retrieval_candidates")
+        deduped = (
+            select(unioned)
+            .distinct(unioned.c.index_chunk_id)
+            .order_by(
+                unioned.c.index_chunk_id.asc(),
+                unioned.c.cosine_distance.asc(),
+                unioned.c.index_chunk_id.asc(),
+            )
+            .alias("retrieval_deduped")
+        )
+        hits = (
+            select(deduped)
+            .order_by(
+                deduped.c.cosine_distance.asc(),
+                deduped.c.index_chunk_id.asc(),
+            )
+            .limit(bindparam("top_k", type_=Integer))
+            .lateral("retrieval_hits")
+        )
+        return (
+            select(
+                KnowledgeBase.active_index_revision_id.label("active_revision_id"),
+                EmbeddingSpace.compatibility_fingerprint.label(
+                    "compatibility_fingerprint"
+                ),
+                EmbeddingSpace.id.label("embedding_space_id"),
+                hits.c.hit_workspace_id,
+                hits.c.hit_knowledge_base_id,
+                hits.c.hit_index_revision_id,
+                hits.c.index_chunk_id,
+                hits.c.indexed_document_version_id,
+                hits.c.document_id,
+                hits.c.document_version_id,
+                hits.c.document_display_name,
+                hits.c.document_original_filename,
+                hits.c.ordinal,
+                hits.c.content,
+                hits.c.source_location,
+                hits.c.hierarchy,
+                hits.c.source_metadata,
+                hits.c.modality,
+                hits.c.evidence_group_key,
+                hits.c.representation_kind,
+                hits.c.index_asset_id,
+                hits.c.asset_media_type,
+                hits.c.asset_checksum_sha256,
+                hits.c.asset_width,
+                hits.c.asset_height,
+                hits.c.cosine_distance,
+                hits.c.build_status,
+                hits.c.serving_status,
+                hits.c.matched_question,
+                hits.c.matched_ordinal,
             )
             .select_from(KnowledgeBase)
             .join(
@@ -966,6 +1207,8 @@ class PgVectorStore:
             asset_checksum_sha256=row["asset_checksum_sha256"],
             asset_width=row["asset_width"],
             asset_height=row["asset_height"],
+            matched_question=row.get("matched_question"),
+            matched_question_ordinal=row.get("matched_ordinal"),
         )
 
     @staticmethod

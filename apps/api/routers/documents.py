@@ -364,6 +364,7 @@ def _chunk_response(value: DocumentChunk) -> DocumentChunkResponse:
             for relation in value.related_visuals
         ),
         excluded_at=value.excluded_at,
+        generated_questions=value.generated_questions,
     )
 
 

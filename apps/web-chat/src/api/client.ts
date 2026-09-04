@@ -116,6 +116,9 @@ export class ApiClient {
     chunkingPreset: ChunkingPreset,
     embedding: KnowledgeBaseEmbeddingSelection,
     idempotencyKey: UUID,
+    autoQa: { enabled: boolean; model_profile_revision_id?: UUID | null } = {
+      enabled: false,
+    },
   ): Promise<KnowledgeBase> {
     return this.request("/knowledge-bases", {
       method: "POST",
@@ -125,6 +128,12 @@ export class ApiClient {
         parsing: { preset: parsingPreset },
         chunking: { preset: chunkingPreset },
         embedding,
+        auto_qa: autoQa.enabled
+          ? {
+            enabled: true,
+            model_profile_revision_id: autoQa.model_profile_revision_id,
+          }
+          : { enabled: false },
       }),
     });
   }

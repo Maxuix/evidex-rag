@@ -101,12 +101,34 @@ class KnowledgeBaseEmbeddingResponse(PublicSchema):
     cross_modal: KnowledgeBaseEmbeddingRoleResponse | None = None
 
 
+class KnowledgeBaseAutoQA(PublicSchema):
+    enabled: bool = False
+    model_profile_revision_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def require_model_when_enabled(self) -> Self:
+        if self.enabled and self.model_profile_revision_id is None:
+            raise ValueError("auto_qa requires a chat model profile revision")
+        if not self.enabled and self.model_profile_revision_id is not None:
+            raise ValueError("auto_qa model is only allowed when enabled")
+        return self
+
+
+class KnowledgeBaseAutoQAResponse(PublicSchema):
+    enabled: bool
+    questions_per_chunk: int = 5
+    model_profile_revision_id: UUID | None = None
+    model_name: str | None = None
+    model_revision: int | None = None
+
+
 class KnowledgeBaseCreate(PublicSchema):
     name: KnowledgeBaseName
     parsing: KnowledgeBaseParsing = KnowledgeBaseParsing()
     chunking: KnowledgeBaseChunking = KnowledgeBaseChunking()
     retrieval_defaults: RetrievalDefaults = RetrievalDefaults()
     embedding: KnowledgeBaseEmbeddingSelection | None = None
+    auto_qa: KnowledgeBaseAutoQA = KnowledgeBaseAutoQA()
 
     @model_validator(mode="after")
     def require_compatible_embedding_strategy(self) -> Self:
@@ -160,6 +182,7 @@ class KnowledgeBaseResponse(PublicSchema):
     chunking: KnowledgeBaseChunkingResponse
     retrieval_defaults: RetrievalDefaults
     answer_policy_defaults: dict[str, Any]
+    auto_qa: KnowledgeBaseAutoQAResponse
     provisioned_at: datetime
     created_at: datetime
     updated_at: datetime

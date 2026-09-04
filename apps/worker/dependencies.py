@@ -250,6 +250,7 @@ def build_worker_dependencies(
         parser_limits=parser_limits,
         embedding_model_resolver=dynamic_embeddings.embedding,
         multimodal_embedding_model_resolver=dynamic_embeddings.multimodal,
+        chat_model=chat_model_adapter,
     )
     poller = resolved_settings.job_poller
     resolved_worker_id = worker_id or _worker_id()

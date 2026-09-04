@@ -49,6 +49,13 @@ function knowledgeBase(id: string, name: string): KnowledgeBase {
     },
     retrieval_defaults: { strategy: "exact_vector", top_k: 10, rerank_mode: "classic" },
     answer_policy_defaults: { answer_style: "concise", insufficiency_policy: "refuse" },
+    auto_qa: {
+      enabled: false,
+      questions_per_chunk: 5,
+      model_profile_revision_id: null,
+      model_name: null,
+      model_revision: null,
+    },
     provisioned_at: NOW,
     created_at: NOW,
     updated_at: NOW,

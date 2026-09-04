@@ -79,7 +79,7 @@ def reciprocal_rank_fusion_lanes(
                 if identity in seen_groups:
                     entry = grouped.get(identity)
                     if entry is not None:
-                        entry["representations"].add(hit.representation_kind)
+                        entry["representations"].update(hit.representation_labels())
                     continue
                 seen_groups.add(identity)
                 entry = grouped.setdefault(
@@ -101,7 +101,7 @@ def reciprocal_rank_fusion_lanes(
                     "cross_modal": "cross_rank",
                 }[lane]
                 entry[rank_key] = rank
-                entry["representations"].add(hit.representation_kind)
+                entry["representations"].update(hit.representation_labels())
                 current = entry["hit"]
                 if _preferred(hit, current):
                     entry["hit"] = hit

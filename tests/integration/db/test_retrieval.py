@@ -569,6 +569,53 @@ class ExactRetrievalDatabaseTests(unittest.IsolatedAsyncioTestCase):
             (valid,),
         )
 
+    async def test_auto_qa_question_hits_return_one_original_chunk(self) -> None:
+        foundation = await self._foundation()
+        body_hit = UUID("01900000-0000-7000-8000-000000001401")
+        question_hit = UUID("01900000-0000-7000-8000-000000001402")
+        await self._target(foundation, chunk_id=body_hit, vector=_axis_vector(1))
+        await self._target(foundation, chunk_id=question_hit, vector=_axis_vector(1))
+        connection = await asyncpg.connect(MIGRATION_DSN)
+        try:
+            for ordinal in range(5):
+                await connection.execute(
+                    """
+                    INSERT INTO index_chunk_question (
+                        index_chunk_id, ordinal, question, embedding
+                    ) VALUES ($1, $2, $3, $4::vector)
+                    """,
+                    question_hit,
+                    ordinal,
+                    f"用户会怎么问安装步骤{ordinal}",
+                    _vector_literal(_axis_vector(0 if ordinal == 2 else 1)),
+                )
+        finally:
+            await connection.close()
+
+        pack = await self.service.retrieve(
+            RetrievalRequest(
+                foundation.kb_id,
+                "query",
+                top_k=10,
+                include_debug=True,
+            ),
+        )
+        self.assertEqual(
+            tuple(item.index_chunk_id for item in pack.evidence),
+            (question_hit,),
+        )
+        evidence = pack.evidence[0]
+        self.assertEqual(evidence.text, f"evidence-{question_hit}")
+        self.assertIn("auto_qa_question", evidence.matched_representations)
+        self.assertIn("text", evidence.matched_representations)
+        self.assertEqual(len(pack.debug.matched_questions), 1)
+        self.assertEqual(pack.debug.matched_questions[0].index_chunk_id, question_hit)
+        self.assertEqual(pack.debug.matched_questions[0].ordinal, 2)
+        self.assertEqual(
+            pack.debug.matched_questions[0].question,
+            "用户会怎么问安装步骤2",
+        )
+
     async def test_revision_activation_reads_are_complete_old_or_new_snapshots(self) -> None:
         foundation = await self._foundation()
         old_first = await self._target(

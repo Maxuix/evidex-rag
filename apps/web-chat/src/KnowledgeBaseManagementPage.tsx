@@ -49,6 +49,7 @@ const INDEX_PHASES = [
   "semantic_analysis",
   "embedding",
   "multimodal_embedding",
+  "auto_qa_generation",
   "persisting",
   "validating",
   "completed",
@@ -457,6 +458,7 @@ export function KnowledgeBaseManagementPage({
                 value.chunking,
                 value.embedding,
                 crypto.randomUUID(),
+                value.autoQa,
               );
               onKnowledgeBaseCreated(created);
             }}
@@ -472,6 +474,7 @@ export function KnowledgeBaseManagementPage({
                   <p>
                     {parsingLabel(knowledgeBase.parsing.preset)} · {chunkingLabel(knowledgeBase.chunking.preset)} · {embeddingLabel(knowledgeBase.embedding.strategy)}
                   </p>
+                  <p>{autoQaStatus(knowledgeBase)}</p>
                 </div>
                 <button
                   className="danger-button"
@@ -1006,6 +1009,7 @@ function KnowledgeBaseCreator({
     parsing: ParsingPreset;
     chunking: ChunkingPreset;
     embedding: KnowledgeBaseEmbeddingSelection;
+    autoQa: { enabled: boolean; model_profile_revision_id?: string | null };
   }) => Promise<void>;
   onOpenModelSettings: () => void;
 }) {
@@ -1018,6 +1022,8 @@ function KnowledgeBaseCreator({
   const [multimodalModel, setMultimodalModel] = useState("");
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [autoQaEnabled, setAutoQaEnabled] = useState(false);
+  const [autoQaModel, setAutoQaModel] = useState("");
   const textModels = useMemo(
     () => validProfiles(modelSettings, "text_embedding"),
     [modelSettings],
@@ -1029,6 +1035,10 @@ function KnowledgeBaseCreator({
   const unifiedModels = useMemo(
     () => multimodalModels.filter(unifiedEligible),
     [multimodalModels],
+  );
+  const chatModels = useMemo(
+    () => validProfiles(modelSettings, "chat"),
+    [modelSettings],
   );
 
   useEffect(() => {
@@ -1044,16 +1054,24 @@ function KnowledgeBaseCreator({
         ? preferred!
         : multimodalModels[0]?.revision_id ?? "");
     }
-  }, [modelSettings, multimodalModel, multimodalModels, textModel, textModels]);
+    if (!chatModels.some((profile) => profile.revision_id === autoQaModel)) {
+      const preferred = modelSettings?.selection.chat_profile_revision_id;
+      setAutoQaModel(chatModels.some((profile) => profile.revision_id === preferred)
+        ? preferred!
+        : chatModels[0]?.revision_id ?? "");
+    }
+  }, [autoQaModel, chatModels, modelSettings, multimodalModel, multimodalModels, textModel, textModels]);
 
   const selectedMultimodalIsUnified = unifiedModels.some(
     (profile) => profile.revision_id === multimodalModel,
   );
-  const selectionValid = parsing === "text_local_v1"
+  const embeddingValid = parsing === "text_local_v1"
     ? Boolean(textModel)
     : multimodalStrategy === "dual_space"
       ? Boolean(textModel && multimodalModel)
       : Boolean(multimodalModel && selectedMultimodalIsUnified);
+  const autoQaValid = !autoQaEnabled || Boolean(autoQaModel);
+  const selectionValid = embeddingValid && autoQaValid;
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -1070,7 +1088,15 @@ function KnowledgeBaseCreator({
         }
         : { strategy: "unified_multimodal", profile_revision_id: multimodalModel };
     try {
-      await onCreate({ name: name.trim(), parsing, chunking, embedding });
+      await onCreate({
+        name: name.trim(),
+        parsing,
+        chunking,
+        embedding,
+        autoQa: autoQaEnabled
+          ? { enabled: true, model_profile_revision_id: autoQaModel }
+          : { enabled: false },
+      });
       setName("");
       setOpen(false);
     } catch (caught) {
@@ -1168,9 +1194,40 @@ function KnowledgeBaseCreator({
               />
             ) : null}
           </div>
-          {!selectionValid ? (
+          <fieldset className="choice-group">
+            <legend>Auto-QA 问句索引</legend>
+            <ChoiceCard
+              active={!autoQaEnabled}
+              title="关闭"
+              description="保持现有正文索引，不额外调用 Chat 模型。"
+              onClick={() => setAutoQaEnabled(false)}
+            />
+            <ChoiceCard
+              active={autoQaEnabled}
+              title="开启"
+              description="每个可用文本 Chunk 生成 5 个问题，增加一次性 LLM 用量、约五倍问题向量和索引时间。问题只改善召回，不作为答案或引用。"
+              onClick={() => setAutoQaEnabled(true)}
+            />
+          </fieldset>
+          {autoQaEnabled ? (
+            <div className="model-selection-grid">
+              <ModelSelect
+                label="Auto-QA Chat 模型"
+                value={autoQaModel}
+                profiles={chatModels}
+                onChange={setAutoQaModel}
+              />
+            </div>
+          ) : null}
+          {!embeddingValid ? (
             <div className="model-required-note">
-              没有可用且验证通过的模型。
+              没有可用且验证通过的 Embedding 模型。
+              <button type="button" onClick={onOpenModelSettings}>打开模型设置</button>
+            </div>
+          ) : null}
+          {autoQaEnabled && !autoQaValid ? (
+            <div className="model-required-note">
+              开启 Auto-QA 需要可用且验证通过的 Chat 模型。
               <button type="button" onClick={onOpenModelSettings}>打开模型设置</button>
             </div>
           ) : null}
@@ -1288,7 +1345,7 @@ function JobState({ item, job }: { item: UploadItem; job: IndexingJob | null }) 
   }
   return (
     <span className="status-text active">
-      {phaseLabel(job.phase)} · {jobProgress(job)}%
+      {phaseLabel(job.phase)} · {jobProgress(job)}%{autoQaProgressSuffix(job)}
     </span>
   );
 }
@@ -1339,7 +1396,7 @@ function DocumentRow({
       </button>
       <div className="document-progress">
         <div>
-          <span>{job ? phaseLabel(job.phase) : "等待任务"}</span>
+          <span>{job ? `${phaseLabel(job.phase)}${autoQaProgressSuffix(job)}` : "等待任务"}</span>
           <strong>{job?.status === "completed" && job.serving_status === "serving" ? "可检索" : `${progress}%`}</strong>
         </div>
         <progress max={100} value={progress} />
@@ -1421,6 +1478,18 @@ function ChunkPreview({
                 />
               ) : null}
               <p>{chunk.content || "该视觉 chunk 没有文本表示。"}</p>
+              <details className="chunk-questions">
+                <summary>生成问题</summary>
+                {chunk.generated_questions.length ? (
+                  <ol>
+                    {chunk.generated_questions.map((question) => (
+                      <li key={question}>{question}</li>
+                    ))}
+                  </ol>
+                ) : (
+                  <p>未生成</p>
+                )}
+              </details>
               <details>
                 <summary>位置与结构信息</summary>
                 <pre>{JSON.stringify({
@@ -1591,6 +1660,11 @@ function RetrievalDebugger({
                 </header>
                 <p>{evidence.text || "该结果没有文本表示。"}</p>
                 <small>文档 {evidence.document_id.slice(0, 8)} · {evidence.matched_representations.join(" / ")}</small>
+                {result.debug?.matched_questions?.find((item) => item.index_chunk_id === evidence.index_chunk_id) ? (
+                  <small>
+                    命中问句：{result.debug.matched_questions.find((item) => item.index_chunk_id === evidence.index_chunk_id)?.question}
+                  </small>
+                ) : null}
               </div>
             </article>
           )) : <EmptyState text="当前 serving 索引没有返回匹配 chunk。" />}
@@ -1683,6 +1757,21 @@ function graphProgressTitle(config: GraphConfig): string {
   return `正在构建，已处理 ${config.processed_chunk_count} 个 chunks`;
 }
 
+function autoQaStatus(knowledgeBase: KnowledgeBase): string {
+  if (!knowledgeBase.auto_qa.enabled) {
+    return "Auto-QA 关闭。如需开启，需要未来的整库重建功能。";
+  }
+  const model = knowledgeBase.auto_qa.model_name
+    ? `${knowledgeBase.auto_qa.model_name} / r${knowledgeBase.auto_qa.model_revision ?? "?"}`
+    : "已冻结 Chat 模型";
+  return `Auto-QA · ${knowledgeBase.auto_qa.questions_per_chunk} 问/Chunk · ${model}。此知识库创建后不可原地开关。`;
+}
+
+function autoQaProgressSuffix(job: IndexingJob): string {
+  if (job.progress?.schema_version !== "auto_qa_generation_v1") return "";
+  return ` · ${job.progress.processed_chunks}/${job.progress.eligible_chunks} chunks · ${job.progress.question_count} 问`;
+}
+
 function validProfiles(
   settings: ModelSettings | null,
   kind: ModelProfile["kind"],
@@ -1762,6 +1851,7 @@ function phaseLabel(phase: string): string {
     semantic_analysis: "分析语义边界",
     embedding: "生成文本向量",
     multimodal_embedding: "生成多模态向量",
+    auto_qa_generation: "生成问句索引",
     persisting: "写入索引",
     validating: "校验索引",
     completed: "处理完成",
@@ -1795,7 +1885,7 @@ function jobElapsedSeconds(job: IndexingJob): number | null {
   const currentAttempt = Number.isFinite(claimedAt)
     ? Math.max(0, Math.floor((Date.now() - claimedAt) / 1000))
     : 0;
-  const parsing = job.progress
+  const parsing = job.progress?.schema_version === "pdf_parsing_progress_v1"
     ? Math.max(0, Math.floor(job.progress.elapsed_ms / 1000))
     : 0;
   const elapsed = Math.max(currentAttempt, parsing);
@@ -1825,6 +1915,8 @@ function jobFailure(job: IndexingJob): string {
     EMBEDDING_SPACE_MISMATCH: "Embedding 空间不兼容",
     INDEX_PERSISTENCE_FAILED: "索引写入失败",
     INDEX_INCOMPLETE: "索引完整性校验失败",
+    AUTO_QA_MODEL_UNAVAILABLE: "Auto-QA 所用 Chat 模型不可用",
+    AUTO_QA_RESPONSE_INVALID: "Auto-QA 模型输出无效",
 
   };
   const legacyTimeLimit = job.error.detail.limit_name;

@@ -49,6 +49,8 @@ from rag_kb.schemas.indexing import (
     IndexingJobResponse,
 )
 from rag_kb.schemas.knowledge_bases import (
+    KnowledgeBaseAutoQA,
+    KnowledgeBaseAutoQAResponse,
     KnowledgeBaseCreate,
     KnowledgeBaseDeleteResponse,
     KnowledgeBaseEmbeddingResponse,
@@ -115,6 +117,8 @@ __all__ = [
     "IndexingJobResponse",
     "ErrorCode",
     "FieldViolation",
+    "KnowledgeBaseAutoQA",
+    "KnowledgeBaseAutoQAResponse",
     "KnowledgeBaseCreate",
     "KnowledgeBaseDeleteResponse",
     "KnowledgeBaseEmbeddingResponse",

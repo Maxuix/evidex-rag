@@ -47,6 +47,13 @@ export interface KnowledgeBase {
     rerank_mode: RerankMode;
   };
   answer_policy_defaults: Record<string, unknown>; // Historical, read-only.
+  auto_qa: {
+    enabled: boolean;
+    questions_per_chunk: number;
+    model_profile_revision_id: UUID | null;
+    model_name: string | null;
+    model_revision: number | null;
+  };
   provisioned_at: IsoDate;
   created_at: IsoDate;
   updated_at: IsoDate;
@@ -143,6 +150,7 @@ export interface DocumentChunk {
   asset: DocumentChunkAsset | null;
   related_visuals: DocumentChunkRelation[];
   excluded_at: IsoDate | null;
+  generated_questions: string[];
 }
 
 export interface DocumentChunkInspection {
@@ -166,22 +174,32 @@ export interface DocumentUpload {
   job_status: "queued";
 }
 
-export interface IndexingProgress {
-  schema_version: "pdf_parsing_progress_v1";
-  stage: string;
-  total_pages: number;
-  completed_pages: number;
-  segment_number: number;
-  segment_count: number;
-  page_from: number;
-  page_to: number;
-  stage_pages: Record<string, number>;
-  ocr_pages: number;
-  ocr_regions: number;
-  table_candidates: number;
-  elapsed_ms: number;
-  child_peak_rss_bytes: number | null;
-}
+export type IndexingProgress =
+  | {
+    schema_version: "pdf_parsing_progress_v1";
+    stage: string;
+    total_pages: number;
+    completed_pages: number;
+    segment_number: number;
+    segment_count: number;
+    page_from: number;
+    page_to: number;
+    stage_pages: Record<string, number>;
+    ocr_pages: number;
+    ocr_regions: number;
+    table_candidates: number;
+    elapsed_ms: number;
+    child_peak_rss_bytes: number | null;
+  }
+  | {
+    schema_version: "auto_qa_generation_v1";
+    eligible_chunks: number;
+    processed_chunks: number;
+    question_count: number;
+    model_calls: number;
+    prompt_tokens: number;
+    completion_tokens: number;
+  };
 
 export interface IndexingJob {
   job_id: UUID;
@@ -241,6 +259,11 @@ export interface RetrievalEvidencePack {
     evidence_group_count: number | null;
     model_rerank_candidate_count: number | null;
     model_rerank_window_count: number | null;
+    matched_questions?: {
+      index_chunk_id: UUID;
+      ordinal: number;
+      question: string;
+    }[];
   } | null;
 }
 

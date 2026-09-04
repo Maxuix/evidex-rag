@@ -91,3 +91,45 @@ describe("API error behavior", () => {
     expect(error.code).toBeNull();
   });
 });
+
+describe("knowledge-base Auto-QA create payload", () => {
+  it("omits a chat profile when Auto-QA is disabled", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      id: "kb-1",
+    }), { status: 201, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await client.createKnowledgeBase(
+      "资料",
+      "text_local_v1",
+      "structural_balanced_v2",
+      { strategy: "text_only", text_profile_revision_id: "emb-1" },
+      "idem-1",
+    );
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1].body));
+    expect(body.auto_qa).toEqual({ enabled: false });
+  });
+
+  it("requires the selected chat profile when Auto-QA is enabled", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      id: "kb-1",
+    }), { status: 201, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await client.createKnowledgeBase(
+      "资料",
+      "text_local_v1",
+      "structural_balanced_v2",
+      { strategy: "text_only", text_profile_revision_id: "emb-1" },
+      "idem-1",
+      { enabled: true, model_profile_revision_id: "chat-1" },
+    );
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1].body));
+    expect(body.auto_qa).toEqual({
+      enabled: true,
+      model_profile_revision_id: "chat-1",
+    });
+  });
+});

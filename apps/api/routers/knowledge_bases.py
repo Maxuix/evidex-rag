@@ -21,6 +21,7 @@ from rag_kb.domain import KnowledgeBase
 from rag_kb.schemas import (
     CursorPayload,
     ErrorCode,
+    KnowledgeBaseAutoQAResponse,
     KnowledgeBaseCreate,
     KnowledgeBaseDeleteResponse,
     KnowledgeBaseChunkingResponse,
@@ -58,6 +59,7 @@ async def create_knowledge_base(
             if payload.embedding is not None
             else None
         ),
+        auto_qa=payload.auto_qa.model_dump(mode="json"),
     )
     return _response(created)
 
@@ -214,6 +216,13 @@ def _response(value: KnowledgeBase) -> KnowledgeBaseResponse:
         ),
         retrieval_defaults=RetrievalDefaults.model_validate(value.retrieval_defaults),
         answer_policy_defaults=dict(value.answer_policy_defaults),
+        auto_qa=KnowledgeBaseAutoQAResponse(
+            enabled=value.auto_qa.enabled,
+            questions_per_chunk=value.auto_qa.questions_per_chunk,
+            model_profile_revision_id=value.auto_qa.model_profile_revision_id,
+            model_name=value.auto_qa.model_name,
+            model_revision=value.auto_qa.model_revision,
+        ),
         provisioned_at=value.provisioned_at,
         created_at=value.created_at,
         updated_at=value.updated_at,

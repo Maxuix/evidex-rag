@@ -21,6 +21,7 @@ from rag_kb.db.models import (
     IndexBuildStatus,
     IndexChunk as IndexChunkRow,
     IndexChunkLexical as IndexChunkLexicalRow,
+    IndexChunkQuestion as IndexChunkQuestionRow,
     IndexLexicalManifest as IndexLexicalManifestRow,
     IndexChunkAssetRelation as IndexChunkAssetRelationRow,
     IndexChunkPlan as IndexChunkPlanRow,
@@ -41,6 +42,7 @@ from rag_kb.domain import (
     ErrorCode,
     IndexChunkWrite,
     IndexChunkLexicalWrite,
+    IndexChunkQuestionWrite,
     IndexLexicalManifest,
     IndexChunkAssetRelationSnapshot,
     IndexChunkAssetRelationWrite,
@@ -65,6 +67,7 @@ from rag_kb.domain import (
     ReconciliationResult,
     ResourceStateConflictError,
     VectorRecordWrite,
+    auto_qa_enabled,
 )
 from rag_kb.document_processing.profiles import profile_fingerprint
 from rag_kb.document_processing.lexical import (
@@ -1609,6 +1612,24 @@ class SqlAlchemyIndexingRepository:
         await self._session.flush()
         return True
 
+    async def set_auto_qa_progress(
+        self,
+        command: IndexingCommand,
+        progress: dict[str, Any],
+    ) -> bool:
+        row = await self._load(command, lock=True)
+        if row is None:
+            return False
+        job, target, *_ = row
+        if not _is_writable(job, target):
+            return False
+        if progress.get("schema_version") != "auto_qa_generation_v1":
+            raise ValueError("auto-qa progress schema is invalid")
+        job.progress = dict(progress)
+        job.phase = IndexingPhase.AUTO_QA_GENERATION.value
+        await self._session.flush()
+        return True
+
     async def yield_continuation(
         self,
         command: IndexingCommand,
@@ -1750,6 +1771,41 @@ class SqlAlchemyIndexingRepository:
                     "stable_vector_key",
                 )
         job.phase = IndexingPhase.PERSISTING.value
+        await self._session.flush()
+        return True
+
+    async def upsert_questions(
+        self,
+        command: IndexingCommand,
+        rows: tuple[IndexChunkQuestionWrite, ...],
+    ) -> bool:
+        loaded = await self._load(command, lock=True)
+        if loaded is None:
+            return False
+        job, target, *_ = loaded
+        if not _is_writable(job, target):
+            return False
+        if not rows:
+            return True
+        values = [
+            {
+                "index_chunk_id": item.index_chunk_id,
+                "ordinal": item.ordinal,
+                "question": item.question,
+                "embedding": list(item.embedding),
+            }
+            for item in rows
+        ]
+        insert = pg_insert(IndexChunkQuestionRow).values(values)
+        await self._session.execute(
+            insert.on_conflict_do_update(
+                index_elements=["index_chunk_id", "ordinal"],
+                set_={
+                    "question": insert.excluded.question,
+                    "embedding": insert.excluded.embedding,
+                },
+            )
+        )
         await self._session.flush()
         return True
 
@@ -1918,6 +1974,7 @@ class SqlAlchemyIndexingRepository:
                     IndexChunkRow.unit_key,
                     IndexChunkRow.index_asset_id,
                     IndexChunkRow.embedding_text_hash,
+                    IndexChunkRow.embedding_text,
                 )
                 .where(IndexChunkRow.indexed_document_version_id == target.id)
                 .order_by(IndexChunkRow.ordinal)
@@ -2089,6 +2146,18 @@ class SqlAlchemyIndexingRepository:
                 phase=IndexingPhase.VALIDATING,
                 diagnostic={"check": "lexical_manifest"},
             )
+        if auto_qa_enabled(revision.auto_qa_config):
+            _, role_definitions = await self._space_roles(revision.id)
+            text_space = role_definitions.get("text_retrieval")
+            if text_space is None:
+                raise IndexingExecutionError(
+                    ErrorCode.INDEX_INCOMPLETE,
+                    phase=IndexingPhase.VALIDATING,
+                    diagnostic={"check": "auto_qa_text_space"},
+                )
+            await self._require_auto_qa_complete(
+                target.id, chunk_records, text_space.dimension
+            )
         target.build_status = IndexBuildStatus.READY
         target.error_code = None
         target.error_detail = None
@@ -2098,6 +2167,64 @@ class SqlAlchemyIndexingRepository:
         job.error_detail = None
         await self._session.flush()
         return True
+
+    async def _require_auto_qa_complete(
+        self,
+        target_id: UUID,
+        chunk_records,
+        dimension: int,
+    ) -> None:
+        eligible_ids = {
+            record.chunk_id
+            for record in chunk_records
+            if (record.embedding_text or "").strip()
+        }
+        question_rows = (
+            await self._session.execute(
+                select(
+                    IndexChunkQuestionRow.index_chunk_id,
+                    IndexChunkQuestionRow.ordinal,
+                    IndexChunkQuestionRow.question,
+                    func.vector_dims(IndexChunkQuestionRow.embedding).label(
+                        "vector_dims"
+                    ),
+                )
+                .join(
+                    IndexChunkRow,
+                    IndexChunkRow.id == IndexChunkQuestionRow.index_chunk_id,
+                )
+                .where(IndexChunkRow.indexed_document_version_id == target_id)
+            )
+        ).all()
+        by_chunk: dict[UUID, list] = {chunk_id: [] for chunk_id in eligible_ids}
+        for row in question_rows:
+            by_chunk.setdefault(row.index_chunk_id, []).append(row)
+        for chunk_id, rows in by_chunk.items():
+            if chunk_id not in eligible_ids:
+                raise IndexingExecutionError(
+                    ErrorCode.INDEX_INCOMPLETE,
+                    phase=IndexingPhase.VALIDATING,
+                    diagnostic={"check": "auto_qa_ineligible_questions"},
+                )
+            ordinals = sorted(item.ordinal for item in rows)
+            questions = [item.question for item in rows]
+            if (
+                ordinals != list(range(5))
+                or len(set(questions)) != 5
+                or any(not (item.question or "").strip() for item in rows)
+                or any(item.vector_dims != dimension for item in rows)
+            ):
+                raise IndexingExecutionError(
+                    ErrorCode.INDEX_INCOMPLETE,
+                    phase=IndexingPhase.VALIDATING,
+                    diagnostic={"check": "auto_qa_questions"},
+                )
+        if any(chunk_id not in by_chunk or not by_chunk[chunk_id] for chunk_id in eligible_ids):
+            raise IndexingExecutionError(
+                ErrorCode.INDEX_INCOMPLETE,
+                phase=IndexingPhase.VALIDATING,
+                diagnostic={"check": "auto_qa_questions"},
+            )
 
     async def count_chunks(self, command: IndexingCommand) -> int:
         count = await self._session.scalar(
@@ -2262,6 +2389,8 @@ def _target(
         representation_config=dict(revision.representation_config),
         embedding_space_ids=space_ids,
         embedding_spaces=spaces,
+        auto_qa_enabled=auto_qa_enabled(revision.auto_qa_config),
+        auto_qa_model_profile_revision_id=revision.auto_qa_model_profile_revision_id,
     )
 
 

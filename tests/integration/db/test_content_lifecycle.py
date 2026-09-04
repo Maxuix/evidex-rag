@@ -73,6 +73,8 @@ class ContentLifecycleTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(first.id, second.id)
         self.assertEqual(first.active_index_revision_id, second.active_index_revision_id)
+        self.assertFalse(first.auto_qa.enabled)
+        self.assertIsNone(first.auto_qa.model_profile_revision_id)
 
         with self.assertRaises(IdempotencyKeyReusedError):
             await self.knowledge_bases.create(

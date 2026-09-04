@@ -180,6 +180,25 @@ async def _selected_embedding_space(
     )
 
 
+async def _selected_chat_profile(uow: "SqlAlchemyUnitOfWork", revision_id: UUID):
+    repository = getattr(uow, "model_settings", None)
+    if repository is None:
+        raise ResourceStateConflictError("a chat model must be selected")
+    bundle = await repository.get_profile_revision(revision_id)
+    if bundle is None or bundle.profile.kind is not ModelKind.CHAT:
+        raise ResourceStateConflictError("the selected auto-qa chat model is invalid")
+    if (
+        not bundle.profile.enabled
+        or not bundle.provider.enabled
+        or bundle.current_revision.validation_status
+        is not ModelValidationStatus.VALID
+    ):
+        raise ResourceStateConflictError(
+            "the selected auto-qa chat model is unavailable"
+        )
+    return bundle
+
+
 class KnowledgeBaseService:
     def __init__(
         self,
@@ -205,6 +224,7 @@ class KnowledgeBaseService:
         chunking_preset: ChunkingPreset | str = ChunkingPreset.STRUCTURAL_BALANCED_V2,
         retrieval_defaults: dict[str, Any],
         embedding_selection: dict[str, Any] | None = None,
+        auto_qa: dict[str, Any] | None = None,
     ) -> KnowledgeBase:
         resolved_preset = ChunkingPreset(chunking_preset)
         resolved_parsing = ParsingPreset(parsing_preset)
@@ -212,6 +232,15 @@ class KnowledgeBaseService:
         scope = IdempotencyScope(
             CREATE_KB_ENDPOINT,
             idempotency_key,
+        )
+        auto_qa_enabled = bool(auto_qa and auto_qa.get("enabled"))
+        raw_auto_qa_revision = (
+            auto_qa.get("model_profile_revision_id") if auto_qa_enabled else None
+        )
+        auto_qa_revision_id = (
+            raw_auto_qa_revision
+            if raw_auto_qa_revision is None or isinstance(raw_auto_qa_revision, UUID)
+            else UUID(str(raw_auto_qa_revision))
         )
         request_hash = canonical_request_hash(
             {
@@ -223,6 +252,14 @@ class KnowledgeBaseService:
                     embedding_selection
                     if embedding_selection is not None
                     else {"strategy": "default_for_parsing"}
+                ),
+                "auto_qa": (
+                    {
+                        "enabled": True,
+                        "model_profile_revision_id": str(auto_qa_revision_id),
+                    }
+                    if auto_qa_enabled
+                    else {"enabled": False}
                 ),
             }
         )
@@ -287,12 +324,24 @@ class KnowledgeBaseService:
                         "multimodal_profile_revision_id"
                     ),
                 )
+            auto_qa_model_revision_id = None
+            if auto_qa_enabled:
+                if auto_qa_revision_id is None:
+                    raise ResourceStateConflictError(
+                        "auto-qa requires a chat model profile revision"
+                    )
+                auto_qa_bundle = await _selected_chat_profile(
+                    uow, auto_qa_revision_id
+                )
+                auto_qa_model_revision_id = auto_qa_bundle.current_revision.id
             created = await uow.knowledge_bases.create(
                 name=name,
                 retrieval_defaults=retrieval_defaults,
                 embedding_space=embedding_space,
                 cross_modal_embedding_space=cross_modal_embedding_space,
                 index_profile=resolved_profile,
+                auto_qa_enabled=auto_qa_enabled,
+                auto_qa_model_profile_revision_id=auto_qa_model_revision_id,
             )
             await uow.content_mutations.add(
                 scope=scope,

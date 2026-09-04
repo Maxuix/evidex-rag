@@ -638,7 +638,7 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
         await self._restore_dynamic_identity_schema(engine)
 
     async def _restore_dynamic_identity_schema(self, engine) -> None:
-        """Replay 0025–0029 when a historical test left the shared schema behind."""
+        """Replay 0025–0030 when a historical test left the shared schema behind."""
 
         identity_migration = importlib.import_module(
             "rag_kb.db.migrations.versions.0025_remove_dynamic_identity"
@@ -654,6 +654,9 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
         )
         v6_migration = importlib.import_module(
             "rag_kb.db.migrations.versions.0029_agent_v6_default"
+        )
+        auto_qa_migration = importlib.import_module(
+            "rag_kb.db.migrations.versions.0030_auto_qa_question_index"
         )
         async with engine.begin() as migration_connection:
             result = await migration_connection.exec_driver_sql(
@@ -709,6 +712,16 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
                     sync_connection, v6_migration, "upgrade"
                 )
             )
+        async with engine.begin() as migration_connection:
+            result = await migration_connection.exec_driver_sql(
+                "SELECT to_regclass('public.index_chunk_question')"
+            )
+            if result.scalar_one() is None:
+                await migration_connection.run_sync(
+                    lambda sync_connection: self._invoke_migration(
+                        sync_connection, auto_qa_migration, "upgrade"
+                    )
+                )
 
     async def test_legacy_chat_workflow_columns_are_removed(self) -> None:
         connection = await asyncpg.connect(MIGRATION_DSN)
@@ -2311,6 +2324,110 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
                 chunk_id,
             )
             self.assertAlmostEqual(distance, 0.0)
+        finally:
+            await connection.close()
+
+    async def test_auto_qa_question_constraints_and_chunk_cascade(self) -> None:
+        connection = await asyncpg.connect(MIGRATION_DSN)
+        try:
+            workspace_id, embedding_space_id, kb_id = await self.create_foundation(
+                connection, suffix="auto-qa"
+            )
+            revision_id = await self.create_revision(
+                connection, workspace_id, embedding_space_id, kb_id, status="active"
+            )
+            config = await connection.fetchrow(
+                """
+                SELECT auto_qa_config, auto_qa_model_profile_revision_id
+                FROM index_revision WHERE id = $1
+                """,
+                revision_id,
+            )
+            stored_config = config["auto_qa_config"]
+            if isinstance(stored_config, str):
+                stored_config = json.loads(stored_config)
+            self.assertEqual(stored_config, {"enabled": False})
+            self.assertIsNone(config["auto_qa_model_profile_revision_id"])
+            with self.assertRaises(asyncpg.CheckViolationError):
+                await connection.execute(
+                    """
+                    UPDATE index_revision
+                    SET auto_qa_config = '{"enabled": true}'::jsonb
+                    WHERE id = $1
+                    """,
+                    revision_id,
+                )
+            document_id, versions = await self.create_document_versions(
+                connection, workspace_id, kb_id, count=1
+            )
+            indexed_version_id = await connection.fetchval(
+                """
+                INSERT INTO indexed_document_version (
+                    workspace_id, kb_id, document_id, document_version_id,
+                    index_revision_id, source_change_seq,
+                    build_status, serving_status
+                ) VALUES ($1, $2, $3, $4, $5, 1, 'ready', 'serving')
+                RETURNING id
+                """,
+                workspace_id,
+                kb_id,
+                document_id,
+                versions[0],
+                revision_id,
+            )
+            chunk_id = await connection.fetchval(
+                """
+                INSERT INTO index_chunk (
+                    workspace_id, kb_id, indexed_document_version_id, ordinal,
+                    content, content_hash, token_count, source_location,
+                    unit_key, modality
+                ) VALUES (
+                    $1, $2, $3, 0, 'test', $4, 1, '{}'::jsonb,
+                    'auto-qa-chunk', 'text'
+                )
+                RETURNING id
+                """,
+                workspace_id,
+                kb_id,
+                indexed_version_id,
+                "0" * 64,
+            )
+            embedding = "[" + ",".join(["1", *("0" for _ in range(1023))]) + "]"
+            await connection.execute(
+                """
+                INSERT INTO index_chunk_question (
+                    index_chunk_id, ordinal, question, embedding
+                ) VALUES ($1, 0, '如何安装', $2::vector)
+                """,
+                chunk_id,
+                embedding,
+            )
+            with self.assertRaises(asyncpg.CheckViolationError):
+                await connection.execute(
+                    """
+                    INSERT INTO index_chunk_question (
+                        index_chunk_id, ordinal, question, embedding
+                    ) VALUES ($1, 5, '超出序号', $2::vector)
+                    """,
+                    chunk_id,
+                    embedding,
+                )
+            with self.assertRaises(asyncpg.UniqueViolationError):
+                await connection.execute(
+                    """
+                    INSERT INTO index_chunk_question (
+                        index_chunk_id, ordinal, question, embedding
+                    ) VALUES ($1, 1, '如何安装', $2::vector)
+                    """,
+                    chunk_id,
+                    embedding,
+                )
+            await connection.execute("DELETE FROM index_chunk WHERE id = $1", chunk_id)
+            remaining = await connection.fetchval(
+                "SELECT count(*) FROM index_chunk_question WHERE index_chunk_id = $1",
+                chunk_id,
+            )
+            self.assertEqual(remaining, 0)
         finally:
             await connection.close()
 

@@ -21,6 +21,7 @@ from sqlalchemy import (
     Index,
     Integer,
     MetaData,
+    SmallInteger,
     String,
     Text,
     UniqueConstraint,
@@ -913,6 +914,27 @@ class IndexRevision(Base):
             name="fk_index_revision_same_workspace_embedding",
         ),
         CheckConstraint("source_snapshot_seq >= 0", name="index_revision_snapshot_nonnegative"),
+        ForeignKeyConstraint(
+            ["workspace_id", "auto_qa_model_profile_revision_id"],
+            ["model_profile_revision.workspace_id", "model_profile_revision.id"],
+            name="fk_index_revision_auto_qa_model_same_workspace",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(auto_qa_config) = 'object' "
+            "AND auto_qa_config ? 'enabled' "
+            "AND ("
+            "((auto_qa_config->>'enabled') = 'false' "
+            "AND auto_qa_model_profile_revision_id IS NULL) "
+            "OR ((auto_qa_config->>'enabled') = 'true' "
+            "AND auto_qa_model_profile_revision_id IS NOT NULL)"
+            ") "
+            "AND ("
+            "NOT (auto_qa_config ? 'questions_per_chunk') "
+            "OR (auto_qa_config->>'questions_per_chunk') = '5'"
+            ")",
+            name="index_revision_auto_qa_config_consistent",
+        ),
         Index(
             "uq_one_active_revision_per_kb",
             "kb_id",
@@ -942,6 +964,14 @@ class IndexRevision(Base):
     )
     representation_config: Mapped[dict[str, Any]] = mapped_column(
         JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    auto_qa_config: Mapped[dict[str, Any]] = mapped_column(
+        JSONB,
+        nullable=False,
+        server_default=text("'{\"enabled\": false}'::jsonb"),
+    )
+    auto_qa_model_profile_revision_id: Mapped[UUID | None] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), nullable=True
     )
     error_code: Mapped[str | None] = mapped_column(String(128))
     error_detail: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
@@ -1298,6 +1328,35 @@ class IndexChunk(Base):
     excluded_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    created_at: Mapped[datetime] = created_timestamp()
+
+
+class IndexChunkQuestion(Base):
+    __tablename__ = "index_chunk_question"
+    __table_args__ = (
+        CheckConstraint(
+            "ordinal BETWEEN 0 AND 4",
+            name="index_chunk_question_ordinal_range",
+        ),
+        CheckConstraint(
+            "length(btrim(question)) > 0",
+            name="index_chunk_question_nonempty",
+        ),
+        UniqueConstraint(
+            "index_chunk_id",
+            "question",
+            name="uq_index_chunk_question_text",
+        ),
+    )
+
+    index_chunk_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("index_chunk.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    ordinal: Mapped[int] = mapped_column(SmallInteger, primary_key=True)
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    embedding: Mapped[list[float]] = mapped_column(Vector(), nullable=False)
     created_at: Mapped[datetime] = created_timestamp()
 
 

@@ -22,6 +22,7 @@ from rag_kb.db.models import (
     IndexBuildStatus,
     IndexChunk as IndexChunkRow,
     IndexChunkAssetRelation as IndexChunkAssetRelationRow,
+    IndexChunkQuestion as IndexChunkQuestionRow,
     IndexingJob as IndexingJobRow,
     IndexRevision as IndexRevisionRow,
     IndexRevisionEmbeddingSpace as IndexRevisionEmbeddingSpaceRow,
@@ -29,6 +30,7 @@ from rag_kb.db.models import (
     IndexServingStatus,
     JobStatus,
     KnowledgeBase as KnowledgeBaseRow,
+    ModelProfileRevision as ModelProfileRevisionRow,
     SourceChange as SourceChangeRow,
     SourceChangeKind,
     SourceFileCleanup as SourceFileCleanupRow,
@@ -54,11 +56,13 @@ from rag_kb.domain import (
     IdempotencyScope,
     IndexProfileDefinition,
     KnowledgeBase,
+    KnowledgeBaseAutoQASummary,
     KnowledgeBaseEmbeddingSummary,
     Page,
     PendingFileMutation,
     ResourceNameConflictError,
     ResourceStateConflictError,
+    auto_qa_config_payload,
     SourceFileCleanup,
     SourceFileReference,
 )
@@ -81,6 +85,8 @@ class SqlAlchemyKnowledgeBaseRepository:
         embedding_space: EmbeddingSpaceDefinition,
         cross_modal_embedding_space: EmbeddingSpaceDefinition | None,
         index_profile: IndexProfileDefinition,
+        auto_qa_enabled: bool = False,
+        auto_qa_model_profile_revision_id: UUID | None = None,
     ) -> KnowledgeBase:
         await self._session.execute(
             text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
@@ -130,6 +136,10 @@ class SqlAlchemyKnowledgeBaseRepository:
             chunking_config=dict(index_profile.chunking_config),
             enrichment_config=dict(index_profile.enrichment_config),
             representation_config=dict(index_profile.representation_config),
+            auto_qa_config=auto_qa_config_payload(enabled=auto_qa_enabled),
+            auto_qa_model_profile_revision_id=(
+                auto_qa_model_profile_revision_id if auto_qa_enabled else None
+            ),
         )
         self._session.add(revision)
         await self._session.flush()
@@ -178,6 +188,10 @@ class SqlAlchemyKnowledgeBaseRepository:
             revision.parser_config,
             revision.chunking_config,
             _embedding_summary_from_spaces(embedding, cross_modal_embedding),
+            await self._auto_qa_summary(
+                revision.auto_qa_config,
+                revision.auto_qa_model_profile_revision_id,
+            ),
         )
 
     async def _find_or_create_embedding(
@@ -231,6 +245,8 @@ class SqlAlchemyKnowledgeBaseRepository:
                     IndexRevisionRow.embedding_space_id,
                     IndexRevisionRow.parser_config,
                     IndexRevisionRow.chunking_config,
+                    IndexRevisionRow.auto_qa_config,
+                    IndexRevisionRow.auto_qa_model_profile_revision_id,
                 )
                 .join(
                     IndexRevisionRow,
@@ -242,7 +258,14 @@ class SqlAlchemyKnowledgeBaseRepository:
         if row is None:
             return None
         summary = await self._embedding_summary(row[0].active_index_revision_id)
-        return _knowledge_base(row[0], row[1], row[2], row[3], summary)
+        return _knowledge_base(
+            row[0],
+            row[1],
+            row[2],
+            row[3],
+            summary,
+            await self._auto_qa_summary(row[4], row[5]),
+        )
 
     async def list(
         self,
@@ -263,6 +286,8 @@ class SqlAlchemyKnowledgeBaseRepository:
                 IndexRevisionRow.embedding_space_id,
                 IndexRevisionRow.parser_config,
                 IndexRevisionRow.chunking_config,
+                IndexRevisionRow.auto_qa_config,
+                IndexRevisionRow.auto_qa_model_profile_revision_id,
             )
             .join(
                 IndexRevisionRow,
@@ -282,6 +307,9 @@ class SqlAlchemyKnowledgeBaseRepository:
         summaries = await self._embedding_summaries(
             tuple(row[0].active_index_revision_id for row in rows)
         )
+        auto_qa_models = await self._auto_qa_models(
+            tuple(row[5] for row in rows if row[5] is not None)
+        )
         items = tuple(
             _knowledge_base(
                 row[0],
@@ -289,6 +317,7 @@ class SqlAlchemyKnowledgeBaseRepository:
                 row[2],
                 row[3],
                 summaries[row[0].active_index_revision_id],
+                _auto_qa_from(row[4], row[5], auto_qa_models),
             )
             for row in rows
         )
@@ -334,6 +363,8 @@ class SqlAlchemyKnowledgeBaseRepository:
                     IndexRevisionRow.embedding_space_id,
                     IndexRevisionRow.parser_config,
                     IndexRevisionRow.chunking_config,
+                    IndexRevisionRow.auto_qa_config,
+                    IndexRevisionRow.auto_qa_model_profile_revision_id,
                 ).where(
                 IndexRevisionRow.id == kb.active_index_revision_id,
                 IndexRevisionRow.kb_id == kb.id,
@@ -347,6 +378,7 @@ class SqlAlchemyKnowledgeBaseRepository:
             revision_facts[1],
             revision_facts[2],
             await self._embedding_summary(kb.active_index_revision_id),
+            await self._auto_qa_summary(revision_facts[3], revision_facts[4]),
         )
 
     async def soft_delete(self, kb_id: UUID) -> KnowledgeBase | None:
@@ -365,6 +397,8 @@ class SqlAlchemyKnowledgeBaseRepository:
                     IndexRevisionRow.embedding_space_id,
                     IndexRevisionRow.parser_config,
                     IndexRevisionRow.chunking_config,
+                    IndexRevisionRow.auto_qa_config,
+                    IndexRevisionRow.auto_qa_model_profile_revision_id,
                 ).where(
                     IndexRevisionRow.workspace_id == self._workspace_id,
                     IndexRevisionRow.kb_id == kb.id,
@@ -470,6 +504,7 @@ class SqlAlchemyKnowledgeBaseRepository:
             revision_facts[1],
             revision_facts[2],
             embedding,
+            await self._auto_qa_summary(revision_facts[3], revision_facts[4]),
         )
 
     async def _embedding_summary(
@@ -523,6 +558,37 @@ class SqlAlchemyKnowledgeBaseRepository:
                 by_role.get(EmbeddingSpaceRole.CROSS_MODAL_RETRIEVAL.value),
             )
         return summaries
+
+    async def _auto_qa_summary(
+        self,
+        config: dict[str, Any] | None,
+        model_profile_revision_id: UUID | None,
+    ) -> KnowledgeBaseAutoQASummary:
+        models = await self._auto_qa_models(
+            (model_profile_revision_id,)
+            if model_profile_revision_id is not None
+            else ()
+        )
+        return _auto_qa_from(config, model_profile_revision_id, models)
+
+    async def _auto_qa_models(
+        self, revision_ids: tuple[UUID, ...]
+    ) -> dict[UUID, tuple[str, int]]:
+        if not revision_ids:
+            return {}
+        rows = (
+            await self._session.execute(
+                select(
+                    ModelProfileRevisionRow.id,
+                    ModelProfileRevisionRow.model,
+                    ModelProfileRevisionRow.revision,
+                ).where(
+                    ModelProfileRevisionRow.workspace_id == self._workspace_id,
+                    ModelProfileRevisionRow.id.in_(revision_ids),
+                )
+            )
+        ).all()
+        return {row.id: (row.model, row.revision) for row in rows}
 
 
 class SqlAlchemyDocumentRepository:
@@ -750,6 +816,22 @@ class SqlAlchemyDocumentRepository:
                 )
                 for item in asset_rows
             }
+        questions_by_chunk: dict[UUID, list[str]] = {item.id: [] for item in rows}
+        if chunk_ids:
+            question_rows = (
+                await self._session.execute(
+                    select(IndexChunkQuestionRow)
+                    .where(IndexChunkQuestionRow.index_chunk_id.in_(chunk_ids))
+                    .order_by(
+                        IndexChunkQuestionRow.index_chunk_id,
+                        IndexChunkQuestionRow.ordinal,
+                    )
+                )
+            ).scalars().all()
+            for question in question_rows:
+                questions_by_chunk.setdefault(question.index_chunk_id, []).append(
+                    question.question
+                )
         related: dict[UUID, list[DocumentChunkRelation]] = {
             item.id: [] for item in rows
         }
@@ -787,6 +869,7 @@ class SqlAlchemyDocumentRepository:
                     asset=assets.get(item.index_asset_id),
                     related_visuals=tuple(related[item.id]),
                     excluded_at=item.excluded_at,
+                    generated_questions=tuple(questions_by_chunk.get(item.id, ())),
                 )
                 for item in rows
             ),
@@ -1643,6 +1726,7 @@ def _knowledge_base(
     parser_config: dict[str, Any],
     chunking_config: dict[str, Any],
     embedding: KnowledgeBaseEmbeddingSummary,
+    auto_qa: KnowledgeBaseAutoQASummary | None = None,
 ) -> KnowledgeBase:
     assert row.active_index_revision_id is not None
     assert row.provisioned_at is not None
@@ -1662,6 +1746,29 @@ def _knowledge_base(
         updated_at=row.updated_at,
         embedding=embedding,
         deleted_at=row.deleted_at,
+        auto_qa=auto_qa or KnowledgeBaseAutoQASummary(),
+    )
+
+
+def _auto_qa_from(
+    config: dict[str, Any] | None,
+    model_profile_revision_id: UUID | None,
+    models: dict[UUID, tuple[str, int]],
+) -> KnowledgeBaseAutoQASummary:
+    enabled = bool(config) and config.get("enabled") is True
+    model = (
+        models.get(model_profile_revision_id)
+        if enabled and model_profile_revision_id is not None
+        else None
+    )
+    return KnowledgeBaseAutoQASummary(
+        enabled=enabled,
+        questions_per_chunk=5,
+        model_profile_revision_id=(
+            model_profile_revision_id if enabled else None
+        ),
+        model_name=model[0] if model is not None else None,
+        model_revision=model[1] if model is not None else None,
     )
 
 
