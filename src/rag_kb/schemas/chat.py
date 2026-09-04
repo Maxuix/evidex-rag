@@ -169,6 +169,7 @@ class ChatAgentTraceResponse(PublicSchema):
         "native_tool_calling_agent_v3",
         "native_tool_calling_agent_v4",
         "native_tool_calling_agent_v5",
+        "native_tool_calling_agent_v6",
     ]
     events: tuple[ChatAgentTraceEventResponse, ...]
     # Stored budget shape passes through: v5 carries only max_total_tokens,
@@ -184,6 +185,7 @@ class ChatAgentResponse(PublicSchema):
         "native_tool_calling_agent_v3",
         "native_tool_calling_agent_v4",
         "native_tool_calling_agent_v5",
+        "native_tool_calling_agent_v6",
     ]
     budget: dict[str, int]
     trace: ChatAgentTraceResponse | None = None

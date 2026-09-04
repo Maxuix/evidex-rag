@@ -1650,7 +1650,7 @@ class ChatRun(Base):
         nullable=False,
         server_default=text(
             "jsonb_build_object("
-            "'version', 'native_tool_calling_agent_v5', "
+            "'version', 'native_tool_calling_agent_v6', "
             "'budget', jsonb_build_object("
             "'max_total_tokens', 400000))"
         ),

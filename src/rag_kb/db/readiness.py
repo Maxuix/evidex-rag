@@ -7,7 +7,7 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-EXPECTED_REVISION = "0028_agent_v5_default"
+EXPECTED_REVISION = "0029_agent_v6_default"
 
 
 class DatabaseReadinessError(RuntimeError):

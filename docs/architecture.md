@@ -83,18 +83,18 @@
 - Chat 可选择 Chat-only 的 auto 模式：在冻结 revision 上首轮同时暴露语义/关键词/邻域/文档清单
   检索与一等 `search_graph_relations` Graph Tool，由原生 Agent 自主选择，语义检索不是 Graph
   的前置条件。
-  Graph Tool 只在存在 active READY build 时可见；每个 ChatRun 最多两次 Graph 调用，Graph 单次
+  Graph Tool 只在存在 active READY build 时可见且不设每个 ChatRun 的调用次数上限；Graph 单次
   90 秒（ChatRun 绝对 deadline 为 600 秒形成 `min(90, remaining)`），候选 K 冻结为 16，完整
-  一至三跳路径按 soft 12 / hard 16 去重 source chunk 原子打包，两次调用累计最多新增 32。
-  不存在服务端提交 completeness guard。Agent 以冻结预算限制累计 token、证据和检索执行数；
-  达到预算后切换到一次 submit-only 收尾，不对单条证据正文做按 token 截断。Graph Tool
+  一至三跳路径按 soft 12 / hard 16 去重 source chunk 原子打包。
+  不存在服务端 completeness guard。Agent 的冻结预算只限制累计 token；达到预算后切换到一次
+  无工具纯文本收尾，不对单条证据正文做按 token 截断。Graph Tool
   只返回 source chunk；edge fact 不进入 prompt、Citation 或回答正文；未配置、未就绪、
   运行时不可用、超时、被拒绝和无新增证据都以安全结果码返回，取消与超时可区分。
 - 持久 ChatSession / ChatRun、Session 短期上下文，以及动态提供当前可用工具的原生
   Tool-Calling Agent。常规工具为 `semantic_search`、`keyword_search`（hybrid
   进程且 lexical manifest 覆盖完整时暴露）、`read_chunk_context`、`list_documents`、
-  计算和提交回答；Graph READY 时首轮同时暴露 `search_graph_relations`，Graph 用完后从工具集移除。
-  所有运行共享证据约束回答、拒答与引用边界。
+  `calculate`；Graph READY 时首轮同时暴露 `search_graph_relations`。模型停止调用工具后直接写
+  带行内 EvidenceRef 的最终正文。所有运行共享证据约束回答、拒答与引用边界。
 - 本地用户 Chat 前端，以及文件协调、数据清理和本地评测工具。
 
 ### 2.3 当前明确不具备
@@ -117,7 +117,7 @@
 | 范围 | 当前选择 |
 | --- | --- |
 | 后端 | Python 3.12、FastAPI、Pydantic、异步 SQLAlchemy、asyncpg、Alembic |
-| 数据库 | PostgreSQL 18 + pgvector；当前 migration head 为 `0028_agent_v5_default` |
+| 数据库 | PostgreSQL 18 + pgvector；当前 migration head 为 `0029_agent_v6_default` |
 | 文档解析 | 原生 Docling；当前 PDF profile 在 Worker 管理的可终止子进程内按确定性页段解析 |
 | Chat 执行 | 普通异步原生 Tool-Calling loop；无 Agent 框架或图运行时 |
 | 模型接入 | OpenAI-compatible Chat/文本 Embedding；Tongyi 多模态 Embedding；固定离线 MiniLM reranker；已验证 Embedding 维度 64..4096 |
@@ -314,8 +314,9 @@ file content mutation 增加 `pending/completed/failed` 终态、稳定 failure 
 保留 attempt、claim/heartbeat、backoff、状态和错误事实；Graph work lease 不变。
 `0027` 把新 ChatRun 的 `agent_configuration` 列默认值改为 `native_tool_calling_agent_v4`
 与同值五键预算，不回填历史行。`0028` 把默认值改为 `native_tool_calling_agent_v5` 与
-单键 token 预算（`max_total_tokens`），同样不回填历史行；v5 执行器读取历史 v3/v4
-配置时只取其中的 token 上限。
+单键 token 预算（`max_total_tokens`）；`0029` 只把新行默认版本推进到
+`native_tool_calling_agent_v6`。三者都不回填历史行；v6 执行器读取历史 v3/v4/v5 配置时
+只取其中的 token 上限。
 P2 的实际数据核查确认 active/retired revision 指针仍承担当前与软删除恢复，两个 READY Graph build
 均为 active，PDF 分段任务真实使用 continuation；因此 revision/build identity、完整性 manifest、Graph
 lease 与 PDF checkpoint 都保留。未使用的 Enterprise Graph profile 只作为需单独授权的完整产品删除
@@ -455,7 +456,7 @@ exact dense（含跨模态 lane）加冻结 rerank；manual graph ChatRun 仍经
 准入只做池去重与证据预算，不走搜索语义下恒为 False 的 `eligibility.usable()`。
 `list_documents` 返回 serving 文档元数据（可选大纲），不进证据池、不可引用，每次计 1 次
 retrieval。结果在证据池中按 chunk 去重。`search_closed` 时四个证据获取工具与 Graph 一并移除，
-只留 calculate 与 submit。
+只保留至多一次 `calculate`，随后进入无工具文本终态轮。
 adaptive ChatRun 在存在 active READY build 时首轮同时暴露一等 `search_graph_relations` Tool；
 Graph 调用数达到冻结上限（默认 2）后该 Tool 从后续轮次移除，超限调用被拒绝且不发起外部查询。
 Graph 每次沿冻结的 build/extractor 身份执行，配置进入 building 只表示 staging，不会遮蔽仍
@@ -466,26 +467,26 @@ serving Chunk hydration；缺任意一跳来源时整条路径拒绝。`classic`
 `adaptive_graphiti_v3` snapshot；完整一至三跳路径是唯一打包原子，不拆断路径，path 可复用
 普通检索/上一次 Graph 已发送 Chunk（重复结果合并 provenance），`new_evidence_count` 只计真正新增
 Chunk；达到 soft 12 后下一条完整路径加入后不超过 hard 16 则整条接收，超过才停止。它不执行
-第二次 vector/FTS seed，也没有服务端提交 guard：submit 永远不再隐式触发 Graph 调用。
+第二次 vector/FTS seed，也没有服务端终态 guard：最终文本永远不再隐式触发 Graph 调用。
 Graph 的 route result 只允许 `admitted`、`no_evidence`、`not_ready`、`timeout`、
 `unavailable`、`rejected` 等安全码，公开 trace 保留 `tool=search_graph_relations` 与
 `graph_relations` lane，edge fact 永不进入 Agent tool result。Graph 单次内层 90 秒 timeout 与该
 结果码可区分外层 ChatRun 取消。
 manual Graph 的 hybrid 候选查询宽度按 `min(40, max(12, top_k * 2))` 计算；packing 按 path-whole
 规则优先保留完整图路径，再用未重复的 hybrid Evidence 回填到 `top_k`。
-Agent（v5）不再设模型轮次、检索次数、Graph 次数或证据条数上限；冻结 budget 只保留
+Agent（v6）不再设模型轮次、检索次数、Graph 次数或证据条数上限；冻结 budget 只保留
 `max_total_tokens`（默认 400k）一个基础设施保险丝。模型在同一轮可以发起多个互不依赖的
 工具调用，服务端并发执行、按 `index_chunk_id` 去重合并进统一证据池，并给每个调用各自
 返回 tool 结果。Agent 不以时间决定控制流；每轮按 response usage
-累计 token，token 保险丝触发后进入软 wrap-up——只留 `submit_answer` 工具，由模型自行选择
-answered/partial/refused；整体超时仍是硬资源错误。检索收敛按完整模型轮统计：一轮内任一
+累计 token，token 保险丝触发后进入软 wrap-up——不再提供工具并要求模型输出纯文本终态；
+整体超时仍是硬资源错误。检索收敛按完整模型轮统计：一轮内任一
 检索产生新 chunk 即归零，成功检索但零新增记一次，连续两轮无新增后关闭检索工具，保留
-至多一次 `calculate` 机会后只允许提交；`calculate`、`list_documents` 不参与统计。
+至多一次 `calculate` 机会，之后同样不再提供工具；`calculate`、`list_documents` 不参与统计。
 检索执行失败只作为该调用的错误结果返回，不取消同轮其他调用；连续两轮没有任何成功工具
-执行或有效提交则按资源错误终止（`protocol_error`），不合成回答。系统 Prompt 只做身份、
+执行时继续累计停滞，连续三轮则按资源错误终止（`protocol_error`），不合成回答。系统 Prompt 只做身份、
 不可信数据与引用纪律约束，不做问题分类或通道路由；工具各自描述自身能力。
-`submit_answer` 与其他调用同轮出现时，提交有效即终止（同轮其余调用不执行），无效则其余
-调用照常执行并给一次修复反馈。Agent 不比较或拒绝重复 Query 本身。
+正常轮次使用自动工具选择；模型某轮没有工具调用时，该轮正文就是终态。Agent 不比较或拒绝
+重复 Query 本身。
 历史 `retrieval_calls` 与已删除的 `max_retrieval_calls` 实际按 Query 执行数计量并继续保留兼容；Trace
 同时发布语义明确的 `retrieval_queries`、`retrieval_tool_calls`、`semantic_tool_calls`、
 `keyword_tool_calls`、`chunk_context_calls`、`document_list_calls` 与 `graph_tool_calls`。
@@ -500,7 +501,7 @@ v4 起不再发布 `simple_tool_calls`。成功 Trace 另汇总 prompt/completio
 不支持以未命中构造缺失性结论。系统没有开放工具集、跨问题 planner、持久 step ledger 或
 跨 run provenance。固定 Agent 另有一个纯函数 Decimal
 `calculate` action：只接收 512 字符内的 `+ - * /` 表达式并返回结果，不绑定证据；
-引用哪些知识库内容由最终回答的 claim 自行决定。
+引用哪些知识库内容由最终正文中的行内 EvidenceRef 自行决定。
 
 ## 10. Chat 与回答
 
@@ -533,11 +534,11 @@ load_context
        with independent calls executed concurrently in the same round
   -> server executes tools and returns stable refs from one merged evidence pool
   -> adaptive mode: Graph visible from the first round, uncapped per run
-  -> model calls submit_answer when ready (answered / partial / refused)
-  -> token fuse switches to a soft submit-only wrap-up round
+  -> model stops calling tools and writes a plain-text final with inline [ev_N]
+  -> token fuse switches to a tool-free soft wrap-up round
   -> two consecutive rounds without new evidence close retrieval
-  -> two consecutive stalled rounds end the run with a resource error
-  -> submission shape validation only; the model's outcome stands
+  -> three consecutive stalled rounds end the run with a resource error
+  -> resolve inline refs, renumber display citations, infer outcome
   -> persist_result
 ```
 
@@ -545,11 +546,11 @@ ChatRun 是唯一持久执行状态；没有 graph checkpoint、Controller、Ver
 Repair 或逐步骤 ledger。成功终态原子保存有界 Agent Trace。迁移
 `0010_drop_legacy_workflow` 已删除旧 workflow configuration/state 及其中的
 ResearchResult/SearchTrace 诊断；核心 ChatRun、消息、答案、Citation、usage 和 timing 事实保留。
-ChatRun 内部 trace 保存 claim salvage 的 rejected count 与内部 reason，供本地
-诊断使用；公开 API/SSE 会剥离这些内部字段，只保留隐私审查过的工具、lane、安全枚举与计数。
+ChatRun 内部 trace 保存有界的工具事件和终态引用解析计数，供本地诊断使用；公开 API/SSE
+只保留隐私审查过的工具、lane、安全枚举与计数。
 共享 trace artifact key 属于 domain 契约，不由 `services` 反向导入 Agent 实现。
 `ChatAnsweringState` 只保存真实 Evidence 可用引用、模型调用、视觉附件、确定性校验结果与渲染结果；
-不保存重复的原始 submit 草稿，也不伪造旧 assessment/structure-validation 状态。
+不保存重复的原始模型草稿，也不伪造旧 assessment/structure-validation 状态。
 `RenderedCitation` 只保存显示顺序与已准入 `PromptEvidence` 的引用，不再重复复制、校验整套证据元数据。
 原始检索 Evidence 与准入后的 PromptEvidence 仍分开：后者承载模型实际可用的视觉快照。
 数据库与公开 Citation 快照字段不变。成功终态 timing 记录实际 outcome、引用、检索、
@@ -557,18 +558,19 @@ ChatRun 内部 trace 保存 claim salvage 的 rejected count 与内部 reason，
 
 回答边界保持：
 
-- 拒答只由模型通过 `submit_answer` 自主给出（v5 起没有任何确定性拒答兜底）；
-  基础设施终止（超时、连续停滞）一律记录为资源错误，不合成回答或拒答。
-- 提交通过形状校验后直接渲染、持久化，不再追加独立
+- 模型用不带 EvidenceRef 的正文解释知识库为何无法作答；基础设施以“至少一个成功解析的引用”
+  推断 `answered`，零成功引用推断 `refused`，v6 不产生新的 `partial`。基础设施终止（超时、
+  连续停滞）一律记录为资源错误，不合成回答或拒答。
+- 纯文本终态完成引用解析后直接渲染、持久化，不再追加独立
   LLM Verifier 或 JSON verdict 重试。语义支持度及题面预设命题由生成模型结合证据判断，
   不把引用合法性检查等同于事实正确性保证；原有 evidence-only 与错误前提拒答提示保留。
   历史 Trace 中的 `verifier` 事件仍可只读展示，新运行不产生此类事件；历史 token 统计不改写。
 - 文档、历史与图片都是 prompt 中的不可信数据，不能扩大权限或引用范围。
-- `submit_answer` 只做形状校验（outcome/claims/unanswered 结构）；claim 引用的非法 ref
-  从引用集中静默丢弃，不删除 claim、不改写 outcome、不阻塞回答；形状非法的提交获得
-  修复反馈并计入停滞保险丝。新 ChatRun 不再有 `clarify` outcome；历史 clarify 数据保持可读。
+- 正文中的 `[ev_N]`（兼容全角/半角括号及组内常用分隔符）按首次出现解析并重编号为展示
+  `[1][2]`；未知 ref 从正文引用标记和引用集中静默丢弃，不阻塞终态。新 ChatRun 不再有
+  `partial` 或 `clarify` outcome；历史值保持可读。
 - 事实 claim 只能引用本次已授权 Evidence；实际未加载的图片不能产生视觉引用。
-- 同一主题上互不兼容的证据直接写成普通 claim 文本，并在 `evidence_refs` 中引用冲突双方；
+- 同一主题上互不兼容的证据直接写成普通正文，并在相应陈述后行内引用冲突双方；
   没有 `kind/conflict/type/adjudication` 分支、冲突领域对象或额外持久化字段。
 - 公开冲突评测不再把模型自报的结构标签当作正确性证明。`surface_evidence_conflict` 要求
   回答命中 gold 文本且至少引用两个不同文档，并单独报告多文档覆盖；该确定性指标不声称
@@ -587,10 +589,9 @@ ChatRun 内部 trace 保存 claim salvage 的 rejected count 与内部 reason，
   也不以文档覆盖率改变回答结果。
 - 最终答案、assistant message、Citation 和 ChatRun 终态在同一所有权边界提交。
 
-答案内容/形状和引用的校验集中在 `submit_answer` 输入边界。内部 `AnswerClaim`、
-`ValidatedAnswer` 不重复验证已经归一化的结果；渲染器负责引用去重、编号和结果展示，
-不再由结果 DTO 重查其编号与 outcome 组合。最终内容非空/大小限制、视觉准入与实际 bytes
-核对、持久化前结果完整性检查仍保留。
+答案内容和引用的归一化集中在纯文本终态边界。内部 `ValidatedAnswer` 在 v6 中保存一个全文
+claim；渲染器负责引用合法性、去重、编号、outcome 推断和结果展示。最终内容非空/大小限制、
+视觉准入与实际 bytes 核对、持久化前结果完整性检查仍保留。
 
 Provider 单次调用的 SDK timeout 与有限 retry 由一个逻辑预算统一计算：
 `timeout * (max_retries + 1) + 60 * max_retries + 1` 秒；Adapter 的外层总预算覆盖整个

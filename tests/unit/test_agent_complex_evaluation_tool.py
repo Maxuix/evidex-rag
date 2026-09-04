@@ -597,6 +597,52 @@ class AgentComplexEvaluationToolTests(unittest.TestCase):
         self.assertFalse(score["strict_correct"])
         self.assertEqual(score["forbidden_citation_document_ids"], ["unrelated"])
 
+    def test_v6_scoring_reports_inline_ref_resolution_and_refusal_discipline(self) -> None:
+        case = {
+            "case_id": "complex-inline",
+            "required_citation_document_ids": [],
+            "forbid_unrelated_citations": False,
+            "aspects": [{"aspect_id": "fact", "answer_variants": ["answer"]}],
+        }
+        run = {
+            "status": "completed",
+            "answer": "The answer.",
+            "agent": {
+                "version": "native_tool_calling_agent_v6",
+                "trace": {
+                    "outcome": "answered",
+                    "events": [
+                        {
+                            "tool": "protocol",
+                            "status": "ok",
+                            "count": 3,
+                            "refs": ["ev_1", "ev_2"],
+                        }
+                    ],
+                },
+            },
+            "citations": [
+                {"document_id": "doc-a"},
+                {"document_id": "doc-b"},
+            ],
+        }
+
+        score = score_complex_case(case, run)
+
+        self.assertEqual(score["inline_ref_observed"], 3)
+        self.assertEqual(score["inline_ref_resolved"], 2)
+        self.assertEqual(score["inline_ref_unresolved"], 1)
+        self.assertEqual(score["inline_ref_parse_rate"], 0.666667)
+        self.assertIsNone(score["refusal_zero_refs"])
+
+        run["agent"]["trace"]["outcome"] = "refused"
+        run["agent"]["trace"]["events"][-1] = {
+            "tool": "protocol", "status": "refused", "count": 0, "refs": []
+        }
+        run["citations"] = []
+        refused = score_complex_case(case, run)
+        self.assertTrue(refused["refusal_zero_refs"])
+
     def test_scoring_maps_runtime_citation_filename_to_corpus_document_id(self) -> None:
         case = {
             "case_id": "complex-filename-map",
@@ -781,6 +827,10 @@ class AgentComplexEvaluationToolTests(unittest.TestCase):
                 "forbidden_citation_document_ids": [],
                 "agent_outcome": "answered",
                 "answered_precision_ok": True,
+                "inline_ref_observed": 3,
+                "inline_ref_resolved": 3,
+                "inline_ref_unresolved": 0,
+                "refusal_zero_refs": False,
             },
             "status": "completed",
             "elapsed_seconds": 4.0,
@@ -816,6 +866,10 @@ class AgentComplexEvaluationToolTests(unittest.TestCase):
         self.assertEqual(summary["judge_calls"], 2)
         self.assertEqual(summary["judge_attempts"], 3)
         self.assertEqual(summary["judge_total_tokens"], 12)
+        self.assertEqual(summary["inline_ref_observed"], 3)
+        self.assertEqual(summary["inline_ref_resolved"], 3)
+        self.assertEqual(summary["inline_ref_unresolved"], 0)
+        self.assertEqual(summary["inline_ref_parse_rate"], 1.0)
 
 
 if __name__ == "__main__":

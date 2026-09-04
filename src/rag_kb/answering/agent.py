@@ -1,4 +1,4 @@
-"""Single bounded native tool-calling loop for one claimed ChatRun (v5)."""
+"""Single bounded native tool-calling loop for one claimed ChatRun (v6)."""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ import asyncio
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 import json
-import re
 import time
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
@@ -19,10 +18,9 @@ from rag_kb.answering.model_execution import (
 from rag_kb.answering.evidence import (
     build_evidence_envelope,
     render_validated_answer,
+    render_text_final_answer,
 )
 from rag_kb.domain import (
-    AnswerClaim,
-    AnswerDraftSource,
     AnswerOutcome,
     CHAT_AGENT_ACCEPTED_VERSIONS,
     CHAT_AGENT_EVENT_TOOLS,
@@ -30,11 +28,9 @@ from rag_kb.domain import (
     CHAT_AGENT_VERSION,
     CHAT_GRAPH_SEARCH_REASONS,
     ChatAgentBudget,
-    CHAT_AGENT_CLAIM_LIMIT,
     CHAT_AGENT_DEFAULT_TOTAL_TOKENS,
     CHAT_AGENT_TRACE_EVENT_LIMIT,
     CHAT_AGENT_TRACE_REF_LIMIT,
-    CHAT_AGENT_UNANSWERED_LIMIT,
     ChatAgentTrace,
     ChatAgentTraceEvent,
     ChatAnsweringState,
@@ -91,31 +87,14 @@ _COMPACTION_TOKEN_FRACTION = 5
 _MAX_CONTEXT_ANCHORS = 3
 _BUDGET_EXHAUSTED_FEEDBACK = (
     "The token budget for this run is nearly exhausted. Do not call search "
-    "tools; submit the best possible answer now with the evidence already "
-    "gathered, or refuse when it cannot support an answer."
+    "tools. Write the best possible final answer now with the evidence already "
+    "gathered, or explain without citations why it cannot be answered."
 )
 _SEARCH_CLOSED_FEEDBACK = (
     "Search is closed: the last two rounds produced no new evidence. Do not "
-    "call search tools. You may calculate once if needed, then submit the "
-    "best supported answer or refuse."
+    "call search tools. You may calculate once if needed, then write the best "
+    "supported final answer or explain without citations why it cannot be answered."
 )
-_SUBMISSION_REPAIR_FEEDBACK = (
-    "The submit_answer arguments were invalid. Call submit_answer again. "
-    "Return exactly the required top-level fields outcome, claims, and "
-    "unanswered; use arrays for claims and unanswered, and include text and "
-    "evidence_refs in every claim."
-)
-_INTERNAL_EVIDENCE_MARKER_GROUP = re.compile(
-    r"\s*[\(\[（]\s*ev_\d+(?:\s*[,，;；、]\s*ev_\d+)*\s*[\)\]）]"
-)
-
-
-@dataclass(frozen=True, slots=True)
-class _SubmissionValidation:
-    validated: ValidatedAnswer
-    retained_refs: tuple[str, ...]
-
-
 @dataclass(slots=True)
 class _CallOutcome:
     """One executed (or rejected) tool call of a round."""
@@ -215,9 +194,9 @@ class ChatAgentProgress:
 
 
 class NativeToolCallingAgent:
-    """Execute search, calculate, and submit in a plain async loop.
+    """Execute search and calculation tools, then accept a plain-text final.
 
-    v5: the model plans retrieval itself; one round may carry several
+    v6: the model plans retrieval itself; one round may carry several
     parallel tool calls; infrastructure only executes tools, merges results,
     and enforces the token/deadline/progress fuses.
     """
@@ -812,9 +791,8 @@ class NativeToolCallingAgent:
             progress.model_rounds = round_number
             if not wrap_up and total_tokens >= budget.max_total_tokens:
                 wrap_up = True
-                # Entering submit-only mode is a real progress opportunity.
-                # Search-phase stalls must not consume the repair attempts
-                # reserved for the final submission.
+                # Entering the tool-free wrap-up is a fresh progress opportunity.
+                # Search-phase stalls must not consume its protocol margin.
                 stalled_rounds = 0
             if wrap_up and not wrap_up_notice_sent:
                 wrap_up_notice_sent = True
@@ -835,17 +813,14 @@ class NativeToolCallingAgent:
                 graph_ready=graph_ready,
             )
             if wrap_up or (search_closed and search_closed_calculation_used):
-                tools = (_tool_by_name(available_tools, "submit_answer"),)
-                tool_choice: ChatToolChoice | str = "submit_answer"
+                tools = ()
+                tool_choice: ChatToolChoice | str = ChatToolChoice.NONE
             elif search_closed:
-                tools = (
-                    _tool_by_name(available_tools, "calculate"),
-                    _tool_by_name(available_tools, "submit_answer"),
-                )
-                tool_choice = ChatToolChoice.REQUIRED
+                tools = (_tool_by_name(available_tools, "calculate"),)
+                tool_choice = ChatToolChoice.AUTO
             else:
                 tools = available_tools
-                tool_choice = ChatToolChoice.REQUIRED
+                tool_choice = ChatToolChoice.AUTO
 
             response = await self._complete_round(
                 context,
@@ -858,62 +833,23 @@ class NativeToolCallingAgent:
             total_tokens += int(response.usage.get("total_tokens", 0) or 0)
 
             if not response.tool_calls:
+                validated, rendered, retained_refs, observed_refs = render_text_final_answer(
+                    response.content,
+                    prompt_by_ref,
+                    loaded_visual_refs=loaded_visual_refs,
+                    current_query=context.query,
+                )
                 events.append(
                     ChatAgentTraceEvent(
                         tool="protocol",
-                        status="rejected",
-                        tool_call_id=f"round_{round_number}",
-                        count=0,
-                    )
-                )
-                messages.append(
-                    ChatModelMessage(
-                        "assistant",
-                        response.content or "Invalid tool protocol.",
-                    )
-                )
-                messages.append(ChatModelMessage("user", _PROTOCOL_ERROR))
-                round_spans.append((span_start, len(messages)))
-                _stall_or_reset(progressed=False)
-                continue
-
-            messages.append(
-                ChatModelMessage(
-                    "assistant",
-                    response.content,
-                    tool_calls=response.tool_calls,
-                )
-            )
-
-            submit_calls = [
-                call for call in response.tool_calls if call.name == "submit_answer"
-            ]
-            other_calls = [
-                call for call in response.tool_calls if call.name != "submit_answer"
-            ]
-            submit_result: _SubmissionValidation | None = None
-            submit_valid = False
-            if submit_calls:
-                submit_result = _validate_submission(
-                    submit_calls[0].arguments,
-                    prompt_by_ref=prompt_by_ref,
-                    loaded_visual_refs=loaded_visual_refs,
-                )
-                submit_valid = submit_result is not None
-            if submit_valid:
-                assert submit_result is not None
-                validated = submit_result.validated
-                events.append(
-                    ChatAgentTraceEvent(
-                        tool="submit_answer",
                         status=(
                             "refused"
                             if validated.outcome is AnswerOutcome.REFUSED
                             else "ok"
                         ),
-                        tool_call_id=submit_calls[0].id,
-                        refs=submit_result.retained_refs[:_TRACE_REF_LIMIT],
-                        count=len(validated.claims),
+                        tool_call_id=f"round_{round_number}",
+                        refs=retained_refs[:_TRACE_REF_LIMIT],
+                        count=len(tuple(dict.fromkeys(observed_refs))),
                         budget_wrap_up=wrap_up,
                     )
                 )
@@ -939,7 +875,18 @@ class NativeToolCallingAgent:
                         if search_closed
                         else "submitted"
                     ),
+                    rendered=rendered,
                 )
+
+            messages.append(
+                ChatModelMessage(
+                    "assistant",
+                    response.content,
+                    tool_calls=response.tool_calls,
+                )
+            )
+
+            other_calls = list(response.tool_calls)
 
             offered_names = {tool.name for tool in tools}
             outcomes: list[_CallOutcome] = [
@@ -1076,20 +1023,6 @@ class NativeToolCallingAgent:
                 messages.append(
                     ChatModelMessage("tool", content, tool_call_id=outcome.call.id)
                 )
-            for submit_call in submit_calls:
-                # The submission was invalid; siblings still executed above.
-                messages.append(
-                    ChatModelMessage(
-                        "tool",
-                        _argument_error("invalid_submission_shape"),
-                        tool_call_id=submit_call.id,
-                    )
-                )
-            if submit_calls:
-                messages.append(
-                    ChatModelMessage("user", _SUBMISSION_REPAIR_FEEDBACK)
-                )
-
             round_spans.append((span_start, len(messages)))
             _stall_or_reset(
                 progressed=any(
@@ -1173,18 +1106,23 @@ def _initial_messages(context: ChatExecutionContext) -> list[ChatModelMessage]:
             "the requested proposition false; require explicit support or denial for the exact "
             "entities and relation, otherwise refuse. A question can presuppose a fact that "
             "never happened (for example asking why or when something occurred); when the "
-            "evidence does not confirm the presupposed fact, refuse instead of answering as "
-            "if it were true. "
+            "evidence does not confirm the presupposed fact, do not claim that the event did "
+            "or did not happen. State only that the knowledge base does not establish the "
+            "premise. Retrieval misses and tangential facts are not evidence for the opposite "
+            "claim. Such a refusal must contain no EvidenceRef marker and must not be padded "
+            "with unrelated cited facts. "
             "You may call several independent tools in the same turn. "
             "Use calculate for arithmetic. "
-            "Before submitting, verify every requested entity, period, subquestion, "
+            "Before finalizing, verify every requested entity, period, subquestion, "
             "ranking, exact figure, and arithmetic result against the cited evidence. "
-            "If any requested part is still unsupported, keep searching or mark that "
-            "part unanswered instead of guessing. "
-            "Finish only with submit_answer. You may submit an answered, partial, or refused "
-            "result as soon as further tool use would not improve it. "
-            "Put EvidenceRefs only in each claim's evidence_refs field; never repeat internal "
-            "EvidenceRef identifiers in the user-visible claim text. "
+            "If any requested part is still unsupported, keep searching or say plainly "
+            "that the evidence does not support that part instead of guessing. "
+            "When further tool use would not improve the answer, stop calling tools and write "
+            "the final user-visible answer as plain text. Cite every factual statement inline "
+            "with the exact issued EvidenceRef in square brackets, for example [ev_3]. "
+            "Use only issued refs and place each marker immediately after the supported text. "
+            "If the request cannot be answered from the evidence, explain why without any "
+            "EvidenceRef marker. "
             "When retrieved evidence gives mutually incompatible statements on the "
             "same subject, explain the disagreement in ordinary claim text and cite "
             "the evidence for every side. If a newer version supersedes an older value, "
@@ -1306,44 +1244,13 @@ def _tools(
             "additionalProperties": False,
         },
     )
-    submit = ChatToolDefinition(
-        "submit_answer",
-        "Submit the final answer: outcome answered | partial | refused, "
-        "claims carrying text and evidence_refs, and the still-unanswered "
-        "parts. Unresolvable refs are dropped from citations and never block "
-        "the answer. When issued evidence conflicts on the same subject, "
-        "explain the disagreement in claim text and include every side in "
-        "evidence_refs; if a newer version resolves it, say which value is "
-        "current and why.",
-        {
-            "type": "object",
-            "properties": {
-                "outcome": {"type": "string", "enum": ["answered", "partial", "refused"]},
-                "claims": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "text": {"type": "string", "minLength": 1, "maxLength": 4000},
-                            "evidence_refs": {"type": "array", "items": {"type": "string"}},
-                        },
-                        "required": ["text", "evidence_refs"],
-                        "additionalProperties": False,
-                    },
-                },
-                "unanswered": {"type": "array", "items": {"type": "string"}},
-            },
-            "required": ["outcome", "claims", "unanswered"],
-            "additionalProperties": False,
-        },
-    )
     tools: list[ChatToolDefinition] = [semantic]
     if keyword_ready:
         tools.append(keyword)
     tools.extend((read_context, list_documents))
     if adaptive and graph_ready:
         tools.append(graph)
-    tools.extend((calculate, submit))
+    tools.append(calculate)
     return tuple(tools)
 
 
@@ -1803,97 +1710,6 @@ def _new_visuals(
     return tuple(selected), tuple(dict.fromkeys(selected_refs))
 
 
-def _validate_submission(
-    value: Mapping[str, Any],
-    *,
-    prompt_by_ref: Mapping[str, PromptEvidence],
-    loaded_visual_refs: set[str],
-) -> _SubmissionValidation | None:
-    """Validate the submission shape. Unresolvable refs drop out of the
-    citation set without blocking the answer; the model's outcome stands."""
-
-    if not isinstance(value, Mapping) or set(value) != {"outcome", "claims", "unanswered"}:
-        return None
-    outcome = value.get("outcome")
-    raw_claims = value.get("claims")
-    unanswered = _normalized_unanswered(
-        value.get("unanswered"), maximum=CHAT_AGENT_UNANSWERED_LIMIT
-    )
-    if outcome not in {"answered", "partial", "refused"} or unanswered is None:
-        return None
-    if not isinstance(raw_claims, (list, tuple)) or len(raw_claims) > CHAT_AGENT_CLAIM_LIMIT:
-        return None
-    if outcome == "refused":
-        if raw_claims:
-            return None
-        return _SubmissionValidation(
-            validated=ValidatedAnswer(
-                outcome=AnswerOutcome.REFUSED,
-                claims=(),
-                missing_aspects=unanswered,
-                source=AnswerDraftSource.PROVIDER,
-            ),
-            retained_refs=(),
-        )
-    retained: list[AnswerClaim] = []
-    retained_refs: list[str] = []
-    for raw in raw_claims:
-        if (
-            not isinstance(raw, Mapping)
-            or not {"text", "evidence_refs"}.issubset(raw)
-            or not set(raw).issubset({"text", "evidence_refs"})
-        ):
-            return None
-        text = raw.get("text")
-        raw_refs = raw.get("evidence_refs")
-        if not isinstance(raw_refs, (list, tuple)):
-            return None
-        evidence_refs = tuple(
-            dict.fromkeys(
-                item.strip()
-                for item in raw_refs
-                if isinstance(item, str) and item.strip()
-            )
-        )
-        if not isinstance(text, str) or not text.strip() or len(text) > 4000:
-            return None
-        resolved = [
-            ref
-            for ref in dict.fromkeys(evidence_refs)
-            if ref in prompt_by_ref
-            and not (
-                _requires_loaded_visual(prompt_by_ref[ref])
-                and ref not in loaded_visual_refs
-            )
-        ]
-        citation_ids = tuple(prompt_by_ref[ref].citation_id for ref in resolved)
-        visible_text = _strip_internal_evidence_markers(text)
-        if not visible_text:
-            return None
-        retained.append(AnswerClaim(text=visible_text, citation_ids=citation_ids))
-        retained_refs.extend(resolved)
-    if not retained:
-        return None
-    validated = ValidatedAnswer(
-        outcome=AnswerOutcome.ANSWERED if outcome == "answered" else AnswerOutcome.PARTIAL,
-        claims=tuple(retained),
-        missing_aspects=tuple(
-            dict.fromkeys(item for item in unanswered if item.strip())
-        ),
-        source=AnswerDraftSource.PROVIDER,
-    )
-    return _SubmissionValidation(
-        validated=validated,
-        retained_refs=tuple(dict.fromkeys(retained_refs)),
-    )
-
-
-def _strip_internal_evidence_markers(value: str) -> str:
-    """Remove redundant provider-written ref groups from user-visible prose."""
-
-    return _INTERNAL_EVIDENCE_MARKER_GROUP.sub("", value).strip()
-
-
 def _final_state(
     context: ChatExecutionContext,
     evidence: Sequence[Evidence],
@@ -1911,6 +1727,7 @@ def _final_state(
     *,
     progress: ChatAgentProgress,
     stop_reason: str,
+    rendered: RenderedAnswer | None = None,
 ) -> ChatPipelineState:
     pack = _pack(context, evidence, strategy)
     envelope = EvidenceEnvelope(
@@ -1919,7 +1736,9 @@ def _final_state(
         tuple(prompt_by_ref.values()),
     )
     cited = tuple(dict.fromkeys(ref for claim in validated.claims for ref in claim.citation_ids))
-    rendered = render_validated_answer(validated, envelope, current_query=context.query)
+    rendered = rendered or render_validated_answer(
+        validated, envelope, current_query=context.query
+    )
     retained_visuals = tuple(
         visual
         for visual in sent_visuals
@@ -2032,13 +1851,6 @@ def _pack(context: ChatExecutionContext, evidence: Sequence[Evidence], strategy:
     )
 
 
-def _requires_loaded_visual(prompt: PromptEvidence) -> bool:
-    return not any(
-        item in {"text", "caption_text", "ocr_text", "table_text"}
-        for item in prompt.matched_representations
-    )
-
-
 def _strings(
     value: object,
     *,
@@ -2055,23 +1867,6 @@ def _strings(
     if require_nonempty and not result:
         return None
     return result
-
-
-def _normalized_unanswered(
-    value: object,
-    *,
-    maximum: int,
-) -> tuple[str, ...] | None:
-    if not isinstance(value, (list, tuple)) or len(value) > maximum:
-        return None
-    normalized: list[str] = []
-    for item in value:
-        if not isinstance(item, str) or len(item) > 1000:
-            return None
-        stripped = item.strip()
-        if stripped and stripped not in normalized:
-            normalized.append(stripped)
-    return tuple(normalized)
 
 
 def _rejected_event(call: ChatToolCall, tool: str | None = None) -> ChatAgentTraceEvent:
@@ -2118,8 +1913,8 @@ def _model_output_limit(context: ChatExecutionContext) -> int:
 def _budget_from_context(
     context: ChatExecutionContext,
 ) -> ChatAgentBudget:
-    """Parse the run's agent configuration. v5 keeps a single token fuse;
-    historical v3/v4 configurations still parse (only their token limit is
+    """Parse the run's agent configuration. v6 keeps a single token fuse;
+    historical v3/v4/v5 configurations still parse (only their token limit is
     honored) so in-place retries of old runs keep working."""
 
     value = context.agent_configuration

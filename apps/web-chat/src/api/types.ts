@@ -377,7 +377,8 @@ export interface ChatAgent {
   version:
     | "native_tool_calling_agent_v3"
     | "native_tool_calling_agent_v4"
-    | "native_tool_calling_agent_v5";
+    | "native_tool_calling_agent_v5"
+    | "native_tool_calling_agent_v6";
   budget: {
     max_total_tokens?: number;
     // Legacy v3/v4 fields, present only on historical runs.
@@ -390,7 +391,8 @@ export interface ChatAgent {
     version:
       | "native_tool_calling_agent_v3"
       | "native_tool_calling_agent_v4"
-      | "native_tool_calling_agent_v5";
+      | "native_tool_calling_agent_v5"
+      | "native_tool_calling_agent_v6";
     events: ChatAgentTraceEvent[];
     budget: ChatAgent["budget"];
     usage: Record<string, number>;

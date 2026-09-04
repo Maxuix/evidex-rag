@@ -13,8 +13,7 @@ from rag_kb.domain import (
     PromptEvidence,
     ValidatedAnswer,
 )
-from rag_kb.answering.evidence import render_validated_answer
-from rag_kb.answering.agent import _validate_submission
+from rag_kb.answering.evidence import render_text_final_answer, render_validated_answer
 from rag_kb.repositories.sqlalchemy_chat import _citations_equal, _serialized_success
 
 
@@ -76,103 +75,65 @@ class RenderedEvidenceTests(unittest.TestCase):
         self.assertFalse(_citations_equal(rows, command))
         self.assertFalse(_citations_equal(rows[:1], command))
 
-class SubmissionBoundaryTests(unittest.TestCase):
-    def test_malformed_claims_invalidate_the_whole_submission(self) -> None:
-        prompt = SimpleNamespace(citation_id="cite_1", matched_representations=("text",))
-        good = {"text": " Supported fact ", "evidence_refs": ["ev_1"]}
-        for patch in (
-            {"text": ""},
-            {"text": "x" * 4001},
-            {"text": 17},
-            {"evidence_refs": "ev_1"},
-            {"legacy_field": True},
-        ):
-            with self.subTest(patch=patch):
-                result = _validate_submission(
-                    {"outcome": "answered", "claims": [good, {**good, **patch}], "unanswered": []},
-                    prompt_by_ref={"ev_1": prompt}, loaded_visual_refs=set(),
-                )
-                self.assertIsNone(result)
+class TextFinalBoundaryTests(unittest.TestCase):
+    def test_inline_refs_are_resolved_with_tolerant_brackets_and_first_use_order(self) -> None:
+        first = SimpleNamespace(citation_id="cite_1", matched_representations=("text",))
+        second = SimpleNamespace(citation_id="cite_2", matched_representations=("ocr_text",))
+        validated, rendered, retained, observed = render_text_final_answer(
+            "Second 【EV_2】, first （ev_1，ev_404）, second again [ev_2].",
+            {"ev_1": first, "ev_2": second},
+            loaded_visual_refs=set(),
+            current_query="Explain.",
+        )
+        self.assertEqual(validated.outcome, AnswerOutcome.ANSWERED)
+        self.assertEqual(rendered.content, "Second [1], first [2], second again [1].")
+        self.assertEqual(retained, ("ev_2", "ev_1"))
+        self.assertEqual(observed, ("ev_2", "ev_1", "ev_404", "ev_2"))
+        self.assertEqual(validated.claims[0].citation_ids, ("cite_2", "cite_1"))
+        self.assertEqual([item.ordinal for item in rendered.citations], [0, 1])
 
-    def test_unresolvable_refs_are_dropped_without_blocking_the_answer(self) -> None:
-        prompt = SimpleNamespace(citation_id="cite_1", matched_representations=("text",))
-        result = _validate_submission(
-            {
-                "outcome": "answered",
-                "claims": [
-                    {"text": "Cited fact", "evidence_refs": ["ev_1", "ev_1", "unknown"]},
-                    {"text": "Uncited remark", "evidence_refs": []},
-                ],
-                "unanswered": [],
-            },
-            prompt_by_ref={"ev_1": prompt}, loaded_visual_refs=set(),
+    def test_unknown_refs_are_silently_removed_and_zero_resolved_refs_refuse(self) -> None:
+        validated, rendered, retained, observed = render_text_final_answer(
+            "The premise is not established [ev_999].",
+            {},
+            loaded_visual_refs=set(),
+            current_query="Did it happen?",
         )
-        self.assertIsNotNone(result)
-        # The model's outcome stands; no rewrite, no claim deletion.
-        self.assertEqual(result.validated.outcome, AnswerOutcome.ANSWERED)
-        self.assertEqual(
-            result.validated.claims,
-            (
-                AnswerClaim("Cited fact", ("cite_1",)),
-                AnswerClaim("Uncited remark", ()),
-            ),
-        )
-        self.assertEqual(result.retained_refs, ("ev_1",))
+        self.assertEqual(validated.outcome, AnswerOutcome.REFUSED)
+        self.assertEqual(rendered.outcome, AnswerOutcome.REFUSED)
+        self.assertEqual(rendered.content, "The premise is not established .")
+        self.assertEqual(rendered.citations, ())
+        self.assertEqual(retained, ())
+        self.assertEqual(observed, ("ev_999",))
+        self.assertEqual(validated.missing_aspects, ())
 
-    def test_refused_and_partial_shapes(self) -> None:
-        prompt = SimpleNamespace(citation_id="cite_1", matched_representations=("text",))
-        args = {"prompt_by_ref": {"ev_1": prompt}, "loaded_visual_refs": set()}
-        refused = _validate_submission(
-            {"outcome": "refused", "claims": [], "unanswered": []}, **args
-        )
-        self.assertEqual(refused.validated.outcome, AnswerOutcome.REFUSED)
-        # refused must not carry claims.
-        self.assertIsNone(
-            _validate_submission(
-                {
-                    "outcome": "refused",
-                    "claims": [{"text": "x", "evidence_refs": []}],
-                    "unanswered": [],
-                },
-                **args,
-            )
-        )
-        # answered/partial require at least one claim.
-        self.assertIsNone(
-            _validate_submission({"outcome": "answered", "claims": [], "unanswered": []}, **args)
-        )
-        partial = _validate_submission(
-            {
-                "outcome": "partial",
-                "claims": [{"text": "Half an answer", "evidence_refs": ["ev_1"]}],
-                "unanswered": ["the rest"],
-            },
-            **args,
-        )
-        self.assertEqual(partial.validated.outcome, AnswerOutcome.PARTIAL)
-        self.assertEqual(partial.validated.missing_aspects, ("the rest",))
-
-    def test_submission_limits_and_visual_admission_remain_boundary_checks(self) -> None:
-        claim = {"text": "A fact", "evidence_refs": ["ev_1"]}
+    def test_visual_only_ref_requires_the_image_to_have_been_loaded(self) -> None:
+        visual = SimpleNamespace(citation_id="cite_1", matched_representations=("image",))
         args = {
-            "prompt_by_ref": {"ev_1": SimpleNamespace(citation_id="cite_1", matched_representations=("image",))},
-            "loaded_visual_refs": set(),
+            "prompt_by_ref": {"ev_1": visual},
+            "current_query": "What is shown?",
         }
-        payload = {"outcome": "answered", "claims": [claim], "unanswered": []}
-        # An unloaded visual ref drops out of citations but never blocks the claim.
-        result = _validate_submission(payload, **args)
-        self.assertEqual(result.validated.outcome, AnswerOutcome.ANSWERED)
-        self.assertEqual(result.validated.claims, (AnswerClaim("A fact", ()),))
-        args["loaded_visual_refs"] = {"ev_1"}
-        with_visual = _validate_submission(payload, **args)
-        self.assertEqual(with_visual.validated.claims, (AnswerClaim("A fact", ("cite_1",)),))
-        for invalid in (
-            {**payload, "claims": [claim] * 101},
-            {**payload, "unanswered": ["x" * 1001]},
-            {**payload, "outcome": "invented"},
-            {**payload, "outcome": "clarify"},
-        ):
-            self.assertIsNone(_validate_submission(invalid, **args))
+        refused = render_text_final_answer(
+            "A chart [ev_1]", loaded_visual_refs=set(), **args
+        )
+        self.assertEqual(refused[0].outcome, AnswerOutcome.REFUSED)
+        answered = render_text_final_answer(
+            "A chart [ev_1]", loaded_visual_refs={"ev_1"}, **args
+        )
+        self.assertEqual(answered[0].outcome, AnswerOutcome.ANSWERED)
+        self.assertEqual(answered[1].content, "A chart [1]")
+
+    def test_plain_text_without_a_resolved_ref_is_a_normal_refusal(self) -> None:
+        validated, rendered, retained, observed = render_text_final_answer(
+            "The available knowledge base does not establish the premise.",
+            {},
+            loaded_visual_refs=set(),
+            current_query="Question",
+        )
+        self.assertEqual(validated.outcome, AnswerOutcome.REFUSED)
+        self.assertEqual(rendered.content, "The available knowledge base does not establish the premise.")
+        self.assertEqual(retained, ())
+        self.assertEqual(observed, ())
 
 
 if __name__ == "__main__":

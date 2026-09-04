@@ -2073,7 +2073,7 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(created.headers["location"], body["status_url"])
         self.assertEqual(body["status"], "queued")
         self.assertEqual(body["assistant_status"], "generating")
-        self.assertEqual(body["agent"]["version"], "native_tool_calling_agent_v5")
+        self.assertEqual(body["agent"]["version"], "native_tool_calling_agent_v6")
         self.assertEqual(
             body["agent"]["budget"],
             {

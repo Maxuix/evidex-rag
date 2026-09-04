@@ -117,7 +117,7 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             first.agent_configuration,
             {
-                "version": "native_tool_calling_agent_v5",
+                "version": "native_tool_calling_agent_v6",
                 "budget": {
                     "max_total_tokens": 400000,
                 },

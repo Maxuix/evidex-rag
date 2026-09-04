@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+import re
+
 from rag_kb.domain import (
+    AnswerClaim,
     AnswerControlReason,
+    AnswerDraftSource,
     AnswerOutcome,
     EvidenceEnvelope,
     EvidencePack,
@@ -12,6 +17,15 @@ from rag_kb.domain import (
     RenderedCitation,
     ValidatedAnswer,
 )
+
+
+_INLINE_EVIDENCE_GROUP = re.compile(
+    r"[\[\uFF3B\u3010\(\uFF08]\s*"
+    r"(?P<refs>ev_\d+(?:\s*[,，;；、]\s*ev_\d+)*)\s*"
+    r"[\]\uFF3D\u3011\)\uFF09]",
+    re.IGNORECASE,
+)
+_INLINE_EVIDENCE_REF = re.compile(r"ev_\d+", re.IGNORECASE)
 
 
 def build_evidence_envelope(pack: EvidencePack) -> EvidenceEnvelope:
@@ -102,6 +116,81 @@ def render_validated_answer(
         outcome=answer.outcome,
         content="\n\n".join(paragraphs),
         citations=tuple(citations),
+    )
+
+
+def render_text_final_answer(
+    content: str,
+    prompt_by_ref: Mapping[str, PromptEvidence],
+    *,
+    loaded_visual_refs: set[str],
+    current_query: str,
+) -> tuple[ValidatedAnswer, RenderedAnswer, tuple[str, ...], tuple[str, ...]]:
+    """Resolve provider-written inline ``ev_N`` groups into display citations.
+
+    The returned ref tuples contain, respectively, retained refs in first-use
+    order and all syntactically observed refs. Unknown refs and visual-only
+    refs whose asset was not sent to the model disappear without blocking the
+    answer.
+    """
+
+    ordinals: dict[str, int] = {}
+    citations: list[RenderedCitation] = []
+    observed_refs: list[str] = []
+
+    def replace_group(match: re.Match[str]) -> str:
+        markers: list[str] = []
+        for raw_ref in _INLINE_EVIDENCE_REF.findall(match.group("refs")):
+            ref = raw_ref.lower()
+            observed_refs.append(ref)
+            prompt = prompt_by_ref.get(ref)
+            if prompt is None or (
+                _requires_loaded_visual(prompt) and ref not in loaded_visual_refs
+            ):
+                continue
+            if ref not in ordinals:
+                ordinal = len(citations)
+                ordinals[ref] = ordinal
+                citations.append(RenderedCitation(ordinal=ordinal, evidence=prompt))
+            markers.append(f"[{ordinals[ref] + 1}]")
+        return "".join(markers)
+
+    rendered_content = _INLINE_EVIDENCE_GROUP.sub(replace_group, content).strip()
+    if not rendered_content:
+        rendered_content = (
+            "当前知识库没有足够证据回答这个问题。"
+            if _contains_cjk(current_query)
+            else "The available evidence is insufficient to answer reliably."
+        )
+    retained_refs = tuple(ordinals)
+    citation_ids = tuple(
+        prompt_by_ref[ref].citation_id for ref in retained_refs
+    )
+    outcome = AnswerOutcome.ANSWERED if citations else AnswerOutcome.REFUSED
+    validated = ValidatedAnswer(
+        outcome=outcome,
+        claims=(AnswerClaim(rendered_content, citation_ids),),
+        missing_aspects=(),
+        source=AnswerDraftSource.PROVIDER,
+        control_reason=(
+            AnswerControlReason.INSUFFICIENT_EVIDENCE
+            if outcome is AnswerOutcome.REFUSED
+            else None
+        ),
+    )
+    rendered = RenderedAnswer(
+        outcome=outcome,
+        content=rendered_content,
+        citations=tuple(citations),
+        control_reason=validated.control_reason,
+    )
+    return validated, rendered, retained_refs, tuple(observed_refs)
+
+
+def _requires_loaded_visual(prompt: PromptEvidence) -> bool:
+    return not any(
+        item in {"text", "caption_text", "ocr_text", "table_text"}
+        for item in prompt.matched_representations
     )
 
 

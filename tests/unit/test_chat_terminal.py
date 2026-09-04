@@ -159,7 +159,7 @@ class ChatTerminalServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             repository.success.agent_trace["version"],
-            "native_tool_calling_agent_v5",
+            "native_tool_calling_agent_v6",
         )
         self.assertEqual(
             repository.success.agent_trace["budget"],

@@ -980,10 +980,20 @@ def score_complex_case(
         "native_tool_calling_agent_v3",
         "native_tool_calling_agent_v4",
         "native_tool_calling_agent_v5",
+        "native_tool_calling_agent_v6",
     }
     status_ok = run.get("status") == "completed"
     trace = agent.get("trace") if isinstance(agent, dict) else None
     agent_outcome = trace.get("outcome") if isinstance(trace, dict) else None
+    inline_refs = _inline_ref_metrics(
+        trace,
+        resolved_count=(
+            len(citations)
+            if isinstance(agent, dict)
+            and agent.get("version") == "native_tool_calling_agent_v6"
+            else None
+        ),
+    )
     coverage = (
         len(required_documents & cited_documents) / len(required_documents)
         if required_documents
@@ -1019,12 +1029,35 @@ def score_complex_case(
         "forbidden_citation_document_ids": forbidden,
         "agent_outcome": agent_outcome,
         "answered_precision_ok": answered_precision_ok,
+        "inline_ref_observed": inline_refs[0],
+        "inline_ref_resolved": inline_refs[1],
+        "inline_ref_unresolved": inline_refs[2],
+        "inline_ref_parse_rate": (
+            round(inline_refs[1] / inline_refs[0], 6)
+            if inline_refs[0]
+            else None
+        ),
+        "refusal_zero_refs": (
+            inline_refs[1] == 0 if agent_outcome == "refused" else None
+        ),
         "evaluation_group": case.get("evaluation_group", "evidence_only"),
     }
 
 
 def summarize_results(results: Iterable[dict[str, Any]]) -> dict[str, Any]:
     values = list(results)
+    inline_ref_observed = sum(
+        _nonnegative_int(item.get("score", {}).get("inline_ref_observed"))
+        for item in values
+    )
+    inline_ref_resolved = sum(
+        _nonnegative_int(item.get("score", {}).get("inline_ref_resolved"))
+        for item in values
+    )
+    inline_ref_unresolved = sum(
+        _nonnegative_int(item.get("score", {}).get("inline_ref_unresolved"))
+        for item in values
+    )
     strict = [
         item
         for item in values
@@ -1128,11 +1161,52 @@ def summarize_results(results: Iterable[dict[str, Any]]) -> dict[str, Any]:
         "chat_run_retry_cases": sum(_has_chat_run_retry(item) for item in values),
         "total_timeout_cases": sum(_has_total_timeout(item) for item in values),
         "total_tokens": sum(_total_tokens(item) for item in values),
+        "inline_ref_observed": inline_ref_observed,
+        "inline_ref_resolved": inline_ref_resolved,
+        "inline_ref_unresolved": inline_ref_unresolved,
+        "inline_ref_parse_rate": (
+            round(inline_ref_resolved / inline_ref_observed, 6)
+            if inline_ref_observed
+            else None
+        ),
+        "refusal_zero_ref_cases": sum(
+            item.get("score", {}).get("refusal_zero_refs") is True
+            for item in values
+        ),
         "median_elapsed_seconds": (
             round(float(median(elapsed)), 3) if elapsed else None
         ),
         "max_elapsed_seconds": round(max(elapsed), 3) if elapsed else None,
     }
+
+
+def _inline_ref_metrics(
+    trace: object,
+    *,
+    resolved_count: int | None = None,
+) -> tuple[int, int, int]:
+    """Read v6 inline-ref counts from the terminal protocol trace event."""
+
+    events = trace.get("events") if isinstance(trace, Mapping) else None
+    if not isinstance(events, list):
+        return 0, 0, 0
+    for event in reversed(events):
+        if not isinstance(event, Mapping) or event.get("tool") != "protocol":
+            continue
+        observed = _nonnegative_int(event.get("count"))
+        refs = event.get("refs")
+        resolved = (
+            resolved_count
+            if resolved_count is not None
+            else len(tuple(dict.fromkeys(refs))) if isinstance(refs, list) else 0
+        )
+        resolved = min(observed, resolved)
+        return observed, resolved, observed - resolved
+    return 0, 0, 0
+
+
+def _nonnegative_int(value: object) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
 
 
 def _primary_score_flag(

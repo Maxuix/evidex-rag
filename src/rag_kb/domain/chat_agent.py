@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 
-CHAT_AGENT_VERSION = "native_tool_calling_agent_v5"
+CHAT_AGENT_VERSION = "native_tool_calling_agent_v6"
 CHAT_AGENT_TRACE_ARTIFACT = "chat_agent_trace"
 CHAT_RETRIEVAL_LANES = frozenset(
     {
@@ -34,6 +34,7 @@ CHAT_AGENT_ACCEPTED_VERSIONS = frozenset(
         "native_tool_calling_agent_v3",
         "native_tool_calling_agent_v4",
         "native_tool_calling_agent_v5",
+        "native_tool_calling_agent_v6",
     }
 )
 CHAT_GRAPH_SEARCH_REASONS = frozenset(
@@ -92,7 +93,7 @@ CHAT_GRAPH_NEW_CHUNK_LIMIT = 16
 
 @dataclass(frozen=True, slots=True)
 class ChatAgentBudget:
-    """v5 keeps a single infrastructure fuse: total answer-model tokens."""
+    """v6 keeps a single infrastructure fuse: total answer-model tokens."""
 
     max_total_tokens: int = CHAT_AGENT_DEFAULT_TOTAL_TOKENS
 

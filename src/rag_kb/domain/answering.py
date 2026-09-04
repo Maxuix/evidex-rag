@@ -158,7 +158,7 @@ class ChatModelVisualContent:
 
 @dataclass(frozen=True, slots=True)
 class AnswerClaim:
-    """Internal claim built after submission-boundary validation."""
+    """Internal normalized answer text and its resolved citation identifiers."""
 
     text: str
     citation_ids: tuple[str, ...]
@@ -166,7 +166,7 @@ class AnswerClaim:
 
 @dataclass(frozen=True, slots=True)
 class ValidatedAnswer:
-    """Normalized submission result; invariants belong to the submission parser."""
+    """Normalized answer result; invariants belong to the active answer boundary."""
 
     outcome: AnswerOutcome
     claims: tuple[AnswerClaim, ...]

@@ -373,20 +373,6 @@ async def _validate_model_profile(
                 "additionalProperties": False,
             },
         )
-        submit_tool = ChatToolDefinition(
-            name="submit_answer",
-            description="Submit the final claim payload.",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "outcome": {"type": "string", "enum": ["refused"]},
-                    "claims": {"type": "array", "maxItems": 0},
-                    "unanswered": {"type": "array", "maxItems": 0},
-                },
-                "required": ["outcome", "claims", "unanswered"],
-                "additionalProperties": False,
-            },
-        )
         first = await adapter.complete(
             ChatModelRequest(
                 messages=(
@@ -396,7 +382,7 @@ async def _validate_model_profile(
                     ),
                     ChatModelMessage("user", "Validate native tool calling."),
                 ),
-                tools=(search_tool, submit_tool),
+                tools=(search_tool,),
                 tool_choice="search_knowledge_base",
                 max_output_tokens=768,
                 thinking_enabled=False,
@@ -416,6 +402,11 @@ async def _validate_model_profile(
         second = await adapter.complete(
             ChatModelRequest(
                 messages=(
+                    ChatModelMessage(
+                        "system",
+                        "Write a plain-text final response and cite the supplied "
+                        "evidence inline with [ev_validation]. Do not call tools.",
+                    ),
                     ChatModelMessage("user", "Validate native tool calling."),
                     ChatModelMessage("assistant", first.content, tool_calls=(call,)),
                     ChatModelMessage(
@@ -439,16 +430,16 @@ async def _validate_model_profile(
                         ),
                     ),
                 ),
-                tools=(search_tool, submit_tool),
-                tool_choice="submit_answer",
+                tools=(),
+                tool_choice="none",
                 max_output_tokens=768,
                 thinking_enabled=False,
             )
         )
         if (
             second.model != revision.model
-            or len(second.tool_calls) != 1
-            or second.tool_calls[0].name != "submit_answer"
+            or second.tool_calls
+            or "[ev_validation]" not in second.content.lower()
         ):
             raise ModelProfileValidationError("provider_validation_failed")
         return None

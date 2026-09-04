@@ -138,7 +138,7 @@ class ChatCreationServiceTests(unittest.IsolatedAsyncioTestCase):
                 "budget": ChatAgentBudget().as_dict(),
             },
         )
-        self.assertEqual(created["agent_configuration"]["version"], "native_tool_calling_agent_v5")
+        self.assertEqual(created["agent_configuration"]["version"], "native_tool_calling_agent_v6")
         self.assertEqual(
             set(created["agent_configuration"]["budget"]),
             {
