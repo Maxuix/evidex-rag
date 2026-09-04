@@ -158,7 +158,7 @@ class AutoQAChatContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(chat.requests[0].thinking_enabled, False)
         self.assertEqual(chat.requests[0].tool_choice, "submit_auto_qa_questions")
 
-    async def test_unknown_ref_is_rejected_without_persisting(self) -> None:
+    async def test_unknown_ref_exhausts_bounded_schema_repair(self) -> None:
         chunk = _chunk(content="安装客户端", embedding_text="安装客户端")
         chat = _ChatModel(ref="c99")
         with self.assertRaises(IndexingExecutionError) as raised:
@@ -168,7 +168,7 @@ class AutoQAChatContractTests(unittest.IsolatedAsyncioTestCase):
                 model_profile_revision_id=uuid4(),
             )
         self.assertEqual(raised.exception.code, ErrorCode.AUTO_QA_RESPONSE_INVALID)
-        self.assertEqual(len(chat.requests), 1)
+        self.assertEqual(len(chat.requests), 3)
 
     async def test_question_count_gets_bounded_schema_repair_retry(self) -> None:
         chunk = _chunk(content="安装客户端", embedding_text="安装客户端")

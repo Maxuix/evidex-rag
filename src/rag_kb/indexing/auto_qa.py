@@ -33,11 +33,21 @@ _AUTO_QA_RESPONSE_ATTEMPTS = 3
 _RETRYABLE_RESPONSE_CHECKS = frozenset(
     {
         "missing_tool_call",
+        "payload_not_object",
+        "unexpected_fields",
+        "items_not_array",
         "item_count",
+        "item_not_object",
+        "unexpected_item_fields",
+        "invalid_ref",
+        "duplicate_ref",
+        "unknown_ref",
         "question_count",
+        "question_not_string",
         "empty_question",
         "duplicate_question",
         "question_too_long",
+        "missing_ref",
     }
 )
 _AUTO_QA_SYSTEM = (
