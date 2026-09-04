@@ -1,7 +1,7 @@
 from copy import deepcopy
 import unittest
 
-from tools.evaluate_auto_qa_reuse import paired_changes, retrieval_gate_passed
+from tools.evaluate_auto_qa_reuse import paired_changes, retrieval_gate_passed, trace_legacy_losses
 
 
 def _complete_result():
@@ -46,3 +46,18 @@ class AutoQAReuseEvaluationTests(unittest.TestCase):
         self.assertEqual(changes["lost_top1"], ["a"])
         self.assertEqual(changes["lost_top10"], ["a"])
         self.assertEqual(changes["new_top10"], ["b"])
+
+
+class LegacyLossTraceTests(unittest.TestCase):
+    def test_loss_trace_separates_recall_from_final_rank(self):
+        before = {"case_id": "lost", "group": "direct", "recall_10": True, "relevant_rank": 2}
+        after = {**before, "recall_10": False, "relevant_rank": None}
+        legacy = {"arms": {"off": {"semantic": {"cases": [before]}},
+                           "on": {"semantic": {"cases": [after]}}}}
+        replay = {"candidate_checks": [{"case_id": "lost", "candidates": [
+            {"source": True, "historical_label_match": True, "model_score": 0.3},
+        ]}], "arms": {"minilm_augmented": {"cases": [after]}}}
+        result = trace_legacy_losses(legacy, replay)[0]
+        self.assertTrue(result["source_candidate_match"])
+        self.assertTrue(result["scored_candidate_match"])
+        self.assertIsNone(result["ranks"]["minilm_augmented"])

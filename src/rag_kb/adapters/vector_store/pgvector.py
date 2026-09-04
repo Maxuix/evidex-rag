@@ -6,6 +6,7 @@ from typing import Any
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
+    Boolean,
     Float,
     Integer,
     SmallInteger,
@@ -446,6 +447,7 @@ class PgVectorStore:
             "query_embedding": list(query_embedding),
             "top_k": plan.candidate_count or plan.top_k,
             "auto_qa_candidate_count": plan.auto_qa_candidate_count,
+            "allow_unverified_auto_qa": plan.allow_unverified_auto_qa,
             "space_role": space_role,
             "representation_kinds": list(representation_kinds),
             "expected_dimension": expected_space.dimension,
@@ -821,6 +823,10 @@ class PgVectorStore:
                 ),
             )
             .where(
+                or_(
+                    bindparam("allow_unverified_auto_qa", type_=Boolean),
+                    IndexRevision.auto_qa_config["generation_policy"].astext == "grounded_v2",
+                ),
                 vector_record.embedding_space_id == IndexRevisionEmbeddingSpace.embedding_space_id,
                 vector_record.embedding_dimension == bindparam("expected_dimension", type_=Integer),
                 vector_record.representation_kind.in_(bindparam("representation_kinds", expanding=True)),

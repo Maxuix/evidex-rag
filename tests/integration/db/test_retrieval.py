@@ -597,6 +597,9 @@ class ExactRetrievalDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await connection.close()
 
         plan = RetrievalQueryPlan(WORKSPACE, foundation.kb_id, RetrievalStrategy.EXACT_VECTOR, top_k=1)
+        legacy_default = await self.vector_store.search(plan, _axis_vector(0))
+        self.assertEqual({hit.index_chunk_id for hit in legacy_default.hits}, {body_hit})
+        plan = replace(plan, allow_unverified_auto_qa=True)
         result = await self.vector_store.search(plan, _axis_vector(0))
         baseline = await self.vector_store.search(replace(plan, auto_qa_candidate_count=0), _axis_vector(0))
         self.assertEqual({hit.index_chunk_id for hit in baseline.hits}, {body_hit})
@@ -622,13 +625,7 @@ class ExactRetrievalDatabaseTests(unittest.IsolatedAsyncioTestCase):
         evidence = pack.evidence[0]
         self.assertEqual(evidence.text, f"evidence-{body_hit}")
         self.assertIn("text", evidence.matched_representations)
-        self.assertEqual(len(pack.debug.matched_questions), 1)
-        self.assertEqual(pack.debug.matched_questions[0].index_chunk_id, question_hit)
-        self.assertEqual(pack.debug.matched_questions[0].ordinal, 2)
-        self.assertEqual(
-            pack.debug.matched_questions[0].question,
-            "用户会怎么问安装步骤2",
-        )
+        self.assertEqual(pack.debug.matched_questions, ())
 
     async def test_grounded_question_write_checks_hash_and_replaces_zero(self):
         import hashlib

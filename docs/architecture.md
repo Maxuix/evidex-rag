@@ -420,7 +420,8 @@ Auto-QA 属于 IndexRevision 的不可变索引表示，创建知识库时选择
 默认关闭。新配置冻结 `generation_policy=grounded_v2`：每个 Chunk 保存明确的已处理数量
 （0–5），只有经独立核验、具备原文 SHA-256 与精确支持跨度的问题才能持久化及向量化。
 未处理、支持失效或向量不完整时 candidate 不能 READY。迁移 `0031` 仅增加可空字段；
-旧问句保持未验证状态，不因升级自动重生成。生成问题永不进入 Prompt Evidence、Citation 或 Graph Episode。
+旧问句保持未验证状态，不因升级自动重生成，也不默认进入补充召回；兼容复评可显式使用
+内部 `allow_unverified_auto_qa` 开关，公开检索请求不开放该开关。生成问题永不进入 Prompt Evidence、Citation 或 Graph Episode。
 已有知识库不能原地开启；后续如需启用，要另做整库重建与 revision 切换。
 
 已有 Auto-QA 词法行可用 `tools/rebuild_auto_qa_lexical.py` 修复：提供明确的 `--env-file`、

@@ -351,8 +351,11 @@ class RetrievalQueryPlan:
     candidate_count: int | None = None
     rerank_mode: RerankMode = RerankMode.NONE
     auto_qa_candidate_count: int = 20
+    allow_unverified_auto_qa: bool = False
 
     def __post_init__(self) -> None:
+        if not isinstance(self.allow_unverified_auto_qa, bool):
+            raise ValueError("unverified auto-qa opt-in must be boolean")
         if (
             not isinstance(self.auto_qa_candidate_count, int)
             or isinstance(self.auto_qa_candidate_count, bool)

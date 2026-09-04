@@ -19,7 +19,7 @@ from apps.api.dependencies import build_api_dependencies
 from rag_kb.adapters.local_reranker import LocalMiniLmReranker
 from rag_kb.adapters.local_reranker_artifacts import verify_local_reranker_artifacts
 from rag_kb.config import load_settings
-from rag_kb.domain import EvidencePack, ModelRerankScore, RetrievalDebug, RetrievalQueryPlan, RetrievalStrategy, RerankMode
+from rag_kb.domain import EvidencePack, ModelRerankScore, RetrievalDebug, RetrievalQueryPlan, RetrievalStrategy, RerankMode, RerankDocument
 from rag_kb.retrieval.service import _matched_questions
 from tools.build_document_qa_corpus import validate_corpus
 from tools.evaluate_auto_qa_retrieval import _case_result, _evaluation_cases, evidence_matches, summarize
@@ -70,6 +70,29 @@ def retrieval_gate_passed(result):
                 if enhanced[group][metric] < original[group][metric]:
                     return False
     return True
+
+
+def trace_legacy_losses(legacy, replay):
+    old_on = {row["case_id"]: row for row in legacy["arms"]["on"]["semantic"]["cases"]}
+    candidates = {row["case_id"]: row for row in replay["candidate_checks"]}
+    arms = {name: {row["case_id"]: row for row in data["cases"]}
+            for name, data in replay["arms"].items()}
+    losses = []
+    for row in legacy["arms"]["off"]["semantic"]["cases"]:
+        case_id = row["case_id"]
+        if row["group"] not in {"direct", "paraphrase"} or not row["recall_10"] or old_on[case_id]["recall_10"]:
+            continue
+        matched = [hit for hit in candidates.get(case_id, {}).get("candidates", [])
+                   if hit["historical_label_match"]]
+        losses.append({
+            "case_id": case_id, "group": row["group"], "legacy_off_rank": row["relevant_rank"],
+            "replayed": case_id in candidates,
+            "source_candidate_match": any(hit["source"] for hit in matched),
+            "any_candidate_match": bool(matched),
+            "scored_candidate_match": any(hit.get("model_score") is not None for hit in matched),
+            "ranks": {name: rows.get(case_id, {}).get("relevant_rank") for name, rows in arms.items()},
+        })
+    return losses
 
 
 class CachedReranker:
@@ -126,7 +149,8 @@ async def run(arguments):
     query_cache = json.loads(query_file.read_text()) if query_file.exists() else {}
     kb_id = UUID(state["arms"]["on"]["knowledge_base_id"])
     plan = RetrievalQueryPlan(settings.identity.workspace_id, kb_id, RetrievalStrategy.EXACT_VECTOR,
-                              top_k=10, candidate_count=40, rerank_mode=RerankMode.LOCAL_MINILM_V1)
+                              top_k=10, candidate_count=40, rerank_mode=RerankMode.LOCAL_MINILM_V1,
+                              allow_unverified_auto_qa=True)
     try:
         async with dependencies.database.sessions() as session:
             async with session.begin():
@@ -199,11 +223,25 @@ async def run(arguments):
                 item.update(model_candidate_count=model_count, model_window_count=windows,
                             final_ids=[str(value.index_chunk_id) for value in evidence])
                 arms[name].append(item)
+            for hit, diagnostic in zip(augmented.hits, result["candidate_checks"][-1]["candidates"], strict=True):
+                if hit.modality not in {"text", "table"} or not hit.text.strip():
+                    diagnostic["model_score"] = None
+                    continue
+                document = RerankDocument(index_chunk_id=hit.index_chunk_id, text=hit.text,
+                                          hierarchy=hit.hierarchy, modality=hit.modality)
+                score = cache.values.get(cache.key(query, document))
+                diagnostic["model_score"] = score["score"] if score else None
             result["arms"] = {name: {"cases": values, "summary": summarize(values)} for name, values in arms.items()}
             result["paired"] = {name: paired_changes(arms[name], arms["minilm_augmented"]) for name in ("classic_source", "minilm_source", "minilm_source_60")}
             result["completed_cases"] = position
             _write(arguments.output, result)
             print(json.dumps({"event": "case_complete", "position": position, "total": len(cases), "case_id": case["evaluation_case_id"]}), flush=True)
+        legacy_path = arguments.state.parent / "retrieval.json"
+        if legacy_path.exists():
+            legacy = json.loads(legacy_path.read_text())
+            if legacy.get("corpus_sha256") != result["corpus_sha256"]:
+                raise RuntimeError("historical retrieval corpus differs")
+            result["legacy_top10_losses"] = trace_legacy_losses(legacy, result)
         result["status"] = "complete"
         result["retrieval_gate_passed"] = retrieval_gate_passed(result)
         result["release_gate_passed"] = False  # Holdout and answer-quality gates remain separate.
