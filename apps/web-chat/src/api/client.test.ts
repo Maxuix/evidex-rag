@@ -127,6 +127,7 @@ describe("knowledge-base Auto-QA create payload", () => {
     );
 
     const body = JSON.parse(String(fetchMock.mock.calls[0][1].body));
+    expect(body.retrieval_defaults).toBeUndefined();
     expect(body.auto_qa).toEqual({
       enabled: true,
       model_profile_revision_id: "chat-1",

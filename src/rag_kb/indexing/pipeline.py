@@ -92,6 +92,7 @@ from rag_kb.indexing.auto_qa import (
     eligible_auto_qa_chunks,
     embed_auto_qa_questions,
     generate_auto_qa_questions,
+    verify_auto_qa_questions,
 )
 from rag_kb.ports.model_api import (
     ChatModelAdapter,
@@ -931,13 +932,19 @@ class IndexingPipeline:
         )
         if not changed:
             raise IndexingCancelled
-        if not eligible:
-            return {}
         generated, usage, model_calls = await generate_auto_qa_questions(
             self._chat_model,
             eligible,
             model_profile_revision_id=target.auto_qa_model_profile_revision_id,
         )
+        verified, verification_usage, verification_calls = await verify_auto_qa_questions(
+            self._chat_model, eligible, generated,
+            model_profile_revision_id=target.auto_qa_model_profile_revision_id,
+        )
+        generated = {key: tuple(item.question for item in values) for key, values in verified.items()}
+        usage = {key: int(usage.get(key) or 0) + int(verification_usage.get(key) or 0)
+                 for key in ("prompt_tokens", "completion_tokens")}
+        model_calls += verification_calls
         progress = {
             **progress,
             "processed_chunks": len(generated),
@@ -972,11 +979,15 @@ class IndexingPipeline:
                         ordinal=ordinal,
                         question=question,
                         embedding=vector,
+                        support=verified[chunk.id][ordinal].support,
                     )
                 )
                 offset += 1
         changed = await self._transaction(
-            lambda uow: uow.indexing.upsert_questions(command, tuple(writes))
+            lambda uow: uow.indexing.upsert_questions(
+                command, tuple(writes),
+                processed_chunk_counts={chunk.id: len(generated.get(chunk.id, ())) for chunk in chunks},
+            )
         )
         if not changed:
             raise IndexingCancelled
@@ -1389,14 +1400,10 @@ def _lexical_rows(
     questions_by_chunk: dict[UUID, tuple[str, ...]] | None = None,
 ) -> tuple[IndexChunkLexicalWrite, ...]:
     rows: list[IndexChunkLexicalWrite] = []
-    questions = questions_by_chunk or {}
     for chunk in chunks:
         if chunk.id not in allowed_chunk_ids:
             continue
         text = chunk.embedding_text or chunk.content
-        extra = questions.get(chunk.id) or ()
-        if extra:
-            text = text + "\n" + "\n".join(extra)
         analyzed = analyze_document(text)
         if analyzed is None:
             continue

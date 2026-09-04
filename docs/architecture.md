@@ -57,7 +57,7 @@
 
 - Chat 用户界面可创建和删除知识库，批量上传、更新、查看和软删除常见文本、PDF 与 Office
   文档，并预览/排除解析后的 chunk、查看索引进度和直接测试检索结果。
-- 单个 Worker 异步解析文档、切分、生成文本/可选多模态向量并建立索引。新建知识库可选择冻结的 Auto-QA 问句索引：每个有文本表示的 Chunk 生成 5 个问题，问题向量进入同一 text_retrieval 空间，问题词项并入现有每 Chunk 词法行；问题不是证据、引用或 Graph Episode。
+- 单个 Worker 异步解析文档、切分、生成文本/可选多模态向量并建立索引。新建知识库可选择冻结的 Auto-QA 问句索引：每个有原文的 Chunk 最多生成 5 个问题，经独立原文核验后保存支持跨度；问句向量只补充候选，主词法行保持原文；问题不是证据、引用或 Graph Episode。
 - 默认精确向量检索；可选 PostgreSQL FTS 混合召回，并支持文本、双空间多模态和显式统一
   图文空间三种索引/检索模式。
 - 可选 Graphiti Graph 检索：由用户选择的 Chat Profile 和内置 Graph Schema Profile 在空闲
@@ -394,8 +394,8 @@ upload
   -> legacy/non-PDF profiles: one isolated Docling conversion
   -> structural or semantic chunks + optional visual assets
   -> role-bound text and optional multimodal embeddings
-  -> optional Auto-QA: constrained 5 questions per textual Chunk, then question embeddings
-  -> persist derived rows, enhance the existing lexical row, and mark target ready/serving
+  -> optional Auto-QA: 0–5 questions, independent source verification, then accepted question embeddings
+  -> persist derived rows and source-only lexical rows, then mark target ready/serving
 ```
 
 当前支持 TXT、Markdown、HTML、CSV、PDF、DOCX、PPTX 和 XLSX。Markdown 可使用 `.mdz` Bundle
@@ -417,9 +417,18 @@ picture 或 table image，并把文本与视觉表示投影到现有 Evidence/as
 space。精确 profile
 名称、token/图片预算、hash 和持久字段由 registry、settings、迁移和测试负责，不在总览重复。
 Auto-QA 属于 IndexRevision 的不可变索引表示，创建知识库时选择并冻结 Chat Profile Revision；
-默认关闭。开启时 fail closed：每个合格 Chunk 必须恰好有 5 个唯一问题及合法维度向量，否则
-candidate 不能 READY。生成问题永不进入 Prompt Evidence、Citation 或 Graph Episode。
+默认关闭。新配置冻结 `generation_policy=grounded_v2`：每个 Chunk 保存明确的已处理数量
+（0–5），只有经独立核验、具备原文 SHA-256 与精确支持跨度的问题才能持久化及向量化。
+未处理、支持失效或向量不完整时 candidate 不能 READY。迁移 `0031` 仅增加可空字段；
+旧问句保持未验证状态，不因升级自动重生成。生成问题永不进入 Prompt Evidence、Citation 或 Graph Episode。
 已有知识库不能原地开启；后续如需启用，要另做整库重建与 revision 切换。
+
+已有 Auto-QA 词法行可用 `tools/rebuild_auto_qa_lexical.py` 修复：提供明确的 `--env-file`、
+`--kb-id` 和 `--revision-id`，默认只读预览，确认目标后加 `--apply`。工具仅重算当前分析器的
+已有词法行，先核对旧 manifest，再在单个事务中更新行及 manifest；不生成 QA、不调用
+embedding、不改问句或源文档。缺失 manifest 或无原文表示时明确失败，不制造完整性记录。
+部署本次实现前需应用保留旧问句的 `0031_auto_qa_grounding`；readiness 按该版本检查。
+
 
 删除先让数据库事实不可服务，再重试物理文件清理。Maintenance 只清理退休派生数据；不会
 自动删除 active/candidate 数据。
@@ -430,9 +439,11 @@ candidate 不能 READY。生成问题永不进入 Prompt Evidence、Citation 或
 并行执行 dense 与 PostgreSQL FTS，并用确定性 RRF 融合。text-only 生成一个文本 query
 vector，dual 模式分别生成文本与跨模态 query vector，unified 模式只生成一个 query vector
 并复用于文本/视觉 lane；每条 SQL 仍强制限定 role 绑定的 space 与维度。`semantic_search`
-在一次精确查询中比较正文表示与 Auto-QA 问句表示，先按 Chunk 取最小距离再截取 Top-K；
-一个 Chunk 最多返回一次。`keyword_search` 仍读取每 Chunk 一行的现有 FTS，只是入库时把
-生成问题并入该词法行。检索结果统一投影为
+在同一 SQL 快照中独立保留原文候选（通常 40）和最多 20 个问句命中的不同 Chunk，再合并去重。
+原文候选与原文 cosine 分数不被问句覆盖；问题距离只作召回及 debug。`classic`/`none`
+忽略问句独有项，`local_minilm_v1` 对合并候选的原文评分。开启 Auto-QA 不改变既有重排默认值；
+本地模型精排需显式选择。`keyword_search` 仍读取每 Chunk 一行的 FTS，新索引不再追加问句词项；
+已有词法行需要单独按原文重建并更新 manifest，代码升级不会自动清除历史词项。检索结果统一投影为
 `EvidencePack`，再由回答链路进行阈值、关系和视觉准入。问句命中仍水合原始 Chunk 正文；
 `matched_question` 只出现在检索 debug。Agent 工具集合和 `tool_choice=auto` 不变，不新增
 `auto_qa_search`。
@@ -452,9 +463,10 @@ ChatRun 保存的 index revision 是创建时一致性 guard，而不是历史�
 才在已准入集合排序并最终截取 `top_k`。`classic` 保留本地确定性排序并作为知识库默认，不能
 以词面覆盖或排序分改写 cosine/FTS 准入事实；hybrid 的 lexical lane 不复用 dense cosine 门。
 `local_minilm_v1` 使用构建时固定、运行时离线的多语言 MiniLM ARM64 INT8 ONNX
-工件，只对现有准入后的最多 20 个 text/table 候选重排。模型 tokenizer 将 query 截至 96
+工件，对全部已准入的 text/table 候选分批评分（每批最多 20）；不再先按 classic 截至 20。
+合并候选上限 320，问句命中的原文候选允许送模型核验而不受原文 cosine 门预先排除。模型 tokenizer 将 query 截至 96
 tokens、层级截至 32 tokens，并把超过剩余 512-token pair 预算的正文按段落或表格行临时窗口化
-（64-token overlap、总窗口最多 80），以窗口最大 logit 聚合回原 Chunk。模型分数不覆盖原
+（64-token overlap、每批总窗口最多 80，超限时拆分文档批次），以窗口最大 logit 聚合回原 Chunk。模型分数不覆盖原
 Evidence score/准入事实，窗口也不持久化；纯视觉候选不送入模型。Native Agent 与
 Retrieval Debug 都可使用该冻结模式；模型不可用时明确失败且不静默回退。
 Text 与 Auto 允许三种精排；Graph 只允许 `classic | local_minilm_v1`，不开放 `none`。所有

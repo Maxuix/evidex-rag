@@ -45,6 +45,7 @@ from rag_kb.domain import (
     RelatedVisualEvidence,
     ServingDocumentList,
     ServingScopeQuery,
+    ModelRerankScore,
     RerankDocument,
     RerankMode,
     VectorSearchHit,
@@ -1485,7 +1486,7 @@ class RetrievalService:
         text_hits = tuple(
             hit
             for hit in text_result.hits
-            if 1.0 - hit.cosine_distance >= profile.min_cosine_similarity
+            if self._admit_text_hit(hit, plan, profile)
         )
         cross_hits = tuple(
             hit
@@ -1493,7 +1494,12 @@ class RetrievalService:
             if 1.0 - hit.cosine_distance
             >= profile.cross_modal_min_cosine_similarity
         )
-        reranked = rerank_hits(
+        reranked = score_hits(
+            query,
+            text_hits,
+            vector_weight=profile.rerank_vector_weight,
+            lexical_weight=profile.rerank_lexical_weight,
+        ) if plan.rerank_mode is RerankMode.LOCAL_MINILM_V1 else rerank_hits(
             query,
             text_hits,
             top_k=min(len(text_hits), output_limit) or 1,
@@ -1661,7 +1667,8 @@ class RetrievalService:
         output_limit = self._candidate_evidence_limit(plan)
         merged: dict[UUID, VectorSearchHit] = {}
         for hit in dense_result.hits:
-            merged[hit.index_chunk_id] = hit
+            if hit.source_candidate or plan.rerank_mode is RerankMode.LOCAL_MINILM_V1:
+                merged[hit.index_chunk_id] = hit
         for hit in lexical_result.hits:
             current = merged.get(hit.index_chunk_id)
             if current is None:
@@ -1682,7 +1689,7 @@ class RetrievalService:
         dense_hits = tuple(
             metrics[hit.index_chunk_id].hit
             for hit in dense_result.hits
-            if 1.0 - hit.cosine_distance >= profile.min_cosine_similarity
+            if self._admit_text_hit(hit, plan, profile)
         )
         lexical_hits = tuple(
             metrics[hit.index_chunk_id].hit
@@ -2112,11 +2119,18 @@ class RetrievalService:
         query: str,
         profile: RetrievalExecutionProfile,
     ) -> tuple[tuple[Evidence, ...], int | None, int | None]:
-        result_limit = plan.candidate_count or plan.top_k
+        result_limit = (plan.candidate_count or plan.top_k) + plan.auto_qa_candidate_count
         if len(result.hits) > result_limit:
             raise RetrievalExecutionError(
                 ErrorCode.INTERNAL_SERVER_ERROR,
                 diagnostic={"check": "result_limit"},
+            )
+        if sum(hit.source_candidate for hit in result.hits) > (plan.candidate_count or plan.top_k):
+            raise RetrievalExecutionError(ErrorCode.INTERNAL_SERVER_ERROR, diagnostic={"check": "source_result_limit"})
+        if sum(not hit.source_candidate for hit in result.hits) > plan.auto_qa_candidate_count:
+            raise RetrievalExecutionError(
+                ErrorCode.INTERNAL_SERVER_ERROR,
+                diagnostic={"check": "question_result_limit"},
             )
         chunk_ids = [hit.index_chunk_id for hit in result.hits]
         if len(chunk_ids) != len(set(chunk_ids)):
@@ -2130,7 +2144,7 @@ class RetrievalService:
             admitted_hits = tuple(
                 hit
                 for hit in result.hits
-                if 1.0 - hit.cosine_distance >= profile.min_cosine_similarity
+                if self._admit_text_hit(hit, plan, profile)
             )
             ordered_reranked = tuple(
                 sorted(
@@ -2156,7 +2170,7 @@ class RetrievalService:
             (
                 hit
                 for hit in result.hits
-                if 1.0 - hit.cosine_distance >= profile.min_cosine_similarity
+                if self._admit_text_hit(hit, plan, profile)
             ),
             key=lambda hit: (hit.cosine_distance, hit.index_chunk_id.int),
         )[: plan.top_k]
@@ -2187,9 +2201,23 @@ class RetrievalService:
         return evidence, None, None
 
     @staticmethod
+    def _admit_text_hit(
+        hit: VectorSearchHit,
+        plan: RetrievalQueryPlan,
+        profile: RetrievalExecutionProfile,
+    ) -> bool:
+        if hit.matched_question and plan.rerank_mode is RerankMode.LOCAL_MINILM_V1:
+            return True
+        if not hit.source_candidate:
+            # A question is a recall hint, never a substitute for evidence scoring.
+            return plan.rerank_mode is RerankMode.LOCAL_MINILM_V1
+        return 1.0 - hit.cosine_distance >= profile.min_cosine_similarity
+
+    @staticmethod
     def _candidate_evidence_limit(plan: RetrievalQueryPlan) -> int:
         if plan.rerank_mode is RerankMode.LOCAL_MINILM_V1:
-            return 20
+            # Up to 100 candidates from each existing lane and 20 QA supplements.
+            return 320
         return plan.top_k
 
     async def _finish_reranking(
@@ -2211,7 +2239,7 @@ class RetrievalService:
             for index, item in enumerate(candidates)
             if item.modality in {"text", "table"} and item.text.strip()
         )
-        if len(model_positions) > reranker.max_documents:
+        if len(candidates) > 320 or reranker.max_documents < 1:
             raise RetrievalExecutionError(
                 ErrorCode.LOCAL_RERANKER_UNAVAILABLE,
                 diagnostic={"check": "local_reranker_candidate_limit"},
@@ -2228,7 +2256,11 @@ class RetrievalService:
             for index in model_positions
         )
         try:
-            scores = await reranker.score(query, documents)
+            scores = ()
+            for offset in range(0, len(documents), reranker.max_documents):
+                scores += await self._score_model_batch(
+                    reranker, query, documents[offset:offset + reranker.max_documents]
+                )
         except (RerankerAdapterError, OSError, RuntimeError) as error:
             raise RetrievalExecutionError(
                 ErrorCode.LOCAL_RERANKER_UNAVAILABLE,
@@ -2291,6 +2323,23 @@ class RetrievalService:
             len(documents),
             sum(item.window_count for item in scores),
         )
+
+    @staticmethod
+    async def _score_model_batch(
+        reranker: TextRerankerAdapter,
+        query: str,
+        documents: tuple[RerankDocument, ...],
+    ) -> tuple[ModelRerankScore, ...]:
+        try:
+            return await reranker.score(query, documents)
+        except RerankerAdapterError as error:
+            if str(error) != "local_reranker_window_limit" or len(documents) < 2:
+                raise
+            midpoint = len(documents) // 2
+            return (
+                await RetrievalService._score_model_batch(reranker, query, documents[:midpoint])
+                + await RetrievalService._score_model_batch(reranker, query, documents[midpoint:])
+            )
 
     @staticmethod
     def _validate_scope(
@@ -2798,8 +2847,7 @@ def _matched_questions(
             continue
         for hit in result.hits:
             if (
-                hit.representation_kind != "auto_qa_question"
-                or not hit.matched_question
+                not hit.matched_question
                 or hit.index_chunk_id in seen
             ):
                 continue

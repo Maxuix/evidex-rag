@@ -23,6 +23,8 @@ from rag_kb.indexing.auto_qa import (
     normalize_question,
     title_path,
     validate_auto_qa_items,
+    validate_question_support,
+    verify_auto_qa_questions,
 )
 from rag_kb.indexing.pipeline import _lexical_rows
 from rag_kb.document_processing.lexical import analyze_document
@@ -57,7 +59,7 @@ class AutoQAGenerationTests(unittest.TestCase):
         self.assertEqual(normalize_question("  1. 如何安装？  "), "如何安装？")
         self.assertEqual(normalize_question("• 什么是配额。"), "什么是配额")
 
-    def test_validate_requires_exact_five_unique_questions_per_ref(self) -> None:
+    def test_validate_accepts_up_to_five_unique_questions_per_ref(self) -> None:
         payload = {
             "items": [
                 {
@@ -129,7 +131,7 @@ class AutoQAGenerationTests(unittest.TestCase):
         rows = _lexical_rows((chunk,), frozenset({chunk.id}), {})
         self.assertEqual(rows[0].lexical_text_hash, baseline.lexical_text_hash)
 
-    def test_enhanced_lexical_includes_question_terms_without_duplicating(self) -> None:
+    def test_question_terms_never_change_source_lexical_row(self) -> None:
         chunk = _chunk(content="安装客户端", embedding_text="安装客户端")
         questions = (
             "如何申请配额",
@@ -139,11 +141,62 @@ class AutoQAGenerationTests(unittest.TestCase):
             "如何查询额度",
         )
         rows = _lexical_rows((chunk,), frozenset({chunk.id}), {chunk.id: questions})
-        self.assertIn("配额", rows[0].lexical_text)
-        self.assertEqual(rows[0].lexical_text.split().count("配额"), 1)
+        self.assertEqual(rows, _lexical_rows((chunk,), frozenset({chunk.id}), {}))
 
 
 class AutoQAChatContractTests(unittest.IsolatedAsyncioTestCase):
+    async def test_independent_verifier_retains_only_supported_question(self):
+        from unittest.mock import AsyncMock
+
+        chunk = _chunk(content="2022 revenue was 10 million.")
+        chat = _ChatModel()
+        chat.complete = AsyncMock(return_value=ChatModelResponse(
+            content="", model="mimo-v2.5", finish_reason="tool_calls",
+            provider_request_id="verify-1", usage={"prompt_tokens": 7},
+            tool_calls=(ChatToolCall(
+                id="verify", name="submit_auto_qa_verification",
+                arguments={"items": [
+                    {"ref": "q0", "supported": True, "quotes": [chunk.content]},
+                    {"ref": "q1", "supported": False, "quotes": []},
+                ]},
+            ),),
+        ))
+        questions = ("What was 2022 revenue?", "What was 2022 net income?")
+        result, usage, calls = await verify_auto_qa_questions(
+            chat, (chunk,), {chunk.id: questions}, model_profile_revision_id=uuid4(),
+        )
+        self.assertEqual([item.question for item in result[chunk.id]], [questions[0]])
+        self.assertEqual((usage["prompt_tokens"], calls), (7, 1))
+        request = chat.complete.call_args.args[0]
+        supplied = json.loads(request.messages[1].content)["items"]
+        self.assertEqual(set(supplied[0]), {"ref", "question", "source"})
+        self.assertEqual(supplied[0]["source"], chunk.content)
+
+    async def test_zero_questions_is_processed_without_verification_call(self):
+        chunk = _chunk(content="Section heading")
+        chat = _ChatModel()
+        result, usage, calls = await verify_auto_qa_questions(chat, (chunk,), {chunk.id: ()}, model_profile_revision_id=uuid4())
+        self.assertEqual(result, {chunk.id: ()})
+        self.assertEqual(calls, 0)
+        self.assertEqual(chat.requests, [])
+        self.assertEqual(validate_auto_qa_items({"items": [{"ref": "c01", "questions": []}]}, ("c01",)), {"c01": ()})
+
+    def test_verifier_requires_exact_spans_and_complete_refs(self):
+        payload = {"items": [{"ref": "q0", "supported": True, "quotes": ["2022 revenue was 10"]}]}
+        source = "In 2022 revenue was 10 million; net income was 2 million."
+        support = validate_question_support(payload, {"q0": source})["q0"]
+        span = support["spans"][0]
+        self.assertEqual(source[span["start"]:span["end"]], "2022 revenue was 10")
+        for invalid in (
+            {"items": [{"ref": "q0", "supported": True, "quotes": ["net income was 10"]}]},
+            {"items": [{"ref": "q0", "supported": True, "quotes": []}]},
+            {"items": [{"ref": "q1", "supported": False, "quotes": []}]},
+            {"items": []},
+        ):
+            with self.subTest(payload=invalid), self.assertRaises(IndexingExecutionError):
+                validate_question_support(invalid, {"q0": source})
+        self.assertEqual(validate_question_support({"items": [{"ref": "q0", "supported": False, "quotes": []}]}, {"q0": source}), {"q0": None})
+
     async def test_forced_tool_output_is_validated_and_normalized(self) -> None:
         chunk = _chunk(content="安装客户端", embedding_text="安装客户端")
         chat = _ChatModel()
@@ -181,7 +234,8 @@ class AutoQAChatContractTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(len(generated[chunk.id]), 5)
         self.assertEqual(calls, 2)
-        self.assertEqual(usage["prompt_tokens"], 10)
+        self.assertEqual(usage["prompt_tokens"], 20)
+        self.assertEqual(usage["completion_tokens"], 30)
         self.assertIn("schema-repair retry", chat.requests[1].messages[0].content)
 
     async def test_question_length_gets_bounded_schema_repair_retry(self) -> None:
@@ -287,7 +341,7 @@ class _RepairingChatModel(_ChatModel):
                             "items": [
                                 {
                                     "ref": "c01",
-                                    "questions": ["一", "二", "三", "四"],
+                                    "questions": ["一", "二", "三", "四", "五", "六"],
                                 }
                             ]
                         },
@@ -342,7 +396,7 @@ class _SplittingChatModel:
         for chunk in chunks:
             questions = ["问题一", "问题二", "问题三", "问题四", "问题五"]
             if len(chunks) > 1:
-                questions.pop()
+                questions.append("问题六")
             items.append({"ref": chunk["ref"], "questions": questions})
         return ChatModelResponse(
             content="",

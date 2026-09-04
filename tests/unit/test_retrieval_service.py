@@ -1173,6 +1173,60 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(pack.evidence[0].related_visuals, ())
 
 
+class AutoQAProtectionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_window_limit_splits_without_losing_documents(self):
+        from rag_kb.ports.model_api import RerankerAdapterError
+
+        calls = []
+        async def score(query, documents):
+            calls.append(documents)
+            if len(documents) > 1:
+                raise RerankerAdapterError("local_reranker_window_limit")
+            return documents
+
+        reranker = MagicMock()
+        reranker.score = score
+        result = await RetrievalService._score_model_batch(reranker, "query", (1, 2, 3))
+        self.assertEqual(result, (1, 2, 3))
+        self.assertEqual([item for batch in calls if len(batch) == 1 for item in batch], [1, 2, 3])
+        reranker.score = AsyncMock(side_effect=RerankerAdapterError("local_reranker_window_limit"))
+        with self.assertRaises(RerankerAdapterError):
+            await RetrievalService._score_model_batch(reranker, "query", (1,))
+
+    async def test_all_source_and_supplementary_candidates_reach_model(self):
+        source = tuple(replace(_hit(UUID(int=20000 + i), distance=0.2), text=f"source evidence {i}") for i in range(40))
+        qa = tuple(replace(
+            _hit(UUID(int=30000 + i), distance=1.0), text=f"supplement evidence {i}",
+            source_candidate=False, matched_question="QUESTION_ONLY_TRAP",
+            question_cosine_distance=0.0,
+        ) for i in range(20))
+        all_hits = source + qa
+        values = {hit.index_chunk_id: (0.6 if hit.source_candidate else 0.1, 0.0, 1, 0) for hit in all_hits}
+        values[qa[-1].index_chunk_id] = (0.99, 4.6, 1, 0)
+        reranker = _LocalReranker(values)
+        service = RetrievalService(WORKSPACE, _Provider(), _Store(None), text_reranker=reranker)
+        plan = RetrievalQueryPlan(WORKSPACE, KB_ID, RetrievalStrategy.EXACT_VECTOR, top_k=10, candidate_count=40, rerank_mode=RerankMode.LOCAL_MINILM_V1)
+        profile = service.execution_profile(strategy=plan.strategy, top_k=10, rerank_mode=plan.rerank_mode)
+        evidence, count, windows = await service._normalize(plan, VectorSearchResult(REVISION_ID, all_hits), query="actual user question", profile=profile)
+        self.assertEqual((count, windows), (60, 60))
+        self.assertEqual([len(batch) for batch in reranker.documents], [20, 20, 20])
+        self.assertEqual({item.index_chunk_id for batch in reranker.documents for item in batch}, {hit.index_chunk_id for hit in all_hits})
+        self.assertTrue(all("QUESTION_ONLY_TRAP" not in item.text for batch in reranker.documents for item in batch))
+        self.assertEqual(evidence[0].index_chunk_id, qa[-1].index_chunk_id)
+        self.assertEqual(evidence[0].vector_similarity, 0.0)
+
+    async def test_classic_is_identical_when_noisy_questions_are_added(self):
+        source = (_hit(CHUNK_1, distance=0.2),)
+        noisy = replace(_hit(CHUNK_2, distance=1.0), source_candidate=False,
+                        matched_question="query query query", question_cosine_distance=0.0)
+        service = RetrievalService(WORKSPACE, _Provider(), _Store(None))
+        plan = RetrievalQueryPlan(WORKSPACE, KB_ID, RetrievalStrategy.EXACT_VECTOR, top_k=1, rerank_mode=RerankMode.CLASSIC)
+        profile = service.execution_profile(strategy=plan.strategy, top_k=1, rerank_mode=plan.rerank_mode)
+        baseline = await service._normalize(plan, VectorSearchResult(REVISION_ID, source), query="query", profile=profile)
+        enhanced = await service._normalize(plan, VectorSearchResult(REVISION_ID, source + (noisy,)), query="query", profile=profile)
+        self.assertEqual(enhanced, baseline)
+
+
 class _Provider:
     max_batch_size = 10
 

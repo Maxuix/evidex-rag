@@ -1286,6 +1286,7 @@ class IndexChunk(Base):
             "(embedding_text IS NULL) = (embedding_text_hash IS NULL)",
             name="index_chunk_embedding_text_pair",
         ),
+        CheckConstraint("auto_qa_question_count BETWEEN 0 AND 5", name="index_chunk_auto_qa_count"),
         ForeignKeyConstraint(
             ["indexed_document_version_id", "index_asset_id"],
             ["index_asset.indexed_document_version_id", "index_asset.id"],
@@ -1317,6 +1318,7 @@ class IndexChunk(Base):
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     embedding_text: Mapped[str | None] = mapped_column(Text)
     embedding_text_hash: Mapped[str | None] = mapped_column(String(64))
+    auto_qa_question_count: Mapped[int | None] = mapped_column(SmallInteger)
     token_count: Mapped[int] = mapped_column(Integer, nullable=False)
     source_location: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     hierarchy: Mapped[dict[str, Any]] = mapped_column(
@@ -1356,6 +1358,7 @@ class IndexChunkQuestion(Base):
     )
     ordinal: Mapped[int] = mapped_column(SmallInteger, primary_key=True)
     question: Mapped[str] = mapped_column(Text, nullable=False)
+    support: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
     embedding: Mapped[list[float]] = mapped_column(Vector(), nullable=False)
     created_at: Mapped[datetime] = created_timestamp()
 

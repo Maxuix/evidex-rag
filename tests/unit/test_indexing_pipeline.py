@@ -174,6 +174,33 @@ class IndexingPipelineTests(unittest.IsolatedAsyncioTestCase):
         tokenizer.start()
         self.addCleanup(tokenizer.stop)
 
+    async def test_rejected_questions_are_not_embedded_and_zero_counts_persist(self):
+        target = replace(_target(), auto_qa_enabled=True,
+                         auto_qa_model_profile_revision_id=uuid4())
+        repository = _Repository(target)
+        factory = _Factory(repository)
+        provider = _Provider(factory)
+        pipeline = _pipeline(factory, provider)
+        pipeline._chat_model = object()
+
+        async def generate(chat, chunks, **kwargs):
+            self.assertFalse(factory.active)
+            return {chunk.id: ("UNSUPPORTED_QUESTION",) for chunk in chunks}, {}, 1
+
+        async def verify(chat, chunks, generated, **kwargs):
+            self.assertFalse(factory.active)
+            return {chunk.id: () for chunk in chunks}, {}, 1
+
+        with patch.object(pipeline_module, "generate_auto_qa_questions", generate), patch.object(
+            pipeline_module, "verify_auto_qa_questions", verify,
+        ):
+            await pipeline.execute(IndexingCommand(target.job_id, target.indexed_document_version_id))
+        self.assertTrue(repository.chunks)
+        self.assertEqual(repository.processed_question_counts,
+                         {chunk.id: 0 for chunk in repository.chunks.values()})
+        self.assertEqual(repository.questions, {})
+        self.assertFalse(any("UNSUPPORTED_QUESTION" in text for batch in provider.inputs for text in batch))
+
     async def test_pdf_segment_continuation_yields_without_consuming_embeddings(self) -> None:
         repository = _Repository(_target())
         factory = _Factory(repository)
@@ -990,7 +1017,8 @@ class _Repository:
         self._active()
         return self.status == "running"
 
-    async def upsert_questions(self, command, rows):
+    async def upsert_questions(self, command, rows, *, processed_chunk_counts=None):
+        self.processed_question_counts = processed_chunk_counts
         del command
         self._active()
         for row in rows:

@@ -6,6 +6,7 @@ from typing import Any
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
+    Float,
     Integer,
     SmallInteger,
     Text,
@@ -444,6 +445,7 @@ class PgVectorStore:
             "knowledge_base_id": plan.knowledge_base_id,
             "query_embedding": list(query_embedding),
             "top_k": plan.candidate_count or plan.top_k,
+            "auto_qa_candidate_count": plan.auto_qa_candidate_count,
             "space_role": space_role,
             "representation_kinds": list(representation_kinds),
             "expected_dimension": expected_space.dimension,
@@ -689,7 +691,7 @@ class PgVectorStore:
         )
         question_distance = IndexChunkQuestion.embedding.cosine_distance(
             query_vector
-        ).label("cosine_distance")
+        ).label("question_cosine_distance")
         chunk_columns = (
             IndexChunk.workspace_id.label("hit_workspace_id"),
             IndexChunk.kb_id.label("hit_knowledge_base_id"),
@@ -775,6 +777,8 @@ class PgVectorStore:
                 vector_record.representation_kind.label("representation_kind"),
                 literal(None, type_=Text()).label("matched_question"),
                 literal(None, type_=SmallInteger()).label("matched_ordinal"),
+                literal(None, type_=Float()).label("question_cosine_distance"),
+                literal(True).label("source_candidate"),
                 body_distance,
             )
             .join(
@@ -797,30 +801,78 @@ class PgVectorStore:
         )
         questions = (
             scope.add_columns(
-                literal("auto_qa_question").label("representation_kind"),
+                vector_record.representation_kind.label("representation_kind"),
                 IndexChunkQuestion.question.label("matched_question"),
                 IndexChunkQuestion.ordinal.label("matched_ordinal"),
                 question_distance,
+                literal(False).label("source_candidate"),
+                body_distance,
             )
             .join(
                 IndexChunkQuestion,
                 IndexChunkQuestion.index_chunk_id == IndexChunk.id,
             )
+            .join(
+                vector_record,
+                and_(
+                    vector_record.index_chunk_id == IndexChunk.id,
+                    vector_record.workspace_id == IndexChunk.workspace_id,
+                    vector_record.kb_id == IndexChunk.kb_id,
+                ),
+            )
             .where(
+                vector_record.embedding_space_id == IndexRevisionEmbeddingSpace.embedding_space_id,
+                vector_record.embedding_dimension == bindparam("expected_dimension", type_=Integer),
+                vector_record.representation_kind.in_(bindparam("representation_kinds", expanding=True)),
                 func.vector_dims(IndexChunkQuestion.embedding)
                 == bindparam("expected_dimension", type_=Integer),
             )
         )
         outer = (KnowledgeBase, IndexRevision, IndexRevisionEmbeddingSpace)
+        body_distinct = (
+            body.correlate(*outer)
+            .distinct(IndexChunk.id)
+            .order_by(IndexChunk.id, body_distance, vector_record.representation_kind)
+            .subquery("body_distinct")
+        )
+        body_top = (
+            select(body_distinct)
+            .order_by(body_distinct.c.cosine_distance, body_distinct.c.index_chunk_id)
+            .limit(bindparam("top_k", type_=Integer))
+        )
+        question_distinct = (
+            questions.correlate(*outer)
+            .distinct(IndexChunk.id)
+            .order_by(
+                IndexChunk.id, question_distance, body_distance,
+                IndexChunkQuestion.ordinal, vector_record.representation_kind,
+            )
+            .subquery("question_distinct")
+        )
+        question_top = (
+            select(question_distinct)
+            .order_by(question_distinct.c.question_cosine_distance, question_distinct.c.index_chunk_id)
+            .limit(bindparam("auto_qa_candidate_count", type_=Integer))
+        )
         unioned = union_all(
-            body.correlate(*outer),
-            questions.correlate(*outer),
+            body_top,
+            question_top,
         ).alias("retrieval_candidates")
+        # Preserve the source vector and the selected question's provenance on overlap.
+        unioned = select(
+            *(column for column in unioned.c if column.name not in {
+                "matched_question", "matched_ordinal", "question_cosine_distance",
+            }),
+            func.max(unioned.c.matched_question).over(partition_by=unioned.c.index_chunk_id).label("matched_question"),
+            func.max(unioned.c.matched_ordinal).over(partition_by=unioned.c.index_chunk_id).label("matched_ordinal"),
+            func.min(unioned.c.question_cosine_distance).over(partition_by=unioned.c.index_chunk_id).label("question_cosine_distance"),
+        ).subquery("candidate_provenance")
         deduped = (
             select(unioned)
             .distinct(unioned.c.index_chunk_id)
             .order_by(
                 unioned.c.index_chunk_id.asc(),
+                unioned.c.source_candidate.desc(),
                 unioned.c.cosine_distance.asc(),
                 unioned.c.index_chunk_id.asc(),
             )
@@ -829,10 +881,10 @@ class PgVectorStore:
         hits = (
             select(deduped)
             .order_by(
+                deduped.c.source_candidate.desc(),
                 deduped.c.cosine_distance.asc(),
                 deduped.c.index_chunk_id.asc(),
             )
-            .limit(bindparam("top_k", type_=Integer))
             .lateral("retrieval_hits")
         )
         return (
@@ -869,6 +921,8 @@ class PgVectorStore:
                 hits.c.serving_status,
                 hits.c.matched_question,
                 hits.c.matched_ordinal,
+                hits.c.question_cosine_distance,
+                hits.c.source_candidate,
             )
             .select_from(KnowledgeBase)
             .join(
@@ -1209,6 +1263,8 @@ class PgVectorStore:
             asset_height=row["asset_height"],
             matched_question=row.get("matched_question"),
             matched_question_ordinal=row.get("matched_ordinal"),
+            question_cosine_distance=row.get("question_cosine_distance"),
+            source_candidate=row.get("source_candidate", True),
         )
 
     @staticmethod

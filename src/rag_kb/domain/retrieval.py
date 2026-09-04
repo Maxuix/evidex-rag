@@ -350,8 +350,15 @@ class RetrievalQueryPlan:
     distance_metric: str = "cosine"
     candidate_count: int | None = None
     rerank_mode: RerankMode = RerankMode.NONE
+    auto_qa_candidate_count: int = 20
 
     def __post_init__(self) -> None:
+        if (
+            not isinstance(self.auto_qa_candidate_count, int)
+            or isinstance(self.auto_qa_candidate_count, bool)
+            or not 0 <= self.auto_qa_candidate_count <= 20
+        ):
+            raise ValueError("auto-qa candidate count must be between zero and twenty")
         if not 1 <= self.top_k <= 100:
             raise ValueError("top_k must be between 1 and 100")
         try:
@@ -430,8 +437,12 @@ class VectorSearchHit:
     lexical_score: float | None = None
     matched_question: str | None = None
     matched_question_ordinal: int | None = None
+    question_cosine_distance: float | None = None
+    source_candidate: bool = True
 
     def representation_labels(self) -> tuple[str, ...]:
+        if self.matched_question and self.representation_kind != "auto_qa_question":
+            return (self.representation_kind, "auto_qa_question")
         if self.representation_kind != "auto_qa_question":
             return (self.representation_kind,)
         body = {"table": "table_text", "image": "caption_text"}.get(
@@ -454,6 +465,15 @@ class VectorSearchHit:
         ):
             raise ValueError("cosine distance must be finite and between 0 and 2")
         object.__setattr__(self, "cosine_distance", float(self.cosine_distance))
+        if self.question_cosine_distance is not None and (
+            isinstance(self.question_cosine_distance, bool)
+            or not isinstance(self.question_cosine_distance, (int, float))
+            or not math.isfinite(self.question_cosine_distance)
+            or not 0.0 <= self.question_cosine_distance <= 2.0
+        ):
+            raise ValueError("question cosine distance must be finite and between 0 and 2")
+        if not self.source_candidate and not self.matched_question:
+            raise ValueError("supplementary candidates require question provenance")
         object.__setattr__(self, "source_location", dict(self.source_location))
         object.__setattr__(self, "hierarchy", dict(self.hierarchy))
         object.__setattr__(self, "source_metadata", dict(self.source_metadata))

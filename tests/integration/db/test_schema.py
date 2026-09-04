@@ -638,7 +638,7 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
         await self._restore_dynamic_identity_schema(engine)
 
     async def _restore_dynamic_identity_schema(self, engine) -> None:
-        """Replay 0025–0030 when a historical test left the shared schema behind."""
+        """Replay 0025–0031 when a historical test left the shared schema behind."""
 
         identity_migration = importlib.import_module(
             "rag_kb.db.migrations.versions.0025_remove_dynamic_identity"
@@ -721,6 +721,25 @@ class DatabaseSchemaTests(unittest.IsolatedAsyncioTestCase):
                     lambda sync_connection: self._invoke_migration(
                         sync_connection, auto_qa_migration, "upgrade"
                     )
+                )
+
+        # Historical tests may recreate only the question table, leaving the
+        # independent chunk column in place. Restore each additive field once.
+        async with engine.begin() as migration_connection:
+            await migration_connection.exec_driver_sql(
+                "ALTER TABLE index_chunk ADD COLUMN IF NOT EXISTS auto_qa_question_count smallint"
+            )
+            await migration_connection.exec_driver_sql(
+                "ALTER TABLE index_chunk_question ADD COLUMN IF NOT EXISTS support jsonb"
+            )
+            result = await migration_connection.exec_driver_sql(
+                "SELECT 1 FROM pg_constraint WHERE conrelid='index_chunk'::regclass "
+                "AND conname='ck_index_chunk_index_chunk_auto_qa_count'"
+            )
+            if result.scalar_one_or_none() is None:
+                await migration_connection.exec_driver_sql(
+                    "ALTER TABLE index_chunk ADD CONSTRAINT ck_index_chunk_index_chunk_auto_qa_count "
+                    "CHECK (auto_qa_question_count BETWEEN 0 AND 5)"
                 )
 
     async def test_legacy_chat_workflow_columns_are_removed(self) -> None:

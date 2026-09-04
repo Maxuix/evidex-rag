@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import hashlib
 from typing import Any
 from uuid import UUID
 
@@ -74,6 +75,25 @@ from rag_kb.document_processing.lexical import (
     LEXICAL_ANALYZER_VERSION,
     lexical_manifest_hash,
 )
+
+
+def _valid_question_support(value: object, content: str) -> bool:
+    if not isinstance(value, dict) or set(value) != {"source_sha256", "spans"}:
+        return False
+    if value["source_sha256"] != hashlib.sha256(content.encode("utf-8")).hexdigest():
+        return False
+    spans = value["spans"]
+    return (
+        isinstance(spans, list) and 1 <= len(spans) <= 8
+        and all(
+            isinstance(span, dict) and set(span) == {"start", "end"}
+            and all(isinstance(span[key], int) and not isinstance(span[key], bool) for key in ("start", "end"))
+            and 0 <= span["start"] < span["end"] <= len(content)
+            and span["end"] - span["start"] <= 1000
+            and bool(content[span["start"]:span["end"]].strip())
+            for span in spans
+        )
+    )
 
 
 class SqlAlchemyIndexingRepository:
@@ -1778,6 +1798,8 @@ class SqlAlchemyIndexingRepository:
         self,
         command: IndexingCommand,
         rows: tuple[IndexChunkQuestionWrite, ...],
+        *,
+        processed_chunk_counts: dict[UUID, int] | None = None,
     ) -> bool:
         loaded = await self._load(command, lock=True)
         if loaded is None:
@@ -1785,7 +1807,40 @@ class SqlAlchemyIndexingRepository:
         job, target, *_ = loaded
         if not _is_writable(job, target):
             return False
+        if processed_chunk_counts is not None:
+            chunks = (await self._session.scalars(select(IndexChunkRow).where(
+                IndexChunkRow.indexed_document_version_id == target.id,
+                IndexChunkRow.workspace_id == self._workspace_id,
+            ))).all()
+            by_id = {chunk.id: chunk for chunk in chunks}
+            if set(processed_chunk_counts) != set(by_id):
+                raise _execution_error(ErrorCode.INDEX_INCOMPLETE, IndexingPhase.PERSISTING, "auto_qa_processed_chunks")
+            questions_by_chunk: dict[UUID, list[IndexChunkQuestionWrite]] = {}
+            for row in rows:
+                if row.index_chunk_id not in by_id:
+                    raise _execution_error(
+                        ErrorCode.INDEX_INCOMPLETE, IndexingPhase.PERSISTING,
+                        "auto_qa_question_scope",
+                    )
+                questions_by_chunk.setdefault(row.index_chunk_id, []).append(row)
+            for chunk_id, count in processed_chunk_counts.items():
+                selected = questions_by_chunk.get(chunk_id, [])
+                if (
+                    isinstance(count, bool)
+                    or not isinstance(count, int)
+                    or not 0 <= count <= 5
+                    or sorted(row.ordinal for row in selected) != list(range(count))
+                ):
+                    raise _execution_error(ErrorCode.INDEX_INCOMPLETE, IndexingPhase.PERSISTING, "auto_qa_processed_count")
+                for row in selected:
+                    if not _valid_question_support(row.support, by_id[chunk_id].content):
+                        raise _execution_error(ErrorCode.INDEX_INCOMPLETE, IndexingPhase.PERSISTING, "auto_qa_support")
+                by_id[chunk_id].auto_qa_question_count = count
+            await self._session.execute(delete(IndexChunkQuestionRow).where(
+                IndexChunkQuestionRow.index_chunk_id.in_(tuple(by_id))
+            ))
         if not rows:
+            await self._session.flush()
             return True
         values = [
             {
@@ -1793,6 +1848,7 @@ class SqlAlchemyIndexingRepository:
                 "ordinal": item.ordinal,
                 "question": item.question,
                 "embedding": list(item.embedding),
+                "support": item.support,
             }
             for item in rows
         ]
@@ -1803,6 +1859,7 @@ class SqlAlchemyIndexingRepository:
                 set_={
                     "question": insert.excluded.question,
                     "embedding": insert.excluded.embedding,
+                    "support": insert.excluded.support,
                 },
             )
         )
@@ -1975,6 +2032,8 @@ class SqlAlchemyIndexingRepository:
                     IndexChunkRow.index_asset_id,
                     IndexChunkRow.embedding_text_hash,
                     IndexChunkRow.embedding_text,
+                    IndexChunkRow.content,
+                    IndexChunkRow.auto_qa_question_count,
                 )
                 .where(IndexChunkRow.indexed_document_version_id == target.id)
                 .order_by(IndexChunkRow.ordinal)
@@ -2156,7 +2215,8 @@ class SqlAlchemyIndexingRepository:
                     diagnostic={"check": "auto_qa_text_space"},
                 )
             await self._require_auto_qa_complete(
-                target.id, chunk_records, text_space.dimension
+                target.id, chunk_records, text_space.dimension,
+                require_grounded=revision.auto_qa_config.get("generation_policy") == "grounded_v2",
             )
         target.build_status = IndexBuildStatus.READY
         target.error_code = None
@@ -2173,11 +2233,13 @@ class SqlAlchemyIndexingRepository:
         target_id: UUID,
         chunk_records,
         dimension: int,
+        *,
+        require_grounded: bool = False,
     ) -> None:
         eligible_ids = {
             record.chunk_id
             for record in chunk_records
-            if (record.embedding_text or "").strip()
+            if (record.embedding_text or "").strip() or record.auto_qa_question_count is not None or require_grounded
         }
         question_rows = (
             await self._session.execute(
@@ -2185,6 +2247,7 @@ class SqlAlchemyIndexingRepository:
                     IndexChunkQuestionRow.index_chunk_id,
                     IndexChunkQuestionRow.ordinal,
                     IndexChunkQuestionRow.question,
+                    IndexChunkQuestionRow.support,
                     func.vector_dims(IndexChunkQuestionRow.embedding).label(
                         "vector_dims"
                     ),
@@ -2197,6 +2260,7 @@ class SqlAlchemyIndexingRepository:
             )
         ).all()
         by_chunk: dict[UUID, list] = {chunk_id: [] for chunk_id in eligible_ids}
+        records = {record.chunk_id: record for record in chunk_records}
         for row in question_rows:
             by_chunk.setdefault(row.index_chunk_id, []).append(row)
         for chunk_id, rows in by_chunk.items():
@@ -2208,9 +2272,17 @@ class SqlAlchemyIndexingRepository:
                 )
             ordinals = sorted(item.ordinal for item in rows)
             questions = [item.question for item in rows]
+            record = records[chunk_id]
+            expected_count = record.auto_qa_question_count
+            if expected_count is None:
+                if require_grounded:
+                    raise IndexingExecutionError(ErrorCode.INDEX_INCOMPLETE, phase=IndexingPhase.VALIDATING, diagnostic={"check": "auto_qa_not_processed"})
+                expected_count = 5
+            elif any(not _valid_question_support(item.support, record.content) for item in rows):
+                raise IndexingExecutionError(ErrorCode.INDEX_INCOMPLETE, phase=IndexingPhase.VALIDATING, diagnostic={"check": "auto_qa_support"})
             if (
-                ordinals != list(range(5))
-                or len(set(questions)) != 5
+                ordinals != list(range(expected_count))
+                or len(set(questions)) != expected_count
                 or any(not (item.question or "").strip() for item in rows)
                 or any(item.vector_dims != dimension for item in rows)
             ):
@@ -2219,7 +2291,7 @@ class SqlAlchemyIndexingRepository:
                     phase=IndexingPhase.VALIDATING,
                     diagnostic={"check": "auto_qa_questions"},
                 )
-        if any(chunk_id not in by_chunk or not by_chunk[chunk_id] for chunk_id in eligible_ids):
+        if any(chunk_id not in by_chunk for chunk_id in eligible_ids):
             raise IndexingExecutionError(
                 ErrorCode.INDEX_INCOMPLETE,
                 phase=IndexingPhase.VALIDATING,

@@ -5,6 +5,7 @@ import json
 import os
 import unittest
 from dataclasses import dataclass, replace
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import asyncpg
@@ -19,9 +20,11 @@ from rag_kb.domain import (
     ErrorCode,
     Evidence,
     EvidenceScoreKind,
+    IndexingExecutionError,
     ResourceNotFoundError,
     RetrievalExecutionError,
     RetrievalRequest,
+    RetrievalQueryPlan,
     RerankMode,
     RetrievalStrategy,
     SERVING_DOCUMENT_LIST_LIMIT,
@@ -32,6 +35,7 @@ from rag_kb.document_processing.lexical import (
     lexical_manifest_hash,
 )
 from rag_kb.retrieval.service import RetrievalService
+from rag_kb.repositories.sqlalchemy_indexing import SqlAlchemyIndexingRepository
 from rag_kb.services.composite_evidence import CompositeEvidenceHydrationService
 from rag_kb.services.content import DocumentService
 from rag_kb.uow.sqlalchemy import SqlAlchemyUnitOfWorkFactory
@@ -569,11 +573,11 @@ class ExactRetrievalDatabaseTests(unittest.IsolatedAsyncioTestCase):
             (valid,),
         )
 
-    async def test_auto_qa_question_hits_return_one_original_chunk(self) -> None:
+    async def test_auto_qa_candidates_preserve_source_quota_and_distances(self) -> None:
         foundation = await self._foundation()
         body_hit = UUID("01900000-0000-7000-8000-000000001401")
         question_hit = UUID("01900000-0000-7000-8000-000000001402")
-        await self._target(foundation, chunk_id=body_hit, vector=_axis_vector(1))
+        await self._target(foundation, chunk_id=body_hit, vector=_axis_vector(0))
         await self._target(foundation, chunk_id=question_hit, vector=_axis_vector(1))
         connection = await asyncpg.connect(MIGRATION_DSN)
         try:
@@ -592,21 +596,31 @@ class ExactRetrievalDatabaseTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await connection.close()
 
+        plan = RetrievalQueryPlan(WORKSPACE, foundation.kb_id, RetrievalStrategy.EXACT_VECTOR, top_k=1)
+        result = await self.vector_store.search(plan, _axis_vector(0))
+        baseline = await self.vector_store.search(replace(plan, auto_qa_candidate_count=0), _axis_vector(0))
+        self.assertEqual({hit.index_chunk_id for hit in baseline.hits}, {body_hit})
+        self.assertEqual({hit.index_chunk_id for hit in result.hits}, {body_hit, question_hit})
+        supplement = next(hit for hit in result.hits if hit.index_chunk_id == question_hit)
+        self.assertFalse(supplement.source_candidate)
+        self.assertEqual(supplement.cosine_distance, 1.0)
+        self.assertEqual(supplement.question_cosine_distance, 0.0)
+        self.assertEqual(supplement.matched_question_ordinal, 2)
+
         pack = await self.service.retrieve(
             RetrievalRequest(
                 foundation.kb_id,
                 "query",
-                top_k=10,
+                top_k=1,
                 include_debug=True,
             ),
         )
         self.assertEqual(
             tuple(item.index_chunk_id for item in pack.evidence),
-            (question_hit,),
+            (body_hit,),
         )
         evidence = pack.evidence[0]
-        self.assertEqual(evidence.text, f"evidence-{question_hit}")
-        self.assertIn("auto_qa_question", evidence.matched_representations)
+        self.assertEqual(evidence.text, f"evidence-{body_hit}")
         self.assertIn("text", evidence.matched_representations)
         self.assertEqual(len(pack.debug.matched_questions), 1)
         self.assertEqual(pack.debug.matched_questions[0].index_chunk_id, question_hit)
@@ -615,6 +629,87 @@ class ExactRetrievalDatabaseTests(unittest.IsolatedAsyncioTestCase):
             pack.debug.matched_questions[0].question,
             "用户会怎么问安装步骤2",
         )
+
+    async def test_grounded_question_write_checks_hash_and_replaces_zero(self):
+        import hashlib
+        from unittest.mock import AsyncMock
+        from sqlalchemy import text
+        from rag_kb.domain import IndexChunkQuestionWrite
+        from rag_kb.db.models import IndexBuildStatus, IndexServingStatus, JobStatus
+
+        foundation = await self._foundation()
+        target = await self._target(foundation, chunk_id=uuid4(), vector=_axis_vector(0))
+        async with self.database.sessions() as session, session.begin():
+            content = await session.scalar(text("SELECT content FROM index_chunk WHERE id=:id"),
+                                           {"id": target.chunk_id})
+            repository = SqlAlchemyIndexingRepository(session, WORKSPACE)
+            # Lease validation is covered elsewhere; exercise the real scoped writes here.
+            repository._load = AsyncMock(return_value=(
+                SimpleNamespace(status=JobStatus.RUNNING),
+                SimpleNamespace(id=target.indexed_document_version_id, kb_id=foundation.kb_id,
+                                build_status=IndexBuildStatus.PROCESSING,
+                                serving_status=IndexServingStatus.CANDIDATE),
+            ))
+            support = {"source_sha256": hashlib.sha256(content.encode()).hexdigest(),
+                       "spans": [{"start": 0, "end": len(content)}]}
+            row = IndexChunkQuestionWrite(target.chunk_id, 0, "Supported question?", _axis_vector(0), support)
+            await repository.upsert_questions(None, (row,), processed_chunk_counts={target.chunk_id: 1})
+            self.assertEqual(await session.scalar(text("SELECT count(*) FROM index_chunk_question")), 1)
+            with self.assertRaises(IndexingExecutionError):
+                await repository.upsert_questions(None, (replace(row, support={**support, "source_sha256": "0" * 64}),),
+                                                  processed_chunk_counts={target.chunk_id: 1})
+            self.assertEqual(await session.scalar(text("SELECT count(*) FROM index_chunk_question")), 1)
+            await repository.upsert_questions(None, (), processed_chunk_counts={target.chunk_id: 0})
+            self.assertEqual(await session.scalar(text("SELECT count(*) FROM index_chunk_question")), 0)
+            self.assertEqual(await session.scalar(text("SELECT auto_qa_question_count FROM index_chunk WHERE id=:id"),
+                                                  {"id": target.chunk_id}), 0)
+
+    async def test_source_lexical_repair_is_scoped_and_idempotent(self):
+        from tools.rebuild_auto_qa_lexical import rebuild
+
+        foundation = await self._foundation()
+        target = await self._target(foundation, chunk_id=uuid4(), vector=_axis_vector(0))
+        await self._lexical_target(foundation, target)
+        noise = analyze_document("unrelated generated question about net income")
+        connection = await asyncpg.connect(MIGRATION_DSN)
+        try:
+            async with connection.transaction():
+                await connection.execute(
+                    "UPDATE index_chunk_lexical SET lexical_text=$1, lexical_text_hash=$2 WHERE index_chunk_id=$3",
+                    noise.lexical_text, noise.lexical_text_hash, target.chunk_id,
+                )
+                await connection.execute(
+                    "UPDATE index_lexical_manifest SET lexical_manifest_hash=$1 WHERE indexed_document_version_id=$2",
+                    lexical_manifest_hash(LEXICAL_ANALYZER_VERSION, ((target.chunk_id, noise.lexical_text_hash),)),
+                    target.indexed_document_version_id,
+                )
+        finally:
+            await connection.close()
+        scope = dict(workspace_id=WORKSPACE, kb_id=foundation.kb_id, revision_id=foundation.revision_id)
+        async with self.database.sessions() as session, session.begin():
+            preview = await rebuild(session, **scope)
+            self.assertEqual(preview["changed_rows"], 1)
+        async with self.database.sessions() as session, session.begin():
+            applied = await rebuild(session, **scope, apply=True)
+            self.assertEqual(applied["changed_rows"], 1)
+        async with self.database.sessions() as session, session.begin():
+            self.assertEqual((await rebuild(session, **scope))["changed_rows"], 0)
+            with self.assertRaises(RuntimeError):
+                await rebuild(session, **{**scope, "workspace_id": OTHER_WORKSPACE})
+
+    async def test_grounded_zero_questions_is_distinct_from_unprocessed(self):
+        foundation = await self._foundation()
+        chunk_id = UUID(int=41001)
+        target = await self._target(foundation, chunk_id=chunk_id, vector=_axis_vector(0))
+        record = SimpleNamespace(chunk_id=chunk_id, embedding_text="source", content=f"evidence-{chunk_id}", auto_qa_question_count=0)
+        async with self.database.sessions() as session:
+            async with session.begin():
+                repository = SqlAlchemyIndexingRepository(session, WORKSPACE)
+                await repository._require_auto_qa_complete(target.indexed_document_version_id, (record,), len(_axis_vector(0)), require_grounded=True)
+                record.auto_qa_question_count = None
+                with self.assertRaises(IndexingExecutionError) as missing:
+                    await repository._require_auto_qa_complete(target.indexed_document_version_id, (record,), len(_axis_vector(0)), require_grounded=True)
+                self.assertEqual(missing.exception.diagnostic["check"], "auto_qa_not_processed")
 
     async def test_revision_activation_reads_are_complete_old_or_new_snapshots(self) -> None:
         foundation = await self._foundation()

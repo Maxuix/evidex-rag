@@ -1205,7 +1205,7 @@ function KnowledgeBaseCreator({
             <ChoiceCard
               active={autoQaEnabled}
               title="开启"
-              description="每个可用文本 Chunk 生成 5 个问题，增加一次性 LLM 用量、约五倍问题向量和索引时间。问题只改善召回，不作为答案或引用。"
+              description="每个文本 Chunk 最多保留 5 个通过原文支持校验的问题，允许零个。生成和校验会增加一次性模型用量，问句补充仅在显式选择本地模型重排时生效，不作为答案或引用。"
               onClick={() => setAutoQaEnabled(true)}
             />
           </fieldset>
@@ -1764,7 +1764,7 @@ function autoQaStatus(knowledgeBase: KnowledgeBase): string {
   const model = knowledgeBase.auto_qa.model_name
     ? `${knowledgeBase.auto_qa.model_name} / r${knowledgeBase.auto_qa.model_revision ?? "?"}`
     : "已冻结 Chat 模型";
-  return `Auto-QA · ${knowledgeBase.auto_qa.questions_per_chunk} 问/Chunk · ${model}。此知识库创建后不可原地开关。`;
+  return `Auto-QA · 最多 ${knowledgeBase.auto_qa.questions_per_chunk} 问/Chunk · ${model}。此知识库创建后不可原地开关。`;
 }
 
 function autoQaProgressSuffix(job: IndexingJob): string {

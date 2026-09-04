@@ -47,6 +47,7 @@ def auto_qa_config_payload(*, enabled: bool) -> dict[str, Any]:
         return {
             "enabled": True,
             "questions_per_chunk": AUTO_QA_QUESTIONS_PER_CHUNK,
+            "generation_policy": "grounded_v2",
         }
     return {"enabled": False}
 
@@ -226,6 +227,7 @@ class IndexChunkQuestionWrite:
     ordinal: int
     question: str
     embedding: tuple[float, ...]
+    support: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if self.ordinal not in range(AUTO_QA_QUESTIONS_PER_CHUNK):
