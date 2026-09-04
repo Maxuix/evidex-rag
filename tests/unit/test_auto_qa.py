@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 from uuid import uuid4
 
@@ -194,6 +195,21 @@ class AutoQAChatContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(generated[chunk.id]), 5)
         self.assertEqual(calls, 2)
 
+    async def test_exhausted_multi_chunk_batch_splits_before_failing(self) -> None:
+        chunks = (
+            _chunk(content="第一段", ordinal=1),
+            _chunk(content="第二段", ordinal=2),
+        )
+        chat = _SplittingChatModel()
+        generated, _, calls = await generate_auto_qa_questions(
+            chat,
+            chunks,
+            model_profile_revision_id=uuid4(),
+        )
+        self.assertEqual(set(generated), {chunk.id for chunk in chunks})
+        self.assertEqual(calls, 5)
+        self.assertEqual([len(batch) for batch in chat.chunk_batches], [2, 2, 2, 1, 1])
+
     async def test_question_embeddings_respect_provider_batch_limit(self) -> None:
         embeddings = _EmbeddingModel(max_batch_size=2)
         vectors = await embed_auto_qa_questions(
@@ -313,6 +329,35 @@ class _RepairingLongQuestionChatModel(_ChatModel):
                 ),
             )
         return await super().complete(request)
+
+
+class _SplittingChatModel:
+    def __init__(self) -> None:
+        self.chunk_batches: list[list[dict]] = []
+
+    async def complete(self, request):
+        chunks = json.loads(request.messages[1].content)["chunks"]
+        self.chunk_batches.append(chunks)
+        items = []
+        for chunk in chunks:
+            questions = ["问题一", "问题二", "问题三", "问题四", "问题五"]
+            if len(chunks) > 1:
+                questions.pop()
+            items.append({"ref": chunk["ref"], "questions": questions})
+        return ChatModelResponse(
+            content="",
+            model="mimo-v2.5",
+            finish_reason="tool_calls",
+            provider_request_id=f"req-split-{len(self.chunk_batches)}",
+            usage={"prompt_tokens": 10, "completion_tokens": 20},
+            tool_calls=(
+                ChatToolCall(
+                    id=f"call-split-{len(self.chunk_batches)}",
+                    name="submit_auto_qa_questions",
+                    arguments={"items": items},
+                ),
+            ),
+        )
 
 
 class _EmbeddingModel:

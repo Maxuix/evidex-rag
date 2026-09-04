@@ -282,33 +282,67 @@ async def generate_auto_qa_questions(
     model_calls = 0
     for offset in range(0, len(chunks), AUTO_QA_BATCH_SIZE):
         batch = tuple(chunks[offset : offset + AUTO_QA_BATCH_SIZE])
-        last_error: IndexingExecutionError | None = None
-        for response_attempt in range(1, _AUTO_QA_RESPONSE_ATTEMPTS + 1):
-            model_calls += 1
-            try:
-                batch_result, batch_usage = await generate_auto_qa_batch(
-                    chat_model,
-                    batch,
-                    model_profile_revision_id=model_profile_revision_id,
-                    response_attempt=response_attempt,
-                )
-            except IndexingExecutionError as error:
-                last_error = error
-                if (
-                    error.code is not ErrorCode.AUTO_QA_RESPONSE_INVALID
-                    or error.diagnostic.get("check") not in _RETRYABLE_RESPONSE_CHECKS
-                    or response_attempt == _AUTO_QA_RESPONSE_ATTEMPTS
-                ):
-                    raise
-                continue
-            break
-        else:  # pragma: no cover - loop either succeeds or raises above
-            assert last_error is not None
-            raise last_error
+        batch_result, batch_usage, batch_calls = await _generate_batch_with_repair(
+            chat_model,
+            batch,
+            model_profile_revision_id=model_profile_revision_id,
+        )
         generated.update(batch_result)
+        model_calls += batch_calls
         usage["prompt_tokens"] += int(batch_usage.get("prompt_tokens") or 0)
         usage["completion_tokens"] += int(batch_usage.get("completion_tokens") or 0)
     return generated, usage, model_calls
+
+
+async def _generate_batch_with_repair(
+    chat_model: ChatModelAdapter,
+    chunks: tuple[IndexChunkWrite, ...],
+    *,
+    model_profile_revision_id: UUID,
+) -> tuple[dict[UUID, tuple[str, ...]], dict[str, int], int]:
+    last_error: IndexingExecutionError | None = None
+    for response_attempt in range(1, _AUTO_QA_RESPONSE_ATTEMPTS + 1):
+        try:
+            result, usage = await generate_auto_qa_batch(
+                chat_model,
+                chunks,
+                model_profile_revision_id=model_profile_revision_id,
+                response_attempt=response_attempt,
+            )
+        except IndexingExecutionError as error:
+            last_error = error
+            if (
+                error.code is not ErrorCode.AUTO_QA_RESPONSE_INVALID
+                or error.diagnostic.get("check") not in _RETRYABLE_RESPONSE_CHECKS
+            ):
+                raise
+            continue
+        return result, dict(usage), response_attempt
+
+    assert last_error is not None
+    if len(chunks) == 1:
+        raise last_error
+    midpoint = len(chunks) // 2
+    left_result, left_usage, left_calls = await _generate_batch_with_repair(
+        chat_model,
+        chunks[:midpoint],
+        model_profile_revision_id=model_profile_revision_id,
+    )
+    right_result, right_usage, right_calls = await _generate_batch_with_repair(
+        chat_model,
+        chunks[midpoint:],
+        model_profile_revision_id=model_profile_revision_id,
+    )
+    return (
+        {**left_result, **right_result},
+        {
+            "prompt_tokens": int(left_usage.get("prompt_tokens") or 0)
+            + int(right_usage.get("prompt_tokens") or 0),
+            "completion_tokens": int(left_usage.get("completion_tokens") or 0)
+            + int(right_usage.get("completion_tokens") or 0),
+        },
+        _AUTO_QA_RESPONSE_ATTEMPTS + left_calls + right_calls,
+    )
 
 
 async def embed_auto_qa_questions(
