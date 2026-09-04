@@ -266,6 +266,19 @@ def _adaptive_context() -> ChatExecutionContext:
     )
 
 
+def _manual_graph_context() -> ChatExecutionContext:
+    return replace(
+        _context(),
+        retrieval_strategy={
+            "profile_version": "graphiti_path_augmented_v3",
+            "strategy": "hybrid",
+            "top_k": 4,
+            "rerank_mode": "classic",
+            "augmentation": "graphiti_path_v3",
+        },
+    )
+
+
 def _pack(
     context: ChatExecutionContext,
     *,
@@ -2825,6 +2838,18 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
                 "search_graph_relations",
                 "calculate",
             ],
+        )
+
+    async def test_manual_graph_mode_does_not_expose_keyword_bypass(self) -> None:
+        context = _manual_graph_context()
+        retriever = _Retriever(_pack(context), keyword_ready=True)
+        model = _Model(None)
+
+        await _agent(model, retriever).run(context)
+
+        self.assertNotIn(
+            "keyword_search",
+            [tool.name for tool in model.requests[0].tools],
         )
 
     def test_prompt_keeps_citation_and_history_boundaries(self) -> None:

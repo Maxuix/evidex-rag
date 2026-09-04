@@ -18,7 +18,7 @@ from apps.api.app import API_PREFIX, create_app
 from apps.api.errors import ApiProblem
 from apps.api.idempotency import RequiredIdempotencyKey
 from apps.api.pagination import decode_cursor, encode_cursor
-from apps.api.routers.chat import _agent_response
+from apps.api.routers.chat import _agent_response, _retrieval_response
 from apps.api.routers.retrieval import router as retrieval_router
 from rag_kb.document_processing.profiles import DOCLING_TEXT_PARSER_CONFIG
 from rag_kb.domain import (
@@ -84,7 +84,11 @@ from rag_kb.schemas import (
     ModelProfileCreate,
     PaginationQuery,
 )
-from rag_kb.retrieval.profile import exact_profile
+from rag_kb.retrieval.profile import (
+    adaptive_graphiti_profile,
+    exact_profile,
+    graph_profile,
+)
 
 
 WORKSPACE = UUID("01900000-0000-7000-8000-000000000001")
@@ -710,6 +714,20 @@ class ApiContractTests(unittest.IsolatedAsyncioTestCase):
 
 
 class CommonContractTests(unittest.TestCase):
+    def test_chat_run_response_projects_the_three_public_modes(self) -> None:
+        run = _chat_run_value(_chat_session_value())
+        profiles = {
+            "text": exact_profile(),
+            "auto": adaptive_graphiti_profile(),
+            "graph": graph_profile(),
+        }
+        for expected_mode, profile in profiles.items():
+            with self.subTest(expected_mode=expected_mode):
+                response = _retrieval_response(
+                    dataclass_replace(run, retrieval_strategy=profile.as_dict())
+                )
+                self.assertEqual(response["mode"], expected_mode)
+
     def test_chat_auto_is_chat_only_and_vector_bounded(self) -> None:
         request = ChatRunCreate.model_validate(
             {
@@ -1462,11 +1480,6 @@ class _FakeChatService:
 
     async def create_run(self, key, **values):
 
-        if values["retrieval_mode"] == "hybrid":
-            raise RetrievalExecutionError(
-                ErrorCode.CAPABILITY_NOT_ENABLED,
-                diagnostic={"capability": "hybrid"},
-            )
         self.create_run_calls.append({"key": key, **values})
         if key == UUID("00000000-0000-0000-0000-000000000099"):
             raise IdempotencyKeyReusedError("internal chat hash detail")
@@ -2041,7 +2054,7 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(missing_key.status, 422)
         self.assertEqual(missing_key.json()["code"], "INVALID_IDEMPOTENCY_KEY")
 
-        disabled_hybrid = await request(
+        retired_hybrid = await request(
             self.app,
             "POST",
             f"{API_PREFIX}/chat/runs",
@@ -2055,10 +2068,9 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
                 },
             },
         )
-        self.assertEqual(disabled_hybrid.status, 409)
-        self.assertEqual(disabled_hybrid.json()["code"], "CAPABILITY_NOT_ENABLED")
-        self.assertFalse(disabled_hybrid.json()["retryable"])
-        self.assertNotIn("hybrid", disabled_hybrid.body.decode())
+        self.assertEqual(retired_hybrid.status, 422)
+        self.assertEqual(retired_hybrid.json()["code"], "REQUEST_VALIDATION_FAILED")
+        self.assertNotIn("CAPABILITY_NOT_ENABLED", retired_hybrid.body.decode())
 
         key = uuid4()
         created = await request(
@@ -2073,6 +2085,7 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(created.headers["location"], body["status_url"])
         self.assertEqual(body["status"], "queued")
         self.assertEqual(body["assistant_status"], "generating")
+        self.assertEqual(body["retrieval"]["mode"], "text")
         self.assertEqual(body["agent"]["version"], "native_tool_calling_agent_v6")
         self.assertEqual(
             body["agent"]["budget"],
@@ -2620,7 +2633,7 @@ def _chat_run_request(session_id: UUID) -> dict[str, object]:
         "session_id": str(session_id),
         "knowledge_base_id": str(_knowledge_base_value().id),
         "message": "  查询 RUN-ORD-14  ",
-        "retrieval": {"mode": "vector", "top_k": 8},
+        "retrieval": {"mode": "text", "top_k": 8},
     }
 
 

@@ -336,8 +336,17 @@ def _retrieval_response(value: ChatRun) -> dict[str, object]:
     rerank_mode = snapshot.get("rerank_mode")
     if not isinstance(rerank_mode, str):
         rerank_mode = "none"
+    profile_version = str(snapshot["profile_version"])
+    mode = (
+        "auto"
+        if profile_version.startswith("adaptive_graphiti_")
+        else "graph"
+        if snapshot.get("augmentation") is not None
+        else "text"
+    )
     return {
-        "profile_version": snapshot["profile_version"],
+        "mode": mode,
+        "profile_version": profile_version,
         "strategy": snapshot["strategy"],
         "top_k": snapshot["top_k"],
         "rerank_mode": rerank_mode,

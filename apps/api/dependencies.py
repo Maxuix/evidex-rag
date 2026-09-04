@@ -265,7 +265,6 @@ def build_api_dependencies(
             else {}
         ),
         default_rerank=resolved_settings.retrieval.rerank_enabled,
-        hybrid_enabled=retrieval_service.hybrid_request_enabled(),
         retrieval_profile_factory=lambda strategy, top_k, rerank_mode: (
             retrieval_service.execution_profile(
                 strategy=strategy,

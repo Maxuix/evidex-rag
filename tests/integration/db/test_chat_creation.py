@@ -140,7 +140,7 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 session_id=session.id,
                 kb_id=kb.id,
                 message="different question",
-                retrieval_mode="vector",
+                retrieval_mode="text",
                 top_k=8,
             )
 
@@ -217,7 +217,7 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 session_id=session.id,
                 kb_id=other_kb.id,
                 message="wrong knowledge base",
-                retrieval_mode="vector",
+                retrieval_mode="text",
                 top_k=10,
             )
 
@@ -794,7 +794,7 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
             session_id=session_id,
             kb_id=kb_id,
             message="How should RUN-ORD-14 be handled?",
-            retrieval_mode="vector",
+            retrieval_mode="text",
             top_k=8,
         )
 

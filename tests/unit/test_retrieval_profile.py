@@ -110,6 +110,7 @@ class RetrievalExecutionProfileTests(unittest.TestCase):
                 augmentation="entity_graph_v1",
             )
         response = ChatRunRetrievalResponse(
+            mode="graph",
             profile_version=snapshot["profile_version"],
             strategy=snapshot["strategy"],
             top_k=snapshot["top_k"],
@@ -128,6 +129,7 @@ class RetrievalExecutionProfileTests(unittest.TestCase):
         self.assertEqual((top_k, rerank_mode), (8, RerankMode.NONE))
         self.assertEqual(execution_type, "adaptive_graphiti")
         response = ChatRunRetrievalResponse(
+            mode="auto",
             profile_version=snapshot["profile_version"],
             strategy=strategy.value,
             top_k=top_k,

@@ -13,11 +13,9 @@ from rag_kb.domain import (
     ChatRun,
     ChatSession,
     ChatSessionBusyError,
-    ErrorCode,
     ModelKind,
     ModelProfileBundle,
     ModelValidationStatus,
-    RetrievalExecutionError,
     IdempotencyKeyReusedError,
     IdempotencyScope,
     Page,
@@ -61,7 +59,6 @@ class ChatService:
         *,
         model_configuration: dict[str, Any],
         default_rerank: bool = False,
-        hybrid_enabled: bool = False,
         retrieval_profile_factory: Callable[
             [RetrievalStrategy, int, RerankMode], RetrievalExecutionProfile
         ],
@@ -77,7 +74,6 @@ class ChatService:
         self._default_rerank_mode = (
             RerankMode.CLASSIC if default_rerank else RerankMode.NONE
         )
-        self._hybrid_enabled = hybrid_enabled
         self._retrieval_profile_factory = retrieval_profile_factory
         if (
             context_strategy != "recent_completed_turns_v1"
@@ -177,13 +173,8 @@ class ChatService:
         rerank_mode: RerankMode | None = None,
         model_profile_revision_id: UUID | None = None,
     ) -> ChatRun:
-        if retrieval_mode not in {"vector", "hybrid", "graph", "auto"}:
+        if retrieval_mode not in {"text", "auto", "graph"}:
             raise ResourceStateConflictError("retrieval mode is unsupported")
-        if retrieval_mode == "hybrid" and not self._hybrid_enabled:
-            raise RetrievalExecutionError(
-                ErrorCode.CAPABILITY_NOT_ENABLED,
-                diagnostic={"capability": "hybrid"},
-            )
         if retrieval_mode == "graph" and rerank_mode is None:
             raise ResourceStateConflictError(
                 "graph retrieval requires an explicit reranker"
@@ -205,10 +196,6 @@ class ChatService:
                 raise ResourceStateConflictError(
                     "graph retrieval requires an enabled reranker"
                 )
-        if retrieval_mode == "hybrid" and resolved_rerank_mode is RerankMode.NONE:
-            raise ResourceStateConflictError(
-                "hybrid retrieval requires reranking"
-            )
         if (
             resolved_rerank_mode is RerankMode.LOCAL_MINILM_V1
             and top_k > 20
@@ -229,11 +216,6 @@ class ChatService:
             "top_k": top_k,
             "rerank_mode": resolved_rerank_mode.value,
         }
-        strategy = (
-            RetrievalStrategy.HYBRID
-            if retrieval_mode in {"hybrid", "graph"}
-            else RetrievalStrategy.EXACT_VECTOR
-        )
         retrieval_strategy = (
             graph_profile(top_k=top_k, rerank_mode=resolved_rerank_mode).as_dict()
             if retrieval_mode == "graph"
@@ -242,7 +224,7 @@ class ChatService:
             ).as_dict()
             if retrieval_mode == "auto"
             else self._retrieval_profile_factory(
-                strategy, top_k, resolved_rerank_mode
+                RetrievalStrategy.EXACT_VECTOR, top_k, resolved_rerank_mode
             ).as_dict()
         )
         request_hash = canonical_request_hash(

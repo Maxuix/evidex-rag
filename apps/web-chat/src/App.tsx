@@ -136,7 +136,7 @@ export function KnowledgeChat({
   const [messagesError, setMessagesError] = useState<string | null>(null);
 
   const [draft, setDraft] = useState("");
-  const [retrievalMode, setRetrievalMode] = useState<"vector" | "hybrid" | "graph" | "auto">("vector");
+  const [retrievalMode, setRetrievalMode] = useState<"text" | "auto" | "graph">("auto");
   const [rerankMode, setRerankMode] = useState<RerankMode>("classic");
   const [graphConfig, setGraphConfig] = useState<GraphConfig | null>(null);
   const [graphConfigLoading, setGraphConfigLoading] = useState(false);
@@ -430,7 +430,7 @@ export function KnowledgeChat({
     setSubmitting(false);
     setPendingRun(null);
     setSubmissionError(null);
-    setRetrievalMode("vector");
+    setRetrievalMode("auto");
     setSessions([]);
     setSessionsLoading(false);
     setSessionsError(null);
@@ -447,7 +447,7 @@ export function KnowledgeChat({
   }, [loadSessions, selectedKnowledgeBaseId]);
 
   useEffect(() => {
-    if (!graphReady && retrievalMode === "graph") setRetrievalMode("vector");
+    if (!graphReady && retrievalMode === "graph") setRetrievalMode("auto");
   }, [graphReady, retrievalMode]);
 
   useEffect(() => {
@@ -733,7 +733,7 @@ export function KnowledgeChat({
             top_k: retrievalMode === "graph"
               ? graphTopK
               : selectedKnowledgeBase.retrieval_defaults.top_k,
-            rerank_mode: retrievalMode === "graph" ? "classic" : rerankMode,
+            rerank_mode: rerankMode,
           },
           model_profile_revision_id: selectedChatModelRevisionId,
         },
@@ -779,25 +779,25 @@ export function KnowledgeChat({
     }
   };
 
-  const changeRetrievalMode = (next: "vector" | "hybrid" | "graph" | "auto") => {
+  const changeRetrievalMode = (next: "text" | "auto" | "graph") => {
     if (next === "graph" && !graphReady) return;
     if (pendingRun) {
       setPendingRun(null);
       setSubmissionError(null);
     }
-    if (next === "hybrid" && rerankMode === "none") setRerankMode("classic");
     if (next === "graph") setRerankMode("classic");
     setRetrievalMode(next);
   };
 
   const changeRerankMode = (next: RerankMode) => {
     if (
-      (next === "none" && retrievalMode === "hybrid")
-      || retrievalMode === "graph"
+      next === "none" && retrievalMode === "graph"
     ) return;
     if (
       next === "local_minilm_v1"
-      && (selectedKnowledgeBase?.retrieval_defaults.top_k ?? 100) > 20
+      && (retrievalMode === "graph"
+        ? graphTopK
+        : selectedKnowledgeBase?.retrieval_defaults.top_k ?? 100) > 20
     ) return;
     if (pendingRun) {
       setPendingRun(null);
@@ -1214,27 +1214,22 @@ export function KnowledgeChat({
                   disabled={submitting || sessionBusy}
                   options={[
                     {
-                      value: "vector",
-                      label: "精确向量",
-                      description: "按语义相似度检索。",
-                    },
-                    {
-                      value: "hybrid",
-                      label: "混合检索",
-                      description: "结合关键词与语义，可能更慢。",
+                      value: "text",
+                      label: "文档检索模式",
+                      description: "仅查文档分块：语义、关键词与邻域检索，不使用图谱。",
                     },
                     {
                       value: "auto",
-                      label: "自动（图谱关系检索）",
+                      label: "智能自适应模式（推荐）",
                       description: graphReady
-                        ? "首轮同时提供普通检索与图谱关系检索，由 Agent 自主选择；每个回答最多调用两次图谱。"
-                        : "当前将仅使用普通检索，不会自动开始建图。",
+                        ? "开放全部检索通道，由模型自主选择文档或实体关系。"
+                        : "图谱未就绪时自动使用文档检索，不会自动开始建图。",
                     },
                     {
                       value: "graph",
-                      label: "Graphiti 图增强",
+                      label: "图谱优先模式",
                       description: graphReady
-                        ? "以混合检索为种子，补充 Graphiti 关系路径。"
+                        ? "强制图路径优先打包，再用混合文档证据回填。"
                         : graphConfigLoading
                           ? "正在读取当前知识库的图谱状态。"
                           : graphConfigError
@@ -1258,27 +1253,27 @@ export function KnowledgeChat({
                     {
                       value: "none",
                       label: "不精排",
-                      description: retrievalMode === "hybrid" || retrievalMode === "graph"
-                        ? retrievalMode === "graph"
-                          ? "Graphiti 图增强固定使用经典精排。"
-                          : "混合检索必须保留精排。"
-                        : "直接使用向量检索顺序，资源开销最低。",
-                      disabled: retrievalMode === "hybrid" || retrievalMode === "graph",
+                      description: retrievalMode === "graph"
+                        ? "图谱优先模式必须启用精排。"
+                        : "直接使用原始检索顺序，资源开销最低。",
+                      disabled: retrievalMode === "graph",
                     },
                     {
                       value: "classic",
                       label: "经典精排",
-                      description: retrievalMode === "graph"
-                        ? "Graphiti 图增强固定以混合检索的经典规则生成种子。"
-                        : "使用现有关键词、向量与去重规则。",
+                      description: "使用现有关键词、向量与去重规则。",
                     },
                     {
                       value: "local_minilm_v1",
                       label: "本地 MiniLM",
-                      description: (selectedKnowledgeBase?.retrieval_defaults.top_k ?? 100) > 20
+                      description: (retrievalMode === "graph"
+                        ? graphTopK
+                        : selectedKnowledgeBase?.retrieval_defaults.top_k ?? 100) > 20
                           ? "本地模型要求知识库 Top K 不超过 20。"
                           : "本机离线 CrossEncoder 精排，相关性更强但更慢。",
-                      disabled: (selectedKnowledgeBase?.retrieval_defaults.top_k ?? 100) > 20,
+                      disabled: (retrievalMode === "graph"
+                        ? graphTopK
+                        : selectedKnowledgeBase?.retrieval_defaults.top_k ?? 100) > 20,
                     },
                   ]}
                   onChange={changeRerankMode}
@@ -1773,9 +1768,7 @@ function answerProcessMetrics(run: ChatRun): AnswerProcessMetrics {
     (event) => event.tool === "search_graph_relations",
   ) ?? [];
   const lastGraphEvent = graphEvents[graphEvents.length - 1];
-  const adaptiveProfile = run.retrieval.profile_version.startsWith(
-    "adaptive_graphiti",
-  );
+  const adaptiveProfile = run.retrieval.mode === "auto";
   const graphRelationsStatus = adaptiveProfile
     ? graphRelationsStatusLabel(
       lastGraphEvent?.route_result_code,

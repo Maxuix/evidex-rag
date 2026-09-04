@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import unittest
-from dataclasses import replace
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
@@ -13,11 +12,10 @@ from rag_kb.domain import (
     ChatAgentBudget,
     ChatSessionBusyError,
     ConversationTurn,
-    ErrorCode,
     Page,
     RerankMode,
+    ResourceStateConflictError,
     RetrievalStrategy,
-    RetrievalExecutionError,
 )
 from rag_kb.memory import hydrate_conversation_context
 from rag_kb.repositories.sqlalchemy_chat import SqlAlchemyChatRepository
@@ -27,10 +25,7 @@ from rag_kb.services.chat import (
     _chat_profile_configuration,
     chat_model_configuration,
 )
-from rag_kb.retrieval.profile import (
-    HYBRID_PROFILE_VERSION,
-    exact_profile,
-)
+from rag_kb.retrieval.profile import EXACT_PROFILE_VERSION, exact_profile
 
 
 class ChatCreationContractTests(unittest.TestCase):
@@ -46,6 +41,61 @@ class ChatCreationContractTests(unittest.TestCase):
             with self.subTest(old=old), self.assertRaises(ValidationError) as captured:
                 ChatRunCreate.model_validate({**payload, "answer_policy": old})
             self.assertEqual(captured.exception.errors()[0]["type"], "extra_forbidden")
+
+    def test_retrieval_exposes_three_modes_and_defaults_to_auto(self) -> None:
+        payload = {
+            "session_id": str(uuid4()),
+            "knowledge_base_id": str(uuid4()),
+            "message": "question",
+        }
+        self.assertEqual(ChatRunCreate.model_validate(payload).retrieval.mode, "auto")
+        for mode in ("text", "auto", "graph"):
+            retrieval = {
+                "mode": mode,
+                "top_k": 4,
+                "rerank_mode": "classic" if mode == "graph" else "none",
+            }
+            with self.subTest(mode=mode):
+                request = ChatRunCreate.model_validate(
+                    {**payload, "retrieval": retrieval}
+                )
+                self.assertEqual(request.retrieval.mode, mode)
+        for retired_mode in ("vector", "hybrid"):
+            with self.subTest(retired_mode=retired_mode), self.assertRaises(ValidationError):
+                ChatRunCreate.model_validate(
+                    {**payload, "retrieval": {"mode": retired_mode}}
+                )
+
+    def test_graph_supports_classic_and_local_reranking_but_not_none(self) -> None:
+        payload = {
+            "session_id": str(uuid4()),
+            "knowledge_base_id": str(uuid4()),
+            "message": "relation question",
+        }
+        for rerank_mode in ("classic", "local_minilm_v1"):
+            with self.subTest(rerank_mode=rerank_mode):
+                request = ChatRunCreate.model_validate(
+                    {
+                        **payload,
+                        "retrieval": {
+                            "mode": "graph",
+                            "top_k": 20,
+                            "rerank_mode": rerank_mode,
+                        },
+                    }
+                )
+                self.assertEqual(request.retrieval.rerank_mode, rerank_mode)
+        with self.assertRaises(ValidationError):
+            ChatRunCreate.model_validate(
+                {
+                    **payload,
+                    "retrieval": {
+                        "mode": "graph",
+                        "top_k": 4,
+                        "rerank_mode": "none",
+                    },
+                }
+            )
 
     def test_model_snapshot_excludes_url_key_and_runtime_controls(self) -> None:
         settings = SimpleNamespace(
@@ -123,7 +173,7 @@ class ChatCreationServiceTests(unittest.IsolatedAsyncioTestCase):
             session_id=uuid4(),
             kb_id=kb_id,
             message="query",
-            retrieval_mode="vector",
+            retrieval_mode="text",
             top_k=5,
             rerank_mode=RerankMode.LOCAL_MINILM_V1,
         )
@@ -146,7 +196,7 @@ class ChatCreationServiceTests(unittest.IsolatedAsyncioTestCase):
             },
         )
 
-    async def test_disabled_hybrid_run_uses_capability_error(self) -> None:
+    async def test_retired_chat_modes_are_rejected(self) -> None:
         workspace_id = uuid4()
         kb_id = uuid4()
         chat = _ChatRepository(kb_id=kb_id)
@@ -156,18 +206,20 @@ class ChatCreationServiceTests(unittest.IsolatedAsyncioTestCase):
             retrieval_profile_factory=_profile_factory,
         )
 
-        with self.assertRaises(RetrievalExecutionError) as failure:
-            await service.create_run(
-                uuid4(),
-                session_id=uuid4(),
-                kb_id=kb_id,
-                message="query",
-                retrieval_mode="hybrid",
-                top_k=5,
-            )
-        self.assertEqual(failure.exception.code, ErrorCode.CAPABILITY_NOT_ENABLED)
+        for retired_mode in ("vector", "hybrid"):
+            with self.subTest(retired_mode=retired_mode), self.assertRaises(
+                ResourceStateConflictError
+            ):
+                await service.create_run(
+                    uuid4(),
+                    session_id=uuid4(),
+                    kb_id=kb_id,
+                    message="query",
+                    retrieval_mode=retired_mode,
+                    top_k=5,
+                )
 
-    async def test_hybrid_run_freezes_only_the_selected_retrieval_preset(
+    async def test_text_run_freezes_exact_vector_document_profile(
         self,
     ) -> None:
         workspace_id = uuid4()
@@ -175,24 +227,12 @@ class ChatCreationServiceTests(unittest.IsolatedAsyncioTestCase):
         chat = _ChatRepository(kb_id=kb_id)
 
         def profile_factory(strategy, top_k, rerank_mode):
-            self.assertIs(strategy, RetrievalStrategy.HYBRID)
-            return replace(
-                exact_profile(top_k=top_k, rerank_mode=rerank_mode),
-                profile_version=HYBRID_PROFILE_VERSION,
-                strategy=RetrievalStrategy.HYBRID,
-                lexical_analyzer_version="lexical_simple_cjk_bigram_v1",
-                lexical_query_version="lexical_or_query_v1",
-                dense_candidate_count=17,
-                lexical_candidate_count=23,
-                dense_weight_micros=1_000_000,
-                lexical_weight_micros=1_000_000,
-                min_rerank_score=0.45,
-            )
+            self.assertIs(strategy, RetrievalStrategy.EXACT_VECTOR)
+            return exact_profile(top_k=top_k, rerank_mode=rerank_mode)
 
         service = ChatService(
             _Factory(workspace_id, chat, kb_id),
             model_configuration={"resolved_model": "fixed-model"},
-            hybrid_enabled=True,
             retrieval_profile_factory=profile_factory,
         )
 
@@ -201,7 +241,7 @@ class ChatCreationServiceTests(unittest.IsolatedAsyncioTestCase):
             session_id=uuid4(),
             kb_id=kb_id,
             message="查询 ABC-42",
-            retrieval_mode="hybrid",
+            retrieval_mode="text",
             top_k=4,
             rerank_mode=RerankMode.CLASSIC,
         )
@@ -210,8 +250,8 @@ class ChatCreationServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             snapshot,
             {
-                "profile_version": HYBRID_PROFILE_VERSION,
-                "strategy": "hybrid",
+                "profile_version": EXACT_PROFILE_VERSION,
+                "strategy": "exact_vector",
                 "top_k": 4,
                 "rerank_mode": "classic",
             },
@@ -226,7 +266,6 @@ class ChatCreationServiceTests(unittest.IsolatedAsyncioTestCase):
         service = ChatService(
             _Factory(workspace_id, chat, kb_id),
             model_configuration={"resolved_model": "fixed-model"},
-            hybrid_enabled=False,
             retrieval_profile_factory=_profile_factory,
         )
 
@@ -327,7 +366,7 @@ class ChatCreationServiceTests(unittest.IsolatedAsyncioTestCase):
             session_id=session_id,
             kb_id=kb_id,
             message="What about it?",
-            retrieval_mode="vector",
+            retrieval_mode="text",
             top_k=3,
         )
 
@@ -354,7 +393,7 @@ class ChatCreationServiceTests(unittest.IsolatedAsyncioTestCase):
                 session_id=uuid4(),
                 kb_id=kb_id,
                 message="question",
-                retrieval_mode="vector",
+                retrieval_mode="text",
                 top_k=3,
             )
 

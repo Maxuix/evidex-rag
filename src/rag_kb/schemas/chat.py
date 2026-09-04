@@ -68,7 +68,7 @@ class ChatMessagePage(PublicSchema):
 
 
 class ChatRetrievalRequest(PublicSchema):
-    mode: Literal["vector", "hybrid", "graph", "auto"] = "vector"
+    mode: Literal["text", "auto", "graph"] = "auto"
     top_k: Annotated[int, Field(ge=1, le=100)] = 10
     rerank_mode: RerankMode | None = None
 
@@ -77,11 +77,12 @@ class ChatRetrievalRequest(PublicSchema):
         if self.mode == "graph":
             if not 4 <= self.top_k <= 20:
                 raise ValueError("graph retrieval top_k must be between 4 and 20")
-            if self.rerank_mode is not RerankMode.CLASSIC:
-                raise ValueError("graph retrieval requires classic reranking")
+            if self.rerank_mode not in {
+                RerankMode.CLASSIC,
+                RerankMode.LOCAL_MINILM_V1,
+            }:
+                raise ValueError("graph retrieval requires an enabled reranker")
             return self
-        if self.mode == "hybrid" and self.rerank_mode is RerankMode.NONE:
-            raise ValueError("hybrid retrieval requires reranking")
         if (
             self.rerank_mode is RerankMode.LOCAL_MINILM_V1
             and self.top_k > 20
@@ -214,6 +215,7 @@ class ChatRunErrorResponse(PublicSchema):
 
 
 class ChatRunRetrievalResponse(PublicSchema):
+    mode: Literal["text", "auto", "graph"]
     profile_version: Annotated[str, Field(min_length=1, max_length=64)]
     strategy: Literal["exact_vector", "hybrid"]
     top_k: Annotated[int, Field(ge=1, le=100)]

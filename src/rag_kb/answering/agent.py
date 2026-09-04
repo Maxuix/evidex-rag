@@ -231,15 +231,20 @@ class NativeToolCallingAgent:
         budget = _budget_from_context(context)
         progress.budget = budget
         adaptive_graphiti = _adaptive_graphiti_enabled(context)
-        _, frozen_top_k, _, _ = parse_chat_retrieval_snapshot(
+        _, frozen_top_k, _, execution_type = parse_chat_retrieval_snapshot(
             context.retrieval_strategy
         )
+        manual_graph = execution_type == "manual_graph"
         graph_ready = (
             await self._retriever.graph_relations_capable(context)
             if adaptive_graphiti
             else False
         )
-        keyword_ready = await self._retriever.keyword_search_capable(context)
+        keyword_ready = (
+            False
+            if manual_graph
+            else await self._retriever.keyword_search_capable(context)
+        )
         messages = _initial_messages(context)
         evidence: list[Evidence] = []
         evidence_ids: set[object] = set()

@@ -64,11 +64,13 @@ ephemeral, and non-replayed; the authoritative answer still comes only from the
 terminal ChatRun. Enabling it uses one additional PostgreSQL connection in each
 of the API and Worker processes.
 
-Exact-vector retrieval remains the default. To evaluate the optional hybrid
-path, explicitly set `RAG_KB__RETRIEVAL__HYBRID_ENABLED=true`; normal indexing
-creates the required lexical rows and completeness manifest for every target.
-Existing requests remain exact unless they select `strategy=hybrid` or Chat
-`retrieval.mode=hybrid`.
+Direct retrieval defaults to exact vector. Chat defaults to the `auto` mode,
+whose semantic lane is also exact vector; its public mode choices are `text`,
+`auto`, and `graph`. To enable keyword search in Text/Auto and hybrid backfill
+for Graph, set `RAG_KB__RETRIEVAL__HYBRID_ENABLED=true`; normal indexing creates
+the required lexical rows and completeness manifest for every target. Direct
+retrieval requests remain exact unless they explicitly select
+`strategy=hybrid`.
 
 ## Host Checks
 

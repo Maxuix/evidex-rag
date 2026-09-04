@@ -794,7 +794,7 @@ class IndexingPipelineDatabaseTests(unittest.IsolatedAsyncioTestCase):
             session_id=session.id,
             kb_id=kb.id,
             message="start while indexing is busy",
-            retrieval_mode="vector",
+            retrieval_mode="text",
             top_k=5,
         )
         retry = RetryPolicy(3, 0.01, 0.02)

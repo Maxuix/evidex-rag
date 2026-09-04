@@ -805,8 +805,8 @@ class StartupValidationTests(unittest.TestCase):
             self.assertIs(api.chat_terminal_watcher._chat, api.chat_service)
             self.assertEqual(api.chat_sse_connection_limiter._maximum, 2)
             self.assertEqual(
-                api.chat_service._hybrid_enabled,
                 api.retrieval_service.hybrid_request_enabled(),
+                settings.retrieval.hybrid_enabled,
             )
             self.assertEqual(
                 worker.retrieval_service.hybrid_request_enabled(),

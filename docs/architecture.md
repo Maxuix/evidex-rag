@@ -80,9 +80,10 @@
   hybrid Evidence 回填余额。每个成功 Episode 的映射独立
   短事务提交；Episode UUID 由 build、Chunk 与 content hash 确定。失败 build 保留其 group 与映射，
   冻结输入未变化时显式 retry 复用同一 build 并只处理缺失 Chunk；输入变化或 force rebuild 才换代。
-- Chat 可选择 Chat-only 的 auto 模式：在冻结 revision 上首轮同时暴露语义/关键词/邻域/文档清单
-  检索与一等 `search_graph_relations` Graph Tool，由原生 Agent 自主选择，语义检索不是 Graph
-  的前置条件。
+- Chat 的公开选择收敛为 `text | auto | graph` 三种模式，默认推荐 `auto`。Text 只开放文档
+  分块的语义、关键词和邻域检索；Auto 在此基础上按 READY capability 开放一等
+  `search_graph_relations` Graph Tool，由原生 Agent 自主选择；Graph 强制经 `retrieve_graph`
+  先打包完整图路径，再用未重复的 hybrid 文档证据回填。
   Graph Tool 只在存在 active READY build 时可见且不设每个 ChatRun 的调用次数上限；Graph 单次
   90 秒（ChatRun 绝对 deadline 为 600 秒形成 `min(90, remaining)`），候选 K 冻结为 16，完整
   一至三跳路径按 soft 12 / hard 16 去重 source chunk 原子打包。
@@ -263,15 +264,16 @@ READY 旧 build 在切换完成前继续服务。
   绑定该 workspace。API 与 Worker 在 schema readiness 通过后幂等创建该 namespace，因此全新空库
   不依赖外部 provisioning。ChatRun 与 ContentMutation 幂等范围为 `endpoint + idempotency_key`。
 - ChatRun 冻结所选 Chat profile revision；索引与检索按 EmbeddingSpace 绑定的 profile revision
-  解析 adapter。Simple 与手动 Graph snapshot 保存 profile version、strategy、`top_k` 和
+  解析 adapter。Text 与手动 Graph snapshot 保存 profile version、strategy、`top_k` 和
   `rerank_mode`；Graph 外层模式额外冻结 `graphiti_path_augmented_v3` 与 `graphiti_path_v3`
-  augmentation，内部 seed 仍使用 hybrid。Chat-only auto 使用独立的
+  augmentation，内部 seed 仍使用 hybrid。默认 Chat-only Auto 使用独立的
   `adaptive_graphiti_v3` snapshot，冻结 exact-vector Simple、一等 Graph Tool 参数
   （`graph_edge_limit=16`、`graph_source_chunk_target=12`、`graph_source_chunk_limit=16`、
-  `graph_call_timeout_seconds=90`）与 router `native_agent_graph_tool_v1`，最多两次 Graph 调用，
-  不改变默认 vector 或直连 Graph API。
+  `graph_call_timeout_seconds=90`）与 router `native_agent_graph_tool_v1`。这三个 Chat 模式不改变
+  直连 Retrieval Debug API 的 `exact_vector | hybrid` strategy 合同。
   retry 按当前进程配置解析候选数、阈值和融合权重。Chat 只有一个固定原生 Agent 路径。
-- 检索默认 exact vector；hybrid FTS 由简单设置开关控制。
+- Text/Auto 的语义通道使用 exact vector；keyword tool 与 Graph 回填所需的 hybrid FTS 由简单
+  设置开关控制。
 - live Agent progress transport 默认关闭，只能通过进程级 `CHAT_DELIVERY` 配置显式开启；它不属于
   Chat/Model/Retrieval profile，也不随 ChatRun 冻结，终态始终来自 ChatRun。
 - 知识库创建时选择 text-only/multimodal parsing、structural/semantic chunking，以及兼容的
@@ -444,11 +446,14 @@ tokens、层级截至 32 tokens，并把超过剩余 512-token pair 预算的正
 （64-token overlap、总窗口最多 80），以窗口最大 logit 聚合回原 Chunk。模型分数不覆盖原
 Evidence score/准入事实，窗口也不持久化；纯视觉候选不送入模型。Native Agent 与
 Retrieval Debug 都可使用该冻结模式；模型不可用时明确失败且不静默回退。
+Text 与 Auto 允许三种精排；Graph 只允许 `classic | local_minilm_v1`，不开放 `none`。所有
+`local_minilm_v1` Chat 请求的 `top_k` 都不得超过 20。
 
 Native Agent 通过按召回通道划分的工具选择检索方式，每轮恰好一个工具调用。
 `semantic_search` 在冻结 workspace/knowledge-base/index revision、检索策略与 top-k 内做
-exact dense（含跨模态 lane）加冻结 rerank；manual graph ChatRun 仍经该工具分派到
-`retrieve_graph`。`keyword_search` 只在进程 hybrid 开启且 lexical manifest 覆盖完整时暴露，
+exact dense（含跨模态 lane）加冻结 rerank；Graph ChatRun 仍经该工具强制分派到
+`retrieve_graph`，且不暴露可绕过图路径的 `keyword_search`。Text/Auto 的 `keyword_search`
+只在进程 hybrid 开启且 lexical manifest 覆盖完整时暴露，
 执行 FTS 后按 `lexical_rank` 截取，证据 `score_kind=LEXICAL`、`score=1.0/lexical_rank`，
 不伪装 cosine 分；manifest/版本类 `INDEX_REVISION_INCOMPATIBLE` 软失败并摘除该工具，
 `CHAT_REVISION_MISMATCH` 仍 fatal。`read_chunk_context` 锚定已签发的 text/table EvidenceRef，
@@ -505,9 +510,9 @@ v4 起不再发布 `simple_tool_calls`。成功 Trace 另汇总 prompt/completio
 
 ## 10. Chat 与回答
 
-API 创建 ChatRun 时在短事务内冻结知识库/revision、检索 preset 的 version/strategy/`top_k`/
-`rerank_mode`（auto 另含 router/augmentation 与 Graph Tool 参数）、原生 Agent 五键预算
-（模型轮次、Graph 调用、token 总量、证据条数与检索调用数）、
+API 创建 ChatRun 时在短事务内冻结知识库/revision、三值检索 mode 对应 preset 的
+version/strategy/`top_k`/`rerank_mode`（Auto 另含 router/augmentation 与 Graph Tool 参数）、
+原生 Agent token budget、
 不可变模型修订和最近已完成 Session turns，然后
 返回 `202`；模型调用由 Worker 执行。公开请求没有 workflow 模式。
 

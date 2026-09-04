@@ -292,6 +292,7 @@ export interface ChatRunError {
 }
 
 export interface ChatRunRetrieval {
+  mode: "text" | "auto" | "graph";
   profile_version: string;
   strategy: "exact_vector" | "hybrid";
   top_k: number;
@@ -456,7 +457,7 @@ export interface ChatRunCreate {
   knowledge_base_id: UUID;
   message: string;
   retrieval: {
-    mode: "vector" | "hybrid" | "graph" | "auto";
+    mode: "text" | "auto" | "graph";
     top_k: number;
     rerank_mode: RerankMode;
   };
