@@ -15,6 +15,7 @@ from uuid import uuid4
 from tools.evaluate_agent_complex_qa import (
     _answer_checkpoint_path,
     _atomic_write_json,
+    _chat_retrieval_mode,
     apply_llm_judgements,
     _extract_decimal_values,
     _validate_options,
@@ -142,6 +143,10 @@ class _CacheJudge(_FakeJudge):
 
 
 class AgentComplexEvaluationToolTests(unittest.TestCase):
+    def test_legacy_strategy_names_map_to_current_chat_modes(self) -> None:
+        self.assertEqual(_chat_retrieval_mode("hybrid"), "auto")
+        self.assertEqual(_chat_retrieval_mode("exact_vector"), "text")
+
     def test_batch_stops_after_nonretryable_auth_failure_and_marks_remaining_not_run(
         self,
     ) -> None:

@@ -885,7 +885,7 @@ def _evaluate_one(
             "knowledge_base_id": kb_id,
             "message": question,
             "retrieval": {
-                "mode": "hybrid" if strategy == "hybrid" else "vector",
+                "mode": _chat_retrieval_mode(strategy),
                 "top_k": top_k,
                 "rerank_mode": rerank_mode,
             },
@@ -936,6 +936,10 @@ def _evaluate_one(
         "score": scored,
         "elapsed_seconds": round(time.perf_counter() - started, 3),
     }
+
+
+def _chat_retrieval_mode(strategy: str) -> str:
+    return "auto" if strategy == "hybrid" else "text"
 
 
 def _wait_for_terminal(
