@@ -882,6 +882,30 @@ class AgentComplexEvaluationToolTests(unittest.TestCase):
         self.assertEqual(summary["inline_ref_unresolved"], 0)
         self.assertEqual(summary["inline_ref_parse_rate"], 1.0)
 
+    def test_summary_uses_legacy_score_for_rescored_inline_ref_metrics(self) -> None:
+        result = {
+            "score": {
+                "semantic_strict_correct": True,
+                "semantic_at_least_partial": True,
+                "terminal_completed": True,
+                "evaluation_group": "evidence_only",
+            },
+            "legacy_score": {
+                "inline_ref_observed": 4,
+                "inline_ref_resolved": 4,
+                "inline_ref_unresolved": 0,
+                "refusal_zero_refs": True,
+            },
+        }
+
+        summary = summarize_results([result])
+
+        self.assertEqual(summary["inline_ref_observed"], 4)
+        self.assertEqual(summary["inline_ref_resolved"], 4)
+        self.assertEqual(summary["inline_ref_unresolved"], 0)
+        self.assertEqual(summary["inline_ref_parse_rate"], 1.0)
+        self.assertEqual(summary["refusal_zero_ref_cases"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

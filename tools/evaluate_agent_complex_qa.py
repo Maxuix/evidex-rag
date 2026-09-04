@@ -1066,15 +1066,15 @@ def score_complex_case(
 def summarize_results(results: Iterable[dict[str, Any]]) -> dict[str, Any]:
     values = list(results)
     inline_ref_observed = sum(
-        _nonnegative_int(item.get("score", {}).get("inline_ref_observed"))
+        _nonnegative_int(_citation_protocol_score(item).get("inline_ref_observed"))
         for item in values
     )
     inline_ref_resolved = sum(
-        _nonnegative_int(item.get("score", {}).get("inline_ref_resolved"))
+        _nonnegative_int(_citation_protocol_score(item).get("inline_ref_resolved"))
         for item in values
     )
     inline_ref_unresolved = sum(
-        _nonnegative_int(item.get("score", {}).get("inline_ref_unresolved"))
+        _nonnegative_int(_citation_protocol_score(item).get("inline_ref_unresolved"))
         for item in values
     )
     strict = [
@@ -1189,7 +1189,7 @@ def summarize_results(results: Iterable[dict[str, Any]]) -> dict[str, Any]:
             else None
         ),
         "refusal_zero_ref_cases": sum(
-            item.get("score", {}).get("refusal_zero_refs") is True
+            _citation_protocol_score(item).get("refusal_zero_refs") is True
             for item in values
         ),
         "median_elapsed_seconds": (
@@ -1197,6 +1197,18 @@ def summarize_results(results: Iterable[dict[str, Any]]) -> dict[str, Any]:
         ),
         "max_elapsed_seconds": round(max(elapsed), 3) if elapsed else None,
     }
+
+
+def _citation_protocol_score(value: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Return the score layer that owns deterministic citation-protocol facts."""
+
+    score = value.get("score")
+    if isinstance(score, Mapping) and "inline_ref_observed" in score:
+        return score
+    legacy_score = value.get("legacy_score")
+    if isinstance(legacy_score, Mapping):
+        return legacy_score
+    return score if isinstance(score, Mapping) else {}
 
 
 def _inline_ref_metrics(
