@@ -25,6 +25,7 @@ from tools.build_document_qa_corpus import (
 )
 from tools.agent_complex_qa_judge import (
     ComplexQaLlmJudge,
+    JUDGE_MAX_OUTPUT_TOKENS,
     JUDGE_PROMPT_VERSION,
     JUDGE_SCHEMA_VERSION,
     build_judge_packet,
@@ -102,6 +103,14 @@ def _parser() -> argparse.ArgumentParser:
         help="rejudge an existing evaluation artifact without calling the answer model",
     )
     parser.add_argument("--judge-profile-revision-id")
+    parser.add_argument(
+        "--judge-max-output-tokens",
+        type=int,
+        help=(
+            "authorized judge-only output cap override; does not change the "
+            "answer model or stored profile"
+        ),
+    )
     parser.add_argument(
         "--judge-cache-dir",
         type=Path,
@@ -281,6 +290,7 @@ def main() -> int:
                 profile_revision_id=judge_profile_revision_id,
                 env_file=runtime.env_file,
                 cache_dir=arguments.judge_cache_dir,
+                max_output_tokens_override=arguments.judge_max_output_tokens,
             )
         )
     except ChatModelExecutionError as error:
@@ -324,10 +334,15 @@ def _validate_options(arguments: argparse.Namespace) -> None:
     provider_timeout = getattr(arguments, "provider_timeout_seconds", None)
     provider_retries = getattr(arguments, "provider_max_retries", None)
     worker_deadline = getattr(arguments, "worker_chat_deadline_seconds", None)
+    judge_max_output = getattr(arguments, "judge_max_output_tokens", None)
     if provider_timeout is not None and provider_timeout <= 0:
         raise ValueError("provider timeout must be positive")
     if provider_retries is not None and provider_retries < 0:
         raise ValueError("provider retries must not be negative")
+    if judge_max_output is not None and not 1 <= judge_max_output <= JUDGE_MAX_OUTPUT_TOKENS:
+        raise ValueError(
+            f"--judge-max-output-tokens must be between 1 and {JUDGE_MAX_OUTPUT_TOKENS}"
+        )
     if worker_deadline is not None and worker_deadline <= 0:
         raise ValueError("worker chat deadline must be positive")
     if arguments.strategy == "hybrid" and arguments.rerank_mode == "none":
@@ -512,10 +527,12 @@ async def judge_results_with_profile(
     profile_revision_id: UUID,
     env_file: Path,
     cache_dir: Path | None = None,
+    max_output_tokens_override: int | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     runtime = await load_frozen_judge_runtime(
         profile_revision_id,
         env_file=env_file,
+        max_output_tokens_override=max_output_tokens_override,
     )
     try:
         judge = ComplexQaLlmJudge(

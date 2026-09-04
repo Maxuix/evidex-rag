@@ -39,7 +39,7 @@ from rag_kb.uow.sqlalchemy import (
 JUDGE_SCHEMA_VERSION = "native_agent_complex_qa_llm_judge_v2"
 JUDGE_PROMPT_VERSION = "agent_complex_qa_semantic_judge_v2"
 JUDGE_TEMPERATURE = 0.1
-JUDGE_MAX_OUTPUT_TOKENS = 4096
+JUDGE_MAX_OUTPUT_TOKENS = 8192
 JUDGE_TRANSIENT_ATTEMPTS = 3
 JUDGE_VERDICTS = frozenset({"correct", "partial", "incorrect", "unverifiable"})
 JUDGE_SUPPORT = frozenset(
@@ -84,6 +84,7 @@ class FrozenJudgeRuntime:
     top_p: float | None
     sampling_top_k: int | None
     reasoning_effort: str
+    profile_max_output_tokens: int
     max_output_tokens: int
     provider_timeout_seconds: float
     provider_max_retries: int
@@ -110,7 +111,13 @@ class FrozenJudgeRuntime:
             "top_p": self.top_p,
             "sampling_top_k": self.sampling_top_k,
             "reasoning_effort": self.reasoning_effort,
+            "profile_max_output_tokens": self.profile_max_output_tokens,
             "max_output_tokens": self.max_output_tokens,
+            "max_output_tokens_source": (
+                "profile"
+                if self.max_output_tokens == self.profile_max_output_tokens
+                else "authorized_evaluation_override"
+            ),
             "provider_timeout_seconds": self.provider_timeout_seconds,
             "provider_max_retries": self.provider_max_retries,
             "transient_attempts_per_logical_judge": JUDGE_TRANSIENT_ATTEMPTS,
@@ -124,6 +131,7 @@ async def load_frozen_judge_runtime(
     profile_revision_id: UUID,
     *,
     env_file: str | Path,
+    max_output_tokens_override: int | None = None,
 ) -> FrozenJudgeRuntime:
     """Resolve one immutable local model profile without exposing its secret."""
 
@@ -175,15 +183,26 @@ async def load_frozen_judge_runtime(
         except (OSError, ValueError) as error:
             raise ValueError("judge provider secret is unavailable") from error
         parameters = dict(bundle.current_revision.configuration)
-        max_output_tokens = parameters.get(
+        profile_max_output_tokens = parameters.get(
             "max_output_tokens", JUDGE_MAX_OUTPUT_TOKENS
         )
         if (
-            isinstance(max_output_tokens, bool)
-            or not isinstance(max_output_tokens, int)
-            or not 1 <= max_output_tokens <= JUDGE_MAX_OUTPUT_TOKENS
+            isinstance(profile_max_output_tokens, bool)
+            or not isinstance(profile_max_output_tokens, int)
+            or not 1 <= profile_max_output_tokens <= JUDGE_MAX_OUTPUT_TOKENS
         ):
             raise ValueError("judge profile max output tokens are invalid")
+        if max_output_tokens_override is not None and (
+            isinstance(max_output_tokens_override, bool)
+            or not isinstance(max_output_tokens_override, int)
+            or not 1 <= max_output_tokens_override <= JUDGE_MAX_OUTPUT_TOKENS
+        ):
+            raise ValueError("judge max output token override is invalid")
+        max_output_tokens = (
+            max_output_tokens_override
+            if max_output_tokens_override is not None
+            else profile_max_output_tokens
+        )
         top_p = parameters.get("top_p", 0.9)
         sampling_top_k = parameters.get("sampling_top_k")
         reasoning_effort = parameters.get("reasoning_effort", "off")
@@ -223,6 +242,7 @@ async def load_frozen_judge_runtime(
             top_p=top_p,
             sampling_top_k=sampling_top_k,
             reasoning_effort=reasoning_effort,
+            profile_max_output_tokens=profile_max_output_tokens,
             max_output_tokens=max_output_tokens,
             provider_timeout_seconds=bundle.provider_revision.timeout_seconds,
             provider_max_retries=bundle.provider_revision.max_retries,

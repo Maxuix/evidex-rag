@@ -274,6 +274,8 @@ class ComplexQaLlmJudgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runtime.profile_revision_id, profile_revision_id)
         self.assertEqual(runtime.provider_revision_id, provider_revision_id)
         self.assertEqual(runtime.max_output_tokens, 2048)
+        self.assertEqual(runtime.profile_max_output_tokens, 2048)
+        self.assertEqual(runtime.config()["max_output_tokens_source"], "profile")
         self.assertEqual(runtime.provider_timeout_seconds, 60.0)
         self.assertEqual(runtime.provider_max_retries, 1)
         self.assertEqual(runtime.config()["temperature"], 0.1)
@@ -281,6 +283,34 @@ class ComplexQaLlmJudgeTests(unittest.IsolatedAsyncioTestCase):
         secret_store.read.assert_called_once_with("secret-ref")
         await runtime.close()
         database.close.assert_awaited_once()
+
+    async def test_frozen_runtime_records_authorized_output_override(self) -> None:
+        profile_revision_id = uuid4()
+        database = SimpleNamespace(close=AsyncMock(), sessions=object())
+        bundle = _runtime_bundle(
+            profile_revision_id=profile_revision_id,
+            provider_revision_id=uuid4(),
+        )
+
+        with _runtime_patches(
+            database=database,
+            bundle=bundle,
+            secret_store=SimpleNamespace(read=Mock(return_value="provider-secret")),
+            adapter=object(),
+        ):
+            runtime = await load_frozen_judge_runtime(
+                profile_revision_id,
+                env_file="/dev/null",
+                max_output_tokens_override=8192,
+            )
+
+        self.assertEqual(runtime.profile_max_output_tokens, 2048)
+        self.assertEqual(runtime.max_output_tokens, 8192)
+        self.assertEqual(
+            runtime.config()["max_output_tokens_source"],
+            "authorized_evaluation_override",
+        )
+        await runtime.close()
 
     async def test_frozen_runtime_rejects_invalid_revision_and_closes(self) -> None:
         profile_revision_id = uuid4()

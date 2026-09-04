@@ -552,12 +552,23 @@ class AgentComplexEvaluationToolTests(unittest.TestCase):
             "poll_seconds": 1.0,
             "strategy": "exact_vector",
             "rerank_mode": "classic",
+            "judge_max_output_tokens": None,
         }
         _validate_options(argparse.Namespace(**base))
         for parallelism in (0, 2, 3):
             with self.subTest(parallelism=parallelism), self.assertRaises(ValueError):
                 _validate_options(
                     argparse.Namespace(**{**base, "parallelism": parallelism})
+                )
+        for judge_max_output_tokens in (0, 8193):
+            with self.subTest(judge_max_output_tokens=judge_max_output_tokens), self.assertRaises(ValueError):
+                _validate_options(
+                    argparse.Namespace(
+                        **{
+                            **base,
+                            "judge_max_output_tokens": judge_max_output_tokens,
+                        }
+                    )
                 )
 
     def test_decimal_parser_preserves_parentheses_and_commas(self) -> None:
