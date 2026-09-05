@@ -164,3 +164,20 @@ def test_mixed_regions_skip_irrelevant_vectors_without_changing_plan():
     with pytest.raises(IndexingExecutionError) as failure:
         build_chunk_plan(**facts, vectors=tuple(None for _ in units))
     assert failure.value.diagnostic['check'] == 'analysis_vector_count'
+
+
+def test_only_semantic_v5_compacts_table_embeddings_without_changing_evidence():
+    doc = DoclingDocument(name='compact')
+    doc.add_table(data=table_data((('Long source column heading', 'USD'), ('Device A', '3.14159'))))
+    chunks = semantic(doc)[2]
+    outputs = {}
+    for profile in ('semantic_breakpoint_v4', 'semantic_breakpoint_v5', 'structural_by_title_token_v5'):
+        draft = composite_evidence(doc, chunks, (), (), profile=profile, source_checksum_sha256='a'*64)
+        outputs[profile] = with_composite_embedding_text(draft.units, draft.relations)[0]
+        assert outputs[profile].content == chunks[0].text
+        assert outputs[profile].source_location == dict(chunks[0].source_location)
+    current = outputs['semantic_breakpoint_v5']
+    assert '| Device A | 3.14159 |' in current.embedding_text
+    assert len(current.embedding_text) < len(outputs['semantic_breakpoint_v4'].embedding_text)
+    assert current.embedding_text_hash != outputs['semantic_breakpoint_v4'].embedding_text_hash
+    assert outputs['semantic_breakpoint_v4'].embedding_text == outputs['structural_by_title_token_v5'].embedding_text

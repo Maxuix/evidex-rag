@@ -411,6 +411,9 @@ OCR，也不提高 conversion/indexing 并发，以守住 6 GiB Worker 上限和
 semantic v5；旧 structural v4、semantic v3/v4 的完整 profile 仍可执行，旧索引不会原地改写。
 semantic v5 用不重叠的原文片段保留标点、数字、URL、代码缩进及分隔符，补齐末尾标题；
 分析视图和计划 hash 包含来源连接规则。仅对超过上限的硬边界区域生成分析 embedding，
+语义 V5 的表格 embedding 使用 `compact_markdown_cells_v1`：仅去掉 Markdown 列对齐空格、
+收敛分隔横线，保留单元格值、列顺序、对齐标记和证据原文，减少触发 2,048 UTF-8 字节二次窗口的机会。
+
 最终检索 embedding 仍生成。两套 v5 共用按行且重复表头的表格切分；结构切分将超长正文的
 标题附在有预算的正文片段上。文本解析模式保留作者图注文字，多模态模式沿用资产关系。
 semantic 继续保留 section、page、table、非正文 block 和空行短标题 `record` 边界；只按来源

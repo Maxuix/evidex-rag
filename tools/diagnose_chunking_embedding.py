@@ -30,7 +30,10 @@ async def run(args):
     frozen = json.loads((root/'frozen.json').read_text())
     documents = json.loads((root/'documents.json').read_text())
     baseline = json.loads((root/'first-pass-result.json').read_text())
-    rows = json.loads((root/'semantic_new-chunks.json').read_text())
+    rows_path = root/'semantic-fidelity-chunks.json'
+    if not rows_path.exists():
+        rows_path = root/'semantic_new-chunks.json'
+    rows = json.loads(rows_path.read_text())
     identities = json.loads((root/'models.json').read_text())
     assert digest(frozen) == baseline['frozen_sha256']
     assert digest(documents) == frozen['documents_sha256']

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import unicodedata
 from dataclasses import replace
 
@@ -38,6 +39,9 @@ def with_composite_embedding_text(
             enriched.append(unit)
             continue
         body = _canonical(unit.content)
+        if (unit.modality is ContentModality.TABLE
+                and unit.processing_metadata.get("profile") == "semantic_breakpoint_v5"):
+            body = compact_markdown_table(body)
         if not body:
             raise ParserExecutionError(
                 ErrorCode.PARSER_OUTPUT_INVALID,
@@ -155,3 +159,25 @@ def _canonical(value: str) -> str:
     return unicodedata.normalize(
         "NFC", value.replace("\r\n", "\n").replace("\r", "\n")
     ).strip()
+
+
+def compact_markdown_table(value: str) -> str:
+    """Remove display padding from embedding text without changing table cells.
+
+    Leave escaped pipes and non-table lines untouched. Code/display evidence
+    does not use this projection. Separator alignment markers are preserved.
+    """
+    lines: list[str] = []
+    for line in value.split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("|") and stripped.endswith("|") and "\\|" not in line:
+            cells = [cell.strip() for cell in stripped[1:-1].split("|")]
+            if cells and all(re.fullmatch(r":?-+:?", cell) for cell in cells):
+                cells = [
+                    (":" if cell.startswith(":") else "") + "---"
+                    + (":" if cell.endswith(":") else "")
+                    for cell in cells
+                ]
+            line = "| " + " | ".join(cells) + " |"
+        lines.append(line)
+    return "\n".join(lines)

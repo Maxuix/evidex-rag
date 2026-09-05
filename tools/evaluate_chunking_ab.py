@@ -424,6 +424,9 @@ async def run(args):
         print(json.dumps({'documents': frozen['document_count'], 'cases': len(frozen['cases']), 'pdf_page_limits': frozen['pdf_page_limits']}), flush=True)
         return
     models, identities = await load_models(args.primary)
+    identity_path = args.output / 'models.json'
+    if identity_path.exists() and json.loads(identity_path.read_text()) != identities:
+        raise ValueError('frozen model identity changed')
     if args.cache_only:
         if json.loads((args.output / 'models.json').read_text()) != identities:
             raise ValueError('model identity changed')

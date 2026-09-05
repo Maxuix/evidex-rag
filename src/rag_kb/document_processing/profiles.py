@@ -273,6 +273,7 @@ STRUCTURAL_CHUNKING_CONFIG = {
 SEMANTIC_CHUNKING_CONFIG = {
     **SEMANTIC_CHUNKING_CONFIG_V4,
     "profile": "semantic_breakpoint_v5",
+    "embedding_table_serialization": "compact_markdown_cells_v1",
     "source_preservation": "source_spans_v1",
     "caption_policy": "text_only_source_caption_v1",
     "table_serialization": "docling_rows_repeated_headers_v2",

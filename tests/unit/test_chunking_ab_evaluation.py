@@ -77,3 +77,24 @@ def test_embedding_whitespace_probe_keeps_source_values_and_structured_content()
     assert projection(table, set()).endswith('| Year | USD |\n| --- | --- |\n| 2026 | 3.14 |')
 
     assert projection(prose, set(), preserve_paragraphs=True) == '[body]\nSensor voltage 3.14;\n\nhttps://x.example/v1.2'
+
+
+def test_context_probe_uses_only_missing_source_titles_and_bounds_context():
+    from tools.diagnose_chunking_context import context_projection
+    from rag_kb.document_processing.tokenization import count_chunk_tokens
+    unit = {'embedding_text': '[body]\nA value: 3.14', 'text': 'A value: 3.14',
+            'hierarchy': {'titles': [{'text': 'Source title'}, {'text': 'Source title'}, {'text': 'A value'}]}}
+    assert context_projection(unit) == '[section]\nSource title\n[body]\nA value: 3.14'
+    assert unit['embedding_text'] == '[body]\nA value: 3.14'
+    unit['hierarchy'] = {'titles': [{'text': 'Long source heading ' * 200}]}
+    assert count_chunk_tokens(context_projection(unit)) < 160
+
+
+def test_compact_tables_preserve_cells_alignment_escapes_and_non_table_inputs():
+    from tools.diagnose_chunking_context import compact_table_projection
+    text = '[table]\nFinancial table\n\n| Key      | USD        |\n|:---------|-----------:|\n| A        | 3.14       |\n| path \\| field | keep  spaces |'
+    row = {'modality': 'table', 'embedding_text': text}
+    compact = compact_table_projection(row)
+    assert compact == '[table]\nFinancial table\n\n| Key | USD |\n| :--- | ---: |\n| A | 3.14 |\n| path \\| field | keep  spaces |'
+    assert row['embedding_text'] == text
+    assert compact_table_projection({'modality': 'text', 'embedding_text': text}) == text
