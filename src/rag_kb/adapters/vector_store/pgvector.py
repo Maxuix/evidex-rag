@@ -82,6 +82,14 @@ class PgVectorStore:
         self._sessions = sessions
         self._configured_space = configured_space
 
+    async def active_revision(self, query: ServingScopeQuery) -> UUID | None:
+        async with self._sessions() as session:
+            return await session.scalar(select(KnowledgeBase.active_index_revision_id).join(
+                IndexRevision, IndexRevision.id == KnowledgeBase.active_index_revision_id,
+            ).where(KnowledgeBase.workspace_id == query.workspace_id,
+                KnowledgeBase.id == query.knowledge_base_id, KnowledgeBase.deleted_at.is_(None),
+                IndexRevision.kb_id == query.knowledge_base_id, IndexRevision.status == IndexRevisionStatus.ACTIVE))
+
     async def source_neighbors(
         self,
         plan: RetrievalQueryPlan,
@@ -322,6 +330,7 @@ class PgVectorStore:
                             " AND target.serving_status = 'serving' "
                             " AND doc.deleted_at IS NULL "
                             " AND version.source_status = 'available' "
+                            "AND (CAST(:after_document_id AS uuid) IS NULL OR doc.id > CAST(:after_document_id AS uuid)) "
                             "ORDER BY doc.id "
                             "LIMIT :limit"
                         ),
@@ -330,6 +339,7 @@ class PgVectorStore:
                             "kb_id": query.knowledge_base_id,
                             "revision_id": active_revision_id,
                             "limit": SERVING_DOCUMENT_LIST_LIMIT + 1,
+                            "after_document_id": query.after_document_id,
                         },
                     )
                 ).mappings().all()
@@ -357,6 +367,7 @@ class PgVectorStore:
                 for item in selected
             ),
             truncated=truncated,
+            next_document_id=selected[-1]["document_id"] if truncated and selected else None,
         )
 
     @staticmethod

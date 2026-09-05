@@ -72,6 +72,7 @@ class QueryExecutionIsolationTests(unittest.IsolatedAsyncioTestCase):
             conversation_context=serialize_conversation_context(empty_conversation_context()),
             contextualized_query={"version": "unknown", "standalone_query": "must not execute"},
         )
+        run.knowledge_bases = [SimpleNamespace(kb_id=run.kb_id, name="legacy", description="", index_revision_id=run.index_revision_id, retrieval_strategy={}, graph_build_id=None, status="ready")]
         session = SimpleNamespace(execute=AsyncMock(return_value=SimpleNamespace(
             one_or_none=lambda: (run, SimpleNamespace(content="Current user question"), SimpleNamespace(id=uuid4())),
         )))

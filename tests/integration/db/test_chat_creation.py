@@ -97,6 +97,95 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self) -> None:
         await self.database.close()
 
+    async def test_multi_scope_is_frozen_and_library_removal_preserves_history(self) -> None:
+        first = await self._create_kb("first")
+        second = await self._create_kb("second")
+        session = await self.chat.create_session(kb_ids=(first.id, second.id), title="comparison")
+        key = uuid4()
+        values = dict(session_id=session.id, kb_ids=(second.id, first.id), message="compare", retrieval_mode="text", top_k=10)
+        run = await self.chat.create_run(key, **values)
+        self.assertIsNone(run.kb_id)
+        self.assertIsNone(run.index_revision_id)
+        self.assertEqual({scope.name for scope in run.knowledge_bases}, {"first", "second"})
+        updated = await self.chat.update_session_scope(session.id, (second.id,))
+        self.assertEqual(updated.knowledge_base_ids, (second.id,))
+        self.assertEqual((await self.chat.create_run(key, **values)).id, run.id)
+        unchanged = await self.chat.get_run(run.id)
+        self.assertEqual(len(unchanged.knowledge_bases), 2)
+        await self.chat.update_session_scope(session.id, (first.id, second.id))
+        con = await asyncpg.connect(MIGRATION_DSN)
+        try:
+            await con.execute("DELETE FROM knowledge_base WHERE id=$1", first.id)
+            self.assertEqual(await con.fetchval("SELECT count(*) FROM chat_session WHERE id=$1",session.id),1)
+            self.assertEqual(await con.fetchval("SELECT count(*) FROM chat_run_kb WHERE run_id=$1",run.id),2)
+        finally: await con.close()
+        history = await self.chat.list_messages(session.id,limit=10,sort="created_at",after=None)
+        self.assertEqual(len(history.items),2)
+        self.assertEqual({scope.name for scope in (await self.chat.get_run(run.id)).knowledge_bases},{"first","second"})
+
+    async def test_legacy_hash_replays_through_normalized_single_selection(self) -> None:
+        from rag_kb.domain import canonical_request_hash
+        kb=await self._create_kb("legacy-replay")
+        session=await self.chat.create_session(kb_id=kb.id,title=None)
+        key=uuid4()
+        run=await self._create_run(session.id,kb.id,key)
+        con=await asyncpg.connect(MIGRATION_DSN)
+        try:
+            # Recover the submitted text and frozen request values to reproduce a pre-migration hash.
+            message=await con.fetchval("SELECT content FROM chat_message WHERE id=$1",run.user_message_id)
+            old=canonical_request_hash({"session_id":str(session.id),"knowledge_base_id":str(kb.id),"message":message,"retrieval":{"mode":"text","top_k":8,"rerank_mode":run.retrieval_strategy["rerank_mode"]},"model_profile_revision_id":None})
+            await con.execute("UPDATE chat_run SET request_hash=$1 WHERE id=$2",old,run.id)
+        finally:await con.close()
+        self.assertEqual((await self._create_run(session.id,kb.id,key)).id,run.id)
+
+    async def test_deleted_only_library_does_not_reappear_in_session_selection(self) -> None:
+        kb = await self._create_kb("removed-only-selection")
+        session = await self.chat.create_session(kb_id=kb.id, title=None)
+        con = await asyncpg.connect(MIGRATION_DSN)
+        try:
+            await con.execute("DELETE FROM knowledge_base WHERE id=$1", kb.id)
+        finally:
+            await con.close()
+        async with self.factory() as uow:
+            current = await uow.chat.get_session(session.id)
+        self.assertEqual(current.knowledge_base_ids, ())
+        self.assertIsNone(current.kb_id)
+
+    async def test_migration_preserves_single_library_messages_and_detached_citations(self) -> None:
+        from alembic.migration import MigrationContext
+        from alembic.operations import Operations
+        from sqlalchemy.ext.asyncio import create_async_engine
+        from sqlalchemy import text
+        import importlib
+        kb=await self._create_kb("migration-history")
+        session=await self.chat.create_session(kb_id=kb.id,title="preserve")
+        run=await self._create_run(session.id,kb.id,uuid4())
+        con=await asyncpg.connect(MIGRATION_DSN)
+        try:
+            await con.execute("""INSERT INTO citation(workspace_id,assistant_message_id,ordinal,document_id_snapshot,document_version_id_snapshot,document_display_name_snapshot,document_original_filename_snapshot,quoted_text,source_location)
+                VALUES($1,$2,0,$3,$4,'historical source','source.txt','retained original quote','{"page":7}')""",WORKSPACE,run.assistant_message_id,uuid4(),uuid4())
+        finally:await con.close()
+        migration=importlib.import_module("rag_kb.db.migrations.versions.0032_multi_kb_scope")
+        engine=create_async_engine(MIGRATION_DSN.replace("postgresql://","postgresql+asyncpg://",1))
+        try:
+            async with engine.connect() as connection:
+                tx=await connection.begin()
+                try:
+                    # Reconstruct the 0031 table shape inside a rolled-back, test-only transaction.
+                    for sql in ("DROP TABLE chat_session_kb", "DROP TABLE chat_run_kb", "ALTER TABLE knowledge_base DROP COLUMN description", "ALTER TABLE citation DROP COLUMN knowledge_base_id_snapshot, DROP COLUMN knowledge_base_name_snapshot, DROP COLUMN index_revision_id_snapshot", "ALTER TABLE chat_session DROP CONSTRAINT fk_chat_session_workspace_id_workspace", "ALTER TABLE chat_session ADD CONSTRAINT fk_chat_session_same_workspace_kb FOREIGN KEY(workspace_id,kb_id) REFERENCES knowledge_base(workspace_id,id) ON DELETE CASCADE"):
+                        await connection.execute(text(sql))
+                    def upgrade(sync):
+                        with Operations.context(MigrationContext.configure(sync)):migration.upgrade()
+                    await connection.run_sync(upgrade)
+                    self.assertEqual((await connection.execute(text("SELECT count(*) FROM chat_message"))).scalar(),2)
+                    self.assertEqual((await connection.execute(text("SELECT count(*) FROM chat_session_kb"))).scalar(),1)
+                    scope=(await connection.execute(text("SELECT kb_id,index_revision_id,name FROM chat_run_kb"))).one()
+                    self.assertEqual(tuple(scope),(kb.id,kb.active_index_revision_id,kb.name))
+                    quote=(await connection.execute(text("SELECT knowledge_base_id_snapshot,index_revision_id_snapshot,quoted_text,index_chunk_id FROM citation"))).one()
+                    self.assertEqual(tuple(quote),(kb.id,kb.active_index_revision_id,"retained original quote",None))
+                finally:await tx.rollback()
+        finally:await engine.dispose()
+
     async def test_concurrent_lost_response_replay_is_one_atomic_run(self) -> None:
         kb = await self._create_kb("primary")
         session = await self.chat.create_session(
@@ -211,7 +300,7 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sessions.items[0].id, session.id)
         self.assertEqual([item.id for item in filtered_sessions.items], [session.id])
 
-        with self.assertRaises(ResourceStateConflictError):
+        with self.assertRaises(ChatSessionBusyError):
             await self.chat.create_run(
                 uuid4(),
                 session_id=session.id,
@@ -458,7 +547,9 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
                         index_chunk_id=chunk_ids[1],
                         document_id=document_id,
                         document_version_id=version_id,
-                        document_display_name="citation source",
+                        knowledge_base_id=kb.id, knowledge_base_name=kb.name,
+                    index_revision_id=kb.active_index_revision_id,
+                    document_display_name="citation source",
                         document_original_filename="source.txt",
                         excerpt="第二段证据",
                         source_location={"paragraph": 2},
@@ -473,7 +564,9 @@ class ChatCreationDatabaseTests(unittest.IsolatedAsyncioTestCase):
                         index_chunk_id=chunk_ids[0],
                         document_id=document_id,
                         document_version_id=version_id,
-                        document_display_name="citation source",
+                        knowledge_base_id=kb.id, knowledge_base_name=kb.name,
+                    index_revision_id=kb.active_index_revision_id,
+                    document_display_name="citation source",
                         document_original_filename="source.txt",
                         excerpt="第一段证据",
                         source_location={"paragraph": 1},

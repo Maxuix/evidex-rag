@@ -42,11 +42,20 @@ export function ToolCallRow({ step, steps, live, elapsedMs, run, attempt, onCita
           {step.expression ? <><dt>表达式</dt><dd><code>{step.expression}</code></dd></> : null}
           {step.result_value !== null ? <><dt>计算结果</dt><dd><strong>{step.result_value}</strong></dd></> : null}
         </dl>}
+        {step.scope_results?.length ? <div className="activity-scope-results"><h4>各知识库结果</h4><ul>{step.scope_results.map((scope, index) => <li key={`${scope.knowledge_base_id}-${index}`}>
+          <strong>{scope.name}</strong> · {scope.status === "ok" || scope.status === "admitted" ? "已检索" : scope.status === "empty" || scope.status === "no_evidence" ? "未命中" : scope.status === "chat_revision_mismatch" ? "索引或图版本已变化" : scope.status === "index_unavailable" ? "索引不可用" : scope.status}
+          {scope.query ? <p>{scope.query}</p> : null}
+          {scope.retrieved_count !== null ? <small>命中 {scope.retrieved_count} · 准入 {scope.admitted_count ?? 0} · 展示 {scope.displayed_count ?? 0}{scope.omitted_count ? ` · 预算未展示 ${scope.omitted_count}` : ""}</small> : null}
+        </li>)}</ul></div> : null}
         {step.sources.length ? <div className="activity-sources"><h4>{step.name === "list_documents" ? "文档清单" : "返回的资料"}</h4><ul>{step.sources.map((source, index) => {
-          const citation = attempt === run.attempt && source.index_chunk_id ? run.citations.find(item => item.index_chunk_id === source.index_chunk_id && item.document_version_id === source.document_version_id) : undefined;
+          const citation = attempt === run.attempt && source.index_chunk_id ? run.citations.find(item =>
+            item.index_chunk_id === source.index_chunk_id && item.document_id === source.document_id
+            && item.document_version_id === source.document_version_id
+            && (!source.knowledge_base_id || item.knowledge_base_id === source.knowledge_base_id)
+            && (!source.index_revision_id || item.index_revision_id === source.index_revision_id)) : undefined;
           return <li key={`${source.ref ?? source.document_id}-${index}`}>
-            <div><strong>{source.title}</strong>{source.location ? <span>{source.location}</span> : null}</div>
-            {citation ? <button type="button" onClick={event => onCitation(citation.ordinal, event.currentTarget)}>引用来源 {citation.ordinal}</button>
+            <div><strong>{source.knowledge_base_name ? `${source.knowledge_base_name} · ` : ""}{source.title}</strong>{source.location ? <span>{source.location}</span> : null}</div>
+            {citation ? <button type="button" onClick={event => onCitation(citation.ordinal, event.currentTarget)}>引用来源 {citation.ordinal + 1}</button>
               : source.index_chunk_id ? <button type="button" onClick={event => onSource(source, event.currentTarget)}>查看片段</button> : null}
           </li>;
         })}</ul>{step.name !== "list_documents" ? <p className="activity-note">检索结果可能重复；最终采用的资料会标记为引用来源。</p> : null}</div> : null}

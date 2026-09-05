@@ -349,6 +349,8 @@ class ChatAgentTrace:
     deadline_ms: int | None = None
     deadline_remaining_ms: int | None = None
     deadline_exceeded: bool = False
+    scope_calls: tuple[dict[str, Any], ...] = ()
+    scope_calls_truncated: bool = False
     version: str = CHAT_AGENT_VERSION
 
     def __post_init__(self) -> None:
@@ -424,6 +426,8 @@ class ChatAgentTrace:
                 "deadline_ms": self.deadline_ms,
                 "deadline_remaining_ms": self.deadline_remaining_ms,
                 "deadline_exceeded": self.deadline_exceeded,
+                "scope_calls": list(self.scope_calls),
+                "scope_calls_truncated": self.scope_calls_truncated,
             },
             "outcome": self.outcome,
         }

@@ -1,5 +1,8 @@
 export type ActivityStatus = "pending" | "running" | "processing" | "succeeded" | "failed" | "rejected" | "cancelled";
 export interface ActivitySource {
+  knowledge_base_id?: string | null;
+  knowledge_base_name?: string | null;
+  index_revision_id?: string | null;
   document_id: string;
   document_version_id: string;
   title: string;
@@ -7,7 +10,12 @@ export interface ActivitySource {
   ref: string | null;
   location: string | null;
 }
+export interface ActivityScope {
+  knowledge_base_id: string; name: string; status: string; query: string | null;
+  retrieved_count: number | null; admitted_count: number | null; displayed_count: number | null; omitted_count: number | null;
+}
 export interface ActivityStep {
+  scope_results?: ActivityScope[];
   step_id: string;
   ordinal: number;
   seq: number;

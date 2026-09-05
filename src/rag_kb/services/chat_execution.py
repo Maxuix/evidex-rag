@@ -112,6 +112,14 @@ class ChatEvidenceRetriever:
     def __init__(self, retrieval: RetrievalService) -> None:
         self._retrieval = retrieval
 
+    async def validate_scope(self, context: ChatExecutionContext, *, check_graph: bool = False) -> None:
+        snapshot = context.knowledge_bases[0]
+        try:
+            await self._retrieval.validate_chat_scope(context.knowledge_base_id, context.index_revision_id,
+                graph_build_id=snapshot.graph_build_id, check_graph=check_graph)
+        except RetrievalExecutionError as error:
+            raise ChatPipelineExecutionError(error.code, phase=ChatPipelinePhase.RETRIEVE_EVIDENCE, diagnostic=error.diagnostic) from error
+
     async def semantic_search(
         self,
         context: ChatExecutionContext,
@@ -271,9 +279,10 @@ class ChatEvidenceRetriever:
     async def list_documents(
         self,
         context: ChatExecutionContext,
+        *, after_document_id: UUID | None = None,
     ) -> ServingDocumentList:
         listed = await self._retrieval.list_serving_documents(
-            context.knowledge_base_id
+            context.knowledge_base_id, **({"after_document_id": after_document_id} if after_document_id else {})
         )
         if listed is None:
             raise ResourceNotFoundError(

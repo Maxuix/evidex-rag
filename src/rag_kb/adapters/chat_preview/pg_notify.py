@@ -612,6 +612,7 @@ def _serialize_activity(event: ChatActivityEvent) -> str:
         return encoded
     step = replace(
         step, details_truncated=True,
+        scope_results=tuple(replace(scope, name=scope.name[:80], query=scope.query[:80] if scope.query else None) for scope in step.scope_results[:2]),
         queries=tuple(query[:120] for query in step.queries),
         sources=tuple(replace(source, title=source.title[:80], location=source.location[:80] if source.location else None) for source in step.sources[:2]),
         expression=step.expression[:160] if step.expression else None,
@@ -619,7 +620,7 @@ def _serialize_activity(event: ChatActivityEvent) -> str:
     )
     encoded = encode(step)
     if len(encoded.encode("utf-8")) > MAX_NOTIFY_PAYLOAD_BYTES:
-        step = replace(step, sources=(), queries=tuple(query[:40] for query in step.queries), refs=())
+        step = replace(step, sources=(), scope_results=(), queries=tuple(query[:40] for query in step.queries), refs=())
         encoded = encode(step)
     if len(encoded.encode("utf-8")) > MAX_NOTIFY_PAYLOAD_BYTES:
         raise ValueError("activity preview exceeds byte limit")

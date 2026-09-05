@@ -373,15 +373,28 @@ export class ApiClient {
     }));
   }
 
+  updateChatScope(sessionId: UUID, knowledgeBaseIds: UUID[]): Promise<ChatSession> {
+    return this.request(`/chat/sessions/${sessionId}/scope`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ knowledge_base_ids: knowledgeBaseIds }),
+    });
+  }
+
+  updateKnowledgeBaseDescription(kbId: UUID, description: string): Promise<KnowledgeBase> {
+    return this.request(`/knowledge-bases/${kbId}`, {
+      method: "PATCH", headers: this.jsonHeaders(crypto.randomUUID()), body: JSON.stringify({ description }),
+    });
+  }
+
   createChatSession(
-    knowledgeBaseId: UUID,
+    knowledgeBaseId: UUID | UUID[],
     title: string,
   ): Promise<ChatSession> {
     return this.request("/chat/sessions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        knowledge_base_id: knowledgeBaseId,
+        knowledge_base_ids: Array.isArray(knowledgeBaseId) ? knowledgeBaseId : [knowledgeBaseId],
         title,
       }),
     });

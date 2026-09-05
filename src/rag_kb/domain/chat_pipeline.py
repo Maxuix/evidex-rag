@@ -16,6 +16,7 @@ from rag_kb.domain.answering import (
     ChatModelVisualContent,
 )
 from rag_kb.domain.chat_agent import CHAT_AGENT_VERSION, ChatAgentBudget
+from rag_kb.domain.chat_scope import ChatKnowledgeBaseSnapshot
 from rag_kb.domain.errors import ErrorCode
 from rag_kb.domain.retrieval import EvidencePack
 from rag_kb.domain.memory import (
@@ -92,11 +93,11 @@ class ChatExecutionContext:
     lease: ChatRunLease
     run_id: UUID
     workspace_id: UUID
-    knowledge_base_id: UUID
+    knowledge_base_id: UUID | None
     session_id: UUID
     user_message_id: UUID
     assistant_message_id: UUID
-    index_revision_id: UUID
+    index_revision_id: UUID | None
     query: str
     retrieval_strategy: Mapping[str, Any]
     model_configuration: Mapping[str, Any]
@@ -110,10 +111,22 @@ class ChatExecutionContext:
             "budget": ChatAgentBudget().as_dict(),
         }
     )
+    knowledge_bases: tuple[ChatKnowledgeBaseSnapshot, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.query.strip():
             raise ValueError("chat query must not be empty")
+        if not self.knowledge_bases and self.knowledge_base_id is not None:
+            object.__setattr__(self, "knowledge_bases", (ChatKnowledgeBaseSnapshot(
+                knowledge_base_id=self.knowledge_base_id,
+                name=str(self.knowledge_base_id),
+                index_revision_id=self.index_revision_id,
+                retrieval_strategy=self.retrieval_strategy,
+                status="ready" if self.index_revision_id else "index_unavailable",
+            ),))
+        ids = [item.knowledge_base_id for item in self.knowledge_bases]
+        if not ids or len(ids) != len(set(ids)):
+            raise ValueError("execution scope must be nonempty and unique")
         if self.attempt < 1:
             raise ValueError("attempt must be positive")
         if (
@@ -137,6 +150,7 @@ class ChatExecutionContext:
 class ChatPipelineState:
     context: ChatExecutionContext | None = None
     evidence_pack: EvidencePack | None = None
+    evidence_packs: tuple[EvidencePack, ...] = ()
     answering: ChatAnsweringState | None = None
     artifacts: Mapping[str, Any] = field(default_factory=dict)
 

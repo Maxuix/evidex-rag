@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
+from rag_kb.domain.chat_scope import ChatKnowledgeBaseSnapshot, normalize_knowledge_base_ids
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
@@ -92,17 +94,28 @@ class ChatService:
     async def create_session(
         self,
         *,
-        kb_id: UUID,
+        kb_id: UUID | None = None,
+        kb_ids: tuple[UUID, ...] | None = None,
         title: str | None,
     ) -> ChatSession:
+        selected = normalize_knowledge_base_ids(kb_ids, kb_id)
         async def persist(uow: SqlAlchemyUnitOfWork) -> ChatSession:
-            if await uow.knowledge_bases.get(kb_id) is None:
-                raise ResourceNotFoundError("knowledge base was not found")
-            return await uow.chat.create_session(
-                kb_id=kb_id,
-                title=title,
-            )
+            for identifier in selected:
+                if await uow.knowledge_bases.chat_scope_snapshot(identifier) is None:
+                    raise ResourceNotFoundError("knowledge base was not found")
+            return await uow.chat.create_session(kb_ids=selected, title=title)
 
+        return await execute_in_transaction(self._unit_of_work, persist)
+
+    async def update_session_scope(self, session_id: UUID, kb_ids: tuple[UUID, ...]) -> ChatSession:
+        selected = normalize_knowledge_base_ids(kb_ids)
+        async def persist(uow: SqlAlchemyUnitOfWork) -> ChatSession:
+            if await uow.chat.lock_session(session_id) is None:
+                raise ResourceNotFoundError("chat session was not found")
+            for identifier in selected:
+                if await uow.knowledge_bases.chat_scope_snapshot(identifier) is None:
+                    raise ResourceNotFoundError("knowledge base was not found")
+            return await uow.chat.set_session_scope(session_id, selected)
         return await execute_in_transaction(self._unit_of_work, persist)
 
     async def list_sessions(
@@ -166,13 +179,15 @@ class ChatService:
         idempotency_key: UUID,
         *,
         session_id: UUID,
-        kb_id: UUID,
+        kb_id: UUID | None = None,
+        kb_ids: tuple[UUID, ...] | None = None,
         message: str,
         retrieval_mode: str,
         top_k: int,
         rerank_mode: RerankMode | None = None,
         model_profile_revision_id: UUID | None = None,
     ) -> ChatRun:
+        selected = normalize_knowledge_base_ids(kb_ids, kb_id)
         if retrieval_mode not in {"text", "auto", "graph"}:
             raise ResourceStateConflictError("retrieval mode is unsupported")
         if retrieval_mode == "graph" and rerank_mode is None:
@@ -230,7 +245,7 @@ class ChatService:
         request_hash = canonical_request_hash(
             {
                 "session_id": str(session_id),
-                "knowledge_base_id": str(kb_id),
+                "knowledge_base_ids": [str(identifier) for identifier in selected],
                 "message": normalized_message,
                 "retrieval": requested_retrieval,
                 "model_profile_revision_id": (
@@ -241,11 +256,17 @@ class ChatService:
             }
         )
 
+        legacy_request_hash = canonical_request_hash({
+            "session_id": str(session_id), "knowledge_base_id": str(selected[0]),
+            "message": normalized_message, "retrieval": requested_retrieval,
+            "model_profile_revision_id": str(model_profile_revision_id) if model_profile_revision_id else None,
+        }) if len(selected) == 1 else None
+
         async def persist(uow: SqlAlchemyUnitOfWork) -> ChatRun:
             await uow.chat.lock_idempotency(scope)
             prior = await uow.chat.get_run_by_scope(scope)
             if prior is not None:
-                if prior.request_hash != request_hash:
+                if prior.request_hash not in ({request_hash, legacy_request_hash} - {None}):
                     raise IdempotencyKeyReusedError(
                         "idempotency key was already used with a different request"
                     )
@@ -254,17 +275,32 @@ class ChatService:
             session = await uow.chat.lock_session(session_id)
             if session is None:
                 raise ResourceNotFoundError("chat session was not found")
-            if session.kb_id != kb_id:
-                raise ResourceStateConflictError(
-                    "chat session belongs to a different knowledge base"
-                )
             if await uow.chat.has_nonterminal_run(session_id):
                 raise ChatSessionBusyError(
                     "chat session already has a queued or running run"
                 )
-            knowledge_base = await uow.knowledge_bases.get(kb_id)
-            if knowledge_base is None:
-                raise ResourceNotFoundError("knowledge base was not found")
+            snapshots = []
+            for identifier in selected:
+                snapshot = await uow.knowledge_bases.chat_scope_snapshot(identifier)
+                if snapshot is None:
+                    raise ResourceNotFoundError("knowledge base was not found")
+                defaults = snapshot.retrieval_strategy
+                target_top_k = int(defaults.get("top_k", 10)) if len(selected) > 1 else top_k
+                target_rerank = RerankMode(defaults.get("rerank_mode", "classic")) if len(selected) > 1 else resolved_rerank_mode
+                if retrieval_mode == "graph":
+                    # The manual Graph control has its own validated 4–20 range.
+                    target_top_k, target_rerank = top_k, resolved_rerank_mode
+                profile = (
+                    graph_profile(top_k=target_top_k, rerank_mode=target_rerank)
+                    if retrieval_mode == "graph" else
+                    adaptive_graphiti_profile(top_k=target_top_k, rerank_mode=target_rerank)
+                    if retrieval_mode == "auto" else
+                    self._retrieval_profile_factory(RetrievalStrategy.EXACT_VECTOR, target_top_k, target_rerank)
+                )
+                graph = await uow.graph.get_config(identifier) if retrieval_mode != "text" else None
+                snapshots.append(replace(snapshot, retrieval_strategy=profile.as_dict(),
+                    graph_build_id=graph.active_build_id if graph is not None else None))
+            await uow.chat.set_session_scope(session_id, selected)
             model_configuration = await self._resolve_model_configuration(
                 uow,
                 model_profile_revision_id,
@@ -272,16 +308,16 @@ class ChatService:
             retrieval_strategy_snapshot = dict(retrieval_strategy)
             recent_turns = await uow.chat.list_completed_turns(
                 session_id=session_id,
-                kb_id=kb_id,
                 limit=self._context_max_turns + 1,
             )
             conversation_context = self._context_selector.select(recent_turns)
             return await uow.chat.create_run(
                 scope=scope,
                 request_hash=request_hash,
-                kb_id=kb_id,
+                kb_id=selected[0] if len(selected) == 1 else None,
                 session_id=session_id,
-                index_revision_id=knowledge_base.active_index_revision_id,
+                index_revision_id=snapshots[0].index_revision_id if len(snapshots) == 1 else None,
+                knowledge_bases=tuple(snapshots),
                 message=normalized_message,
                 retrieval_strategy=retrieval_strategy_snapshot,
                 model_configuration=model_configuration,

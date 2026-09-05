@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "../api/client";
+import { ToolCallRow } from "./ToolCallRow";
 import { ExecutionTimeline } from "./ExecutionTimeline";
 import { ActivitySourcePreview } from "./ActivitySourcePreview";
 import { applyActivity, disconnectActivity, emptyActivity } from "./activityState";
@@ -85,5 +86,53 @@ describe("retrieved source preview", () => {
     expect(view.container.querySelector("script")).toBeNull();
     fireEvent.keyDown(window, { key: "Escape" }); expect(view.onClose).toHaveBeenCalledOnce();
     view.unmount(); view.trigger.remove();
+  });
+});
+
+
+describe("multi-library source identity", () => {
+  it("opens a source using its own frozen library revision", async () => {
+    const trigger = document.createElement("button"); document.body.append(trigger);
+    const source = {...sourceFixture, knowledge_base_id: "kb-b", knowledge_base_name: "库 B", index_revision_id: "revision-b"};
+    const run = runFixture({knowledge_base_id:null,index_revision_id:null,knowledge_bases:[{knowledge_base_id:"kb-a",name:"库 A",index_revision_id:"revision-a",status:"ready"},{knowledge_base_id:"kb-b",name:"库 B",index_revision_id:"revision-b",status:"ready"}]});
+    const api = {getDocument:vi.fn().mockResolvedValue({kb_id:"kb-b",current_version:{id:source.document_version_id},index:{index_revision_id:"revision-b"}}),getDocumentChunks:vi.fn().mockResolvedValue({document_id:source.document_id,document_version_id:source.document_version_id,index_revision_id:"revision-b",items:[{id:source.index_chunk_id,content:"来自库 B 的同名文档",excluded_at:null}],next_cursor:null})} as unknown as ApiClient;
+    const view=render(<ActivitySourcePreview client={api} run={run} source={source} trigger={trigger} onClose={vi.fn()} />);
+    expect(await screen.findByText("来自库 B 的同名文档")).toBeTruthy();
+    expect(screen.getByText("库 B")).toBeTruthy();
+    view.unmount();trigger.remove();
+  });
+  it.each(["wrong-library","wrong-revision"])("rejects %s before reading chunk contents",async mismatch => {
+    const trigger=document.createElement("button");document.body.append(trigger);
+    const source={...sourceFixture,knowledge_base_id:mismatch==="wrong-library"?"kb-a":"kb-b",index_revision_id:mismatch==="wrong-revision"?"revision-a":"revision-b"};
+    const run=runFixture({knowledge_base_id:null,index_revision_id:null,knowledge_bases:[{knowledge_base_id:"kb-b",name:"库 B",index_revision_id:"revision-b",status:"ready"}]});
+    const getDocumentChunks=vi.fn();
+    const api={getDocument:vi.fn().mockResolvedValue({kb_id:"kb-b",current_version:{id:source.document_version_id},index:{index_revision_id:"revision-b"}}),getDocumentChunks} as unknown as ApiClient;
+    const view=render(<ActivitySourcePreview client={api} run={run} source={source} trigger={trigger} onClose={vi.fn()} />);
+    expect(await screen.findByRole("alert")).toBeTruthy();expect(getDocumentChunks).not.toHaveBeenCalled();view.unmount();trigger.remove();
+  });
+});
+
+
+describe("timeline citation links", () => {
+  it.each(["matching", "wrong-library", "wrong-revision"])("keeps displayed numbering and source identity for %s", async variant => {
+    const source = {...sourceFixture, knowledge_base_id: "kb-b", index_revision_id: "revision-b"};
+    const citation = {ordinal: 2, index_chunk_id: source.index_chunk_id, document_id: source.document_id,
+      document_version_id: source.document_version_id, document_display_name: source.title,
+      document_original_filename: "deployment.txt", quoted_text: "库 B 的原文", source_location: {}, score: null,
+      modality: "text" as const, asset: null, matched_representations: ["text"],
+      knowledge_base_id: variant === "wrong-library" ? "kb-a" : "kb-b",
+      index_revision_id: variant === "wrong-revision" ? "revision-a" : "revision-b"};
+    const step = stepFixture({status: "succeeded", sources: [source]});
+    const onOpen = vi.fn();
+    render(<ToolCallRow step={step} steps={[step]} live={false} elapsedMs={500} run={runFixture({citations:[citation]})}
+      attempt={1} onCitation={onOpen} onSource={vi.fn()} />);
+    await userEvent.click(screen.getByRole("button", {name: /语义检索/}));
+    if (variant === "matching") {
+      await userEvent.click(screen.getByRole("button", {name: "引用来源 3"}));
+      expect(onOpen).toHaveBeenCalledWith(2, expect.any(HTMLButtonElement));
+    } else {
+      expect(screen.queryByRole("button", {name: /引用来源/})).toBeNull();
+      expect(screen.getByRole("button", {name: "查看片段"})).toBeTruthy();
+    }
   });
 });

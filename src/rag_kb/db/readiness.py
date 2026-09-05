@@ -7,7 +7,7 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-EXPECTED_REVISION = "0031_auto_qa_grounding"
+EXPECTED_REVISION = "0032_multi_kb_scope"
 
 
 class DatabaseReadinessError(RuntimeError):

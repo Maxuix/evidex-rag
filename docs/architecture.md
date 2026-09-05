@@ -3,8 +3,8 @@
 | 字段 | 内容 |
 | --- | --- |
 | 文档状态 | 全项目唯一当前架构文档（描述事实，不是目标蓝图） |
-| 最后核对 | 2026-09-04 |
-| 核对基线 | 当前 `main`、实际代码、配置、Alembic 迁移 `0030`、Compose 与公开路由 |
+| 最后核对 | 2026-09-06 |
+| 核对基线 | 当前 `main`、实际代码、配置、Alembic 迁移 `0032`、实际配置与公开路由 |
 | 适用对象 | 个人维护者、CODE AGENTS |
 | 部署边界 | 单机、单用户、本地使用；不是共享或生产服务 |
 | 设计优先级 | 功能可用与个人可维护性优先于平台化、通用化和生产完备性 |
@@ -91,6 +91,8 @@
   无工具纯文本收尾，不对单条证据正文做按 token 截断。Graph Tool
   只返回 source chunk；edge fact 不进入 prompt、Citation 或回答正文；未配置、未就绪、
   运行时不可用、超时、被拒绝和无新增证据都以安全结果码返回，取消与超时可区分。
+- 用户可多选知识库，Session 保存选择，ChatRun 冻结各库索引、检索配置与图 build；同一个 Agent
+  自主选择指定库或全部所选库，回答引用和原文预览显示各自库名。
 - 持久 ChatSession / ChatRun、Session 短期上下文，以及动态提供当前可用工具的原生
   Tool-Calling Agent。常规工具为 `semantic_search`、`keyword_search`（hybrid
   进程且 lexical manifest 覆盖完整时暴露）、`read_chunk_context`、`list_documents`、
@@ -320,6 +322,11 @@ file content mutation 增加 `pending/completed/failed` 终态、稳定 failure 
 `native_tool_calling_agent_v6`。`0030` 为 `IndexRevision` 增加冻结的 Auto-QA 配置
 （默认关闭）和最小 `index_chunk_question` 表；旧知识库无需回填。`0027`–`0030` 都不回填历史行；
 v6 执行器读取历史 v3/v4/v5 配置时只取其中的 token 上限。
+`0031` 增加 Auto-QA 原文支持跨度；`0032_multi_kb_scope` 增加库描述、`chat_session_kb`
+选择关联、`chat_run_kb` 不可变范围和 Citation 来源快照。迁移把旧会话、Run 与引用回填为
+单库来源，并在切换约束前验证完整性；即使原 chunk 已删除，也保留引用原文。删除某库只移除
+会话选择关联，不级联删除整个会话或 Run 范围历史。旧单库列允许 NULL，退出多库来源判定。
+`0032` 不提供会丢失多库历史的 downgrade；部署前按本地保留数据流程应用迁移，readiness 检查该 head。
 P2 的实际数据核查确认 active/retired revision 指针仍承担当前与软删除恢复，两个 READY Graph build
 均为 active，PDF 分段任务真实使用 continuation；因此 revision/build identity、完整性 manifest、Graph
 lease 与 PDF checkpoint 都保留。未使用的 Enterprise Graph profile 只作为需单独授权的完整产品删除
@@ -332,7 +339,7 @@ lease 与 PDF checkpoint 都保留。未使用的 Enterprise Graph profile 只�
 | 知识库与文档 | `Workspace`、`KnowledgeBase`、`Document`、`DocumentVersion` |
 | 索引 | `EmbeddingSpace`、`IndexRevision`、`IndexedDocumentVersion`、`IndexingJob` |
 | 检索数据 | `IndexChunk`、词法派生、可选 `index_chunk_question`、资产/关系、可变维度 `VectorRecord`、Graph 配置、Graphiti build 与 Episode→Chunk 映射 |
-| Chat | `ChatSession`、`ChatMessage`、`ChatRun`、`Citation` |
+| Chat | `ChatSession`、`chat_session_kb`、`ChatMessage`、`ChatRun`、`chat_run_kb`、`Citation` |
 | 本地协调 | `ContentMutation` 幂等/终态记录、文件清理记录、必要的索引计划/manifest、本地 model-secret 引用 |
 
 数据保护重点是：源文件与数据库事实一致、同一文档只服务 ready 的索引、Chat 终态和引用
@@ -453,7 +460,7 @@ Auto-QA 属于 IndexRevision 的不可变索引表示，创建知识库时选择
 `--kb-id` 和 `--revision-id`，默认只读预览，确认目标后加 `--apply`。工具仅重算当前分析器的
 已有词法行，先核对旧 manifest，再在单个事务中更新行及 manifest；不生成 QA、不调用
 embedding、不改问句或源文档。缺失 manifest 或无原文表示时明确失败，不制造完整性记录。
-部署本次实现前需应用保留旧问句的 `0031_auto_qa_grounding`；readiness 按该版本检查。
+Auto-QA 原文支持字段由 `0031_auto_qa_grounding` 提供；当前部署 head 与 readiness 见 §7。
 
 
 删除先让数据库事实不可服务，再重试物理文件清理。Maintenance 只清理退休派生数据；不会
@@ -578,11 +585,14 @@ v4 起不再发布 `simple_tool_calls`。成功 Trace 另汇总 prompt/completio
 
 ## 10. Chat 与回答
 
-API 创建 ChatRun 时在短事务内冻结知识库/revision、三值检索 mode 对应 preset 的
+API 创建 ChatRun 时在短事务内冻结具体知识库集合及每库名称、描述、index revision、可用状态、
+Graph build，以及三值检索 mode 对应 preset 的
 version/strategy/`top_k`/`rerank_mode`（Auto 另含 router/augmentation 与 Graph Tool 参数）、
 原生 Agent token budget、
 不可变模型修订和最近已完成 Session turns，然后
 返回 `202`；模型调用由 Worker 执行。公开请求没有 workflow 模式。
+改变 Session 选择只影响下一轮；不可用库仍留在快照内。多库 Auto/Text 分别采用各库冻结的
+Top-K、rerank 与索引空间，手动 Graph 采用经校验的本次 Graph 参数；不直接比较跨库原始分数。
 
 回答行为是单一的 evidence-only 逐 claim salvage/拒答路径。无效的 `answer_style`、
 `insufficiency_policy` 及单值策略标签已从创建/更新请求、服务层和 Worker context 移除；
@@ -601,15 +611,16 @@ JSON，不作为当前执行配置，也不做旧枚举解析。旧客户端提�
 
 ```text
 load_context
-  -> active READY build capability read without any model call
+  -> bounded untrusted KB directory and per-KB capability read without a model call
   -> model chooses any combination of semantic_search / keyword_search /
        read_chunk_context / list_documents / search_graph_relations / calculate,
        with independent calls executed concurrently in the same round
-  -> server executes tools and returns stable refs from one merged evidence pool
+  -> resolve explicit KB or all_selected; bounded fan-out with per-KB evidence packs
+  -> return source-labelled groups with globally stable refs
   -> adaptive mode: Graph visible from the first round, uncapped per run
   -> model stops calling tools and writes a plain-text final with inline [ev_N]
   -> token fuse switches to a tool-free soft wrap-up round
-  -> two consecutive rounds without new evidence close retrieval
+  -> close retrieval only after every selected KB has stalled for two rounds
   -> three consecutive stalled rounds end the run with a resource error
   -> resolve inline refs, renumber display citations, infer outcome
   -> persist_result
@@ -627,8 +638,27 @@ ChatRun 内部旧 trace 保留有界工具事件和终态引用解析计数；�
 不保存重复的原始模型草稿，也不伪造旧 assessment/structure-validation 状态。
 `RenderedCitation` 只保存显示顺序与已准入 `PromptEvidence` 的引用，不再重复复制、校验整套证据元数据。
 原始检索 Evidence 与准入后的 PromptEvidence 仍分开：后者承载模型实际可用的视觉快照。
-数据库与公开 Citation 快照字段不变。成功终态 timing 记录实际 outcome、引用、检索、
+数据库与公开 Citation 新增 knowledge_base_id、名称及 index_revision_id 来源快照。
+持久化前逐条验证来源属于冻结集合，并核对 chunk 的真实 workspace/KB/revision/document/version。
+成功终态 timing 记录实际 outcome、引用、检索、
 视觉和 query-rewrite 事实，不写空 validation 占位。
+
+所有检索工具（`calculate` 除外）必填 `knowledge_base_id`：具体 UUID 或 `all_selected`。
+全范围严格展开本轮所选集合，每个 query 在每个目标库独立执行，整个 Run 共用并发上限 4。
+指定未选库、缺失或无效范围均拒绝；部分库失败保留其余结果，取消会取消并等待子任务结束。
+底层只支持 active revision，执行前后核对冻结 index/build；变更返回明确版本错误，不读取替代版本。
+Graph 全范围只组合各库局部图原文，不产生跨库图路径或实体映射。
+
+目录包含不可信名称、描述、能力及每库最多 5 个标题；初始目录条目预算 12,000 字符，超出时
+明确给出 `catalog_offset` 后续页。`list_documents` 的单库文档游标独立分页，目录不是引用证据。
+独立子问题可同轮并发，依赖新实体/版本的补查留到后续轮次；完整列举不能把 Top-K 当作全集。
+
+每库保留独立 `EvidencePack`，全局 ref 按真实 KB/revision/chunk 绑定来源。每轮各查询/库的完整
+chunk 或完整图路径组轮转准入，共享 96,000 字符展示预算；装不下的组明确报告省略数，
+不能把残缺路径显示成完整路径。图片与邻域读取按该 ref 的真实库授权，视觉预算仍在整个 Run 累计。
+局部无新增证据按库逐轮计数，不因一个库重复空查而剥夺其他库的首次查询机会。
+Trace 的有界 `scope_calls` 记录每个工具/query/库的状态及检索、合格、准入、展示、新内容和省略数；
+它是执行观测，不证明语义完整性，也没有增加另一个生成或核验流水线。
 
 回答边界保持：
 
@@ -674,12 +704,13 @@ semaphore/retry 窗口。Worker 启动时拒绝不大于该预算的 Chat Agent 
 每次 attempt 使用一个内存 `ChatActivityRecorder` 观察模型轮次、工具调用与实际系统操作。
 工具在并发派发前获得服务端 ordinal/step_id；各自进入执行、返回/合并和结束状态，合并后的
 EvidenceRef 与新证据数沿用原 Agent 的证据顺序。输入只在对应参数校验通过后记录；计算
-表达式还必须通过确定性求值。来源只包含文档/版本/chunk 身份、标题、位置及内部 ref，
-不含检索正文、模型正文、凭据或任意诊断对象。图谱记录路径与跳数，基础设施不可用显示失败。
+表达式还必须通过确定性求值。来源只包含库/索引/文档/版本/chunk 身份、标题、位置及内部 ref，
+不含检索正文、模型正文、凭据或任意诊断对象。每步可带分库查询、状态和计数；
+图谱按库记录路径与跳数，基础设施不可用显示失败。
 
 同一 recorder 产生易失 `agent.activity` 事件与终态快照。`chat_activity_v1` 使用独立版本，
 `run_id + attempt + step_id + seq` 标识更新；序号在进入有界队列前分配，前端可识别丢失。
-PG NOTIFY 预览最多 4000 UTF-8 字节，超限缩短输入/来源并标记 `details_truncated`，不阻塞
+PG NOTIFY 预览最多 4000 UTF-8 字节，超限缩短输入/来源/分库详情并标记 `details_truncated`，不阻塞
 回答。每个终态快照最多 1024 步、1 MiB：先裁剪较早详情，再移除较早步骤，显式记录省略数。
 成功快照进入既有 `agent_trace.activity`，失败、超时与协作式 Worker 停止的部分快照进入
 原 attempt timing ledger；重新尝试不覆盖此前记录，无新表或迁移。强杀进程不能保留内存
@@ -705,7 +736,9 @@ activity。无效/未知记录通过 `activity_unavailable` 提示，不影响�
 - retrieval query、Graph 配置 `GET/PUT /knowledge-bases/{kb_id}/graph-config` 和授权
   `GET /index-assets/{asset_id}/content`；Graph 查询仍是明确的外层 `graph` 模式，路径仍只返回
   当前 serving 的原始 Chunk Evidence；Chat creation 另支持 Chat-only `auto` 模式；
-- chat sessions、messages、runs 和 events；SSE 逐调用事件为 `agent.activity`，兼容阶段快照 `agent.progress`。
+- chat sessions、messages、runs 和 events；创建 Session/Run 接受 `knowledge_base_ids`，
+  旧单库输入在入口归一化，`PATCH /chat/sessions/{id}/scope` 更新下一轮选择。Run 返回独立
+  `knowledge_bases` 冻结范围；SSE 逐调用事件为 `agent.activity`，兼容阶段快照 `agent.progress`。
 
 上传、状态、分页、幂等和错误的精确契约以 OpenAPI、schema 和路由测试为准。未实现能力不
 添加占位成功路由。索引任务状态对当前 PDF 额外公开 content-safe 的阶段、页段、OCR、表格、
@@ -713,12 +746,14 @@ activity。无效/未知记录通过 `activity_unavailable` 提示，不影响�
 会重叠的阶段耗时相加成虚假的精确百分比。
 
 `apps/web-chat` 是本地唯一前端，提供知识库创建/删除、文档批量导入/更新/删除、索引进度、
-chunk 预览/排除、检索 debug，以及知识库/Session 选择、统一 Native Agent 提问、
-终态回答、逐调用时间线和证据抽屉。时间线按真实模型轮次展示并行工具、输入、来源、
+chunk 预览/排除、检索 debug，以及库描述编辑、知识库/Session 选择、统一 Native Agent 提问、
+终态回答、逐调用时间线和证据抽屉。输入区支持范围多选、跨列表分页的全选和清空；全选保存
+当时具体 ID，空选择不提交请求。切换会话恢复选择，当前 Run 保留自己的冻结范围。
+时间线按真实模型轮次展示并行工具、输入、来源、
 结果与耗时；运行中默认展开并跟随最新步骤，历史默认折叠，用户向上阅读时暂停跟随。
 重复调用与不同 attempt 保留独立记录。旧 trace 只投影实际已存事件，缺少输入/轮次/耗时
 直接说明，不能编造固定阶段或独立核验过程。最终引用仍使用 Citation 抽屉，普通检索片段
-通过既有文档/chunk 接口读取，先检查知识库、文档版本和 index revision，不用新版本替代
+通过既有文档/chunk 接口读取，按各来源所属库的 Run 快照检查知识库、文档版本和 index revision，不用新版本替代
 历史来源；文本以纯文本渲染。管理页复用 Chat 既有视觉 token 与侧栏，不形成第二套 UI。
 它只调用公开 API；诊断功能不等于生产管理控制面。Chat 与管理页的异步读写使用 generation、
 作用域身份和请求序号守卫，旧 KB/session/document 的 success、error、finally 回调不得覆盖当前视图。

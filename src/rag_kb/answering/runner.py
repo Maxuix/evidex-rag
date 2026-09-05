@@ -106,9 +106,9 @@ class NativeAgentRunner:
                     ChatProgressStage.PERSIST_RESULT,
                     ChatProgressActivity.PERSIST_RESULT,
                     facts=ChatProgressFacts(
-                        evidence_count=len(state.evidence_pack.evidence)
-                        if state.evidence_pack is not None
-                        else 0,
+                        evidence_count=sum(len(pack.evidence) for pack in state.evidence_packs)
+                        if state.evidence_packs else len(state.evidence_pack.evidence)
+                        if state.evidence_pack is not None else 0,
                         retrieval_calls=getattr(trace, "retrieval_calls", None),
                     ),
                     completed=(

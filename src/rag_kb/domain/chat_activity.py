@@ -35,6 +35,10 @@ def _text(value: object, maximum: int) -> None:
 
 
 def _shape(value: object, cls: type) -> dict[str, Any]:
+    if isinstance(value, dict) and cls is ActivityStep:
+        value = {"scope_results": (), **value}
+    if isinstance(value, dict) and cls is ActivitySource:
+        value = {"knowledge_base_id": None, "knowledge_base_name": None, "index_revision_id": None, **value}
     if not isinstance(value, dict) or set(value) != {f.name for f in fields(cls)}:
         raise ValueError("invalid activity fields")
     return dict(value)
@@ -48,11 +52,20 @@ class ActivitySource:
     index_chunk_id: str | None = None
     ref: str | None = None
     location: str | None = None
+    knowledge_base_id: str | None = None
+    knowledge_base_name: str | None = None
+    index_revision_id: str | None = None
 
     def __post_init__(self) -> None:
         for value in (self.document_id, self.document_version_id):
             _text(value, 36)
             UUID(value)
+        for value in (self.knowledge_base_id, self.index_revision_id):
+            if value is not None:
+                _text(value, 36)
+                UUID(value)
+        if self.knowledge_base_name is not None:
+            _text(self.knowledge_base_name, 256)
         if self.index_chunk_id is not None:
             _text(self.index_chunk_id, 36)
             UUID(self.index_chunk_id)
@@ -61,6 +74,31 @@ class ActivitySource:
             raise ValueError("invalid activity evidence ref")
         if self.location is not None:
             _text(self.location, 256)
+
+
+@dataclass(frozen=True, slots=True)
+class ActivityScope:
+    knowledge_base_id: str
+    name: str
+    status: str
+    query: str | None = None
+    retrieved_count: int | None = None
+    admitted_count: int | None = None
+    displayed_count: int | None = None
+    omitted_count: int | None = None
+
+    def __post_init__(self) -> None:
+        _text(self.knowledge_base_id, 36)
+        UUID(self.knowledge_base_id)
+        _text(self.name, 255)
+        _text(self.status, 80)
+        if not re.fullmatch(r"[A-Za-z0-9_]+", self.status):
+            raise ValueError("invalid activity scope status")
+        if self.query is not None:
+            _text(self.query, 2048)
+        for value in (self.retrieved_count, self.admitted_count, self.displayed_count, self.omitted_count):
+            if value is not None:
+                _integer(value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +129,7 @@ class ActivityStep:
     result_value: str | None = None
     result_code: str | None = None
     sources: tuple[ActivitySource, ...] = ()
+    scope_results: tuple[ActivityScope, ...] = ()
     details_truncated: bool = False
 
     def __post_init__(self) -> None:
@@ -128,6 +167,8 @@ class ActivityStep:
             raise ValueError("invalid outline flag")
         if type(self.details_truncated) is not bool or not isinstance(self.sources, tuple) or len(self.sources) > 100:
             raise ValueError("invalid activity details")
+        if not isinstance(self.scope_results, tuple) or len(self.scope_results) > 100 or any(not isinstance(scope, ActivityScope) for scope in self.scope_results):
+            raise ValueError("invalid activity scopes")
         if any(not isinstance(source, ActivitySource) for source in self.sources):
             raise ValueError("invalid activity source")
 
@@ -140,6 +181,9 @@ class ActivityStep:
         for key in ("queries", "refs", "sources"):
             if not isinstance(data[key], (list, tuple)):
                 raise ValueError("invalid activity list")
+        if not isinstance(data["scope_results"], (list, tuple)):
+            raise ValueError("invalid activity scope list")
+        data["scope_results"] = tuple(ActivityScope(**_shape(scope, ActivityScope)) for scope in data["scope_results"])
         data["queries"] = tuple(data["queries"])
         data["refs"] = tuple(data["refs"])
         data["sources"] = tuple(ActivitySource(**_shape(source, ActivitySource)) for source in data["sources"])

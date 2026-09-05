@@ -28,7 +28,7 @@ from rag_kb.domain import (
     ChatSession,
 )
 from rag_kb.domain.chat_activity import ACTIVE_STATUSES, ChatActivityEvent, ChatActivitySnapshot
-from rag_kb.schemas.chat import ChatActivityEventResponse, ChatAgentTraceResponse, ChatAgentTraceEventResponse, ChatAgentTraceDiagnosticsResponse
+from rag_kb.schemas.chat import ChatScopeSelection, ChatActivityEventResponse, ChatAgentTraceResponse, ChatAgentTraceEventResponse, ChatAgentTraceDiagnosticsResponse
 from rag_kb.services.chat_delivery import ChatSseSubscription
 from rag_kb.schemas import (
     ChatAnswerCompletedEvent,
@@ -70,10 +70,16 @@ async def create_chat_session(
     payload: ChatSessionCreate,
 ) -> ChatSessionResponse:
     value = await request.app.state.dependencies.chat_service.create_session(
-        kb_id=payload.knowledge_base_id,
+        kb_ids=payload.knowledge_base_ids,
         title=payload.title,
     )
     response.headers["Location"] = f"/api/v1/chat/sessions/{value.id}/messages"
+    return _session_response(value)
+
+
+@router.patch("/sessions/{session_id}/scope", response_model=ChatSessionResponse)
+async def update_chat_scope(request: Request, session_id: UUID, payload: ChatScopeSelection) -> ChatSessionResponse:
+    value = await request.app.state.dependencies.chat_service.update_session_scope(session_id, payload.knowledge_base_ids)
     return _session_response(value)
 
 
@@ -139,7 +145,7 @@ async def create_chat_run(
     value = await request.app.state.dependencies.chat_service.create_run(
         idempotency_key,
         session_id=payload.session_id,
-        kb_id=payload.knowledge_base_id,
+        kb_ids=payload.knowledge_base_ids,
         message=payload.message,
         retrieval_mode=payload.retrieval.mode,
         top_k=payload.retrieval.top_k,
@@ -292,6 +298,7 @@ def _session_response(value: ChatSession) -> ChatSessionResponse:
     return ChatSessionResponse(
         id=value.id,
         knowledge_base_id=value.kb_id,
+        knowledge_base_ids=value.knowledge_base_ids,
         title=value.title,
         created_at=value.created_at,
         updated_at=value.updated_at,
@@ -317,6 +324,8 @@ def _run_response(value: ChatRun, *, live_progress_available: bool | None = None
         activities=activities, live_progress_available=live_progress_available,
         run_id=value.id,
         knowledge_base_id=value.kb_id,
+        knowledge_bases=tuple(item.as_dict() for item in value.knowledge_bases),
+        knowledge_base_ids=tuple(item.knowledge_base_id for item in value.knowledge_bases) or ((value.kb_id,) if value.kb_id else ()),
         session_id=value.session_id,
         user_message_id=value.user_message_id,
         assistant_message_id=value.assistant_message_id,
@@ -418,6 +427,9 @@ def _citation_responses(value: ChatRun) -> tuple[ChatCitationResponse, ...]:
     return tuple(
         ChatCitationResponse(
             ordinal=item.ordinal,
+            knowledge_base_id=item.knowledge_base_id,
+            knowledge_base_name=item.knowledge_base_name,
+            index_revision_id=item.index_revision_id,
             index_chunk_id=item.index_chunk_id,
             document_id=item.document_id,
             document_version_id=item.document_version_id,

@@ -49,7 +49,12 @@ const uuid = (value: unknown) => typeof value === "string" && /^[0-9a-f]{8}-[0-9
 function object(value: unknown): value is Record<string, unknown> { return !!value && typeof value === "object" && !Array.isArray(value); }
 function keys(value: Record<string, unknown>, expected: string[]) { return Object.keys(value).length === expected.length && expected.every(key => key in value); }
 function source(value: unknown): value is ActivitySource {
-  return object(value) && keys(value, ["document_id", "document_version_id", "title", "index_chunk_id", "ref", "location"])
+  if (!object(value)) return false;
+  const {knowledge_base_id, knowledge_base_name, index_revision_id, ...legacy} = value;
+  return (knowledge_base_id == null || uuid(knowledge_base_id))
+    && (index_revision_id == null || uuid(index_revision_id))
+    && (knowledge_base_name == null || text(knowledge_base_name, 256))
+    && keys(legacy, ["document_id", "document_version_id", "title", "index_chunk_id", "ref", "location"])
     && uuid(value.document_id) && uuid(value.document_version_id) && text(value.title, 512)
     && (value.index_chunk_id === null || uuid(value.index_chunk_id))
     && (value.ref === null || (typeof value.ref === "string" && /^ev_[1-9][0-9]*$/.test(value.ref)))
@@ -62,7 +67,10 @@ const names: Record<string, ReadonlySet<string>> = {
 };
 const counts = ["round", "started_offset_ms", "ended_offset_ms", "top_k", "returned_count", "new_evidence_count", "document_count", "citation_count", "image_count", "path_count", "hop1_count", "hop2_count", "hop3_count"];
 export function parseActivityStep(value: unknown): ActivityStep | null {
-  if (!object(value) || !keys(value, ["step_id", "ordinal", "seq", "kind", "name", "status", ...counts, "queries", "refs", "expression", "include_outline", "result_value", "result_code", "sources", "details_truncated"])) return null;
+  if (!object(value)) return null;
+  const {scope_results, ...legacy} = value;
+  if (scope_results !== undefined && (!Array.isArray(scope_results) || scope_results.length > 100 || !scope_results.every(scope => object(scope) && keys(scope, ["knowledge_base_id", "name", "status", "query", "retrieved_count", "admitted_count", "displayed_count", "omitted_count"]) && uuid(scope.knowledge_base_id) && text(scope.name, 255) && text(scope.status, 80) && /^[A-Za-z0-9_]+$/.test(scope.status) && nullableText(scope.query, 2048) && [scope.retrieved_count, scope.admitted_count, scope.displayed_count, scope.omitted_count].every(count => count === null || number(count, 0))))) return null;
+  if (!keys(legacy, ["step_id", "ordinal", "seq", "kind", "name", "status", ...counts, "queries", "refs", "expression", "include_outline", "result_value", "result_code", "sources", "details_truncated"])) return null;
   if (!number(value.ordinal, 1) || value.step_id !== `step_${value.ordinal}` || !number(value.seq, 1)
     || typeof value.kind !== "string" || typeof value.name !== "string" || !names[value.kind]?.has(value.name)
     || !["pending", "running", "processing", "succeeded", "failed", "rejected", "cancelled"].includes(String(value.status))) return null;

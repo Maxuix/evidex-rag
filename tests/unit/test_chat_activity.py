@@ -11,7 +11,7 @@ from rag_kb.answering.activity import ChatActivityRecorder
 from rag_kb.answering.agent import ChatAgentProgress
 from rag_kb.answering.runner import NativeAgentRunner
 from rag_kb.domain import ChatExecutionCommand, ChatPipelineExecutionError, ChatPipelinePhase, ChatToolCall, ErrorCode
-from rag_kb.domain.chat_activity import CHAT_ACTIVITY_ARTIFACT, MAX_ACTIVITY_BYTES, ActivitySource, ChatActivitySnapshot
+from rag_kb.domain.chat_activity import CHAT_ACTIVITY_ARTIFACT, MAX_ACTIVITY_BYTES, ActivitySource, ActivityScope, ChatActivitySnapshot
 from tests.unit.test_native_tool_calling_agent import _Model, _Retriever, _agent, _context, _pack
 from tests.unit.test_chat_terminal import _ContextLoader, _Persister, _Reporter
 
@@ -23,7 +23,8 @@ class ActivityTests(unittest.TestCase):
         queries = tuple(('中文查询' * 500) + str(i) for i in range(3))
         key = recorder.begin('tool', 'semantic_search', queries=queries)
         sources = tuple(ActivitySource(str(uuid4()), str(uuid4()), '来源标题' * 120) for _ in range(100))
-        recorder.update(key, 'succeeded', sources=sources, returned_count=100)
+        scopes = tuple(ActivityScope(str(uuid4()), '知识库'*80, 'ok', query='查询'*1000, retrieved_count=10, admitted_count=5, displayed_count=5, omitted_count=0) for _ in range(100))
+        recorder.update(key, 'succeeded', sources=sources, scope_results=scopes, returned_count=100)
         wire = serialize_preview_event(events[-1])
         self.assertLessEqual(len(wire.encode()), MAX_NOTIFY_PAYLOAD_BYTES)
         parsed = parse_preview_payload(wire)
@@ -31,6 +32,7 @@ class ActivityTests(unittest.TestCase):
         self.assertEqual(parsed.step.returned_count, 100)
         snapshot = recorder.snapshot('completed')
         self.assertEqual(snapshot.steps[0].queries, queries)
+        self.assertEqual(snapshot.steps[0].scope_results, scopes)
         self.assertEqual(ChatActivitySnapshot.from_dict(json.loads(json.dumps(snapshot.as_dict()))), snapshot)
         bad = json.loads(wire)
         bad['step']['reasoning'] = 'must not be accepted'

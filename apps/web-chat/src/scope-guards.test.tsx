@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -303,5 +303,29 @@ describe("component request scopes", () => {
 
     await waitFor(() => expect(screen.getByText(/Embedding 服务不可用/)).toBeTruthy());
     expect(screen.getByRole("button", { name: "重试索引" })).toBeTruthy();
+  });
+});
+
+
+describe("saved multi-library selection", () => {
+  it("restores concrete IDs, selects all pages, and keeps empty selection local", async () => {
+    const a=knowledgeBase("kb-a","知识库 A"), b=knowledgeBase("kb-b","知识库 B");
+    const saved={...session(a.id,"multi-session","多库会话"),knowledge_base_id:null,knowledge_base_ids:[a.id]};
+    const updateChatScope=vi.fn(async (_id:string,ids:string[]) => ({...saved,knowledge_base_ids:ids}));
+    const createChatRun=vi.fn();
+    const listKnowledgeBases=vi.fn(async (cursor?:string) => cursor ? {items:[b],next_cursor:null} : {items:[a],next_cursor:"second-page"});
+    const api={getModelSettings:vi.fn().mockResolvedValue(modelSettings()),listKnowledgeBases,getGraphConfig:vi.fn().mockResolvedValue(null),getGraphSchemaProfiles:vi.fn().mockResolvedValue([]),listChatSessions:vi.fn().mockResolvedValue({items:[saved],next_cursor:null}),listChatMessages:vi.fn().mockResolvedValue({items:[],next_cursor:null}),updateChatScope,createChatRun} as unknown as ApiClient;
+    render(<KnowledgeChat client={api} />);
+    await screen.findByRole("button",{name:"多库会话"});
+    const scope=screen.getByRole("group",{name:"搜索范围"});
+    const summary=scope.querySelector("summary")!;await userEvent.click(summary);
+    await userEvent.click(within(scope).getByRole("button",{name:"全选"}));
+    await waitFor(()=>expect(updateChatScope).toHaveBeenCalledWith("multi-session",["kb-a","kb-b"]));
+    expect(listKnowledgeBases).toHaveBeenCalledWith("second-page");
+    expect((within(scope).getByRole("checkbox",{name:"知识库 B"}) as HTMLInputElement).checked).toBe(true);
+    await userEvent.click(within(scope).getByRole("button",{name:"清空"}));
+    expect(screen.getByText("请至少选择一个知识库后发送。")).toBeTruthy();
+    expect(updateChatScope).toHaveBeenCalledTimes(1);
+    expect(createChatRun).not.toHaveBeenCalled();
   });
 });

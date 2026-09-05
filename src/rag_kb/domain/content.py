@@ -90,6 +90,7 @@ class KnowledgeBase:
     parser_config: dict[str, Any] = field(default_factory=dict)
     embedding: KnowledgeBaseEmbeddingSummary | None = None
     deleted_at: datetime | None = None
+    description: str = ""
     auto_qa: KnowledgeBaseAutoQASummary = field(default_factory=KnowledgeBaseAutoQASummary)
 
 

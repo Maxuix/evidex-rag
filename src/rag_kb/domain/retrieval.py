@@ -51,6 +51,7 @@ SERVING_DOCUMENT_OUTLINE_LIMIT = 8
 class ServingScopeQuery:
     workspace_id: UUID
     knowledge_base_id: UUID
+    after_document_id: UUID | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +98,7 @@ class ServingDocumentList:
     resolved_active_revision_id: UUID
     entries: tuple[ServingDocumentEntry, ...] = ()
     truncated: bool = False
+    next_document_id: UUID | None = None
 
     def __post_init__(self) -> None:
         if len(self.entries) > SERVING_DOCUMENT_LIST_LIMIT:

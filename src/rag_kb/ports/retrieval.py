@@ -25,6 +25,8 @@ from rag_kb.domain import (
 
 
 class VectorStore(Protocol):
+    async def active_revision(self, query: ServingScopeQuery) -> UUID | None: ...
+
     async def source_neighbors(
         self,
         plan: RetrievalQueryPlan,

@@ -122,6 +122,10 @@ export function KnowledgeChat({
   const [selectedKnowledgeBaseId, setSelectedKnowledgeBaseId] = useState(
     () => readKnowledgeBaseId() || "",
   );
+  const [selectedScopeIds, setSelectedScopeIds] = useState<string[]>(() => readKnowledgeBaseId() ? [readKnowledgeBaseId()!] : []);
+  const [scopeSaving, setScopeSaving] = useState(false);
+  const selectedScopeIdsRef = useRef(selectedScopeIds);
+  selectedScopeIdsRef.current = selectedScopeIds;
   const [knowledgeBasesLoading, setKnowledgeBasesLoading] = useState(true);
   const [knowledgeBasesError, setKnowledgeBasesError] = useState<string | null>(null);
 
@@ -140,6 +144,7 @@ export function KnowledgeChat({
   const [retrievalMode, setRetrievalMode] = useState<"text" | "auto" | "graph">("auto");
   const [rerankMode, setRerankMode] = useState<RerankMode>("classic");
   const [graphConfig, setGraphConfig] = useState<GraphConfig | null>(null);
+  const [scopeGraphReady, setScopeGraphReady] = useState<Record<string, boolean>>({});
   const [graphConfigLoading, setGraphConfigLoading] = useState(false);
   const [graphConfigError, setGraphConfigError] = useState<string | null>(null);
   const [graphSchemaProfiles, setGraphSchemaProfiles] = useState<GraphSchemaProfile[]>([]);
@@ -194,9 +199,8 @@ export function KnowledgeChat({
     && currentRun.session_id === selectedSessionId
     && !isTerminal(currentRun),
   ) || messages.some((item) => item.assistant_status === "generating");
-  const graphReady = Boolean(
-    graphConfig?.enabled && graphConfig.status === "ready",
-  );
+  const graphReady = selectedScopeIds.some(id => id === selectedKnowledgeBaseId
+    ? Boolean(graphConfig?.enabled && graphConfig.status === "ready") : scopeGraphReady[id]);
   const graphTopK = Math.min(
     20,
     Math.max(4, selectedKnowledgeBase?.retrieval_defaults.top_k ?? 4),
@@ -290,6 +294,8 @@ export function KnowledgeChat({
           ? stored
           : page.items[0]?.id ?? null;
         setSelectedSessionId(next);
+        const restored = page.items.find(item => item.id === next);
+        if (restored) setSelectedScopeIds(restored.knowledge_base_ids ?? (restored.knowledge_base_id ? [restored.knowledge_base_id] : []));
       }
     } catch (error) {
       if (isCurrent()) setSessionsError(errorMessage(error));
@@ -404,6 +410,7 @@ export function KnowledgeChat({
   }, [loadKnowledgeBases]);
 
   useEffect(() => {
+    setSelectedScopeIds(selectedKnowledgeBaseId ? [selectedKnowledgeBaseId] : []);
     ++graphConfigGeneration.current;
     setGraphConfig(null);
     setGraphConfigError(null);
@@ -447,6 +454,16 @@ export function KnowledgeChat({
       void loadSessions(selectedKnowledgeBaseId);
     }
   }, [loadSessions, selectedKnowledgeBaseId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const identifiers = selectedScopeIds.filter(id => id !== selectedKnowledgeBaseId);
+    void Promise.all(identifiers.map(async id => {
+      try { const config = await client.getGraphConfig(id); return [id, Boolean(config?.enabled && config.status === "ready")] as const; }
+      catch { return [id, false] as const; }
+    })).then(entries => { if (!cancelled) setScopeGraphReady(Object.fromEntries(entries)); });
+    return () => { cancelled = true; };
+  }, [client, selectedKnowledgeBaseId, selectedScopeIds]);
 
   useEffect(() => {
     if (!graphReady && retrievalMode === "graph") setRetrievalMode("auto");
@@ -509,7 +526,7 @@ export function KnowledgeChat({
             sessionId: selectedSessionIdRef.current,
           })
           && run.session_id === selectedSessionId
-          && run.knowledge_base_id === selectedKnowledgeBaseId
+          && runScopeKey(run) === scopeKey(selectedScopeIdsRef.current)
         ) setCurrentRun(run);
       })
       .catch((error) => {
@@ -548,7 +565,6 @@ export function KnowledgeChat({
         if (
           result.status === "fulfilled"
           && result.value.session_id === selectedSessionId
-          && result.value.knowledge_base_id === selectedKnowledgeBaseId
         ) {
           loaded[result.value.run_id] = result.value;
         }
@@ -581,7 +597,7 @@ export function KnowledgeChat({
     }
     const token: ChatViewScope = {
       generation: chatGeneration.current,
-      knowledgeBaseId: currentRun.knowledge_base_id,
+      knowledgeBaseId: selectedKnowledgeBaseIdRef.current,
       sessionId: currentRun.session_id,
     };
     const isCurrent = () => isChatViewScopeCurrent(token, {
@@ -607,7 +623,7 @@ export function KnowledgeChat({
     let polling = false;
     const alive = () => !cancelled && !finished && isCurrent();
     const accept = (next: ChatRun) => {
-      if (!alive() || next.run_id !== currentRun.run_id || next.knowledge_base_id !== token.knowledgeBaseId || next.session_id !== token.sessionId) return false;
+      if (!alive() || next.run_id !== currentRun.run_id || runScopeKey(next) !== runScopeKey(currentRun) || next.session_id !== token.sessionId) return false;
       if (isTerminal(next)) {
         finished = true;
         closeStream?.(); closeStream = null;
@@ -705,9 +721,65 @@ export function KnowledgeChat({
     window.setTimeout(() => textareaRef.current?.focus(), 0);
   };
 
+  const changeScope = async (ids: string[]) => {
+    if (scopeSaving || submitting || pendingRun) return;
+    const previous = selectedScopeIds;
+    const selected = [...new Set(ids)].sort();
+    const sessionId = selectedSessionId;
+    setSelectedScopeIds(selected);
+    selectedScopeIdsRef.current = selected;
+    setSubmissionError(null);
+    // Empty selection is a local draft; no retrieval request can be submitted.
+    if (!sessionId || !selected.length) return;
+    setScopeSaving(true);
+    try {
+      const updated = await client.updateChatScope(sessionId, selected);
+      if (selectedSessionIdRef.current === sessionId) setSessions(current => mergeById(current, [updated]));
+    } catch (error) {
+      if (selectedSessionIdRef.current === sessionId) {
+        setSelectedScopeIds(previous);
+        setSubmissionError(errorMessage(error));
+      }
+    } finally { setScopeSaving(false); }
+  };
+
+  const selectAllScopes = async () => {
+    if (scopeSaving || submitting || pendingRun) return;
+    const generation = chatGeneration.current;
+    const sessionId = selectedSessionIdRef.current;
+    setScopeSaving(true);
+    try {
+      const all: KnowledgeBase[] = [];
+      let cursor: string | undefined;
+      const seen = new Set<string>();
+      do {
+        const page = await client.listKnowledgeBases(cursor);
+        if (generation !== chatGeneration.current || sessionId !== selectedSessionIdRef.current) return;
+        all.push(...page.items);
+        cursor = page.next_cursor ?? undefined;
+        if (cursor && seen.has(cursor)) throw new Error("知识库分页未能完成，请稍后重试。");
+        if (cursor) seen.add(cursor);
+      } while (cursor);
+      const ids = [...new Set(all.map(kb => kb.id))].sort();
+      if (sessionId && ids.length) {
+        const updated = await client.updateChatScope(sessionId, ids);
+        if (generation !== chatGeneration.current || sessionId !== selectedSessionIdRef.current) return;
+        setSessions(current => mergeById(current, [updated]));
+      }
+      setKnowledgeBases(all);
+      setKnowledgeBaseCursor(null);
+      setSelectedScopeIds(ids);
+      selectedScopeIdsRef.current = ids;
+    } catch (error) {
+      if (generation === chatGeneration.current) setSubmissionError(errorMessage(error));
+    } finally { setScopeSaving(false); }
+  };
+
   const submit = async () => {
     if (
       !selectedKnowledgeBase
+      || !selectedScopeIds.length
+      || scopeSaving
       || !draft.trim()
       || submitting
       || sessionBusy
@@ -715,13 +787,14 @@ export function KnowledgeChat({
     ) return;
     const question = draft.trim();
     const submissionKnowledgeBaseId = selectedKnowledgeBase.id;
+    const submittedScope = [...selectedScopeIds];
     setSubmitting(true);
     setSubmissionError(null);
     let sessionId = selectedSessionId;
     try {
       if (!sessionId) {
         const created = await client.createChatSession(
-          selectedKnowledgeBase.id,
+          submittedScope,
           questionTitle(question),
         );
         if (selectedKnowledgeBaseIdRef.current !== submissionKnowledgeBaseId) return;
@@ -735,7 +808,7 @@ export function KnowledgeChat({
         idempotencyKey: crypto.randomUUID(),
         payload: {
           session_id: sessionId,
-          knowledge_base_id: selectedKnowledgeBase.id,
+          knowledge_base_ids: submittedScope,
           message: question,
           retrieval: {
             mode: retrievalMode,
@@ -761,10 +834,10 @@ export function KnowledgeChat({
   };
 
   const performRun = async (pending: PendingRun) => {
-    const submissionKnowledgeBaseId = pending.payload.knowledge_base_id;
+    const submissionScopeKey = scopeKey(pending.payload.knowledge_base_ids ?? (pending.payload.knowledge_base_id ? [pending.payload.knowledge_base_id] : []));
     const submissionSessionId = pending.payload.session_id;
     const isCurrent = () => (
-      selectedKnowledgeBaseIdRef.current === submissionKnowledgeBaseId
+      scopeKey(selectedScopeIdsRef.current) === submissionScopeKey
       && selectedSessionIdRef.current === submissionSessionId
     );
     setSubmitting(true);
@@ -774,7 +847,7 @@ export function KnowledgeChat({
         pending.payload,
         pending.idempotencyKey,
       );
-      if (!isCurrent()) return;
+      if (!isCurrent() || runScopeKey(run) !== submissionScopeKey || run.session_id !== submissionSessionId) return;
       setCurrentRun(run);
       setRunCache((current) => ({ ...current, [run.run_id]: run }));
       setDraft("");
@@ -849,8 +922,8 @@ export function KnowledgeChat({
     setEvidenceLoading(true);
     try {
       const run = await client.getChatRun(runId);
-      if (!isCurrent() || run.knowledge_base_id !== selectedKnowledgeBaseIdRef.current) {
-        throw new ApiClientError("来源不属于当前知识库。");
+      if (!isCurrent() || run.session_id !== selectedSessionIdRef.current) {
+        throw new ApiClientError("来源不属于当前会话。");
       }
       setRunCache((current) => ({ ...current, [runId]: run }));
       setEvidence({ run, runId, ordinal });
@@ -995,6 +1068,7 @@ export function KnowledgeChat({
                   title={sessionTitle(session)}
                   onClick={() => {
                     if (submitting || pendingRun) return;
+                    setSelectedScopeIds(session.knowledge_base_ids ?? (session.knowledge_base_id ? [session.knowledge_base_id] : []));
                     setSelectedSessionId(session.id);
                     setMobileSidebarOpen(false);
                   }}
@@ -1071,7 +1145,7 @@ export function KnowledgeChat({
           </button>
           <div className="chat-heading">
             <h1>{title}</h1>
-            <p>{selectedKnowledgeBase?.name || "请选择知识库"}</p>
+            <p>{selectedScopeIds.length > 1 ? `搜索范围：${selectedScopeIds.length} 个知识库` : selectedScopeIds.length === 1 ? knowledgeBases.find(kb => kb.id === selectedScopeIds[0])?.name ?? "已选择 1 个知识库" : "请选择知识库"}</p>
           </div>
           {deliveryMode !== "idle" ? (
             <span className="delivery-status">
@@ -1166,17 +1240,34 @@ export function KnowledgeChat({
             </div>
           ) : null}
           <div className="composer">
+            <fieldset className="search-scope" disabled={scopeSaving || submitting || Boolean(pendingRun)}>
+              <legend>搜索范围{scopeSaving ? " · 保存中" : ""}</legend>
+              <details>
+                <summary>{selectedScopeIds.length ? selectedScopeIds.map(id => knowledgeBases.find(kb => kb.id === id)?.name ?? id).join("、") : "请选择知识库"}</summary>
+                <div className="scope-options">
+                  <button type="button" onClick={() => void selectAllScopes()}>全选</button>
+                  <button type="button" onClick={() => void changeScope([])}>清空</button>
+                  {knowledgeBases.map(kb => <label key={kb.id} title={kb.description || kb.name}>
+                    <input type="checkbox" checked={selectedScopeIds.includes(kb.id)} onChange={event => void changeScope(event.target.checked ? [...selectedScopeIds, kb.id] : selectedScopeIds.filter(id => id !== kb.id))} />
+                    {kb.name}
+                  </label>)}
+                  {knowledgeBaseCursor ? <button type="button" onClick={() => void loadKnowledgeBases(knowledgeBaseCursor)}>加载更多知识库</button> : null}
+                </div>
+              </details>
+              {!selectedScopeIds.length ? <small>请至少选择一个知识库后发送。</small> : null}
+              {currentRun && !isTerminal(currentRun) ? <small>本轮范围：{currentRun.knowledge_bases?.map(kb => kb.name).join("、") || runScopeKey(currentRun)}。选择变更用于下一轮。</small> : null}
+            </fieldset>
             <textarea
               ref={textareaRef}
               value={draft}
               rows={1}
               maxLength={32768}
-              disabled={!selectedKnowledgeBase || !chatModelConfigured || submitting || sessionBusy}
+              disabled={!selectedKnowledgeBase || !selectedScopeIds.length || scopeSaving || !chatModelConfigured || submitting || sessionBusy}
               placeholder={
                 !chatModelConfigured
                   ? "请先在右下角齿轮中选择对话模型"
                   : selectedKnowledgeBase
-                  ? "询问这个知识库中的内容…"
+                  ? "询问所选知识库中的内容…"
                   : "请先选择知识库"
               }
               aria-label="输入问题"
@@ -1240,7 +1331,7 @@ export function KnowledgeChat({
                       value: "graph",
                       label: "图谱优先模式",
                       description: graphReady
-                        ? "强制图路径优先打包，再用混合文档证据回填。"
+                        ? "逐库优先检索局部图谱，未就绪的库会标明不可用。"
                         : graphConfigLoading
                           ? "正在读取当前知识库的图谱状态。"
                           : graphConfigError
@@ -1249,7 +1340,7 @@ export function KnowledgeChat({
                               ? "图谱正在构建完成前不可用。"
                               : graphConfig?.status === "failed"
                                 ? "图谱构建失败，请先修复或重试。"
-                                : "当前知识库尚未启用或完成图谱构建。",
+                                : "所选知识库尚未启用或完成图谱构建。",
                       disabled: !graphReady,
                     },
                   ]}
@@ -1312,7 +1403,7 @@ export function KnowledgeChat({
             </div>
           </div>
           <p className="composer-disclaimer">
-            回答仅基于当前知识库内容，请核对重要信息。
+            回答依据本轮所选知识库，请核对重要信息。
           </p>
         </div>
       </main>}
@@ -1647,3 +1738,6 @@ function disconnectProgress(
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "操作未能完成，请稍后重试。";
 }
+
+function scopeKey(ids: readonly string[]): string { return [...new Set(ids)].sort().join(","); }
+function runScopeKey(run: ChatRun): string { return scopeKey(run.knowledge_base_ids ?? run.knowledge_bases?.map(kb => kb.knowledge_base_id) ?? (run.knowledge_base_id ? [run.knowledge_base_id] : [])); }

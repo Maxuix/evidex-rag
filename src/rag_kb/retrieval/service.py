@@ -341,14 +341,27 @@ class RetrievalService:
             )
         )
 
+    async def validate_chat_scope(self, knowledge_base_id: UUID, index_revision_id: UUID, *, graph_build_id: UUID | None = None, check_graph: bool = False) -> None:
+        active = await self._vector_store.active_revision(ServingScopeQuery(workspace_id=self._workspace_id, knowledge_base_id=knowledge_base_id))
+        if active != index_revision_id:
+            raise RetrievalExecutionError(ErrorCode.CHAT_REVISION_MISMATCH, diagnostic={"check": "frozen_revision"})
+        if check_graph:
+            if graph_build_id is None:
+                raise RetrievalExecutionError(ErrorCode.GRAPH_NOT_READY, diagnostic={"check": "frozen_graph_unavailable"})
+            build = await self._graph_store.get_active_graphiti_build(self._workspace_id, knowledge_base_id) if self._graph_store is not None else None
+            if graph_build_id is None or build is None or build.build_id != graph_build_id or build.index_revision_id != index_revision_id:
+                raise RetrievalExecutionError(ErrorCode.CHAT_REVISION_MISMATCH, diagnostic={"check": "frozen_graph_build"})
+
     async def list_serving_documents(
         self,
         knowledge_base_id: UUID,
+        *, after_document_id: UUID | None = None,
     ) -> ServingDocumentList | None:
         return await self._vector_store.list_serving_documents(
             ServingScopeQuery(
                 workspace_id=self._workspace_id,
                 knowledge_base_id=knowledge_base_id,
+                after_document_id=after_document_id,
             )
         )
 

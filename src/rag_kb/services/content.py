@@ -220,6 +220,7 @@ class KnowledgeBaseService:
         idempotency_key: UUID,
         *,
         name: str,
+        description: str = "",
         parsing_preset: ParsingPreset | str = ParsingPreset.TEXT_LOCAL_V1,
         chunking_preset: ChunkingPreset | str = ChunkingPreset.STRUCTURAL_BALANCED_V2,
         retrieval_defaults: dict[str, Any],
@@ -245,6 +246,7 @@ class KnowledgeBaseService:
         request_hash = canonical_request_hash(
             {
                 "name": name,
+                "description": description,
                 "parsing": {"preset": resolved_parsing.value},
                 "chunking": {"preset": resolved_preset.value},
                 "retrieval_defaults": retrieval_defaults,
@@ -336,6 +338,7 @@ class KnowledgeBaseService:
                 auto_qa_model_revision_id = auto_qa_bundle.current_revision.id
             created = await uow.knowledge_bases.create(
                 name=name,
+                description=description,
                 retrieval_defaults=retrieval_defaults,
                 embedding_space=embedding_space,
                 cross_modal_embedding_space=cross_modal_embedding_space,
@@ -381,6 +384,7 @@ class KnowledgeBaseService:
         kb_id: UUID,
         *,
         name: str | None,
+        description: str | None = None,
         retrieval_defaults: dict[str, Any] | None,
     ) -> KnowledgeBase:
         scope = IdempotencyScope(
@@ -391,6 +395,7 @@ class KnowledgeBaseService:
             {
                 "kb_id": str(kb_id),
                 "name": name,
+                "description": description,
                 "retrieval_defaults": retrieval_defaults,
             }
         )
@@ -408,6 +413,7 @@ class KnowledgeBaseService:
             updated = await uow.knowledge_bases.update(
                 kb_id,
                 name=name,
+                description=description,
                 retrieval_defaults=retrieval_defaults,
             )
             if updated is None:

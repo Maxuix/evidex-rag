@@ -494,6 +494,7 @@ export function KnowledgeBaseManagementPage({
 
               {actionError ? <InlineError message={actionError} /> : null}
 
+              <KnowledgeBaseDescription key={knowledgeBase.id} knowledgeBase={knowledgeBase} client={client} onSaved={onKnowledgeBaseCreated} />
               <GraphSettingsPanel
                 knowledgeBase={knowledgeBase}
                 modelSettings={modelSettings}
@@ -2003,4 +2004,20 @@ function formatDate(value: string): string {
     hour: "2-digit",
     minute: "2-digit",
   }).format(new Date(value));
+}
+
+function KnowledgeBaseDescription({ knowledgeBase, client, onSaved }: { knowledgeBase: KnowledgeBase; client: ApiClient; onSaved: (kb: KnowledgeBase) => void }) {
+  const [description, setDescription] = useState(knowledgeBase.description ?? "");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  return <section className="management-panel">
+    <label>知识库描述<textarea value={description} maxLength={2000} disabled={saving} onChange={event => setDescription(event.target.value)} placeholder="说明这个知识库收录的主题、项目或资料范围，帮助检索时选择来源。" /></label>
+    <button type="button" disabled={saving || description === (knowledgeBase.description ?? "")} onClick={async () => {
+      setSaving(true); setError(null);
+      try { onSaved(await client.updateKnowledgeBaseDescription(knowledgeBase.id, description)); }
+      catch (error) { setError(managementError(error)); }
+      finally { setSaving(false); }
+    }}>{saving ? "保存中…" : "保存描述"}</button>
+    {error ? <InlineError message={error} /> : null}
+  </section>;
 }

@@ -35,6 +35,8 @@ def build_evidence_envelope(pack: EvidencePack) -> EvidenceEnvelope:
         items=tuple(
             PromptEvidence(
                 citation_id=f"cite_{item.rank}",
+                knowledge_base_id=pack.knowledge_base_id,
+                index_revision_id=pack.index_revision_id,
                 rank=item.rank,
                 index_chunk_id=item.index_chunk_id,
                 document_id=item.document_id,

@@ -879,6 +879,7 @@ class CommonContractTests(unittest.TestCase):
                 "/api/v1/retrieval/query",
                 "/api/v1/chat/sessions",
                 "/api/v1/chat/sessions/{session_id}/messages",
+                "/api/v1/chat/sessions/{session_id}/scope",
                 "/api/v1/chat/runs",
                 "/api/v1/chat/runs/{run_id}",
                 "/api/v1/chat/runs/{run_id}/events",
@@ -1244,6 +1245,7 @@ class _FakeKnowledgeBaseService:
         retrieval_defaults,
         embedding_selection=None,
         auto_qa=None,
+        description="",
     ):
         del key, embedding_selection, auto_qa
         from rag_kb.document_processing.profiles import profile_for_preset
@@ -1251,6 +1253,7 @@ class _FakeKnowledgeBaseService:
         self.value = dataclass_replace(
             self.value,
             name=name,
+            description=description,
             parser_config=profile_for_preset(
                 chunking_preset, parsing_preset
             ).parser_config,
@@ -1279,6 +1282,7 @@ class _FakeKnowledgeBaseService:
         *,
         name,
         retrieval_defaults,
+        description=None,
     ):
 
         if key == UUID("00000000-0000-0000-0000-000000000099"):
@@ -1288,6 +1292,7 @@ class _FakeKnowledgeBaseService:
         self.value = dataclass_replace(
             self.value,
             name=name or self.value.name,
+            description=self.value.description if description is None else description,
             retrieval_defaults=retrieval_defaults or self.value.retrieval_defaults,
         )
         return self.value
@@ -1487,7 +1492,8 @@ class _FakeChatService:
         self.run = _chat_run_value(self.session)
         self.create_run_calls: list[dict[str, object]] = []
 
-    async def create_session(self, *, kb_id, title):
+    async def create_session(self, *, kb_ids, title):
+        kb_id = kb_ids[0]
 
         if kb_id != _knowledge_base_value().id:
             raise ResourceNotFoundError("internal chat knowledge-base detail")
@@ -1555,7 +1561,7 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
             self.dependencies.chat_service,  # type: ignore[arg-type]
             poll_interval_seconds=0.001,
             jitter_ratio=0,
-            max_duration_seconds=0.01,
+            max_duration_seconds=0.25,
         )
         self.dependencies.chat_event_watcher = ChatEventWatcher(
             self.dependencies.chat_terminal_watcher

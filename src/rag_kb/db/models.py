@@ -28,7 +28,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR, UUID as PostgreSQLUUID
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.schema import conv
 
 
@@ -385,6 +385,7 @@ class KnowledgeBase(Base):
         ForeignKey("workspace.id", ondelete="RESTRICT"), nullable=False, index=True
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("''"))
     source_change_seq: Mapped[int] = mapped_column(
         BigInteger, nullable=False, server_default=text("0")
     )
@@ -1602,21 +1603,28 @@ class VectorRecord(Base):
 
 class ChatSession(Base):
     __tablename__ = "chat_session"
+    knowledge_bases: Mapped[list[ChatSessionKnowledgeBase]] = relationship(lazy="selectin", cascade="all, delete-orphan")
     __table_args__ = (
         UniqueConstraint("workspace_id", "id", name="uq_chat_session_workspace_id"),
-        ForeignKeyConstraint(
-            ["workspace_id", "kb_id"],
-            ["knowledge_base.workspace_id", "knowledge_base.id"],
-            name="fk_chat_session_same_workspace_kb",
-        ),
     )
 
     id: Mapped[UUID] = uuid_primary_key()
-    workspace_id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), nullable=False)
-    kb_id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), nullable=False)
+    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspace.id", ondelete="RESTRICT"), nullable=False)
+    kb_id: Mapped[UUID | None] = mapped_column(PostgreSQLUUID(as_uuid=True), nullable=True)
     title: Mapped[str | None] = mapped_column(String(512))
     created_at: Mapped[datetime] = created_timestamp()
     updated_at: Mapped[datetime] = updated_timestamp()
+
+
+class ChatSessionKnowledgeBase(Base):
+    __tablename__ = "chat_session_kb"
+    __table_args__ = (
+        ForeignKeyConstraint(["workspace_id", "session_id"], ["chat_session.workspace_id", "chat_session.id"], ondelete="CASCADE"),
+        ForeignKeyConstraint(["workspace_id", "kb_id"], ["knowledge_base.workspace_id", "knowledge_base.id"], ondelete="CASCADE"),
+    )
+    session_id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), primary_key=True)
+    kb_id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), primary_key=True)
+    workspace_id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), nullable=False)
 
 
 class ChatMessage(Base):
@@ -1664,6 +1672,7 @@ class ChatMessage(Base):
 
 class ChatRun(Base):
     __tablename__ = "chat_run"
+    knowledge_bases: Mapped[list[ChatRunKnowledgeBase]] = relationship(lazy="selectin", cascade="all, delete-orphan")
     __table_args__ = (
         UniqueConstraint(
             "endpoint",
@@ -1687,15 +1696,15 @@ class ChatRun(Base):
 
     id: Mapped[UUID] = uuid_primary_key()
     workspace_id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), nullable=False)
-    kb_id: Mapped[UUID] = mapped_column(
-        ForeignKey("knowledge_base.id", ondelete="CASCADE"), nullable=False, index=True
+    kb_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("knowledge_base.id", ondelete="SET NULL"), nullable=True, index=True
     )
     session_id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), nullable=False)
     user_message_id: Mapped[UUID] = mapped_column(
         ForeignKey("chat_message.id", ondelete="RESTRICT"), nullable=False
     )
-    index_revision_id: Mapped[UUID] = mapped_column(
-        ForeignKey("index_revision.id", ondelete="RESTRICT"), nullable=False
+    index_revision_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("index_revision.id", ondelete="SET NULL"), nullable=True
     )
     status: Mapped[ChatRunStatus] = mapped_column(
         enum_type(ChatRunStatus, "chat_run_status"), nullable=False
@@ -1734,6 +1743,19 @@ class ChatRun(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class ChatRunKnowledgeBase(Base):
+    __tablename__ = "chat_run_kb"
+    run_id: Mapped[UUID] = mapped_column(ForeignKey("chat_run.id", ondelete="CASCADE"), primary_key=True)
+    # Source identities are durable snapshots: deleting a KB must preserve history.
+    kb_id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("''"))
+    index_revision_id: Mapped[UUID | None] = mapped_column(PostgreSQLUUID(as_uuid=True), nullable=True)
+    graph_build_id: Mapped[UUID | None] = mapped_column(PostgreSQLUUID(as_uuid=True), nullable=True)
+    retrieval_strategy: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+
+
 class Citation(Base):
     __tablename__ = "citation"
     __table_args__ = (
@@ -1749,6 +1771,9 @@ class Citation(Base):
         ForeignKey("chat_message.id", ondelete="CASCADE"), nullable=False, index=True
     )
     ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    knowledge_base_id_snapshot: Mapped[UUID | None] = mapped_column(PostgreSQLUUID(as_uuid=True), nullable=True)
+    knowledge_base_name_snapshot: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    index_revision_id_snapshot: Mapped[UUID | None] = mapped_column(PostgreSQLUUID(as_uuid=True), nullable=True)
     index_chunk_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("index_chunk.id", ondelete="SET NULL")
     )

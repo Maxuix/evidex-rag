@@ -183,6 +183,7 @@ function EvidenceCard({
       <div className="evidence-card-body">
         <div className="evidence-title-row">
           <div>
+            {citation.knowledge_base_name ? <p className="citation-kb">{citation.knowledge_base_name}</p> : null}
             <h3>{name}</h3>
             <p>{formatSourceLocation(citation.source_location)}</p>
           </div>

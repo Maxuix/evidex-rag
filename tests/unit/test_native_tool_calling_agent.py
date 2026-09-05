@@ -80,6 +80,9 @@ class _Model:
                 usage=dict(self.usage),
             )
         tool_calls = value if isinstance(value, tuple) else ((value,) if value else ())
+        tool_calls = tuple(replace(call, arguments={"knowledge_base_id": "all_selected", **call.arguments})
+                           if call.name in {"semantic_search", "keyword_search", "list_documents", "read_chunk_context", "search_graph_relations"} else call
+                           for call in tool_calls)
         return ChatModelResponse(
             content="" if tool_calls else "plain assistant text",
             model="fixed-model",
@@ -106,7 +109,7 @@ class _Retriever:
         self.graph_ready = graph_ready
         self.keyword_ready = keyword_ready
         self.neighbors = neighbors
-        self.documents = documents
+        self.documents = documents or ServingDocumentList(pack.index_revision_id)
         self.anchors = ()
         self.capability_calls = 0
 
@@ -145,6 +148,9 @@ class _Retriever:
 
 
 class _QueryRetriever:
+    async def list_documents(self, context):
+        return ServingDocumentList(context.index_revision_id)
+
     def __init__(self, packs_by_query: dict[str, EvidencePack]) -> None:
         self.packs_by_query = packs_by_query
         self.queries = []
@@ -164,6 +170,9 @@ class _QueryRetriever:
 
 
 class _GraphRetriever:
+    async def list_documents(self, context):
+        return ServingDocumentList(context.index_revision_id)
+
     def __init__(
         self,
         pack: EvidencePack,
@@ -251,6 +260,7 @@ def _context() -> ChatExecutionContext:
 def _adaptive_context() -> ChatExecutionContext:
     return replace(
         _context(),
+        knowledge_bases=(),
         retrieval_strategy={
             "profile_version": "adaptive_graphiti_v3",
             "strategy": "exact_vector",
@@ -269,6 +279,7 @@ def _adaptive_context() -> ChatExecutionContext:
 def _manual_graph_context() -> ChatExecutionContext:
     return replace(
         _context(),
+        knowledge_bases=(),
         retrieval_strategy={
             "profile_version": "graphiti_path_augmented_v3",
             "strategy": "hybrid",
@@ -576,7 +587,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         graph_schema = next(
             tool.input_schema for tool in ready if tool.name == "search_graph_relations"
         )
-        self.assertEqual(tuple(graph_schema["required"]), ("query", "reason"))
+        self.assertEqual(tuple(graph_schema["required"]), ("query", "reason", "knowledge_base_id"))
         self.assertEqual(
             _search_queries_arguments({"queries": ["one", "two"]}, max_top_k=3),
             (("one", "two"), None, None),
@@ -744,7 +755,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("conversation history", messages[0].content)
         self.assertIn("Prior assistant messages are never evidence", messages[0].content)
         self.assertEqual(
-            [(message.role, message.content) for message in messages[1:]],
+            [(message.role, message.content) for message in messages[2:]],
             [
                 ("user", chronological[0].user_content),
                 ("assistant", chronological[0].assistant_content),
@@ -784,7 +795,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
             "semantic_search", "read_chunk_context", "list_documents", "calculate"
         ])
         self.assertIn('"evidence_ref":"ev_1"', model.requests[1].messages[-1].content)
-        self.assertIn('"groups":[{"query":"revenue"', model.requests[1].messages[-1].content)
+        self.assertEqual(json.loads(model.requests[1].messages[-1].content)["groups"][0]["query"], "revenue")
         self.assertEqual(state.artifacts[AGENT_TRACE_ARTIFACT].retrieval_calls, 1)
         self.assertEqual(len(model.requests), 2)
         self.assertEqual(len(state.answering.model_calls), 2)
@@ -2861,7 +2872,7 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         # Tools describe their own capability; the system prompt does not
         # enumerate or route between them.
         self.assertNotIn("semantic_search", plain)
-        self.assertNotIn("list_documents", plain)
+        self.assertIn("directory", plain)
 
     async def test_list_documents_does_not_enter_the_evidence_pool(self) -> None:
         context = _context()

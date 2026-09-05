@@ -51,6 +51,7 @@ async def create_knowledge_base(
     created = await request.app.state.dependencies.knowledge_base_service.create(
         idempotency_key,
         name=payload.name,
+        description=payload.description,
         parsing_preset=payload.parsing.preset,
         chunking_preset=payload.chunking.preset,
         retrieval_defaults=payload.retrieval_defaults.model_dump(mode="json"),
@@ -116,6 +117,7 @@ async def update_knowledge_base(
         idempotency_key,
         kb_id,
         name=payload.name,
+        description=payload.description,
         retrieval_defaults=(
             payload.retrieval_defaults.model_dump(mode="json")
             if payload.retrieval_defaults is not None
@@ -182,6 +184,7 @@ def _response(value: KnowledgeBase) -> KnowledgeBaseResponse:
     return KnowledgeBaseResponse(
         id=value.id,
         name=value.name,
+        description=value.description,
         source_change_seq=value.source_change_seq,
         active_index_revision_id=value.active_index_revision_id,
         embedding_space_id=value.embedding_space_id,

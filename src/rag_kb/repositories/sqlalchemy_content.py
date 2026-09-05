@@ -68,6 +68,9 @@ from rag_kb.domain import (
 )
 
 
+from rag_kb.domain.chat_scope import ChatKnowledgeBaseSnapshot
+
+
 class SqlAlchemyKnowledgeBaseRepository:
     def __init__(
         self,
@@ -77,10 +80,25 @@ class SqlAlchemyKnowledgeBaseRepository:
         self._session = session
         self._workspace_id = workspace_id
 
+    async def chat_scope_snapshot(self, kb_id: UUID) -> ChatKnowledgeBaseSnapshot | None:
+        row = await self._session.scalar(select(KnowledgeBaseRow).where(
+            KnowledgeBaseRow.id == kb_id, KnowledgeBaseRow.workspace_id == self._workspace_id,
+            KnowledgeBaseRow.deleted_at.is_(None),
+        ))
+        if row is None:
+            return None
+        return ChatKnowledgeBaseSnapshot(
+            knowledge_base_id=row.id, name=row.name, description=row.description,
+            index_revision_id=row.active_index_revision_id,
+            retrieval_strategy=dict(row.retrieval_defaults),
+            status="ready" if row.active_index_revision_id else "index_unavailable",
+        )
+
     async def create(
         self,
         *,
         name: str,
+        description: str = "",
         retrieval_defaults: dict[str, Any],
         embedding_space: EmbeddingSpaceDefinition,
         cross_modal_embedding_space: EmbeddingSpaceDefinition | None,
@@ -121,6 +139,7 @@ class SqlAlchemyKnowledgeBaseRepository:
         kb = KnowledgeBaseRow(
             workspace_id=self._workspace_id,
             name=name,
+            description=description,
             retrieval_defaults=dict(retrieval_defaults),
             answer_policy_defaults={},  # Retired column; historical values remain readable.
         )
@@ -329,6 +348,7 @@ class SqlAlchemyKnowledgeBaseRepository:
         kb_id: UUID,
         *,
         name: str | None,
+        description: str | None = None,
         retrieval_defaults: dict[str, Any] | None,
     ) -> KnowledgeBase | None:
         kb = await self._session.scalar(
@@ -352,6 +372,8 @@ class SqlAlchemyKnowledgeBaseRepository:
             if duplicate is not None:
                 raise ResourceNameConflictError("knowledge-base name already exists")
             kb.name = name
+        if description is not None:
+            kb.description = description
         if retrieval_defaults is not None:
             kb.retrieval_defaults = dict(retrieval_defaults)
         kb.updated_at = datetime.now(UTC)
@@ -1734,6 +1756,7 @@ def _knowledge_base(
         id=row.id,
         workspace_id=row.workspace_id,
         name=row.name,
+        description=row.description,
         source_change_seq=row.source_change_seq,
         active_index_revision_id=row.active_index_revision_id,
         embedding_space_id=embedding_space_id,

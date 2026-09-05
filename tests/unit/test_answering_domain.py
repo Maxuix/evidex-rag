@@ -54,6 +54,9 @@ class RenderedEvidenceTests(unittest.TestCase):
         rows = [
             SimpleNamespace(
                 ordinal=ordinal, index_chunk_id=item.index_chunk_id,
+                knowledge_base_id_snapshot=item.knowledge_base_id,
+                knowledge_base_name_snapshot=item.knowledge_base_name,
+                index_revision_id_snapshot=item.index_revision_id,
                 document_id_snapshot=item.document_id,
                 document_version_id_snapshot=item.document_version_id,
                 document_display_name_snapshot=item.document_display_name,

@@ -25,8 +25,19 @@ ChatProgressStageValue = Literal[
 ]
 
 
-class ChatSessionCreate(PublicSchema):
-    knowledge_base_id: UUID
+class ChatScopeSelection(PublicSchema):
+    knowledge_base_id: UUID | None = None
+    knowledge_base_ids: tuple[UUID, ...] | None = None
+
+    @model_validator(mode="after")
+    def validate_scope(self) -> "ChatScopeSelection":
+        from rag_kb.domain.chat_scope import normalize_knowledge_base_ids
+        object.__setattr__(self, "knowledge_base_ids", normalize_knowledge_base_ids(self.knowledge_base_ids, self.knowledge_base_id))
+        object.__setattr__(self, "knowledge_base_id", None)
+        return self
+
+
+class ChatSessionCreate(ChatScopeSelection):
     title: Annotated[str, Field(min_length=1, max_length=512)] | None = None
 
     @field_validator("title")
@@ -42,7 +53,8 @@ class ChatSessionCreate(PublicSchema):
 
 class ChatSessionResponse(PublicSchema):
     id: UUID
-    knowledge_base_id: UUID
+    knowledge_base_id: UUID | None
+    knowledge_base_ids: tuple[UUID, ...] = ()
     title: str | None
     created_at: datetime
     updated_at: datetime
@@ -193,9 +205,8 @@ class ChatAgentResponse(PublicSchema):
     trace: ChatAgentTraceResponse | None = None
 
 
-class ChatRunCreate(PublicSchema):
+class ChatRunCreate(ChatScopeSelection):
     session_id: UUID
-    knowledge_base_id: UUID
     message: Annotated[str, Field(min_length=1, max_length=32768)]
     retrieval: ChatRetrievalRequest = ChatRetrievalRequest()
     model_profile_revision_id: UUID | None = None
@@ -260,6 +271,9 @@ class ChatCitationAssetResponse(PublicSchema):
 
 
 class ChatCitationResponse(PublicSchema):
+    knowledge_base_id: UUID | None = None
+    knowledge_base_name: str | None = None
+    index_revision_id: UUID | None = None
     ordinal: Annotated[int, Field(ge=0)]
     index_chunk_id: UUID | None
     document_id: UUID
@@ -284,15 +298,17 @@ class ChatActivityEventResponse(PublicSchema):
 
 
 class ChatRunResponse(PublicSchema):
+    knowledge_bases: tuple[dict[str, Any], ...] = ()
+    knowledge_base_ids: tuple[UUID, ...] = ()
     activities: tuple[ChatActivitySnapshot, ...] = ()
     live_progress_available: bool | None = None
     activity_unavailable: bool = False
     run_id: UUID
-    knowledge_base_id: UUID
+    knowledge_base_id: UUID | None
     session_id: UUID
     user_message_id: UUID
     assistant_message_id: UUID
-    index_revision_id: UUID
+    index_revision_id: UUID | None
     status: Literal["queued", "running", "completed", "failed", "cancelled"]
     assistant_status: Literal["generating", "completed", "failed"]
     answer: str | None

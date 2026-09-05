@@ -16,8 +16,12 @@ from rag_kb.db.models import (
     ChatMessageRole,
     ChatRun as ChatRunRow,
     ChatRunStatus,
+    ChatRunKnowledgeBase,
+    ChatSessionKnowledgeBase,
     ChatSession as ChatSessionRow,
     Citation as CitationRow,
+    IndexChunk as IndexChunkRow,
+    IndexedDocumentVersion as IndexedDocumentVersionRow,
 )
 from rag_kb.domain import (
     ChatCitation,
@@ -36,6 +40,7 @@ from rag_kb.domain import (
     ReconciliationResult,
 )
 from rag_kb.memory import hydrate_conversation_context
+from rag_kb.domain.chat_scope import ChatKnowledgeBaseSnapshot, normalize_knowledge_base_ids
 
 
 class SqlAlchemyChatRepository:
@@ -214,6 +219,22 @@ class SqlAlchemyChatRepository:
         if citations:
             return ChatTerminalWriteStatus.STALE
 
+        scopes = {item.kb_id: item for item in run.knowledge_bases}
+        for citation in command.rendered.citations:
+            item = citation.evidence
+            scope = scopes.get(item.knowledge_base_id)
+            if scope is None or scope.index_revision_id != item.index_revision_id:
+                raise ValueError("citation is outside the frozen run scope")
+            source = await self._session.scalar(select(IndexChunkRow).join(IndexedDocumentVersionRow, IndexedDocumentVersionRow.id == IndexChunkRow.indexed_document_version_id).where(
+                IndexChunkRow.id == item.index_chunk_id,
+                IndexChunkRow.workspace_id == self._workspace_id,
+                IndexChunkRow.kb_id == item.knowledge_base_id,
+                IndexedDocumentVersionRow.index_revision_id == item.index_revision_id,
+                IndexedDocumentVersionRow.document_id == item.document_id,
+                IndexedDocumentVersionRow.document_version_id == item.document_version_id,
+            ))
+            if source is None:
+                raise ValueError("citation source identity is invalid")
         usage = _merge_usage(run.usage, calls)
         timing = _merge_timing(
             run.timing,
@@ -235,6 +256,9 @@ class SqlAlchemyChatRepository:
                     workspace_id=self._workspace_id,
                     assistant_message_id=assistant.id,
                     ordinal=item.ordinal,
+                    knowledge_base_id_snapshot=item.evidence.knowledge_base_id,
+                    knowledge_base_name_snapshot=item.evidence.knowledge_base_name,
+                    index_revision_id_snapshot=item.evidence.index_revision_id,
                     index_chunk_id=item.evidence.index_chunk_id,
                     document_id_snapshot=item.evidence.document_id,
                     document_version_id_snapshot=item.evidence.document_version_id,
@@ -457,12 +481,15 @@ class SqlAlchemyChatRepository:
             attempt=run.attempt,
             conversation_context=conversation_context,
             agent_configuration=dict(run.agent_configuration),
+            knowledge_bases=_scope_snapshots(run),
         )
 
-    async def create_session(self, *, kb_id: UUID, title: str | None) -> ChatSession:
+    async def create_session(self, *, kb_id: UUID | None = None, kb_ids: tuple[UUID, ...] | None = None, title: str | None) -> ChatSession:
+        selected = normalize_knowledge_base_ids(kb_ids, kb_id)
         row = ChatSessionRow(
             workspace_id=self._workspace_id,
-            kb_id=kb_id,
+            kb_id=selected[0] if len(selected) == 1 else None,
+            knowledge_bases=[ChatSessionKnowledgeBase(kb_id=identifier, workspace_id=self._workspace_id) for identifier in selected],
             title=title,
         )
         self._session.add(row)
@@ -489,6 +516,21 @@ class SqlAlchemyChatRepository:
         )
         return _session(row) if row is not None else None
 
+    async def set_session_scope(self, session_id: UUID, kb_ids: tuple[UUID, ...]) -> ChatSession:
+        row = await self._session.scalar(select(ChatSessionRow).where(
+            ChatSessionRow.id == session_id, ChatSessionRow.workspace_id == self._workspace_id,
+        ).with_for_update())
+        if row is None:
+            raise ValueError("session not found")
+        existing = {item.kb_id: item for item in row.knowledge_bases}
+        row.knowledge_bases = [existing.get(identifier) or ChatSessionKnowledgeBase(
+            kb_id=identifier, workspace_id=self._workspace_id,
+        ) for identifier in kb_ids]
+        row.kb_id = kb_ids[0] if len(kb_ids) == 1 else None
+        await self._session.flush()
+        await self._session.refresh(row, attribute_names=["updated_at"])
+        return _session(row)
+
     async def has_nonterminal_run(self, session_id: UUID) -> bool:
         return bool(
             await self._session.scalar(
@@ -508,7 +550,7 @@ class SqlAlchemyChatRepository:
         self,
         *,
         session_id: UUID,
-        kb_id: UUID,
+        kb_id: UUID | None = None,
         limit: int,
     ) -> tuple[ConversationTurn, ...]:
         if limit < 1:
@@ -527,7 +569,6 @@ class SqlAlchemyChatRepository:
                 .where(
                     ChatRunRow.workspace_id == self._workspace_id,
                     ChatRunRow.session_id == session_id,
-                    ChatRunRow.kb_id == kb_id,
                     ChatRunRow.status == ChatRunStatus.COMPLETED,
                     user.workspace_id == self._workspace_id,
                     user.session_id == session_id,
@@ -568,7 +609,7 @@ class SqlAlchemyChatRepository:
             ChatSessionRow.workspace_id == self._workspace_id,
         )
         if kb_id is not None:
-            statement = statement.where(ChatSessionRow.kb_id == kb_id)
+            statement = statement.where(ChatSessionRow.knowledge_bases.any(kb_id=kb_id))
         statement = _with_after(
             statement, column, ChatSessionRow.id, after, descending
         )
@@ -673,14 +714,15 @@ class SqlAlchemyChatRepository:
         *,
         scope: IdempotencyScope,
         request_hash: str,
-        kb_id: UUID,
+        kb_id: UUID | None,
         session_id: UUID,
-        index_revision_id: UUID,
+        index_revision_id: UUID | None,
         message: str,
         retrieval_strategy: dict[str, Any],
         model_configuration: dict[str, Any],
         conversation_context: dict[str, Any],
         agent_configuration: dict[str, Any],
+        knowledge_bases: tuple[ChatKnowledgeBaseSnapshot, ...] = (),
     ) -> ChatRun:
         user_message = ChatMessageRow(
             workspace_id=self._workspace_id,
@@ -699,6 +741,11 @@ class SqlAlchemyChatRepository:
             session_id=session_id,
             user_message_id=user_message.id,
             index_revision_id=index_revision_id,
+            knowledge_bases=[ChatRunKnowledgeBase(
+                kb_id=item.knowledge_base_id, name=item.name, description=item.description,
+                index_revision_id=item.index_revision_id, graph_build_id=item.graph_build_id,
+                retrieval_strategy=dict(item.retrieval_strategy), status=item.status,
+            ) for item in knowledge_bases],
             status=ChatRunStatus.QUEUED,
             endpoint=scope.endpoint,
             idempotency_key=scope.idempotency_key,
@@ -766,6 +813,9 @@ def _run_rows(rows) -> ChatRun:
     citations = tuple(
         ChatCitation(
             ordinal=citation.ordinal,
+            knowledge_base_id=citation.knowledge_base_id_snapshot,
+            knowledge_base_name=citation.knowledge_base_name_snapshot,
+            index_revision_id=citation.index_revision_id_snapshot,
             index_chunk_id=citation.index_chunk_id,
             document_id=citation.document_id_snapshot,
             document_version_id=citation.document_version_id_snapshot,
@@ -1014,6 +1064,9 @@ def _citations_equal(rows, command: ChatTerminalSuccessCommand) -> bool:
     expected = command.rendered.citations
     return len(rows) == len(expected) and all(
         row.ordinal == item.ordinal
+        and row.knowledge_base_id_snapshot == item.evidence.knowledge_base_id
+        and row.knowledge_base_name_snapshot == item.evidence.knowledge_base_name
+        and row.index_revision_id_snapshot == item.evidence.index_revision_id
         and row.index_chunk_id == item.evidence.index_chunk_id
         and row.document_id_snapshot == item.evidence.document_id
         and row.document_version_id_snapshot == item.evidence.document_version_id
@@ -1056,13 +1109,15 @@ def _with_after(
 
 
 def _session(row: ChatSessionRow) -> ChatSession:
+    selected = tuple(sorted((item.kb_id for item in row.knowledge_bases), key=str))
     return ChatSession(
         id=row.id,
         workspace_id=row.workspace_id,
-        kb_id=row.kb_id,
+        kb_id=row.kb_id if row.kb_id in selected else None,
         title=row.title,
         created_at=row.created_at,
         updated_at=row.updated_at,
+        knowledge_base_ids=selected,
     )
 
 
@@ -1109,6 +1164,7 @@ def _run(
         assistant_status=assistant.assistant_status.value,
         assistant_content=assistant.content,
         citations=citations,
+        knowledge_bases=_scope_snapshots(run),
         attempt=run.attempt,
         error_code=run.error_code,
         error_detail=dict(run.error_detail) if run.error_detail is not None else None,
@@ -1125,3 +1181,11 @@ def _run(
             else None
         ),
     )
+
+
+def _scope_snapshots(run: ChatRunRow) -> tuple[ChatKnowledgeBaseSnapshot, ...]:
+    return tuple(ChatKnowledgeBaseSnapshot(
+        knowledge_base_id=item.kb_id, name=item.name, description=item.description,
+        index_revision_id=item.index_revision_id, graph_build_id=item.graph_build_id,
+        retrieval_strategy=item.retrieval_strategy, status=item.status,
+    ) for item in sorted(run.knowledge_bases, key=lambda item: str(item.kb_id)))

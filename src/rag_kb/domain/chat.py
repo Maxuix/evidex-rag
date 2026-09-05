@@ -8,6 +8,7 @@ from typing import Any
 from uuid import UUID
 
 from rag_kb.domain.chat_agent import CHAT_AGENT_VERSION, ChatAgentBudget
+from rag_kb.domain.chat_scope import ChatKnowledgeBaseSnapshot
 
 
 class ChatSessionBusyError(RuntimeError):
@@ -18,10 +19,15 @@ class ChatSessionBusyError(RuntimeError):
 class ChatSession:
     id: UUID
     workspace_id: UUID
-    kb_id: UUID
+    kb_id: UUID | None
     title: str | None
     created_at: datetime
     updated_at: datetime
+    knowledge_base_ids: tuple[UUID, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.knowledge_base_ids and self.kb_id is not None:
+            object.__setattr__(self, "knowledge_base_ids", (self.kb_id,))
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +56,9 @@ class ChatCitation:
     modality: str = "text"
     asset_snapshot: dict[str, Any] | None = None
     matched_representations: tuple[str, ...] = ("text",)
+    knowledge_base_id: UUID | None = None
+    knowledge_base_name: str | None = None
+    index_revision_id: UUID | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -69,11 +78,11 @@ class ChatCitation:
 class ChatRun:
     id: UUID
     workspace_id: UUID
-    kb_id: UUID
+    kb_id: UUID | None
     session_id: UUID
     user_message_id: UUID
     assistant_message_id: UUID
-    index_revision_id: UUID
+    index_revision_id: UUID | None
     status: str
     endpoint: str
     idempotency_key: UUID
@@ -103,3 +112,4 @@ class ChatRun:
         }
     )
     agent_trace: dict[str, Any] | None = None
+    knowledge_bases: tuple[ChatKnowledgeBaseSnapshot, ...] = ()

@@ -55,6 +55,9 @@ class PromptEvidence:
     graph_anchor_index_chunk_id: UUID | None = None
     graph_hop_count: int | None = None
     graph_path_rank: int | None = None
+    knowledge_base_id: UUID | None = None
+    knowledge_base_name: str | None = None
+    index_revision_id: UUID | None = None
 
     def __post_init__(self) -> None:
         if self.citation_id != f"cite_{self.rank}" or self.rank < 1:
@@ -92,8 +95,8 @@ class PromptEvidence:
 
 @dataclass(frozen=True, slots=True)
 class EvidenceEnvelope:
-    knowledge_base_id: UUID
-    index_revision_id: UUID
+    knowledge_base_id: UUID | None
+    index_revision_id: UUID | None
     items: tuple[PromptEvidence, ...]
 
     def __post_init__(self) -> None:

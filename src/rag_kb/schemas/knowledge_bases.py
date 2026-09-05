@@ -127,6 +127,7 @@ class KnowledgeBaseAutoQAResponse(PublicSchema):
 
 
 class KnowledgeBaseCreate(PublicSchema):
+    description: Annotated[str, Field(max_length=2000)] = ""
     name: KnowledgeBaseName
     parsing: KnowledgeBaseParsing = KnowledgeBaseParsing()
     chunking: KnowledgeBaseChunking = KnowledgeBaseChunking()
@@ -155,6 +156,7 @@ class KnowledgeBaseCreate(PublicSchema):
 
 
 class KnowledgeBaseUpdate(PublicSchema):
+    description: Annotated[str, Field(max_length=2000)] | None = None
     name: KnowledgeBaseName | None = None
     retrieval_defaults: RetrievalDefaults | None = None
 
@@ -170,12 +172,13 @@ class KnowledgeBaseUpdate(PublicSchema):
 
     @model_validator(mode="after")
     def require_change(self) -> Self:
-        if self.name is None and self.retrieval_defaults is None:
+        if self.name is None and self.retrieval_defaults is None and self.description is None:
             raise ValueError("at least one knowledge-base field must be supplied")
         return self
 
 
 class KnowledgeBaseResponse(PublicSchema):
+    description: str = ""
     id: UUID
     name: str
     source_change_seq: int

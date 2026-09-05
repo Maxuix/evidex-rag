@@ -72,7 +72,7 @@ class ChatActivityRecorder:
         self._bytes += _size(step)
         if self._bytes > MAX_ACTIVITY_BYTES - 4096:
             for key, value in tuple(self._steps.items()):
-                compact = replace(value, queries=(), refs=(), expression=None, sources=(), result_value=None, details_truncated=True)
+                compact = replace(value, queries=(), refs=(), expression=None, sources=(), scope_results=(), result_value=None, details_truncated=True)
                 self._bytes += _size(compact) - _size(value)
                 self._steps[key] = compact
                 if self._bytes <= MAX_ACTIVITY_BYTES - 4096:

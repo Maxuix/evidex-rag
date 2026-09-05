@@ -449,6 +449,9 @@ class _ChatRepository:
         self.events.append("busy")
         return self.busy
 
+    async def set_session_scope(self, session_id, kb_ids):
+        return None
+
     async def list_completed_turns(self, **values):
         del values
         self.events.append("history")
@@ -475,6 +478,11 @@ def _profile_factory(strategy, top_k, rerank_mode):
 
 
 class _KnowledgeBases:
+    async def chat_scope_snapshot(self, kb_id):
+        from rag_kb.domain.chat_scope import ChatKnowledgeBaseSnapshot
+        value = await self.get(kb_id)
+        return ChatKnowledgeBaseSnapshot(kb_id, "Test KB", value.active_index_revision_id, {}) if value else None
+
     def __init__(self, kb_id) -> None:
         self.kb_id = kb_id
 
@@ -492,6 +500,8 @@ class _UnitOfWork:
         self.workspace_id = workspace_id
         self.chat = chat
         self.knowledge_bases = _KnowledgeBases(kb_id)
+        from unittest.mock import AsyncMock
+        self.graph = SimpleNamespace(get_config=AsyncMock(return_value=None))
 
     async def __aenter__(self):
         return self

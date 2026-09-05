@@ -11,6 +11,7 @@ export interface Page<T> {
 }
 
 export interface KnowledgeBase {
+  description?: string;
   id: UUID;
   name: string;
   source_change_seq: number;
@@ -274,7 +275,8 @@ export interface RetrievalEvidencePack {
 
 export interface ChatSession {
   id: UUID;
-  knowledge_base_id: UUID;
+  knowledge_base_id: UUID | null;
+  knowledge_base_ids?: UUID[];
   title: string | null;
   created_at: IsoDate;
   updated_at: IsoDate;
@@ -300,6 +302,9 @@ export interface CitationAsset {
 }
 
 export interface ChatCitation {
+  knowledge_base_id?: UUID | null;
+  knowledge_base_name?: string | null;
+  index_revision_id?: UUID | null;
   ordinal: number;
   index_chunk_id: UUID | null;
   document_id: UUID;
@@ -452,9 +457,11 @@ export interface ChatRun {
   activities?: ActivitySnapshot[];
   activity_unavailable?: boolean;
   live_progress_available?: boolean | null;
-  index_revision_id?: UUID;
+  index_revision_id?: UUID | null;
   run_id: UUID;
-  knowledge_base_id: UUID;
+  knowledge_base_id: UUID | null;
+  knowledge_base_ids?: UUID[];
+  knowledge_bases?: Array<{knowledge_base_id: UUID; name: string; index_revision_id: UUID | null; status: string}>;
   session_id: UUID;
   status: "queued" | "running" | "completed" | "failed" | "cancelled";
   assistant_status: "generating" | "completed" | "failed";
@@ -486,7 +493,8 @@ export interface ChatRun {
 
 export interface ChatRunCreate {
   session_id: UUID;
-  knowledge_base_id: UUID;
+  knowledge_base_id?: UUID;
+  knowledge_base_ids?: UUID[];
   message: string;
   retrieval: {
     mode: "text" | "auto" | "graph";
