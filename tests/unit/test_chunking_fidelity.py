@@ -19,10 +19,10 @@ from rag_kb.document_processing.profiles import (
     STRUCTURAL_CHUNKING_CONFIG, STRUCTURAL_CHUNKING_CONFIG_V4, profile_fingerprint,
     profile_for_preset, resolve,
 )
-from rag_kb.document_processing.semantic_boundaries import build_chunk_plan, requires_semantic_vectors
+from rag_kb.document_processing.semantic_boundaries import build_chunk_plan, requires_semantic_vectors, semantic_analysis_ordinals
 from rag_kb.document_processing.semantic_text import joined_units
 from rag_kb.document_processing.tokenization import count_chunk_tokens
-from rag_kb.domain import ChunkingPreset, ParserExecutionError
+from rag_kb.domain import ChunkingPreset, IndexingExecutionError
 from rag_kb.repositories.sqlalchemy_graph import _graph_chunking_profile_compatible
 
 
@@ -145,3 +145,22 @@ def test_long_code_preserves_indentation_at_final_chunk_boundaries():
     assert len(chunks) > 1
     assert ''.join(chunk.text for chunk in chunks) == body
     compile(''.join(chunk.text for chunk in chunks), '<chunks>', 'exec')
+
+
+def test_mixed_regions_skip_irrelevant_vectors_without_changing_plan():
+    doc = DoclingDocument(name='mixed')
+    doc.add_heading(text='Short section', level=1)
+    doc.add_text(label=DocItemLabel.TEXT, text='Small bounded source.')
+    doc.add_heading(text='Long section', level=1)
+    doc.add_text(label=DocItemLabel.TEXT, text=' '.join(['alpha']*1200))
+    units = docling_semantic_units(doc)
+    needed = semantic_analysis_ordinals(units)
+    assert 0 not in needed and needed
+    full = tuple((1., 0.) for _ in units)
+    sparse = tuple(full[index] if index in needed else None for index in range(len(units)))
+    facts = dict(indexed_document_version_id=UUID(int=1), source_checksum_sha256='a'*64,
+                 profile_fingerprint='b'*64, units=units, sequence_hash=docling_unit_sequence_hash(units))
+    assert build_chunk_plan(**facts, vectors=full) == build_chunk_plan(**facts, vectors=sparse)
+    with pytest.raises(IndexingExecutionError) as failure:
+        build_chunk_plan(**facts, vectors=tuple(None for _ in units))
+    assert failure.value.diagnostic['check'] == 'analysis_vector_count'

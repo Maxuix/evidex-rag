@@ -76,6 +76,7 @@ from rag_kb.document_processing.docling import (
 )
 from rag_kb.document_processing.semantic_boundaries import (
     requires_semantic_vectors,
+    semantic_analysis_ordinals,
     build_chunk_plan,
     validate_plan,
 )
@@ -547,11 +548,14 @@ class IndexingPipeline:
             _requires_semantic_analysis,
             units,
         )
-        vectors = (
-            await self._embed_analysis_units(target, units, embedding_provider)
-            if requires_analysis
-            else None
-        )
+        vectors = None
+        if requires_analysis:
+            ordinals = await asyncio.to_thread(semantic_analysis_ordinals, units)
+            embedded = await self._embed_analysis_units(
+                target, tuple(units[index] for index in ordinals), embedding_provider
+            )
+            by_ordinal = dict(zip(ordinals, embedded, strict=True))
+            vectors = tuple(by_ordinal.get(index) for index in range(len(units)))
         proposed = await asyncio.to_thread(
             build_chunk_plan,
             **plan_facts,

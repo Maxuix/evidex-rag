@@ -336,7 +336,7 @@ async def evaluate(args, models, identities):
     from rag_kb.document_processing.composite_text import with_composite_embedding_text
     from rag_kb.document_processing.profiles import (STRUCTURAL_CHUNKING_CONFIG, STRUCTURAL_CHUNKING_CONFIG_V4,
         SEMANTIC_CHUNKING_CONFIG, SEMANTIC_CHUNKING_CONFIG_V4)
-    from rag_kb.document_processing.semantic_boundaries import build_chunk_plan, requires_semantic_vectors
+    from rag_kb.document_processing.semantic_boundaries import build_chunk_plan, requires_semantic_vectors, semantic_analysis_ordinals
     frozen = json.loads((args.output / 'frozen.json').read_text())
     payload = json.loads((args.output / 'documents.json').read_text())
     if digest(payload) != frozen['documents_sha256']:
@@ -346,7 +346,7 @@ async def evaluate(args, models, identities):
     answers = json.loads(answers_path.read_text()) if answers_path.exists() else {}
     configs = {'structural_old': STRUCTURAL_CHUNKING_CONFIG_V4, 'structural_new': STRUCTURAL_CHUNKING_CONFIG,
                'semantic_old': SEMANTIC_CHUNKING_CONFIG_V4, 'semantic_new': SEMANTIC_CHUNKING_CONFIG}
-    result = {'frozen_sha256': digest(frozen), 'models': identities, 'arms': {}, 'gates': {}}
+    result = {'frozen_sha256': digest(frozen), 'models': identities, 'arms': {}, 'gates': {}, 'sparse_plan_checks': 0}
     queries = np.asarray([await cache.query(case['question']) for case in frozen['cases']])
     for arm, config in configs.items():
         rows, analysis_inputs = [], 0
@@ -357,11 +357,24 @@ async def evaluate(args, models, identities):
             else:
                 units = docling_semantic_units(doc, chunking_config=config, include_captions=arm.endswith('_new'))
                 need = requires_semantic_vectors(units)
-                vectors = await cache.documents(tuple(unit.text for unit in units)) if need else None
-                analysis_inputs += len(units) if need else 0
+                ordinals = semantic_analysis_ordinals(units) if arm.endswith('_new') else tuple(range(len(units)))
+                vectors = None
+                if need:
+                    embedded = await cache.documents(tuple(units[index].text for index in ordinals))
+                    mapped = dict(zip(ordinals, embedded, strict=True))
+                    vectors = tuple(mapped.get(index) for index in range(len(units)))
+                    analysis_inputs += len(ordinals)
                 plan = build_chunk_plan(indexed_document_version_id=UUID(int=1), source_checksum_sha256=digest(value),
                                         profile_fingerprint=digest(config), units=units, vectors=vectors,
                                         sequence_hash=docling_unit_sequence_hash(units))
+                if args.cache_only and args.verify_full_analysis_cache and arm == 'semantic_new' and need:
+                    full = await cache.documents(tuple(unit.text for unit in units))
+                    full_plan = build_chunk_plan(indexed_document_version_id=UUID(int=1), source_checksum_sha256=digest(value),
+                        profile_fingerprint=digest(config), units=units, vectors=full,
+                        sequence_hash=docling_unit_sequence_hash(units))
+                    if plan != full_plan:
+                        raise ValueError('sparse analysis changed the immutable plan')
+                    result['sparse_plan_checks'] += 1
                 chunks = assemble_semantic_chunks(doc, units, plan)
             draft = composite_evidence(doc, chunks, (), (), profile=config['profile'], source_checksum_sha256=digest(value))
             for unit in with_composite_embedding_text(draft.units, draft.relations):
@@ -432,5 +445,9 @@ if __name__ == '__main__':
     parser.add_argument('--prepare-only', action='store_true')
     parser.add_argument('--preflight-only', action='store_true')
     parser.add_argument('--cache-only', action='store_true')
+    parser.add_argument('--verify-full-analysis-cache', action='store_true',
+                        help='With cache-only, compare sparse plans against an existing full-analysis cache.')
     args = parser.parse_args()
+    if args.verify_full_analysis_cache and not args.cache_only:
+        parser.error('--verify-full-analysis-cache requires --cache-only')
     asyncio.run(run(args))

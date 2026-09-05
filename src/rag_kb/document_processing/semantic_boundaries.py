@@ -26,7 +26,7 @@ def build_chunk_plan(
     source_checksum_sha256: str,
     profile_fingerprint: str,
     units: tuple[SemanticUnit, ...],
-    vectors: tuple[tuple[float, ...], ...] | None,
+    vectors: tuple[tuple[float, ...] | None, ...] | None,
     sequence_hash: str,
 ) -> IndexChunkPlan:
     """Build a deterministic immutable plan from validated unit vectors."""
@@ -41,7 +41,8 @@ def build_chunk_plan(
         if vectors is None and not requires_semantic_vectors(units):
             scores = tuple(None if unit.hard_boundary_before else 0 for unit in units[1:])
         else:
-            if vectors is None or len(vectors) != len(units):
+            if (vectors is None or len(vectors) != len(units)
+                    or any(vectors[index] is None for index in semantic_analysis_ordinals(units))):
                 raise _failed("analysis_vector_count")
             scores = smoothed_distances(units, vectors)
         boundaries = _select_all_regions(units, scores)
@@ -69,7 +70,7 @@ def build_chunk_plan(
 
 def smoothed_distances(
     units: tuple[SemanticUnit, ...],
-    vectors: tuple[tuple[float, ...], ...],
+    vectors: tuple[tuple[float, ...] | None, ...],
 ) -> tuple[int | None, ...]:
     """Return one score after each unit except the last; hard boundaries are None."""
 
@@ -78,7 +79,8 @@ def smoothed_distances(
     raw: list[int | None] = []
     quantization = _config_int("distance_quantization")
     for index in range(len(units) - 1):
-        if units[index + 1].hard_boundary_before is not None:
+        if (units[index + 1].hard_boundary_before is not None
+                or vectors[index] is None or vectors[index + 1] is None):
             raw.append(None)
             continue
         dot = sum(
@@ -412,12 +414,17 @@ def _failed(check: str) -> IndexingExecutionError:
     )
 
 
-def requires_semantic_vectors(units: tuple[SemanticUnit, ...]) -> bool:
-    """Only oversized hard regions consult distances in the current planner."""
+def semantic_analysis_ordinals(units: tuple[SemanticUnit, ...]) -> tuple[int, ...]:
+    """Only units in oversized hard regions can influence selected boundaries."""
+    needed: list[int] = []
     start = 0
     for end in range(1, len(units) + 1):
         if end == len(units) or units[end].hard_boundary_before is not None:
             if count_chunk_tokens(joined_units(units[start:end])) > _config_int("max_chunk_tokens"):
-                return True
+                needed.extend(range(start, end))
             start = end
-    return False
+    return tuple(needed)
+
+
+def requires_semantic_vectors(units: tuple[SemanticUnit, ...]) -> bool:
+    return bool(semantic_analysis_ordinals(units))
