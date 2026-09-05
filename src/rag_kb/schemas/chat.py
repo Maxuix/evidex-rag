@@ -11,6 +11,7 @@ from pydantic import Field, field_validator, model_validator
 from rag_kb.domain import (
     RerankMode,
 )
+from rag_kb.domain.chat_activity import ActivityStep, ChatActivitySnapshot
 from rag_kb.schemas.common import OpaqueCursor, PublicSchema
 
 
@@ -273,7 +274,19 @@ class ChatCitationResponse(PublicSchema):
     matched_representations: tuple[str, ...] = ("text",)
 
 
+class ChatActivityEventResponse(PublicSchema):
+    version: Literal["chat_activity_v1"] = "chat_activity_v1"
+    run_id: UUID
+    attempt: Annotated[int, Field(ge=1)]
+    seq: Annotated[int, Field(ge=1)]
+    step: ActivityStep
+    elapsed_ms: Annotated[int, Field(ge=0)]
+
+
 class ChatRunResponse(PublicSchema):
+    activities: tuple[ChatActivitySnapshot, ...] = ()
+    live_progress_available: bool | None = None
+    activity_unavailable: bool = False
     run_id: UUID
     knowledge_base_id: UUID
     session_id: UUID

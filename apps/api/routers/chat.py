@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Mapping
 from datetime import datetime
+from dataclasses import replace
 from typing import Annotated, Literal
 from uuid import UUID
 
@@ -26,6 +27,8 @@ from rag_kb.domain import (
     ChatRun,
     ChatSession,
 )
+from rag_kb.domain.chat_activity import ACTIVE_STATUSES, ChatActivityEvent, ChatActivitySnapshot
+from rag_kb.schemas.chat import ChatActivityEventResponse, ChatAgentTraceResponse, ChatAgentTraceEventResponse, ChatAgentTraceDiagnosticsResponse
 from rag_kb.services.chat_delivery import ChatSseSubscription
 from rag_kb.schemas import (
     ChatAnswerCompletedEvent,
@@ -144,7 +147,7 @@ async def create_chat_run(
         model_profile_revision_id=payload.model_profile_revision_id,
     )
     response.headers["Location"] = _status_url(value.id)
-    return _run_response(value)
+    return _run_response(value, live_progress_available=getattr(request.app.state.dependencies, "chat_preview_broker", None) is not None)
 
 
 @router.get(
@@ -156,7 +159,8 @@ async def get_chat_run(
     run_id: UUID,
 ) -> ChatRunResponse:
     return _run_response(
-        await request.app.state.dependencies.chat_service.get_run(run_id)
+        await request.app.state.dependencies.chat_service.get_run(run_id),
+        live_progress_available=getattr(request.app.state.dependencies, "chat_preview_broker", None) is not None,
     )
 
 
@@ -226,7 +230,11 @@ async def stream_chat_run_events(
         disconnected=request.is_disconnected,
         preview=subscription.preview,
     ):
-        if isinstance(value, ChatProgressSnapshot):
+        if isinstance(value, ChatActivityEvent):
+            yield ServerSentEvent(event="agent.activity", data=ChatActivityEventResponse(
+                run_id=value.run_id, attempt=value.attempt, seq=value.seq, step=value.step, elapsed_ms=value.elapsed_ms,
+            ).model_dump(mode="json"))
+        elif isinstance(value, ChatProgressSnapshot):
             update = value.update
             facts = update.facts
             yield ServerSentEvent(
@@ -302,8 +310,11 @@ def _message_response(value: ChatMessage) -> ChatMessageResponse:
     )
 
 
-def _run_response(value: ChatRun) -> ChatRunResponse:
+def _run_response(value: ChatRun, *, live_progress_available: bool | None = None) -> ChatRunResponse:
+    activities = _activity_responses(value)
     return ChatRunResponse(
+        activity_unavailable=_activity_unavailable(value, activities),
+        activities=activities, live_progress_available=live_progress_available,
         run_id=value.id,
         knowledge_base_id=value.kb_id,
         session_id=value.session_id,
@@ -324,7 +335,7 @@ def _run_response(value: ChatRun) -> ChatRunResponse:
         attempt=value.attempt,
         error=_run_error(value),
         usage=dict(value.usage) if value.usage is not None else None,
-        timing=dict(value.timing) if value.timing is not None else None,
+        timing=_public_timing(value.timing),
         created_at=value.created_at,
         updated_at=value.updated_at,
         completed_at=value.completed_at,
@@ -453,30 +464,24 @@ def _public_agent_trace(value: dict[str, object] | None) -> dict[str, object] | 
 
     if value is None:
         return None
-    trace = dict(value)
+    trace = {key: item for key, item in value.items() if key in ChatAgentTraceResponse.model_fields}
     trace["budget"] = _without_retired_budget_field(trace.get("budget"))
     diagnostics = trace.get("diagnostics")
     if isinstance(diagnostics, Mapping):
         trace["diagnostics"] = {
             key: item
             for key, item in diagnostics.items()
-            if key != "near_deadline"
+            if key in ChatAgentTraceDiagnosticsResponse.model_fields
         }
     events = trace.get("events")
     if isinstance(events, list):
-        internal_keys = {
-            "rejected_claim_count",
-            "rejection_reasons",
-            "submit_only_repair",
-            "budget_wrap_up",
-        }
         public_events: list[object] = []
         for event in events:
             if not isinstance(event, dict):
                 public_events.append(event)
                 continue
             public_event = {
-                key: item for key, item in event.items() if key not in internal_keys
+                key: item for key, item in event.items() if key in ChatAgentTraceEventResponse.model_fields
             }
             if event.get("retrieval_lane") == "graph_relations":
                 if public_event.get("route_reason_code") not in CHAT_GRAPH_SEARCH_REASONS:
@@ -560,3 +565,62 @@ def _invalid_cursor(detail: str) -> None:
         title="Invalid cursor",
         detail=detail,
     )
+
+
+def _activity_responses(value: ChatRun) -> tuple[ChatActivitySnapshot, ...]:
+    snapshots: dict[int, ChatActivitySnapshot] = {}
+    attempts = (value.timing or {}).get("attempts", {})
+    candidates = []
+    if isinstance(attempts, Mapping):
+        for key, record in attempts.items():
+            if isinstance(record, Mapping) and str(key).isdigit():
+                candidates.append((int(key), record.get("agent_trace"), False))
+    candidates.append((value.attempt, value.agent_trace, value.status == "completed"))
+    for attempt, trace, completed in candidates:
+        if not isinstance(trace, Mapping) or attempt > value.attempt:
+            continue
+        try:
+            snapshot = ChatActivitySnapshot.from_dict(trace.get("activity"))
+            if snapshot.attempt != attempt:
+                continue
+            if completed:
+                # Reading a committed successful run is the proof of persistence.
+                steps = tuple(replace(step, status="succeeded") if step.name == "persist_result" and step.status in ACTIVE_STATUSES else step for step in snapshot.steps)
+                snapshot = replace(snapshot, status="completed", steps=steps)
+            snapshots[attempt] = snapshot
+        except (ValueError, TypeError, AttributeError):
+            # Invalid/unknown observations never prevent reading the answer.
+            continue
+    return tuple(snapshots[key] for key in sorted(snapshots))
+
+
+def _public_timing(value: Mapping[str, object] | None) -> dict[str, object] | None:
+    if value is None:
+        return None
+    timing = dict(value)
+    attempts = timing.get("attempts")
+    if isinstance(attempts, Mapping):
+        records = {}
+        for key, record in attempts.items():
+            if isinstance(record, Mapping):
+                record = dict(record)
+                trace = record.get("agent_trace")
+                if isinstance(trace, dict):
+                    record["agent_trace"] = _public_agent_trace(trace)
+            records[key] = record
+        timing["attempts"] = records
+    return timing
+
+
+def _activity_unavailable(value: ChatRun, activities: tuple[ChatActivitySnapshot, ...]) -> bool:
+    expected = set()
+    if isinstance(value.agent_trace, Mapping) and "activity" in value.agent_trace:
+        expected.add(value.attempt)
+    attempts = (value.timing or {}).get("attempts", {})
+    if isinstance(attempts, Mapping):
+        for key, record in attempts.items():
+            if isinstance(record, Mapping) and str(key).isdigit() and 0 < int(key) <= value.attempt:
+                trace = record.get("agent_trace")
+                if isinstance(trace, Mapping) and "activity" in trace:
+                    expected.add(int(key))
+    return bool(expected - {item.attempt for item in activities})

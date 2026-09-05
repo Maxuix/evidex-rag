@@ -8,7 +8,6 @@ import {
 
 import { ApiClient, ApiClientError, loadRuntimeConfig } from "./api/client";
 import type {
-  ChatAgentTraceEvent,
   ChatMessage,
   ChatProgressSnapshot,
   ChatProgressStage,
@@ -50,6 +49,8 @@ import {
 } from "./storage";
 import { ModelSettingsDialog } from "./ModelSettingsDialog";
 import { KnowledgeBaseManagementPage } from "./KnowledgeBaseManagementPage";
+import { ExecutionTimeline } from "./execution/ExecutionTimeline";
+import { applyActivity, disconnectActivity, emptyActivity, type ActivityState } from "./execution/activityState";
 
 interface PendingRun {
   payload: ChatRunCreate;
@@ -157,6 +158,8 @@ export function KnowledgeChat({
     () => emptyProgress(null),
   );
 
+  const [activity, setActivity] = useState<ActivityState>(() => emptyActivity(null));
+
   const [runCache, setRunCache] = useState<Record<string, ChatRun>>({});
   const [evidence, setEvidence] = useState<EvidenceSelection | null>(null);
   const [evidenceLoading, setEvidenceLoading] = useState(false);
@@ -175,7 +178,6 @@ export function KnowledgeChat({
   const selectedSessionIdRef = useRef(selectedSessionId);
   const previousChatKnowledgeBaseIdRef = useRef(selectedKnowledgeBaseId);
   const previousChatSessionIdRef = useRef(selectedSessionId);
-  const skipSessionScopeInvalidationRef = useRef(false);
   selectedKnowledgeBaseIdRef.current = selectedKnowledgeBaseId;
   selectedSessionIdRef.current = selectedSessionId;
 
@@ -465,13 +467,9 @@ export function KnowledgeChat({
     );
     previousChatKnowledgeBaseIdRef.current = selectedKnowledgeBaseId;
     if (knowledgeBaseChanged) {
-      skipSessionScopeInvalidationRef.current = true;
-      previousChatSessionIdRef.current = selectedSessionId;
-      return;
-    }
-    if (skipSessionScopeInvalidationRef.current) {
-      skipSessionScopeInvalidationRef.current = false;
-      previousChatSessionIdRef.current = selectedSessionId;
+      // The KB effect resets to null. A subsequent non-null selection must
+      // still load its messages, even if the null reset was batched away.
+      previousChatSessionIdRef.current = null;
       return;
     }
     if (previousChatSessionIdRef.current === selectedSessionId) return;
@@ -573,6 +571,7 @@ export function KnowledgeChat({
 
   useEffect(() => {
     setProgress(emptyProgress(currentRun?.run_id ?? null));
+    setActivity(emptyActivity(currentRun?.run_id ?? null));
   }, [currentRun?.run_id]);
 
   useEffect(() => {
@@ -600,64 +599,74 @@ export function KnowledgeChat({
       return;
     }
     let cancelled = false;
+    let finished = false;
     let closeStream: (() => void) | null = null;
     let pollTimer: number | null = null;
+    let reconnectTimer: number | null = null;
+    let reconnectAttempts = 0;
     let polling = false;
+    const alive = () => !cancelled && !finished && isCurrent();
+    const accept = (next: ChatRun) => {
+      if (!alive() || next.run_id !== currentRun.run_id || next.knowledge_base_id !== token.knowledgeBaseId || next.session_id !== token.sessionId) return false;
+      if (isTerminal(next)) {
+        finished = true;
+        closeStream?.(); closeStream = null;
+        if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
+        if (pollTimer !== null) window.clearTimeout(pollTimer);
+      }
+      setCurrentRun(next);
+      return true;
+    };
     const poll = async () => {
-      if (cancelled) return;
+      if (!alive()) return;
       try {
         const next = await client.getChatRun(currentRun.run_id);
-        if (cancelled || !isCurrent() || next.knowledge_base_id !== token.knowledgeBaseId || next.session_id !== token.sessionId) return;
-        setCurrentRun(next);
-        if (!isTerminal(next)) {
-          pollTimer = window.setTimeout(
-            poll,
-            UI_POLICY.runPollInitialMs + Math.random() * UI_POLICY.runPollJitterMs,
-          );
-        }
+        if (accept(next) && !finished) pollTimer = window.setTimeout(poll, UI_POLICY.runPollInitialMs + Math.random() * UI_POLICY.runPollJitterMs);
       } catch {
-        if (!cancelled) pollTimer = window.setTimeout(poll, UI_POLICY.runPollRetryMs);
+        if (alive()) pollTimer = window.setTimeout(poll, UI_POLICY.runPollRetryMs);
       }
     };
     const beginPolling = () => {
-      if (cancelled || polling) return;
-      polling = true;
-      closeStream?.();
-      closeStream = null;
-      setProgress((current) => disconnectProgress(current, currentRun.run_id));
+      if (!alive()) return;
+      closeStream?.(); closeStream = null;
+      setProgress(current => disconnectProgress(current, currentRun.run_id));
+      setActivity(current => disconnectActivity(current, currentRun.run_id));
       setDeliveryMode("polling");
-      void poll();
-    };
-    const settle = async (statusUrl: string) => {
-      closeStream?.();
-      closeStream = null;
-      try {
-        const next = await client.getChatRun(statusUrl);
-        if (!cancelled && isCurrent() && next.knowledge_base_id === token.knowledgeBaseId && next.session_id === token.sessionId) setCurrentRun(next);
-      } catch {
-        beginPolling();
+      if (!polling) { polling = true; void poll(); }
+      if (reconnectTimer === null && reconnectAttempts < 3) {
+        const delay = [1000, 2500, 5000][reconnectAttempts++];
+        reconnectTimer = window.setTimeout(() => { reconnectTimer = null; if (alive()) connect(); }, delay);
       }
     };
-    closeStream = client.subscribeChatRun(currentRun.events_url, {
-      open: () => !cancelled && isCurrent() && setDeliveryMode("sse"),
-      completed: (event) => void settle(event.status_url),
-      failed: (event) => void settle(event.status_url),
-      progress: (event) => {
-        if (isCurrent()) setProgress(
-          (current) => applyProgress(current, currentRun.run_id, event),
-        );
-      },
-      progressInvalid: () => {
-        if (isCurrent()) setProgress(
-          (current) => disconnectProgress(current, currentRun.run_id),
-        );
-      },
-      error: beginPolling,
-    });
+    const settle = async (event: { run_id: string; status_url: string }) => {
+      if (!alive() || event.run_id !== currentRun.run_id) return;
+      closeStream?.(); closeStream = null;
+      try { accept(await client.getChatRun(event.status_url)); }
+      catch { beginPolling(); }
+    };
+    const connect = () => {
+      closeStream = client.subscribeChatRun(currentRun.events_url, {
+        open: () => {
+          if (!alive()) return;
+          setDeliveryMode("sse");
+          setProgress(current => ({ ...current, mode: current.snapshot ? "live" : "idle" }));
+          setActivity(current => ({ ...current, mode: "live" }));
+        },
+        completed: event => void settle(event),
+        failed: event => void settle(event),
+        progress: event => { if (alive()) setProgress(current => applyProgress(current, currentRun.run_id, event)); },
+        progressInvalid: () => { if (alive()) setProgress(current => disconnectProgress(current, currentRun.run_id)); },
+        activity: event => { if (alive()) setActivity(current => applyActivity(current, currentRun.run_id, currentRun.attempt, event)); },
+        activityInvalid: () => { if (alive()) setActivity(current => ({ ...current, invalid: true })); },
+        error: beginPolling,
+      });
+    };
+    connect();
     return () => {
       cancelled = true;
       closeStream?.();
       if (pollTimer !== null) window.clearTimeout(pollTimer);
+      if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
     };
   }, [client, currentRun?.run_id, currentRun?.status, loadMessages, selectedSessionId]);
 
@@ -1111,6 +1120,8 @@ export function KnowledgeChat({
                 <Message
                   key={message.id}
                   message={message}
+                  client={client}
+                  activity={message.run_id === currentRun?.run_id ? activity : null}
                   run={message.run_id ? runCache[message.run_id] ?? null : null}
                   progress={
                     message.run_id
@@ -1470,11 +1481,15 @@ function ComposerMenuIcon({ kind }: {
 
 function Message({
   message,
+  client,
+  activity,
   run,
   progress,
   onCitation,
 }: {
   message: ChatMessage;
+  client: ApiClient;
+  activity: ActivityState | null;
   run: ChatRun | null;
   progress: ChatProgressState | null;
   onCitation: (ordinal: number, trigger: HTMLButtonElement) => void;
@@ -1494,18 +1509,14 @@ function Message({
       <div className="assistant-mark" aria-hidden="true">K</div>
       <div className="assistant-content">
         {run ? (
-          <ExecutionTrace
-            run={run}
-            progress={progress}
-            generating={generating}
-          />
+          <ExecutionTimeline key={run.run_id} run={run} activity={activity} progress={progress} client={client} onCitation={onCitation} />
         ) : null}
-        {generating ? (
+        {generating ? (!run ? (
           <div className="thinking" aria-live="polite">
             <span /><span /><span />
             <strong>正在查找资料并整理回答</strong>
           </div>
-        ) : failed ? (
+        ) : null) : failed ? (
           <p className="failed-answer">这次回答没有完成，请稍后再次提问。</p>
         ) : (
           <>
@@ -1523,536 +1534,6 @@ function Message({
       </div>
     </article>
   );
-}
-
-function ExecutionTrace({
-  run,
-  progress,
-  generating,
-}: {
-  run: ChatRun;
-  progress: ChatProgressState | null;
-  generating: boolean;
-}) {
-  const terminal = isTerminal(run);
-  const [expanded, setExpanded] = useState(false);
-  useEffect(() => setExpanded(false), [run.run_id]);
-
-  const disconnected = generating && progress?.mode === "disconnected";
-  const metrics = answerProcessMetrics(run);
-  const content = (
-    <div className="execution-trace-body">
-      {disconnected ? (
-        <div className="answer-process-notice" role="status">
-          实时进度连接已中断，回答仍在后台运行；这里保留最后一次确认的状态。
-        </div>
-      ) : null}
-      {run.status === "completed" ? (
-        <CompletedAnswerProcess run={run} metrics={metrics} />
-      ) : (
-        <ActiveAnswerProcess
-          run={run}
-          snapshot={progress?.snapshot ?? null}
-          disconnected={disconnected}
-        />
-      )}
-      {terminal ? <AnswerProcessTechnicalDetails run={run} metrics={metrics} /> : null}
-    </div>
-  );
-  if (terminal) {
-    return (
-      <section className={`execution-trace terminal-trace${expanded ? " expanded" : ""}`}>
-        <button
-          className="answer-process-toggle"
-          type="button"
-          aria-expanded={expanded}
-          onClick={() => setExpanded((value) => !value)}
-        >
-          <span>回答过程</span>
-          <strong className={run.status === "completed" ? "complete" : "incomplete"}>
-            {run.status === "completed" ? "已完成" : "未完成"}
-          </strong>
-        </button>
-        {expanded ? content : null}
-      </section>
-    );
-  }
-  return (
-    <section className="execution-trace" aria-label="实时回答过程">
-      <header>
-        <span>回答过程</span>
-        <strong className="active">进行中</strong>
-      </header>
-      {content}
-    </section>
-  );
-}
-
-interface AnswerProcessMetrics {
-  retrievalCalls: number;
-  candidateCount: number;
-  citationCount: number;
-  calculationCalls: number;
-  modelRounds: number;
-  graphRelationsStatus: string | null;
-  graphRelationsNewEvidenceCount: number;
-  graphRelationsCallCount: number;
-  graphRelationsHopCounts: {
-    hop1Count: number;
-    hop2Count: number;
-    hop3Count: number;
-  };
-}
-
-interface AnswerProcessStep {
-  key: string;
-  title: string;
-  description: string;
-  meta: string;
-}
-
-function CompletedAnswerProcess({
-  run,
-  metrics,
-}: {
-  run: ChatRun;
-  metrics: AnswerProcessMetrics;
-}) {
-  const summary = completedAnswerSummary(run, metrics);
-  const steps = completedAnswerSteps(run, metrics);
-  return (
-    <>
-      <section className="answer-process-summary" aria-labelledby={`answer-summary-${run.run_id}`}>
-        <h3 id={`answer-summary-${run.run_id}`}>{summary.title}</h3>
-        <p>{summary.description}</p>
-      </section>
-      <AnswerProcessMetricList metrics={metrics} />
-      <h3 className="answer-process-section-title">本次回答经历了什么</h3>
-      <ol className="answer-process-steps">
-        {steps.map((step, index) => (
-          <li key={step.key}>
-            <span className="answer-process-step-number" aria-hidden="true">
-              {index + 1}
-            </span>
-            <div>
-              <h4>{step.title}</h4>
-              <p>{step.description}</p>
-              <span className="answer-process-step-meta">{step.meta}</span>
-            </div>
-          </li>
-        ))}
-      </ol>
-    </>
-  );
-}
-
-function AnswerProcessMetricList({ metrics }: { metrics: AnswerProcessMetrics }) {
-  return (
-    <ul className="answer-process-metrics" aria-label="本次回答摘要">
-      <li className="retrieval"><span>检索</span><strong>{metrics.retrievalCalls} 次</strong></li>
-      <li className="candidate"><span>候选资料</span><strong>{metrics.candidateCount} 条</strong></li>
-      <li className="citation"><span>最终引用</span><strong>{metrics.citationCount} 条</strong></li>
-      {metrics.graphRelationsStatus ? (
-        <li className="retrieval"><span>图谱关系检索</span><strong>{metrics.graphRelationsStatus}</strong></li>
-      ) : null}
-    </ul>
-  );
-}
-
-function ActiveAnswerProcess({
-  run,
-  snapshot,
-  disconnected,
-}: {
-  run: ChatRun;
-  snapshot: ChatProgressSnapshot | null;
-  disconnected: boolean;
-}) {
-  const failed = run.status === "failed" || run.status === "cancelled";
-  const activity = liveActivityView(snapshot?.activity ?? "load_context");
-  const meta = liveProgressMeta(snapshot);
-  return (
-    <>
-      <section className={`answer-process-summary${failed ? " failed" : ""}`}>
-        <h3>{failed
-          ? run.status === "cancelled" ? "这次回答已停止" : "这次回答未能完成"
-          : "正在查找资料并整理回答"}</h3>
-        <p>{failed
-          ? "这里只展示停止前已确认的状态；未完成的步骤不会被标记为完成。"
-          : "进度会随着已确认的工作更新，不会预先补齐尚未发生的步骤。"}</p>
-      </section>
-      <div
-        className={`answer-process-live-step${failed ? " failed" : ""}`}
-        aria-live={failed || disconnected ? "off" : "polite"}
-      >
-        <span className="answer-process-step-number" aria-hidden="true">
-          {activity.step}
-        </span>
-        <div>
-          <span className="answer-process-live-label">
-            {failed ? "最后确认的状态" : disconnected ? "最后收到的进度" : "当前进度"}
-          </span>
-          <h4>{activity.title}</h4>
-          <p>{activity.description}</p>
-          {meta ? <span className="answer-process-step-meta">{meta}</span> : null}
-        </div>
-      </div>
-    </>
-  );
-}
-
-function AnswerProcessTechnicalDetails({
-  run,
-  metrics,
-}: {
-  run: ChatRun;
-  metrics: AnswerProcessMetrics;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const modelName = run.model.profile_name || run.model.model;
-  const hiddenDiagnosticCount = run.agent.trace?.events.filter(
-    (event) => event.tool === "protocol" || event.status !== "ok",
-  ).length ?? 0;
-  return (
-    <>
-      <section className={`answer-process-technical${expanded ? " expanded" : ""}`}>
-        <button
-          type="button"
-          aria-expanded={expanded}
-          onClick={() => setExpanded((value) => !value)}
-        >
-          <span>查看技术详情</span>
-          <small>
-            {modelName} · 模型 {metrics.modelRounds} 轮 · 诊断信息已{expanded ? "展开" : "收起"}
-          </small>
-        </button>
-        {expanded ? (
-          <dl>
-            <div><dt>Agent</dt><dd>Native Tool-Calling</dd></div>
-            <div><dt>模型</dt><dd>{modelName}</dd></div>
-            <div><dt>检索调用</dt><dd>{metrics.retrievalCalls} 次</dd></div>
-            {metrics.graphRelationsStatus ? (
-              <div><dt>图谱关系检索</dt><dd>{metrics.graphRelationsStatus}</dd></div>
-            ) : null}
-            {metrics.graphRelationsCallCount > 0 ? (
-              <div><dt>图谱调用</dt><dd>{metrics.graphRelationsCallCount} 次</dd></div>
-            ) : null}
-            <div><dt>计算调用</dt><dd>{metrics.calculationCalls} 次</dd></div>
-            {hiddenDiagnosticCount > 0 ? (
-              <div><dt>校验调整</dt><dd>{hiddenDiagnosticCount} 次</dd></div>
-            ) : null}
-          </dl>
-        ) : null}
-      </section>
-      <p className="answer-process-privacy-note">
-        默认隐藏工具 ID、event ref 与协议状态；这些内部标记不会作为回答结果展示。
-      </p>
-    </>
-  );
-}
-
-function answerProcessMetrics(run: ChatRun): AnswerProcessMetrics {
-  const trace = run.agent.trace;
-  const searchEvents = trace?.events.filter(
-    (event) =>
-      (
-        event.tool === "search_knowledge_base"
-        || event.tool === "semantic_search"
-        || event.tool === "keyword_search"
-        || event.tool === "read_chunk_context"
-      )
-      && event.status === "ok",
-  ) ?? [];
-  const eventCandidateCount = Math.max(0, ...searchEvents.map((event) => event.count));
-  const graphEvents = trace?.events.filter(
-    (event) => event.tool === "search_graph_relations",
-  ) ?? [];
-  const lastGraphEvent = graphEvents[graphEvents.length - 1];
-  const adaptiveProfile = run.retrieval.mode === "auto";
-  const graphRelationsStatus = adaptiveProfile
-    ? graphRelationsStatusLabel(
-      lastGraphEvent?.route_result_code,
-      lastGraphEvent?.new_evidence_count ?? 0,
-    )
-    : null;
-  return {
-    retrievalCalls: safeUsageCount(run, "retrieval_calls", searchEvents.length),
-    candidateCount: safeUsageCount(run, "evidence_refs", eventCandidateCount),
-    citationCount: run.citations.length,
-    calculationCalls: safeUsageCount(
-      run,
-      "calculation_calls",
-      trace?.events.filter(
-        (event) => event.tool === "calculate" && event.status === "ok",
-      ).length ?? 0,
-    ),
-    modelRounds: safeUsageCount(run, "model_rounds", 0),
-    graphRelationsStatus,
-    graphRelationsNewEvidenceCount: lastGraphEvent?.new_evidence_count ?? 0,
-    graphRelationsCallCount: graphEvents.length,
-    graphRelationsHopCounts: {
-      hop1Count: lastGraphEvent?.hop1_count ?? 0,
-      hop2Count: lastGraphEvent?.hop2_count ?? 0,
-      hop3Count: lastGraphEvent?.hop3_count ?? 0,
-    },
-  };
-}
-
-function graphRelationsStatusLabel(
-  status: ChatAgentTraceEvent["route_result_code"] | undefined,
-  count: number,
-): string {
-  switch (status) {
-    case "admitted":
-      return `已返回 · 新增 ${count} 条`;
-    case "no_evidence":
-      return "已检索但无新增证据";
-    case "not_ready":
-      return "图谱当前未就绪";
-    case "timeout":
-      return "图谱检索超时";
-    case "unavailable":
-      return "图谱当前不可用";
-    case "rejected":
-      return "未执行";
-    case "not_requested":
-    case undefined:
-      return "未请求";
-    default:
-      return "未请求";
-  }
-}
-
-function safeUsageCount(run: ChatRun, key: string, fallback: number): number {
-  const value = run.agent.trace?.usage[key];
-  return typeof value === "number" && Number.isFinite(value)
-    ? Math.max(0, Math.trunc(value))
-    : fallback;
-}
-
-function completedAnswerSummary(
-  run: ChatRun,
-  metrics: AnswerProcessMetrics,
-): { title: string; description: string } {
-  const outcome = run.agent.trace?.outcome ?? (run.answer ? "answered" : "refused");
-  if (outcome === "clarify") {
-    return {
-      title: "系统需要先和你确认问题的具体指向",
-      description: "问题存在歧义，系统没有猜测你的意图，请根据追问补充说明。",
-    };
-  }
-  if (outcome === "refused") {
-    return {
-      title: "这次回答没有找到足够可靠的支持材料",
-      description: metrics.retrievalCalls > 0
-        ? `系统检索了 ${metrics.retrievalCalls} 次，但没有用不可靠的候选内容拼凑答案。`
-        : "系统没有生成缺少可靠依据的推测性回答。",
-    };
-  }
-  if (outcome === "partial") {
-    return {
-      title: `这次回答只保留了有可靠来源的部分内容，并使用 ${metrics.citationCount} 条来源`,
-      description: `${candidateSummaryDescription(metrics)}${graphitiSummaryDescription(metrics)}`,
-    };
-  }
-  return {
-    title: metrics.retrievalCalls > 0
-      ? `这次回答查找了 ${metrics.retrievalCalls} 次资料，最终使用 ${metrics.citationCount} 条来源`
-      : `这次回答已经完成，最终使用 ${metrics.citationCount} 条来源`,
-    description: `${candidateSummaryDescription(metrics)}${graphitiSummaryDescription(metrics)}`,
-  };
-}
-
-function candidateSummaryDescription(metrics: AnswerProcessMetrics): string {
-  if (metrics.retrievalCalls === 0) {
-    return "本次没有调用知识库检索；最终引用数量仍以回答实际采用的来源为准。";
-  }
-  if (metrics.candidateCount === 0) {
-    return "这次检索没有产生可用候选资料，因此不会把内部调用记录当作引用展示。";
-  }
-  return `检索到的 ${metrics.candidateCount} 条内容只是候选资料；只有经过整理并被最终回答采用的来源才会显示为引用。`;
-}
-
-function graphitiSummaryDescription(metrics: AnswerProcessMetrics): string {
-  const { graphRelationsStatus: status } = metrics;
-  if (!status) return "";
-  const hopSummary = [
-    metrics.graphRelationsHopCounts.hop1Count > 0
-      ? `一跳 ${metrics.graphRelationsHopCounts.hop1Count} 条`
-      : "",
-    metrics.graphRelationsHopCounts.hop2Count > 0
-      ? `两跳 ${metrics.graphRelationsHopCounts.hop2Count} 条`
-      : "",
-    metrics.graphRelationsHopCounts.hop3Count > 0
-      ? `三跳 ${metrics.graphRelationsHopCounts.hop3Count} 条`
-      : "",
-  ].filter(Boolean).join("、");
-  const hopText = metrics.graphRelationsCallCount > 0 && hopSummary
-    ? `（${hopSummary}）`
-    : "";
-  if (metrics.graphRelationsNewEvidenceCount > 0) {
-    return ` 图谱关系检索新增 ${metrics.graphRelationsNewEvidenceCount} 条来源候选${hopText}。`;
-  }
-  return ` 图谱关系检索（第 ${metrics.graphRelationsCallCount} 次）：${status}${hopText}。`;
-}
-
-function completedAnswerSteps(
-  run: ChatRun,
-  metrics: AnswerProcessMetrics,
-): AnswerProcessStep[] {
-  const outcome = run.agent.trace?.outcome ?? (run.answer ? "answered" : "refused");
-  const searchTitle = metrics.retrievalCalls > 1
-    ? `查找资料 · 第 1–${metrics.retrievalCalls} 次`
-    : metrics.retrievalCalls === 1 ? "查找资料 · 1 次" : "评估可用资料";
-  const searchDescription = metrics.retrievalCalls > 0
-    ? `共找到 ${metrics.candidateCount} 条候选内容；系统会继续筛选，候选资料不等于最终引用。${graphitiSummaryDescription(metrics)}`
-    : "本次没有调用知识库检索，也不会虚构检索阶段或候选数量。";
-  const verificationDescription = outcome === "refused"
-    ? "没有足够可靠的来源支持结论，因此没有生成推测性回答。"
-    : outcome === "clarify"
-      ? "问题指向存在歧义，系统没有基于猜测生成回答。"
-      : metrics.citationCount > 0
-        ? `最终回答实际采用 ${metrics.citationCount} 条来源；未采用的候选内容不会显示为引用。`
-        : "回答没有附带来源；界面不会把候选内容误标为最终引用。";
-  const resultDescription = outcome === "refused"
-    ? "本次以说明资料不足结束，没有输出无依据的结论。"
-    : outcome === "clarify"
-      ? "本次以追问结束，请补充说明后系统会继续回答。"
-      : outcome === "partial"
-        ? `已生成部分回答，并附上实际采用的 ${metrics.citationCount} 条来源。`
-        : `回答已生成，并附上实际采用的 ${metrics.citationCount} 条来源。`;
-  return [
-    {
-      key: "understand",
-      title: "理解问题",
-      description: "结合本次问题与会话上下文，确定需要查找和核对的知识范围。",
-      meta: "输入已就绪",
-    },
-    {
-      key: "search",
-      title: searchTitle,
-      description: searchDescription,
-      meta: metrics.retrievalCalls > 0
-        ? `${metrics.retrievalCalls} 次检索 · ${metrics.candidateCount} 条候选资料`
-        : "未调用知识库检索",
-    },
-    {
-      key: "verify",
-      title: "整理并核验回答",
-      description: verificationDescription,
-      meta: metrics.citationCount > 0
-        ? `${metrics.citationCount} 条最终引用来源`
-        : "没有最终引用来源",
-    },
-    {
-      key: "result",
-      title: "完成结果",
-      description: resultDescription,
-      meta: outcome === "refused"
-        ? "完成 · 未生成推测性结论"
-        : outcome === "clarify"
-          ? "完成 · 等待你的补充说明"
-          : `完成 · 最终引用 ${metrics.citationCount} 条`,
-    },
-  ];
-}
-
-function liveActivityView(
-  activity: ChatProgressSnapshot["activity"],
-): { step: number; title: string; description: string } {
-  const views: Record<ChatProgressSnapshot["activity"] | "semantic_search" | "keyword_search" | "read_chunk_context" | "list_documents", {
-    step: number;
-    title: string;
-    description: string;
-  }> = {
-    load_context: {
-      step: 1,
-      title: "理解问题",
-      description: "正在读取本次问题与会话上下文。",
-    },
-    tool_decision: {
-      step: 1,
-      title: "确定下一步",
-      description: "正在判断是否需要查找资料、核对计算或整理回答。",
-    },
-    search_knowledge_base: {
-      step: 2,
-      title: "查找资料",
-      description: "正在知识库中查找与问题相关的候选内容。",
-    },
-    semantic_search: {
-      step: 2,
-      title: "语义检索",
-      description: "正在按概念和释义查找相关内容。",
-    },
-    keyword_search: {
-      step: 2,
-      title: "关键词检索",
-      description: "正在按专名、编号或精确短语查找相关内容。",
-    },
-    read_chunk_context: {
-      step: 2,
-      title: "阅读相邻片段",
-      description: "正在读取已命中片段的相邻上下文。",
-    },
-    list_documents: {
-      step: 2,
-      title: "盘点文档",
-      description: "正在列出知识库中的文档清单。",
-    },
-    search_graph_relations: {
-      step: 2,
-      title: "图谱关系检索",
-      description: "正在图谱中查找完整的关系路径证据。",
-    },
-    retrieval_complete: {
-      step: 2,
-      title: "整理候选资料",
-      description: "正在合并并去除重复的检索结果。",
-    },
-    prepare_visual_evidence: {
-      step: 2,
-      title: "核对可引用素材",
-      description: "正在确认与文字证据相关的图片或表格。",
-    },
-    calculate: {
-      step: 3,
-      title: "核对计算",
-      description: "正在基于已找到的资料检查计算结果。",
-    },
-    submit_answer: {
-      step: 3,
-      title: "整理并核验回答",
-      description: "正在提交回答并核对来源是否有效。",
-    },
-    generate_answer: {
-      step: 3,
-      title: "整理回答",
-      description: "正在根据可用资料生成回答。",
-    },
-    validate_answer: {
-      step: 3,
-      title: "核验回答",
-      description: "正在检查回答内容与引用来源。",
-    },
-    persist_result: {
-      step: 4,
-      title: "完成结果",
-      description: "正在保存最终回答和引用来源。",
-    },
-  };
-  return views[activity];
-}
-
-function liveProgressMeta(snapshot: ChatProgressSnapshot | null): string | null {
-  if (!snapshot) return null;
-  const facts = snapshot.facts;
-  if (facts.retrieval_calls !== null && facts.evidence_count !== null) {
-    return `${facts.retrieval_calls} 次检索 · ${facts.evidence_count} 条候选资料`;
-  }
-  if (facts.retrieval_calls !== null) return `已检索 ${facts.retrieval_calls} 次`;
-  if (facts.evidence_count !== null) return `已找到 ${facts.evidence_count} 条候选资料`;
-  return null;
 }
 
 function Welcome({

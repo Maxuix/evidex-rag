@@ -619,8 +619,9 @@ ChatRun 是唯一持久执行状态；没有 graph checkpoint、Controller、Ver
 Repair 或逐步骤 ledger。成功终态原子保存有界 Agent Trace。迁移
 `0010_drop_legacy_workflow` 已删除旧 workflow configuration/state 及其中的
 ResearchResult/SearchTrace 诊断；核心 ChatRun、消息、答案、Citation、usage 和 timing 事实保留。
-ChatRun 内部 trace 保存有界的工具事件和终态引用解析计数，供本地诊断使用；公开 API/SSE
-只保留隐私审查过的工具、lane、安全枚举与计数。
+ChatRun 内部旧 trace 保留有界工具事件和终态引用解析计数；新增的 `chat_activity_v1`
+观测快照记录实际执行边界，公开经过校验的工具输入、来源元数据和结果计数，不保存模型推理
+或原始 provider 输出。它不参与执行控制，也不是逐步骤事务日志。
 共享 trace artifact key 属于 domain 契约，不由 `services` 反向导入 Agent 实现。
 `ChatAnsweringState` 只保存真实 Evidence 可用引用、模型调用、视觉附件、确定性校验结果与渲染结果；
 不保存重复的原始模型草稿，也不伪造旧 assessment/structure-validation 状态。
@@ -670,7 +671,26 @@ Provider 单次调用的 SDK timeout 与有限 retry 由一个逻辑预算统一
 `timeout * (max_retries + 1) + 60 * max_retries + 1` 秒；Adapter 的外层总预算覆盖整个
 semaphore/retry 窗口。Worker 启动时拒绝不大于该预算的 Chat Agent deadline；本地默认 deadline
 为 600 秒，ChatRun 的既有 attempt 上限不因 Agent 而增加。
-Agent progress 是 content-safe、易失且不可重放的快照；断线后读取权威 ChatRun。
+每次 attempt 使用一个内存 `ChatActivityRecorder` 观察模型轮次、工具调用与实际系统操作。
+工具在并发派发前获得服务端 ordinal/step_id；各自进入执行、返回/合并和结束状态，合并后的
+EvidenceRef 与新证据数沿用原 Agent 的证据顺序。输入只在对应参数校验通过后记录；计算
+表达式还必须通过确定性求值。来源只包含文档/版本/chunk 身份、标题、位置及内部 ref，
+不含检索正文、模型正文、凭据或任意诊断对象。图谱记录路径与跳数，基础设施不可用显示失败。
+
+同一 recorder 产生易失 `agent.activity` 事件与终态快照。`chat_activity_v1` 使用独立版本，
+`run_id + attempt + step_id + seq` 标识更新；序号在进入有界队列前分配，前端可识别丢失。
+PG NOTIFY 预览最多 4000 UTF-8 字节，超限缩短输入/来源并标记 `details_truncated`，不阻塞
+回答。每个终态快照最多 1024 步、1 MiB：先裁剪较早详情，再移除较早步骤，显式记录省略数。
+成功快照进入既有 `agent_trace.activity`，失败、超时与协作式 Worker 停止的部分快照进入
+原 attempt timing ledger；重新尝试不覆盖此前记录，无新表或迁移。强杀进程不能保留内存
+中尚未提交的观察。`persist_result` 只有在提交后的 ChatRun 读取投影中才确认为成功，不伪造
+落库耗时。
+
+公开 ChatRun 的 `activities` 按 attempt 投影并校验快照，旧 trace 与 timing 不重复暴露内部
+activity。无效/未知记录通过 `activity_unavailable` 提示，不影响回答读取；
+`live_progress_available` 区分服务端未开启进度。旧 `agent.progress` 保留兼容。
+实时轨迹不支持持久重放；刷新运行中的页面可能缺少之前的调用，断线保留已收记录、有限
+重连三次并独立轮询 ChatRun，完成后以保存快照校准。终态优先于迟到事件或轮询。
 
 这些约束直接保护回答可信度和个人数据，继续保留；模型调用的细粒度 timing、wire 版本和每个
 中间 hash 不应自动成为未来功能的强制模板。
@@ -685,7 +705,7 @@ Agent progress 是 content-safe、易失且不可重放的快照；断线后读�
 - retrieval query、Graph 配置 `GET/PUT /knowledge-bases/{kb_id}/graph-config` 和授权
   `GET /index-assets/{asset_id}/content`；Graph 查询仍是明确的外层 `graph` 模式，路径仍只返回
   当前 serving 的原始 Chunk Evidence；Chat creation 另支持 Chat-only `auto` 模式；
-- chat sessions、messages、runs 和 events；SSE 进度事件为 `agent.progress`。
+- chat sessions、messages、runs 和 events；SSE 逐调用事件为 `agent.activity`，兼容阶段快照 `agent.progress`。
 
 上传、状态、分页、幂等和错误的精确契约以 OpenAPI、schema 和路由测试为准。未实现能力不
 添加占位成功路由。索引任务状态对当前 PDF 额外公开 content-safe 的阶段、页段、OCR、表格、
@@ -694,7 +714,12 @@ Agent progress 是 content-safe、易失且不可重放的快照；断线后读�
 
 `apps/web-chat` 是本地唯一前端，提供知识库创建/删除、文档批量导入/更新/删除、索引进度、
 chunk 预览/排除、检索 debug，以及知识库/Session 选择、统一 Native Agent 提问、
-终态回答、有界工具轨迹和证据抽屉。管理页复用 Chat 既有视觉 token 与侧栏，不形成第二套 UI。
+终态回答、逐调用时间线和证据抽屉。时间线按真实模型轮次展示并行工具、输入、来源、
+结果与耗时；运行中默认展开并跟随最新步骤，历史默认折叠，用户向上阅读时暂停跟随。
+重复调用与不同 attempt 保留独立记录。旧 trace 只投影实际已存事件，缺少输入/轮次/耗时
+直接说明，不能编造固定阶段或独立核验过程。最终引用仍使用 Citation 抽屉，普通检索片段
+通过既有文档/chunk 接口读取，先检查知识库、文档版本和 index revision，不用新版本替代
+历史来源；文本以纯文本渲染。管理页复用 Chat 既有视觉 token 与侧栏，不形成第二套 UI。
 它只调用公开 API；诊断功能不等于生产管理控制面。Chat 与管理页的异步读写使用 generation、
 作用域身份和请求序号守卫，旧 KB/session/document 的 success、error、finally 回调不得覆盖当前视图。
 

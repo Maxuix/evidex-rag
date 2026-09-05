@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Protocol
 from uuid import UUID
 
+from rag_kb.domain.chat_activity import ChatActivityEvent
 from rag_kb.domain.chat_preview import (
     ChatProgressUpdate,
     ChatPreviewEvent,
@@ -14,6 +15,8 @@ from rag_kb.domain.chat_preview import (
 class ChatPreviewSink(Protocol):
     @property
     def enabled(self) -> bool: ...
+
+    def emit_activity(self, event: ChatActivityEvent) -> None: ...
 
     async def emit_progress(
         self,

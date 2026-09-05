@@ -144,7 +144,7 @@ class ChatRunScheduler:
                         outcome="terminal",
                     )
             elif stop_task in done:
-                await _cancel(pipeline_task)
+                interrupted = await _cancel(pipeline_task)
                 log_event(
                     LOGGER,
                     "chat_attempt_stopped",
@@ -152,7 +152,7 @@ class ChatRunScheduler:
                     run_id=lease.run_id,
                     attempt=lease.attempt,
                 )
-                await self._settle_stopped(lease)
+                await self._settle_stopped(lease, interrupted)
             else:
                 await _cancel(pipeline_task)
                 log_event(
@@ -164,8 +164,8 @@ class ChatRunScheduler:
                     attempt=lease.attempt,
                 )
         except asyncio.CancelledError:
-            await _cancel(pipeline_task)
-            await self._settle_stopped(lease)
+            interrupted = await _cancel(pipeline_task)
+            await self._settle_stopped(lease, interrupted)
             raise
         finally:
             heartbeat_task.cancel()
@@ -204,10 +204,10 @@ class ChatRunScheduler:
                 ownership_lost.set()
                 return
 
-    async def _settle_stopped(self, lease: ChatRunLease) -> None:
+    async def _settle_stopped(self, lease: ChatRunLease, interrupted: ChatPipelineExecutionError | None = None) -> None:
         await self._failure_settler.settle(
             lease,
-            ChatPipelineExecutionError(
+            interrupted or ChatPipelineExecutionError(
                 ErrorCode.CHAT_WORKER_STOPPED,
                 phase=ChatPipelinePhase.LOAD_CONTEXT,
                 diagnostic={"operation": "worker_shutdown"},
@@ -215,7 +215,8 @@ class ChatRunScheduler:
         )
 
 
-async def _cancel(task: asyncio.Task) -> None:
+async def _cancel(task: asyncio.Task) -> ChatPipelineExecutionError | None:
     if not task.done():
         task.cancel()
-    await asyncio.gather(task, return_exceptions=True)
+    result = (await asyncio.gather(task, return_exceptions=True))[0]
+    return result if isinstance(result, ChatPipelineExecutionError) else None

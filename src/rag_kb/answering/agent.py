@@ -10,6 +10,8 @@ import time
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
+from rag_kb.answering.activity import ChatActivityRecorder
+from rag_kb.domain.chat_activity import ACTIVITY_TOOLS, CHAT_ACTIVITY_ARTIFACT, ActivitySource
 from rag_kb.answering.model_execution import (
     complete_model,
     model_call_record,
@@ -112,12 +114,15 @@ class _CallOutcome:
     route_reason_code: str | None = None
     graph_call_index: int | None = None
     item_extras: dict[str, dict[str, Any]] | None = None
+    activity_step_id: str | None = None
+    activity_result: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
 class ChatAgentProgress:
     """In-memory, non-blocking checkpoint for one Agent attempt."""
 
+    activity: ChatActivityRecorder | None = None
     started_at: float = field(default_factory=time.monotonic)
     deadline_seconds: float | None = None
     budget: ChatAgentBudget | None = None
@@ -190,6 +195,7 @@ class ChatAgentProgress:
             "usage": usage,
             "diagnostics": diagnostics,
             "outcome": None,
+            "activity": self.activity.snapshot("failed").as_dict() if self.activity else None,
         }
 
 
@@ -228,6 +234,9 @@ class NativeToolCallingAgent:
         progress: ChatAgentProgress | None = None,
     ) -> ChatPipelineState:
         progress = progress or ChatAgentProgress(deadline_seconds=deadline_seconds)
+        if progress.activity is None:
+            progress.activity = ChatActivityRecorder(context.run_id, context.attempt, started_at=progress.started_at)
+        activity = progress.activity
         budget = _budget_from_context(context)
         progress.budget = budget
         adaptive_graphiti = _adaptive_graphiti_enabled(context)
@@ -296,7 +305,7 @@ class NativeToolCallingAgent:
                 )
                 raise failure
 
-        async def _execute_one(call: ChatToolCall) -> _CallOutcome:
+        async def _execute_one(call: ChatToolCall, step_id: str) -> _CallOutcome:
             """Validate and execute one tool call; never raises for provider
             or retrieval failures, only for unexpected bugs."""
             nonlocal keyword_ready
@@ -318,6 +327,7 @@ class NativeToolCallingAgent:
                         event_status="rejected",
                     )
                 assert queries is not None
+                activity.update(step_id, "running", queries=queries, top_k=top_k_override or frozen_top_k)
                 lane = "semantic" if name == "semantic_search" else "keyword"
                 search_method = (
                     self._retriever.semantic_search
@@ -381,6 +391,7 @@ class NativeToolCallingAgent:
                         event_status="rejected",
                     )
                 assert refs is not None and anchors is not None
+                activity.update(step_id, "running", refs=refs)
                 try:
                     neighbors = await self._retriever.read_chunk_context(
                         context, anchors
@@ -430,6 +441,7 @@ class NativeToolCallingAgent:
                         response=_argument_error("invalid_arguments"),
                         event_status="rejected",
                     )
+                activity.update(step_id, "running", include_outline=include_outline)
                 try:
                     listed = await self._retriever.list_documents(context)
                 except ChatPipelineExecutionError as error:
@@ -457,6 +469,15 @@ class NativeToolCallingAgent:
                     call=call,
                     lane="document_list",
                     executed=True,
+                    activity_result={
+                        "document_count": len(listed.entries),
+                        "details_truncated": listed.truncated or any(len(" · ".join(entry.outline)) > 256 for entry in listed.entries) if include_outline else listed.truncated,
+                        "sources": tuple(ActivitySource(
+                            document_id=str(entry.document_id), document_version_id=str(entry.document_version_id),
+                            title=entry.display_name[:512],
+                            location=(" · ".join(entry.outline)[:256] or None) if include_outline else None,
+                        ) for entry in listed.entries),
+                    },
                     response=json.dumps(
                         {
                             "status": "ok",
@@ -486,6 +507,7 @@ class NativeToolCallingAgent:
                         event_status="rejected",
                     )
                 query, route_reason_code = graph_request
+                activity.update(step_id, "running", queries=(query,))
                 started = time.monotonic()
                 try:
                     graph_search_result = (
@@ -541,9 +563,11 @@ class NativeToolCallingAgent:
                         ),
                         event_status="rejected",
                     )
+                activity.update(step_id, "running", expression=expression)
                 return _CallOutcome(
                     call=call,
                     executed=True,
+                    activity_result={"result_value": fact.result},
                     response=json.dumps(
                         {"status": "ok", "result": fact.result},
                         separators=(",", ":"),
@@ -554,6 +578,31 @@ class NativeToolCallingAgent:
             return _CallOutcome(
                 call=call, response=_PROTOCOL_ERROR, event_status="rejected"
             )
+
+        async def _observe_one(call: ChatToolCall, step_id: str) -> _CallOutcome:
+            try:
+                outcome = await _execute_one(call, step_id)
+            except asyncio.CancelledError:
+                activity.update(step_id, "cancelled", result_code="cancelled")
+                raise
+            except Exception:
+                activity.update(step_id, "failed", result_code="tool_execution_failed")
+                raise
+            outcome.activity_step_id = step_id
+            if outcome.event_status == "rejected":
+                code = "invalid_arguments"
+                if outcome.response:
+                    # These error JSON values are constructed by our tool handlers.
+                    value = json.loads(outcome.response)
+                    code = value.get("code", "tool_execution_failed")
+                activity.update(step_id, "failed" if outcome.executed else "rejected", result_code=code)
+            elif outcome.graph_search_result is not None and outcome.graph_search_result.route_result_code in {"timeout", "unavailable", "not_ready", "rejected"}:
+                activity.update(step_id, "failed", result_code=outcome.graph_search_result.route_result_code, returned_count=0)
+            elif outcome.packs:
+                activity.update(step_id, "processing", returned_count=sum(len(pack.evidence) for pack in outcome.packs))
+            else:
+                activity.update(step_id, "succeeded", **outcome.activity_result)
+            return outcome
 
         async def _absorb_round(retrievals: list[_CallOutcome]) -> None:
             """Merge one round's retrieval results into the evidence pool."""
@@ -609,6 +658,7 @@ class NativeToolCallingAgent:
             progress.consecutive_no_new_evidence = consecutive_no_new_evidence
 
             cumulative = _pack(context, evidence, strategy)
+            visual_step = activity.begin("system", "prepare_visuals", round=round_number) if any(item.asset or item.related_visuals for item in cumulative.evidence) else None
             visual_state = await self._prepare_visuals(
                 context,
                 cumulative,
@@ -617,6 +667,8 @@ class NativeToolCallingAgent:
             )
             latest_visual_state = visual_state.answering
             assert latest_visual_state is not None
+            if visual_step is not None:
+                activity.update(visual_step, "succeeded", image_count=len(latest_visual_state.visual_content))
             for decision in latest_visual_state.visual_decisions:
                 key = (decision.visual_unit_id, decision.asset_id)
                 existing = visual_decisions.get(key)
@@ -698,6 +750,18 @@ class NativeToolCallingAgent:
                     item_extras=extras or None,
                 )
                 outcome.response = tool_result
+                if outcome.activity_step_id is not None and (graph_result is None or graph_result.route_result_code not in {"timeout", "unavailable", "not_ready", "rejected"}):
+                    activity.update(
+                        outcome.activity_step_id, "succeeded",
+                        returned_count=len(result_refs), new_evidence_count=new_by_call[call_index],
+                        sources=_activity_sources(evidence_by_ref, result_refs),
+                        details_truncated=len(result_refs) > 100,
+                        path_count=graph_result.path_count if graph_result is not None else None,
+                        hop1_count=graph_result.hop1_count if graph_result is not None else None,
+                        hop2_count=graph_result.hop2_count if graph_result is not None else None,
+                        hop3_count=graph_result.hop3_count if graph_result is not None else None,
+                        result_code=graph_result.route_result_code if graph_result is not None else "ok",
+                    )
                 sent_content_refs.update(newly_sent_content_refs)
                 events.append(
                     ChatAgentTraceEvent(
@@ -788,6 +852,8 @@ class NativeToolCallingAgent:
                     sent_visual_asset_ids.add(visual.asset_id)
                     sent_visuals.append(visual)
             if search_closed and not search_closed_notice_sent:
+                closed_step = activity.begin("system", "close_search", round=round_number)
+                activity.update(closed_step, "succeeded", result_code="no_new_evidence")
                 search_closed_notice_sent = True
                 messages.append(ChatModelMessage("user", _SEARCH_CLOSED_FEEDBACK))
 
@@ -800,6 +866,8 @@ class NativeToolCallingAgent:
                 # Search-phase stalls must not consume its protocol margin.
                 stalled_rounds = 0
             if wrap_up and not wrap_up_notice_sent:
+                wrap_step = activity.begin("system", "token_wrap_up", round=round_number)
+                activity.update(wrap_step, "succeeded", result_code="token_budget")
                 wrap_up_notice_sent = True
                 messages.append(ChatModelMessage("user", _BUDGET_EXHAUSTED_FEEDBACK))
 
@@ -827,6 +895,7 @@ class NativeToolCallingAgent:
                 tools = available_tools
                 tool_choice = ChatToolChoice.AUTO
 
+            model_step = activity.begin("model", "model_round", round=round_number)
             response = await self._complete_round(
                 context,
                 messages,
@@ -834,16 +903,19 @@ class NativeToolCallingAgent:
                 tool_choice,
                 tuple(calls),
             )
+            activity.update(model_step, "succeeded", returned_count=len(response.tool_calls), result_code="tool_calls" if response.tool_calls else "final_text")
             calls.append(model_call_record(ChatModelOperation.AGENT_ROUND, response))
             total_tokens += int(response.usage.get("total_tokens", 0) or 0)
 
             if not response.tool_calls:
+                citation_step = activity.begin("system", "resolve_citations", round=round_number)
                 validated, rendered, retained_refs, observed_refs = render_text_final_answer(
                     response.content,
                     prompt_by_ref,
                     loaded_visual_refs=loaded_visual_refs,
                     current_query=context.query,
                 )
+                activity.update(citation_step, "succeeded", citation_count=len(retained_refs))
                 events.append(
                     ChatAgentTraceEvent(
                         tool="protocol",
@@ -892,11 +964,13 @@ class NativeToolCallingAgent:
             )
 
             other_calls = list(response.tool_calls)
+            step_ids = {id(call): activity.begin("tool", call.name if call.name in ACTIVITY_TOOLS else "unknown", round=round_number, pending=True) for call in other_calls}
 
             offered_names = {tool.name for tool in tools}
             outcomes: list[_CallOutcome] = [
                 _CallOutcome(
-                    call=call, response=_PROTOCOL_ERROR, event_status="rejected"
+                    call=call, response=_PROTOCOL_ERROR, event_status="rejected",
+                    activity_step_id=step_ids[id(call)],
                 )
                 for call in other_calls
                 if call.name not in offered_names
@@ -904,9 +978,11 @@ class NativeToolCallingAgent:
             runnable = [
                 call for call in other_calls if call.name in offered_names
             ]
+            for outcome in outcomes:
+                activity.update(step_ids[id(outcome.call)], "rejected", result_code="tool_not_available")
             if runnable:
                 raw = await asyncio.gather(
-                    *(_execute_one(call) for call in runnable),
+                    *(_observe_one(call, step_ids[id(call)]) for call in runnable),
                     return_exceptions=True,
                 )
                 for item in raw:
@@ -1806,7 +1882,7 @@ def _final_state(
             validated=validated,
             rendered=rendered,
         ),
-        artifacts={AGENT_TRACE_ARTIFACT: trace},
+        artifacts={AGENT_TRACE_ARTIFACT: trace, CHAT_ACTIVITY_ARTIFACT: progress.activity.snapshot() if progress.activity else None},
     )
 
 
@@ -1943,3 +2019,18 @@ def _budget_from_context(
             phase=ChatPipelinePhase.LOAD_CONTEXT,
             diagnostic={"check": "agent_budget"},
         )
+
+
+def _activity_sources(evidence_by_ref: Mapping[str, Evidence], refs: Sequence[str]) -> tuple[ActivitySource, ...]:
+    sources = []
+    labels = {"page": "页", "page_number": "页", "page_start": "起始页", "section": "章节", "section_title": "章节", "sheet": "工作表", "slide": "幻灯片"}
+    for ref in refs[:100]:
+        item = evidence_by_ref[ref]
+        location = " · ".join(f"{label} {item.source_location[key]}" for key, label in labels.items() if type(item.source_location.get(key)) in {str, int})[:256]
+        sources.append(ActivitySource(
+            document_id=str(item.document_id), document_version_id=str(item.document_version_id),
+            index_chunk_id=str(item.index_chunk_id), ref=ref,
+            title=(item.document_display_name or item.document_original_filename or "文档")[:512],
+            location=location or None,
+        ))
+    return tuple(sources)

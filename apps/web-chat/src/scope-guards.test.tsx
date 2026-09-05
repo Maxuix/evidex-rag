@@ -1,6 +1,8 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+import { eventFixture, runFixture, snapshotFixture, stepFixture } from "./execution/activityFixtures";
 
 import { KnowledgeChat } from "./App";
 import { KnowledgeBaseManagementPage } from "./KnowledgeBaseManagementPage";
@@ -152,6 +154,41 @@ afterEach(() => {
 });
 
 describe("component request scopes", () => {
+  it("keeps terminal activity authoritative over delayed polling and stream callbacks", async () => {
+    const kb = knowledgeBase("kb-a", "知识库 A");
+    const run = runFixture({ knowledge_base_id: kb.id, session_id: "session-a" });
+    const callbacks: Parameters<ApiClient["subscribeChatRun"]>[1][] = [];
+    const poll = deferred<ReturnType<typeof runFixture>>();
+    const getChatRun = vi.fn().mockResolvedValue(run);
+    const message = { id: "assistant-a", session_id: run.session_id, run_id: run.run_id, role: "assistant", assistant_status: "generating", content: "", created_at: NOW };
+    const client = {
+      getModelSettings: vi.fn().mockResolvedValue(modelSettings()),
+      listKnowledgeBases: vi.fn().mockResolvedValue({ items: [kb], next_cursor: null }),
+      getGraphConfig: vi.fn().mockResolvedValue(null), getGraphSchemaProfiles: vi.fn().mockResolvedValue([]),
+      listChatSessions: vi.fn().mockResolvedValue({ items: [session(kb.id, run.session_id, "验收会话")], next_cursor: null }),
+      listChatMessages: vi.fn().mockResolvedValue({ items: [message], next_cursor: null }),
+      getChatRun,
+      subscribeChatRun: vi.fn((_url, handlers) => { callbacks.push(handlers); return vi.fn(); }),
+    } as unknown as ApiClient;
+    render(<KnowledgeChat client={client} />);
+    await userEvent.click(await screen.findByRole("button", { name: "验收会话" }));
+    await waitFor(() => expect(callbacks.length).toBeGreaterThan(0));
+    const stream = callbacks[callbacks.length - 1];
+    act(() => { stream.activity?.(eventFixture()); });
+    expect(screen.getByText("2025 年营业收入与同比增幅")).toBeTruthy();
+    getChatRun.mockImplementationOnce(() => poll.promise);
+    act(() => { stream.error(); });
+    expect(screen.getByText(/实时连接中断，正在查询后台状态/)).toBeTruthy();
+    const saved = snapshotFixture([stepFixture({ status: "succeeded", ended_offset_ms: 900, returned_count: 2, new_evidence_count: 2 })]);
+    getChatRun.mockResolvedValue({ ...run, status: "completed", activities: [saved] });
+    await act(async () => { stream.completed({ run_id: run.run_id, status_url: run.status_url } as Parameters<typeof stream.completed>[0]); });
+    await waitFor(() => expect(screen.getByText("返回 2 条资料 · 合并新增 2 条")).toBeTruthy());
+    await act(async () => { poll.resolve(run); stream.activity?.(eventFixture(stepFixture({ seq: 100, queries: ["迟到的错误更新"] }))); });
+    expect(screen.queryByText("迟到的错误更新")).toBeNull();
+    expect(screen.queryByText(/实时连接中断，正在查询后台状态/)).toBeNull();
+    expect(screen.getByText("返回 2 条资料 · 合并新增 2 条")).toBeTruthy();
+  });
+
   it("does not let an old management-page document response replace the new KB", async () => {
     const kbA = knowledgeBase("kb-a", "知识库 A");
     const kbB = knowledgeBase("kb-b", "知识库 B");

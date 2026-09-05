@@ -17,6 +17,7 @@ from rag_kb.domain import (
     CHAT_AGENT_TRACE_ARTIFACT,
     ErrorCode,
 )
+from rag_kb.domain.chat_activity import CHAT_ACTIVITY_ARTIFACT, ChatActivitySnapshot
 from rag_kb.uow import execute_in_transaction
 
 if TYPE_CHECKING:
@@ -98,7 +99,11 @@ def _agent_trace(state: ChatPipelineState) -> dict[str, Any] | None:
             phase=ChatPipelinePhase.PERSIST_RESULT,
             diagnostic={"check": "agent_trace"},
         )
-    return as_dict()
+    trace = as_dict()
+    activity = state.artifacts.get(CHAT_ACTIVITY_ARTIFACT)
+    if isinstance(activity, ChatActivitySnapshot):
+        trace["activity"] = activity.as_dict()
+    return trace
 
 
 class ChatFailureSettlementService:
