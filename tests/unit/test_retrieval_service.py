@@ -620,6 +620,33 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(pack.evidence[0].score, 0.40)
         self.assertEqual(pack.evidence[0].lexical_coverage, 0.0)
 
+    async def test_rerank_context_is_scoped_and_only_changes_model_projection(self):
+        first = replace(_hit(CHUNK_1), document_original_filename="Boeing_2022.pdf")
+        store = _Store(None)
+        store.introductions = {first.indexed_document_version_id: "Boeing annual report\n\nSecond paragraph"}
+        service = RetrievalService(WORKSPACE, _Provider(), store)
+        documents = await service._prepare_rerank_documents((first,), knowledge_base_id=KB_ID)
+        self.assertEqual(store.context_query, {
+            "workspace_id": WORKSPACE, "knowledge_base_id": KB_ID, "index_revision_id": REVISION_ID,
+            "indexed_document_version_ids": (first.indexed_document_version_id,),
+        })
+        self.assertEqual(documents[0].document_context, "Boeing_2022.pdf\nBoeing annual report")
+        self.assertEqual(documents[0].text, first.text)
+        self.assertEqual(documents[0].hierarchy, first.hierarchy)
+        self.assertNotIn("Boeing annual report", first.text)
+
+    async def test_rerank_context_rejects_unrequested_document_and_mixed_revision(self):
+        first = _hit(CHUNK_1)
+        store = _Store(None)
+        store.introductions = {UUID(int=999): "wrong document"}
+        service = RetrievalService(WORKSPACE, _Provider(), store)
+        with self.assertRaises(RetrievalExecutionError):
+            await service._prepare_rerank_documents((first,), knowledge_base_id=KB_ID)
+        store.introductions = {}
+        with self.assertRaises(RetrievalExecutionError):
+            await service._prepare_rerank_documents((first, replace(first, index_revision_id=UUID(int=998))),
+                                                     knowledge_base_id=KB_ID)
+
     async def test_local_model_reorders_classic_candidates_and_keeps_base_scores(
         self,
     ) -> None:
@@ -1283,6 +1310,10 @@ class _HangingProvider(_Provider):
 
 
 class _Store:
+    async def rerank_document_contexts(self, **kwargs):
+        self.context_query = kwargs
+        return getattr(self, "introductions", {})
+
     def __init__(
         self,
         result: VectorSearchResult | None,

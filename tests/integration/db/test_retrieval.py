@@ -85,6 +85,42 @@ class ExactRetrievalDatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self) -> None:
         await self.database.close()
 
+    async def test_rerank_introductions_are_bounded_version_scoped_and_exclusion_aware(self):
+        foundation = await self._foundation()
+        first = await self._target(foundation, chunk_id=uuid4(), vector=_axis_vector(0))
+        unavailable = await self._target(foundation, chunk_id=uuid4(), vector=_axis_vector(0),
+                                         source_status="unavailable")
+        retired = await self._target(foundation, chunk_id=uuid4(), vector=_axis_vector(0),
+                                     serving_status="retired")
+        other = await self._foundation(workspace_id=OTHER_WORKSPACE,
+                                       compatibility_fingerprint="sha256:foreign-context-space")
+        foreign = await self._target(other, chunk_id=uuid4(), vector=_axis_vector(0))
+        scope = dict(workspace_id=WORKSPACE, knowledge_base_id=foundation.kb_id,
+                     index_revision_id=foundation.revision_id,
+                     indexed_document_version_ids=tuple(target.indexed_document_version_id
+                         for target in (first, unavailable, retired, foreign)))
+        connection = await asyncpg.connect(MIGRATION_DSN)
+        try:
+            await connection.execute("UPDATE index_chunk SET content=$1 WHERE id=$2", "first" * 1000, first.chunk_id)
+            contexts = await self.vector_store.rerank_document_contexts(**scope)
+            self.assertEqual(contexts, {first.indexed_document_version_id: ("first" * 1000)[:2048]})
+            await connection.execute("""
+                INSERT INTO index_chunk (id, workspace_id, kb_id, indexed_document_version_id,
+                    ordinal, content, content_hash, token_count, source_location, hierarchy,
+                    source_metadata, unit_key, modality)
+                SELECT $1, workspace_id, kb_id, indexed_document_version_id, 1,
+                    'allowed second source', content_hash, token_count, source_location, hierarchy,
+                    source_metadata, 'second-source', modality FROM index_chunk WHERE id=$2
+            """, uuid4(), first.chunk_id)
+            await connection.execute("UPDATE index_chunk SET excluded_at=now() WHERE id=$1", first.chunk_id)
+            self.assertEqual(await self.vector_store.rerank_document_contexts(**scope),
+                             {first.indexed_document_version_id: "allowed second source"})
+            for changed in ({"workspace_id": OTHER_WORKSPACE}, {"knowledge_base_id": other.kb_id},
+                            {"index_revision_id": other.revision_id}):
+                self.assertEqual(await self.vector_store.rerank_document_contexts(**{**scope, **changed}), {})
+        finally:
+            await connection.close()
+
     async def test_role_probe_and_exact_search_keep_stable_top_k(self) -> None:
         foundation = await self._foundation()
         first = UUID("01900000-0000-7000-8000-000000001111")

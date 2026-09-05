@@ -111,18 +111,29 @@ class CachedReranker:
 
     def key(self, query, document):
         payload = [self.identity, query, str(document.index_chunk_id), document.text, document.hierarchy, document.modality]
+        # Keep old snapshot inspection readable, but never reuse a legacy input
+        # score when the live adapter now receives document context/table fixes.
+        if self.adapter is not None:
+            payload += [hashlib.sha256((ROOT / "src/rag_kb/adapters/local_reranker.py").read_bytes()).hexdigest(),
+                        document.document_context, getattr(self, "batch_signature", "")]
         return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
     async def score(self, query, documents):
+        self.batch_signature = ""
+        self.batch_signature = hashlib.sha256("".join(self.key(query, item) for item in documents).encode()).hexdigest()
         missing = tuple(item for item in documents if self.key(query, item) not in self.values)
         if missing:
             if self.cache_only:
                 raise RuntimeError("model score cache missing; local inference is disabled")
-            scores = await self.adapter.score(query, missing)
-            for document, score in zip(missing, scores, strict=True):
+            # INT8 is batch-sensitive; a partially cached batch must be scored whole.
+            scores = await self.adapter.score(query, documents)
+            for document, score in zip(documents, scores, strict=True):
                 assert document.index_chunk_id == score.index_chunk_id
                 self.values[self.key(query, document)] = {**asdict(score), "index_chunk_id": str(score.index_chunk_id)}
             _write(self.path, self.values)
+        self.latest_scores = getattr(self, "latest_scores", {})
+        for item in documents:
+            self.latest_scores[(query, item.index_chunk_id)] = self.values[self.key(query, item)]
         return tuple(ModelRerankScore(**{**self.values[self.key(query, item)], "index_chunk_id": item.index_chunk_id}) for item in documents)
 
 
@@ -233,7 +244,7 @@ async def run(arguments):
                     continue
                 document = RerankDocument(index_chunk_id=hit.index_chunk_id, text=hit.text,
                                           hierarchy=hit.hierarchy, modality=hit.modality)
-                score = cache.values.get(cache.key(query, document))
+                score = getattr(cache, "latest_scores", {}).get((query, document.index_chunk_id))
                 diagnostic["model_score"] = score["score"] if score else None
             result["arms"] = {name: {"cases": values, "summary": summarize(values)} for name, values in arms.items()}
             result["paired"] = {name: paired_changes(arms[name], arms["minilm_augmented"]) for name in ("classic_source", "minilm_source", "minilm_source_60")}

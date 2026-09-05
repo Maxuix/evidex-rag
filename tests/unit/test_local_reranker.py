@@ -60,6 +60,37 @@ class _ModelRuntimeFailure(Exception):
 
 
 class LocalRerankerWindowTests(unittest.TestCase):
+    def test_document_context_does_not_displace_hierarchy_or_drop_body(self):
+        tokenizer = _CharacterTokenizer()
+        document = RerankDocument(CHUNK_1, "正文" * 600, {"titles": [{"text": "损益表"}]},
+                                  document_context="Boeing 2022 annual report" * 10)
+        windows = build_local_rerank_windows(tokenizer, "毛利率", (document,))
+        decoded = ["".join(chr(token - 10) for token in window.input_ids if token >= 10) for window in windows]
+        self.assertTrue(all("Boeing 2022" in value and "损益表" in value for value in decoded))
+        self.assertTrue(all(len(window.input_ids) <= 512 for window in windows))
+        self.assertEqual(document.text, "正文" * 600)
+
+    def test_caption_and_multirow_years_repeat_with_table_rows(self):
+        tokenizer = _CharacterTokenizer()
+        header = "Annual sales (USD millions)\n| Item | A | B |\n| --- | --- | --- |\n| | Years Ended | |\n| | 2022 | 2021 |\n"
+        rows = [f"| product{index} | 66608 | 62286 |" for index in range(30)]
+        windows = _table_windows(tokenizer, header + "\n".join(rows), 300, 32)
+        decoded = ["".join(chr(token - 10) for token in value) for value in windows]
+        self.assertGreater(len(windows), 1)
+        self.assertTrue(all(value.startswith(header) for value in decoded))
+        # Every financial row must still occur intact in at least one window.
+        self.assertTrue(all(any(row in value for value in decoded) for row in rows))
+
+    def test_oversized_header_is_preserved_instead_of_silently_truncated(self):
+        tokenizer = _CharacterTokenizer()
+        text = "| " + "TITLE" * 50 + " | value |\n| --- | --- |\n| last row | 987 |"
+        windows = _table_windows(tokenizer, text, 100, 32)
+        self.assertGreater(len(windows), 2)
+        expected = tuple(tokenizer.encode(text, add_special_tokens=False).ids)
+        self.assertTrue(all(len(value) <= 100 for value in windows))
+        self.assertTrue(set(expected).issubset(set().union(*(set(value) for value in windows))))
+        self.assertTrue(any("last row | 987" in "".join(chr(token - 10) for token in value) for value in windows))
+
     def test_long_document_pair_windows_never_exceed_model_limit(self) -> None:
         tokenizer = _CharacterTokenizer()
         windows = build_local_rerank_windows(
