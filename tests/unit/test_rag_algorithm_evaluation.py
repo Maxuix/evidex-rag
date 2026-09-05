@@ -77,6 +77,21 @@ def test_invalid_model_output_is_not_saved_or_used(tmp_path):
     assert io.new_calls == 2
 
 
+def test_valid_generation_survives_json_cache_roundtrip(tmp_path):
+    import asyncio
+    from tools.rag_algorithm_runtime import PLANNING_MAX_OUTPUT_TOKENS
+    class Valid:
+        async def complete(self, request):
+            assert request.max_output_tokens == PLANNING_MAX_OUTPUT_TOKENS == 4096
+            return SimpleNamespace(content='{"queries":["broader question"]}',
+                usage={'total_tokens': 7}, model='mimo-v2.5', finish_reason='stop')
+    io = ModelIO(tmp_path, {'chat': {'model': 'mimo-v2.5'}}, {}, {'chat': Valid()})
+    original = asyncio.run(io.generate('stepback', {'question': 'q'}))
+    replay = ModelIO(tmp_path, io.identities, {})
+    assert asyncio.run(replay.generate('stepback', {'question': 'q'})) == original
+    assert io.new_calls == 1 and replay.new_calls == 0
+
+
 def test_reader_keeps_full_real_source_and_resolves_only_issued_refs():
     from tools.evaluate_rag_algorithm_reader import reader_input
     from rag_kb.answering.evidence import render_text_final_answer

@@ -72,7 +72,7 @@ async def run(args):
         nonlocal completed, calls
         source_ids = plans[policy][case['case_id']]
         messages, prompts, by_ref = reader_input(case, source_ids, docs)
-        identity = {'model': io.identities['chat'], 'messages': [(m.role, m.content) for m in messages],
+        identity = {'model': io.identities['chat'], 'messages': [[m.role, m.content] for m in messages],
             'max_output_tokens': 1024, 'reader_protocol_sha256': digest(reader_protocol)}
         target = args.output/'reader-calls'/f'{digest(identity)}.json'
         if target.exists():

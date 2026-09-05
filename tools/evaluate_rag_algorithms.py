@@ -18,7 +18,7 @@ from tools.auto_strategy_metrics import evidence_row, paired_changes, summarize
 from tools.evaluate_classic_strategy import costs, immutable
 from tools.prepare_auto_strategy import digest, jsonl, read, require, sha, write
 from tools.rag_algorithm_policies import ARMS, CONTROLS, GENERATIVE, PROMPTS, SYSTEM, CorpusIndex, algorithms, pack
-from tools.rag_algorithm_runtime import load_io
+from tools.rag_algorithm_runtime import PLANNING_MAX_OUTPUT_TOKENS, load_io
 
 ROOT = Path(__file__).resolve().parents[1]
 PRIOR = '.runtime/evaluations/auto-strategy-20260905'
@@ -52,7 +52,7 @@ def freeze(args):
         'source_sha256': {str(p.relative_to(args.primary)): sha(p) for p in inputs},
         'policy_sha256': sha(ROOT/'tools/rag_algorithm_policies.py'),
         'runtime_sha256': sha(ROOT/'tools/rag_algorithm_runtime.py'),
-        'prompts': PROMPTS, 'system': SYSTEM, 'max_output_tokens': 1024, 'schema_repair_attempts': 1,
+        'prompts': PROMPTS, 'system': SYSTEM, 'max_output_tokens': PLANNING_MAX_OUTPUT_TOKENS, 'schema_repair_attempts': 1,
         'candidate_k_per_query': 40, 'min_cosine': .35, 'bm25_k1': 1.2, 'bm25_b': .75, 'rrf_k': 60,
         'read_k': 10, 'iterative_rounds': 2, 'iterative_queries_per_round': 2,
         'matching': 'whole-source selection with max10 and each query Classic10 text-token cap; no truncation',

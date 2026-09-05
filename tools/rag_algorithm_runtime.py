@@ -11,6 +11,8 @@ from rag_kb.domain import ChatModelMessage, ChatModelRequest
 from tools.prepare_auto_strategy import digest, read, require, write
 from tools.rag_algorithm_policies import PROMPTS, SYSTEM, validate_output
 
+PLANNING_MAX_OUTPUT_TOKENS = 4096
+
 
 class ModelIO:
     def __init__(self, output, identities, embedding_identity, models=None):
@@ -22,7 +24,7 @@ class ModelIO:
         messages = [ChatModelMessage('system', SYSTEM+'\n'+PROMPTS[kind]),
                     ChatModelMessage('user', json.dumps(payload, ensure_ascii=False, sort_keys=True))]
         identity = {'model': self.identities['chat'], 'kind': kind, 'schema': 'rag_algorithms_v1',
-            'messages': [(m.role, m.content) for m in messages], 'max_output_tokens': 1024}
+            'messages': [[m.role, m.content] for m in messages], 'max_output_tokens': PLANNING_MAX_OUTPUT_TOKENS}
         key = digest(identity)
         path = self.output/'calls'/f'{key}.json'
         if path.exists():
@@ -36,7 +38,7 @@ class ModelIO:
                 start = time.perf_counter()
                 # One schema-only repair is part of the frozen protocol. Invalid
                 # output content is never persisted or used for subsequent search.
-                response = await self.models['chat'].complete(ChatModelRequest(messages=tuple(messages), max_output_tokens=1024))
+                response = await self.models['chat'].complete(ChatModelRequest(messages=tuple(messages), max_output_tokens=PLANNING_MAX_OUTPUT_TOKENS))
                 self.new_calls += 1
                 attempts.append({'usage': dict(response.usage), 'seconds': time.perf_counter()-start,
                                  'finish_reason': response.finish_reason, 'model': response.model})
