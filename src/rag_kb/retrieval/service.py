@@ -90,6 +90,19 @@ if TYPE_CHECKING:
 LOGGER = get_logger(__name__)
 
 
+def rerank_document_from_evidence(item, introduction: str = "") -> RerankDocument:
+    """Project source metadata for scoring without modifying quoted evidence."""
+    filename = (getattr(item, "document_original_filename", None)
+                or item.source_metadata.get("original_filename", ""))
+    context = "\n".join(value for value in (
+        filename[:512] if isinstance(filename, str) else "",
+        introduction[:2048].split("\n\n", 1)[0].strip(),
+    ) if value)
+    return RerankDocument(index_chunk_id=item.index_chunk_id, text=item.text,
+                          hierarchy=item.hierarchy, modality=item.modality,
+                          document_context=context)
+
+
 class GraphCapabilityStatus(StrEnum):
     READY = "ready"
     NOT_READY = "not_ready"
@@ -890,17 +903,10 @@ class RetrievalService:
             )
         if not traversal.chunks:
             return traversal, {}
-        documents = tuple(
-            RerankDocument(
-                index_chunk_id=chunk.index_chunk_id,
-                text=chunk.text,
-                hierarchy=chunk.hierarchy,
-                modality=chunk.modality,
-            )
-            for chunk in traversal.chunks
+        documents = await self._prepare_rerank_documents(
+            traversal.chunks[:reranker.max_documents],
+            knowledge_base_id=traversal.chunks[0].knowledge_base_id,
         )
-        if len(documents) > reranker.max_documents:
-            documents = documents[: reranker.max_documents]
         try:
             scores = await reranker.score(query, documents)
         except (RerankerAdapterError, OSError, RuntimeError) as error:
@@ -2246,14 +2252,9 @@ class RetrievalService:
             )
         if not model_positions:
             return candidates[: plan.top_k], 0, 0
-        documents = tuple(
-            RerankDocument(
-                index_chunk_id=candidates[index].index_chunk_id,
-                text=candidates[index].text,
-                hierarchy=candidates[index].hierarchy,
-                modality=candidates[index].modality,
-            )
-            for index in model_positions
+        documents = await self._prepare_rerank_documents(
+            tuple(candidates[index] for index in model_positions),
+            knowledge_base_id=plan.knowledge_base_id,
         )
         try:
             scores = ()
@@ -2323,6 +2324,25 @@ class RetrievalService:
             len(documents),
             sum(item.window_count for item in scores),
         )
+
+    async def _prepare_rerank_documents(self, candidates, *, knowledge_base_id):
+        if not candidates:
+            return ()
+        revision = candidates[0].index_revision_id
+        if any(item.index_revision_id != revision for item in candidates):
+            raise RetrievalExecutionError(ErrorCode.INTERNAL_SERVER_ERROR,
+                                          diagnostic={"check": "rerank_context_revision"})
+        targets = tuple(dict.fromkeys(item.indexed_document_version_id for item in candidates))
+        introductions = await self._vector_store.rerank_document_contexts(
+            workspace_id=self._workspace_id, knowledge_base_id=knowledge_base_id,
+            index_revision_id=revision, indexed_document_version_ids=targets,
+        )
+        if (not isinstance(introductions, dict) or not set(introductions).issubset(targets)
+                or any(not isinstance(value, str) or len(value) > 2048 for value in introductions.values())):
+            raise RetrievalExecutionError(ErrorCode.INTERNAL_SERVER_ERROR,
+                                          diagnostic={"check": "rerank_context_scope"})
+        return tuple(rerank_document_from_evidence(
+            item, introductions.get(item.indexed_document_version_id, "")) for item in candidates)
 
     @staticmethod
     async def _score_model_batch(

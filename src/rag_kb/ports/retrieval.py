@@ -24,6 +24,15 @@ from rag_kb.domain import (
 
 
 class VectorStore(Protocol):
+    async def rerank_document_contexts(
+        self,
+        *,
+        workspace_id: UUID,
+        knowledge_base_id: UUID,
+        index_revision_id: UUID,
+        indexed_document_version_ids: tuple[UUID, ...],
+    ) -> dict[UUID, str]: ...
+
     async def adjacent_chunks(
         self,
         query: AdjacentChunkQuery,

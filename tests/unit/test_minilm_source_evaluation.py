@@ -1,6 +1,7 @@
 from dataclasses import replace
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 from uuid import UUID
 
 from rag_kb.domain import RerankDocument
@@ -30,6 +31,7 @@ class SourceReferenceTests(unittest.TestCase):
         doc = RerankDocument(index_chunk_id=UUID(int=1), text="original", hierarchy={}, modality="text")
         key = scorer.key("query", doc)
         for query, changed in (("other", doc), ("query", replace(doc, text="edited")),
+                               ("query", replace(doc, document_context="different company")),
                                ("query", replace(doc, hierarchy={"titles": [{"text": "Company"}]}))):
             self.assertNotEqual(key, scorer.key(query, changed))
 
@@ -51,3 +53,37 @@ class SourceReferenceTests(unittest.TestCase):
         scorer.cache = {scorer.key("query", doc): {"logits": [float("nan")], "window_count": 1}}
         with self.assertRaisesRegex(RuntimeError, "Invalid cached reference"):
             scorer.score("query", (doc,))
+
+    def test_int8_cache_is_bound_to_the_complete_ordered_batch(self):
+        scorer = object.__new__(ReferenceScorer)
+        scorer.window_code = "fixed"
+        scorer.backend = "int8"
+        scorer.window_batch_size = 8
+        scorer.cache_only = True
+        scorer.cache = {}
+        docs = (RerankDocument(UUID(int=1), "first", {}), RerankDocument(UUID(int=2), "second", {}))
+        with self.assertRaisesRegex(RuntimeError, "cache-only"):
+            scorer.score("query", docs)
+        scorer.cache = {scorer.key("query", doc): {"logits": [0.1], "window_count": 1} for doc in docs}
+        self.assertEqual(len(scorer.score("query", docs)), 2)
+        with self.assertRaisesRegex(RuntimeError, "cache-only"):
+            scorer.score("query", tuple(reversed(docs)))
+
+    def test_invalid_inference_is_rejected_before_persisting_cache(self):
+        scorer = object.__new__(ReferenceScorer)
+        scorer.window_code = "fixed"
+        scorer.cache_only = False
+        scorer.cache = {}
+        scorer.session = object()
+        scorer.tokenizer = SimpleNamespace(pad_token_id=1)
+        scorer.window_batch_size = 1
+        scorer.seconds = 0.0
+        doc = RerankDocument(UUID(int=1), "source", {})
+        window = SimpleNamespace(index_chunk_id=doc.index_chunk_id)
+        with patch("tools.evaluate_minilm_source.build_local_rerank_windows", return_value=(window,)), \
+             patch("tools.evaluate_minilm_source._infer_windows", return_value=(float("nan"),)), \
+             patch("tools.evaluate_minilm_source._write") as write:
+            with self.assertRaisesRegex(RuntimeError, "Non-finite inference"):
+                scorer.score("query", (doc,))
+            write.assert_not_called()
+        self.assertEqual(scorer.cache, {})

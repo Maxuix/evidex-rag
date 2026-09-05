@@ -132,6 +132,7 @@ class RerankDocument:
     text: str
     hierarchy: dict[str, Any]
     modality: str = "text"
+    document_context: str = ""
 
     def __post_init__(self) -> None:
         if not self.text.strip():
@@ -140,6 +141,7 @@ class RerankDocument:
             raise ValueError("rerank document modality is unsupported")
         object.__setattr__(self, "text", self.text.strip())
         object.__setattr__(self, "hierarchy", dict(self.hierarchy))
+        object.__setattr__(self, "document_context", self.document_context.strip())
 
 
 @dataclass(frozen=True, slots=True)

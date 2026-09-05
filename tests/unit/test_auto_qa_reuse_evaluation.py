@@ -64,6 +64,35 @@ class LegacyLossTraceTests(unittest.TestCase):
 
 
 class CachedScoreTests(unittest.IsolatedAsyncioTestCase):
+    async def test_live_cache_invalidates_context_and_batch_and_scores_whole_batch(self):
+        from dataclasses import replace
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+        from unittest.mock import AsyncMock
+        from uuid import UUID
+        from rag_kb.domain import ModelRerankScore, RerankDocument
+
+        async def score(query, documents):
+            return tuple(ModelRerankScore(doc.index_chunk_id, .5, 0, 1, 0) for doc in documents)
+
+        adapter = AsyncMock()
+        adapter.score.side_effect = score
+        docs = (RerankDocument(UUID(int=1), "source1", {}), RerankDocument(UUID(int=2), "source2", {}))
+        with TemporaryDirectory() as directory:
+            cache = CachedReranker(adapter, Path(directory) / "scores.json", "fixed")
+            await cache.score("query", docs)
+            await cache.score("query", docs)
+            self.assertEqual(adapter.score.await_count, 1)
+            await cache.score("query", tuple(reversed(docs)))
+            self.assertEqual(adapter.score.await_count, 2)
+            changed = (replace(docs[0], document_context="company and year"), docs[1])
+            await cache.score("query", changed)
+            self.assertEqual(adapter.score.await_count, 3)
+            del cache.values[cache.key("query", changed[0])]
+            await cache.score("query", changed)
+            self.assertEqual(adapter.score.await_count, 4)
+            self.assertEqual(adapter.score.call_args.args[1], changed)
+
     async def test_cache_only_miss_does_not_call_model(self):
         from pathlib import Path
         from tempfile import TemporaryDirectory
