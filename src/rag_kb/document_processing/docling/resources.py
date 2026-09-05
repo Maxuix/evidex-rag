@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 from io import BytesIO
 import math
+from pathlib import Path
 import re
 import warnings
 
@@ -48,7 +49,11 @@ def image_dimensions(
 
 def image_payload(uri: object) -> str:
     value = str(uri)
-    if not value.startswith("data:image/") or ";base64," not in value:
+    if (
+        isinstance(uri, Path)
+        or not value.startswith("data:image/")
+        or ";base64," not in value
+    ):
         raise ParserExecutionError(
             ErrorCode.PARSER_OUTPUT_INVALID,
             diagnostic={"check": "docling_image_ref"},

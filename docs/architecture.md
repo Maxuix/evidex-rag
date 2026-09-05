@@ -388,6 +388,7 @@ upload
   -> atomically store source file
   -> commit DocumentVersion + queued IndexingJob
   -> Worker claims job
+  -> bounded PDF page/evidence probe in the owned killable child (cached for resume)
   -> current PDF profiles: deterministic page segments in a killable child process
   -> persist content-safe progress/checkpoint and yield between segments
   -> globally reassemble and validate one DoclingDocument
@@ -406,6 +407,17 @@ upload
 batch 1 和每段初始 20 页，这些值目前不是用户运行时配置项。系统在段间持久化进度、
 让出索引 lane。保持 Docling 区域 OCR 和 TableFormer Accurate，不用“存在文本层”关闭整份
 OCR，也不提高 conversion/indexing 并发，以守住 6 GiB Worker 上限和混合页面、多模态资产质量。
+
+当前新索引使用文本 `docling_text_local_v4` / 多模态 `docling_multimodal_local_v5`；旧 profile
+仍可读取，升级不自动重建既有索引。XLSX 在加载 openpyxl/Docling 前按 worksheet relationships
+检查真实单元格跨度、合并区域和累计 XML/单元格预算。PDF 页数与视觉页探测也在解析子进程
+执行，不在 Worker 线程中提取 PDF 文本；图像覆盖率判定可保留带页码或嵌套 Form 的扫描页，
+不会因少量文字层而直接丢弃整页证据。段间复用已绑定 source/profile 的探测结果。
+
+checkpoint 在下一段落盘及最终合并前检查累计预算，合并逐段释放输入；图像在解码/裁切前
+校验总像素、尺寸和图像头。PDF 表格可通过已有页图与 bbox 裁切为 table image。
+精确资源上限见 `ParserLimits` / `AdmissionLimits`；改变这些上限不能替代内容质量验证。
+修复与保真/内存证据见 [Docling 验证报告](test/78-0905-docling-fix-test.md)。
 
 结构切分和语义切分都直接消费一次 Docling conversion 结果。当前 semantic v4 除 section、page、
 table 和非正文 block 外，还把空行分隔且带短标题的内部记录投影为 `record` 硬边界；这保留 TXT、

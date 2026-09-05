@@ -178,6 +178,13 @@ def test_image_header_must_match_declared_size():
     assert caught.value.diagnostic["check"] == "docling_image_header"
 
 
+def test_path_cannot_masquerade_as_a_data_uri():
+    from pathlib import Path
+    from rag_kb.document_processing.docling.resources import image_payload
+    with pytest.raises(ParserExecutionError):
+        image_payload(Path("data:image/png;base64,AAAA"))
+
+
 def test_table_crop_cannot_allocate_outside_pixel_budget():
     document = page_document()
     table = document.add_table(data=TableData(num_rows=0, num_cols=0, table_cells=[]), prov=ProvenanceItem(page_no=1, charspan=(0, 0), bbox=BoundingBox(l=0, t=0, r=10000, b=10000)))
