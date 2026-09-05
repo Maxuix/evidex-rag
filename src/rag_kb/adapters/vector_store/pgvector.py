@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from uuid import UUID
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
@@ -79,6 +80,54 @@ class PgVectorStore:
             raise ValueError("configured embedding space is not supported")
         self._sessions = sessions
         self._configured_space = configured_space
+
+    async def rerank_document_contexts(
+        self,
+        *,
+        workspace_id: UUID,
+        knowledge_base_id: UUID,
+        index_revision_id: UUID,
+        indexed_document_version_ids: tuple[UUID, ...],
+    ) -> dict[UUID, str]:
+        """Read bounded source introductions only from the requested serving versions."""
+        if not indexed_document_version_ids:
+            return {}
+        if len(indexed_document_version_ids) > 320:
+            raise ValueError("rerank context document limit exceeded")
+        statement = text("""
+            SELECT target.id, LEFT(intro.content, 2048) AS introduction
+            FROM indexed_document_version target
+            JOIN knowledge_base kb ON kb.id = target.kb_id
+              AND kb.workspace_id = target.workspace_id
+              AND kb.active_index_revision_id = target.index_revision_id
+              AND kb.deleted_at IS NULL
+            JOIN index_revision revision ON revision.id = target.index_revision_id
+              AND revision.workspace_id = target.workspace_id AND revision.kb_id = target.kb_id
+              AND revision.status = 'active'
+            JOIN document doc ON doc.id = target.document_id
+              AND doc.workspace_id = target.workspace_id AND doc.kb_id = target.kb_id
+              AND doc.deleted_at IS NULL
+            JOIN document_version version ON version.id = target.document_version_id
+              AND version.document_id = doc.id AND version.workspace_id = target.workspace_id
+              AND version.kb_id = target.kb_id AND version.source_status = 'available'
+            JOIN LATERAL (
+              SELECT chunk.content FROM index_chunk chunk
+              WHERE chunk.indexed_document_version_id = target.id
+                AND chunk.workspace_id = target.workspace_id AND chunk.kb_id = target.kb_id
+                AND chunk.excluded_at IS NULL AND chunk.modality IN ('text', 'table')
+                AND btrim(chunk.content) <> ''
+              ORDER BY chunk.ordinal, chunk.id LIMIT 1
+            ) intro ON true
+            WHERE target.workspace_id = :workspace_id AND target.kb_id = :kb_id
+              AND target.index_revision_id = :revision_id AND target.id IN :target_ids
+              AND target.build_status = 'ready' AND target.serving_status = 'serving'
+        """).bindparams(bindparam("target_ids", expanding=True))
+        async with self._sessions() as session:
+            rows = (await session.execute(statement, {
+                "workspace_id": workspace_id, "kb_id": knowledge_base_id,
+                "revision_id": index_revision_id, "target_ids": list(indexed_document_version_ids),
+            })).mappings().all()
+        return {row["id"]: row["introduction"] for row in rows}
 
     async def has_space_role(
         self, plan: RetrievalQueryPlan, space_role: str

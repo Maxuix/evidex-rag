@@ -466,9 +466,15 @@ ChatRun 保存的 index revision 是创建时一致性 guard，而不是历史�
 `local_minilm_v1` 使用构建时固定、运行时离线的多语言 MiniLM ARM64 INT8 ONNX
 工件，对全部已准入的 text/table 候选分批评分（每批最多 20）；不再先按 classic 截至 20。
 合并候选上限 320，问句命中的原文候选允许送模型核验而不受原文 cosine 门预先排除。模型 tokenizer 将 query 截至 96
-tokens、层级截至 32 tokens，并把超过剩余 512-token pair 预算的正文按段落或表格行临时窗口化
+tokens；文件名与同一 serving 文档开头提供独立的 32-token 上下文，章节层级另保留 32 tokens。
+上下文在评分前按候选 indexed document version 做一次有界读取，绑定 workspace/KB/active revision、
+ready/serving、可用且未删除的源版本，忽略 excluded Chunk；每文档只读首个可用 text/table Chunk
+前 2,048 字符，再由投影取第一段。它仅用于模型输入，不改原文引用、词法行或向量，无需迁移/重建索引。
+超过剩余 512-token pair 预算的正文按段落或表格行临时窗口化
 （64-token overlap、每批总窗口最多 80，超限时拆分文档批次），以窗口最大 logit 聚合回原 Chunk。模型分数不覆盖原
-Evidence score/准入事实，窗口也不持久化；纯视觉候选不送入模型。Native Agent 与
+Evidence score/准入事实，窗口也不持久化。表前标题不再妨碍表头识别，表名及可识别的多行年份/
+单位表头随窗口重复；表头过宽或一个 Chunk 含多个独立表格时保留全文普通窗口覆盖，不截掉
+表头后继续假装列语义完整。纯视觉候选不送入模型。Native Agent 与
 Retrieval Debug 都可使用该冻结模式；模型不可用时明确失败且不静默回退。
 Text 与 Auto 允许三种精排；Graph 只允许 `classic | local_minilm_v1`，不开放 `none`。所有
 `local_minilm_v1` Chat 请求的 `top_k` 都不得超过 20。

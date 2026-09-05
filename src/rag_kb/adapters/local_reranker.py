@@ -34,6 +34,7 @@ LOCAL_RERANKER_MANIFEST_PATH = Path(
 LOCAL_RERANKER_MAX_SEQUENCE_LENGTH = 512
 LOCAL_RERANKER_MAX_QUERY_TOKENS = 96
 LOCAL_RERANKER_MAX_HIERARCHY_TOKENS = 32
+LOCAL_RERANKER_MAX_CONTEXT_TOKENS = 32
 LOCAL_RERANKER_WINDOW_OVERLAP = 64
 LOCAL_RERANKER_MAX_DOCUMENTS = 20
 LOCAL_RERANKER_MAX_WINDOWS = 80
@@ -219,12 +220,16 @@ def build_local_rerank_windows(
     separator_ids = _encode_without_special_tokens(tokenizer, "\n\n")
     prepared: list[LocalRerankWindow] = []
     for document in documents:
+        context_ids = _encode_without_special_tokens(
+            tokenizer, document.document_context,
+        )[:LOCAL_RERANKER_MAX_CONTEXT_TOKENS]
         hierarchy_ids = _encode_without_special_tokens(
             tokenizer,
             _hierarchy_text(document.hierarchy),
         )[:LOCAL_RERANKER_MAX_HIERARCHY_TOKENS]
-        hierarchy_prefix = (
-            (*hierarchy_ids, *separator_ids) if hierarchy_ids else ()
+        hierarchy_prefix = tuple(
+            value for part in (context_ids, hierarchy_ids) if part
+            for value in (*part, *separator_ids)
         )
         body_budget = document_budget - len(hierarchy_prefix)
         if body_budget < 1:
@@ -291,16 +296,26 @@ def _table_windows(
     lines = tuple(line.strip() for line in text.splitlines() if line.strip())
     if not lines:
         return ()
-    header_lines: tuple[str, ...] = ()
-    rows = lines
-    if len(lines) >= 2 and _TABLE_SEPARATOR.fullmatch(lines[1]):
-        header_lines = lines[:2]
-        rows = lines[2:]
+    separator = next((index for index in range(1, len(lines))
+                      if _TABLE_SEPARATOR.fullmatch(lines[index])
+                      and "|" in lines[index - 1]), None)
+    if separator is None:
+        return _text_windows(tokenizer, text, window_size, overlap)
+    if any(_TABLE_SEPARATOR.fullmatch(line) for line in lines[separator + 1:]):
+        # Distinct tables must not inherit the first table's column labels.
+        return _text_windows(tokenizer, text, window_size, overlap)
+    header_end = separator + 1
+    while header_end < len(lines) and _table_header_continuation(lines[header_end]):
+        header_end += 1
+    header_lines = lines[:header_end]
+    rows = lines[header_end:]
     header_ids = tuple(
         _encode_without_special_tokens(tokenizer, "\n".join(header_lines))
     )
-    if header_ids:
-        header_ids = header_ids[: max(1, min(len(header_ids), window_size // 3))]
+    # A very wide header cannot be repeated intact alongside useful body text.
+    # Preserve the full source via ordinary windows instead of dropping header tokens.
+    if len(header_ids) > window_size // 2:
+        return _text_windows(tokenizer, text, window_size, overlap)
     row_budget = window_size - len(header_ids)
     if header_ids:
         newline_ids = _encode_without_special_tokens(tokenizer, "\n")
@@ -317,6 +332,24 @@ def _table_windows(
         min(overlap, max(0, row_budget - 1)),
     )
     return tuple((*header_ids, *window) for window in payload_windows)
+
+
+def _table_header_continuation(line: str) -> bool:
+    """Recognize unlabelled period/unit rows, never arbitrary numeric data rows."""
+    if not line.startswith("|"):
+        return False
+    cells = [cell.strip() for cell in line.strip("|").split("|")]
+    if not cells or cells[0]:
+        return False
+    values = [cell for cell in cells[1:] if cell]
+    if not values:
+        return True
+    return all(
+        re.fullmatch(r"(?:19|20)\d{2}(?:年|\s*\(\d+\))?", value)
+        or re.search(r"(?:years? ended|months? ended|in (?:millions|thousands)|单位[：:]|年[度末]|截至)",
+                     value, re.IGNORECASE)
+        for value in values
+    )
 
 
 def _encode_segments(
