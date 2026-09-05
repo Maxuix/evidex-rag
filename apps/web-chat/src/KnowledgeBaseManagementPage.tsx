@@ -2006,18 +2006,50 @@ function formatDate(value: string): string {
   }).format(new Date(value));
 }
 
-function KnowledgeBaseDescription({ knowledgeBase, client, onSaved }: { knowledgeBase: KnowledgeBase; client: ApiClient; onSaved: (kb: KnowledgeBase) => void }) {
+function KnowledgeBaseDescription({
+  knowledgeBase,
+  client,
+  onSaved,
+}: {
+  knowledgeBase: KnowledgeBase;
+  client: ApiClient;
+  onSaved: (kb: KnowledgeBase) => void;
+}) {
   const [description, setDescription] = useState(knowledgeBase.description ?? "");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  return <section className="management-panel">
-    <label>知识库描述<textarea value={description} maxLength={2000} disabled={saving} onChange={event => setDescription(event.target.value)} placeholder="说明这个知识库收录的主题、项目或资料范围，帮助检索时选择来源。" /></label>
-    <button type="button" disabled={saving || description === (knowledgeBase.description ?? "")} onClick={async () => {
-      setSaving(true); setError(null);
-      try { onSaved(await client.updateKnowledgeBaseDescription(knowledgeBase.id, description)); }
-      catch (error) { setError(managementError(error)); }
-      finally { setSaving(false); }
-    }}>{saving ? "保存中…" : "保存描述"}</button>
-    {error ? <InlineError message={error} /> : null}
-  </section>;
+  return (
+    <section className="management-panel kb-description">
+      <label className="management-field">
+        <span>知识库描述</span>
+        <textarea
+          value={description}
+          rows={4}
+          maxLength={2000}
+          disabled={saving}
+          onChange={(event) => setDescription(event.target.value)}
+          placeholder="说明这个知识库收录的主题、项目或资料范围，帮助检索时选择来源。"
+        />
+      </label>
+      <button
+        className="primary-button"
+        type="button"
+        disabled={saving || description === (knowledgeBase.description ?? "")}
+        onClick={async () => {
+          setSaving(true);
+          setError(null);
+          try {
+            onSaved(await client.updateKnowledgeBaseDescription(knowledgeBase.id, description));
+          } catch (error) {
+            setError(managementError(error));
+          } finally {
+            setSaving(false);
+          }
+        }}
+      >
+        {saving ? "保存中…" : "保存描述"}
+      </button>
+      {error ? <InlineError message={error} /> : null}
+    </section>
+  );
 }

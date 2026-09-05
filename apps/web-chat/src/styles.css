@@ -1708,6 +1708,16 @@ input:focus-visible {
   padding: 22px;
 }
 
+.kb-description {
+  display: grid;
+  min-width: 0;
+  gap: 14px;
+}
+
+.kb-description > button {
+  justify-self: start;
+}
+
 .management-overview {
   display: flex;
   min-width: 0;
@@ -1996,6 +2006,7 @@ input:focus-visible {
 
 .management-field input,
 .management-field select,
+.management-field textarea,
 .debug-form textarea,
 .debug-controls input,
 .debug-controls select {
@@ -2550,11 +2561,16 @@ input:focus-visible {
   gap: 10px;
 }
 
+.management-field textarea,
 .debug-form textarea {
   min-height: 86px;
   padding: 11px 12px;
   resize: vertical;
   line-height: 1.55;
+}
+
+.management-field textarea {
+  font-weight: 400;
 }
 
 .debug-controls {
