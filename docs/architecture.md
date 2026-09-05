@@ -407,10 +407,16 @@ batch 1 和每段初始 20 页，这些值目前不是用户运行时配置项�
 让出索引 lane。保持 Docling 区域 OCR 和 TableFormer Accurate，不用“存在文本层”关闭整份
 OCR，也不提高 conversion/indexing 并发，以守住 6 GiB Worker 上限和混合页面、多模态资产质量。
 
-结构切分和语义切分都直接消费一次 Docling conversion 结果。当前 semantic v4 除 section、page、
-table 和非正文 block 外，还把空行分隔且带短标题的内部记录投影为 `record` 硬边界；这保留 TXT、
-Markdown 和 Docling inline group 中原本存在的独立记录，不按业务实体或评测 relation 识别内容。
-legacy semantic v3 可读取但不用于新索引；Graph v2 不允许直接建立在 v3 semantic revision 上。
+结构切分和语义切分都直接消费一次 Docling conversion 结果。新建索引使用 structural v5 或
+semantic v5；旧 structural v4、semantic v3/v4 的完整 profile 仍可执行，旧索引不会原地改写。
+semantic v5 用不重叠的原文片段保留标点、数字、URL、代码缩进及分隔符，补齐末尾标题；
+分析视图和计划 hash 包含来源连接规则。每个硬边界区域都不超过上限时跳过分析 embedding，
+最终检索 embedding 仍生成。两套 v5 共用按行且重复表头的表格切分；结构切分将超长正文的
+标题附在有预算的正文片段上。文本解析模式保留作者图注文字，多模态模式沿用资产关系。
+semantic 继续保留 section、page、table、非正文 block 和空行短标题 `record` 边界；只按来源
+结构识别内部记录，不按业务实体或评测关系识别。Graph v2 可建立在 semantic v4/v5 上，
+仍不允许直接使用 semantic v3。切分上限及检索默认值未改变，已有知识库升级需另行创建
+使用新 profile 的索引版本并完成重建/切换。
 多模态路径保存受限的 page、
 picture 或 table image，并把文本与视觉表示投影到现有 Evidence/asset 关系。dual 模式分别
 使用文本和跨模态 space；unified 模式让文本、查询和图片复用同一已确认的多模态 profile 与

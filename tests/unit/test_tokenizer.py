@@ -16,6 +16,8 @@ import tiktoken
 from rag_kb.domain import ChunkingPreset, ConversationTurn
 from rag_kb.document_processing.profiles import (
     CHUNK_TOKENIZER,
+    STRUCTURAL_CHUNKING_CONFIG_V4,
+    SEMANTIC_CHUNKING_CONFIG_V4,
     profile_fingerprint,
     profile_for_preset,
 )
@@ -322,7 +324,7 @@ class TokenizerAssetTests(unittest.TestCase):
                 self.assertEqual(
                     profile_fingerprint(
                         profile.parser_config,
-                        profile.chunking_config,
+                        (STRUCTURAL_CHUNKING_CONFIG_V4 if preset == ChunkingPreset.STRUCTURAL_BALANCED_V2 else SEMANTIC_CHUNKING_CONFIG_V4),
                     ),
                     expected,
                 )

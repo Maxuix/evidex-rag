@@ -9,7 +9,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import and_, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from rag_kb.document_processing.profiles import SEMANTIC_CHUNKING_CONFIG
+from rag_kb.document_processing.profiles import SEMANTIC_CHUNKING_CONFIG, SEMANTIC_CHUNKING_CONFIG_V4
 from rag_kb.db.models import (
     Document as DocumentRow,
     DocumentSourceStatus,
@@ -1070,7 +1070,7 @@ def _graph_chunking_profile_compatible(chunking_config: object) -> bool:
         return False
     if chunking_config.get("strategy") != "semantic_breakpoint":
         return True
-    return chunking_config == SEMANTIC_CHUNKING_CONFIG
+    return chunking_config in (SEMANTIC_CHUNKING_CONFIG, SEMANTIC_CHUNKING_CONFIG_V4)
 
 
 def _resolve_schema_profile(

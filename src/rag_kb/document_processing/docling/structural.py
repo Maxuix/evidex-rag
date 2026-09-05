@@ -1,7 +1,7 @@
 """Structural chunk assembly read directly from a ``DoclingDocument``.
 
 Boundaries come from Docling's own headings, tables and surfaces; the frozen
-``structural_by_title_token_v4`` profile only adds the token budget. No parser
+current frozen profiles add token budgets and source context. No parser
 or loader produces chunks any more.
 """
 
@@ -27,7 +27,8 @@ from rag_kb.document_processing.docling.traversal import (
     section_paths,
     table_html,
 )
-from rag_kb.document_processing.profiles import STRUCTURAL_CHUNKING_CONFIG_V4
+from rag_kb.document_processing.profiles import STRUCTURAL_CHUNKING_CONFIG, STRUCTURAL_CHUNKING_CONFIG_V4
+from rag_kb.document_processing.docling.table_chunks import table_chunks, table_header_rows
 from rag_kb.document_processing.tokenization import count_chunk_tokens, split_by_tokens
 from rag_kb.domain import (
     ChunkAssemblyDraft,
@@ -56,9 +57,12 @@ def assemble_structural(
     limits: ParserLimits | None = None,
     *,
     surface_labels: Mapping[int, str] | None = None,
+    chunking_config: Mapping[str, Any] | None = None,
+    include_captions: bool = False,
 ) -> tuple[ChunkAssemblyDraft, ...]:
     """Assemble structural chunks without materializing a second document model."""
 
+    current_profile = (chunking_config or STRUCTURAL_CHUNKING_CONFIG) == STRUCTURAL_CHUNKING_CONFIG
     resolved = limits or ParserLimits()
     paths = section_paths(document)
     kind = surface_kind(document)
@@ -78,7 +82,7 @@ def assemble_structural(
             headings.extend(region)
             region = []
             return
-        parts, trailing = _region_parts([*headings, *region])
+        parts, trailing = _region_parts([*headings, *region], attach_headings=current_profile)
         headings = []
         region = []
         for text, refs in parts:
@@ -115,13 +119,13 @@ def assemble_structural(
             flush()
             visuals += 1
             headings = _append_table(
-                document, paths, drafts, item, headings, resolved, surface_labels
+                document, paths, drafts, item, headings, resolved, surface_labels, current_profile
             )
             _require_chunk_limit(drafts, resolved)
             continue
         if item_kind is ItemKind.PICTURE:
             visuals += 1
-        if item_kind in {ItemKind.PICTURE, ItemKind.CAPTION}:
+        if item_kind is ItemKind.PICTURE or (item_kind is ItemKind.CAPTION and not (current_profile and include_captions)):
             # A picture never becomes an empty chunk and an author caption never
             # becomes a context-free one; both stay reachable through the
             # reference they leave in the surrounding chunk.
@@ -156,6 +160,7 @@ def _append_table(
     headings: list[_Entry],
     limits: ParserLimits,
     surface_labels: Mapping[int, str] | None,
+    current_profile: bool = False,
 ) -> list[_Entry]:
     """Emit a table as its own chunks; return the headings still unattached."""
 
@@ -173,6 +178,12 @@ def _append_table(
         return headings
     references = item.refs
     prefix = [entry.text for entry in headings if entry.text]
+    if current_profile:
+        parts = table_chunks(text, prefix="\n\n".join(prefix), header_rows=table_header_rows(table))
+        refs = tuple(dict.fromkeys((*[ref for entry in headings for ref in entry.refs], *references)))
+        for part in parts:
+            drafts.append(_draft(document, paths, part, refs, limits, surface_labels))
+        return []
     parts = _table_parts(text)
     attached = bool(prefix) and count_chunk_tokens(
         "\n\n".join((*prefix, parts[0]))
@@ -227,7 +238,7 @@ def _draft(
 
 
 def _region_parts(
-    region: list[_Entry],
+    region: list[_Entry], *, attach_headings: bool = False,
 ) -> tuple[tuple[tuple[str, tuple[str, ...]], ...], tuple[str, ...]]:
     """Apply the frozen token budget to one region of consecutive items.
 
@@ -264,6 +275,21 @@ def _region_parts(
             current.append(entry)
             continue
         tokens = count_chunk_tokens(entry.text)
+        if attach_headings and current and all(not item.text or item.heading for item in current):
+            prefix = "\n\n".join(item.text for item in current if item.text)
+            if count_chunk_tokens(f"{prefix}\n\n{entry.text}") > maximum:
+                budget = maximum - count_chunk_tokens(prefix) - 2
+                if budget > 0:
+                    pieces = split_by_tokens(entry.text, max_tokens=budget, overlap_tokens=overlap if budget > overlap else 0)
+                    while pieces and any(count_chunk_tokens(f"{prefix}\n\n{piece}") > maximum for piece in pieces):
+                        budget -= 1
+                        pieces = split_by_tokens(entry.text, max_tokens=budget, overlap_tokens=overlap if budget > overlap else 0)
+                    refs = tuple(dict.fromkeys((*carried, *(ref for item in current for ref in item.refs), *entry.refs)))
+                    parts.extend((f"{prefix}\n\n{piece}", refs) for piece in pieces)
+                    current = []
+                    current_tokens = 0
+                    carried = ()
+                    continue
         if tokens > maximum:
             flush()
             pieces = split_by_tokens(

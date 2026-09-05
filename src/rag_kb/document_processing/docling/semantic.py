@@ -28,7 +28,8 @@ from rag_kb.document_processing.docling.traversal import (
     iterate_chunking_items,
     section_paths,
 )
-from rag_kb.document_processing.profiles import SEMANTIC_CHUNKING_CONFIG
+from rag_kb.document_processing.profiles import SEMANTIC_CHUNKING_CONFIG, SEMANTIC_CHUNKING_CONFIG_V4
+from rag_kb.document_processing.semantic_text import joined_units
 from rag_kb.document_processing.tokenization import count_chunk_tokens, split_by_tokens
 from rag_kb.domain import (
     ChunkAssemblyDraft,
@@ -75,10 +76,13 @@ def docling_semantic_units(
     *,
     surface_labels: Mapping[int, str] | None = None,
     chunking_config: Mapping[str, Any] | None = None,
+    include_captions: bool = False,
 ) -> tuple[SemanticUnit, ...]:
     """Build bounded analysis units without provider or persistence I/O."""
 
     resolved = limits or ParserLimits()
+    if (chunking_config or SEMANTIC_CHUNKING_CONFIG).get("source_preservation") == "source_spans_v1":
+        return _source_units(document, resolved, surface_labels=surface_labels, include_captions=include_captions)
     kind = surface_kind(document)
     fragments: list[_Fragment] = []
     pending_titles: list[tuple[tuple[str, ...], str]] = []
@@ -232,9 +236,11 @@ def assemble_semantic_chunks(
         selected = units[start:end]
         if not selected:
             raise _failed("empty_plan_range")
-        text = "\n\n".join(unit.text for unit in selected).strip()
+        text = joined_units(selected)
+        if not selected[0].source_preserving:
+            text = text.strip()
         token_count = count_chunk_tokens(text)
-        if not text or token_count > maximum:
+        if not text.strip() or token_count > maximum:
             raise _failed("assembled_chunk_token_limit")
         refs = tuple(
             dict.fromkeys(
@@ -271,6 +277,9 @@ def docling_unit_sequence_hash(units: tuple[SemanticUnit, ...]) -> str:
             "item_refs": list(unit.item_refs),
             "source_location": unit.source_location,
             "hard_boundary_before": unit.hard_boundary_before,
+            **({"separator_before": unit.separator_before} if unit.separator_before != "\n\n" else {}),
+            **({"content_kind": unit.content_kind} if unit.content_kind != "text" else {}),
+            **({"source_preserving": True} if unit.source_preserving else {}),
         }
         for unit in units
     ]
@@ -502,7 +511,7 @@ def _require_limits(units: tuple[SemanticUnit, ...]) -> None:
             phase="semantic_analysis",
             diagnostic={"limit_name": "max_analysis_tokens", "limit": max_tokens},
         )
-    if any(unit.token_count > _max_unit_tokens() for unit in units):
+    if any(unit.token_count > (800 if unit.content_kind == "table" else _max_unit_tokens()) for unit in units):
         raise ParserExecutionError(
             ErrorCode.SEMANTIC_CHUNKING_FAILED,
             phase="semantic_analysis",
@@ -530,7 +539,7 @@ def _max_unit_tokens() -> int:
 
 
 def _config_int(name: str) -> int:
-    value = SEMANTIC_CHUNKING_CONFIG[name]
+    value = SEMANTIC_CHUNKING_CONFIG_V4[name]
     if isinstance(value, bool) or not isinstance(value, int):
         raise TypeError(f"{name} must be an integer")
     return value
@@ -542,3 +551,188 @@ def _failed(check: str) -> ParserExecutionError:
         phase="semantic_analysis",
         diagnostic={"check": check},
     )
+
+
+# Split only at explicit sentence/line boundaries. Source separators are retained;
+# punctuation such as decimals and URLs never gets reconstructed with spaces.
+_SOURCE_BREAK = re.compile(r"(?<=[。！？；])|(?<=[.!?;])(?=\s)|\n+")
+
+
+def _source_pieces(text: str, *, code: bool = False) -> tuple[str, ...]:
+    """Return disjoint substrings whose concatenation is exactly the input."""
+    # Code is split at lines, never at punctuation inside expressions/strings.
+    breaks = re.finditer(r"\n+", text) if code else _SOURCE_BREAK.finditer(text)
+    spans: list[str] = []
+    cursor = 0
+    for match in breaks:
+        if match.end() > cursor:
+            spans.append(text[cursor:match.end()])
+            cursor = match.end()
+    if cursor < len(text):
+        spans.append(text[cursor:])
+    pieces: list[str] = []
+    for span in spans:
+        if count_chunk_tokens(span) <= _max_unit_tokens():
+            pieces.append(span)
+            continue
+        # The shared Unicode-safe splitter trims windows; recover each exact gap
+        # from the source, then keep it with the following source substring.
+        offset = 0
+        for part in split_by_tokens(span, max_tokens=_max_unit_tokens() - 8, overlap_tokens=0):
+            start = span.find(part, offset)
+            if start < 0:
+                raise _failed("source_piece_span")
+            end = start + len(part)
+            raw = span[offset:end]
+            if count_chunk_tokens(raw) > _max_unit_tokens():
+                # Unusually long whitespace runs are source too. Split by characters
+                # with token validation rather than silently dropping indentation.
+                pieces.extend(_bounded_source(raw))
+            else:
+                pieces.append(raw)
+            offset = end
+        if offset < len(span):
+            pieces.extend(_bounded_source(span[offset:]))
+    if "".join(pieces) != text:
+        raise _failed("source_piece_coverage")
+    return tuple(pieces)
+
+
+def _bounded_source(text: str) -> tuple[str, ...]:
+    parts: list[str] = []
+    while text:
+        lo, hi = 1, len(text)
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if count_chunk_tokens(text[:mid]) <= _max_unit_tokens():
+                lo = mid
+            else:
+                hi = mid - 1
+        parts.append(text[:lo])
+        text = text[lo:]
+    return tuple(parts)
+
+
+def _source_units(
+    document: DoclingDocument, limits: ParserLimits, *,
+    surface_labels: Mapping[int, str] | None, include_captions: bool,
+) -> tuple[SemanticUnit, ...]:
+    """Current unit projection; legacy projection above remains executable."""
+    from rag_kb.document_processing.docling.table_chunks import table_chunks, table_header_rows
+    from docling_core.types.doc.document import TableItem
+
+    units: list[SemanticUnit] = []
+    titles: list[tuple[tuple[str, ...], str]] = []
+    context: list[str] = []
+    previous_surface = None
+    previous_container = None
+    previous_kind = None
+    record_has_body = False
+    kind = surface_kind(document)
+
+    def append(text: str, refs: tuple[str, ...], boundary: str | None,
+               separator: str, content_kind: str, span: tuple[int, int] | None = None) -> None:
+        location = project_source_location(document, refs, limits, surface_labels=surface_labels)
+        if span is not None:
+            location = {**location, "source_span": list(span)}
+        unit = SemanticUnit(len(units), text, count_chunk_tokens(text), refs,
+                            location, boundary, separator, content_kind, source_preserving=True)
+        if units and boundary is None and content_kind != "table":
+            prior = units[-1]
+            combined = prior.text + separator + text
+            if prior.content_kind == content_kind and count_chunk_tokens(combined) <= _config_int("analysis_unit_target_tokens"):
+                merged_refs = tuple(dict.fromkeys((*prior.item_refs, *refs)))
+                units[-1] = replace(prior, text=combined, token_count=count_chunk_tokens(combined),
+                                    item_refs=merged_refs,
+                                    source_location=project_source_location(document, merged_refs, limits, surface_labels=surface_labels))
+                return
+        units.append(unit)
+
+    for item in iterate_chunking_items(document):
+        item_kind = _effective_kind(item)
+        if item_kind is ItemKind.PICTURE or (item_kind is ItemKind.CAPTION and not include_captions):
+            context.extend(item.refs)
+            continue
+        if item_kind in {ItemKind.TITLE, ItemKind.SECTION_HEADER}:
+            if item.text:
+                titles.append((item.refs, item.text))
+            continue
+        if not item.text:
+            continue
+        surface = _surface_ordinal(item, kind)
+        boundary = _boundary(item_kind=item_kind, previous_kind=previous_kind,
+                             surface=surface, previous_surface=previous_surface,
+                             container=item.semantic_container, previous_container=previous_container,
+                             has_pending_titles=bool(titles), has_previous_content=bool(units))
+        record = _record_projection(item) or _looks_like_record_heading(item_kind, item.text)
+        if boundary is None and record and record_has_body:
+            boundary = _BOUNDARY_RECORD
+            record_has_body = False
+        refs = tuple(dict.fromkeys((*context, *(ref for rr, _ in titles for ref in rr), *item.refs)))
+        prefix = "\n".join(title for _, title in titles)
+        context.clear()
+        titles.clear()
+        if item_kind is ItemKind.TABLE:
+            table = item.items[0]
+            if not isinstance(table, TableItem):
+                raise _failed("docling_table_item")
+            for index, part in enumerate(table_chunks(item.text, prefix=prefix, header_rows=table_header_rows(table))):
+                append(part, refs, boundary if index == 0 else _BOUNDARY_TABLE, "\n\n", "table")
+        else:
+            text = f"{prefix}\n{item.text}" if prefix else item.text
+            code = item_kind in _BLOCK_KINDS
+            blocks = ((text, None),) if code else _source_record_blocks(text)
+            cursor = 0
+            first = True
+            for block, record_boundary in blocks:
+                start = text.find(block, cursor)
+                if start < 0:
+                    raise _failed("source_record_span")
+                gap = text[cursor:start]
+                pieces = _source_pieces(block, code=code)
+                piece_start = start
+                for i, piece in enumerate(pieces):
+                    append(piece, refs, boundary if first else (record_boundary if i == 0 else None),
+                           "\n\n" if first else (gap if i == 0 else ""),
+                           "block" if code else "text", (piece_start, piece_start + len(piece)))
+                    first = False
+                    piece_start += len(piece)
+                cursor = start + len(block)
+        if surface is not None:
+            previous_surface = surface
+        previous_container = item.semantic_container
+        previous_kind = item_kind
+        if not record or _record_projection(item):
+            record_has_body = True
+
+    if titles:
+        refs = tuple(dict.fromkeys((*context, *(ref for rr, _ in titles for ref in rr))))
+        for index, part in enumerate(_source_pieces("\n".join(title for _, title in titles))):
+            append(part, refs, _BOUNDARY_SECTION if index == 0 else None,
+                   "\n\n" if index == 0 else "", "text")
+        context.clear()
+    if not units:
+        raise ParserExecutionError(ErrorCode.PARSER_OUTPUT_INVALID, phase="semantic_analysis",
+                                   diagnostic={"check": "non_empty_semantic_units"})
+    if context:
+        last = units[-1]
+        refs = tuple(dict.fromkeys((*last.item_refs, *context)))
+        units[-1] = replace(last, item_refs=refs,
+                            source_location=project_source_location(document, refs, limits, surface_labels=surface_labels))
+    result = tuple(units)
+    _require_limits(result)
+    return result
+
+
+def _source_record_blocks(text: str) -> tuple[tuple[str, str | None], ...]:
+    starts = [0, *(match.end() for match in _RECORD_BREAK.finditer(text))]
+    spans = [(start, starts[index + 1] if index + 1 < len(starts) else len(text))
+             for index, start in enumerate(starts)]
+    blocks = []
+    for index, (start, end) in enumerate(spans):
+        block = text[start:end]
+        boundary = _BOUNDARY_RECORD if index and _heading_bearing_record(canonical_text(block)) else None
+        if index == 1 and _standalone_heading(canonical_text(text[:start])):
+            boundary = None
+        blocks.append((block, boundary))
+    return tuple(blocks)

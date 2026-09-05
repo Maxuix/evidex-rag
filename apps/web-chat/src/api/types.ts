@@ -39,7 +39,7 @@ export interface KnowledgeBase {
   };
   chunking: {
     preset: ChunkingPreset;
-    profile: "structural_by_title_token_v4" | "semantic_breakpoint_v3" | "semantic_breakpoint_v4";
+    profile: "structural_by_title_token_v4" | "structural_by_title_token_v5" | "semantic_breakpoint_v3" | "semantic_breakpoint_v4" | "semantic_breakpoint_v5";
   };
   retrieval_defaults: {
     strategy: "exact_vector";

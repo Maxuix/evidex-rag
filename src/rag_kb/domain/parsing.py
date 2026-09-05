@@ -223,6 +223,10 @@ class SemanticUnit:
     item_refs: tuple[str, ...]
     source_location: dict[str, Any]
     hard_boundary_before: str | None
+    # Exact source separator; legacy units use the historical paragraph join.
+    separator_before: str = "\n\n"
+    content_kind: str = "text"
+    source_preserving: bool = False
 
 
 @dataclass(frozen=True, slots=True)

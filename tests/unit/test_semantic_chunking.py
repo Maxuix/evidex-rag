@@ -9,6 +9,7 @@ from uuid import UUID, uuid4
 from rag_kb.document_processing.profiles import (
     SEMANTIC_CHUNKING_CONFIG,
     SEMANTIC_CHUNKING_CONFIG_V3,
+    SEMANTIC_CHUNKING_CONFIG_V4,
     profile_fingerprint,
     profile_for_preset,
     public_descriptor,
@@ -50,7 +51,7 @@ class SemanticProfileTests(unittest.TestCase):
             "structural_balanced_v2",
         )
         self.assertEqual(
-            semantic.chunking_config["profile"], "semantic_breakpoint_v4"
+            semantic.chunking_config["profile"], "semantic_breakpoint_v5"
         )
         self.assertEqual(
             semantic.chunking_config["selector"],
@@ -145,7 +146,7 @@ class SemanticBoundaryTests(unittest.TestCase):
             source_checksum_sha256="b" * 64,
             profile_fingerprint=profile_fingerprint(
                 profile.parser_config,
-                profile.chunking_config,
+                SEMANTIC_CHUNKING_CONFIG_V4,
             ),
             units=units,
             vectors=vectors,

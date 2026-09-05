@@ -8,6 +8,7 @@ from uuid import UUID
 
 from rag_kb.document_processing.profiles import SEMANTIC_CHUNKING_CONFIG
 from rag_kb.document_processing.tokenization import count_chunk_tokens
+from rag_kb.document_processing.semantic_text import joined_units
 from rag_kb.domain import (
     ChunkBoundary,
     ChunkBoundaryReason,
@@ -33,13 +34,16 @@ def build_chunk_plan(
     if not units:
         raise _failed("non_empty_units")
     hard_boundaries = any(unit.hard_boundary_before for unit in units[1:])
-    total_tokens = count_chunk_tokens("\n\n".join(unit.text for unit in units))
+    total_tokens = count_chunk_tokens(joined_units(units))
     if total_tokens <= _config_int("max_chunk_tokens") and not hard_boundaries:
         boundaries: tuple[ChunkBoundary, ...] = ()
     else:
-        if vectors is None or len(vectors) != len(units):
-            raise _failed("analysis_vector_count")
-        scores = smoothed_distances(units, vectors)
+        if vectors is None and not requires_semantic_vectors(units):
+            scores = tuple(None if unit.hard_boundary_before else 0 for unit in units[1:])
+        else:
+            if vectors is None or len(vectors) != len(units):
+                raise _failed("analysis_vector_count")
+            scores = smoothed_distances(units, vectors)
         boundaries = _select_all_regions(units, scores)
 
     payload = {
@@ -359,7 +363,7 @@ def _better(
 
 
 def _joined(units: tuple[SemanticUnit, ...], start: int, end: int) -> str:
-    return "\n\n".join(unit.text for unit in units[start:end])
+    return joined_units(units[start:end])
 
 
 def _boundary_json(boundary: ChunkBoundary) -> dict[str, int | str | None]:
@@ -406,3 +410,14 @@ def _failed(check: str) -> IndexingExecutionError:
         phase=IndexingPhase.SEMANTIC_ANALYSIS,
         diagnostic={"check": check},
     )
+
+
+def requires_semantic_vectors(units: tuple[SemanticUnit, ...]) -> bool:
+    """Only oversized hard regions consult distances in the current planner."""
+    start = 0
+    for end in range(1, len(units) + 1):
+        if end == len(units) or units[end].hard_boundary_before is not None:
+            if count_chunk_tokens(joined_units(units[start:end])) > _config_int("max_chunk_tokens"):
+                return True
+            start = end
+    return False

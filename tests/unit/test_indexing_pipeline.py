@@ -70,7 +70,7 @@ class IndexingDomainTests(unittest.TestCase):
 
         self.assertEqual(
             profile.chunking_config["profile"],
-            "structural_by_title_token_v4",
+            "structural_by_title_token_v5",
         )
         self.assertEqual(
             (

@@ -50,6 +50,7 @@ from rag_kb.document_processing.docling.traversal import iterate_chunking_items
 from rag_kb.document_processing.semantic_boundaries import build_chunk_plan
 from rag_kb.document_processing.profiles import (
     SEMANTIC_CHUNKING_CONFIG_V3,
+    SEMANTIC_CHUNKING_CONFIG_V4,
     profile_fingerprint,
     profile_for_preset,
 )
@@ -642,7 +643,7 @@ Beta product belongs to Beta Company. This is explicit evidence.
         document = logical_document()
         document.add_text(label=DocItemLabel.TEXT, text=" ".join(["beta"] * 400))
 
-        units = docling_semantic_units(document)
+        units = docling_semantic_units(document, chunking_config=SEMANTIC_CHUNKING_CONFIG_V4)
         fragments = [
             unit.source_location["fragment"]
             for unit in units

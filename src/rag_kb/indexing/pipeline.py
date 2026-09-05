@@ -59,12 +59,10 @@ from rag_kb.document_processing.profiles import (
     DOCLING_ENRICHMENT_CONFIG,
     DOCLING_MULTIMODAL_PARSER_CONFIG,
     DOCLING_REPRESENTATION_CONFIG,
-    SEMANTIC_CHUNKING_CONFIG,
     profile_fingerprint,
     parser_profile,
     resolve,
 )
-from rag_kb.document_processing.tokenization import count_chunk_tokens
 from rag_kb.document_processing.docling import (
     asset_manifest_hash,
     assemble_semantic_chunks,
@@ -77,6 +75,7 @@ from rag_kb.document_processing.docling import (
     relate_assets_to_chunks,
 )
 from rag_kb.document_processing.semantic_boundaries import (
+    requires_semantic_vectors,
     build_chunk_plan,
     validate_plan,
 )
@@ -499,7 +498,9 @@ class IndexingPipeline:
         if strategy is ChunkingStrategyKind.STRUCTURAL:
             try:
                 return assemble_structural(
-                    document, self._parser_limits, surface_labels=surface_labels
+                    document, self._parser_limits, surface_labels=surface_labels,
+                    chunking_config=target.chunking_config,
+                    include_captions=not target.representation_config,
                 )
             except ParserExecutionError as error:
                 raise IndexingExecutionError(
@@ -527,6 +528,7 @@ class IndexingPipeline:
                 self._parser_limits,
                 surface_labels=surface_labels,
                 chunking_config=target.chunking_config,
+                include_captions=not target.representation_config,
             )
         except ParserExecutionError as error:
             raise IndexingExecutionError(
@@ -1387,11 +1389,7 @@ class IndexingPipeline:
         return tuple(vectors)
 
 def _requires_semantic_analysis(units: tuple[SemanticUnit, ...]) -> bool:
-    return (
-        count_chunk_tokens("\n\n".join(unit.text for unit in units))
-        > int(SEMANTIC_CHUNKING_CONFIG["max_chunk_tokens"])
-        or any(unit.hard_boundary_before for unit in units[1:])
-    )
+    return requires_semantic_vectors(units)
 
 
 def _lexical_rows(
