@@ -699,6 +699,7 @@ input:focus-visible {
   display: grid;
   min-width: 0;
   height: 100%;
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: 70px minmax(0, 1fr) auto;
   overflow: hidden;
   background: #ffffff;
@@ -3098,10 +3099,57 @@ input:focus-visible {
 
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 
-.search-scope { border: 0; margin: 0 0 10px; padding: 0; min-width: 0; }
-.search-scope legend { font-size: 12px; color: var(--text-muted, #666); margin-bottom: 4px; }
-.search-scope summary { cursor: pointer; max-width: 100%; overflow-wrap: anywhere; }
-.search-scope small { display: block; color: var(--text-muted, #666); margin-top: 6px; }
-.scope-options { display: flex; flex-wrap: wrap; gap: 8px 16px; padding: 12px 0; max-height: 220px; overflow: auto; }
-.scope-options label { display: flex; align-items: center; gap: 6px; }
+/* Search scope stays in the toolbar; its floating list never resizes the composer. */
+.knowledge-scope { position: relative; min-width: 82px; max-width: 220px; flex: 0 1 auto; }
+.scope-trigger { display: flex; align-items: center; gap: 7px; width: 100%; height: 32px; padding: 0 10px; border: 1px solid var(--border); border-radius: 9px; background: var(--background); font-size: 12px; text-align: left; transition: background 130ms ease, border-color 130ms ease; }
+.scope-trigger:hover, .scope-trigger.is-open { background: var(--surface-strong); border-color: var(--border-strong); }
+.scope-trigger-kind { color: var(--muted); font-size: 11px; flex-shrink: 0; }
+.scope-trigger-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 550; }
+.scope-trigger.is-empty { color: var(--danger); border-color: #e8c9c5; }
+.scope-trigger-chevron { color: var(--muted); flex-shrink: 0; margin-left: auto; }
+.scope-count { padding: 1px 5px; border-radius: 4px; background: #eaeaea; color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; flex-shrink: 0; }
+.scope-mobile-count { display: none; white-space: nowrap; font-weight: 550; }
+.scope-popover { position: absolute; bottom: calc(100% + 12px); left: 0; z-index: 35; display: flex; flex-direction: column; width: min(360px, calc(100vw - 48px)); max-height: min(430px, calc(100dvh - 154px)); padding: 14px 10px 10px; border: 1px solid var(--border); border-radius: 16px; background: var(--background); box-shadow: 0 12px 42px rgb(0 0 0 / 14%), 0 2px 8px rgb(0 0 0 / 4%); animation: composer-popover-in 130ms ease-out; }
+.scope-popover-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 4px 12px; }
+.scope-popover-heading strong { font-size: 14px; font-weight: 650; }
+.scope-popover-heading > span { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.scope-search { flex-shrink: 0; width: 100%; min-width: 0; height: 36px; padding: 0 11px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); font-size: 12px; }
+.scope-search::placeholder { color: var(--faint); }
+.scope-search:focus-visible { outline: 2px solid var(--border-strong); outline-offset: 1px; }
+.scope-list-actions { display: flex; flex-shrink: 0; gap: 12px; align-items: center; padding: 13px 5px 6px; font-size: 11px; }
+.scope-list-actions > span { margin-right: auto; color: var(--faint); }
+.scope-list-actions button { padding: 2px 0; border: 0; background: transparent; color: var(--muted); font-size: 11px; }
+.scope-list-actions button:hover { color: var(--text); }
+.scope-list { min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
+.scope-row { display: flex; align-items: center; gap: 10px; min-height: 43px; margin: 2px 0; padding: 9px 10px; border-radius: 8px; cursor: pointer; }
+.scope-row:hover { background: var(--surface); }
+.scope-row.is-selected { background: var(--surface-strong); }
+.scope-row:focus-within { outline: 2px solid var(--border-strong); outline-offset: -2px; }
+.scope-row input { width: 16px; height: 16px; flex-shrink: 0; margin: 0; accent-color: var(--accent); cursor: pointer; }
+.scope-row input:disabled { cursor: wait; opacity: 0.5; }
+.scope-row-copy { display: grid; min-width: 0; gap: 3px; }
+.scope-row-copy strong, .scope-row-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scope-row-copy strong { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow-wrap: anywhere; white-space: normal; font-size: 12px; line-height: 1.5; font-weight: 500; }
+.scope-row-copy small { color: var(--muted); font-size: 11px; line-height: 1.4; }
+.scope-list-empty { padding: 20px 12px; margin: 0; color: var(--muted); text-align: center; font-size: 12px; line-height: 1.6; }
+.scope-load-more { width: 100%; padding: 10px; border: 0; background: transparent; color: var(--muted); font-size: 12px; }
+.scope-load-more:hover { background: var(--surface); }
+.scope-popover-footer { display: flex; flex-shrink: 0; align-items: center; gap: 12px; margin-top: 10px; padding: 10px 4px 0; border-top: 1px solid var(--border); }
+.scope-popover-footer small { flex: 1; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.scope-done { flex-shrink: 0; padding: 6px 13px; color: white; background: var(--accent); border: 0; border-radius: 7px; font-size: 12px; }
+.scope-done:hover { background: #333; }
+@media (max-width: 480px) {
+  .knowledge-scope { max-width: 144px; min-width: 76px; }
+  .scope-trigger { gap: 5px; padding-inline: 8px; }
+  .scope-trigger-kind { display: none; }
+  .scope-trigger.is-multiple .scope-trigger-name, .scope-trigger.is-multiple .scope-count { display: none; }
+  .scope-mobile-count { display: inline; }
+  .composer-model-control { width: 24vw; min-width: 76px; }
+  .composer-options { flex: 1; }
+  .scope-row { min-height: 44px; }
+}
+@media (max-width: 640px) {
+  .settings-gear { top: 12px; right: 12px; bottom: auto; width: 36px; height: 36px; background: transparent; color: var(--muted); border: 0; box-shadow: none; }
+  .chat-header { padding-right: 56px; }
+}
 .citation-kb { font-weight: 600; }

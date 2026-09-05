@@ -317,8 +317,8 @@ describe("saved multi-library selection", () => {
     const api={getModelSettings:vi.fn().mockResolvedValue(modelSettings()),listKnowledgeBases,getGraphConfig:vi.fn().mockResolvedValue(null),getGraphSchemaProfiles:vi.fn().mockResolvedValue([]),listChatSessions:vi.fn().mockResolvedValue({items:[saved],next_cursor:null}),listChatMessages:vi.fn().mockResolvedValue({items:[],next_cursor:null}),updateChatScope,createChatRun} as unknown as ApiClient;
     render(<KnowledgeChat client={api} />);
     await screen.findByRole("button",{name:"多库会话"});
-    const scope=screen.getByRole("group",{name:"搜索范围"});
-    const summary=scope.querySelector("summary")!;await userEvent.click(summary);
+    await userEvent.click(screen.getByRole("button",{name:/搜索范围：/}));
+    const scope=screen.getByRole("dialog",{name:"选择知识库"});
     await userEvent.click(within(scope).getByRole("button",{name:"全选"}));
     await waitFor(()=>expect(updateChatScope).toHaveBeenCalledWith("multi-session",["kb-a","kb-b"]));
     expect(listKnowledgeBases).toHaveBeenCalledWith("second-page");

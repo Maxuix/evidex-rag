@@ -49,6 +49,7 @@ import {
 } from "./storage";
 import { ModelSettingsDialog } from "./ModelSettingsDialog";
 import { KnowledgeBaseManagementPage } from "./KnowledgeBaseManagementPage";
+import { KnowledgeScopePicker } from "./KnowledgeScopePicker";
 import { ExecutionTimeline } from "./execution/ExecutionTimeline";
 import { applyActivity, disconnectActivity, emptyActivity, type ActivityState } from "./execution/activityState";
 
@@ -1240,23 +1241,6 @@ export function KnowledgeChat({
             </div>
           ) : null}
           <div className="composer">
-            <fieldset className="search-scope" disabled={scopeSaving || submitting || Boolean(pendingRun)}>
-              <legend>搜索范围{scopeSaving ? " · 保存中" : ""}</legend>
-              <details>
-                <summary>{selectedScopeIds.length ? selectedScopeIds.map(id => knowledgeBases.find(kb => kb.id === id)?.name ?? id).join("、") : "请选择知识库"}</summary>
-                <div className="scope-options">
-                  <button type="button" onClick={() => void selectAllScopes()}>全选</button>
-                  <button type="button" onClick={() => void changeScope([])}>清空</button>
-                  {knowledgeBases.map(kb => <label key={kb.id} title={kb.description || kb.name}>
-                    <input type="checkbox" checked={selectedScopeIds.includes(kb.id)} onChange={event => void changeScope(event.target.checked ? [...selectedScopeIds, kb.id] : selectedScopeIds.filter(id => id !== kb.id))} />
-                    {kb.name}
-                  </label>)}
-                  {knowledgeBaseCursor ? <button type="button" onClick={() => void loadKnowledgeBases(knowledgeBaseCursor)}>加载更多知识库</button> : null}
-                </div>
-              </details>
-              {!selectedScopeIds.length ? <small>请至少选择一个知识库后发送。</small> : null}
-              {currentRun && !isTerminal(currentRun) ? <small>本轮范围：{currentRun.knowledge_bases?.map(kb => kb.name).join("、") || runScopeKey(currentRun)}。选择变更用于下一轮。</small> : null}
-            </fieldset>
             <textarea
               ref={textareaRef}
               value={draft}
@@ -1265,7 +1249,9 @@ export function KnowledgeChat({
               disabled={!selectedKnowledgeBase || !selectedScopeIds.length || scopeSaving || !chatModelConfigured || submitting || sessionBusy}
               placeholder={
                 !chatModelConfigured
-                  ? "请先在右下角齿轮中选择对话模型"
+                  ? "请先在模型设置中选择对话模型"
+                  : !selectedScopeIds.length
+                  ? "请先选择搜索范围"
                   : selectedKnowledgeBase
                   ? "询问所选知识库中的内容…"
                   : "请先选择知识库"
@@ -1285,6 +1271,15 @@ export function KnowledgeChat({
             />
             <div className="composer-toolbar">
               <div className="composer-options">
+                <KnowledgeScopePicker
+                  key={`${selectedKnowledgeBaseId}:${selectedSessionId ?? "new"}`}
+                  knowledgeBases={knowledgeBases} selectedIds={selectedScopeIds}
+                  disabled={submitting || Boolean(pendingRun)} saving={scopeSaving}
+                  loading={knowledgeBasesLoading} hasMore={Boolean(knowledgeBaseCursor)}
+                  activeRun={Boolean(currentRun && !isTerminal(currentRun))}
+                  onChange={changeScope} onSelectAll={selectAllScopes}
+                  onLoadMore={() => loadKnowledgeBases(knowledgeBaseCursor ?? undefined)}
+                />
                 <label
                   className="composer-model-control"
                   title={modelSettingsLoading
