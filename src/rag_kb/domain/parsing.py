@@ -64,7 +64,9 @@ class ParserLimits:
     pdf_table_batch_size: int = 1
     pdf_segment_pages: int = 20
     max_pdf_content_bytes: int = 20 * 1024 * 1024
-    max_pdf_operators: int = 200_000
+    # Whole-document drawing work, including repeated Form invocations.
+    # Native-text annual reports can exceed one million operators.
+    max_pdf_operators: int = 5_000_000
     max_pdf_form_depth: int = 16
     max_checkpoint_bytes: int = 192 * 1024 * 1024
 

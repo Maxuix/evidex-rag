@@ -153,6 +153,36 @@ def test_pdf_operator_and_decompression_budgets():
     assert caught.value.diagnostic["limit_name"] == "max_pdf_content_bytes"
 
 
+def test_pdf_long_document_operator_budget():
+    writer = PdfWriter()
+    content = DecodedStreamObject()
+    content.set_data(b"q Q\n" * 1000)
+    stream = writer._add_object(content.flate_encode())
+    for _ in range(101):
+        page = writer.add_blank_page(width=100, height=100)
+        page[NameObject("/Contents")] = stream
+    output = BytesIO()
+    writer.write(output)
+    source = ParserSource("long.pdf", "application/pdf", output.getvalue())
+
+    # Ordinary per-page work must not exhaust the default after 100 pages.
+    assert scanned_surfaces(source) == frozenset()
+    assert scanned_surfaces(source, replace(ParserLimits(), max_pdf_operators=202_000)) == frozenset()
+    # The bound remains cumulative, even when pages reuse the same stream.
+    with pytest.raises(ParserExecutionError) as caught:
+        scanned_surfaces(source, replace(ParserLimits(), max_pdf_operators=201_999))
+    assert caught.value.diagnostic == {"limit_name": "max_pdf_operators", "limit": 201_999}
+
+
+def test_pdf_operator_budget_counts_nested_form_work():
+    source = pdf_source(nested=True)
+    # One Form invocation plus four operators inside it.
+    assert scanned_surfaces(source, replace(ParserLimits(), max_pdf_operators=5)) == frozenset({1})
+    with pytest.raises(ParserExecutionError) as caught:
+        scanned_surfaces(source, replace(ParserLimits(), max_pdf_operators=4))
+    assert caught.value.diagnostic["limit_name"] == "max_pdf_operators"
+
+
 def test_pdf_cyclic_form_is_rejected():
     from pypdf import PdfReader
     reader = PdfReader(BytesIO(pdf_source(nested=True).content))
