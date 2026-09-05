@@ -47,6 +47,7 @@ from rag_kb.db.models import (
     VectorRecord,
 )
 from rag_kb.domain import (
+    AdjacentChunkAnchor,
     AdjacentChunkHit,
     AdjacentChunkQuery,
     AdjacentChunkResult,
@@ -80,6 +81,73 @@ class PgVectorStore:
             raise ValueError("configured embedding space is not supported")
         self._sessions = sessions
         self._configured_space = configured_space
+
+    async def source_neighbors(
+        self,
+        plan: RetrievalQueryPlan,
+        query_embedding: tuple[float, ...],
+        *,
+        index_revision_id: UUID,
+        anchors: tuple[AdjacentChunkAnchor, ...],
+        expected_space: EmbeddingSpaceDefinition,
+    ) -> VectorSearchResult | None:
+        """Read at most two neighbors per anchor with their own original-vector distance."""
+        if not 1 <= len(anchors) <= 100 or len({a.index_chunk_id for a in anchors}) != len(anchors):
+            raise ValueError("source neighbors require one to one hundred distinct anchors")
+        self._require_exact_plan(plan, query_embedding, expected_space)
+        statement = self._source_neighbor_statement(len(anchors), expected_space.dimension)
+        parameters = {
+            "workspace_id": plan.workspace_id, "knowledge_base_id": plan.knowledge_base_id,
+            "index_revision_id": index_revision_id, "query_embedding": list(query_embedding),
+            "expected_dimension": expected_space.dimension,
+        }
+        for i, anchor in enumerate(anchors):
+            parameters.update({f"adj_input_rank_{i}": i+1, f"adj_input_chunk_id_{i}": anchor.index_chunk_id,
+                f"adj_input_target_id_{i}": anchor.indexed_document_version_id,
+                f"adj_input_ordinal_{i}": anchor.ordinal})
+        async with self._sessions() as session:
+            rows = (await session.execute(statement, parameters)).mappings().all()
+        if not rows:
+            return None
+        first = rows[0]
+        if first["active_revision_id"] != index_revision_id or first["validated_anchor_count"] != len(anchors):
+            raise RetrievalExecutionError(ErrorCode.INDEX_REVISION_INCOMPATIBLE,
+                                          diagnostic={"check": "source_neighbor_anchor_scope"})
+        if first["compatibility_fingerprint"] != expected_space.compatibility_fingerprint:
+            raise RetrievalExecutionError(ErrorCode.EMBEDDING_SPACE_MISMATCH,
+                                          diagnostic={"check": "source_neighbor_embedding_space"})
+        hits = tuple(self._hit(r) for r in rows if r["index_chunk_id"] is not None and r["cosine_distance"] is not None)
+        if len(hits) > 2*len(anchors):
+            raise RetrievalExecutionError(ErrorCode.INTERNAL_SERVER_ERROR,
+                                          diagnostic={"check": "source_neighbor_budget"})
+        return VectorSearchResult(resolved_active_revision_id=first["active_revision_id"], hits=hits,
+            embedding_space_id=first["embedding_space_id"], compatibility_fingerprint=first["compatibility_fingerprint"],
+            space_role="text_retrieval")
+
+    @staticmethod
+    def _source_neighbor_statement(anchor_count: int, dimension: int):
+        adjacent = PgVectorStore._adjacent_statement(anchor_count, max_anchors=100).subquery("source_neighbors")
+        query_vector = bindparam("query_embedding", type_=Vector(dimension))
+        distance = VectorRecord.embedding.cosine_distance(query_vector).label("cosine_distance")
+        return (
+            select(*adjacent.c, EmbeddingSpace.id.label("embedding_space_id"),
+                   EmbeddingSpace.compatibility_fingerprint, VectorRecord.representation_kind, distance)
+            .select_from(adjacent)
+            .join(IndexRevisionEmbeddingSpace, and_(
+                IndexRevisionEmbeddingSpace.index_revision_id == adjacent.c.active_revision_id,
+                IndexRevisionEmbeddingSpace.workspace_id == bindparam("workspace_id"),
+                IndexRevisionEmbeddingSpace.role == "text_retrieval"))
+            .join(EmbeddingSpace, and_(EmbeddingSpace.id == IndexRevisionEmbeddingSpace.embedding_space_id,
+                                      EmbeddingSpace.workspace_id == IndexRevisionEmbeddingSpace.workspace_id))
+            .outerjoin(VectorRecord, and_(VectorRecord.index_chunk_id == adjacent.c.index_chunk_id,
+                VectorRecord.workspace_id == adjacent.c.hit_workspace_id,
+                VectorRecord.kb_id == adjacent.c.hit_knowledge_base_id,
+                VectorRecord.embedding_space_id == EmbeddingSpace.id,
+                VectorRecord.embedding_dimension == bindparam("expected_dimension", type_=Integer),
+                VectorRecord.representation_kind.in_(("text", "caption_text", "ocr_text", "table_text"))))
+            .distinct(adjacent.c.index_chunk_id)
+            .order_by(adjacent.c.index_chunk_id, distance, VectorRecord.representation_kind)
+        )
 
     async def rerank_document_contexts(
         self,
@@ -1019,9 +1087,9 @@ class PgVectorStore:
         )
 
     @staticmethod
-    def _adjacent_statement(anchor_count: int):
-        if not 1 <= anchor_count <= 2:
-            raise ValueError("adjacency query requires one or two anchors")
+    def _adjacent_statement(anchor_count: int, *, max_anchors: int = 2):
+        if max_anchors not in {2, 100} or not 1 <= anchor_count <= max_anchors:
+            raise ValueError("adjacency query exceeds its anchor bound")
 
         anchor_rows = values(
             column("anchor_rank", Integer),

@@ -109,8 +109,13 @@ def score_hits(
     *,
     vector_weight: float = 0.65,
     lexical_weight: float = 0.35,
+    reference_hits: Iterable[VectorSearchHit] | None = None,
 ) -> tuple[RerankedHit, ...]:
-    """Score candidates in input order without truncation or diversity selection."""
+    """Score candidates, optionally freezing lexical statistics to the original pool.
+
+    Source-context supplements must not change scores of already retrieved chunks.
+    The reference pool contains original candidates only, never generated questions.
+    """
 
     if not math.isclose(vector_weight + lexical_weight, 1.0, abs_tol=1e-9):
         raise ValueError("rerank weights must sum to one")
@@ -119,17 +124,23 @@ def score_hits(
         return ()
     query_terms = _terms(query)
     document_terms = tuple(_terms(hit.text) for hit in candidates)
-    document_frequency = Counter(
-        term for terms in document_terms for term in set(terms)
+    statistics_terms = (
+        document_terms if reference_hits is None
+        else tuple(_terms(hit.text) for hit in reference_hits)
     )
-    average_length = sum(len(terms) for terms in document_terms) / len(candidates)
+    if not statistics_terms:
+        raise ValueError("reference hits must not be empty when scoring candidates")
+    document_frequency = Counter(
+        term for terms in statistics_terms for term in set(terms)
+    )
+    average_length = sum(len(terms) for terms in statistics_terms) / len(statistics_terms)
     return tuple(
         _score(
             hit,
             terms,
             query_terms,
             document_frequency,
-            len(candidates),
+            len(statistics_terms),
             average_length,
             vector_weight,
             lexical_weight,

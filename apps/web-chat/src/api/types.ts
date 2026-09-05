@@ -261,6 +261,7 @@ export interface RetrievalEvidencePack {
     evidence_group_count: number | null;
     model_rerank_candidate_count: number | null;
     model_rerank_window_count: number | null;
+    source_context_candidate_count?: number;
     matched_questions?: {
       index_chunk_id: UUID;
       ordinal: number;

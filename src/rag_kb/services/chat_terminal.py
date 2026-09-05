@@ -216,5 +216,8 @@ def _retrieval_diagnostics(state: ChatPipelineState) -> dict[str, int]:
         "model_rerank_window_count": getattr(
             debug, "model_rerank_window_count", None
         ),
+        "source_context_candidate_count": getattr(
+            debug, "source_context_candidate_count", None
+        ),
     }
     return {key: value for key, value in values.items() if value is not None}

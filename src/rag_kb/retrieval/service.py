@@ -77,6 +77,11 @@ from rag_kb.retrieval.fusion import (
     reciprocal_rank_fusion_lanes,
 )
 from rag_kb.retrieval.eligibility import EvidenceEligibilityPolicy
+from rag_kb.retrieval.source_context import (
+    SOURCE_CONTEXT_ANCHOR_LIMIT,
+    rank_with_source_context,
+    table_neighbor_compatible,
+)
 from rag_kb.retrieval.profile import (
     EXACT_PROFILE_VERSION,
     HYBRID_PROFILE_VERSION,
@@ -1180,6 +1185,7 @@ class RetrievalService:
         multimodal = cross_provider is not None
         relations: tuple[IndexChunkAssetRelationSnapshot, ...] = ()
         cross_result: VectorSearchResult | None = None
+        source_context_hits: tuple[VectorSearchHit, ...] = ()
         if multimodal:
             assert cross_provider is not None
             if _providers_share_space(embedding_provider, cross_provider):
@@ -1266,12 +1272,17 @@ class RetrievalService:
                     "knowledge base or active revision was not found"
                 )
             self._validate_scope(plan, result)
+            if plan.rerank_mode is RerankMode.CLASSIC:
+                source_context_hits = await self._source_context_candidates(
+                    plan, result, query_embedding, embedding_provider, profile
+                )
             evidence, model_candidate_count, model_window_count = (
                 await self._normalize(
                     plan,
                     result,
                     query=request.query,
                     profile=profile,
+                    source_context_hits=source_context_hits,
                 )
             )
         debug = (
@@ -1302,6 +1313,7 @@ class RetrievalService:
                 ),
                 model_rerank_candidate_count=model_candidate_count,
                 model_rerank_window_count=model_window_count,
+                source_context_candidate_count=len(source_context_hits),
                 matched_questions=_matched_questions(result),
             )
             if request.include_debug
@@ -2117,6 +2129,99 @@ class RetrievalService:
                 diagnostic={"check": "cross_modal_provider_contract"},
             ) from error
 
+    async def _source_context_candidates(
+        self,
+        plan: RetrievalQueryPlan,
+        result: VectorSearchResult,
+        query_embedding: tuple[float, ...],
+        provider: EmbeddingModelAdapter,
+        profile: RetrievalExecutionProfile,
+    ) -> tuple[VectorSearchHit, ...]:
+        lookup = getattr(self._vector_store, "source_neighbors", None)
+        if lookup is None:
+            return ()
+        # This policy is validated for original-source retrieval only.
+        if any(not h.source_candidate or h.matched_question for h in result.hits):
+            return ()
+        sources = tuple(h for h in result.hits if h.source_candidate)
+        if not sources:
+            return ()
+        # The wider read supplies structural anchors only. Its plain text hits do
+        # not replace the core pool or change its lexical reference statistics.
+        expanded_plan = replace(
+            plan,
+            candidate_count=SOURCE_CONTEXT_ANCHOR_LIMIT,
+            auto_qa_candidate_count=0,
+            allow_unverified_auto_qa=False,
+        )
+        expanded = await self._search_text(expanded_plan, query_embedding, provider)
+        if expanded is None:
+            raise RetrievalExecutionError(ErrorCode.INDEX_REVISION_INCOMPATIBLE,
+                                          diagnostic={"check": "source_context_lookahead_revision"})
+        self._validate_scope(expanded_plan, expanded)
+        if len({h.index_chunk_id for h in expanded.hits}) != len(expanded.hits):
+            raise RetrievalExecutionError(ErrorCode.INTERNAL_SERVER_ERROR,
+                                          diagnostic={"check": "source_context_lookahead_duplicate"})
+        if expanded.resolved_active_revision_id != result.resolved_active_revision_id or len(expanded.hits) > SOURCE_CONTEXT_ANCHOR_LIMIT:
+            raise RetrievalExecutionError(ErrorCode.INDEX_REVISION_INCOMPATIBLE,
+                                          diagnostic={"check": "source_context_lookahead_scope"})
+        prefix = expanded.hits[:len(sources)]
+        if len(prefix) != len(sources) or any(
+            a.index_chunk_id != b.index_chunk_id
+            or not math.isclose(a.cosine_distance, b.cosine_distance, abs_tol=1e-9, rel_tol=0)
+            for a, b in zip(sources, prefix, strict=True)
+        ):
+            raise RetrievalExecutionError(ErrorCode.INDEX_REVISION_INCOMPATIBLE,
+                                          diagnostic={"check": "source_context_core_changed"})
+        if any(not h.source_candidate or h.matched_question for h in expanded.hits):
+            raise RetrievalExecutionError(ErrorCode.INTERNAL_SERVER_ERROR,
+                                          diagnostic={"check": "source_context_lookahead_question"})
+        anchors = tuple(
+            h for h in expanded.hits
+            if h.modality in {"text", "table"} and self._admit_text_hit(h, expanded_plan, profile)
+        )
+        if not anchors:
+            return ()
+        found = await lookup(
+            plan,
+            query_embedding,
+            index_revision_id=result.resolved_active_revision_id,
+            anchors=tuple(
+                AdjacentChunkAnchor(h.index_chunk_id, h.indexed_document_version_id, h.ordinal)
+                for h in anchors
+            ),
+            expected_space=provider.embedding_space,
+        )
+        if found is None:
+            raise RetrievalExecutionError(ErrorCode.INDEX_REVISION_INCOMPATIBLE,
+                                          diagnostic={"check": "source_context_revision"})
+        self._validate_scope(plan, found)
+        if found.compatibility_fingerprint != result.compatibility_fingerprint:
+            raise RetrievalExecutionError(ErrorCode.EMBEDDING_SPACE_MISMATCH,
+                                          diagnostic={"check": "source_context_embedding_space"})
+        if found.resolved_active_revision_id != result.resolved_active_revision_id or len(found.hits) > 2*len(anchors):
+            raise RetrievalExecutionError(ErrorCode.INTERNAL_SERVER_ERROR,
+                                          diagnostic={"check": "source_context_scope_or_budget"})
+        existing = {h.index_chunk_id for h in result.hits}
+        seen: set[UUID] = set()
+        additions = []
+        for neighbor in found.hits:
+            if neighbor.index_chunk_id in seen or not neighbor.source_candidate or neighbor.matched_question:
+                raise RetrievalExecutionError(ErrorCode.INTERNAL_SERVER_ERROR,
+                                              diagnostic={"check": "source_context_duplicate_or_question"})
+            seen.add(neighbor.index_chunk_id)
+            if not any(
+                neighbor.indexed_document_version_id == anchor.indexed_document_version_id
+                and abs(neighbor.ordinal - anchor.ordinal) == 1 for anchor in anchors
+            ):
+                raise RetrievalExecutionError(ErrorCode.INTERNAL_SERVER_ERROR,
+                                              diagnostic={"check": "source_context_anchor_relation"})
+            if neighbor.index_chunk_id not in existing and any(
+                table_neighbor_compatible(anchor, neighbor) for anchor in anchors
+            ):
+                additions.append(neighbor)
+        return tuple(additions)
+
     async def _normalize(
         self,
         plan: RetrievalQueryPlan,
@@ -2124,6 +2229,7 @@ class RetrievalService:
         *,
         query: str,
         profile: RetrievalExecutionProfile,
+        source_context_hits: tuple[VectorSearchHit, ...] = (),
     ) -> tuple[tuple[Evidence, ...], int | None, int | None]:
         result_limit = (plan.candidate_count or plan.top_k) + plan.auto_qa_candidate_count
         if len(result.hits) > result_limit:
@@ -2145,6 +2251,15 @@ class RetrievalService:
                 diagnostic={"check": "duplicate_chunk"},
             )
         self._validate_scope(plan, result)
+        if source_context_hits:
+            if plan.rerank_mode is not RerankMode.CLASSIC or len(source_context_hits) > 2*SOURCE_CONTEXT_ANCHOR_LIMIT:
+                raise RetrievalExecutionError(ErrorCode.INTERNAL_SERVER_ERROR,
+                                              diagnostic={"check": "source_context_normalize_budget"})
+            ids = [h.index_chunk_id for h in (*result.hits, *source_context_hits)]
+            if len(ids) != len(set(ids)):
+                raise RetrievalExecutionError(ErrorCode.INTERNAL_SERVER_ERROR,
+                                              diagnostic={"check": "source_context_normalize_duplicate"})
+            self._validate_scope(plan, replace(result, hits=source_context_hits))
         if plan.rerank:
             output_limit = self._candidate_evidence_limit(plan)
             admitted_hits = tuple(
@@ -2167,6 +2282,15 @@ class RetrievalService:
                     ),
                 )[:output_limit]
             )
+            if source_context_hits:
+                ordered_reranked = rank_with_source_context(
+                    query,
+                    admitted_hits,
+                    source_context_hits,
+                    top_k=output_limit,
+                    vector_weight=profile.rerank_vector_weight,
+                    lexical_weight=profile.rerank_lexical_weight,
+                )
             candidates = tuple(
                 RetrievalService._evidence_from_reranked(rank, item)
                 for rank, item in enumerate(ordered_reranked, start=1)

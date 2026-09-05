@@ -6,6 +6,7 @@ from typing import Protocol
 from uuid import UUID
 
 from rag_kb.domain import (
+    AdjacentChunkAnchor,
     AdjacentChunkQuery,
     AdjacentChunkResult,
     EmbeddingSpaceDefinition,
@@ -24,6 +25,16 @@ from rag_kb.domain import (
 
 
 class VectorStore(Protocol):
+    async def source_neighbors(
+        self,
+        plan: RetrievalQueryPlan,
+        query_embedding: tuple[float, ...],
+        *,
+        index_revision_id: UUID,
+        anchors: tuple[AdjacentChunkAnchor, ...],
+        expected_space: EmbeddingSpaceDefinition,
+    ) -> VectorSearchResult | None: ...
+
     async def rerank_document_contexts(
         self,
         *,

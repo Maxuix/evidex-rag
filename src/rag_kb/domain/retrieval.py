@@ -724,6 +724,7 @@ class RetrievalDebug:
     evidence_group_count: int | None = None
     model_rerank_candidate_count: int | None = None
     model_rerank_window_count: int | None = None
+    source_context_candidate_count: int = 0
     graph: Any | None = None
     matched_questions: tuple[RetrievalMatchedQuestion, ...] = ()
 
@@ -739,6 +740,7 @@ class RetrievalDebug:
             self.evidence_group_count,
             self.model_rerank_candidate_count,
             self.model_rerank_window_count,
+            self.source_context_candidate_count,
         ):
             if value is not None and value < 0:
                 raise ValueError("debug counts must be non-negative")

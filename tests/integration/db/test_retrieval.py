@@ -16,6 +16,7 @@ from rag_kb.adapters.lexical_store.postgres import PgLexicalStore
 from rag_kb.adapters.vector_store.pgvector import PgVectorStore
 from rag_kb.db import DatabaseProcess, create_database_resources
 from rag_kb.domain import (
+    AdjacentChunkAnchor,
     EmbeddingSpaceDefinition,
     ErrorCode,
     Evidence,
@@ -84,6 +85,58 @@ class ExactRetrievalDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self) -> None:
         await self.database.close()
+
+    async def test_source_neighbors_use_own_vectors_deduplicate_and_validate_frozen_scope(self):
+        foundation = await self._foundation()
+        target = await self._target(foundation, chunk_id=uuid4(), vector=_axis_vector(0))
+        second, third = uuid4(), uuid4()
+        connection = await asyncpg.connect(MIGRATION_DSN)
+        try:
+            for ordinal, chunk_id in ((1, second), (2, third)):
+                await connection.execute("""
+                    INSERT INTO index_chunk (id, workspace_id, kb_id, indexed_document_version_id,
+                        ordinal, content, content_hash, token_count, source_location, hierarchy,
+                        source_metadata, unit_key, modality)
+                    SELECT $1, workspace_id, kb_id, indexed_document_version_id, $2,
+                        'independent table evidence', content_hash, token_count, source_location,
+                        hierarchy, source_metadata, $3, 'table' FROM index_chunk WHERE id=$4
+                """, chunk_id, ordinal, f'source-neighbor:{chunk_id}', target.chunk_id)
+            await connection.execute("""
+                INSERT INTO vector_record (workspace_id, kb_id, index_chunk_id, embedding_space_id,
+                    embedding_dimension, representation_kind, embedding)
+                VALUES ($1, $2, $3, $4, 1024, 'table_text', $5::vector)
+            """, WORKSPACE, foundation.kb_id, second, foundation.embedding_space_id,
+                _vector_literal(_axis_vector(1)))
+            anchors = (AdjacentChunkAnchor(target.chunk_id, target.indexed_document_version_id, 0),
+                       AdjacentChunkAnchor(third, target.indexed_document_version_id, 2))
+            plan = RetrievalQueryPlan(WORKSPACE, foundation.kb_id, RetrievalStrategy.EXACT_VECTOR,
+                                      top_k=10, rerank_mode=RerankMode.CLASSIC)
+            kwargs = dict(index_revision_id=foundation.revision_id, anchors=anchors, expected_space=self.definition)
+            result = await self.vector_store.source_neighbors(plan, _axis_vector(0), **kwargs)
+            self.assertEqual([h.index_chunk_id for h in result.hits], [second])
+            self.assertAlmostEqual(result.hits[0].cosine_distance, 1.0)
+            self.assertEqual(result.hits[0].text, 'independent table evidence')
+            self.assertTrue(result.hits[0].source_candidate)
+            self.assertIsNone(result.hits[0].matched_question)
+            with self.assertRaises(RetrievalExecutionError):
+                await self.vector_store.source_neighbors(plan, _axis_vector(0), **{
+                    **kwargs, 'expected_space': replace(self.definition, compatibility_fingerprint='sha256:wrong')})
+            with self.assertRaises(ValueError):
+                await self.vector_store.source_neighbors(plan, _axis_vector(0), **{**kwargs, 'anchors': (anchors[0], anchors[0])})
+            with self.assertRaises(RetrievalExecutionError):
+                await self.vector_store.source_neighbors(plan, _axis_vector(0), **{
+                    **kwargs, 'anchors': (replace(anchors[0], ordinal=10), anchors[1])})
+            await connection.execute('UPDATE index_chunk SET excluded_at=now() WHERE id=$1', second)
+            self.assertEqual((await self.vector_store.source_neighbors(plan, _axis_vector(0), **kwargs)).hits, ())
+            await connection.execute('UPDATE index_chunk SET excluded_at=now() WHERE id=$1', third)
+            with self.assertRaises(RetrievalExecutionError):
+                await self.vector_store.source_neighbors(plan, _axis_vector(0), **kwargs)
+            other = await self._foundation(workspace_id=OTHER_WORKSPACE,
+                                           compatibility_fingerprint='sha256:other-neighbor-space')
+            self.assertIsNone(await self.vector_store.source_neighbors(
+                replace(plan, knowledge_base_id=other.kb_id), _axis_vector(0), **kwargs))
+        finally:
+            await connection.close()
 
     async def test_rerank_introductions_are_bounded_version_scoped_and_exclusion_aware(self):
         foundation = await self._foundation()

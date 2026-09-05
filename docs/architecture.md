@@ -485,6 +485,19 @@ ChatRun 保存的 index revision 是创建时一致性 guard，而不是历史�
 文本 cosine 门，lexical 使用 FTS rank 与完整 manifest，cross-modal 使用自身 cosine 门；随后
 才在已准入集合排序并最终截取 `top_k`。`classic` 保留本地确定性排序并作为知识库默认，不能
 以词面覆盖或排序分改写 cosine/FTS 准入事实；hybrid 的 lexical lane 不复用 dense cosine 门。
+
+纯文本空间的 exact + `classic` 原文检索增加有界表格补全：保留原核心候选（Top-10 请求为
+40 个），用同一查询向量再读前 100 个原文，仅把达到原 cosine 门的 text/table 项作为结构
+锚点。只补同一 indexed document version、相邻 ordinal、相同来源表面、页差不超过 1 的
+table；两侧都有章节标题且不同则拒绝，不递归扩展。补充项最多 200 个，使用自身原文向量
+距离和独立引用；结构关系是额外准入依据，不借用锚点的 cosine 分。查询保留 workspace/KB、
+active revision、ready/serving、源可用、未删除及非 excluded 约束，跨读前缀或 revision 漂移
+明确失败。Classic 词法统计固定在原核心候选；原排序前 `ceil(top_k/2)` 个位置保持，余下位置
+再按原文分数竞争。此保护保证领先位置，不能保证任意新数据的整个 Top-10 都无退步。
+补充数量写入 `source_context_candidate_count` 调试字段。含问句命中的候选、Hybrid、MiniLM、
+多模态和 Graph 路径不使用这条策略。无需迁移或重建旧索引；报告 80 记录冻结回归集的
+收益与局限，尚未联合评测新 V5 切分重建后的索引。
+
 `local_minilm_v1` 使用构建时固定、运行时离线的多语言 MiniLM ARM64 INT8 ONNX
 工件，对全部已准入的 text/table 候选分批评分（每批最多 20）；不再先按 classic 截至 20。
 合并候选上限 320，问句命中的原文候选允许送模型核验而不受原文 cosine 门预先排除。模型 tokenizer 将 query 截至 96
