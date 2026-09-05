@@ -61,3 +61,19 @@ def test_cache_replays_without_provider_and_separates_query_from_document():
             cache.database.close()
     with TemporaryDirectory() as directory:
         asyncio.run(scenario(Path(directory) / 'vectors.sqlite'))
+
+
+def test_embedding_whitespace_probe_keeps_source_values_and_structured_content():
+    from tools.diagnose_chunking_embedding import projection
+    prose = {'embedding_text': '[body]\nSensor\nvoltage 3.14;\n\nhttps://x.example/v1.2',
+             'source_location': {'item_refs': ['#/texts/0']}, 'modality': 'text'}
+    original = prose['embedding_text']
+    assert projection(prose, set()) == '[body]\nSensor voltage 3.14; https://x.example/v1.2'
+    assert prose['embedding_text'] == original
+    code = {**prose, 'embedding_text': '[body]\ndef f():\n    return 3.14'}
+    assert projection(code, {'#/texts/0'}) == code['embedding_text']
+    table = {**prose, 'modality': 'table',
+             'embedding_text': '[table]\nRevenue\n\n| Year | USD |\n| --- | --- |\n| 2026 | 3.14 |'}
+    assert projection(table, set()).endswith('| Year | USD |\n| --- | --- |\n| 2026 | 3.14 |')
+
+    assert projection(prose, set(), preserve_paragraphs=True) == '[body]\nSensor voltage 3.14;\n\nhttps://x.example/v1.2'
