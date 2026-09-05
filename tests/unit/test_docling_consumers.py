@@ -131,7 +131,8 @@ def paginated_document(*, page_images: bool = False) -> DoclingDocument:
     )
     document.add_heading(text="Section B", level=1, prov=prov(2))
     document.add_table(
-        data=table_data((("h1", "h2"), ("a", "b"))), prov=prov(2)
+        data=table_data((("h1", "h2"), ("a", "b"))),
+        prov=ProvenanceItem(page_no=2, charspan=(0, 10), bbox=BoundingBox(l=40, t=300, r=440, b=100, coord_origin=CoordOrigin.BOTTOMLEFT))
     )
     document.add_text(
         label=DocItemLabel.TEXT, text="Closing paragraph on page two.", prov=prov(2)
@@ -777,12 +778,12 @@ class AssetExtractionTests(unittest.TestCase):
             document, page_image_surfaces=frozenset({2})
         )
 
-        self.assertEqual([asset.kind for asset in default], [ASSET_KIND_PICTURE])
+        self.assertEqual([asset.kind for asset in default], [ASSET_KIND_PICTURE, ASSET_KIND_TABLE_IMAGE])
         self.assertEqual(
             [asset.kind for asset in requested],
-            [ASSET_KIND_PICTURE, ASSET_KIND_PAGE_IMAGE],
+            [ASSET_KIND_PICTURE, ASSET_KIND_TABLE_IMAGE, ASSET_KIND_PAGE_IMAGE],
         )
-        self.assertEqual(requested[1].source_location["surface_start"], 2)
+        self.assertEqual(requested[-1].source_location["surface_start"], 2)
 
     def test_a_surface_docling_read_nothing_from_becomes_a_page_image(self) -> None:
         document = paginated_document(page_images=True)
@@ -792,7 +793,7 @@ class AssetExtractionTests(unittest.TestCase):
 
         kinds = [asset.kind for asset in extract_docling_assets(document)]
 
-        self.assertEqual(kinds, [ASSET_KIND_PICTURE, ASSET_KIND_PAGE_IMAGE])
+        self.assertEqual(kinds, [ASSET_KIND_PICTURE, ASSET_KIND_TABLE_IMAGE, ASSET_KIND_PAGE_IMAGE])
 
     def test_logical_documents_never_produce_page_images(self) -> None:
         self.assertEqual(extract_docling_assets(logical_document()), ())

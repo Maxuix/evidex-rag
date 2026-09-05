@@ -16,6 +16,10 @@ class AdmissionLimits:
     max_lines: int = 200_000
     max_csv_columns: int = 1_024
     max_csv_cells: int = 200_000
+    max_xlsx_cells: int = 200_000
+    max_xlsx_columns: int = 1_024
+    max_xlsx_sheets: int = 256
+    max_xlsx_xml_bytes: int = 20 * 1024 * 1024
     max_archive_entries: int = 10_000
     max_expanded_bytes: int = 100 * 1024 * 1024
     max_assets: int = 1_000
@@ -32,6 +36,10 @@ class ParserLimits:
     max_num_pages: int = 500
     max_csv_columns: int = 1_024
     max_csv_cells: int = 200_000
+    max_xlsx_cells: int = 200_000
+    max_xlsx_columns: int = 1_024
+    max_xlsx_sheets: int = 256
+    max_xlsx_xml_bytes: int = 20 * 1024 * 1024
     max_docling_items: int = 20_000
     max_chunks: int = 20_000
     max_extracted_characters: int = 5_000_000
@@ -55,6 +63,10 @@ class ParserLimits:
     pdf_layout_batch_size: int = 1
     pdf_table_batch_size: int = 1
     pdf_segment_pages: int = 20
+    max_pdf_content_bytes: int = 20 * 1024 * 1024
+    max_pdf_operators: int = 200_000
+    max_pdf_form_depth: int = 16
+    max_checkpoint_bytes: int = 192 * 1024 * 1024
 
     def __post_init__(self) -> None:
         if (
@@ -79,6 +91,8 @@ class ParserProfile(StrEnum):
     DOCLING_MULTIMODAL_LOCAL_V3 = "docling_multimodal_local_v3"
     DOCLING_TEXT_LOCAL_V3 = "docling_text_local_v3"
     DOCLING_MULTIMODAL_LOCAL_V4 = "docling_multimodal_local_v4"
+    DOCLING_TEXT_LOCAL_V4 = "docling_text_local_v4"
+    DOCLING_MULTIMODAL_LOCAL_V5 = "docling_multimodal_local_v5"
 
     @property
     def preset(self) -> ParsingPreset:
@@ -86,6 +100,7 @@ class ParserProfile(StrEnum):
             self.DOCLING_MULTIMODAL_LOCAL_V2,
             self.DOCLING_MULTIMODAL_LOCAL_V3,
             self.DOCLING_MULTIMODAL_LOCAL_V4,
+            self.DOCLING_MULTIMODAL_LOCAL_V5,
         }:
             return ParsingPreset.MULTIMODAL_LOCAL_V2
         return ParsingPreset.TEXT_LOCAL_V1
@@ -96,7 +111,9 @@ class ParserProfile(StrEnum):
             self.DOCLING_TEXT_LOCAL_V2,
             self.DOCLING_MULTIMODAL_LOCAL_V3,
             self.DOCLING_TEXT_LOCAL_V3,
+            self.DOCLING_TEXT_LOCAL_V4,
             self.DOCLING_MULTIMODAL_LOCAL_V4,
+            self.DOCLING_MULTIMODAL_LOCAL_V5,
         }
 
 

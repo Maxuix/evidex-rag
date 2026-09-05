@@ -14,6 +14,7 @@ from dataclasses import dataclass
 import hashlib
 from io import BytesIO
 import json
+import math
 from typing import Any
 
 from PIL import Image
@@ -36,6 +37,9 @@ from rag_kb.document_processing.docling.traversal import (
     parent_ref,
 )
 from rag_kb.document_processing.docling.figures import normalize_figure_labels
+from rag_kb.document_processing.docling.resources import (
+    image_dimensions, image_usage, require_limit,
+)
 from rag_kb.document_processing.tokenization import count_chunk_tokens
 from rag_kb.domain import (
     ChunkAssemblyDraft,
@@ -90,18 +94,21 @@ def extract_docling_assets(
     """
 
     resolved = limits or ParserLimits()
+    image_usage(document, resolved, verify_headers=True)
     assets: list[ParsedAssetDraft] = []
     total_bytes = 0
+    total_pixels = 0
     kind = surface_kind(document)
     decorative = _decorative_pictures(document, kind)
 
     for picture in document.pictures:
-        image = _image_of(picture, document)
-        if image is None:
-            continue
         reference = item_ref(picture)
         if reference in decorative:
             # Logos, rules and repeated watermarks are furniture, not evidence.
+            continue
+        total_pixels = _reserve_image(picture, document, resolved, total_pixels)
+        image = _image_of(picture, document)
+        if image is None:
             continue
         asset = _bounded_asset(
             image,
@@ -120,8 +127,7 @@ def extract_docling_assets(
         total_bytes = _require_asset_limits(assets, total_bytes, asset, resolved)
 
     for table in document.tables:
-        if table.image is None:
-            continue
+        total_pixels = _reserve_image(table, document, resolved, total_pixels)
         image = _image_of(table, document)
         if image is None:
             continue
@@ -144,6 +150,10 @@ def extract_docling_assets(
 
     for ordinal in _page_image_surfaces(document, kind, page_image_surfaces):
         page = document.pages[ordinal]
+        if page.image is not None:
+            width, height = image_dimensions(page.image.size.width, page.image.size.height, resolved)
+            total_pixels += width * height
+            require_limit("max_total_image_pixels", total_pixels, resolved)
         image = page.image.pil_image if page.image is not None else None
         if image is None:
             continue
@@ -427,6 +437,33 @@ def _image_of(item: DocItem, document: DoclingDocument) -> Image.Image | None:
             ErrorCode.PARSER_OUTPUT_INVALID,
             diagnostic={"check": "docling_asset_image"},
         ) from error
+
+
+def _reserve_image(item, document, limits, total_pixels):
+    """Validate the exact crop dimensions before Pillow can allocate padding."""
+    ref = getattr(item, "image", None)
+    if ref is not None:
+        width, height = image_dimensions(ref.size.width, ref.size.height, limits)
+    else:
+        if not item.prov:
+            return total_pixels
+        page = document.pages.get(item.prov[0].page_no)
+        if page is None or page.image is None or page.size is None:
+            return total_pixels
+        try:
+            box = item.prov[0].bbox.to_top_left_origin(page_height=page.size.height).scale_to_size(old_size=page.size, new_size=page.image.size)
+            values = box.as_tuple()
+            if not all(math.isfinite(v) for v in values):
+                raise ValueError("invalid crop")
+            left, top, right, bottom = map(round, values)
+            width, height = image_dimensions(right - left, bottom - top, limits)
+        except ParserExecutionError:
+            raise
+        except Exception as error:
+            raise ParserExecutionError(ErrorCode.PARSER_OUTPUT_INVALID, diagnostic={"check": "docling_asset_geometry"}) from error
+    total_pixels += width * height
+    require_limit("max_total_image_pixels", total_pixels, limits)
+    return total_pixels
 
 
 def _bounded_asset(

@@ -35,7 +35,9 @@ export interface KnowledgeBase {
       | "docling_text_local_v2"
       | "docling_multimodal_local_v3"
       | "docling_text_local_v3"
-      | "docling_multimodal_local_v4";
+      | "docling_multimodal_local_v4"
+      | "docling_text_local_v4"
+      | "docling_multimodal_local_v5";
   };
   chunking: {
     preset: ChunkingPreset;

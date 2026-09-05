@@ -145,7 +145,7 @@ _DOCLING_PARSER_BASE_V3["time_limit_policy"] = (
     "unbounded_with_long_running_notice_v1"
 )
 
-DOCLING_TEXT_PARSER_CONFIG = {
+DOCLING_TEXT_PARSER_CONFIG_V3 = {
     **_DOCLING_PARSER_BASE_V3,
     "profile": "docling_text_local_v3",
     "generate_page_images": False,
@@ -153,7 +153,7 @@ DOCLING_TEXT_PARSER_CONFIG = {
     "asset_mapping": "none",
 }
 
-DOCLING_MULTIMODAL_PARSER_CONFIG = {
+DOCLING_MULTIMODAL_PARSER_CONFIG_V4 = {
     **_DOCLING_PARSER_BASE_V3,
     "profile": "docling_multimodal_local_v4",
     "generate_page_images": True,
@@ -163,6 +163,22 @@ DOCLING_MULTIMODAL_PARSER_CONFIG = {
     "markdown_media": deepcopy(
         DOCLING_MULTIMODAL_PARSER_CONFIG_V3["markdown_media"]
     ),
+}
+
+DOCLING_TEXT_PARSER_CONFIG = {
+    **DOCLING_TEXT_PARSER_CONFIG_V3,
+    "profile": "docling_text_local_v4",
+    "resource_policy": "bounded_xlsx_pdf_checkpoint_v2",
+    "pdf_probe": "isolated_pdf_page_facts_v2",
+}
+
+DOCLING_MULTIMODAL_PARSER_CONFIG = {
+    **DOCLING_MULTIMODAL_PARSER_CONFIG_V4,
+    "profile": "docling_multimodal_local_v5",
+    "resource_policy": "bounded_xlsx_pdf_checkpoint_v2",
+    "pdf_probe": "isolated_pdf_page_facts_v2",
+    "page_image_policy": "image_coverage_surface_v2",
+    "asset_mapping": "docling_picture_table_crop_page_v2",
 }
 
 DOCLING_ENRICHMENT_CONFIG = {
@@ -355,11 +371,13 @@ _EXECUTABLE_PARSER_CONFIGS = (
         DOCLING_MULTIMODAL_PARSER_CONFIG_V3,
         ParserProfile.DOCLING_MULTIMODAL_LOCAL_V3,
     ),
-    (DOCLING_TEXT_PARSER_CONFIG, ParserProfile.DOCLING_TEXT_LOCAL_V3),
+    (DOCLING_TEXT_PARSER_CONFIG_V3, ParserProfile.DOCLING_TEXT_LOCAL_V3),
+    (DOCLING_TEXT_PARSER_CONFIG, ParserProfile.DOCLING_TEXT_LOCAL_V4),
     (
-        DOCLING_MULTIMODAL_PARSER_CONFIG,
+        DOCLING_MULTIMODAL_PARSER_CONFIG_V4,
         ParserProfile.DOCLING_MULTIMODAL_LOCAL_V4,
     ),
+    (DOCLING_MULTIMODAL_PARSER_CONFIG, ParserProfile.DOCLING_MULTIMODAL_LOCAL_V5),
 )
 
 

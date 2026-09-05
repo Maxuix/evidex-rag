@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from contextlib import contextmanager
 import resource
+import sys
 import threading
 import time
 from typing import Any, Iterator
@@ -143,4 +144,5 @@ def _emit(payload: dict[str, Any]) -> None:
 
 def _child_peak_rss_bytes() -> int:
     # Worker containers run Linux, where ru_maxrss is expressed in KiB.
-    return int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss) * 1024
+    raw = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+    return raw if sys.platform == "darwin" else raw * 1024
