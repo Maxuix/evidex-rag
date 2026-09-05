@@ -7,6 +7,7 @@ from unittest.mock import patch
 from uuid import UUID, uuid4
 
 from rag_kb.document_processing.profiles import (
+    DOCLING_TEXT_PARSER_CONFIG_V3,
     SEMANTIC_CHUNKING_CONFIG,
     SEMANTIC_CHUNKING_CONFIG_V3,
     SEMANTIC_CHUNKING_CONFIG_V4,
@@ -137,7 +138,6 @@ class SemanticBoundaryTests(unittest.TestCase):
             (1.0, 0.0) if index < 4 else (0.0, 1.0)
             for index in range(8)
         )
-        profile = profile_for_preset(ChunkingPreset.SEMANTIC_BALANCED_V1)
 
         plan = build_chunk_plan(
             indexed_document_version_id=UUID(
@@ -145,7 +145,7 @@ class SemanticBoundaryTests(unittest.TestCase):
             ),
             source_checksum_sha256="b" * 64,
             profile_fingerprint=profile_fingerprint(
-                profile.parser_config,
+                DOCLING_TEXT_PARSER_CONFIG_V3,
                 SEMANTIC_CHUNKING_CONFIG_V4,
             ),
             units=units,

@@ -111,35 +111,18 @@ def _space(
 
 
 class ScannedSurfaceTests(unittest.TestCase):
-    def test_text_layer_probe_stops_after_first_non_whitespace_fragment(self) -> None:
-        class TextPage:
-            def __init__(self) -> None:
-                self.visited: list[str] = []
-                self.swallowed_control_flow = False
-                self.reached_later_text = False
+    def test_surface_probe_reads_operators_without_extracting_page_text(self) -> None:
+        from pypdf.generic import DecodedStreamObject, NameObject
 
-            def extract_text(self, *, visitor_text) -> str:
-                visitor_text(" \n", None, None, None, None)
-                self.visited.append("whitespace")
-                try:
-                    visitor_text("native text", None, None, None, None)
-                except Exception:
-                    self.swallowed_control_flow = True
-                self.reached_later_text = True
-                visitor_text("later text", None, None, None, None)
-                return "native text later text"
-
-        page = TextPage()
-        with patch(
-            "rag_kb.adapters.parser.scanned_pages.PdfReader",
-            return_value=SimpleNamespace(pages=(page,)),
-        ):
-            result = scanned_surfaces(_pdf_source(b"synthetic"))
-
-        self.assertEqual(result, frozenset())
-        self.assertEqual(page.visited, ["whitespace"])
-        self.assertFalse(page.swallowed_control_flow)
-        self.assertFalse(page.reached_later_text)
+        writer = PdfWriter()
+        page = writer.add_blank_page(width=612, height=792)
+        stream = DecodedStreamObject()
+        stream.set_data(b"BT (native text) Tj (later text) Tj ET")
+        page[NameObject("/Contents")] = writer._add_object(stream)
+        output = BytesIO()
+        writer.write(output)
+        with patch("pypdf._page.PageObject.extract_text", side_effect=AssertionError("no text extraction")):
+            self.assertEqual(scanned_surfaces(_pdf_source(output.getvalue())), frozenset())
 
     def test_raster_only_pdf_page_is_detected_without_provider_or_ocr(self) -> None:
         scanned = BytesIO()
@@ -171,7 +154,8 @@ class ScannedSurfaceTests(unittest.TestCase):
     def test_corrupt_pdf_bytes_fail_closed(self) -> None:
         with self.assertRaises(ParserExecutionError) as raised:
             scanned_surfaces(_pdf_source(b"%PDF-1.7 truncated"))
-        self.assertEqual(raised.exception.code, ErrorCode.PARSER_OUTPUT_INVALID)
+        self.assertEqual(raised.exception.code, ErrorCode.FILE_CONTENT_INVALID)
+        self.assertEqual(raised.exception.diagnostic["check"], "pdf_page_probe")
 
 
 def _pdf_source(content: bytes) -> ParserSource:
