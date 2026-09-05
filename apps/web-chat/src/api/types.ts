@@ -1,3 +1,5 @@
+import type { ActivitySnapshot } from "../execution/activityTypes";
+
 export type UUID = string;
 export type IsoDate = string;
 export type JsonMap = Record<string, unknown>;
@@ -447,6 +449,10 @@ export interface ChatAgent {
 }
 
 export interface ChatRun {
+  activities?: ActivitySnapshot[];
+  activity_unavailable?: boolean;
+  live_progress_available?: boolean | null;
+  index_revision_id?: UUID;
   run_id: UUID;
   knowledge_base_id: UUID;
   session_id: UUID;

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 import logging
 from typing import Any
@@ -13,6 +13,9 @@ from uuid import UUID
 
 import asyncpg
 
+from rag_kb.domain.chat_activity import (
+    CHAT_ACTIVITY_VERSION, ActivityStep, ChatActivityEvent, activity_json,
+)
 from rag_kb.domain.chat_preview import (
     CHAT_PROGRESS_VERSION,
     ChatProgressActivity,
@@ -56,7 +59,7 @@ class PgNotifyPreviewSink:
             raise ValueError("preview sink limits must be positive")
         self._dsn = _asyncpg_dsn(sqlalchemy_dsn)
         self._connect = connect
-        self._commands: asyncio.Queue[_ProgressCommand] = asyncio.Queue(
+        self._commands: asyncio.Queue[_ProgressCommand | ChatActivityEvent] = asyncio.Queue(
             maxsize=command_queue_size
         )
         self._worker_task: asyncio.Task[None] | None = None
@@ -86,6 +89,16 @@ class PgNotifyPreviewSink:
             await asyncio.gather(task, return_exceptions=True)
         await self._discard_connection()
 
+    def emit_activity(self, event: ChatActivityEvent) -> None:
+        if self._closed:
+            return
+        self._ensure_worker()
+        try:
+            self._commands.put_nowait(event)
+        except asyncio.QueueFull:
+            # Producer-owned sequences reveal gaps; terminal snapshots reconcile.
+            pass
+
     async def emit_progress(
         self,
         *,
@@ -113,7 +126,14 @@ class PgNotifyPreviewSink:
         progress_sequences: OrderedDict[tuple[UUID, int], int] = OrderedDict()
         while not self._closed:
             command = await self._commands.get()
-            await self._publish_progress(progress_sequences, command)
+            if isinstance(command, ChatActivityEvent):
+                try:
+                    payload = serialize_preview_event(command)
+                except (UnicodeError, ValueError):
+                    continue
+                await self._notify(payload)
+            else:
+                await self._publish_progress(progress_sequences, command)
 
     async def _publish_progress(
         self,
@@ -411,6 +431,8 @@ class PgNotifyPreviewBroker:
 
 
 def serialize_preview_event(event: ChatPreviewEvent) -> str:
+    if isinstance(event, ChatActivityEvent):
+        return _serialize_activity(event)
     update = event.update
     facts = update.facts
     payload: dict[str, object] = {
@@ -452,6 +474,16 @@ def parse_preview_payload(payload: str) -> ChatPreviewEvent:
         value = json.loads(payload)
     except json.JSONDecodeError as error:
         raise ValueError("invalid chat preview JSON") from error
+    if isinstance(value, dict) and value.get("version") == CHAT_ACTIVITY_VERSION:
+        if set(value) != {"version", "event", "run_id", "attempt", "seq", "step", "elapsed_ms"} or value.get("event") != "agent.activity":
+            raise ValueError("invalid activity envelope")
+        try:
+            return ChatActivityEvent(
+                UUID(value["run_id"]), value["attempt"], value["seq"],
+                ActivityStep.from_dict(value["step"]), value["elapsed_ms"],
+            )
+        except (TypeError, AttributeError) as error:
+            raise ValueError("invalid activity values") from error
     if not isinstance(value, dict) or value.get("version") != CHAT_PROGRESS_VERSION:
         raise ValueError("invalid chat preview version")
     if value.get("event") != "agent.progress":
@@ -564,3 +596,31 @@ def _asyncpg_dsn(sqlalchemy_dsn: str) -> str:
     if not sqlalchemy_dsn.startswith(prefix):
         raise ValueError("chat preview DSN must use postgresql+asyncpg")
     return "postgresql://" + sqlalchemy_dsn[len(prefix) :]
+
+
+def _serialize_activity(event: ChatActivityEvent) -> str:
+    def encode(step: ActivityStep) -> str:
+        return activity_json({
+            "version": CHAT_ACTIVITY_VERSION, "event": "agent.activity",
+            "run_id": str(event.run_id), "attempt": event.attempt,
+            "seq": event.seq, "step": step.as_dict(), "elapsed_ms": event.elapsed_ms,
+        })
+
+    step = event.step
+    encoded = encode(step)
+    if len(encoded.encode("utf-8")) <= MAX_NOTIFY_PAYLOAD_BYTES:
+        return encoded
+    step = replace(
+        step, details_truncated=True,
+        queries=tuple(query[:120] for query in step.queries),
+        sources=tuple(replace(source, title=source.title[:80], location=source.location[:80] if source.location else None) for source in step.sources[:2]),
+        expression=step.expression[:160] if step.expression else None,
+        result_value=step.result_value[:160] if step.result_value else None,
+    )
+    encoded = encode(step)
+    if len(encoded.encode("utf-8")) > MAX_NOTIFY_PAYLOAD_BYTES:
+        step = replace(step, sources=(), queries=tuple(query[:40] for query in step.queries), refs=())
+        encoded = encode(step)
+    if len(encoded.encode("utf-8")) > MAX_NOTIFY_PAYLOAD_BYTES:
+        raise ValueError("activity preview exceeds byte limit")
+    return encoded

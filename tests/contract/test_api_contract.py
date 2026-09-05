@@ -2352,6 +2352,54 @@ class ContentApiContractTests(unittest.IsolatedAsyncioTestCase):
             0,
         )
 
+    async def test_sse_delivers_typed_activity_with_server_identity(self) -> None:
+        from rag_kb.answering.activity import ChatActivityRecorder
+        chat = self.dependencies.chat_service
+        events = []
+        activity = ChatActivityRecorder(chat.run.id, 1, emit=events.append)
+        step_id = activity.begin("tool", "calculate", round=1, expression="120 * 3 + 80")
+        activity.update(step_id, "succeeded", result_value="440")
+        self.dependencies.chat_preview_broker = _PreviewBroker(_PreviewSubscription(events[-1]))
+        streamed = await request(self.app, "GET", f"{API_PREFIX}/chat/runs/{chat.run.id}/events", disconnect_immediately=False)
+        self.assertEqual(streamed.status, 200)
+        self.assertIn(b"event: agent.activity", streamed.body)
+        body = next(json.loads(line[6:]) for line in streamed.body.splitlines() if line.startswith(b"data: "))
+        self.assertEqual(body["version"], "chat_activity_v1")
+        self.assertEqual(body["run_id"], str(chat.run.id))
+        self.assertEqual(body["seq"], body["step"]["seq"])
+        self.assertEqual(body["step"]["result_value"], "440")
+        self.assertIn("elapsed_ms", body)
+
+    async def test_activity_projection_preserves_attempts_and_committed_success(self) -> None:
+        from rag_kb.answering.activity import ChatActivityRecorder
+        chat = self.dependencies.chat_service
+        prior = ChatActivityRecorder(chat.run.id, 1)
+        prior.begin("model", "model_round", round=1)
+        prior.terminate("failed", code="deadline_exceeded")
+        current = ChatActivityRecorder(chat.run.id, 2)
+        current.begin("system", "persist_result")
+        chat.run = dataclass_replace(chat.run, attempt=2, status="completed", assistant_status="completed", agent_trace={
+            "version": "native_tool_calling_agent_v6", "events": [], "budget": {}, "usage": {}, "outcome": "answered",
+            "activity": current.snapshot().as_dict(), "internal_provider_debug": "PRIVATE",
+        }, timing={"attempts": {"1": {"agent_trace": {"activity": prior.snapshot("failed").as_dict(), "internal_provider_debug": "PRIVATE"}}}})
+        response = await request(self.app, "GET", f"{API_PREFIX}/chat/runs/{chat.run.id}")
+        self.assertEqual(response.status, 200)
+        body = response.json()
+        self.assertEqual([item["attempt"] for item in body["activities"]], [1, 2])
+        self.assertEqual(body["activities"][0]["steps"][0]["status"], "failed")
+        self.assertEqual(body["activities"][1]["steps"][0]["status"], "succeeded")
+        self.assertEqual(body["activities"][1]["status"], "completed")
+        self.assertFalse(body["live_progress_available"])
+        self.assertNotIn("activity", body["agent"]["trace"])
+        self.assertNotIn("activity", body["timing"]["attempts"]["1"]["agent_trace"])
+        self.assertNotIn("PRIVATE", json.dumps(body))
+        self.assertEqual(chat.run.agent_trace["activity"]["steps"][0]["status"], "running")
+        chat.run.agent_trace["activity"]["version"] = "unknown"
+        degraded = await request(self.app, "GET", f"{API_PREFIX}/chat/runs/{chat.run.id}")
+        self.assertEqual(degraded.status, 200)
+        self.assertEqual([item["attempt"] for item in degraded.json()["activities"]], [1])
+        self.assertTrue(degraded.json()["activity_unavailable"])
+
     async def test_sse_delivers_progress_before_terminal(
         self,
     ) -> None:

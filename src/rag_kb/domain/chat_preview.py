@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from uuid import UUID
 
+from rag_kb.domain.chat_activity import ChatActivityEvent
+
 
 
 CHAT_PROGRESS_VERSION = "chat_progress_v1"
@@ -113,7 +115,7 @@ class ChatProgressSnapshot:
             raise ValueError("chat progress attempt and sequence must be positive")
 
 
-ChatLiveEvent = ChatProgressSnapshot
+ChatLiveEvent = ChatProgressSnapshot | ChatActivityEvent
 ChatPreviewEvent = ChatLiveEvent
 
 

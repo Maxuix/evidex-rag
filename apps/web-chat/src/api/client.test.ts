@@ -134,3 +134,27 @@ describe("knowledge-base Auto-QA create payload", () => {
     });
   });
 });
+
+describe("activity delivery", () => {
+  it("decodes observations, isolates unknown versions, and removes listeners on close", async () => {
+    const { eventFixture } = await import("../execution/activityFixtures");
+    const stream = new EventTarget();
+    const close = vi.fn();
+    vi.stubGlobal("EventSource", class { constructor() { return Object.assign(stream, { close }); } });
+    const activity = vi.fn(), activityInvalid = vi.fn();
+    const stop = client.subscribeChatRun("/api/v1/chat/runs/run/events", { completed: vi.fn(), failed: vi.fn(), progress: vi.fn(), progressInvalid: vi.fn(), error: vi.fn(), activity, activityInvalid });
+    const valid = eventFixture();
+    stream.dispatchEvent(new MessageEvent("agent.activity", { data: JSON.stringify(valid) }));
+    stream.dispatchEvent(new MessageEvent("agent.activity", { data: JSON.stringify({ ...valid, version: "unknown" }) }));
+    expect(activity).toHaveBeenCalledExactlyOnceWith(valid);
+    expect(activityInvalid).toHaveBeenCalledOnce();
+    stop();
+    stream.dispatchEvent(new MessageEvent("agent.activity", { data: JSON.stringify(valid) }));
+    expect(activity).toHaveBeenCalledOnce(); expect(close).toHaveBeenCalledOnce();
+  });
+  it("preserves a server-reported unavailable trace when normalizing a run", async () => {
+    const { runFixture } = await import("../execution/activityFixtures");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response(200, runFixture({ activities: [], activity_unavailable: true }))));
+    expect((await client.getChatRun("/api/v1/chat/runs/run")).activity_unavailable).toBe(true);
+  });
+});

@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from dataclasses import replace
 import logging
 from typing import TYPE_CHECKING
 from uuid import UUID
 
+from rag_kb.answering.activity import ChatActivityRecorder
+from rag_kb.domain.chat_activity import CHAT_ACTIVITY_ARTIFACT
 from rag_kb.answering.agent import ChatAgentProgress, NativeToolCallingAgent
 from rag_kb.domain import (
     ChatExecutionCommand,
@@ -60,6 +63,11 @@ class NativeAgentRunner:
     async def execute(self, command: ChatExecutionCommand) -> ChatPipelineState:
         state: ChatPipelineState | None = None
         progress = ChatAgentProgress(deadline_seconds=self._deadline_seconds)
+        activity = ChatActivityRecorder(
+            command.lease.run_id, command.lease.attempt,
+            emit=getattr(self._progress_sink, "emit_activity", None), started_at=progress.started_at,
+        )
+        progress.activity = activity
         phase = ChatPipelinePhase.LOAD_CONTEXT
         reporter = self._progress_reporter_factory(
             command.lease.run_id,
@@ -72,6 +80,7 @@ class NativeAgentRunner:
                     ChatProgressStage.UNDERSTAND_QUERY,
                     ChatProgressActivity.LOAD_CONTEXT,
                 )
+                load_step = activity.begin("system", "load_context")
                 context = await self._context_loader.load(command)
                 if context.lease != command.lease:
                     raise ChatPipelineExecutionError(
@@ -79,6 +88,7 @@ class NativeAgentRunner:
                         phase=phase,
                         diagnostic={"check": "claimed_lease"},
                     )
+                activity.update(load_step, "succeeded")
                 phase = ChatPipelinePhase.GENERATE_OR_REFUSE
                 await reporter.show(
                     ChatProgressStage.RETRIEVE_EVIDENCE,
@@ -106,10 +116,14 @@ class NativeAgentRunner:
                         ChatProgressStage.GENERATE_ANSWER,
                     ),
                 )
+                persist_step = activity.begin("system", "persist_result")
+                state = replace(state, artifacts={**state.artifacts, CHAT_ACTIVITY_ARTIFACT: activity.snapshot()})
                 result = await self._result_persister.run(state)
+                activity.update(persist_step, "succeeded")
                 await reporter.finish(ChatProgressActivity.PERSIST_RESULT)
                 return result
         except TimeoutError as error:
+            activity.terminate("failed", code="deadline_exceeded")
             failure = ChatPipelineExecutionError(
                 ErrorCode.CHAT_PIPELINE_DEADLINE_EXCEEDED,
                 phase=phase,
@@ -119,11 +133,25 @@ class NativeAgentRunner:
                 failure.retain_model_calls(state.answering.model_calls)
             else:
                 failure.retain_model_calls(tuple(progress.model_calls))
-                failure.retain_agent_trace(progress.partial_trace())
+            failure.retain_agent_trace(progress.partial_trace())
             raise failure from error
-        except ChatPipelineExecutionError:
+        except ChatPipelineExecutionError as error:
+            activity.terminate("failed", code=error.code.value)
+            trace = error.agent_trace or progress.partial_trace(stop_reason="protocol_error")
+            error.agent_trace = {**trace, "activity": activity.snapshot("failed").as_dict()}
+            error.retain_model_calls(tuple(progress.model_calls))
             raise
+        except asyncio.CancelledError as error:
+            activity.terminate("cancelled", code="cancelled")
+            trace = progress.partial_trace()
+            trace["activity"] = activity.snapshot("cancelled").as_dict()
+            raise ChatPipelineExecutionError(
+                ErrorCode.CHAT_WORKER_STOPPED, phase=phase,
+                diagnostic={"operation": "worker_shutdown"},
+                model_calls=tuple(progress.model_calls), agent_trace=trace,
+            ) from error
         except Exception as error:
+            activity.terminate("failed", code="execution_failed")
             log_exception(
                 LOGGER,
                 "chat_agent_step_failed",
@@ -140,4 +168,7 @@ class NativeAgentRunner:
             )
             if state is not None and state.answering is not None:
                 failure.retain_model_calls(state.answering.model_calls)
+            else:
+                failure.retain_model_calls(tuple(progress.model_calls))
+            failure.retain_agent_trace(progress.partial_trace(stop_reason="protocol_error"))
             raise failure from error

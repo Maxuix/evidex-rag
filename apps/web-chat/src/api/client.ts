@@ -1,3 +1,5 @@
+import { parseActivityEvent, parseActivitySnapshot } from "../execution/activityState";
+import type { ActivityEvent } from "../execution/activityTypes";
 import type {
   ApiProblem,
   ChatMessage,
@@ -400,14 +402,14 @@ export class ApiClient {
     payload: ChatRunCreate,
     idempotencyKey: UUID,
   ): Promise<ChatRun> {
-    return this.request("/chat/runs", {
+    return this.request<ChatRun>("/chat/runs", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "Idempotency-Key": idempotencyKey,
       },
       body: JSON.stringify(payload),
-    });
+    }).then(normalizeActivity);
   }
 
   getChatRun(runIdOrUrl: UUID | string): Promise<ChatRun> {
@@ -415,7 +417,7 @@ export class ApiClient {
       || runIdOrUrl.startsWith("http://")
       ? runIdOrUrl
       : `/chat/runs/${runIdOrUrl}`;
-    return this.request(path);
+    return this.request<ChatRun>(path).then(normalizeActivity);
   }
 
   subscribeChatRun(
@@ -425,6 +427,8 @@ export class ApiClient {
       failed: (event: ChatTerminalEvent) => void;
       progress: (event: ChatProgressSnapshot) => void;
       progressInvalid: () => void;
+      activity?: (event: ActivityEvent) => void;
+      activityInvalid?: () => void;
       error: () => void;
       open?: () => void;
     },
@@ -442,17 +446,23 @@ export class ApiClient {
       const value = parseProgressSnapshot(event);
       value ? handlers.progress(value) : handlers.progressInvalid();
     };
+    const activity = (event: Event) => {
+      const value = parseActivityEvent(parseJsonObject(event));
+      value ? handlers.activity?.(value) : handlers.activityInvalid?.();
+    };
     const open = () => handlers.open?.();
     const error = () => handlers.error();
     source.addEventListener("answer.completed", completed);
     source.addEventListener("run.failed", failed);
     source.addEventListener("agent.progress", progress);
+    source.addEventListener("agent.activity", activity);
     source.addEventListener("open", open);
     source.addEventListener("error", error);
     return () => {
       source.removeEventListener("answer.completed", completed);
       source.removeEventListener("run.failed", failed);
       source.removeEventListener("agent.progress", progress);
+      source.removeEventListener("agent.activity", activity);
       source.removeEventListener("open", open);
       source.removeEventListener("error", error);
       source.close();
@@ -742,4 +752,12 @@ function problemMessage(status: number, problem: ApiProblem): string {
   if (status === 422) return fieldDetail || detail || "提交内容不符合要求，请检查后重试。";
   if (status >= 500) return "本地知识库服务暂时不可用，请稍后重试。";
   return detail || (typeof problem.title === "string" ? problem.title : "请求未能完成。");
+}
+
+
+function normalizeActivity(run: ChatRun): ChatRun {
+  if (run.activities === undefined) return run;
+  if (!Array.isArray(run.activities)) return { ...run, activities: [], activity_unavailable: true };
+  const activities = run.activities.map(parseActivitySnapshot);
+  return { ...run, activities: activities.filter(item => item !== null).filter(item => item.attempt <= run.attempt), activity_unavailable: run.activity_unavailable || activities.some(item => !item || item.attempt > run.attempt) };
 }
