@@ -26,6 +26,7 @@ from rag_kb.document_processing.resource_preflight import (
     validate_csv_structure,
     validate_ooxml_images,
 )
+from rag_kb.document_processing.xlsx_preflight import validate_xlsx_structure
 
 
 _FILENAME = re.compile(r"^[^/\\\x00]{1,255}$")
@@ -204,6 +205,14 @@ class FileAdmissionService:
                     )
                 ):
                     raise FileAdmissionError(ErrorCode.FILE_CONTENT_INVALID)
+                if extension == ".xlsx":
+                    validate_xlsx_structure(
+                        archive,
+                        max_cells=self.limits.max_xlsx_cells,
+                        max_columns=self.limits.max_xlsx_columns,
+                        max_sheets=self.limits.max_xlsx_sheets,
+                        max_xml_bytes=self.limits.max_xlsx_xml_bytes,
+                    )
                 validate_ooxml_images(
                     archive,
                     extension=extension,

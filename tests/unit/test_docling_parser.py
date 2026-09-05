@@ -42,7 +42,7 @@ from docling_core.types.doc import (
 )
 from docling_core.types.doc.common.origin import DocumentOrigin
 from PIL import Image
-from pypdf import PdfWriter
+from pypdf import PdfWriter, PdfReader
 
 from rag_kb.adapters.parser.docling.artifacts import (
     ArtifactManifestError,
@@ -274,6 +274,23 @@ def _hang_once_child(connection, limits, artifacts_path, artifact_manifest_path)
         connection.close()
 
 
+def _probe_hang_once_child(connection, limits, artifacts_path, artifact_manifest_path):
+    marker = artifacts_path / "probe-entered"
+    try:
+        request = connection.recv()
+        if request[0] != "probe":
+            return
+        if not marker.exists():
+            marker.write_text(str(os.getpid()))
+            time.sleep(120)
+            return
+        connection.send_bytes(b"M" + json.dumps({
+            "schema": "pdf_image_coverage_v2", "total_pages": 1, "surfaces": [1],
+        }).encode())
+    finally:
+        connection.close()
+
+
 def _crash_child(connection, limits, artifacts_path, artifact_manifest_path) -> None:
     del limits, artifacts_path, artifact_manifest_path
     connection.recv()
@@ -299,6 +316,13 @@ def _segmented_child(connection, limits, artifacts_path, artifact_manifest_path)
                 kind, source, _profile, page_range = connection.recv()
             except EOFError:
                 return
+            if kind == "probe":
+                connection.send_bytes(b"M" + json.dumps({
+                    "schema": "pdf_image_coverage_v2",
+                    "total_pages": len(PdfReader(BytesIO(source.content)).pages),
+                    "surfaces": [],
+                }).encode())
+                continue
             if kind != "parse" or page_range is None:
                 return
             if source.original_filename == "budget.pdf":
@@ -1042,49 +1066,55 @@ class DoclingParserTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(first.document.name, second.document.name)
 
-    async def test_scanned_surface_probe_does_not_block_event_loop(self) -> None:
-        harness = _ProcessHarness(child_target=_echo_child)
-        self.addCleanup(harness.close)
-        source = ParserSource("guide.pdf", "application/pdf", b"%PDF-1.7")
-        loop_thread = threading.get_ident()
-        probe_entered = threading.Event()
-        probe_release = threading.Event()
-        probe_thread: list[int] = []
-
-        def blocked_probe(probe_source):
-            self.assertIs(probe_source, source)
-            probe_thread.append(threading.get_ident())
-            probe_entered.set()
-            if not probe_release.wait(timeout=2):
-                raise AssertionError("event loop did not release scanned-page probe")
-            return frozenset({1})
-
-        async def release_after_probe_starts() -> None:
-            while not probe_entered.is_set():
-                await asyncio.sleep(0)
-            probe_release.set()
-
-        release_task = asyncio.create_task(release_after_probe_starts())
-        try:
-            with patch.object(
-                parser_module,
-                "scanned_surfaces",
-                side_effect=blocked_probe,
-            ):
-                parsed = await harness.parser.parse(
-                    source,
-                    preset=ParsingPreset.MULTIMODAL_LOCAL_V2,
+    async def test_pdf_probe_runs_in_owned_child(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            parser = DoclingParser(
+                ParserLimits(), artifacts_path=Path(directory),
+                artifact_manifest_path=Path(directory) / "manifest.json",
+            )
+            self.addCleanup(parser.close)
+            from tests.unit.test_docling_safety import pdf_source
+            with patch.object(parser_module, "probe_pdf", side_effect=AssertionError("parent must not parse PDF")):
+                total, surfaces = await parser._probe_pdf(
+                    pdf_source(stamp=True, nested=True),
+                    ParserProfile.DOCLING_MULTIMODAL_LOCAL_V4,
                 )
-            await release_task
-        finally:
-            probe_release.set()
-            if not release_task.done():
-                release_task.cancel()
-                await asyncio.gather(release_task, return_exceptions=True)
+            self.assertEqual((total, surfaces), (1, frozenset({1})))
+            self.assertTrue(parser._process.is_alive())
+            self.assertNotEqual(parser._process.pid, os.getpid())
 
-        self.assertEqual(parsed.page_image_surfaces, frozenset({1}))
-        self.assertEqual(len(probe_thread), 1)
-        self.assertNotEqual(probe_thread[0], loop_thread)
+    async def test_cancellation_terminates_pdf_probe_and_next_probe_recovers(self):
+        harness = _ProcessHarness(child_target=_probe_hang_once_child)
+        self.addCleanup(harness.close)
+        source = ParserSource("probe.pdf", "application/pdf", _pdf_with_pages(1))
+        task = asyncio.create_task(harness.parser._probe_pdf(source, ParserProfile.DOCLING_MULTIMODAL_LOCAL_V5))
+        marker = harness.root / "probe-entered"
+        async with asyncio.timeout(60):
+            while not marker.exists():
+                await asyncio.sleep(0.01)
+        previous_pid = int(marker.read_text())
+        started = time.monotonic()
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        self.assertLess(time.monotonic() - started, 5)
+        self.assertIsNone(harness.parser._process)
+        result = await harness.parser._probe_pdf(source, ParserProfile.DOCLING_MULTIMODAL_LOCAL_V5)
+        self.assertEqual(result, (1, frozenset({1})))
+        self.assertNotEqual(harness.parser._process.pid, previous_pid)
+
+    async def test_segment_resume_reuses_validated_pdf_probe(self):
+        harness = _ProcessHarness(child_target=_segmented_child)
+        harness.parser._limits = replace(ParserLimits(), pdf_segment_pages=1)
+        self.addCleanup(harness.close)
+        source = ParserSource("two.pdf", "application/pdf", _pdf_with_pages(2))
+        key = str(uuid4())
+        with patch.object(harness.parser, "_probe_pdf", wraps=harness.parser._probe_pdf) as probe:
+            first = await harness.parser.parse(source, profile=ParserProfile.DOCLING_TEXT_LOCAL_V4, checkpoint_key=key)
+            second = await harness.parser.parse(source, profile=ParserProfile.DOCLING_TEXT_LOCAL_V4, checkpoint_key=key)
+            self.assertIsInstance(first, DocumentParseContinuation)
+            self.assertIsInstance(second, DocumentParseResult)
+            self.assertEqual(probe.await_count, 1)
 
     async def test_slow_conversion_is_allowed_to_finish(self) -> None:
         harness = _ProcessHarness(child_target=_slow_child)
@@ -1109,10 +1139,9 @@ class DoclingParserTests(unittest.IsolatedAsyncioTestCase):
         )
         # Spawn must import the Docling test module; a cold local cache can
         # take more than five seconds before the child reaches its target.
-        for _ in range(1500):
-            if (harness.root / "first-child-hung").exists():
-                break
-            await asyncio.sleep(0.01)
+        async with asyncio.timeout(60):
+            while not (harness.root / "first-child-hung").exists():
+                await asyncio.sleep(0.01)
         self.assertTrue((harness.root / "first-child-hung").exists())
 
         first.cancel()
@@ -1178,10 +1207,9 @@ class DoclingParserTests(unittest.IsolatedAsyncioTestCase):
         )
         marker = harness.root / "first-child-hung"
         # This observes process startup, not a product conversion deadline.
-        for _ in range(1500):
-            if marker.exists():
-                break
-            await asyncio.sleep(0.01)
+        async with asyncio.timeout(60):
+            while not marker.exists():
+                await asyncio.sleep(0.01)
         self.assertTrue(marker.exists())
         child_pid = int(marker.read_text(encoding="utf-8"))
 

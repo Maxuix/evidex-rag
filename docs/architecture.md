@@ -388,6 +388,7 @@ upload
   -> atomically store source file
   -> commit DocumentVersion + queued IndexingJob
   -> Worker claims job
+  -> bounded PDF page/evidence probe in the owned killable child (cached for resume)
   -> current PDF profiles: deterministic page segments in a killable child process
   -> persist content-safe progress/checkpoint and yield between segments
   -> globally reassemble and validate one DoclingDocument
@@ -407,14 +408,26 @@ batch 1 和每段初始 20 页，这些值目前不是用户运行时配置项�
 让出索引 lane。保持 Docling 区域 OCR 和 TableFormer Accurate，不用“存在文本层”关闭整份
 OCR，也不提高 conversion/indexing 并发，以守住 6 GiB Worker 上限和混合页面、多模态资产质量。
 
+当前新索引使用文本 `docling_text_local_v4` / 多模态 `docling_multimodal_local_v5`；旧 profile
+仍可读取，升级不自动重建既有索引。XLSX 在加载 openpyxl/Docling 前按 worksheet relationships
+检查真实单元格跨度、合并区域和累计 XML/单元格预算。PDF 页数与视觉页探测也在解析子进程
+执行，不在 Worker 线程中提取 PDF 文本；图像覆盖率判定可保留带页码或嵌套 Form 的扫描页，
+不会因少量文字层而直接丢弃整页证据。段间复用已绑定 source/profile 的探测结果。
+
+checkpoint 在下一段落盘及最终合并前检查累计预算，合并逐段释放输入；图像在解码/裁切前
+校验总像素、尺寸和图像头。PDF 表格可通过已有页图与 bbox 裁切为 table image。
+精确资源上限见 `ParserLimits` / `AdmissionLimits`；改变这些上限不能替代内容质量验证。
+修复与保真/内存证据见 [Docling 验证报告](test/78-0905-docling-fix-test.md)。
+
 结构切分和语义切分都直接消费一次 Docling conversion 结果。新建索引使用 structural v5 或
 semantic v5；旧 structural v4、semantic v3/v4 的完整 profile 仍可执行，旧索引不会原地改写。
 semantic v5 用不重叠的原文片段保留标点、数字、URL、代码缩进及分隔符，补齐末尾标题；
 分析视图和计划 hash 包含来源连接规则。仅对超过上限的硬边界区域生成分析 embedding，
+最终检索 embedding 仍生成。
 语义 V5 的表格 embedding 使用 `compact_markdown_cells_v1`：仅去掉 Markdown 列对齐空格、
 收敛分隔横线，保留单元格值、列顺序、对齐标记和证据原文，减少触发 2,048 UTF-8 字节二次窗口的机会。
 
-最终检索 embedding 仍生成。两套 v5 共用按行且重复表头的表格切分；结构切分将超长正文的
+两套 v5 共用按行且重复表头的表格切分；结构切分将超长正文的
 标题附在有预算的正文片段上。文本解析模式保留作者图注文字，多模态模式沿用资产关系。
 semantic 继续保留 section、page、table、非正文 block 和空行短标题 `record` 边界；只按来源
 结构识别内部记录，不按业务实体或评测关系识别。Graph v2 可建立在 semantic v4/v5 上，

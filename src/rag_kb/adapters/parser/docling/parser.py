@@ -34,7 +34,6 @@ from docling.datamodel.base_models import (
 from docling.document_converter import DocumentConverter
 from docling_core.types.doc import DocItemLabel, DoclingDocument
 from PIL import Image as PillowImage
-from pypdf import PdfReader
 
 from rag_kb.adapters.parser.docling.artifacts import (
     ArtifactManifestError,
@@ -43,7 +42,7 @@ from rag_kb.adapters.parser.docling.artifacts import (
 from rag_kb.adapters.parser.docling.factory import build_docling_converter
 from rag_kb.adapters.parser.docling.progress_pipeline import emit_pdf_progress
 from rag_kb.adapters.parser.ooxml_metadata import worksheet_labels
-from rag_kb.adapters.parser.scanned_pages import scanned_surfaces
+from rag_kb.adapters.parser.scanned_pages import probe_pdf
 from rag_kb.domain import (
     ErrorCode,
     FileAdmissionError,
@@ -64,6 +63,8 @@ from rag_kb.document_processing.resource_preflight import (
     validate_csv_structure,
     validate_ooxml_images,
 )
+from rag_kb.document_processing.xlsx_preflight import validate_xlsx_structure
+from rag_kb.document_processing.docling.resources import image_usage, require_limit
 from rag_kb.ports.parsing import (
     DocumentParseContinuation,
     DocumentParseResult,
@@ -82,19 +83,22 @@ _MEDIA_TYPES = {
     ".pptx": f"{_OOXML_PREFIX}.presentationml.presentation",
     ".xlsx": f"{_OOXML_PREFIX}.spreadsheetml.sheet",
 }
-_DATA_URI_PREFIX = "data:"
-_BASE64_MARKER = ";base64,"
-_BASE64_PAYLOAD = re.compile(r"^[A-Za-z0-9+/]*={0,2}$")
 DOCLING_DOCUMENT_VERSION = "1.10.0"
 ConverterFactory = Callable[..., DocumentConverter]
 ChildTarget = Callable[[Connection, ParserLimits, Path, Path], None]
 _PROCESS_STOP_GRACE_SECONDS = 1.0
 _MAX_IPC_RESPONSE_BYTES = 256 * 1024 * 1024
 _SUCCESS_RESPONSE = b"O"
+_PDF_PROBE_RESPONSE = b"M"
+_PDF_PROBE_SCHEMA = "pdf_image_coverage_v2"
 _ERROR_RESPONSE = b"E"
 _PROGRESS_RESPONSE = b"P"
 _CHECKPOINT_SCHEMA = "docling_page_range_json_v1"
 _MAX_CHECKPOINT_MANIFEST_BYTES = 256 * 1024
+_USAGE_KEYS = {
+    "max_num_pages", "max_docling_items", "max_extracted_characters", "max_assets",
+    "max_total_asset_bytes", "max_total_image_pixels", "max_checkpoint_bytes",
+}
 _PDF_PROGRESS_STAGE_NAMES = frozenset(
     {
         "page_parse",
@@ -174,17 +178,22 @@ class DoclingParser:
                 on_progress=on_progress,
             )
 
+        surfaces = frozenset()
+        if source.media_type == "application/pdf":
+            _, surfaces = await self._probe_pdf(source, resolved_profile)
         round_trip = await self._convert_once(
             source,
             profile=resolved_profile,
         )
         try:
-            document = _decode_response(round_trip.response, self._limits)
+            document = await asyncio.to_thread(
+                _decode_response, round_trip.response, self._limits
+            )
         except ParserExecutionError as error:
             if error.code is ErrorCode.PARSER_CRASHED:
                 await self._reset_child()
             raise
-        return await self._result(source, resolved_preset, document)
+        return await self._result(source, document, surfaces)
 
     async def _convert_once(
         self,
@@ -193,6 +202,7 @@ class DoclingParser:
         profile: ParserProfile,
         page_range: tuple[int, int] | None = None,
         on_raw_progress: Callable[[dict[str, Any]], None] | None = None,
+        operation: str = "parse",
     ) -> _RoundTripResult:
         async with self._request_lock:
             connection = self._ensure_child()
@@ -205,6 +215,7 @@ class DoclingParser:
                     profile,
                     page_range,
                     on_raw_progress,
+                    operation,
                 )
             except RuntimeError as error:
                 raise ParserExecutionError(
@@ -234,15 +245,10 @@ class DoclingParser:
     async def _result(
         self,
         source: ParserSource,
-        preset: ParsingPreset,
         document: DoclingDocument,
+        page_image_surfaces: frozenset[int] = frozenset(),
     ) -> DocumentParseResult:
         labels = await asyncio.to_thread(worksheet_labels, source)
-        page_image_surfaces = (
-            await asyncio.to_thread(scanned_surfaces, source)
-            if preset is ParsingPreset.MULTIMODAL_LOCAL_V2
-            else frozenset()
-        )
         return DocumentParseResult(
             document=document,
             surface_labels=tuple(labels.items()),
@@ -257,13 +263,20 @@ class DoclingParser:
         checkpoint_key: str,
         on_progress: ParserProgressHandler | None,
     ) -> DocumentParseResult | DocumentParseContinuation:
-        total_pages = await asyncio.to_thread(_pdf_page_count, source, self._limits)
+        cached_probe = await asyncio.to_thread(
+            self._cached_pdf_probe, checkpoint_key, source, profile
+        )
+        total_pages, surfaces = (
+            cached_probe if cached_probe is not None
+            else await self._probe_pdf(source, profile)
+        )
         checkpoint = await asyncio.to_thread(
             self._load_or_create_checkpoint,
             checkpoint_key,
             source,
             profile,
             total_pages,
+            surfaces,
         )
 
         pending_index = next(
@@ -341,7 +354,8 @@ class DoclingParser:
                 await consumer
 
             try:
-                document = _decode_response(
+                document = await asyncio.to_thread(
+                    _decode_response,
                     round_trip.response,
                     self._limits,
                     allow_empty=True,
@@ -394,7 +408,42 @@ class DoclingParser:
             stage="completed",
         )
         await _publish_progress(on_progress, completed)
-        return await self._result(source, profile.preset, document)
+        return await self._result(source, document, surfaces)
+
+    async def _probe_pdf(
+        self, source: ParserSource, profile: ParserProfile,
+    ) -> tuple[int, frozenset[int]]:
+        result = await self._convert_once(source, profile=profile, operation="probe")
+        try:
+            if result.response[:1] == _ERROR_RESPONSE:
+                _decode_response(result.response, self._limits)
+            return _decode_pdf_probe(result.response, self._limits)
+        except ParserExecutionError as error:
+            if error.code is ErrorCode.PARSER_CRASHED:
+                await self._reset_child()
+            raise
+
+    def _cached_pdf_probe(
+        self, checkpoint_key: str, source: ParserSource, profile: ParserProfile,
+    ) -> tuple[int, frozenset[int]] | None:
+        path = self._checkpoint_directory(checkpoint_key) / "manifest.json"
+        if not path.exists():
+            return None
+        checkpoint = _read_checkpoint_manifest(path)
+        if (
+            checkpoint.get("source_sha256") != hashlib.sha256(source.content).hexdigest()
+            or checkpoint.get("profile") != profile.value
+        ):
+            raise ParserExecutionError(
+                ErrorCode.PARSER_CRASHED,
+                diagnostic={"check": "pdf_checkpoint_identity"},
+            )
+        probe = checkpoint.get("probe")
+        if not isinstance(probe, dict) or probe.get("schema") != _PDF_PROBE_SCHEMA:
+            return None
+        return _decode_pdf_probe(
+            _PDF_PROBE_RESPONSE + json.dumps(probe).encode(), self._limits
+        )
 
     def discard_checkpoint(self, checkpoint_key: str) -> None:
         directory = self._checkpoint_directory(checkpoint_key)
@@ -413,6 +462,7 @@ class DoclingParser:
         source: ParserSource,
         profile: ParserProfile,
         total_pages: int,
+        surfaces: frozenset[int] = frozenset(),
     ) -> dict[str, Any]:
         directory = self._checkpoint_directory(checkpoint_key)
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -441,6 +491,9 @@ class DoclingParser:
                     diagnostic={"check": "pdf_checkpoint_identity"},
                 )
             _validate_checkpoint(checkpoint, total_pages)
+            checkpoint["probe"] = {"schema": _PDF_PROBE_SCHEMA, "total_pages": total_pages, "surfaces": sorted(surfaces)}
+            self._checkpoint_usage(checkpoint_key, checkpoint)
+            _write_private_json(manifest_path, checkpoint)
             return checkpoint
         segments = [
             {
@@ -462,6 +515,7 @@ class DoclingParser:
             "source_sha256": source_sha256,
             "profile": profile.value,
             "total_pages": total_pages,
+            "probe": {"schema": _PDF_PROBE_SCHEMA, "total_pages": total_pages, "surfaces": sorted(surfaces)},
             "elapsed_ms": 0,
             "segments": segments,
         }
@@ -480,13 +534,23 @@ class DoclingParser:
         directory = self._checkpoint_directory(checkpoint_key)
         segment = checkpoint["segments"][segment_index]
         filename = f"pages-{segment['page_from']}-{segment['page_to']}.json"
+        usage = _validate_document(document, self._limits, allow_empty=True)
+        accumulated = self._checkpoint_usage(checkpoint_key, checkpoint)
+        self._add_usage(accumulated, usage)
         payload = document.model_dump_json().encode("utf-8")
+        usage["max_checkpoint_bytes"] = len(payload)
+        require_limit(
+            "max_checkpoint_bytes",
+            accumulated.get("max_checkpoint_bytes", 0) + len(payload),
+            self._limits,
+        )
         _write_private_bytes(directory / filename, payload)
         completed = {
             **segment,
             "status": "completed",
             "filename": filename,
             "sha256": hashlib.sha256(payload).hexdigest(),
+            "usage": usage,
             "elapsed_ms": elapsed_ms,
             "stage_pages": {
                 name: int(value)
@@ -509,39 +573,93 @@ class DoclingParser:
         _write_private_json(directory / "manifest.json", checkpoint)
         return checkpoint
 
-    def _assemble_checkpoint(
-        self,
-        checkpoint_key: str,
-        checkpoint: dict[str, Any],
-    ) -> DoclingDocument:
-        directory = self._checkpoint_directory(checkpoint_key)
-        documents: list[DoclingDocument] = []
+    def _add_usage(
+        self, accumulated: dict[str, int], usage: dict[str, int],
+    ) -> dict[str, int]:
+        for name, value in usage.items():
+            if name not in _USAGE_KEYS or type(value) is not int or value < 0:
+                raise ParserExecutionError(
+                    ErrorCode.PARSER_CRASHED,
+                    diagnostic={"check": "pdf_checkpoint_usage"},
+                )
+            accumulated[name] = accumulated.get(name, 0) + value
+            require_limit(name, accumulated[name], self._limits)
+        return accumulated
+
+    def _read_segment(
+        self, checkpoint_key: str, segment: dict[str, Any],
+    ) -> tuple[DoclingDocument, dict[str, int]]:
+        path = self._checkpoint_directory(checkpoint_key) / segment["filename"]
+        payload = _read_private_bytes(path, self._limits.max_checkpoint_bytes)
+        if hashlib.sha256(payload).hexdigest() != segment["sha256"]:
+            raise ParserExecutionError(
+                ErrorCode.PARSER_CRASHED,
+                diagnostic={"check": "pdf_checkpoint_digest"},
+            )
+        try:
+            document = DoclingDocument.model_validate_json(payload)
+        except Exception as error:
+            raise ParserExecutionError(
+                ErrorCode.PARSER_CRASHED,
+                diagnostic={"check": "pdf_checkpoint_document"},
+            ) from error
+        usage = _validate_document(document, self._limits, allow_empty=True)
+        usage["max_checkpoint_bytes"] = len(payload)
+        expected_pages = set(range(segment["page_from"], segment["page_to"] + 1))
+        if set(document.pages) != expected_pages:
+            raise ParserExecutionError(
+                ErrorCode.PARSER_OUTPUT_INVALID,
+                diagnostic={"check": "pdf_segment_pages"},
+            )
+        return document, usage
+
+    def _checkpoint_usage(
+        self, checkpoint_key: str, checkpoint: dict[str, Any],
+    ) -> dict[str, int]:
+        accumulated = {}
         for segment in checkpoint["segments"]:
             if segment["status"] != "completed":
+                continue
+            usage = segment.get("usage")
+            if usage is None:
+                # Old checkpoints are upgraded one segment at a time, before
+                # any full-document allocation. Never trust absent counters.
+                _, usage = self._read_segment(checkpoint_key, segment)
+                segment["usage"] = usage
+            if not isinstance(usage, dict) or set(usage) != _USAGE_KEYS:
                 raise ParserExecutionError(
                     ErrorCode.PARSER_CRASHED,
-                    diagnostic={"check": "pdf_checkpoint_incomplete"},
+                    diagnostic={"check": "pdf_checkpoint_usage"},
                 )
-            payload = _read_private_bytes(directory / segment["filename"])
-            if hashlib.sha256(payload).hexdigest() != segment["sha256"]:
-                raise ParserExecutionError(
-                    ErrorCode.PARSER_CRASHED,
-                    diagnostic={"check": "pdf_checkpoint_digest"},
-                )
-            try:
-                documents.append(DoclingDocument.model_validate_json(payload))
-            except Exception as error:
-                raise ParserExecutionError(
-                    ErrorCode.PARSER_CRASHED,
-                    diagnostic={"check": "pdf_checkpoint_document"},
-                ) from error
-        document = DoclingDocument.concatenate(documents)
-        # Docling's public concatenate() merges pages and all item collections
-        # but intentionally creates a fresh document without ``origin``. Keep
-        # the source identity so downstream provenance continues to recognize
-        # a PDF as paginated; otherwise page boundaries collapse to logical
-        # surfaces and change chunk packing after a segment boundary.
-        document.origin = documents[0].origin
+            self._add_usage(accumulated, usage)
+        return accumulated
+
+    def _assemble_checkpoint(
+        self, checkpoint_key: str, checkpoint: dict[str, Any],
+    ) -> DoclingDocument:
+        self._checkpoint_usage(checkpoint_key, checkpoint)
+        origin = None
+
+        def documents():
+            nonlocal origin
+            accumulated = {}
+            for segment in checkpoint["segments"]:
+                if segment["status"] != "completed":
+                    raise ParserExecutionError(
+                        ErrorCode.PARSER_CRASHED,
+                        diagnostic={"check": "pdf_checkpoint_incomplete"},
+                    )
+                document, usage = self._read_segment(checkpoint_key, segment)
+                self._add_usage(accumulated, usage)
+                if origin is None:
+                    origin = document.origin
+                yield document
+
+        # The pinned concatenate implementation consumes its argument once.
+        # Yielding one document at a time avoids retaining every input alongside
+        # the output copies. Recheck real usage, not just manifest counters.
+        document = DoclingDocument.concatenate(documents())
+        document.origin = origin
         _validate_document(document, self._limits)
         return document
 
@@ -849,9 +967,19 @@ def _parser_child(
                     page_range = None
                 else:
                     kind, source, profile_value, page_range = request
-                if kind != "parse" or not isinstance(source, ParserSource):
+                if kind not in {"parse", "probe"} or not isinstance(source, ParserSource):
                     raise ValueError("invalid parser child request")
                 profile = _resolve_profile_value(profile_value)
+                if kind == "probe":
+                    total_pages, surfaces = probe_pdf(
+                        source, limits,
+                        include_surfaces=profile.preset is ParsingPreset.MULTIMODAL_LOCAL_V2,
+                    )
+                    send(_PDF_PROBE_RESPONSE + json.dumps({
+                        "schema": _PDF_PROBE_SCHEMA, "total_pages": total_pages,
+                        "surfaces": sorted(surfaces),
+                    }).encode())
+                    continue
                 started_at = time.monotonic()
 
                 def emit(payload: dict[str, Any]) -> None:
@@ -919,6 +1047,14 @@ def _preflight_conversion_source(
             )
         elif extension in {".docx", ".pptx", ".xlsx"}:
             with ZipFile(BytesIO(source.content)) as archive:
+                if extension == ".xlsx":
+                    validate_xlsx_structure(
+                        archive,
+                        max_cells=limits.max_xlsx_cells,
+                        max_columns=limits.max_xlsx_columns,
+                        max_sheets=limits.max_xlsx_sheets,
+                        max_xml_bytes=limits.max_xlsx_xml_bytes,
+                    )
                 validate_ooxml_images(
                     archive,
                     extension=extension,
@@ -958,11 +1094,12 @@ def _round_trip(
     profile: ParserProfile,
     page_range: tuple[int, int] | None,
     on_progress: Callable[[dict[str, Any]], None] | None,
+    operation: str = "parse",
 ) -> _RoundTripResult:
     request = (
-        ("parse", source, profile.value)
+        (operation, source, profile.value)
         if page_range is None and not profile.uses_balanced_pdf_runtime
-        else ("parse", source, profile.value, page_range)
+        else (operation, source, profile.value, page_range)
     )
     connection.send(request)
     last_progress: dict[str, Any] = {}
@@ -1003,25 +1140,28 @@ def _resolve_profile_value(value: Any) -> ParserProfile:
         return _resolve_profile(profile=ParsingPreset(value), preset=None)
 
 
-def _pdf_page_count(source: ParserSource, limits: ParserLimits) -> int:
+def _decode_pdf_probe(
+    response: bytes, limits: ParserLimits,
+) -> tuple[int, frozenset[int]]:
     try:
-        # Docling accepts many PDFs with repairable cross-reference defects.
-        # Keep the page-count probe at least as permissive as the converter so
-        # segmentation does not reject a document the legacy path could parse.
-        total = len(PdfReader(BytesIO(source.content), strict=False).pages)
+        if response[:1] != _PDF_PROBE_RESPONSE or len(response) > 65536:
+            raise ValueError("invalid probe response")
+        probe = json.loads(response[1:])
+        count, surfaces = probe["total_pages"], probe["surfaces"]
+        if (probe.get("schema") != _PDF_PROBE_SCHEMA or type(count) is not int or count < 1
+                or not isinstance(surfaces, list) or len(surfaces) > count
+                or any(type(n) is not int or not 1 <= n <= count for n in surfaces)
+                or len(set(surfaces)) != len(surfaces)):
+            raise ValueError("invalid probe metadata")
+        require_limit("max_num_pages", count, limits)
+        return count, frozenset(surfaces)
+    except ParserExecutionError:
+        raise
     except Exception as error:
         raise ParserExecutionError(
-            ErrorCode.FILE_CONTENT_INVALID,
-            diagnostic={"check": "pdf_page_count"},
+            ErrorCode.PARSER_CRASHED,
+            diagnostic={"check": "pdf_child_probe"},
         ) from error
-    if total <= 0:
-        raise ParserExecutionError(
-            ErrorCode.FILE_CONTENT_INVALID,
-            diagnostic={"check": "pdf_page_count"},
-        )
-    if total > limits.max_num_pages:
-        _raise_limit("max_num_pages", limits.max_num_pages)
-    return total
 
 
 async def _consume_progress(
@@ -1164,7 +1304,7 @@ def _decode_progress_response(response: bytes) -> dict[str, Any]:
 
 def _read_checkpoint_manifest(path: Path) -> dict[str, Any]:
     try:
-        payload = _read_private_bytes(path)
+        payload = _read_private_bytes(path, _MAX_CHECKPOINT_MANIFEST_BYTES)
         if len(payload) > _MAX_CHECKPOINT_MANIFEST_BYTES:
             raise ValueError("manifest too large")
         value = json.loads(payload)
@@ -1294,14 +1434,29 @@ def _write_private_bytes(path: Path, payload: bytes) -> None:
         raise
 
 
-def _read_private_bytes(path: Path) -> bytes:
+def _read_private_bytes(path: Path, maximum: int = _MAX_IPC_RESPONSE_BYTES) -> bytes:
     if path.is_symlink() or not path.is_file():
         raise ParserExecutionError(
             ErrorCode.PARSER_CRASHED,
             diagnostic={"check": "pdf_checkpoint_file"},
         )
     try:
-        return path.read_bytes()
+        with path.open("rb") as stream:
+            size = os.fstat(stream.fileno()).st_size
+            if size > maximum:
+                raise ParserExecutionError(
+                    ErrorCode.PARSER_RESOURCE_LIMIT,
+                    diagnostic={"limit_name": "max_checkpoint_bytes", "limit": maximum},
+                )
+            # read(maximum) allocates the ceiling even for a tiny checkpoint.
+            # Bound by the opened file's size, retaining one byte for growth detection.
+            payload = stream.read(size + 1)
+        if len(payload) != size:
+            raise ParserExecutionError(
+                ErrorCode.PARSER_CRASHED,
+                diagnostic={"check": "pdf_checkpoint_file_changed"},
+            )
+        return payload
     except OSError as error:
         raise ParserExecutionError(
             ErrorCode.PARSER_CRASHED,
@@ -1486,7 +1641,7 @@ def _validate_document(
     limits: ParserLimits,
     *,
     allow_empty: bool = False,
-) -> None:
+) -> dict[str, int]:
     if document.schema_name != "DoclingDocument":
         raise ParserExecutionError(
             ErrorCode.PARSER_OUTPUT_INVALID,
@@ -1526,53 +1681,12 @@ def _validate_document(
             diagnostic={"check": "non_empty_docling_items"},
         )
 
-    image_refs = [
-        page.image for page in document.pages.values() if page.image is not None
-    ]
-    image_refs.extend(
-        item.image for item in document.pictures if item.image is not None
-    )
-    image_refs.extend(item.image for item in document.tables if item.image is not None)
-    if len(image_refs) > limits.max_assets:
-        _raise_limit("max_assets", limits.max_assets)
-    total_asset_bytes = 0
-    for image_ref in image_refs:
-        width = int(image_ref.size.width)
-        height = int(image_ref.size.height)
-        if width > limits.max_image_width:
-            _raise_limit("max_image_width", limits.max_image_width)
-        if height > limits.max_image_height:
-            _raise_limit("max_image_height", limits.max_image_height)
-        if width * height > limits.max_image_pixels:
-            _raise_limit("max_image_pixels", limits.max_image_pixels)
-        total_asset_bytes += _local_image_bytes(image_ref.uri)
-        if total_asset_bytes > limits.max_total_asset_bytes:
-            _raise_limit("max_total_asset_bytes", limits.max_total_asset_bytes)
-
-
-def _local_image_bytes(uri: Any) -> int:
-    if isinstance(uri, Path):
-        raise ParserExecutionError(
-            ErrorCode.PARSER_OUTPUT_INVALID,
-            diagnostic={"check": "docling_image_ref"},
-        )
-    serialized = str(uri)
-    if not serialized.startswith(_DATA_URI_PREFIX) or _BASE64_MARKER not in serialized:
-        raise ParserExecutionError(
-            ErrorCode.PARSER_OUTPUT_INVALID,
-            diagnostic={"check": "docling_image_ref"},
-        )
-    encoded = serialized.split(_BASE64_MARKER, 1)[1]
-    try:
-        if len(encoded) % 4 or _BASE64_PAYLOAD.fullmatch(encoded) is None:
-            raise ValueError("invalid base64 payload")
-        padding = encoded.count("=")
-        return (len(encoded) * 3 // 4) - padding
-    except (TypeError, ValueError) as error:
-        raise ParserExecutionError(
-            ErrorCode.PARSER_OUTPUT_INVALID,
-            diagnostic={"check": "docling_image_ref"},
-        ) from error
+    return {
+        "max_num_pages": len(document.pages),
+        "max_docling_items": item_count,
+        "max_extracted_characters": character_count,
+        **image_usage(document, limits),
+    }
 
 
 def _raise_limit(limit_name: str, limit: int) -> None:
