@@ -44,7 +44,7 @@ class ContentSafeHandler(SimpleHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 - stdlib handler API
         path = canonical_request_path(urlsplit(self.path).path)
         if path == "/health":
-            self._send_json({"status": "ok"}, cache_control="no-store")
+            self._send_health()
             return
         if path == "/runtime-config.json":
             self._send_json(
@@ -56,18 +56,15 @@ class ContentSafeHandler(SimpleHTTPRequestHandler):
 
     def do_HEAD(self) -> None:  # noqa: N802 - stdlib handler API
         path = canonical_request_path(urlsplit(self.path).path)
-        if path in {"/health", "/runtime-config.json"}:
-            payload = (
-                {"status": "ok"}
-                if path == "/health"
-                else {"api_base_url": self.api_base_url}
+        if path == "/health":
+            self._send_health(head_only=True)
+            return
+        if path == "/runtime-config.json":
+            self._send_json(
+                {"api_base_url": self.api_base_url},
+                cache_control="no-store",
+                head_only=True,
             )
-            body = _json_bytes(payload)
-            self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
             return
         self._serve_static_or_index(path, head_only=True)
 
@@ -133,14 +130,31 @@ class ContentSafeHandler(SimpleHTTPRequestHandler):
             return "text/javascript"
         return super().guess_type(path)
 
-    def _send_json(self, value: dict[str, str], *, cache_control: str) -> None:
+    def _send_health(self, *, head_only: bool = False) -> None:
+        ready = readable_index(Path(self.directory))
+        self._send_json(
+            {"status": "ok" if ready else "unavailable"},
+            cache_control="no-store",
+            status=HTTPStatus.OK if ready else HTTPStatus.SERVICE_UNAVAILABLE,
+            head_only=head_only,
+        )
+
+    def _send_json(
+        self,
+        value: dict[str, str],
+        *,
+        cache_control: str,
+        status: HTTPStatus = HTTPStatus.OK,
+        head_only: bool = False,
+    ) -> None:
         body = _json_bytes(value)
-        self.send_response(HTTPStatus.OK)
+        self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", cache_control)
         self.end_headers()
-        self.wfile.write(body)
+        if not head_only:
+            self.wfile.write(body)
 
     def send_response(self, code: int, message: str | None = None) -> None:
         super().send_response(code, message)
@@ -162,8 +176,8 @@ def main(argv: list[str] | None = None) -> int:
 
     api_base_url, api_origin = validate_api_base_url(args.api_base_url)
     directory = args.directory.resolve(strict=True)
-    if not directory.is_dir() or not (directory / "index.html").is_file():
-        parser.error("compiled frontend directory is missing index.html")
+    if not directory.is_dir() or not readable_index(directory):
+        parser.error("compiled frontend index.html is missing, empty or unreadable")
 
     handler = partial(
         ContentSafeHandler,
@@ -234,6 +248,14 @@ def canonical_request_path(value: str) -> str:
 
 def _json_bytes(value: dict[str, str]) -> bytes:
     return json.dumps(value, separators=(",", ":"), sort_keys=True).encode("utf-8")
+
+
+def readable_index(directory: Path) -> bool:
+    try:
+        with (directory / "index.html").open("rb") as source:
+            return bool(source.read(1))
+    except OSError:
+        return False
 
 
 if __name__ == "__main__":

@@ -9,13 +9,20 @@ import tempfile
 import threading
 from types import ModuleType
 import unittest
+from unittest.mock import patch
+
+from tools.smoke_local import check_frontend
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SERVER_PATH = PROJECT_ROOT / "apps" / "web-chat" / "server.py"
 API_BASE_URL = "http://127.0.0.1:8000/api/v1"
 API_ORIGIN = "http://127.0.0.1:8000"
-INDEX_BODY = b"<!doctype html><html><body>compiled-shell</body></html>"
+INDEX_BODY = (
+    b'<!doctype html><html><head><script type="module" src="/assets/app-deadbeef.js"></script>'
+    b'<link rel="stylesheet" href="/assets/app-deadbeef.css"></head>'
+    b'<body><div id="root">compiled-shell</div></body></html>'
+)
 
 
 def _load_server_module(
@@ -47,6 +54,7 @@ class FrontendServerTests(unittest.TestCase):
             "globalThis.frontendLoaded = true;",
             encoding="utf-8",
         )
+        (self.dist / "assets" / "app-deadbeef.css").write_text("body { color: black; }")
         (self.dist / "assets" / "chunks" / "chunk-deadbeef.js").write_text(
             "export const compiled = true;",
             encoding="utf-8",
@@ -134,6 +142,39 @@ class FrontendServerTests(unittest.TestCase):
         self.assertEqual(json.loads(body), {"status": "ok"})
         self.assertEqual(headers["content-type"], "application/json; charset=utf-8")
         self.assertEqual(headers["cache-control"], "no-store")
+
+    def test_health_rejects_missing_or_empty_shell(self) -> None:
+        for remove in (False, True):
+            with self.subTest(remove=remove):
+                (self.dist / "index.html").write_bytes(b"")
+                if remove:
+                    (self.dist / "index.html").unlink()
+                status, _, body = self.request("/health")
+                self.assertEqual(status, 503)
+                self.assertEqual(json.loads(body), {"status": "unavailable"})
+
+    def test_health_rejects_unreadable_shell_for_get_and_head(self) -> None:
+        with patch.object(Path, "open", side_effect=PermissionError):
+            status, _, body = self.request("/health")
+            self.assertEqual(status, 503)
+            self.assertEqual(json.loads(body), {"status": "unavailable"})
+            status, _, body = self.request("/health", method="HEAD")
+            self.assertEqual(status, 503)
+            self.assertEqual(body, b"")
+
+    def test_smoke_reads_compiled_assets_and_rejects_a_missing_bundle(self) -> None:
+        host, port = self.server.server_address
+        origin = f"http://{host}:{port}"
+        check_frontend(origin)
+        (self.dist / "assets" / "app-deadbeef.js").unlink()
+        with self.assertRaises(OSError):
+            check_frontend(origin)
+
+    def test_smoke_rejects_error_html_returned_as_a_successful_homepage(self) -> None:
+        (self.dist / "index.html").write_text("<html><body>Error response</body></html>")
+        host, port = self.server.server_address
+        with self.assertRaisesRegex(RuntimeError, "missing the compiled application"):
+            check_frontend(f"http://{host}:{port}")
 
     def test_runtime_config_is_uncached_and_has_security_headers(self) -> None:
         status, headers, body = self.request("/runtime-config.json")

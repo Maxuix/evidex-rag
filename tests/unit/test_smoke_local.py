@@ -29,9 +29,12 @@ class SmokeLocalTests(unittest.TestCase):
         with (
             patch("tools.smoke_local.resolve_local_runtime", return_value=runtime),
             patch("tools.smoke_local.read_json", side_effect=responses) as read,
+            patch("tools.smoke_local.check_frontend") as frontend,
             patch("sys.argv", ["smoke-local"]),
         ):
             self.assertEqual(main(), 0)
+
+        frontend.assert_called_once_with("http://127.0.0.1:13000")
 
         self.assertEqual(
             [call.args[0] for call in read.call_args_list],

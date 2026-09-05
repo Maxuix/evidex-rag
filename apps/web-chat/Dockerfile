@@ -39,8 +39,6 @@ RUN groupadd --gid 10001 rag-kb \
 
 COPY server.py /app/server.py
 
-USER 10001:10001
-
 EXPOSE 3000
 
 CMD ["python", "/app/server.py"]
@@ -49,6 +47,13 @@ FROM runtime-base AS runtime
 
 COPY --from=build /web/dist /app/dist
 
+# Host/build umasks must not make the compiled shell unreadable to the server.
+RUN chmod -R a+rX /app
+USER 10001:10001
+
 FROM runtime-base AS prebuilt-runtime
 
 COPY --from=frontend-dist / /app/dist
+
+RUN chmod -R a+rX /app
+USER 10001:10001

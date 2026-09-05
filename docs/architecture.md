@@ -842,6 +842,9 @@ network-aware resolver，也不使用 `TIKTOKEN_CACHE_DIR`。API 与 Worker comp
 依赖闭集仍由 `package-lock.json` 决定。若宿主已安装的前端依赖通过 `npm ls --all`，starter 可在
 宿主执行 Vite build，并只把生成的 `dist` 作为只读 build context 交给最终 Python frontend 镜像；
 这条路径不安装或更新依赖，Docker `npm ci` 仍是 clean checkout fallback。
+两条前端镜像构建路径都会校准静态文件的读取和目录遍历权限，再切换到非 root 用户，避免
+宿主 `umask` 造成部署后 404。启动和 `/health` 检查首页文件可读且非空；本地 smoke 另外请求
+实际首页及其 JS/CSS 资源，确认应用入口、内容类型和资源可用性。
 
 旧双-env、worktree override 和迁移备份已经退役；它们不是 runtime input，重新出现时 doctor 只报告
 content-safe stale warning。唯一有效配置是 primary checkout 的 0600 `.env.local`，模型 provider/profile
