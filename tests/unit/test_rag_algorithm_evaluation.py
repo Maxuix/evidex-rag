@@ -128,6 +128,22 @@ def test_reader_invalid_final_is_counted_without_persisting_provider_content(fin
     assert 'UNVALIDATED_PROVIDER_TEXT' not in str(result)
 
 
+def test_concurrent_identical_reader_inputs_share_one_observation():
+    import asyncio
+    from tools.evaluate_rag_algorithm_reader import shared_response
+    async def run():
+        pending, calls = {}, []
+        async def request():
+            calls.append(1)
+            await asyncio.sleep(0)
+            return {'answer': 'one observation'}
+        results = await asyncio.gather(*(shared_response(pending, 'same-prompt', request) for _ in range(20)))
+        assert len(calls) == 1 and all(r is results[0] for r in results)
+        await shared_response(pending, 'different-prompt', request)
+        assert len(calls) == 2
+    asyncio.run(run())
+
+
 class FailureFixtureIndex:
     by_id = {i: {'text': 'source '+i} for i in ('a', 'b', 'c', 'd', 'x')}
     def classic(self, query, vector, weight=.65):

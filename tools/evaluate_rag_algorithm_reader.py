@@ -59,6 +59,13 @@ def final_projection(raw, prompts, query):
             'validation': 'existing source/citation renderer; no claim-level entailment validation'}
 
 
+async def shared_response(pending, key, operation):
+    """Identical A/B inputs share one observation, including concurrent cache misses."""
+    if key not in pending:
+        pending[key] = asyncio.create_task(operation())
+    return await pending[key]
+
+
 async def run(args):
     protocol = validate(args)
     selection = read(args.output/'selection.json')
@@ -72,6 +79,7 @@ async def run(args):
     reader_protocol = {'schema': 'rag_algorithm_reader_v1', 'case_ids': protocol['reader_case_ids'],
         'policies': ['classic65', selected], 'max_output_tokens': 1024, 'instruction': FINAL_INSTRUCTION,
         'invalid_final': 'count truncated/nonfinal responses as failed answers with EM/F1 zero; keep usage, withhold content, no retry; provider errors still stop',
+        'identical_inputs': 'share one cached validated/failed observation; no concurrent resampling',
         'reader_sha256': sha(Path(__file__)), 'agent_sha256': sha(ROOT/'src/rag_kb/answering/agent.py'),
         'evidence_sha256': sha(ROOT/'src/rag_kb/answering/evidence.py'), 'scorer_sha256': sha(score_path),
         'validation_sha256': sha(args.output/'validation.json'),
@@ -83,6 +91,7 @@ async def run(args):
     spec.loader.exec_module(scoring)
     sem = asyncio.Semaphore(4)
     completed, calls = 0, 0
+    pending = {}
     async def one(case, policy):
         nonlocal completed, calls
         source_ids = plans[policy][case['case_id']]
@@ -90,18 +99,22 @@ async def run(args):
         identity = {'model': io.identities['chat'], 'messages': [[m.role, m.content] for m in messages],
             'max_output_tokens': 1024, 'reader_protocol_sha256': digest(reader_protocol)}
         target = args.output/'reader-calls'/f'{digest(identity)}.json'
-        if target.exists():
-            response = read(target)
-            require(response['identity'] == identity, 'Reader cache identity differs')
-        else:
-            require(io.models is not None, 'Reader cache miss; no fallback generation in replay')
-            async with sem:
-                start = time.perf_counter()
-                raw = await io.models['chat'].complete(ChatModelRequest(messages=tuple(messages), max_output_tokens=1024))
-                calls += 1
-                response = {'identity': identity, **final_projection(raw, prompts, case['query']),
-                    'usage': dict(raw.usage), 'seconds': time.perf_counter()-start, 'model': raw.model}
-                write(target, response)
+        async def fetch():
+            nonlocal calls
+            if target.exists():
+                response = read(target)
+                require(response['identity'] == identity, 'Reader cache identity differs')
+            else:
+                require(io.models is not None, 'Reader cache miss; no fallback generation in replay')
+                async with sem:
+                    start = time.perf_counter()
+                    raw = await io.models['chat'].complete(ChatModelRequest(messages=tuple(messages), max_output_tokens=1024))
+                    calls += 1
+                    response = {'identity': identity, **final_projection(raw, prompts, case['query']),
+                        'usage': dict(raw.usage), 'seconds': time.perf_counter()-start, 'model': raw.model}
+                    write(target, response)
+            return response
+        response = await shared_response(pending, target.stem, fetch)
         require(set(response['retained_refs']) <= set(prompts), 'Cached answer contains a foreign citation')
         text = re.sub(r'\[\d+\]', '', response['content']).strip()
         cited = {docs[str(by_ref[ref].index_chunk_id)]['document_id'] for ref in response['retained_refs']}
