@@ -216,6 +216,23 @@ def analyze(args):
                     'mean_overhead': {key: sum(r['overhead'][key] for r in current)/len(current) for key in current[0]['overhead']}}
             analyses[name] = groups
         result['stages'][stage] = analyses
+    reader_path = args.output/'reader.json'
+    if reader_path.exists():
+        reader = read(reader_path)
+        old = [r for r in reader['rows'] if r['policy'] == 'classic65']
+        current = [r for r in reader['rows'] if r['policy'] == selection]
+        by_id = {r['case_id']: r for r in old}
+        result['reader'] = {
+            'scope': 'fixed-evidence reader; citation IDs/coverage do not establish claim entailment',
+            'summary': reader['summary'],
+            'intervals': {metric: paired_interval(old, current, metric)
+                          for metric in ('em', 'f1', 'cited_all_required')},
+            'changes': {metric: {
+                'gained': [r['case_id'] for r in current if r[metric] > by_id[r['case_id']][metric]],
+                'lost': [r['case_id'] for r in current if r[metric] < by_id[r['case_id']][metric]],
+            } for metric in ('em', 'f1', 'cited_all_required')},
+            'reader_sha256': sha(reader_path),
+        }
     write(args.output/'analysis.json', result)
     print({'selected': selection, 'fresh': result['stages']['validation'][selection]}, flush=True)
 
