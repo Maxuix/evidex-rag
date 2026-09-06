@@ -4,7 +4,7 @@ from uuid import UUID
 import numpy as np
 import pytest
 
-from tools.rag_algorithm_policies import CorpusIndex, balanced, pack, rrf, validate_output
+from tools.rag_algorithm_policies import CorpusIndex, PlanningOutputFailure, algorithms, balanced, pack, rrf, validate_output
 from tools.rag_algorithm_runtime import ModelIO, validate_vector
 
 
@@ -75,6 +75,12 @@ def test_invalid_model_output_is_not_saved_or_used(tmp_path):
     failure = next((tmp_path/'failures').glob('*.json')).read_text()
     assert '"x"' not in failure
     assert io.new_calls == 2
+    replay = ModelIO(tmp_path, io.identities, {})
+    with pytest.raises(PlanningOutputFailure) as failure:
+        asyncio.run(replay.generate('multiquery', {'question': 'q'}))
+    cost = replay.cost([failure.value.key, failure.value.key])
+    assert cost['llm_calls'] == 2 and cost['llm_total_tokens'] == 14
+    assert cost['planning_failures'] == 1 and replay.new_calls == 0
 
 
 def test_valid_generation_survives_json_cache_roundtrip(tmp_path):
@@ -105,3 +111,58 @@ def test_reader_keeps_full_real_source_and_resolves_only_issued_refs():
     assert rendered.content == 'Paris [1]'
     assert refs == ('ev_1',) and 'ev_99' in observed
     assert 'ev_99' not in prompts
+
+
+class FailureFixtureIndex:
+    by_id = {i: {'text': 'source '+i} for i in ('a', 'b', 'c', 'd', 'x')}
+    def classic(self, query, vector, weight=.65):
+        return ['x', 'b', 'a', 'c'] if query == 'followup' else ['a', 'b', 'c', 'd']
+    def dense(self, vector):
+        return ['a', 'b', 'c', 'd'], None
+    def bm25(self, query):
+        return ['a', 'b', 'c', 'd']
+
+
+@pytest.mark.parametrize('policy', ['multiquery_rrf', 'hyde_rrf', 'stepback_rrf',
+    'decompose_rrf', 'decompose_balanced', 'iterative_rrf', 'iterative_balanced'])
+def test_failed_initial_expansion_retains_baseline_without_embedding(policy):
+    import asyncio
+    class Failed:
+        async def generate(self, *args, **kwargs):
+            raise PlanningOutputFailure('f:invalid')
+        async def embed(self, *args, **kwargs):
+            pytest.fail('Invalid planning output must not reach embeddings')
+    rankings, requests, traces = asyncio.run(algorithms('q', None, FailureFixtureIndex(), Failed(), requested=(policy,)))
+    assert rankings[policy] == ['a', 'b', 'c', 'd']
+    assert requests[policy] == ['f:invalid']
+    assert next(iter(traces.values()))['status'] == 'degraded'
+
+
+def test_failed_second_round_preserves_validated_views_and_stops_expansion():
+    import asyncio
+    class SecondFailed:
+        calls = 0
+        async def generate(self, *args, **kwargs):
+            self.calls += 1
+            if self.calls == 2:
+                raise PlanningOutputFailure('f:second')
+            return {'queries': [{'query': 'followup', 'source_id': 'b', 'quote': 'source b'}]}, 'g:first'
+        async def embed(self, text, **kwargs):
+            assert text == 'followup'
+            return None, 'e:first'
+    io = SecondFailed()
+    rankings, requests, traces = asyncio.run(algorithms('q', None, FailureFixtureIndex(), io,
+        requested=('iterative_rrf', 'iterative_balanced')))
+    assert rankings['iterative_rrf'] == rrf([['a', 'b', 'c', 'd'], ['x', 'b', 'a', 'c']])
+    assert rankings['iterative_balanced'] == balanced(['a', 'b', 'c', 'd'], [['x', 'b', 'a', 'c']], ['b'])
+    assert requests['iterative_rrf'] == ['g:first', 'e:first', 'f:second']
+    assert len(traces['iterate']['rounds']) == 1 and io.calls == 2
+
+
+def test_provider_error_is_not_converted_to_planning_fallback():
+    import asyncio
+    class Unavailable:
+        async def generate(self, *args, **kwargs):
+            raise RuntimeError('provider unavailable')
+    with pytest.raises(RuntimeError, match='provider unavailable'):
+        asyncio.run(algorithms('q', None, FailureFixtureIndex(), Unavailable(), requested=('multiquery_rrf',)))

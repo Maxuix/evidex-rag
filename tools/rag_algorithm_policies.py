@@ -24,6 +24,22 @@ CONTROLS = ('classic65', 'classic85', 'dense', 'bm25', 'hybrid_rrf', 'classic15'
 GENERATIVE = ('multiquery_rrf', 'hyde_rrf', 'stepback_rrf', 'decompose_rrf', 'decompose_balanced', 'iterative_rrf', 'iterative_balanced')
 ARMS = CONTROLS + GENERATIVE
 
+FAILURE_HANDLING = {
+    'scope': 'planning output validation only; provider/config errors still stop',
+    'attempts': 2,
+    'initial': 'retain original Classic candidates and mark affected algorithm degraded',
+    'iterative': 'stop expansion; retain original and previously validated views/anchors',
+    'cache': 'reuse recorded failures without resampling',
+    'accounting': 'report degraded cases and include all failed/repair attempt costs',
+}
+
+
+class PlanningOutputFailure(ValueError):
+    """A recorded, exhausted validation failure; never carries invalid content."""
+    def __init__(self, key):
+        super().__init__('Planning output failed validation twice')
+        self.key = key
+
 
 def validate_output(kind, value, visible=None):
     """Validate structure and source anchors before saving provider output."""
@@ -153,7 +169,13 @@ async def algorithms(query, original_vector, index, io, *, requested=ARMS):
         wanted = [name for name in requested if name.startswith(kind+'_')]
         if not wanted:
             continue
-        value, call_key = await io.generate(kind, {'question': query})
+        try:
+            value, call_key = await io.generate(kind, {'question': query})
+        except PlanningOutputFailure as error:
+            traces[kind] = {'status': 'degraded', 'failure_key': error.key}
+            for name in wanted:
+                rankings[name], requests[name] = list(base), [error.key]
+            continue
         texts = [value['passage']] if kind == 'hyde' else value['queries']
         views, keys = [], [call_key]
         for text in texts:
@@ -169,12 +191,18 @@ async def algorithms(query, original_vector, index, io, *, requested=ARMS):
     wanted = [name for name in requested if name.startswith('iterative_')]
     if wanted:
         views, anchors, keys, rounds = [], [], [], []
+        failure_key = None
         visible_order = base[:5]
         for round_number in range(2):
             visible = {i: index.by_id[i]['text'] for i in visible_order}
             payload = {'question': query, 'sources': [{'source_id': i, 'text': text} for i, text in visible.items()],
                 'previous_queries': [item['query'] for row in rounds for item in row['queries']]}
-            value, key = await io.generate('iterate', payload, visible=visible)
+            try:
+                value, key = await io.generate('iterate', payload, visible=visible)
+            except PlanningOutputFailure as error:
+                failure_key = error.key
+                keys.append(error.key)
+                break
             keys.append(key)
             rounds.append(value)
             if not value['queries']:
@@ -186,6 +214,8 @@ async def algorithms(query, original_vector, index, io, *, requested=ARMS):
                 anchors.append(item['source_id'])
             visible_order = list(dict.fromkeys([*base[:5], *balanced(base, views, anchors)]))[:10]
         traces['iterate'] = {'rounds': rounds, 'views': views, 'anchors': anchors}
+        if failure_key:
+            traces['iterate'].update(status='degraded', failure_key=failure_key)
         for name in wanted:
             rankings[name] = balanced(base, views, anchors) if name.endswith('_balanced') else rrf([base, *views])
             requests[name] = keys

@@ -17,7 +17,7 @@ from tools.analyze_auto_strategy import paired_interval
 from tools.auto_strategy_metrics import evidence_row, paired_changes, summarize
 from tools.evaluate_classic_strategy import costs, immutable
 from tools.prepare_auto_strategy import digest, jsonl, read, require, sha, write
-from tools.rag_algorithm_policies import ARMS, CONTROLS, GENERATIVE, PROMPTS, SYSTEM, CorpusIndex, algorithms, pack
+from tools.rag_algorithm_policies import ARMS, CONTROLS, GENERATIVE, PROMPTS, SYSTEM, FAILURE_HANDLING, CorpusIndex, algorithms, pack
 from tools.rag_algorithm_runtime import PLANNING_MAX_OUTPUT_TOKENS, load_io
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -53,6 +53,7 @@ def freeze(args):
         'policy_sha256': sha(ROOT/'tools/rag_algorithm_policies.py'),
         'runtime_sha256': sha(ROOT/'tools/rag_algorithm_runtime.py'),
         'prompts': PROMPTS, 'system': SYSTEM, 'max_output_tokens': PLANNING_MAX_OUTPUT_TOKENS, 'schema_repair_attempts': 1,
+        'failure_handling': FAILURE_HANDLING,
         'candidate_k_per_query': 40, 'min_cosine': .35, 'bm25_k1': 1.2, 'bm25_b': .75, 'rrf_k': 60,
         'read_k': 10, 'iterative_rounds': 2, 'iterative_queries_per_round': 2,
         'matching': 'whole-source selection with max10 and each query Classic10 text-token cap; no truncation',
@@ -150,7 +151,9 @@ async def evaluate(args, *, fresh=False):
                         choices = order[:10]+pack(order[10:], prices, max_items=5, token_budget=2048)
                     for suffix, chosen in [('', choices), ('__tokens', pack(order, prices, token_budget=token_cap))]:
                         row = evidence_row(gold, chosen, order, prices)
-                        row.update(overhead=io.cost(requests[name]), candidate_count=len(order))
+                        overhead = io.cost(requests[name])
+                        row.update(overhead=overhead, candidate_count=len(order),
+                                   degraded=bool(overhead['planning_failures']))
                         rows[name+suffix] = row
                 record = {'case_id': case['case_id'], 'rows': rows, 'traces': traces,
                     'requests': requests, 'original_embedding_key': original_key}
@@ -207,6 +210,8 @@ def analyze(args):
                 base = [r for r in old if r['family'] == family]
                 current = [r for r in rows if r['family'] == family]
                 groups[family] = {'summary': compact(current)[family], 'paired': paired_changes(base, current),
+                    'degraded_cases': [r['case_id'] for r in current if r['degraded']],
+                    'degraded_rate': sum(r['degraded'] for r in current)/len(current),
                     'intervals': {m: paired_interval(base, current, m) for m in ('complete_evidence', 'hit1', 'required_fraction')},
                     'mean_overhead': {key: sum(r['overhead'][key] for r in current)/len(current) for key in current[0]['overhead']}}
             analyses[name] = groups

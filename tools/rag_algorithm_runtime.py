@@ -9,7 +9,7 @@ import numpy as np
 
 from rag_kb.domain import ChatModelMessage, ChatModelRequest
 from tools.prepare_auto_strategy import digest, read, require, write
-from tools.rag_algorithm_policies import PROMPTS, SYSTEM, validate_output
+from tools.rag_algorithm_policies import PROMPTS, SYSTEM, PlanningOutputFailure, validate_output
 
 PLANNING_MAX_OUTPUT_TOKENS = 4096
 
@@ -31,6 +31,12 @@ class ModelIO:
             record = read(path)
             require(record['identity'] == identity, 'Cached request identity changed')
             return validate_output(kind, record['value'], visible), 'g:'+key
+        failure_path = self.output/'failures'/f'{key}.json'
+        if failure_path.exists():
+            record = read(failure_path)
+            require(record['identity'] == identity and len(record['attempts']) == 2,
+                    'Cached planning failure identity or attempt count changed')
+            raise PlanningOutputFailure('f:'+key)
         require(self.models is not None, 'Missing generation cache; real call is not allowed in replay')
         attempts = []
         async with self.semaphore:
@@ -51,7 +57,7 @@ class ModelIO:
                     if attempt:
                         write(self.output/'failures'/f'{key}.json', {'identity': identity,
                             'error_type': type(error).__name__, 'attempts': attempts})
-                        raise ValueError('Required algorithm output failed validation twice') from error
+                        raise PlanningOutputFailure('f:'+key) from error
                     messages.append(ChatModelMessage('system', 'The previous response failed schema or exact-source-anchor validation. Return a fresh valid JSON object obeying every constraint.'))
                     continue
                 write(path, {'identity': identity, 'value': value, 'attempts': attempts,
@@ -83,11 +89,14 @@ class ModelIO:
         return vector, 'e:'+key
 
     def cost(self, keys):
-        values = {'llm_calls': 0, 'embedding_calls': 0, 'llm_total_tokens': 0, 'model_seconds_sum': 0.}
+        values = {'llm_calls': 0, 'embedding_calls': 0, 'llm_total_tokens': 0, 'model_seconds_sum': 0.,
+                  'planning_failures': 0}
         for ref in dict.fromkeys(keys):
             kind, key = ref.split(':', 1)
-            record = read(self.output/('calls' if kind == 'g' else 'vectors')/f'{key}.json')
-            if kind == 'g':
+            require(kind in {'g', 'e', 'f'}, 'Unknown request cost kind')
+            record = read(self.output/{'g': 'calls', 'e': 'vectors', 'f': 'failures'}[kind]/f'{key}.json')
+            if kind in {'g', 'f'}:
+                values['planning_failures'] += int(kind == 'f')
                 values['llm_calls'] += len(record['attempts'])
                 values['llm_total_tokens'] += sum(a['usage'].get('total_tokens', 0) for a in record['attempts'])
                 values['model_seconds_sum'] += sum(a['seconds'] for a in record['attempts'])
