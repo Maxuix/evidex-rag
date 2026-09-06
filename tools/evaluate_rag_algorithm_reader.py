@@ -45,6 +45,20 @@ def reader_input(case, selected, docs):
     return messages, prompts, by_ref
 
 
+def final_projection(raw, prompts, query):
+    """Keep the existing final/citation gate; invalid finals are failed observations."""
+    invalid = bool(raw.tool_calls) or raw.finish_reason == 'length'
+    common = {'invalid_final': invalid, 'finish_reason': raw.finish_reason}
+    if invalid:
+        return {**common, 'content': '', 'outcome': 'invalid', 'retained_refs': [], 'observed_refs': [],
+                'validation': 'final validation failed; provider content withheld; no retry'}
+    validated, rendered, refs, observed = render_text_final_answer(raw.content, prompts,
+        loaded_visual_refs=set(), current_query=query)
+    return {**common, 'content': rendered.content, 'outcome': validated.outcome.value,
+            'retained_refs': list(refs), 'observed_refs': list(observed),
+            'validation': 'existing source/citation renderer; no claim-level entailment validation'}
+
+
 async def run(args):
     protocol = validate(args)
     selection = read(args.output/'selection.json')
@@ -57,6 +71,7 @@ async def run(args):
     score_path = args.primary/'evaluation/hotpotqa-1000-v1/scoring/hotpot_evaluate_v1.py'
     reader_protocol = {'schema': 'rag_algorithm_reader_v1', 'case_ids': protocol['reader_case_ids'],
         'policies': ['classic65', selected], 'max_output_tokens': 1024, 'instruction': FINAL_INSTRUCTION,
+        'invalid_final': 'count truncated/nonfinal responses as failed answers with EM/F1 zero; keep usage, withhold content, no retry; provider errors still stop',
         'reader_sha256': sha(Path(__file__)), 'agent_sha256': sha(ROOT/'src/rag_kb/answering/agent.py'),
         'evidence_sha256': sha(ROOT/'src/rag_kb/answering/evidence.py'), 'scorer_sha256': sha(score_path),
         'validation_sha256': sha(args.output/'validation.json'),
@@ -84,21 +99,18 @@ async def run(args):
                 start = time.perf_counter()
                 raw = await io.models['chat'].complete(ChatModelRequest(messages=tuple(messages), max_output_tokens=1024))
                 calls += 1
-                require(not raw.tool_calls and raw.finish_reason != 'length', 'Reader returned incomplete/nonfinal answer')
-                validated, rendered, refs, observed = render_text_final_answer(raw.content, prompts,
-                    loaded_visual_refs=set(), current_query=case['query'])
-                response = {'identity': identity, 'content': rendered.content, 'outcome': validated.outcome.value,
-                    'retained_refs': list(refs), 'observed_refs': list(observed), 'usage': dict(raw.usage),
-                    'seconds': time.perf_counter()-start, 'model': raw.model,
-                    'validation': 'existing source/citation renderer; no claim-level entailment validation'}
+                response = {'identity': identity, **final_projection(raw, prompts, case['query']),
+                    'usage': dict(raw.usage), 'seconds': time.perf_counter()-start, 'model': raw.model}
                 write(target, response)
         require(set(response['retained_refs']) <= set(prompts), 'Cached answer contains a foreign citation')
         text = re.sub(r'\[\d+\]', '', response['content']).strip()
         cited = {docs[str(by_ref[ref].index_chunk_id)]['document_id'] for ref in response['retained_refs']}
         required = set(case['required_paths'][0])
         row = {'case_id': case['case_id'], 'cluster': case['cluster'], 'policy': policy,
-            'answer': text, 'gold': case['answer'], 'em': bool(scoring.exact_match_score(text, case['answer'])),
-            'f1': scoring.f1_score(text, case['answer'])[0], 'outcome': response['outcome'],
+            'answer': text, 'gold': case['answer'],
+            'em': not response['invalid_final'] and bool(scoring.exact_match_score(text, case['answer'])),
+            'f1': 0. if response['invalid_final'] else scoring.f1_score(text, case['answer'])[0],
+            'outcome': response['outcome'], 'invalid_final': response['invalid_final'],
             'cited_all_required': required <= cited, 'foreign_refs': len(set(response['observed_refs'])-set(prompts)),
             'usage': response['usage'], 'seconds': response['seconds'], 'cache_key': target.stem}
         completed += 1
@@ -117,6 +129,8 @@ async def run(args):
     for name in ('classic65', selected):
         rr = [r for r in rows if r['policy'] == name]
         summaries[name] = {'cases': len(rr), 'em': sum(r['em'] for r in rr),
+            'invalid_finals': sum(r['invalid_final'] for r in rr),
+            'validated_finals': sum(not r['invalid_final'] for r in rr),
             'mean_f1': sum(r['f1'] for r in rr)/len(rr), 'cited_all_required': sum(r['cited_all_required'] for r in rr),
             'refused': sum(r['outcome'] == 'refused' for r in rr), 'foreign_refs': sum(r['foreign_refs'] for r in rr),
             'mean_tokens': sum(r['usage'].get('total_tokens', 0) for r in rr)/len(rr)}

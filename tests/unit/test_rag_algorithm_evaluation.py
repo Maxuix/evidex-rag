@@ -111,6 +111,21 @@ def test_reader_keeps_full_real_source_and_resolves_only_issued_refs():
     assert rendered.content == 'Paris [1]'
     assert refs == ('ev_1',) and 'ev_99' in observed
     assert 'ev_99' not in prompts
+    from tools.evaluate_rag_algorithm_reader import final_projection
+    result = final_projection(SimpleNamespace(content='Paris [ev_1][ev_99]',
+        tool_calls=(), finish_reason='stop'), prompts, 'Where?')
+    assert not result['invalid_final'] and result['content'] == rendered.content
+    assert result['retained_refs'] == list(refs) and result['observed_refs'] == list(observed)
+
+
+@pytest.mark.parametrize('finish,tools', [('length', ()), ('stop', ('unexpected_tool',))])
+def test_reader_invalid_final_is_counted_without_persisting_provider_content(finish, tools):
+    from tools.evaluate_rag_algorithm_reader import final_projection
+    raw = SimpleNamespace(content='UNVALIDATED_PROVIDER_TEXT [ev_99]', tool_calls=tools, finish_reason=finish)
+    result = final_projection(raw, {}, 'question')
+    assert result['invalid_final'] and result['outcome'] == 'invalid'
+    assert result['content'] == '' and result['retained_refs'] == result['observed_refs'] == []
+    assert 'UNVALIDATED_PROVIDER_TEXT' not in str(result)
 
 
 class FailureFixtureIndex:
