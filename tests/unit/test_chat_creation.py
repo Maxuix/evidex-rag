@@ -19,16 +19,31 @@ from rag_kb.domain import (
 )
 from rag_kb.memory import hydrate_conversation_context
 from rag_kb.repositories.sqlalchemy_chat import SqlAlchemyChatRepository
-from rag_kb.schemas import ChatRunCreate
+from rag_kb.schemas import ChatRunCreate, RetrievalDefaults
 from rag_kb.services.chat import (
     ChatService,
     _chat_profile_configuration,
     chat_model_configuration,
 )
-from rag_kb.retrieval.profile import EXACT_PROFILE_VERSION, exact_profile
+from rag_kb.retrieval.profile import (
+    EXACT_PROFILE_VERSION,
+    ITERATIVE_BALANCED_PROFILE_VERSION,
+    exact_profile,
+    iterative_balanced_profile,
+)
 
 
 class ChatCreationContractTests(unittest.TestCase):
+    def test_knowledge_base_defaults_allow_iterative_balanced_with_reranking(self) -> None:
+        defaults = RetrievalDefaults(
+            strategy="iterative_balanced",
+            top_k=10,
+            rerank_mode=RerankMode.CLASSIC,
+        )
+        self.assertEqual(defaults.strategy, "iterative_balanced")
+        with self.assertRaises(ValidationError):
+            RetrievalDefaults(strategy="iterative_balanced", rerank_mode=RerankMode.NONE)
+
     def test_request_normalizes_content_and_rejects_retired_policy(self) -> None:
         payload = {
             "session_id": str(uuid4()),
@@ -60,6 +75,40 @@ class ChatCreationContractTests(unittest.TestCase):
                     {**payload, "retrieval": retrieval}
                 )
                 self.assertEqual(request.retrieval.mode, mode)
+        iterative = ChatRunCreate.model_validate(
+            {
+                **payload,
+                "retrieval": {
+                    "mode": "text",
+                    "strategy": "iterative_balanced",
+                    "top_k": 10,
+                    "rerank_mode": "classic",
+                },
+            }
+        )
+        self.assertEqual(iterative.retrieval.strategy, "iterative_balanced")
+        with self.assertRaises(ValidationError):
+            ChatRunCreate.model_validate(
+                {
+                    **payload,
+                    "retrieval": {
+                        "mode": "text",
+                        "strategy": "hybrid",
+                        "top_k": 10,
+                        "rerank_mode": "classic",
+                    },
+                }
+            )
+        with self.assertRaises(ValidationError):
+            ChatRunCreate.model_validate(
+                {
+                    **payload,
+                    "retrieval": {
+                        "mode": "auto",
+                        "strategy": "iterative_balanced",
+                    },
+                }
+            )
         for retired_mode in ("vector", "hybrid"):
             with self.subTest(retired_mode=retired_mode), self.assertRaises(ValidationError):
                 ChatRunCreate.model_validate(
@@ -252,6 +301,42 @@ class ChatCreationServiceTests(unittest.IsolatedAsyncioTestCase):
             {
                 "profile_version": EXACT_PROFILE_VERSION,
                 "strategy": "exact_vector",
+                "top_k": 4,
+                "rerank_mode": "classic",
+            },
+        )
+
+    async def test_text_run_freezes_iterative_balanced_profile(self) -> None:
+        workspace_id = uuid4()
+        kb_id = uuid4()
+        chat = _ChatRepository(kb_id=kb_id)
+
+        def profile_factory(strategy, top_k, rerank_mode):
+            self.assertIs(strategy, RetrievalStrategy.ITERATIVE_BALANCED)
+            return iterative_balanced_profile(top_k=top_k, rerank_mode=rerank_mode)
+
+        service = ChatService(
+            _Factory(workspace_id, chat, kb_id),
+            model_configuration={"resolved_model": "fixed-model"},
+            retrieval_profile_factory=profile_factory,
+        )
+
+        created = await service.create_run(
+            uuid4(),
+            session_id=uuid4(),
+            kb_id=kb_id,
+            message="查询 ABC-42",
+            retrieval_mode="text",
+            top_k=4,
+            rerank_mode=RerankMode.CLASSIC,
+            retrieval_strategy=RetrievalStrategy.ITERATIVE_BALANCED,
+        )
+
+        self.assertEqual(
+            created["retrieval_strategy"],
+            {
+                "profile_version": ITERATIVE_BALANCED_PROFILE_VERSION,
+                "strategy": "iterative_balanced",
                 "top_k": 4,
                 "rerank_mode": "classic",
             },

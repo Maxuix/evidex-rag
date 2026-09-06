@@ -46,6 +46,11 @@ class RetrievalQueryRequest(RetrievalPublicSchema):
         ):
             raise ValueError("hybrid retrieval requires reranking")
         if (
+            self.strategy is RetrievalStrategy.ITERATIVE_BALANCED
+            and self.rerank_mode is RerankMode.NONE
+        ):
+            raise ValueError("iterative balanced retrieval requires reranking")
+        if (
             self.rerank_mode is RerankMode.LOCAL_MINILM_V1
             and self.top_k > 20
         ):

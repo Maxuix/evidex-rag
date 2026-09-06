@@ -20,7 +20,7 @@ KnowledgeBaseName = Annotated[str, Field(min_length=1, max_length=255)]
 
 
 class RetrievalDefaults(PublicSchema):
-    strategy: Literal["exact_vector"] = "exact_vector"
+    strategy: Literal["exact_vector", "iterative_balanced"] = "exact_vector"
     top_k: Annotated[int, Field(ge=1, le=100)] = 10
     rerank_mode: RerankMode = RerankMode.CLASSIC
 
@@ -31,6 +31,8 @@ class RetrievalDefaults(PublicSchema):
             and self.top_k > 20
         ):
             raise ValueError("local reranking supports top_k up to 20")
+        if self.strategy == "iterative_balanced" and self.rerank_mode is RerankMode.NONE:
+            raise ValueError("iterative balanced strategy requires reranking")
         return self
 
 

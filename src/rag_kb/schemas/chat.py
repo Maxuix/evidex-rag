@@ -10,6 +10,7 @@ from pydantic import Field, field_validator, model_validator
 
 from rag_kb.domain import (
     RerankMode,
+    RetrievalStrategy,
 )
 from rag_kb.domain.chat_activity import ActivityStep, ChatActivitySnapshot
 from rag_kb.schemas.common import OpaqueCursor, PublicSchema
@@ -82,11 +83,16 @@ class ChatMessagePage(PublicSchema):
 
 class ChatRetrievalRequest(PublicSchema):
     mode: Literal["text", "auto", "graph"] = "auto"
+    strategy: RetrievalStrategy | None = None
     top_k: Annotated[int, Field(ge=1, le=100)] = 10
     rerank_mode: RerankMode | None = None
 
     @model_validator(mode="after")
     def require_supported_rerank_combination(self) -> "ChatRetrievalRequest":
+        if self.mode != "text" and self.strategy is not None:
+            raise ValueError("retrieval strategy is only available in text mode")
+        if self.mode == "text" and self.strategy is RetrievalStrategy.HYBRID:
+            raise ValueError("hybrid retrieval is only available through graph mode")
         if self.mode == "graph":
             if not 4 <= self.top_k <= 20:
                 raise ValueError("graph retrieval top_k must be between 4 and 20")
@@ -101,6 +107,11 @@ class ChatRetrievalRequest(PublicSchema):
             and self.top_k > 20
         ):
             raise ValueError("local reranking supports top_k up to 20")
+        if (
+            self.strategy is RetrievalStrategy.ITERATIVE_BALANCED
+            and self.rerank_mode is RerankMode.NONE
+        ):
+            raise ValueError("iterative balanced strategy requires reranking")
         return self
 
 
@@ -229,7 +240,7 @@ class ChatRunErrorResponse(PublicSchema):
 class ChatRunRetrievalResponse(PublicSchema):
     mode: Literal["text", "auto", "graph"]
     profile_version: Annotated[str, Field(min_length=1, max_length=64)]
-    strategy: Literal["exact_vector", "hybrid"]
+    strategy: Literal["exact_vector", "hybrid", "iterative_balanced"]
     top_k: Annotated[int, Field(ge=1, le=100)]
     rerank_mode: RerankMode
 

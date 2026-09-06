@@ -143,6 +143,7 @@ export function KnowledgeChat({
 
   const [draft, setDraft] = useState("");
   const [retrievalMode, setRetrievalMode] = useState<"text" | "auto" | "graph">("auto");
+  const [retrievalStrategy, setRetrievalStrategy] = useState<"exact_vector" | "iterative_balanced">("exact_vector");
   const [rerankMode, setRerankMode] = useState<RerankMode>("classic");
   const [graphConfig, setGraphConfig] = useState<GraphConfig | null>(null);
   const [scopeGraphReady, setScopeGraphReady] = useState<Record<string, boolean>>({});
@@ -472,10 +473,12 @@ export function KnowledgeChat({
 
   useEffect(() => {
     if (selectedKnowledgeBase) {
+      setRetrievalStrategy(selectedKnowledgeBase.retrieval_defaults.strategy);
       setRerankMode(selectedKnowledgeBase.retrieval_defaults.rerank_mode);
     }
   }, [
     selectedKnowledgeBase?.id,
+    selectedKnowledgeBase?.retrieval_defaults.strategy,
     selectedKnowledgeBase?.retrieval_defaults.rerank_mode,
   ]);
 
@@ -813,6 +816,9 @@ export function KnowledgeChat({
           message: question,
           retrieval: {
             mode: retrievalMode,
+            ...(retrievalMode === "text"
+              ? { strategy: retrievalStrategy }
+              : {}),
             top_k: retrievalMode === "graph"
               ? graphTopK
               : selectedKnowledgeBase.retrieval_defaults.top_k,
@@ -887,6 +893,18 @@ export function KnowledgeChat({
       setSubmissionError(null);
     }
     setRerankMode(next);
+  };
+
+  const changeRetrievalStrategy = (next: "exact_vector" | "iterative_balanced") => {
+    if (retrievalMode !== "text") return;
+    if (pendingRun) {
+      setPendingRun(null);
+      setSubmissionError(null);
+    }
+    if (next === "iterative_balanced" && rerankMode === "none") {
+      setRerankMode("classic");
+    }
+    setRetrievalStrategy(next);
   };
 
   const changeChatModel = (next: string) => {
@@ -1342,6 +1360,25 @@ export function KnowledgeChat({
                   onChange={changeRetrievalMode}
                 />
                 <ComposerOptionMenu
+                  kind="strategy"
+                  label="检索策略"
+                  value={retrievalStrategy}
+                  disabled={submitting || sessionBusy || retrievalMode !== "text"}
+                  options={[
+                    {
+                      value: "exact_vector",
+                      label: "精确向量",
+                      description: "使用单轮向量检索，兼容性和开销最稳定。",
+                    },
+                    {
+                      value: "iterative_balanced",
+                      label: "迭代平衡",
+                      description: "基于首轮证据进行最多两轮锚定扩展，并保留首轮结果。",
+                    },
+                  ]}
+                  onChange={changeRetrievalStrategy}
+                />
+                <ComposerOptionMenu
                   kind="rerank"
                   label="精排方式"
                   value={rerankMode}
@@ -1447,7 +1484,7 @@ function ComposerOptionMenu<T extends string>({
   disabled,
   onChange,
 }: {
-  kind: "retrieval" | "rerank";
+  kind: "retrieval" | "strategy" | "rerank";
   label: string;
   value: T;
   options: readonly ComposerMenuOption<T>[];
@@ -1535,9 +1572,9 @@ function ComposerModelIcon() {
 }
 
 function ComposerMenuIcon({ kind }: {
-  kind: "retrieval" | "rerank";
+  kind: "retrieval" | "strategy" | "rerank";
 }) {
-  if (kind === "retrieval") {
+  if (kind === "retrieval" || kind === "strategy") {
     return (
       <svg viewBox="0 0 20 20" aria-hidden="true">
         <circle cx="8.5" cy="8.5" r="4.75" />

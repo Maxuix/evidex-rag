@@ -7,10 +7,12 @@ from rag_kb.schemas.chat import ChatRunRetrievalResponse
 from rag_kb.retrieval.profile import (
     GRAPH_RETRIEVAL_PROFILE_VERSION,
     HYBRID_PROFILE_VERSION,
+    ITERATIVE_BALANCED_PROFILE_VERSION,
     GraphRetrievalProfile,
     adaptive_graphiti_profile,
     exact_profile,
     graph_profile,
+    iterative_balanced_profile,
     parse_chat_retrieval_snapshot,
     parse_retrieval_snapshot,
 )
@@ -69,6 +71,24 @@ class RetrievalExecutionProfileTests(unittest.TestCase):
                 (KeyError, ValueError)
             ):
                 parse_retrieval_snapshot(snapshot)
+
+    def test_iterative_balanced_snapshot_round_trips_as_a_bounded_dense_policy(self) -> None:
+        snapshot = iterative_balanced_profile(top_k=8).as_dict()
+
+        strategy, top_k, rerank_mode, execution_type = parse_chat_retrieval_snapshot(
+            snapshot
+        )
+
+        self.assertEqual(snapshot["profile_version"], ITERATIVE_BALANCED_PROFILE_VERSION)
+        self.assertIs(strategy, RetrievalStrategy.ITERATIVE_BALANCED)
+        self.assertEqual((top_k, rerank_mode), (8, RerankMode.CLASSIC))
+        self.assertEqual(execution_type, "iterative_balanced")
+        with self.assertRaises(ValueError):
+            parse_chat_retrieval_snapshot(
+                {**snapshot, "rerank_mode": RerankMode.NONE.value}
+            )
+        with self.assertRaises(ValueError):
+            iterative_balanced_profile(rerank_mode=RerankMode.NONE)
 
     def test_graph_profile_round_trips_as_a_classic_hybrid_outer_profile(self) -> None:
         snapshot = graph_profile(top_k=8).as_dict()

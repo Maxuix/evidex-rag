@@ -1522,7 +1522,9 @@ function RetrievalDebugger({
   const scopeGeneration = useRef(0);
   const [query, setQuery] = useState("");
   const [topK, setTopK] = useState(knowledgeBase.retrieval_defaults.top_k);
-  const [strategy, setStrategy] = useState<"exact_vector" | "hybrid">("exact_vector");
+  const [strategy, setStrategy] = useState<"exact_vector" | "hybrid" | "iterative_balanced">(
+    knowledgeBase.retrieval_defaults.strategy,
+  );
   const [rerankMode, setRerankMode] = useState<RerankMode>(
     knowledgeBase.retrieval_defaults.rerank_mode,
   );
@@ -1536,9 +1538,11 @@ function RetrievalDebugger({
     setResult(null);
     setError(null);
     setTopK(knowledgeBase.retrieval_defaults.top_k);
+    setStrategy(knowledgeBase.retrieval_defaults.strategy);
     setRerankMode(knowledgeBase.retrieval_defaults.rerank_mode);
   }, [
     knowledgeBase.id,
+    knowledgeBase.retrieval_defaults.strategy,
     knowledgeBase.retrieval_defaults.rerank_mode,
     knowledgeBase.retrieval_defaults.top_k,
   ]);
@@ -1605,14 +1609,15 @@ function RetrievalDebugger({
           <label>
             检索策略
             <select value={strategy} onChange={(event) => {
-              const next = event.target.value as "exact_vector" | "hybrid";
+              const next = event.target.value as "exact_vector" | "hybrid" | "iterative_balanced";
               setStrategy(next);
-              if (next === "hybrid" && rerankMode === "none") {
+              if ((next === "hybrid" || next === "iterative_balanced") && rerankMode === "none") {
                 setRerankMode("classic");
               }
             }}>
               <option value="exact_vector">精确向量</option>
               <option value="hybrid">混合检索</option>
+              <option value="iterative_balanced">迭代平衡</option>
             </select>
           </label>
           <label>
@@ -1622,7 +1627,7 @@ function RetrievalDebugger({
               setRerankMode(next);
               if (next === "local_minilm_v1" && topK > 20) setTopK(20);
             }}>
-              <option value="none" disabled={strategy === "hybrid"}>不精排</option>
+              <option value="none" disabled={strategy === "hybrid" || strategy === "iterative_balanced"}>不精排</option>
               <option value="classic">经典精排</option>
               <option value="local_minilm_v1">本地 MiniLM</option>
             </select>
@@ -1637,7 +1642,7 @@ function RetrievalDebugger({
         <div className="debug-results">
           <div className="debug-summary">
             <strong>{result.evidence.length} 个结果</strong>
-            <span>策略 {result.strategy === "hybrid" ? "混合检索" : "精确向量"}</span>
+            <span>策略 {result.strategy === "hybrid" ? "混合检索" : result.strategy === "iterative_balanced" ? "迭代平衡" : "精确向量"}</span>
             {result.debug ? <span>候选 {result.debug.text_candidate_count ?? 0} / {result.debug.lexical_candidate_count ?? 0}</span> : null}
             {result.debug?.model_rerank_candidate_count !== null
               && result.debug?.model_rerank_candidate_count !== undefined ? (

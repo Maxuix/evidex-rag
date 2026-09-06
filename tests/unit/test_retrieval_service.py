@@ -555,6 +555,43 @@ class RetrievalServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(pack.debug.resolved_active_revision_id, REVISION_ID)
         self.assertEqual(pack.debug.result_count, 2)
 
+    async def test_iterative_balanced_uses_the_exact_vector_lane(self) -> None:
+        provider = _Provider()
+        store = _Store(VectorSearchResult(REVISION_ID, (_hit(CHUNK_1),)))
+        service = RetrievalService(WORKSPACE, provider, store)
+
+        pack = await service.retrieve(
+            RetrievalRequest(
+                KB_ID,
+                "anchored query",
+                top_k=5,
+                strategy=RetrievalStrategy.ITERATIVE_BALANCED,
+                rerank_mode=RerankMode.CLASSIC,
+            )
+        )
+
+        self.assertIs(pack.strategy, RetrievalStrategy.ITERATIVE_BALANCED)
+        self.assertIs(store.plans[0].strategy, RetrievalStrategy.ITERATIVE_BALANCED)
+        self.assertEqual(provider.queries, ["anchored query"])
+
+    async def test_iterative_balanced_without_reranking_fails_before_external_io(self) -> None:
+        provider = _Provider()
+        store = _Store(VectorSearchResult(REVISION_ID))
+        service = RetrievalService(WORKSPACE, provider, store)
+
+        with self.assertRaises(RetrievalExecutionError) as failure:
+            await service.retrieve(
+                RetrievalRequest(
+                    KB_ID,
+                    "query",
+                    strategy=RetrievalStrategy.ITERATIVE_BALANCED,
+                )
+            )
+
+        self.assertEqual(failure.exception.code, ErrorCode.CAPABILITY_NOT_ENABLED)
+        self.assertEqual(provider.queries, [])
+        self.assertEqual(store.plans, [])
+
     async def test_classic_rerank_orders_admitted_cosine_evidence(
         self,
     ) -> None:

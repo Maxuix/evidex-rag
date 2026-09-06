@@ -615,7 +615,11 @@ class PgVectorStore:
         configured = expected_space or self._configured_space
         if (
             plan.strategy
-            not in {RetrievalStrategy.EXACT_VECTOR, RetrievalStrategy.HYBRID}
+            not in {
+                RetrievalStrategy.EXACT_VECTOR,
+                RetrievalStrategy.HYBRID,
+                RetrievalStrategy.ITERATIVE_BALANCED,
+            }
             or plan.distance_metric != "cosine"
         ):
             raise RetrievalExecutionError(

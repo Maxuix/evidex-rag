@@ -148,7 +148,11 @@ class ChatEvidenceRetriever:
                     knowledge_base_id=context.knowledge_base_id,
                     query=query,
                     top_k=top_k,
-                    strategy=RetrievalStrategy.EXACT_VECTOR,
+                    strategy=(
+                        _strategy
+                        if _strategy is RetrievalStrategy.ITERATIVE_BALANCED
+                        else RetrievalStrategy.EXACT_VECTOR
+                    ),
                     rerank_mode=rerank_mode,
                     include_debug=True,
                 )

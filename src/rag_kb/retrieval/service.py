@@ -85,6 +85,7 @@ from rag_kb.retrieval.source_context import (
 from rag_kb.retrieval.profile import (
     EXACT_PROFILE_VERSION,
     HYBRID_PROFILE_VERSION,
+    ITERATIVE_BALANCED_PROFILE_VERSION,
     RetrievalExecutionProfile,
 )
 
@@ -254,6 +255,13 @@ class RetrievalService:
             lexical_query_version=lexical_query_version,
             **common_profile,
         )
+        self._iterative_balanced_profile = RetrievalExecutionProfile(
+            profile_version=ITERATIVE_BALANCED_PROFILE_VERSION,
+            strategy=RetrievalStrategy.ITERATIVE_BALANCED,
+            lexical_analyzer_version=None,
+            lexical_query_version=None,
+            **common_profile,
+        )
 
     def hybrid_request_enabled(self) -> bool:
         """Return whether this process can accept a hybrid request mode.
@@ -275,6 +283,8 @@ class RetrievalService:
         base = (
             self._hybrid_profile
             if strategy is RetrievalStrategy.HYBRID
+            else self._iterative_balanced_profile
+            if strategy is RetrievalStrategy.ITERATIVE_BALANCED
             else self._exact_profile
         )
         return replace(
@@ -1928,7 +1938,18 @@ class RetrievalService:
                     diagnostic={"capability": "hybrid_reranking"},
                 )
             return
-        if request.strategy is not RetrievalStrategy.EXACT_VECTOR:
+        if (
+            request.strategy is RetrievalStrategy.ITERATIVE_BALANCED
+            and request.rerank_mode is RerankMode.NONE
+        ):
+            raise RetrievalExecutionError(
+                ErrorCode.CAPABILITY_NOT_ENABLED,
+                diagnostic={"capability": "iterative_balanced_reranking"},
+            )
+        if request.strategy not in {
+            RetrievalStrategy.EXACT_VECTOR,
+            RetrievalStrategy.ITERATIVE_BALANCED,
+        }:
             raise RetrievalExecutionError(
                 ErrorCode.CAPABILITY_NOT_ENABLED,
                 diagnostic={"capability": request.strategy.value},

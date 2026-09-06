@@ -10,8 +10,10 @@ from uuid import uuid4
 from rag_kb.answering.agent import (
     AGENT_TRACE_ARTIFACT,
     NativeToolCallingAgent,
+    _balanced_admissions,
     _graph_arguments,
     _initial_messages,
+    _query_has_evidence_anchor,
     _search_queries_arguments,
     _tools,
 )
@@ -508,6 +510,36 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("cite the evidence for every side", prompt)
         self.assertNotIn('kind="conflict"', prompt)
 
+    def test_iterative_balanced_prompt_requires_grounded_bounded_follow_ups(self) -> None:
+        context = replace(
+            _context(),
+            retrieval_strategy={
+                "profile_version": "iterative_balanced_v1",
+                "strategy": "iterative_balanced",
+                "top_k": 3,
+                "rerank_mode": "classic",
+            },
+        )
+        prompt = _initial_messages(context)[0].content
+        self.assertIn("at most two follow-up retrieval rounds", prompt)
+        self.assertIn("exact phrase of at least three characters", prompt)
+        self.assertIn("Preserve the first three initial results", prompt)
+
+    def test_iterative_balanced_helpers_protect_leaders_and_require_anchors(self) -> None:
+        context = _context()
+        base = _pack(context, count=4).evidence
+        follow_up = _pack(context, text="Alpha-42 is the owner of the ledger.", count=2).evidence
+        admissions = _balanced_admissions(
+            [(object(), (base, follow_up))],
+            protect_initial_leaders=True,
+        )
+        self.assertEqual(
+            tuple(item.index_chunk_id for _, item in admissions[:3]),
+            tuple(item.index_chunk_id for item in base[:3]),
+        )
+        self.assertTrue(_query_has_evidence_anchor("What is Alpha-42's owner?", follow_up))
+        self.assertFalse(_query_has_evidence_anchor("unrelated question", follow_up))
+
     def test_submit_answer_is_removed_and_prompt_requires_inline_refs(self) -> None:
         self.assertNotIn("submit_answer", [tool.name for tool in _tools()])
         prompt = _initial_messages(_context())[0].content
@@ -804,6 +836,71 @@ class NativeToolCallingAgentTests(unittest.IsolatedAsyncioTestCase):
             state.artifacts[AGENT_TRACE_ARTIFACT].budget.as_dict(),
             ChatAgentBudget().as_dict(),
         )
+
+    async def test_iterative_balanced_caps_follow_up_rounds_and_requires_anchors(self) -> None:
+        context = replace(
+            _context(),
+            retrieval_strategy={
+                "profile_version": "iterative_balanced_v1",
+                "strategy": "iterative_balanced",
+                "top_k": 3,
+                "rerank_mode": "classic",
+            },
+        )
+        retriever = _QueryRetriever(
+            {
+                "original question": _pack(
+                    context,
+                    text="Alpha-42 is the owner of the ledger.",
+                ),
+                "Alpha-42 owner": _pack(
+                    context,
+                    text="Alpha-42 ownership was confirmed in the ledger.",
+                ),
+                "Alpha-42 ledger": _pack(
+                    context,
+                    text="The Alpha-42 ledger was updated in June.",
+                ),
+            }
+        )
+        model = _Model(
+            ChatToolCall(
+                "search-1",
+                "semantic_search",
+                {"queries": ["original question"]},
+            ),
+            ChatToolCall(
+                "search-2",
+                "semantic_search",
+                {"queries": ["Alpha-42 owner"]},
+            ),
+            ChatToolCall(
+                "search-3",
+                "semantic_search",
+                {"queries": ["Alpha-42 ledger"]},
+            ),
+            ChatToolCall(
+                "submit-1",
+                "submit_answer",
+                {"outcome": "refused", "claims": [], "unanswered": []},
+            ),
+        )
+
+        state = await _agent(model, retriever).run(context)
+
+        self.assertEqual(
+            retriever.queries,
+            ["original question", "Alpha-42 owner", "Alpha-42 ledger"],
+        )
+        self.assertEqual(
+            state.artifacts[AGENT_TRACE_ARTIFACT].retrieval_calls,
+            3,
+        )
+        self.assertEqual(
+            tuple(tool.name for tool in model.requests[3].tools),
+            ("calculate",),
+        )
+        self.assertEqual(state.answering.rendered.outcome, AnswerOutcome.REFUSED)
 
     async def test_cited_plain_text_finishes_without_post_answer_calls(self) -> None:
         for outcome, unanswered in (

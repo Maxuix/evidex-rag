@@ -271,11 +271,13 @@ READY 旧 build 在切换完成前继续服务。
   augmentation，内部 seed 仍使用 hybrid。默认 Chat-only Auto 使用独立的
   `adaptive_graphiti_v3` snapshot，冻结 exact-vector Simple、一等 Graph Tool 参数
   （`graph_edge_limit=16`、`graph_source_chunk_target=12`、`graph_source_chunk_limit=16`、
-  `graph_call_timeout_seconds=90`）与 router `native_agent_graph_tool_v1`。这三个 Chat 模式不改变
-  直连 Retrieval Debug API 的 `exact_vector | hybrid` strategy 合同。
+  `graph_call_timeout_seconds=90`）与 router `native_agent_graph_tool_v1`。Text 可选择
+  `exact_vector` 或有界的 `iterative_balanced`；这三个 Chat 模式不改变直连 Retrieval Debug API
+  的 `exact_vector | hybrid | iterative_balanced` strategy 合同。
   retry 按当前进程配置解析候选数、阈值和融合权重。Chat 只有一个固定原生 Agent 路径。
-- Text/Auto 的语义通道使用 exact vector；keyword tool 与 Graph 回填所需的 hybrid FTS 由简单
-  设置开关控制。
+- Text 的 `exact_vector` 使用单轮 exact vector，`iterative_balanced` 复用同一 exact vector
+  底座并由原生 Agent 执行最多两轮原文锚定扩展；Auto 的语义通道仍使用 exact vector。keyword
+  tool 与 Graph 回填所需的 hybrid FTS 由简单设置开关控制。
 - live Agent progress transport 默认关闭，只能通过进程级 `CHAT_DELIVERY` 配置显式开启；它不属于
   Chat/Model/Retrieval profile，也不随 ChatRun 冻结，终态始终来自 ChatRun。
 - 知识库创建时选择 text-only/multimodal parsing、structural/semantic chunking，以及兼容的
@@ -480,6 +482,11 @@ vector，dual 模式分别生成文本与跨模态 query vector，unified 模式
 `EvidencePack`，再由回答链路进行阈值、关系和视觉准入。问句命中仍水合原始 Chunk 正文；
 `matched_question` 只出现在检索 debug。Agent 工具集合和 `tool_choice=auto` 不变，不新增
 `auto_qa_search`。
+
+Text Chat 的 `iterative_balanced` 是单一 Agent 路径上的检索策略：首轮使用原始问题，后续
+最多两轮只允许引用已发出证据中的原文锚点，并在合并时保留首轮前三个结果、交错加入后续视图。
+每轮仍复用 exact vector、同一精排配置和现有 EvidencePack/Citation 约束；锚点校验失败的查询
+会被拒绝，轮数达到上限后直接进入回答阶段。Classic 仍是默认策略。
 
 检索始终限定当前 workspace、knowledge base、active revision、ready/serving target 和可用
 源版本。现有 hybrid manifest 检查用于避免返回半成品索引；不支持时明确失败，不把不一致的

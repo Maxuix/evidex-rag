@@ -234,7 +234,7 @@ export class ApiClient {
     knowledgeBaseId: UUID,
     query: string,
     topK: number,
-    strategy: "exact_vector" | "hybrid",
+    strategy: "exact_vector" | "hybrid" | "iterative_balanced",
     rerankMode: RerankMode,
   ): Promise<RetrievalEvidencePack> {
     return this.request("/retrieval/query", {

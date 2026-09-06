@@ -185,11 +185,25 @@ class ChatService:
         retrieval_mode: str,
         top_k: int,
         rerank_mode: RerankMode | None = None,
+        retrieval_strategy: RetrievalStrategy | None = None,
         model_profile_revision_id: UUID | None = None,
     ) -> ChatRun:
         selected = normalize_knowledge_base_ids(kb_ids, kb_id)
         if retrieval_mode not in {"text", "auto", "graph"}:
             raise ResourceStateConflictError("retrieval mode is unsupported")
+        if retrieval_mode != "text" and retrieval_strategy is not None:
+            raise ResourceStateConflictError(
+                "retrieval strategy is only available in text mode"
+            )
+        resolved_strategy = (
+            RetrievalStrategy.EXACT_VECTOR
+            if retrieval_strategy is None
+            else RetrievalStrategy(retrieval_strategy)
+        )
+        if retrieval_mode == "text" and resolved_strategy is RetrievalStrategy.HYBRID:
+            raise ResourceStateConflictError(
+                "hybrid retrieval is only available through graph mode"
+            )
         if retrieval_mode == "graph" and rerank_mode is None:
             raise ResourceStateConflictError(
                 "graph retrieval requires an explicit reranker"
@@ -218,6 +232,14 @@ class ChatService:
             raise ResourceStateConflictError(
                 "local reranking supports top_k up to 20"
             )
+        if (
+            retrieval_mode == "text"
+            and resolved_strategy is RetrievalStrategy.ITERATIVE_BALANCED
+            and resolved_rerank_mode is RerankMode.NONE
+        ):
+            raise ResourceStateConflictError(
+                "iterative balanced strategy requires reranking"
+            )
         normalized_message = message.strip()
         if not normalized_message:
             raise ValueError("message must contain non-whitespace characters")
@@ -231,7 +253,9 @@ class ChatService:
             "top_k": top_k,
             "rerank_mode": resolved_rerank_mode.value,
         }
-        retrieval_strategy = (
+        if retrieval_mode == "text" and retrieval_strategy is not None:
+            requested_retrieval["strategy"] = resolved_strategy.value
+        retrieval_snapshot = (
             graph_profile(top_k=top_k, rerank_mode=resolved_rerank_mode).as_dict()
             if retrieval_mode == "graph"
             else adaptive_graphiti_profile(
@@ -239,7 +263,7 @@ class ChatService:
             ).as_dict()
             if retrieval_mode == "auto"
             else self._retrieval_profile_factory(
-                RetrievalStrategy.EXACT_VECTOR, top_k, resolved_rerank_mode
+                resolved_strategy, top_k, resolved_rerank_mode
             ).as_dict()
         )
         request_hash = canonical_request_hash(
@@ -287,6 +311,11 @@ class ChatService:
                 defaults = snapshot.retrieval_strategy
                 target_top_k = int(defaults.get("top_k", 10)) if len(selected) > 1 else top_k
                 target_rerank = RerankMode(defaults.get("rerank_mode", "classic")) if len(selected) > 1 else resolved_rerank_mode
+                target_strategy = (
+                    resolved_strategy
+                    if len(selected) == 1 or retrieval_strategy is not None
+                    else RetrievalStrategy(defaults.get("strategy", "exact_vector"))
+                )
                 if retrieval_mode == "graph":
                     # The manual Graph control has its own validated 4–20 range.
                     target_top_k, target_rerank = top_k, resolved_rerank_mode
@@ -295,7 +324,7 @@ class ChatService:
                     if retrieval_mode == "graph" else
                     adaptive_graphiti_profile(top_k=target_top_k, rerank_mode=target_rerank)
                     if retrieval_mode == "auto" else
-                    self._retrieval_profile_factory(RetrievalStrategy.EXACT_VECTOR, target_top_k, target_rerank)
+                    self._retrieval_profile_factory(target_strategy, target_top_k, target_rerank)
                 )
                 graph = await uow.graph.get_config(identifier) if retrieval_mode != "text" else None
                 snapshots.append(replace(snapshot, retrieval_strategy=profile.as_dict(),
@@ -305,7 +334,7 @@ class ChatService:
                 uow,
                 model_profile_revision_id,
             )
-            retrieval_strategy_snapshot = dict(retrieval_strategy)
+            retrieval_strategy_snapshot = dict(retrieval_snapshot)
             recent_turns = await uow.chat.list_completed_turns(
                 session_id=session_id,
                 limit=self._context_max_turns + 1,

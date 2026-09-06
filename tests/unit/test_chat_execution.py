@@ -30,6 +30,7 @@ from rag_kb.retrieval.profile import (
     HYBRID_PROFILE_VERSION,
     adaptive_graphiti_profile,
     exact_profile,
+    iterative_balanced_profile,
 )
 
 
@@ -266,6 +267,37 @@ class ChatExecutionServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(request.top_k, 5)
         self.assertIs(request.rerank_mode, RerankMode.CLASSIC)
         self.assertIs(result.strategy, RetrievalStrategy.EXACT_VECTOR)
+
+    async def test_iterative_balanced_snapshot_preserves_strategy_for_retrieval(self) -> None:
+        context = replace(
+            _context(),
+            retrieval_strategy=iterative_balanced_profile(
+                top_k=7,
+                rerank_mode=RerankMode.CLASSIC,
+            ).as_dict(),
+        )
+        captured = {}
+
+        class Retrieval:
+            async def retrieve(self, request):
+                captured["request"] = request
+                return EvidencePack(
+                    knowledge_base_id=request.knowledge_base_id,
+                    index_revision_id=context.index_revision_id,
+                    strategy=request.strategy,
+                )
+
+        result = await ChatEvidenceRetriever(Retrieval()).semantic_search(  # type: ignore[arg-type]
+            context,
+            "anchored query",
+            top_k_override=5,
+        )
+
+        request = captured["request"]
+        self.assertIs(request.strategy, RetrievalStrategy.ITERATIVE_BALANCED)
+        self.assertEqual(request.top_k, 5)
+        self.assertIs(request.rerank_mode, RerankMode.CLASSIC)
+        self.assertIs(result.strategy, RetrievalStrategy.ITERATIVE_BALANCED)
 
     async def test_retrieval_fails_closed_when_active_revision_moved(self) -> None:
         context = _context()

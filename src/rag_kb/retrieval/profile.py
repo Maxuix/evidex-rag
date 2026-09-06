@@ -20,6 +20,7 @@ from rag_kb.domain import (
 
 EXACT_PROFILE_VERSION = "exact_vector_v2"
 HYBRID_PROFILE_VERSION = "hybrid_fts_rrf_v2"
+ITERATIVE_BALANCED_PROFILE_VERSION = "iterative_balanced_v1"
 ADAPTIVE_GRAPHITI_PROFILE_VERSION = "adaptive_graphiti_v3"
 ADAPTIVE_GRAPHITI_ROUTER_VERSION = "native_agent_graph_tool_v1"
 
@@ -30,7 +31,7 @@ GRAPH_SOURCE_CHUNK_LIMIT_DEFAULT = 16
 GRAPH_CALL_TIMEOUT_SECONDS_DEFAULT = 90
 
 RetrievalExecutionType = Literal[
-    "simple", "manual_graph", "adaptive_graphiti"
+    "simple", "iterative_balanced", "manual_graph", "adaptive_graphiti"
 ]
 
 
@@ -157,11 +158,7 @@ class RetrievalExecutionProfile:
     mmr_lambda: float
 
     def __post_init__(self) -> None:
-        expected_version = (
-            EXACT_PROFILE_VERSION
-            if self.strategy is RetrievalStrategy.EXACT_VECTOR
-            else HYBRID_PROFILE_VERSION
-        )
+        expected_version = _profile_version(self.strategy)
         if self.profile_version != expected_version:
             raise ValueError("retrieval profile version and strategy differ")
         if not 1 <= self.top_k <= 100:
@@ -179,6 +176,11 @@ class RetrievalExecutionProfile:
             and self.rerank_mode is RerankMode.NONE
         ):
             raise ValueError("hybrid profile requires reranking")
+        if (
+            self.strategy is RetrievalStrategy.ITERATIVE_BALANCED
+            and self.rerank_mode is RerankMode.NONE
+        ):
+            raise ValueError("iterative balanced profile requires reranking")
         if (
             self.rerank_mode is RerankMode.LOCAL_MINILM_V1
             and self.top_k > 20
@@ -234,7 +236,7 @@ class RetrievalExecutionProfile:
             self.lexical_analyzer_version is not None
             or self.lexical_query_version is not None
         ):
-            raise ValueError("exact profile must not declare lexical versions")
+            raise ValueError("dense profile must not declare lexical versions")
 
     def as_dict(self) -> dict[str, Any]:
         """Persist only the preset and user-selected retrieval controls."""
@@ -264,11 +266,7 @@ def parse_retrieval_snapshot(
     }:
         raise ValueError("retrieval snapshot fields are invalid")
     strategy = RetrievalStrategy(value["strategy"])
-    expected_version = (
-        EXACT_PROFILE_VERSION
-        if strategy is RetrievalStrategy.EXACT_VECTOR
-        else HYBRID_PROFILE_VERSION
-    )
+    expected_version = _profile_version(strategy)
     if value["profile_version"] != expected_version:
         raise ValueError("retrieval profile version and strategy differ")
     raw_top_k = value["top_k"]
@@ -280,6 +278,11 @@ def parse_retrieval_snapshot(
     rerank_mode = RerankMode(value["rerank_mode"])
     if strategy is RetrievalStrategy.HYBRID and rerank_mode is RerankMode.NONE:
         raise ValueError("hybrid snapshot requires reranking")
+    if (
+        strategy is RetrievalStrategy.ITERATIVE_BALANCED
+        and rerank_mode is RerankMode.NONE
+    ):
+        raise ValueError("iterative balanced snapshot requires reranking")
     if rerank_mode is RerankMode.LOCAL_MINILM_V1 and top_k > 20:
         raise ValueError("local reranking supports top_k up to 20")
     return strategy, top_k, rerank_mode
@@ -323,7 +326,12 @@ def parse_chat_retrieval_snapshot(
             "manual_graph",
         )
     strategy, top_k, rerank_mode = parse_retrieval_snapshot(value)
-    return strategy, top_k, rerank_mode, "simple"
+    execution_type: RetrievalExecutionType = (
+        "iterative_balanced"
+        if strategy is RetrievalStrategy.ITERATIVE_BALANCED
+        else "simple"
+    )
+    return strategy, top_k, rerank_mode, execution_type
 
 
 def parse_adaptive_graphiti_snapshot(
@@ -415,3 +423,43 @@ def exact_profile(
         rerank_lexical_weight=0.35,
         mmr_lambda=0.75,
     )
+
+
+def iterative_balanced_profile(
+    *,
+    top_k: int = 10,
+    rerank_mode: RerankMode = RerankMode.CLASSIC,
+) -> RetrievalExecutionProfile:
+    """Build the dense base profile used by the bounded Agent policy."""
+
+    return RetrievalExecutionProfile(
+        profile_version=ITERATIVE_BALANCED_PROFILE_VERSION,
+        strategy=RetrievalStrategy.ITERATIVE_BALANCED,
+        top_k=top_k,
+        rerank_mode=rerank_mode,
+        dense_candidate_count=max(top_k, min(top_k * 4, 40)),
+        lexical_candidate_count=max(top_k, 40),
+        cross_modal_candidate_count=max(top_k, 20),
+        lexical_analyzer_version=None,
+        lexical_query_version=None,
+        rrf_k=60,
+        dense_weight_micros=1_000_000,
+        lexical_weight_micros=1_000_000,
+        cross_modal_weight_micros=1_000_000,
+        min_cosine_similarity=0.35,
+        min_rerank_score=0.45,
+        cross_modal_min_cosine_similarity=0.25,
+        rerank_vector_weight=0.65,
+        rerank_lexical_weight=0.35,
+        mmr_lambda=0.75,
+    )
+
+
+def _profile_version(strategy: RetrievalStrategy) -> str:
+    if strategy is RetrievalStrategy.EXACT_VECTOR:
+        return EXACT_PROFILE_VERSION
+    if strategy is RetrievalStrategy.HYBRID:
+        return HYBRID_PROFILE_VERSION
+    if strategy is RetrievalStrategy.ITERATIVE_BALANCED:
+        return ITERATIVE_BALANCED_PROFILE_VERSION
+    raise ValueError("unsupported retrieval strategy")

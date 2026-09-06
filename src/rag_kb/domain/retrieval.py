@@ -26,6 +26,7 @@ def evidence_group_identity(
 class RetrievalStrategy(StrEnum):
     EXACT_VECTOR = "exact_vector"
     HYBRID = "hybrid"
+    ITERATIVE_BALANCED = "iterative_balanced"
 
 
 class RerankMode(StrEnum):
@@ -381,7 +382,10 @@ class RetrievalQueryPlan:
             and self.top_k > 20
         ):
             raise ValueError("local reranking supports top_k up to 20")
-        if self.strategy is RetrievalStrategy.EXACT_VECTOR:
+        if self.strategy in {
+            RetrievalStrategy.EXACT_VECTOR,
+            RetrievalStrategy.ITERATIVE_BALANCED,
+        }:
             if self.distance_metric != "cosine":
                 raise ValueError("exact-vector retrieval uses cosine distance")
             if self.rerank:
@@ -406,6 +410,8 @@ class RetrievalQueryPlan:
                 raise ValueError(
                     "hybrid retrieval requires a bounded scored candidate set"
                 )
+        else:
+            raise ValueError("unsupported retrieval strategy")
 
     @property
     def rerank(self) -> bool:

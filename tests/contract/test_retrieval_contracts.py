@@ -95,6 +95,26 @@ class RetrievalTransportContractTests(unittest.TestCase):
         self.assertIs(request.strategy, RetrievalStrategy.HYBRID)
         self.assertIs(request.rerank_mode, RerankMode.CLASSIC)
 
+    def test_request_accepts_iterative_balanced_strategy(self) -> None:
+        request = RetrievalQueryRequest.model_validate(
+            {
+                "knowledge_base_id": str(KB_ID),
+                "query": "iterative ABC-42",
+                "strategy": "iterative_balanced",
+                "rerank_mode": "classic",
+            }
+        )
+        self.assertIs(request.strategy, RetrievalStrategy.ITERATIVE_BALANCED)
+        with self.assertRaises(ValidationError):
+            RetrievalQueryRequest.model_validate(
+                {
+                    "knowledge_base_id": str(KB_ID),
+                    "query": "iterative ABC-42",
+                    "strategy": "iterative_balanced",
+                    "rerank_mode": "none",
+                }
+            )
+
     def test_request_rejects_unimplemented_strategies(self) -> None:
         for strategy in ("ann_vector", "lexical"):
             with self.subTest(strategy=strategy), self.assertRaises(

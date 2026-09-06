@@ -47,7 +47,7 @@ export interface KnowledgeBase {
     profile: "structural_by_title_token_v4" | "structural_by_title_token_v5" | "semantic_breakpoint_v3" | "semantic_breakpoint_v4" | "semantic_breakpoint_v5";
   };
   retrieval_defaults: {
-    strategy: "exact_vector";
+    strategy: "exact_vector" | "iterative_balanced";
     top_k: number;
     rerank_mode: RerankMode;
   };
@@ -253,7 +253,7 @@ export interface RetrievalEvidence {
 export interface RetrievalEvidencePack {
   knowledge_base_id: UUID;
   index_revision_id: UUID;
-  strategy: "exact_vector" | "hybrid";
+  strategy: "exact_vector" | "hybrid" | "iterative_balanced";
   evidence: RetrievalEvidence[];
   debug: {
     result_count: number;
@@ -327,7 +327,7 @@ export interface ChatRunError {
 export interface ChatRunRetrieval {
   mode: "text" | "auto" | "graph";
   profile_version: string;
-  strategy: "exact_vector" | "hybrid";
+  strategy: "exact_vector" | "hybrid" | "iterative_balanced";
   top_k: number;
   rerank_mode: RerankMode;
 }
@@ -498,6 +498,7 @@ export interface ChatRunCreate {
   message: string;
   retrieval: {
     mode: "text" | "auto" | "graph";
+    strategy?: "exact_vector" | "iterative_balanced";
     top_k: number;
     rerank_mode: RerankMode;
   };
