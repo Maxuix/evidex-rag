@@ -16,3 +16,8 @@ htmlcov/
 node_modules/
 .runtime/
 evaluation/adaptive-graph-route-v1/runs/
+
+# Personal study/interview materials, not for the public repository
+导学-RAG.md
+面经-RAG.md
+项目经历-AgenticRAG.html

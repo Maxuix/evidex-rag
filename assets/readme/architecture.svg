@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 600" role="img" aria-label="Evidex runtime architecture: browser, web chat UI, FastAPI API, single worker, PostgreSQL with pgvector, FalkorDB, local volumes, and model providers">
+  <title>Evidex runtime architecture</title>
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#3B434E"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1200" height="600" rx="16" fill="#0D1117"/>
+  <rect x="0.5" y="0.5" width="1199" height="599" rx="16" fill="none" stroke="#21262D"/>
+
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+
+    <!-- Browser -->
+    <rect x="40" y="40" width="200" height="64" rx="12" fill="#161B22" stroke="#30363D"/>
+    <text x="140" y="68" font-size="20" text-anchor="middle" fill="#E6EDF3">Browser</text>
+    <text x="140" y="92" font-size="14" text-anchor="middle" fill="#8B949E">loopback only</text>
+
+    <!-- Frontend -->
+    <rect x="380" y="40" width="360" height="64" rx="12" fill="#161B22" stroke="#30363D"/>
+    <text x="560" y="68" font-size="20" text-anchor="middle" fill="#E6EDF3">Web Chat UI</text>
+    <text x="560" y="92" font-size="14" text-anchor="middle" fill="#8B949E">React 19 · TypeScript · Vite · :3000</text>
+
+    <!-- API -->
+    <rect x="380" y="150" width="360" height="90" rx="12" fill="#161B22" stroke="#58A6FF"/>
+    <text x="560" y="182" font-size="20" text-anchor="middle" fill="#E6EDF3">FastAPI API</text>
+    <text x="560" y="206" font-size="14" text-anchor="middle" fill="#8B949E">:8000 · ingestion · retrieval · chat · settings</text>
+    <text x="560" y="226" font-size="14" text-anchor="middle" fill="#6E7681">OpenAPI under /api/v1</text>
+
+    <!-- Worker -->
+    <rect x="380" y="280" width="360" height="130" rx="12" fill="#161B22" stroke="#A371F7"/>
+    <text x="560" y="308" font-size="20" text-anchor="middle" fill="#E6EDF3">Single Worker</text>
+    <rect x="396" y="322" width="158" height="72" rx="10" fill="#0D1117" stroke="#30363D"/>
+    <text x="475" y="350" font-size="16" text-anchor="middle" fill="#C9A6FA">indexing lane</text>
+    <text x="475" y="372" font-size="13" text-anchor="middle" fill="#8B949E">Docling · killable child</text>
+    <rect x="566" y="322" width="158" height="72" rx="10" fill="#0D1117" stroke="#30363D"/>
+    <text x="645" y="350" font-size="16" text-anchor="middle" fill="#C9A6FA">chat lane</text>
+    <text x="645" y="372" font-size="13" text-anchor="middle" fill="#8B949E">agent tool loop</text>
+
+    <!-- Maintenance -->
+    <rect x="40" y="280" width="260" height="70" rx="12" fill="#161B22" stroke="#30363D"/>
+    <text x="170" y="310" font-size="18" text-anchor="middle" fill="#E6EDF3">Maintenance CLI</text>
+    <text x="170" y="332" font-size="14" text-anchor="middle" fill="#8B949E">cleanup · reconcile</text>
+
+    <!-- PostgreSQL -->
+    <rect x="40" y="470" width="700" height="90" rx="12" fill="#101C2C" stroke="#58A6FF"/>
+    <text x="390" y="502" font-size="20" text-anchor="middle" fill="#E6EDF3">PostgreSQL 18 + pgvector</text>
+    <text x="390" y="528" font-size="14" text-anchor="middle" fill="#8B949E">facts · jobs · FTS · vectors · graph build state · Alembic migrations</text>
+
+    <!-- Providers -->
+    <rect x="820" y="150" width="340" height="110" rx="12" fill="#161B22" stroke="#3FB9A4"/>
+    <text x="990" y="182" font-size="20" text-anchor="middle" fill="#E6EDF3">Model providers</text>
+    <text x="990" y="206" font-size="14" text-anchor="middle" fill="#8B949E">OpenAI-compatible chat + text embeddings</text>
+    <text x="990" y="228" font-size="14" text-anchor="middle" fill="#8B949E">Tongyi multimodal embeddings</text>
+
+    <!-- FalkorDB -->
+    <rect x="820" y="300" width="340" height="90" rx="12" fill="#161B22" stroke="#D29922"/>
+    <text x="990" y="332" font-size="20" text-anchor="middle" fill="#E6EDF3">FalkorDB</text>
+    <text x="990" y="356" font-size="14" text-anchor="middle" fill="#8B949E">Graphiti episode graphs · AOF</text>
+
+    <!-- Volumes -->
+    <rect x="820" y="430" width="340" height="90" rx="12" fill="#161B22" stroke="#8B949E"/>
+    <text x="990" y="462" font-size="20" text-anchor="middle" fill="#E6EDF3">Local volumes</text>
+    <text x="990" y="486" font-size="14" text-anchor="middle" fill="#8B949E">sources · assets · model cache · secrets</text>
+
+    <!-- arrows -->
+    <line x1="240" y1="72" x2="372" y2="72" stroke="#3B434E" stroke-width="2.5" marker-end="url(#arr)"/>
+    <text x="306" y="60" font-size="14" text-anchor="middle" fill="#6E7681">open :3000</text>
+
+    <line x1="560" y1="104" x2="560" y2="142" stroke="#3B434E" stroke-width="2.5" marker-end="url(#arr)"/>
+    <text x="575" y="128" font-size="14" fill="#6E7681">HTTP / SSE</text>
+
+    <path d="M 380 195 H 316 V 462" fill="none" stroke="#3B434E" stroke-width="2.5" marker-end="url(#arr)"/>
+    <text x="308" y="254" font-size="14" text-anchor="end" fill="#6E7681">facts + jobs (SQL)</text>
+
+    <line x1="560" y1="410" x2="560" y2="462" stroke="#3B434E" stroke-width="2.5" marker-end="url(#arr)"/>
+    <text x="575" y="442" font-size="14" fill="#6E7681">claim jobs · write derived rows</text>
+
+    <line x1="170" y1="350" x2="170" y2="462" stroke="#3B434E" stroke-width="2.5" marker-end="url(#arr)"/>
+    <text x="185" y="430" font-size="14" fill="#6E7681">retired data</text>
+
+    <path d="M 740 320 H 786 V 205 H 812" fill="none" stroke="#3B434E" stroke-width="2.5" marker-end="url(#arr)"/>
+    <text x="780" y="308" font-size="14" text-anchor="middle" fill="#6E7681">chat · embeddings</text>
+
+    <line x1="740" y1="345" x2="812" y2="345" stroke="#3B434E" stroke-width="2.5" marker-end="url(#arr)"/>
+    <text x="776" y="335" font-size="14" text-anchor="middle" fill="#6E7681">episodes</text>
+
+    <path d="M 740 380 H 786 V 475 H 812" fill="none" stroke="#3B434E" stroke-width="2.5" marker-end="url(#arr)"/>
+    <text x="780" y="410" font-size="14" text-anchor="middle" fill="#6E7681">files</text>
+  </g>
+</svg>
