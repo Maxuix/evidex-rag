@@ -19,7 +19,7 @@
 
 1. 可执行代码、Alembic 迁移、锁文件和实际运行配置是最终事实。
 2. 本文记录稳定的产品、进程、数据和主要调用链，应与第一项保持一致。
-3. [`../archive/`](../archive/) 只保存历史快照，不能作为当前事实或自动恢复工作的指令。
+3. 本地历史、评测材料和个人资料不属于当前公开仓库事实，也不能作为自动恢复工作的指令。
 
 不得从已完成、暂停或未激活的计划推断当前仍需实现某项能力。只有稳定架构事实发生变化时
 才更新本文；局部修复、测试调整、内部重命名和不改变边界的重构不要求机械同步总览。
@@ -362,18 +362,9 @@ lifecycle。当前修复与评测只从主 checkout 的 `.venv` 运行；需要�
 Python-side test services。任何正式 `rag` Docker lifecycle 都必须另有明确的 runtime 请求，不能从
 “运行测试/评测”推导。
 
-当前只维护 `tools/evaluate_agent_complex_qa.py` 一个通用回归入口及
-`evaluation/document-qa-v1/` 核心语料。`--dry-run` 离线验证冻结 corpus、case 顺序、证据 span 与摘要；
-经单独授权的真实运行可选择 exact-vector 或 hybrid 检索，验证回答、引用、算术、多文档与缺失证据，
-并使用独立 Judge profile 进行语义评分。入口只连接 workspace-bound、owner-only 的 host test runtime，
-不 provision 服务、不管理 Docker/Compose lifecycle，也不把问题、回答、正文、Provider payload 或 secret
-写入 Git。Provider 或 runtime 身份缺失时在外部调用前停止；真实模型仍必须使用仓库规定的 OpenCode Go
-及固定模型，不允许 fallback。
-
-已完成的 Adaptive Graph、routing、open-source、enterprise 与 large-evaluation campaign runner、语料、
-launchd/supervisor/host-provisioning 控制代码和专属测试位于
-`archive/evaluations/01-0901-completed-campaigns/`，不再是当前命令或架构依赖。忽略目录下的历史 runtime
-checkpoint/报告保持原位，归档不删除用户结果。
+仓库只保留 `tools/` 下的本地运行和评测入口代码，不上传冻结评测语料、评测结果、campaign runner、
+历史 runtime 或其他过程资料。需要执行评测时，必须在本地另行准备语料和 owner-only test runtime；
+问题、回答、正文、Provider payload、数据库记录和 secret 都只能留在被忽略的本地目录。
 
 `text/plain` 是公开上传合同的一部分，不经过 Docling 不支持的 TXT converter，而是以严格 UTF-8 直接构造
 受同一 item/character 预算约束的 `DoclingDocument`。Markdown/CSV/Office simple pipeline 不消费 PDF
@@ -938,9 +929,6 @@ docs/
 
 - `architecture.md` 是全项目唯一架构文档。稳定产品、进程、主要数据、公开 API、模块或运行
   边界变化时，必须在同一任务中主动更新相关章节。
-- 过程性评审、路线图、测试报告和文档站源码不进入当前公开 `docs/`。
-- [`archive/docs-20260819/`](../archive/docs-20260819/) 保存旧架构专题、旧任务系统、旧 review、
-  release/baseline 与其他历史资料；`archive/plans/NN-MMDD-short/` 保存历史计划与其完整子计划。
-  `archive/` 是独立的历史归档目录，本规则不自动改写其中内容；已有归档只读且不能覆盖 Git 或本文。
+- 过程性评审、路线图、测试报告、文档站源码、历史归档和评测材料不进入当前公开仓库。
 
 除固定的 `architecture.md` 外，当前公开 `docs/` 不新增其他文档类型。

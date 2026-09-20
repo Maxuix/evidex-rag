@@ -73,7 +73,7 @@
 - 每次聊天可以组合选择多个知识库，并冻结知识库集合、索引版本、检索配置和图谱构建版本。
 - 引用保留知识库名称和版本快照，即使原始片段后来被删除也能追溯。
 - 提供本地 doctor 预检、Worker 心跳、结构化 JSONL 日志和安全诊断包。
-- 测试和评测入口支持离线 dry-run；数据库集成测试使用临时回环 PostgreSQL。
+- 测试入口支持离线检查；数据库集成测试使用临时回环 PostgreSQL。
 
 ## 为什么不同
 
@@ -132,8 +132,7 @@ src/rag_kb/
   adapters/            文件、模型和存储适配器
   repositories/ uow/ db/ config/ observability/
 
-evaluation/            冻结评测语料
-tools/                 doctor、smoke、reset、评测和数据库测试工具
+tools/                 doctor、smoke、reset 和本地测试工具
 tests/                 basic / unit / contract / integration 测试
 docs/                  唯一的最终架构文档
 ```
@@ -143,7 +142,7 @@ docs/                  唯一的最终架构文档
 ### 环境要求
 
 - Docker Compose
-- Python 3.12.13（用于 doctor、测试和评测；应用本身运行在容器内）
+- Python 3.12.13（用于 doctor 和测试；应用本身运行在容器内）
 - Node 24 / npm 11（仅在 Docker 外开发前端时需要）
 
 ### 1. 创建本地配置
@@ -220,12 +219,6 @@ PYTHONPATH=src:. .venv/bin/python tools/run_database_tests.py
 # 前端
 cd apps/web-chat && npm ci && npm test && npm run build
 
-```
-
-评测 dry-run 完全离线：
-
-```bash
-PYTHONPATH=src:. .venv/bin/python tools/evaluate_agent_complex_qa.py --dry-run
 ```
 
 ## 安全边界

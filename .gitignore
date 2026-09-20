@@ -9,12 +9,22 @@ __pycache__/
 
 # Local credentials, certificates, and runtime secrets
 .claude/settings.local.json
+.claude/
 .secrets/
+secrets/
+credentials/
 model-secrets/
 *.pem
 *.key
 *.p12
 *.pfx
+*.secret
+*.secrets
+*.token
+*.credentials
+.netrc
+.npmrc
+.pypirc
 
 # Local databases, dumps, logs, and process state
 *.db
@@ -42,16 +52,101 @@ evaluation/adaptive-graph-route-v1/runs/
 
 # Local AI-assistant instructions and handoff state
 .agent/
+.agents/
 AGENTS.md
 agents.md
 CLAUDE.md
 claude.md
+GEMINI.md
+gemini.md
+CODEX.md
+codex.md
+COPILOT.md
+copilot.md
+CURSOR.md
+cursor.md
+WINDSURF.md
+windsurf.md
+*-instructions.md
+*-instructions.txt
+.cursor/
+.windsurf/
+.continue/
+.clinerules/
+.roo/
+.amazonq/
+.aider*
+.codex/
+
+# Local plans, handoffs, trackers, reviews, and test reports
+PLAN.md
+TODO.md
+TRACKER.md
+LOG.md
+HANDOFF*.md
+plans/
+reviews/
+*-test-report.md
+*-test-result.md
 
 # Personal study/interview materials, not for the public repository
 导学-RAG.md
 面经-RAG.md
 项目经历-AgenticRAG.html
 
-# Keep only the final public architecture record under docs/
+# Public documentation policy: keep only the final architecture record
 docs/*
 !docs/architecture.md
+
+# Local history, plans, reviews, evaluation corpora, and results
+archive/
+evaluation/
+test-results/
+test-reports/
+reports/
+artifacts/
+results/
+runs/
+**/runs/
+*.junit.xml
+*.pytest.xml
+*.coverage
+
+# Personal files and user-provided documents
+personal/
+private/
+resume/
+resumes/
+cv/
+profile/
+profiles/
+*.vcf
+*.doc
+*.docx
+*.xls
+*.xlsx
+*.ppt
+*.pptx
+*.pdf
+*.jsonl
+*.csv
+*.tsv
+*.parquet
+
+# Local data, database exports, and generated storage
+local-data/
+user-data/
+postgres-data/
+pgdata/
+uploads/
+storage/
+*.bak
+*.backup
+*.sql.gz
+
+# Local editor state and temporary files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~

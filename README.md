@@ -220,7 +220,6 @@ src/rag_kb/
   adapters/            file, Docling, model, and retrieval store implementations
   repositories/ uow/ db/ config/ observability/
 
-evaluation/            frozen QA corpora (document-qa-v1, hotpotqa-1000-v1, multi-kb-v1)
 tools/                 local runtime doctor, smoke, reset, evaluation, DB test runner
 tests/                 basic / unit / contract / integration suites
 docs/                  architecture.md (single maintained architecture record)
@@ -343,18 +342,6 @@ lane — it never steals capacity from document jobs:
    build keeps serving until the switch is atomic.
 4. Switching the schema profile or changing frozen inputs requires a new build
    generation; explicit retry reuses the same build when nothing changed.
-
-## Evaluation
-
-```bash
-PYTHONPATH=src:. .venv/bin/python tools/evaluate_agent_complex_qa.py --dry-run
-```
-
-The dry-run is fully offline: it validates the frozen `evaluation/document-qa-v1`
-corpus (case order, evidence spans, summaries) without touching any database,
-graph, or provider. Real model runs are separately authorized operations that
-connect only to identity-bound, owner-provided disposable test dependencies —
-never to the personal `rag` stack.
 
 ## Testing
 
