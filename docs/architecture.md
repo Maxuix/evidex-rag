@@ -19,8 +19,7 @@
 
 1. 可执行代码、Alembic 迁移、锁文件和实际运行配置是最终事实。
 2. 本文记录稳定的产品、进程、数据和主要调用链，应与第一项保持一致。
-3. [`roadmap/`](roadmap/) 只保存候选方向；[`../archive/`](../archive/) 只保存历史快照。
-   两者都不能作为自动恢复工作的指令。
+3. [`../archive/`](../archive/) 只保存历史快照，不能作为当前事实或自动恢复工作的指令。
 
 不得从已完成、暂停或未激活的计划推断当前仍需实现某项能力。只有稳定架构事实发生变化时
 才更新本文；局部修复、测试调整、内部重命名和不改变边界的重构不要求机械同步总览。
@@ -328,8 +327,7 @@ v6 执行器读取历史 v3/v4/v5 配置时只取其中的 token 上限。
 P2 的实际数据核查确认 active/retired revision 指针仍承担当前与软删除恢复，两个 READY Graph build
 均为 active，PDF 分段任务真实使用 continuation；因此 revision/build identity、完整性 manifest、Graph
 lease 与 PDF checkpoint 都保留。未使用的 Enterprise Graph profile 只作为需单独授权的完整产品删除
-候选，不在配置收敛中隐式移除。详见
-[index/Graph/PDF retention review](reviews/16-0902-index-graph-retention-review.md)。
+候选，不在配置收敛中隐式移除。相关保留边界已经固化在代码、迁移和当前运行配置中。
 除此之外不承诺任意历史版本兼容。主要持久事实为：
 
 | 范围 | 主要实体 |
@@ -419,13 +417,13 @@ OCR，也不提高 conversion/indexing 并发，以守住 6 GiB Worker 上限和
 执行，不在 Worker 线程中提取 PDF 文本；图像覆盖率判定可保留带页码或嵌套 Form 的扫描页，
 不会因少量文字层而直接丢弃整页证据。段间复用已绑定 source/profile 的探测结果。
 操作符预算按整份文档累计（包含重复 Form 调用），默认 500 万；原 20 万上限会拒绝
-普通长篇年报。保留 20 MiB 累计解压内容、500 页和深度限制，实测见
-[PDF 预算回归报告](test/84-0905-pdf-budget-test.md)。
+普通长篇年报。保留 20 MiB 累计解压内容、500 页和深度限制；相关预算以代码中的
+`ParserLimits` / `AdmissionLimits` 和可执行测试为准。
 
 checkpoint 在下一段落盘及最终合并前检查累计预算，合并逐段释放输入；图像在解码/裁切前
 校验总像素、尺寸和图像头。PDF 表格可通过已有页图与 bbox 裁切为 table image。
 精确资源上限见 `ParserLimits` / `AdmissionLimits`；改变这些上限不能替代内容质量验证。
-修复与保真/内存证据见 [Docling 验证报告](test/78-0905-docling-fix-test.md)。
+修复与保真/内存约束以代码和可执行测试为准。
 
 结构切分和语义切分都直接消费一次 Docling conversion 结果。新建索引使用 structural v5 或
 semantic v5；旧 structural v4、semantic v3/v4 的完整 profile 仍可执行，旧索引不会原地改写。
@@ -895,9 +893,8 @@ docker compose --env-file .env.local --project-name rag down
   字面值的重复测试。
 - 不默认增加全量矩阵、性能/安全/发布 gate 或版本化报告；只有当前问题需要时才增加。
 
-需要长期保留某次实际验证证据时，将结果写入 [`test/`](test/)，使用
-`NN-MMDD-short-test.md`。报告记录被测基线、范围、环境、命令或用户场景、实际结果、失败与
-未验证项；它不定义另一套测试流程，测试入口以代码、锁文件和实际运行配置为准。
+本文只保留最终架构事实。一次性评审、路线图、测试报告和文档站源码不进入当前公开 `docs/`；
+测试入口以代码、锁文件和实际运行配置为准。
 
 默认轻量 Python 检查：
 
@@ -923,8 +920,8 @@ PYTHONPATH=src:. .venv/bin/python tools/reset_local.py \
 
 ## 14. 轻量维护协议
 
-项目变更以 Git 历史、可执行测试和 `docs/` 下的分类文档为准；仓库不保留临时任务状态、交接便笺
-或本地助手配置。小型明确工作可以直接实现，多阶段或高风险工作应在提交前形成简短的可审阅记录。
+项目变更以 Git 历史、可执行测试和本文为准；仓库不保留临时任务状态、交接便笺或本地助手配置。
+小型明确工作可以直接实现，多阶段或高风险工作应在提交前形成简短的可审阅记录。
 只提交任务拥有的文件并执行最小充分验证；稳定产品、进程、数据或 API 边界变化时同步本文。
 
 实现默认选择模块更少、持久状态更少、运行分支更少的方案。历史计划、评审和测试证据只作为背景
@@ -932,28 +929,18 @@ PYTHONPATH=src:. .venv/bin/python tools/reset_local.py \
 
 ## 15. 文档治理
 
-活动文档只允许以下结构：
+当前公开 `docs/` 只允许以下结构：
 
 ```text
 docs/
-├── architecture.md
-├── reviews/
-├── roadmap/
-└── test/
+└── architecture.md
 ```
 
 - `architecture.md` 是全项目唯一架构文档。稳定产品、进程、主要数据、公开 API、模块或运行
   边界变化时，必须在同一任务中主动更新相关章节。
-- `reviews/` 只保存基于实际证据的 review 报告，命名为 `NN-MMDD-short-review.md`。报告本身
-  不会自动成为任务；需要执行的结论必须进入 TODO。
-- `test/` 只保存已经实际执行的测试报告，命名为 `NN-MMDD-short-test.md`。报告必须写明被测
-  基线、范围与环境、命令或用户场景、结果与失败、未验证项；不得在此另写测试流程。失败或
-  延后项只有进入 TODO 后才成为当前任务。
-- `roadmap/` 只保存开放方向和概念边界，命名为 `NN-MMDD-short-roadmap.md`。不得写实现步骤、
-  当前状态、验收清单或承诺日期；立项后才转入 PLAN/TODO。
+- 过程性评审、路线图、测试报告和文档站源码不进入当前公开 `docs/`。
 - [`archive/docs-20260819/`](../archive/docs-20260819/) 保存旧架构专题、旧任务系统、旧 review、
   release/baseline 与其他历史资料；`archive/plans/NN-MMDD-short/` 保存历史计划与其完整子计划。
-  每次只新增一个最终归档包，已有归档只读且不能覆盖 Git 或本文。
+  `archive/` 是独立的历史归档目录，本规则不自动改写其中内容；已有归档只读且不能覆盖 Git 或本文。
 
-除固定的 `architecture.md` 外，文件名以短英文或简短拼音为主，避免重复项目名、阶段长句和
-状态堆叠。新类型沿用 `NN-MMDD-short-type.md` 规则。
+除固定的 `architecture.md` 外，当前公开 `docs/` 不新增其他文档类型。

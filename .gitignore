@@ -51,3 +51,7 @@ claude.md
 导学-RAG.md
 面经-RAG.md
 项目经历-AgenticRAG.html
+
+# Keep only the final public architecture record under docs/
+docs/*
+!docs/architecture.md

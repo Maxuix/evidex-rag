@@ -223,8 +223,7 @@ src/rag_kb/
 evaluation/            frozen QA corpora (document-qa-v1, hotpotqa-1000-v1, multi-kb-v1)
 tools/                 local runtime doctor, smoke, reset, evaluation, DB test runner
 tests/                 basic / unit / contract / integration suites
-docs/                  architecture.md (single architecture record), reviews, test reports, roadmap
-docs/docs-web/         optional Fumadocs documentation site
+docs/                  architecture.md (single maintained architecture record)
 ```
 
 Import direction is enforced by `architecture.toml` and verified in the basic
@@ -417,8 +416,6 @@ This application is designed for **one user on one machine**:
 ## Documentation
 
 - [docs/architecture.md](docs/architecture.md) — the single maintained architecture record (Chinese)
-- [docs/test/](docs/test/) — executed test and evaluation reports with real baselines
-- [docs/roadmap/](docs/roadmap/) — concept-only candidate directions
 - [README.zh-CN.md](README.zh-CN.md) — 简体中文项目说明
 
 ## License

@@ -135,7 +135,7 @@ src/rag_kb/
 evaluation/            冻结评测语料
 tools/                 doctor、smoke、reset、评测和数据库测试工具
 tests/                 basic / unit / contract / integration 测试
-docs/                  架构、评审、测试、路线图和文档站源码
+docs/                  唯一的最终架构文档
 ```
 
 ## 快速开始
@@ -144,7 +144,7 @@ docs/                  架构、评审、测试、路线图和文档站源码
 
 - Docker Compose
 - Python 3.12.13（用于 doctor、测试和评测；应用本身运行在容器内）
-- Node 24 / npm 11（仅在 Docker 外开发前端或文档站时需要）
+- Node 24 / npm 11（仅在 Docker 外开发前端时需要）
 
 ### 1. 创建本地配置
 
@@ -204,7 +204,7 @@ PYTHONPATH=src:. .venv/bin/python tools/local_runtime.py doctor
 
 重排模式为 `none`、`classic` 和 `local_minilm_v1`。
 
-## 测试与文档站
+## 测试
 
 ```bash
 # 基础测试：导入和架构边界
@@ -220,8 +220,6 @@ PYTHONPATH=src:. .venv/bin/python tools/run_database_tests.py
 # 前端
 cd apps/web-chat && npm ci && npm test && npm run build
 
-# 文档站
-cd docs/docs-web && npm ci && npm run types:check && npm run build
 ```
 
 评测 dry-run 完全离线：
@@ -242,9 +240,6 @@ Evidex 设计为**一台机器上的一个用户**：
 ## 相关文档
 
 - [架构记录](docs/architecture.md)
-- [测试与评测报告](docs/test/)
-- [路线图](docs/roadmap/)
-- [文档站源码](docs/docs-web/)
 
 ## License
 
