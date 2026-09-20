@@ -1,17 +1,13 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
-import subprocess
-import tempfile
-import textwrap
 import unittest
 
 import yaml
 
 
 ROOT = Path(__file__).resolve().parents[2]
-SCRIPT = ROOT / "start-local.sh"
+MAKEFILE = ROOT / "Makefile"
 COMPOSE = ROOT / "compose.yaml"
 DOCKERFILE = ROOT / "Dockerfile"
 DOCKERIGNORE = ROOT / ".dockerignore"
@@ -21,7 +17,64 @@ def _seconds(value: str | int) -> int:
     return int(value) if isinstance(value, int) else int(str(value).rstrip("s"))
 
 
-class StartLocalScriptTests(unittest.TestCase):
+class MakefileStartupTests(unittest.TestCase):
+    def test_makefile_is_the_canonical_local_entrypoint(self) -> None:
+        makefile = MAKEFILE.read_text(encoding="utf-8")
+
+        self.assertFalse((ROOT / "start-local.sh").exists())
+        self.assertIn("COMPOSE_PROJECT := rag", makefile)
+        self.assertIn("MANIFEST := .env.local", makefile)
+        self.assertIn(
+            "docker compose --env-file $(MANIFEST) --project-name $(COMPOSE_PROJECT)",
+            makefile,
+        )
+
+    def test_up_runs_doctor_then_the_ordered_compose_sequence(self) -> None:
+        makefile = MAKEFILE.read_text(encoding="utf-8")
+
+        self.assertIn("up: doctor prepare frontend-dist", makefile)
+        self.assertIn("python3 tools/local_runtime.py doctor", makefile)
+        steps = [
+            "up -d --wait postgres",
+            "exec -T postgres /docker-entrypoint-initdb.d/10-init-runtime.sh",
+            "build api frontend",
+            "up storage-init",
+            "--profile tools run --rm migrate",
+            "up -d --wait api worker frontend",
+        ]
+        positions = [makefile.index(step) for step in steps]
+        self.assertEqual(positions, sorted(positions))
+
+    def test_revision_and_model_asset_wiring_is_preserved(self) -> None:
+        makefile = MAKEFILE.read_text(encoding="utf-8")
+
+        self.assertIn("export RAG_KB_BUILD_REVISION", makefile)
+        self.assertIn("git rev-parse HEAD", makefile)
+        self.assertIn("docker image inspect rag-kb-app:local", makefile)
+        self.assertIn(
+            "RAG_KB_BUILD_MODEL_ASSET_CONTEXT := docker-image://rag-kb-app:local",
+            makefile,
+        )
+
+    def test_identity_guards_are_preserved(self) -> None:
+        makefile = MAKEFILE.read_text(encoding="utf-8")
+
+        self.assertIn("RAG_KB_LOCAL_COMPOSE_ENV_FILE is retired", makefile)
+        self.assertIn("RAG_KB_LOCAL_APP_ENV_FILE is retired", makefile)
+        self.assertIn("the personal Compose project is fixed to", makefile)
+        self.assertIn("linked worktrees are read-only for the personal runtime", makefile)
+
+    def test_ready_banner_reads_ports_from_the_manifest(self) -> None:
+        makefile = MAKEFILE.read_text(encoding="utf-8")
+
+        self.assertIn("manifest_value", makefile)
+        self.assertIn("RAG_KB_API_PORT", makefile)
+        self.assertIn("RAG_KB_FRONTEND_PORT", makefile)
+        self.assertIn("User Chat: http://127.0.0.1:", makefile)
+        self.assertIn("API docs: http://127.0.0.1:", makefile)
+
+
+class ComposeBuildContractTests(unittest.TestCase):
     def test_python_image_reuses_downloads_across_network_retries(self) -> None:
         dockerfile = DOCKERFILE.read_text(encoding="utf-8")
 
@@ -291,7 +344,7 @@ class StartLocalScriptTests(unittest.TestCase):
         dockerfile = (ROOT / "apps/web-chat/Dockerfile").read_text(
             encoding="utf-8"
         )
-        script = SCRIPT.read_text(encoding="utf-8")
+        makefile = MAKEFILE.read_text(encoding="utf-8")
 
         self.assertIn("RAG_KB_BUILD_FRONTEND_TARGET", build["target"])
         self.assertIn("frontend-dist", build["additional_contexts"])
@@ -301,11 +354,11 @@ class StartLocalScriptTests(unittest.TestCase):
         )
         self.assertIn("FROM runtime-base AS prebuilt-runtime", dockerfile)
         self.assertIn("COPY --from=frontend-dist / /app/dist", dockerfile)
-        self.assertIn('npm --prefix "$frontend_directory" ls --all', script)
-        self.assertIn('npm --prefix "$frontend_directory" run build', script)
+        self.assertIn("npm --prefix $(FRONTEND_DIR) ls --all", makefile)
+        self.assertIn("npm --prefix $(FRONTEND_DIR) run build", makefile)
         self.assertIn(
-            "RAG_KB_BUILD_FRONTEND_TARGET=prebuilt-runtime",
-            script,
+            "RAG_KB_BUILD_FRONTEND_TARGET := prebuilt-runtime",
+            makefile,
         )
 
     def test_compose_uses_one_manifest_and_revision_labels(self) -> None:
@@ -329,143 +382,6 @@ class StartLocalScriptTests(unittest.TestCase):
             'LABEL org.opencontainers.image.revision="${RAG_KB_BUILD_REVISION}"',
             (ROOT / "apps/web-chat/Dockerfile").read_text(encoding="utf-8"),
         )
-
-    def _run(
-        self,
-        directory: Path,
-        *,
-        linked: bool = False,
-        doctor_ok: bool = True,
-        extra_environment: dict[str, str] | None = None,
-    ) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
-        primary = directory / "primary"
-        checkout = directory / "linked" if linked else primary
-        checkout.mkdir(parents=True)
-        primary.mkdir(parents=True, exist_ok=True)
-        (primary / ".git").mkdir()
-        script = checkout / "start-local.sh"
-        script.write_text(SCRIPT.read_text(encoding="utf-8"), encoding="utf-8")
-        script.chmod(0o755)
-        manifest = checkout / ".env.local"
-        manifest.write_text(
-            "COMPOSE_PROJECT_NAME=rag\n"
-            "RAG_KB_API_PORT=18000\n"
-            "RAG_KB_FRONTEND_PORT=13000\n",
-            encoding="utf-8",
-        )
-        manifest.chmod(0o600)
-
-        fake_bin = directory / "bin"
-        fake_bin.mkdir()
-        log = directory / "commands.log"
-        git = fake_bin / "git"
-        git.write_text(
-            textwrap.dedent(
-                """\
-                #!/bin/sh
-                case "$*" in
-                  *--git-common-dir*) printf '%s\\n' "$FAKE_GIT_COMMON_DIR" ;;
-                  *'rev-parse HEAD'*) printf '0123456789abcdef\\n' ;;
-                  *) exit 1 ;;
-                esac
-                """
-            ),
-            encoding="utf-8",
-        )
-        git.chmod(0o755)
-        python = fake_bin / "python3"
-        python.write_text(
-            "#!/bin/sh\nprintf 'python3 %s\\n' \"$*\" >>\"$FAKE_COMMAND_LOG\"\n"
-            "exit \"$FAKE_DOCTOR_EXIT\"\n",
-            encoding="utf-8",
-        )
-        python.chmod(0o755)
-        docker = fake_bin / "docker"
-        docker.write_text(
-            "#!/bin/sh\nprintf 'project=%s revision=%s docker %s\\n' "
-            '"$COMPOSE_PROJECT_NAME" "$RAG_KB_BUILD_REVISION" "$*" '
-            '>>"$FAKE_COMMAND_LOG"\nexit 0\n',
-            encoding="utf-8",
-        )
-        docker.chmod(0o755)
-
-        environment = {
-            **os.environ,
-            "PATH": f"{fake_bin}:/usr/bin:/bin",
-            "FAKE_GIT_COMMON_DIR": str(primary / ".git"),
-            "FAKE_COMMAND_LOG": str(log),
-            "FAKE_DOCTOR_EXIT": "0" if doctor_ok else "1",
-        }
-        for name in (
-            "COMPOSE_PROJECT_NAME",
-            "RAG_KB_LOCAL_COMPOSE_ENV_FILE",
-            "RAG_KB_LOCAL_APP_ENV_FILE",
-            "RAG_KB_BUILD_REVISION",
-            "RAG_KB_BUILD_MODEL_ASSET_CONTEXT",
-            "RAG_KB_BUILD_FRONTEND_TARGET",
-            "RAG_KB_BUILD_FRONTEND_DIST_CONTEXT",
-        ):
-            environment.pop(name, None)
-        if extra_environment:
-            environment.update(extra_environment)
-        completed = subprocess.run(
-            (str(script),),
-            cwd=checkout,
-            env=environment,
-            capture_output=True,
-            text=True,
-        )
-        return completed, manifest, log
-
-    def test_primary_start_uses_fixed_project_manifest_and_revision(self) -> None:
-        with tempfile.TemporaryDirectory() as raw_directory:
-            completed, manifest, log = self._run(Path(raw_directory))
-
-            self.assertEqual(completed.returncode, 0, completed.stderr)
-            calls = log.read_text(encoding="utf-8")
-            prefix = f"docker compose --env-file {manifest} --project-name rag"
-            self.assertIn(f"project=rag revision=0123456789abcdef {prefix} up -d --wait postgres", calls)
-            self.assertIn("docker image inspect rag-kb-app:local", calls)
-            self.assertIn(f"{prefix} exec -T postgres", calls)
-            self.assertIn(f"{prefix} build api frontend", calls)
-            self.assertIn(f"{prefix} --profile tools run --rm migrate", calls)
-            self.assertNotIn("docker inspect", calls)
-            self.assertNotIn("ps -aq", calls)
-            self.assertIn("User Chat: http://127.0.0.1:13000", completed.stdout)
-            self.assertIn("API docs: http://127.0.0.1:18000", completed.stdout)
-
-    def test_linked_worktree_stops_before_docker_or_doctor(self) -> None:
-        with tempfile.TemporaryDirectory() as raw_directory:
-            completed, _, log = self._run(Path(raw_directory), linked=True)
-
-            self.assertNotEqual(completed.returncode, 0)
-            self.assertIn("linked worktrees are read-only", completed.stderr)
-            self.assertFalse(log.exists())
-
-    def test_doctor_failure_stops_before_compose(self) -> None:
-        with tempfile.TemporaryDirectory() as raw_directory:
-            completed, _, log = self._run(
-                Path(raw_directory),
-                doctor_ok=False,
-            )
-
-            self.assertNotEqual(completed.returncode, 0)
-            self.assertIn("doctor found blocking drift", completed.stderr)
-            calls = log.read_text(encoding="utf-8")
-            self.assertIn("python3", calls)
-            self.assertIn("docker info", calls)
-            self.assertNotIn("docker compose", calls)
-
-    def test_retired_env_override_stops_before_external_action(self) -> None:
-        with tempfile.TemporaryDirectory() as raw_directory:
-            completed, _, log = self._run(
-                Path(raw_directory),
-                extra_environment={"RAG_KB_LOCAL_APP_ENV_FILE": "legacy.env"},
-            )
-
-            self.assertNotEqual(completed.returncode, 0)
-            self.assertIn("is retired", completed.stderr)
-            self.assertFalse(log.exists())
 
 
 if __name__ == "__main__":

@@ -264,14 +264,15 @@ or competing Compose projects without echoing any configuration value.
 **3. Build and start**
 
 ```bash
-./start-local.sh
+make up
 ```
 
-The starter never guesses projects or ports and never rewrites your manifest:
-it reconciles the declared database roles, applies Alembic migrations, builds
-revision-labelled images (frozen model artifacts verified by SHA-256
-manifest), starts the services, and waits for health. Existing volumes are
-retained.
+`make up` never guesses projects or ports and never rewrites your manifest:
+it runs the content-safe doctor preflight, reconciles the declared database
+roles, applies Alembic migrations, builds revision-labelled images (frozen
+model artifacts verified by SHA-256 manifest), starts the services, and waits
+for health. Existing volumes are retained. Run `make help` for the other
+lifecycle targets (`down`, `ps`, `logs`, `migrate`, `smoke`, …).
 
 **4. Open the app**
 
@@ -369,10 +370,10 @@ loudly instead of silently skipping.
 ## Operations
 
 ```bash
-docker compose --env-file .env.local --project-name rag ps
-docker compose --env-file .env.local --project-name rag logs --no-color api worker
-PYTHONPATH=src:. .venv/bin/python tools/smoke_local.py
-docker compose --env-file .env.local --project-name rag down
+make ps
+make logs        # SERVICES='api' to follow a single service
+make smoke
+make down
 ```
 
 - Logs: application-safe JSONL under `.runtime/logs` (10 MiB × 5 rotation),

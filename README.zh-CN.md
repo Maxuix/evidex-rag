@@ -165,8 +165,10 @@ PYTHONPATH=src:. .venv/bin/python tools/local_runtime.py doctor
 ### 3. 构建并启动
 
 ```bash
-./start-local.sh
+make up
 ```
+
+`make up` 先运行 doctor 预检，再依次校准数据库角色、构建带 Git revision 标签的镜像、执行 Alembic 迁移并等待各服务健康；已有数据卷不会被重置。其余生命周期命令见 `make help`（`down`、`ps`、`logs`、`migrate`、`smoke` 等）。
 
 ### 4. 打开应用
 

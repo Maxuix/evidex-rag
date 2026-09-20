@@ -154,7 +154,7 @@ Storage Init ─────> prepare source/asset/model-cache/model-secret/log 
 ```
 
 `compose.yaml` 运行 PostgreSQL、API、单 Worker、一次性 Storage Init/Migration/Maintenance，
-以及用户前端。标准入口是 `./start-local.sh`。这些进程已经承载现有功能，因此继续保留；这不表示
+以及用户前端。标准入口是根目录 `Makefile`（`make up`）。这些进程已经承载现有功能，因此继续保留；这不表示
 后续功能必须增加新进程、队列、控制面或分布式协议。
 
 主要运行原则：
@@ -819,8 +819,8 @@ Layout、Table、页面装配和文档装配计数；数据库只保存固定 al
 
 个人正式 runtime 只有一个身份：primary checkout、owner-only `.env.local`、Compose project
 `rag` 以及 manifest 中的四个 loopback 端口。linked worktree 只用于代码和测试，不能重建、
-migrate 或切换个人 stack。`./start-local.sh` 先执行 content-safe doctor；它不猜测 project/端口、
-不从容器提取 credential、也不生成或覆盖配置。通过 preflight 后，starter 才按顺序启动
+migrate 或切换个人 stack。`make up` 先执行 content-safe doctor；它不猜测 project/端口、
+不从容器提取 credential、也不生成或覆盖配置。通过 preflight 后，启动序列才依次启动
 PostgreSQL、幂等校准现有 admin/migration/runtime 角色、构建带 Git revision label 的应用镜像、
 准备 source storage、执行 Alembic 并等待 API/Worker/frontend 健康。现有业务卷不会因启动被重置。
 固定 Docling/reranker 资产通过可覆盖的 HTTPS Hugging Face 镜像下载，瞬时网络错误做有界重试并
@@ -833,7 +833,7 @@ SHA-256 为 `223921b76ee99bde995b7ff738513eef100fb51d18c93597a113bcffe865b2a7`�
 network-aware resolver，也不使用 `TIKTOKEN_CACHE_DIR`。API 与 Worker composition root 在创建数据库
 资源、进入 readiness 前执行 tokenizer preflight；`source-data` volume 不承载 tokenizer 资产或其缓存。
 前端 `npm ci` 同样使用可覆盖的 HTTPS registry、原生有限 fetch retry/timeout 与独立 BuildKit cache，
-依赖闭集仍由 `package-lock.json` 决定。若宿主已安装的前端依赖通过 `npm ls --all`，starter 可在
+依赖闭集仍由 `package-lock.json` 决定。若宿主已安装的前端依赖通过 `npm ls --all`，`make up` 可在
 宿主执行 Vite build，并只把生成的 `dist` 作为只读 build context 交给最终 Python frontend 镜像；
 这条路径不安装或更新依赖，Docker `npm ci` 仍是 clean checkout fallback。
 两条前端镜像构建路径都会校准静态文件的读取和目录遍历权限，再切换到非 root 用户，避免
@@ -845,15 +845,14 @@ content-safe stale warning。唯一有效配置是 primary checkout 的 0600 `.e
 继续通过 Web Chat 和数据库维护，不存在环境 fallback。常用命令：
 
 ```bash
-./start-local.sh
-PYTHONPATH=src:. .venv/bin/python tools/local_runtime.py doctor
-docker compose --env-file .env.local --project-name rag ps
-docker compose --env-file .env.local --project-name rag logs --no-color api worker
-PYTHONPATH=src:. .venv/bin/python tools/smoke_local.py
-docker compose --env-file .env.local --project-name rag down
+make up
+make ps
+make logs      # SERVICES='api' 可只跟随单个服务
+make smoke
+make down
 ```
 
-以上 Compose/start 命令属于个人 runtime 运维，不属于测试流程，不能从“测试”请求中推导。
+以上 make/Compose 命令属于个人 runtime 运维，不属于测试流程，不能从“测试”请求中推导。
 
 测试使用 `unittest`，现有目录包括 `tests/basic`、`tests/unit`、`tests/contract` 和
 `tests/integration`。验证按风险选择：

@@ -27,7 +27,7 @@ class BasicProjectTests(unittest.TestCase):
                 importlib.import_module(module)
 
     def test_local_entrypoints_exist(self) -> None:
-        self.assertTrue((ROOT / "start-local.sh").stat().st_mode & 0o111)
+        self.assertTrue((ROOT / "Makefile").is_file())
         self.assertTrue((ROOT / "tools/reset_local.py").is_file())
         self.assertTrue((ROOT / "tools/smoke_local.py").is_file())
         self.assertTrue((ROOT / "examples/demo-document.md").is_file())
