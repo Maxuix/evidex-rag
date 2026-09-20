@@ -10,6 +10,10 @@
   </p>
 </div>
 
+<p align="center">
+  <a href="README.md">English</a> · <a href="README.zh-CN.md">简体中文</a>
+</p>
+
 **Evidex** is a local-first, single-user personal knowledge base with
 evidence-grounded RAG chat. Import your documents, let a worker parse, chunk,
 and index them into pgvector (optionally into a Graphiti knowledge graph as
@@ -220,7 +224,7 @@ evaluation/            frozen QA corpora (document-qa-v1, hotpotqa-1000-v1, mult
 tools/                 local runtime doctor, smoke, reset, evaluation, DB test runner
 tests/                 basic / unit / contract / integration suites
 docs/                  architecture.md (single architecture record), reviews, test reports, roadmap
-.agent/                lightweight plan/TODO/tracker/log handoff area
+docs/docs-web/         optional Fumadocs documentation site
 ```
 
 Import direction is enforced by `architecture.toml` and verified in the basic
@@ -415,8 +419,7 @@ This application is designed for **one user on one machine**:
 - [docs/architecture.md](docs/architecture.md) — the single maintained architecture record (Chinese)
 - [docs/test/](docs/test/) — executed test and evaluation reports with real baselines
 - [docs/roadmap/](docs/roadmap/) — concept-only candidate directions
-- [AGENTS.md](AGENTS.md) — maintenance and safety rules for coding agents
-- [.agent/](.agent/) — current plan, TODO, tracker, and factual history log
+- [README.zh-CN.md](README.zh-CN.md) — 简体中文项目说明
 
 ## License
 

@@ -40,8 +40,12 @@ node_modules/
 .runtime/
 evaluation/adaptive-graph-route-v1/runs/
 
-# Local agent handoffs may contain host paths and operational details
-.agent/HANDOFF-*.md
+# Local AI-assistant instructions and handoff state
+.agent/
+AGENTS.md
+agents.md
+CLAUDE.md
+claude.md
 
 # Personal study/interview materials, not for the public repository
 导学-RAG.md

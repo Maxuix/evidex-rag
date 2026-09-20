@@ -5,7 +5,7 @@
 | 文档状态 | 全项目唯一当前架构文档（描述事实，不是目标蓝图） |
 | 最后核对 | 2026-09-06 |
 | 核对基线 | 当前 `main`、实际代码、配置、Alembic 迁移 `0032`、实际配置与公开路由 |
-| 适用对象 | 个人维护者、CODE AGENTS |
+| 适用对象 | 个人维护者、项目贡献者 |
 | 部署边界 | 单机、单用户、本地使用；不是共享或生产服务 |
 | 设计优先级 | 功能可用与个人可维护性优先于平台化、通用化和生产完备性 |
 
@@ -19,11 +19,7 @@
 
 1. 可执行代码、Alembic 迁移、锁文件和实际运行配置是最终事实。
 2. 本文记录稳定的产品、进程、数据和主要调用链，应与第一项保持一致。
-3. [`.agent/PLAN.md`](../.agent/PLAN.md) 记录当前打算怎么做；需要时可在 `.agent/subplans/`
-   放置独立子计划；[`.agent/TODO.md`](../.agent/TODO.md) 记录当前具体动作。
-4. [`.agent/TRACKER.md`](../.agent/TRACKER.md) 记录当前做到哪里；
-   [`.agent/LOG.md`](../.agent/LOG.md) 只记录已经实际发生的历史。
-5. [`roadmap/`](roadmap/) 只保存候选方向；[`../archive/`](../archive/) 只保存历史快照。
+3. [`roadmap/`](roadmap/) 只保存候选方向；[`../archive/`](../archive/) 只保存历史快照。
    两者都不能作为自动恢复工作的指令。
 
 不得从已完成、暂停或未激活的计划推断当前仍需实现某项能力。只有稳定架构事实发生变化时
@@ -901,7 +897,7 @@ docker compose --env-file .env.local --project-name rag down
 
 需要长期保留某次实际验证证据时，将结果写入 [`test/`](test/)，使用
 `NN-MMDD-short-test.md`。报告记录被测基线、范围、环境、命令或用户场景、实际结果、失败与
-未验证项；它不定义另一套测试流程，也不替代 `AGENTS.md` 的验证规则或 `.agent/` 的当前状态。
+未验证项；它不定义另一套测试流程，测试入口以代码、锁文件和实际运行配置为准。
 
 默认轻量 Python 检查：
 
@@ -927,25 +923,12 @@ PYTHONPATH=src:. .venv/bin/python tools/reset_local.py \
 
 ## 14. 轻量维护协议
 
-项目任务只通过 [`.agent/`](../.agent/) 维护；旧的 `docs/implementation-plans/` 与
-`EXECUTION-TRACKER.md` 已归档并停用。`.agent/` 是交接便笺，不是审批系统：
+项目变更以 Git 历史、可执行测试和 `docs/` 下的分类文档为准；仓库不保留临时任务状态、交接便笺
+或本地助手配置。小型明确工作可以直接实现，多阶段或高风险工作应在提交前形成简短的可审阅记录。
+只提交任务拥有的文件并执行最小充分验证；稳定产品、进程、数据或 API 边界变化时同步本文。
 
-- 多阶段、高风险或改变方向时才写一份 current `PLAN.md`；小型明确工作可直接实现。
-- `TODO.md` 只保留仍需执行的动作，`TRACKER.md` 只保留短状态/阻塞/下一步，`LOG.md` 追加实际结果。
-- 只有需要独立范围或验证的阶段才建短 subplan；不要把同一事实复制到所有状态文件和报告。
-- routine work 可在完成时一次更新状态，不要求为开始工作制造计划或 authorization gate。
-
-Git 是恢复事实。小型可回退变更可以留在当前分支；大型、风险、并行或需独立 review 的工作才使用
-`codex/` 前缀短分支。只提交任务拥有的文件并做最小充分验证。
-local branch/commit/fast-forward merge 是普通实现动作；remote mutation 和 history rewrite 仍需确认。
-
-只有依赖安装、不可恢复的本地数据操作、数据保留选择不清楚的 schema 变化、产品/架构扩张和远程
-Git 操作需要先问。只读检查、宿主机 `.venv` 测试、可逆编辑和 local Git 不重复请求授权；测试授权
-不包含 build/restart、镜像下载或容器生命周期操作，一次 destructive 授权也不能扩展到未列出的目标。
-
-PLAN 结束时记录实际结果，把 PLAN 和其 subplans 一起移入 `archive/plans/NN-MMDD-short/`，然后把
-PLAN/TODO/TRACKER 重置为“无当前工作”。roadmap、review 和 archive 都不会自动变成任务。实现默认选择
-模块更少、持久状态更少、运行分支更少的方案；稳定产品/进程/数据/API 边界变化时才同步本文。
+实现默认选择模块更少、持久状态更少、运行分支更少的方案。历史计划、评审和测试证据只作为背景
+材料，不会自动转化为当前任务。
 
 ## 15. 文档治理
 
@@ -969,8 +952,8 @@ docs/
 - `roadmap/` 只保存开放方向和概念边界，命名为 `NN-MMDD-short-roadmap.md`。不得写实现步骤、
   当前状态、验收清单或承诺日期；立项后才转入 PLAN/TODO。
 - [`archive/docs-20260819/`](../archive/docs-20260819/) 保存旧架构专题、旧任务系统、旧 review、
-  release/baseline 与其他历史资料；`archive/plans/NN-MMDD-short/` 保存以后结束的 PLAN 与其
-  完整子计划。每次只新增一个最终归档包，已有归档只读且不能覆盖 Git、本文或 `.agent/`。
+  release/baseline 与其他历史资料；`archive/plans/NN-MMDD-short/` 保存历史计划与其完整子计划。
+  每次只新增一个最终归档包，已有归档只读且不能覆盖 Git 或本文。
 
 除固定的 `architecture.md` 外，文件名以短英文或简短拼音为主，避免重复项目名、阶段长句和
 状态堆叠。新类型沿用 `NN-MMDD-short-type.md` 规则。
