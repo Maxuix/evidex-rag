@@ -6,6 +6,29 @@ __pycache__/
 .env
 .env.*
 !.env.example
+
+# Local credentials, certificates, and runtime secrets
+.claude/settings.local.json
+.secrets/
+model-secrets/
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Local databases, dumps, logs, and process state
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.dump
+*.log
+*.pid
+
+# Build and tool caches produced outside dependency directories
+.next/
+.source/
+*.tsbuildinfo
 .mypy_cache/
 .pytest_cache/
 .ruff_cache/
@@ -16,6 +39,9 @@ htmlcov/
 node_modules/
 .runtime/
 evaluation/adaptive-graph-route-v1/runs/
+
+# Local agent handoffs may contain host paths and operational details
+.agent/HANDOFF-*.md
 
 # Personal study/interview materials, not for the public repository
 导学-RAG.md
