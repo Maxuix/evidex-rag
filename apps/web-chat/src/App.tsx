@@ -4,7 +4,13 @@ import {
   useMemo,
   useRef,
   useState,
+  type ReactNode,
 } from "react";
+import {
+  ArrowUp, ArrowUpRight, ArrowsDownUp, CaretDown, CaretLeft, CaretRight,
+  ChatCircle, Check, Cpu, Database, Desktop, GearSix, List,
+  MagnifyingGlass, Plus, SlidersHorizontal,
+} from "@phosphor-icons/react";
 
 import { ApiClient, ApiClientError, loadRuntimeConfig } from "./api/client";
 import type {
@@ -176,6 +182,7 @@ export function KnowledgeChat({
   const [sidebarCollapsed, setSidebarCollapsed] = useState(readSidebarCollapsed);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [activePage, setActivePage] = useState<"chat" | "knowledge-base">("chat");
+  const sidebarRef = useRef<HTMLElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const messageGeneration = useRef(0);
   const chatGeneration = useRef(0);
@@ -187,6 +194,45 @@ export function KnowledgeChat({
   const previousChatSessionIdRef = useRef(selectedSessionId);
   selectedKnowledgeBaseIdRef.current = selectedKnowledgeBaseId;
   selectedSessionIdRef.current = selectedSessionId;
+
+  useEffect(() => {
+    const media = window.matchMedia?.("(max-width: 959px)");
+    const sidebar = sidebarRef.current;
+    if (!media || !sidebar) return;
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const visibleControls = () => Array.from(sidebar.querySelectorAll<HTMLElement>(
+      "button:not(:disabled), select:not(:disabled), input:not(:disabled)",
+    )).filter((control) => control.getClientRects().length);
+    const update = () => { sidebar.inert = media.matches && !mobileSidebarOpen; };
+    update();
+    media.addEventListener("change", update);
+    if (media.matches && mobileSidebarOpen) visibleControls()[0]?.focus();
+    const handleKey = (event: KeyboardEvent) => {
+      if (!media.matches || !mobileSidebarOpen) return;
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setMobileSidebarOpen(false);
+      }
+      if (event.key !== "Tab") return;
+      const controls = visibleControls();
+      const first = controls[0];
+      const last = controls[controls.length - 1];
+      if (!first || !last) return;
+      if (!sidebar.contains(document.activeElement) || (event.shiftKey && document.activeElement === first)) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    window.addEventListener("keydown", handleKey);
+    return () => {
+      media.removeEventListener("change", update);
+      window.removeEventListener("keydown", handleKey);
+      if (media.matches && mobileSidebarOpen && opener?.isConnected) opener.focus();
+    };
+  }, [mobileSidebarOpen]);
 
   const selectedKnowledgeBase = useMemo(
     () => knowledgeBases.find((item) => item.id === selectedKnowledgeBaseId) ?? null,
@@ -966,7 +1012,7 @@ export function KnowledgeChat({
   const title = selectedSession ? sessionTitle(selectedSession) : "新对话";
 
   return (
-    <div className={`app${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
+    <div className={`app${sidebarCollapsed ? " sidebar-collapsed" : ""}${evidence && activePage === "chat" ? " evidence-open" : ""}`}>
       {mobileSidebarOpen ? (
         <button
           className="mobile-backdrop"
@@ -975,7 +1021,7 @@ export function KnowledgeChat({
           onClick={() => setMobileSidebarOpen(false)}
         />
       ) : null}
-      <aside className={`sidebar${mobileSidebarOpen ? " mobile-open" : ""}`}>
+      <aside ref={sidebarRef} id="knowledge-sidebar" className={`sidebar${mobileSidebarOpen ? " mobile-open" : ""}`}>
         <div className="sidebar-top">
           <div className="brand">
             <span className="brand-symbol">K</span>
@@ -991,7 +1037,7 @@ export function KnowledgeChat({
               storeSidebarCollapsed(next);
             }}
           >
-            {sidebarCollapsed ? "›" : "‹"}
+            {sidebarCollapsed ? <CaretRight size={18} /> : <CaretLeft size={18} />}
           </button>
         </div>
 
@@ -1005,24 +1051,25 @@ export function KnowledgeChat({
               setMobileSidebarOpen(false);
             }}
           >
-            <span aria-hidden="true">◌</span>
+            <ChatCircle size={20} aria-hidden="true" />
             <span>对话</span>
           </button>
           <button
             className={activePage === "knowledge-base" ? "active" : ""}
             type="button"
             title="知识库管理"
+            aria-label="知识库管理"
             onClick={() => {
               setActivePage("knowledge-base");
               setMobileSidebarOpen(false);
             }}
           >
-            <span aria-hidden="true">▤</span>
-            <span>知识库管理</span>
+            <Database size={20} aria-hidden="true" />
+            <span>知识库</span>
           </button>
         </nav>
 
-        <label className="knowledge-select">
+        {(knowledgeBases.length !== 1 || knowledgeBaseCursor || activePage === "knowledge-base") ? <label className="knowledge-select">
           <span>知识库</span>
           <select
             value={selectedKnowledgeBaseId}
@@ -1034,7 +1081,7 @@ export function KnowledgeChat({
               <option key={item.id} value={item.id}>{item.name}</option>
             ))}
           </select>
-        </label>
+        </label> : null}
         {knowledgeBaseCursor ? (
           <button
             className="sidebar-text-action"
@@ -1045,17 +1092,18 @@ export function KnowledgeChat({
           </button>
         ) : null}
 
-        {activePage === "chat" ? (
+        {activePage === "chat" ? <div className="session-toolbar">
+          <span>对话历史</span>
           <button
             className="new-chat-button"
             type="button"
             disabled={!selectedKnowledgeBase || submitting || Boolean(pendingRun)}
             onClick={beginNewConversation}
           >
-            <span aria-hidden="true">＋</span>
+            <Plus size={17} aria-hidden="true" />
             <span>新对话</span>
           </button>
-        ) : null}
+        </div> : null}
 
         {activePage === "chat" ? <nav className="session-navigation" aria-label="会话历史">
           {sessionsLoading && !sessions.length ? (
@@ -1085,6 +1133,7 @@ export function KnowledgeChat({
                   type="button"
                   key={session.id}
                   title={sessionTitle(session)}
+                  aria-label={sessionTitle(session)}
                   onClick={() => {
                     if (submitting || pendingRun) return;
                     setSelectedScopeIds(session.knowledge_base_ids ?? (session.knowledge_base_id ? [session.knowledge_base_id] : []));
@@ -1092,8 +1141,8 @@ export function KnowledgeChat({
                     setMobileSidebarOpen(false);
                   }}
                 >
-                  <span className="session-dot" aria-hidden="true" />
-                  <span>{sessionTitle(session)}</span>
+                  <span className="session-title">{sessionTitle(session)}</span>
+                  <time>{formatTime(session.updated_at)}</time>
                 </button>
               ))}
             </div>
@@ -1116,9 +1165,16 @@ export function KnowledgeChat({
             <p>创建、导入、查看解析结果并测试检索。</p>
           </div>
         )}
-        <div className="local-boundary">
-          <span className="status-dot" aria-hidden="true" />
-          <span>本地试用</span>
+        <div className="sidebar-footer">
+          <button className="settings-gear" type="button" aria-label="打开模型设置" title="模型设置"
+            onClick={() => { setMobileSidebarOpen(false); setSettingsOpen(true); }}>
+            <GearSix size={20} aria-hidden="true" /><span>设置</span>
+          </button>
+          <div className="local-boundary">
+            <Desktop size={19} aria-hidden="true" />
+            <span>本地运行</span>
+            <span className="status-dot" aria-hidden="true" />
+          </div>
         </div>
       </aside>
 
@@ -1158,9 +1214,11 @@ export function KnowledgeChat({
             className="icon-button mobile-menu"
             type="button"
             aria-label="打开会话列表"
+            aria-expanded={mobileSidebarOpen}
+            aria-controls="knowledge-sidebar"
             onClick={() => setMobileSidebarOpen(true)}
           >
-            ☰
+            <List size={21} aria-hidden="true" />
           </button>
           <div className="chat-heading">
             <h1>{title}</h1>
@@ -1271,7 +1329,7 @@ export function KnowledgeChat({
                   : !selectedScopeIds.length
                   ? "请先选择搜索范围"
                   : selectedKnowledgeBase
-                  ? "询问所选知识库中的内容…"
+                  ? messages.length ? "继续提问…" : "询问所选知识库中的内容…"
                   : "请先选择知识库"
               }
               aria-label="输入问题"
@@ -1306,7 +1364,7 @@ export function KnowledgeChat({
                       ? "选择本次对话使用的模型修订版"
                       : "请在齿轮设置中添加并验证模型"}
                 >
-                  <ComposerModelIcon />
+                  <Cpu className="composer-model-icon" size={17} aria-hidden="true" />
                   <select
                     aria-label="对话模型"
                     value={selectedChatModelRevisionId ?? ""}
@@ -1316,12 +1374,13 @@ export function KnowledgeChat({
                     <option value="">未选择模型</option>
                     {chatModels.map((profile) => (
                       <option key={profile.revision_id} value={profile.revision_id}>
-                        {profile.name} · r{profile.revision}
+                        {profile.name}{chatModels.filter((item) => item.name === profile.name).length > 1 ? ` · r${profile.revision}` : ""}
                       </option>
                     ))}
                   </select>
-                  <span className="composer-model-chevron" aria-hidden="true">⌄</span>
+                  <CaretDown className="composer-model-chevron" size={13} aria-hidden="true" />
                 </label>
+                <ComposerSettings disabled={submitting || sessionBusy}>
                 <ComposerOptionMenu
                   kind="retrieval"
                   label="检索模式"
@@ -1412,6 +1471,7 @@ export function KnowledgeChat({
                   ]}
                   onChange={changeRerankMode}
                 />
+                </ComposerSettings>
               </div>
               <button
                 className="send-button"
@@ -1429,7 +1489,7 @@ export function KnowledgeChat({
                 {submitting || sessionBusy ? (
                   <span className="send-pulse" aria-hidden="true" />
                 ) : (
-                  <span aria-hidden="true">↑</span>
+                  <ArrowUp size={23} aria-hidden="true" />
                 )}
               </button>
             </div>
@@ -1440,16 +1500,6 @@ export function KnowledgeChat({
         </div>
       </main>}
 
-      {activePage === "chat" ? <button
-        className="settings-gear"
-        type="button"
-        aria-label="打开模型设置"
-        title="模型设置"
-        onClick={() => setSettingsOpen(true)}
-      >
-        ⚙
-      </button> : null}
-
       {settingsOpen ? (
         <ModelSettingsDialog
           client={client}
@@ -1459,7 +1509,7 @@ export function KnowledgeChat({
         />
       ) : null}
 
-      {evidence ? (
+      {evidence && activePage === "chat" ? (
         <EvidenceDrawer
           client={client}
           run={evidence.run}
@@ -1474,6 +1524,40 @@ export function KnowledgeChat({
       ) : null}
     </div>
   );
+}
+
+function ComposerSettings({ children, disabled }: { children: ReactNode; disabled: boolean }) {
+  const [open, setOpen] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const outside = (event: PointerEvent) => {
+      if (event.target instanceof Node && !root.current?.contains(event.target)) setOpen(false);
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setOpen(false);
+        trigger.current?.focus();
+      }
+    };
+    document.addEventListener("pointerdown", outside);
+    document.addEventListener("keydown", escape);
+    return () => {
+      document.removeEventListener("pointerdown", outside);
+      document.removeEventListener("keydown", escape);
+    };
+  }, [open]);
+  return <div className="composer-settings" ref={root}>
+    <button ref={trigger} className={`retrieval-settings-button${open ? " active" : ""}`} type="button"
+      aria-label="检索设置" aria-expanded={open} aria-haspopup="dialog" disabled={disabled}
+      onClick={() => setOpen((value) => !value)}>
+      <SlidersHorizontal size={19} aria-hidden="true" /><span>检索设置</span>
+    </button>
+    {open ? <div className="retrieval-settings-panel" role="dialog" aria-label="检索设置">
+      <strong>检索设置</strong>{children}
+    </div> : null}
+  </div>;
 }
 
 function ComposerOptionMenu<T extends string>({
@@ -1530,6 +1614,8 @@ function ComposerOptionMenu<T extends string>({
         onClick={() => setOpen((current) => !current)}
       >
         <ComposerMenuIcon kind={kind} />
+        <span className="composer-setting-label">{label}<small>{selected.label}</small></span>
+        <CaretRight size={14} aria-hidden="true" />
       </button>
       {open ? (
         <div className="composer-popover" role="menu" aria-label={label}>
@@ -1548,7 +1634,7 @@ function ComposerOptionMenu<T extends string>({
               }}
             >
               <span className="composer-option-check" aria-hidden="true">
-                {option.value === value ? "✓" : ""}
+                {option.value === value ? <Check size={14} /> : null}
               </span>
               <span>
                 <strong>{option.label}</strong>
@@ -1562,44 +1648,10 @@ function ComposerOptionMenu<T extends string>({
   );
 }
 
-function ComposerModelIcon() {
-  return (
-    <svg className="composer-model-icon" viewBox="0 0 20 20" aria-hidden="true">
-      <path d="M10 2.75 16 6.2v7.6l-6 3.45-6-3.45V6.2L10 2.75Z" />
-      <circle cx="10" cy="10" r="2.1" />
-    </svg>
-  );
-}
-
-function ComposerMenuIcon({ kind }: {
-  kind: "retrieval" | "strategy" | "rerank";
-}) {
-  if (kind === "retrieval" || kind === "strategy") {
-    return (
-      <svg viewBox="0 0 20 20" aria-hidden="true">
-        <circle cx="8.5" cy="8.5" r="4.75" />
-        <path d="m12 12 4.25 4.25" />
-      </svg>
-    );
-  }
-  if (kind === "rerank") {
-    return (
-      <svg viewBox="0 0 20 20" aria-hidden="true">
-        <path d="M4 5h12M4 10h12M4 15h12" />
-        <circle cx="8" cy="5" r="1.5" />
-        <circle cx="13" cy="10" r="1.5" />
-        <circle cx="7" cy="15" r="1.5" />
-      </svg>
-    );
-  }
-  return (
-    <svg viewBox="0 0 20 20" aria-hidden="true">
-      <circle cx="5" cy="5" r="1.75" />
-      <circle cx="15" cy="5" r="1.75" />
-      <circle cx="10" cy="15" r="1.75" />
-      <path d="M6.7 5h2.05A1.25 1.25 0 0 1 10 6.25v6.9M13.3 5h-2.05A1.25 1.25 0 0 0 10 6.25" />
-    </svg>
-  );
+function ComposerMenuIcon({ kind }: { kind: "retrieval" | "strategy" | "rerank" }) {
+  if (kind === "retrieval") return <MagnifyingGlass size={18} aria-hidden="true" />;
+  if (kind === "rerank") return <ArrowsDownUp size={18} aria-hidden="true" />;
+  return <SlidersHorizontal size={18} aria-hidden="true" />;
 }
 
 function Message({
@@ -1648,12 +1700,12 @@ function Message({
               citationCount={run ? run.citations.length : null}
               onCitation={message.run_id ? onCitation : undefined}
             />
-            {message.run_id ? (
-              <SourcesButton content={message.content} onOpen={onCitation} />
-            ) : null}
           </>
         )}
         <time>{formatTime(message.created_at)}</time>
+        {message.run_id && !generating && !failed ? (
+          <SourcesButton content={message.content} citations={run?.citations} onOpen={onCitation} />
+        ) : null}
       </div>
     </article>
   );
@@ -1680,7 +1732,7 @@ function Welcome({
         {suggestions.map((value) => (
           <button type="button" key={value} onClick={() => onSuggestion(value)}>
             {value}
-            <span aria-hidden="true">↗</span>
+            <ArrowUpRight size={17} aria-hidden="true" />
           </button>
         ))}
       </div>

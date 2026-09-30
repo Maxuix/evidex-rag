@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { CaretDown, CaretRight } from "@phosphor-icons/react";
 import type { ApiClient } from "../api/client";
 import type { ChatProgressSnapshot, ChatRun } from "../api/types";
 import type { ActivityState } from "./activityState";
@@ -51,10 +52,10 @@ export function ExecutionTimeline({ run, activity, progress, client, onCitation 
   };
   const priorAttempts = new Map(persisted.filter(item => item.attempt < currentAttempt).map(item => [item.attempt, { steps: item.steps, omitted: item.omitted_step_count, elapsedMs: item.elapsed_ms }]));
   for (const [attempt, record] of Object.entries(scope?.attempts ?? {})) if (+attempt < currentAttempt && !priorAttempts.has(+attempt)) priorAttempts.set(+attempt, { steps: Object.values(record.steps).sort((a, b) => a.ordinal - b.ordinal), omitted: record.omitted, elapsedMs: record.elapsedMs });
-  return <section className={`execution-timeline${terminal ? " is-terminal" : ""}`} aria-label="回答执行过程">
+  return <section className={`execution-timeline${terminal ? " is-terminal" : ""}${expanded ? " is-expanded" : ""}`} aria-label="回答执行过程">
     <button className="activity-header" type="button" aria-expanded={expanded} aria-controls={`timeline-${run.run_id}`} onClick={() => setExpanded(value => !value)}>
-      <span><strong>回答过程</strong><span className="activity-header-state">{stateText}</span></span>
-      <span className="activity-header-meta">{toolCount ? `${toolCount} 次${terminal && saved && !omitted ? "" : "已记录的"}工具调用` : ""}{run.citations.length ? ` · ${run.citations.length} 条引用` : ""}{elapsedMs > 0 ? ` · ${duration(elapsedMs)}` : ""}<span>{expanded ? "收起" : "展开"}</span></span>
+      <span>{expanded ? <CaretDown size={16} aria-hidden="true" /> : <CaretRight size={16} aria-hidden="true" />}<strong>回答过程</strong><span className="activity-header-state">{stateText}</span></span>
+      <span className="activity-header-meta">{toolCount ? `${toolCount} 次${terminal && saved && !omitted ? "" : "已记录的"}工具调用` : ""}{run.citations.length ? ` · ${run.citations.length} 条引用` : ""}{elapsedMs > 0 ? ` · ${duration(elapsedMs)}` : ""}</span>
     </button>
     <span className="sr-only" role="status" aria-live="polite">{disconnected ? "实时连接已中断" : stateText}</span>
     {expanded ? <div id={`timeline-${run.run_id}`}>

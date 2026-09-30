@@ -20,26 +20,21 @@
 
 ## 截图
 
-<table>
-  <tr>
-    <td width="50%">
-      <img src="assets/readme/chat-agent-trace.jpg" alt="带有模型轮次、并行工具调用、来源和耗时的回答时间线" />
-    </td>
-    <td width="50%">
-      <img src="assets/readme/chat-source-drawer.jpg" alt="展示引用背后准确检索片段的来源抽屉" />
-    </td>
-  </tr>
-  <tr>
-    <td><sub>回答过程时间线：展示每次工具调用、输入、来源、结果数量和耗时。</sub></td>
-    <td><sub>引用来源抽屉：打开引用即可查看其背后的准确片段。</sub></td>
-  </tr>
-  <tr>
-    <td colspan="2">
-      <img src="assets/readme/kb-scope-picker.png" alt="支持多知识库范围选择的聊天输入框" />
-      <br/><sub>多知识库对话：每次会话可以组合选择知识库，运行期间范围保持冻结。</sub>
-    </td>
-  </tr>
-</table>
+<img src="assets/readme/chat-source-drawer.png" alt="新版对话界面：暖灰侧栏、带引用的回答与并排展示的来源原文" width="100%" />
+
+<sub>简洁的阅读工作区：中性色表面、统一的检索设置入口，以及桌面端并排展示的引用来源；小屏使用来源弹层。</sub>
+
+<details>
+  <summary>查看回答过程与多知识库选择</summary>
+
+  <p>展开回答过程，查看模型轮次、工具输入、来源、结果数量和耗时。</p>
+  <img src="assets/readme/chat-agent-trace.png" alt="展开的回答过程，展示检索问题、返回数量、状态和耗时" width="100%" />
+
+  <p>每次会话可以组合选择多个知识库，每轮运行会冻结当次范围。</p>
+  <img src="assets/readme/kb-scope-picker.png" alt="多知识库范围选择器：三个知识库中已选择两个" width="100%" />
+</details>
+
+<sub>截图为本地前端预览使用内存示例数据渲染的真实界面。</sub>
 
 ## 核心能力
 
@@ -204,6 +199,16 @@ make up
 - `iterative_balanced`：在 Text 模式中基于已有证据片段进行最多两轮额外检索。
 
 重排模式为 `none`、`classic` 和 `local_minilm_v1`。
+
+## 前端预览
+
+```bash
+cd apps/web-chat
+npm ci
+npm run dev
+```
+
+打开 <http://127.0.0.1:5173/design-preview.html> 查看使用内存示例数据的前端界面；添加 `?scope-demo` 可展示多知识库选择。该入口无需启动后端即可复现 README 截图，生产构建仍使用 `index.html` 和正常的 API 运行配置。
 
 ## 测试
 

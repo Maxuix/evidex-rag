@@ -1,4 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { CaretDown, Database } from "@phosphor-icons/react";
 import type { KnowledgeBase } from "./api/types";
 
 interface Props {
@@ -69,11 +70,11 @@ export function KnowledgeScopePicker({ knowledgeBases, selectedIds, disabled, sa
         if (open) close();
         else { setQuery(""); setInitialSelection(selectedIds); setOpen(true); }
       }}>
-      <span className="scope-trigger-kind">范围</span>
+      <Database className="scope-trigger-kind" size={17} aria-hidden="true" />
       <span className="scope-trigger-name">{name}</span>
       {selectedIds.length > 1 ? <span className="scope-count">+{selectedIds.length - 1}</span> : null}
       {selectedIds.length > 1 ? <span className="scope-mobile-count">{selectedIds.length} 个库</span> : null}
-      <span className="scope-trigger-chevron" aria-hidden="true">⌄</span>
+      <CaretDown className="scope-trigger-chevron" size={13} aria-hidden="true" />
     </button>
     {open ? <div id={panelId} role="dialog" aria-label="选择知识库" className="scope-popover">
       <div className="scope-popover-heading">

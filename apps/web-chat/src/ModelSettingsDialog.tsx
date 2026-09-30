@@ -1,4 +1,5 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { X } from "@phosphor-icons/react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import type { ApiClient } from "./api/client";
 import type {
@@ -65,6 +66,8 @@ export function ModelSettingsDialog({
   const [providerFormRevision, setProviderFormRevision] = useState(0);
   const [profileFormRevision, setProfileFormRevision] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const dialogRef = useRef<HTMLElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
 
   const refresh = async () => {
     setLoading(true);
@@ -82,11 +85,34 @@ export function ModelSettingsDialog({
 
   useEffect(() => {
     if (!initial) void refresh();
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    closeRef.current?.focus();
     const close = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
+      if (event.key !== "Tab") return;
+      const controls = Array.from(dialogRef.current?.querySelectorAll<HTMLElement>(
+        "button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), summary",
+      ) ?? []).filter((control) => {
+        const folded = control.closest("details:not([open])");
+        return control.getClientRects().length > 0
+          && (!folded || folded.querySelector(":scope > summary") === control);
+      });
+      const first = controls[0];
+      const last = controls[controls.length - 1];
+      if (!first || !last) return;
+      if (!dialogRef.current?.contains(document.activeElement) || (event.shiftKey && document.activeElement === first)) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
     };
     window.addEventListener("keydown", close);
-    return () => window.removeEventListener("keydown", close);
+    return () => {
+      window.removeEventListener("keydown", close);
+      if (opener?.isConnected) opener.focus();
+    };
   }, []);
 
   const run = async (operation: () => Promise<unknown>, onSuccess?: () => void) => {
@@ -122,13 +148,13 @@ export function ModelSettingsDialog({
     <div className="settings-backdrop" role="presentation" onMouseDown={(event) => {
       if (event.target === event.currentTarget) onClose();
     }}>
-      <section className="settings-dialog" role="dialog" aria-modal="true" aria-labelledby="model-settings-title">
+      <section ref={dialogRef} className="settings-dialog" role="dialog" aria-modal="true" aria-labelledby="model-settings-title">
         <header>
           <div>
             <h2 id="model-settings-title">模型设置</h2>
             <p>配置保存在本机；API Key 不会返回浏览器。</p>
           </div>
-          <button className="icon-button" type="button" aria-label="关闭模型设置" onClick={onClose}>×</button>
+          <button ref={closeRef} className="icon-button" type="button" aria-label="关闭模型设置" onClick={onClose}><X size={21} aria-hidden="true" /></button>
         </header>
 
         <nav className="settings-tabs" aria-label="模型设置分类">

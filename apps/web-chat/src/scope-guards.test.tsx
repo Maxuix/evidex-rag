@@ -154,6 +154,39 @@ afterEach(() => {
 });
 
 describe("component request scopes", () => {
+  it("applies the consolidated retrieval controls to the submitted request and restores keyboard focus", async () => {
+    const kb = knowledgeBase("kb-a", "知识库 A");
+    const configured = modelSettings();
+    configured.profiles[0].provider_secret_available = true;
+    const run = runFixture({ knowledge_base_id: kb.id, session_id: "session-a", status: "completed", assistant_status: "completed" });
+    const createChatRun = vi.fn().mockResolvedValue(run);
+    const client = {
+      getModelSettings: vi.fn().mockResolvedValue(configured),
+      listKnowledgeBases: vi.fn().mockResolvedValue({ items: [kb], next_cursor: null }),
+      getGraphConfig: vi.fn().mockResolvedValue(null), getGraphSchemaProfiles: vi.fn().mockResolvedValue([]),
+      listChatSessions: vi.fn().mockResolvedValue({ items: [session(kb.id, run.session_id, "检索设置会话")], next_cursor: null }),
+      listChatMessages: vi.fn().mockResolvedValue({ items: [], next_cursor: null }),
+      getChatRun: vi.fn().mockResolvedValue(run), createChatRun,
+    } as unknown as ApiClient;
+    render(<KnowledgeChat client={client} />);
+    await screen.findByRole("button", { name: "检索设置会话" });
+    const trigger = screen.getByRole("button", { name: "检索设置" });
+    await userEvent.click(trigger);
+    await userEvent.click(screen.getByRole("button", { name: /检索模式：/ }));
+    await userEvent.click(screen.getByRole("menuitemradio", { name: /文档检索模式/ }));
+    await userEvent.click(screen.getByRole("button", { name: /检索策略：/ }));
+    await userEvent.click(screen.getByRole("menuitemradio", { name: /迭代平衡/ }));
+    await userEvent.click(screen.getByRole("button", { name: /精排方式：/ }));
+    await userEvent.click(screen.getByRole("menuitemradio", { name: /不精排/ }));
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "检索设置" })).toBeNull();
+    expect(window.document.activeElement).toBe(trigger);
+    await userEvent.type(screen.getByLabelText("输入问题"), "请解释文档内容");
+    await userEvent.click(screen.getByRole("button", { name: "发送问题" }));
+    await waitFor(() => expect(createChatRun).toHaveBeenCalled());
+    expect(createChatRun.mock.calls[0][0].retrieval).toMatchObject({ mode: "text", strategy: "iterative_balanced", rerank_mode: "none" });
+  });
+
   it("keeps terminal activity authoritative over delayed polling and stream callbacks", async () => {
     const kb = knowledgeBase("kb-a", "知识库 A");
     const run = runFixture({ knowledge_base_id: kb.id, session_id: "session-a" });

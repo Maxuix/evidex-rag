@@ -89,6 +89,7 @@ plans/
 reviews/
 *-test-report.md
 *-test-result.md
+design-qa.md
 
 # Personal study/interview materials, not for the public repository
 导学-RAG.md

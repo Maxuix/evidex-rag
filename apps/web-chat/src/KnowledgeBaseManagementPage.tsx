@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { CaretDown, List } from "@phosphor-icons/react";
 
 import { ApiClient, ApiClientError } from "./api/client";
 import { UI_POLICY } from "./uiPolicy";
@@ -436,7 +437,7 @@ export function KnowledgeBaseManagementPage({
           aria-label="打开侧栏"
           onClick={onOpenMobileSidebar}
         >
-          ☰
+          <List size={21} aria-hidden="true" />
         </button>
         <div className="chat-heading management-heading">
           <h1>知识库管理</h1>
@@ -495,6 +496,8 @@ export function KnowledgeBaseManagementPage({
               {actionError ? <InlineError message={actionError} /> : null}
 
               <KnowledgeBaseDescription key={knowledgeBase.id} knowledgeBase={knowledgeBase} client={client} onSaved={onKnowledgeBaseCreated} />
+              <details className="management-advanced">
+                <summary>知识图谱配置<CaretDown size={16} aria-hidden="true" /></summary>
               <GraphSettingsPanel
                 knowledgeBase={knowledgeBase}
                 modelSettings={modelSettings}
@@ -507,6 +510,7 @@ export function KnowledgeBaseManagementPage({
                 onUpdate={onUpdateGraphConfig}
                 onOpenModelSettings={onOpenModelSettings}
               />
+              </details>
 
               <section className="management-panel upload-panel-chat">
                 <div className="management-panel-heading">
@@ -625,16 +629,19 @@ export function KnowledgeBaseManagementPage({
                 />
               ) : null}
 
+              <details className="management-advanced">
+                <summary>检索验证<CaretDown size={16} aria-hidden="true" /></summary>
               <RetrievalDebugger
                 client={client}
                 knowledgeBase={knowledgeBase}
               />
+              </details>
             </>
           ) : (
             <section className="management-panel empty-management">
               <span className="welcome-mark">K</span>
               <h2>先创建一个知识库</h2>
-              <p>创建时确定解析、切分和 embedding 配置，之后即可批量导入文档。</p>
+              <p>选择解析与检索配置后，即可批量导入文档。</p>
             </section>
           )}
         </div>
@@ -1113,7 +1120,7 @@ function KnowledgeBaseCreator({
         <div>
           <span className="eyebrow">知识库配置</span>
           <h2>创建知识库</h2>
-          <p>解析、chunk 和 embedding 配置会固化到索引版本中。</p>
+          <p>选择资料的解析与检索方式，创建后即可添加文档。</p>
         </div>
         <button className="primary-button" type="button" onClick={() => setOpen((value) => !value)}>
           {open ? "收起" : "新建知识库"}
@@ -1583,9 +1590,9 @@ function RetrievalDebugger({
     <section className="management-panel debug-panel">
       <div className="management-panel-heading">
         <div>
-          <span className="eyebrow">Debug</span>
+          <span className="eyebrow">检索验证</span>
           <h2>测试索引结果</h2>
-          <p>直接查看当前 serving 索引返回的 chunk、排序和分数。</p>
+          <p>输入问题，查看命中的文档片段与相关性。</p>
         </div>
       </div>
       <form className="debug-form" onSubmit={(event) => void submit(event)}>

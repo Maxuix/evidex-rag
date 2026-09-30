@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { CaretRight, Check, Copy, FileText, X } from "@phosphor-icons/react";
 
 import type { ApiClient } from "./api/client";
 import type { ChatRun } from "./api/types";
@@ -20,32 +21,42 @@ export function AnswerText({
   const paragraphs = content.split(/\n{2,}/);
   return (
     <div className="answer-text">
-      {paragraphs.map((paragraph, paragraphIndex) => (
-        <p key={`${paragraphIndex}-${paragraph.slice(0, 20)}`}>
-          {renderInline(paragraph, citationCount, onCitation)}
-        </p>
-      ))}
+      {paragraphs.map((paragraph, paragraphIndex) => {
+        const key = `${paragraphIndex}-${paragraph.slice(0, 20)}`;
+        const heading = /^(#{1,3})\s+([^\n]+)$/.exec(paragraph);
+        return heading ? <h3 key={key}>{renderInline(heading[2], citationCount, onCitation)}</h3>
+          : <p key={key}>{renderInline(paragraph, citationCount, onCitation)}</p>;
+      })}
     </div>
   );
 }
 
 export function SourcesButton({
   content,
+  citations,
   onOpen,
 }: {
   content: string;
+  citations?: ChatRun["citations"];
   onOpen: (ordinal: number, trigger: HTMLButtonElement) => void;
 }) {
   const ordinals = citationOrdinals(content);
   if (!ordinals.length) return null;
+  const first = citations?.find((citation) => citation.ordinal === ordinals[0]);
   return (
     <button
       className="sources-button"
       type="button"
+      aria-label={`${ordinals.length} 个来源`}
       onClick={(event) => onOpen(ordinals[0], event.currentTarget)}
     >
-      <span aria-hidden="true">▣</span>
-      {ordinals.length} 个来源
+      <FileText size={19} aria-hidden="true" />
+      <span className="source-summary">
+        {first ? <><span>[{first.ordinal + 1}] {documentName(first.document_display_name, first.document_original_filename)}</span>
+          <small>{formatSourceLocation(first.source_location)}{ordinals.length > 1 ? ` · 共 ${ordinals.length} 个来源` : ""}</small></>
+          : <span>{ordinals.length} 个来源</span>}
+      </span>
+      <CaretRight size={16} aria-hidden="true" />
     </button>
   );
 }
@@ -68,14 +79,30 @@ export function EvidenceDrawer({
   onClose: () => void;
 }) {
   const closeRef = useRef<HTMLButtonElement>(null);
+  const drawerRef = useRef<HTMLElement>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
   useEffect(() => {
     closeRef.current?.focus();
     const handleKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (document.querySelector(".settings-dialog, .retrieval-settings-panel, .scope-popover")) return;
+      if (event.key === "Escape") onCloseRef.current();
+      if (event.key !== "Tab" || window.matchMedia("(min-width: 1200px)").matches) return;
+      const buttons = drawerRef.current?.querySelectorAll<HTMLButtonElement>("button:not(:disabled)");
+      if (!buttons?.length) return;
+      const first = buttons[0];
+      const last = buttons[buttons.length - 1];
+      if (!drawerRef.current?.contains(document.activeElement) || (event.shiftKey && document.activeElement === first)) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
     };
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
-  }, [onClose]);
+  }, []);
 
   useEffect(() => {
     document.getElementById(`evidence-${selectedOrdinal}`)?.scrollIntoView({
@@ -94,11 +121,10 @@ export function EvidenceDrawer({
         aria-label="关闭证据来源"
         onClick={onClose}
       />
-      <aside className="evidence-drawer" aria-label="证据来源">
+      <aside ref={drawerRef} className="evidence-drawer" aria-label="证据来源">
         <header className="evidence-header">
           <div>
-            <p className="overline">回答依据</p>
-            <h2>证据来源</h2>
+            <h2>引用来源</h2>
           </div>
           <button
             ref={closeRef}
@@ -107,7 +133,7 @@ export function EvidenceDrawer({
             aria-label="关闭证据来源"
             onClick={onClose}
           >
-            ×
+            <X size={21} aria-hidden="true" />
           </button>
         </header>
 
@@ -122,6 +148,7 @@ export function EvidenceDrawer({
           <div className="drawer-state">这条回答没有引用来源。</div>
         ) : null}
         <div className="evidence-list">
+          {run?.citations.length ? <p className="evidence-intro">本次回答的依据</p> : null}
           {run?.citations.map((citation) => (
             <EvidenceCard
               key={citation.ordinal}
@@ -179,7 +206,7 @@ function EvidenceCard({
       className={`evidence-card${selected ? " selected" : ""}`}
       onClick={onSelect}
     >
-      <div className="evidence-number">{citation.ordinal + 1}</div>
+      <div className="evidence-number">[{citation.ordinal + 1}]</div>
       <div className="evidence-card-body">
         <div className="evidence-title-row">
           <div>
@@ -187,13 +214,13 @@ function EvidenceCard({
             <h3>{name}</h3>
             <p>{formatSourceLocation(citation.source_location)}</p>
           </div>
-          <span className="modality-label">
+          {citation.modality !== "text" ? <span className="modality-label">
             {citation.modality === "image"
               ? "图片"
               : citation.modality === "table"
                 ? "表格"
                 : "文本"}
-          </span>
+          </span> : null}
         </div>
         {imageUrl && !imageFailed ? (
           <img
@@ -215,6 +242,7 @@ function EvidenceCard({
             void copy();
           }}
         >
+          {copied ? <Check size={14} aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}
           {copied ? "已复制" : "复制引用"}
         </button>
       </div>

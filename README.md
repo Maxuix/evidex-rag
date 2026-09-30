@@ -28,28 +28,21 @@ and chat history never leave the host.
 
 ## Screenshots
 
-<table>
-  <tr>
-    <td width="50%">
-      <img src="assets/readme/chat-agent-trace.jpg" alt="Chat answer with a per-call agent timeline: model rounds, parallel tool calls, returned sources and durations" />
-    </td>
-    <td width="50%">
-      <img src="assets/readme/chat-source-drawer.jpg" alt="Source drawer showing the exact retrieved fragment behind a citation, with document title, page and section" />
-    </td>
-  </tr>
-  <tr>
-    <td><sub>The answer process timeline: every tool call with its inputs, sources, result counts, and duration.</sub></td>
-    <td><sub>The citation drawer: each reference opens the exact retrieved fragment behind it.</sub></td>
-  </tr>
-  <tr>
-    <td colspan="2">
-      <img src="assets/readme/kb-scope-picker.png" alt="Chat input with multi knowledge-base scope picker" />
-      <br/><sub>Multi-KB chat scope: pick any combination of knowledge bases per session; each run freezes its own scope.</sub>
-    </td>
-  </tr>
-</table>
+<img src="assets/readme/chat-source-drawer.png" alt="Redesigned chat workspace with a warm gray sidebar, cited answer, and source text displayed alongside it" width="100%" />
 
-<sub>Screenshots show the real UI rendered with local acceptance-fixture data.</sub>
+<sub>A quiet reading workspace: neutral surfaces, compact retrieval settings, and side-by-side references on desktop. Smaller screens use a source panel.</sub>
+
+<details>
+  <summary>Execution timeline and multi-KB scope</summary>
+
+  <p>The answer process expands to show model rounds, tool inputs, returned sources, result counts, and duration.</p>
+  <img src="assets/readme/chat-agent-trace.png" alt="Expanded answer process showing the retrieval query, result count, status, and duration" width="100%" />
+
+  <p>Select multiple knowledge bases for a session; each run freezes its own scope.</p>
+  <img src="assets/readme/kb-scope-picker.png" alt="Knowledge-base scope picker with two of three libraries selected" width="100%" />
+</details>
+
+<sub>Screenshots show the real UI rendered with in-memory example data from the local frontend preview.</sub>
 
 ## What it is
 
@@ -343,6 +336,19 @@ lane — it never steals capacity from document jobs:
    build keeps serving until the switch is atomic.
 4. Switching the schema profile or changing frozen inputs requires a new build
    generation; explicit retry reuses the same build when nothing changed.
+
+## Frontend preview
+
+```bash
+cd apps/web-chat
+npm ci
+npm run dev
+```
+
+Open <http://127.0.0.1:5173/design-preview.html> for a frontend-only preview
+with in-memory example data. Add `?scope-demo` to show the multi-KB example.
+This entry reproduces the screenshots without starting the backend; the
+production build uses `index.html` and the regular runtime API configuration.
 
 ## Testing
 
