@@ -29,6 +29,9 @@
   --sidebar-width: 260px;
   --evidence-width: 448px;
   --reading-width: 820px;
+  --font-body: 16px;
+  --font-title: 19px;
+  --font-answer-title: 22px;
 }
 
 * {
@@ -124,8 +127,8 @@ input:focus-visible {
   display: flex;
   min-width: 0;
   gap: 10px;
-  font-size: 17px;
-  font-weight: 650;
+  font-size: 16px;
+  font-weight: 600;
   letter-spacing: -0.025em;
   white-space: nowrap;
   color: var(--ink);
@@ -327,7 +330,7 @@ input:focus-visible {
   border: 0;
   border-radius: 8px;
   box-shadow: none;
-  font-size: 14px;
+  font-size: 13px;
 }
 
 .settings-gear:hover {
@@ -373,7 +376,7 @@ input:focus-visible {
 }
 
 .settings-dialog h2 {
-  font-size: 18px;
+  font-size: 17px;
 }
 
 .settings-dialog header p,
@@ -741,8 +744,8 @@ input:focus-visible {
   margin: 0;
   overflow: hidden;
   color: var(--ink);
-  font-size: 21px;
-  font-weight: 650;
+  font-size: var(--font-title);
+  font-weight: 600;
   letter-spacing: -0.025em;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -808,7 +811,7 @@ input:focus-visible {
   overflow-wrap: anywhere;
   background: var(--surface-strong);
   border-radius: 16px 16px 4px 16px;
-  font-size: 18px;
+  font-size: var(--font-body);
 }
 
 .message time {
@@ -849,15 +852,15 @@ input:focus-visible {
   margin: 0 0 16px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  font-size: 18px;
-  line-height: 1.8;
+  font-size: var(--font-body);
+  line-height: 1.75;
 }
 
 .answer-text h3 {
   margin: 0 0 18px;
   color: var(--ink);
-  font-size: 24px;
-  font-weight: 650;
+  font-size: var(--font-answer-title);
+  font-weight: 600;
   line-height: 1.5;
   letter-spacing: -0.02em;
 }
@@ -874,7 +877,7 @@ input:focus-visible {
   background: var(--accent-surface);
   border: 0;
   border-radius: 4px;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
   line-height: 1.5;
 }
@@ -896,7 +899,7 @@ input:focus-visible {
   background: var(--accent-surface);
   border: 0;
   border-radius: 10px;
-  font-size: 14px;
+  font-size: 13px;
 }
 
 .thinking {
@@ -1004,8 +1007,8 @@ input:focus-visible {
 
 .welcome h2 {
   margin: 0;
-  font-size: clamp(24px, 3vw, 34px);
-  font-weight: 650;
+  font-size: clamp(22px, 3vw, 30px);
+  font-weight: 600;
   letter-spacing: -0.04em;
 }
 
@@ -1076,7 +1079,7 @@ input:focus-visible {
   background: transparent;
   border: 0;
   outline: none;
-  font-size: 15px;
+  font-size: 14px;
   line-height: 1.5;
 }
 
@@ -1393,8 +1396,8 @@ input:focus-visible {
 .evidence-header h2 {
   margin: 0;
   color: var(--ink);
-  font-size: 21px;
-  font-weight: 650;
+  font-size: var(--font-title);
+  font-weight: 600;
   letter-spacing: -0.025em;
 }
 
@@ -1453,7 +1456,7 @@ input:focus-visible {
 .evidence-title-row h3 {
   margin: 0;
   color: var(--ink);
-  font-size: 20px;
+  font-size: 18px;
   font-weight: 600;
   line-height: 1.5;
   overflow-wrap: anywhere;
@@ -1480,8 +1483,8 @@ input:focus-visible {
   padding: 0;
   color: var(--text);
   border: 0;
-  font-size: 18px;
-  line-height: 1.85;
+  font-size: var(--font-body);
+  line-height: 1.8;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -1582,7 +1585,7 @@ input:focus-visible {
   background: transparent;
   border: 0;
   border-radius: 9px;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 500;
 }
 
@@ -1762,7 +1765,7 @@ input:focus-visible {
 .confirm-dialog h2 {
   margin: 3px 0 0;
   color: var(--text);
-  font-size: 18px;
+  font-size: 17px;
   letter-spacing: -0.02em;
 }
 
@@ -3076,7 +3079,7 @@ input:focus-visible {
 .execution-timeline.is-expanded { border: 1px solid var(--border); background: var(--panel); }
 .activity-header { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 13px 16px; border: 0; border-radius: 10px; text-align: left; background: transparent; }
 .activity-header > span { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
-.activity-header strong { font-size: 14px; }
+.activity-header strong { font-size: 13px; }
 .activity-header-state { color: var(--muted); font-size: 12px; }
 .activity-header-meta { justify-content: flex-end; color: var(--muted); font-size: 11px; line-height: 1.6; }
 .activity-header-meta > span { color: var(--text); margin-left: 4px; }
@@ -3253,8 +3256,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   .sidebar-collapsed .new-chat-button { padding: 0 4px; }
 }
 @media (max-width: 719px) {
-  .user-message > div, .answer-text p { font-size: 16px; }
-  .answer-text h3 { font-size: 21px; }
+  :root { --font-body: 15px; --font-answer-title: 20px; }
+  .composer textarea { font-size: 16px; }
   .sources-button { font-size: 13px; min-height: 54px; }
   .chat-heading h1 { font-size: 16px; }
   .chat-heading p { font-size: 12px; }
